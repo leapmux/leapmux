@@ -114,13 +114,24 @@ export class PendingOpsManager {
 
   /** Push a fresh local batch and apply it speculatively. */
   submit(batch: OpBatch): void {
-    // recomputeSpeculative aliases speculativeState to confirmedState
-    // when no batches are pending. Detach before mutating so the
-    // applySpeculative below doesn't pollute confirmedState. We clone
-    // only the records the new batch will touch — same shape as
-    // recomputeSpeculative below.
-    if (this.state.speculativeState === this.state.confirmedState)
-      this.state.speculativeState = cloneStateForBatches(this.state.confirmedState, [batch])
+    // Detach every record THIS batch will touch, always — the clone is
+    // per-batch, not per-manager. `apply.ts` writes registers in place, and
+    // `cloneStateForBatches` deep-clones only the records the batches it was
+    // GIVEN name, shallow-copying the maps around them. So once a batch is
+    // pending, speculativeState still shares every record that batch left
+    // alone with confirmedState, and a second batch touching one of those
+    // would write straight through into confirmed state. That write is not
+    // merely visible early: recomputeSpeculative re-derives FROM
+    // confirmedState, so a later reject cannot undo it, and it lands under
+    // the local clientHlc, which then suppresses lower-HLC remote writes.
+    //
+    // Cloning out of speculativeState (not confirmedState) is what makes one
+    // unconditional call cover both cases: when the states are aliased it
+    // reads confirmed, and when they are already detached it preserves the
+    // earlier batches' speculative writes. The cost is one shallow copy of
+    // the four maps per submit — the same O(records) pointer work
+    // recomputeSpeculative already pays on every commit echo.
+    this.state.speculativeState = cloneStateForBatches(this.state.speculativeState, [batch])
     this.state.pendingBatches.push(batch)
     for (const op of batch.ops)
       applySpeculative(this.state.speculativeState, op)

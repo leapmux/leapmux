@@ -130,9 +130,12 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
           Cancel
         </button>
         <Show when={hasPushableWork(props.state.gitState)}>
+          {/* `workingDir` is the dir the worker itself resolved for this tab
+              and echoed back on the inspect response, so the push runs in
+              exactly the repo this prompt is about. */}
           <PushBranchButton
             workerId={props.state.workerId}
-            tab={{ type: props.state.tabType, id: props.state.tabId }}
+            workingDir={props.state.workingDir}
             gitState={props.state.gitState}
             onPushed={refreshStatus}
           />

@@ -25,7 +25,7 @@ import { createDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename } from '~/lib/paths'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { tabKey } from '~/stores/tab.helpers'
+import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { focusTile, removeEmptyFloatingWindow } from './tileLifecycle'
@@ -525,10 +525,17 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
 
     const fileName = basename(path) || path
     const tabId = generateFileTabId()
+    // A file tab inherits the git context of the tab it was opened from, the
+    // same way a terminal opened "here" does -- same helper, same guard that it
+    // only seeds when the two resolve to the same directory. Without it the tab
+    // renders ungrouped until the next git-status refresh reaches it, even
+    // though the answer was on screen at the moment of the open.
+    const gitSeed = resolveOptimisticGitInfo(activeTab(), { workingDir: ctx.workingDir })
     openTabInFocusedTile(
       { view, layoutStore, selection, metadata },
       { type: TabType.FILE, id: tabId, workerId: ctx.workerId },
       {
+        ...gitSeed,
         filePath: path,
         workingDir: ctx.workingDir,
         title: fileName,
@@ -545,9 +552,15 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     )
 
     // E2EE worker-side path registration. The hub never sees the path; the
-    // worker persists `(user_id, tab_id, file_path)` and emits
+    // worker persists `(user_id, tab_id, file_path, working_dir)` and emits
     // FileTabPathRegistered on its OWN private-event stream so peer clients
-    // populate their local fileTabPaths cache.
+    // learn the path and the resolved working dir.
+    //
+    // `workingDir` is what makes the worker able to answer branch-context
+    // questions about this tab at all -- the last-tab close inspection, the
+    // sibling-on-this-branch scan, PushBranch. It is the originating tab's dir,
+    // the same value seeded onto the tab above, so the two sides group this tab
+    // identically instead of the worker re-deriving one from the file path.
     //
     // Unconditional. This used to be gated on an active workspace id, left over
     // from when the request carried one -- a guard on a value the call no longer
@@ -559,6 +572,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     workerRpc.registerFileTabPath(ctx.workerId, {
       tabId,
       filePath: path,
+      workingDir: ctx.workingDir,
     }).catch(() => {
       // Roll back the optimistic add so the user sees the failure surface (and
       // isn't left with a tab whose path peers can't resolve).

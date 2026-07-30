@@ -33,7 +33,6 @@ export function MarkdownFileView(props: {
   // Proportional scroll sync for side-by-side view
   let leftRef!: HTMLDivElement
   let rightRef!: HTMLDivElement
-  let rightSourceRef: HTMLDivElement | undefined
   let ignoreScroll = false
 
   const syncScroll = (source: HTMLDivElement, target: HTMLDivElement) => {
@@ -73,12 +72,9 @@ export function MarkdownFileView(props: {
             onScroll={() => syncScroll(rightRef, leftRef)}
           >
             <SelectionQuotePopover
-              containerRef={rightSourceRef}
               onQuote={(text, startLine, endLine) => props.onQuote?.(text, startLine, endLine)}
             >
-              <div ref={rightSourceRef}>
-                <ReadResultView lines={lines()} filePath={props.filePath} />
-              </div>
+              <ReadResultView lines={lines()} filePath={props.filePath} />
             </SelectionQuotePopover>
           </div>
         </div>

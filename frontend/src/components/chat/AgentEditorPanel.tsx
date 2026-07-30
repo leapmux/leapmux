@@ -388,7 +388,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     }}
                     hasEditorContent={hasContent()}
                     onTriggerSend={() => triggerSend?.()}
-                    editorContentRef={editorContentRef}
+                    editorContentRef={() => editorContentRef}
                     bypassPermissionMode={props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.bypassPermissionMode : undefined}
                     onPermissionModeChange={props.onPermissionModeChange}
                     contextUsage={props.agentSessionInfo?.contextUsage}

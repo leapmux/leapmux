@@ -1,11 +1,8 @@
-import type { createFileTabPathsStore } from '~/lib/fileTabPaths'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, onCleanup } from 'solid-js'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { sameKeys } from '~/lib/sameKeys'
 import { openWorkerPrivateEventStream } from '~/lib/workerPrivateEvents'
-import { isFileTab } from '~/stores/tab.types'
 
 /**
  * Open one `WatchWorkerPrivateEvents` subscription per WORKER that hosts a tab
@@ -41,7 +38,6 @@ import { isFileTab } from '~/stores/tab.types'
 export interface UseWorkerPrivateStreamsOpts {
   view: TabView
   metadata: TabMetadataStore
-  fileTabPaths: ReturnType<typeof createFileTabPathsStore>
 }
 
 export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void {
@@ -80,7 +76,6 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
       for (const close of privateStreamCleanups.values())
         close()
       privateStreamCleanups.clear()
-      opts.fileTabPaths.clear()
       return
     }
 
@@ -100,20 +95,49 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
           opts.metadata.patch(evt.tabId, { title: evt.title })
         },
         onFileTabPathRegistered: (evt) => {
-          opts.fileTabPaths.register(evt.tabId, evt.filePath)
-          // Mirror the path onto the joined tab so existing file-tab title
-          // rendering (which reads `tab.filePath`) sees a path arriving via the
-          // private-event stream -- typically when another client opened the
-          // file, or when this client joined after the open.
-          const existing = opts.view.getById(TabType.FILE, evt.tabId)
-          // The key is FILE-scoped so the lookup can only ever yield a FileTab;
-          // narrow with the guard so `filePath` is accessible.
-          if (existing && isFileTab(existing) && !existing.filePath) {
-            opts.metadata.patch(evt.tabId, { filePath: evt.filePath })
-          }
-        },
-        onFileTabPathRevoked: (evt) => {
-          opts.fileTabPaths.revoke(evt.tabId)
+          // Mirror onto the joined tab so existing file-tab rendering (which
+          // reads `tab.filePath`) and the branch grouping (which reads
+          // `tab.workingDir`) see what arrived on the private-event stream --
+          // typically when another client opened the file, or when this client
+          // joined after the open.
+          //
+          // NOT gated on the tab already existing. The event races the CRDT row
+          // it describes -- they travel worker->client and worker->hub->client
+          // respectively. Skipping the patch when the row has not landed yet
+          // used to lose the payload for good: `register` above still recorded
+          // the path, which is exactly what the FILE hydrator's predicate treats
+          // as "already answered", so nothing ever asked again and the tab kept
+          // an empty path forever. `tabMetadata` is keyed by tab id
+          // independently of the projection, so writing early is safe -- the
+          // join picks it up when the row appears.
+          //
+          // And NOT gated on the field being missing locally. The worker is the
+          // resolver: it normalizes the working dir (tilde expansion, the
+          // no-originating-tab fallback) and its answer is the one every
+          // branch-context operation will use, so a local guess must not outrank
+          // it. A "fill only what is MISSING" gate could by construction never
+          // correct a value that was present but wrong -- which is the common
+          // case for `workingDir`, since the local open path seeds it from
+          // `getCurrentTabContext()` and then marks the tab hydrated. Writing
+          // unconditionally costs nothing when the values agree: `patch` drops a
+          // write equal to what is stored (see `sameStoredValue`), which is the
+          // single place that rule lives now.
+          //
+          // `|| undefined` because these arrive as proto3 strings: an absent
+          // field is `''`, and `mergeDefined` treats a real `''` as a CLEARING
+          // write rather than as "no opinion".
+          //
+          // `hydrated` because this event IS a worker answer for this exact
+          // tab, carrying the same payload `GetFileTabPath` returns -- so the
+          // FILE hydrator has nothing left to ask. That flag is the one place
+          // "the worker has answered for this tab" lives; a second cache
+          // holding the same fact could outlive the row it describes and strand
+          // the tab (see `retainOnly`).
+          opts.metadata.patch(evt.tabId, {
+            filePath: evt.filePath || undefined,
+            workingDir: evt.workingDir || undefined,
+            hydrated: true,
+          })
         },
       })
       privateStreamCleanups.set(workerId, close)

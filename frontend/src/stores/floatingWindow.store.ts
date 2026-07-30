@@ -1,6 +1,6 @@
 import type { CloseTileResult, GridAxis, LayoutNodeLocal, SplitOrientation } from './layout.store'
 import type { LayoutOwner } from './layoutOwner'
-import type { CRDTBridge, Projection } from '~/lib/crdt'
+import type { CRDTBridge, LocalTreeCache, Projection, RenderedFloatingWindow } from '~/lib/crdt'
 import { createComputed, createEffect, createMemo, createSignal, mapArray, on } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import { renderTreeToLocal, withBridge } from '~/lib/crdt'
@@ -100,11 +100,24 @@ function tileSetMapsEqual(
 }
 
 /**
- * Structural equality for string id sets. Backs the `liveWindowIds`
- * memo so geometry-only updates (which keep the membership stable
- * but produce a fresh Set instance each tick) don't notify the GC
- * effect.
+ * A window's inner tree in local shape, with the fallback leaf every consumer
+ * has to agree on.
+ *
+ * `renderTreeToLocal` returns null only for an empty `node_id`, which is what a
+ * window whose root has not been seeded projects to. Such a window is still
+ * LIVE, so it needs a leaf to render and to own -- and a STABLE id for it, since
+ * minting one per tick would remount the tile.
+ *
+ * The window id is the only id available here. Naming the window's `rootNodeId`
+ * instead would be unreachable, not merely unused: `buildTreeFromRoot` returns
+ * the empty-node_id tree ONLY when `rootNodeId` is itself `""`, so the branch
+ * that would read it can only run when there is nothing to read.
  */
+function windowLayoutRoot(rendered: RenderedFloatingWindow, cache: LocalTreeCache): LayoutNodeLocal {
+  return renderTreeToLocal(rendered.innerTree, cache)
+    ?? { type: 'leaf', id: `__empty_${rendered.windowId}` }
+}
+
 /**
  * createFloatingWindowStore — projection-driven floating-window store.
  * Window list + inner trees derive from `project(bridge.speculativeState())
@@ -140,6 +153,19 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
   // Per-window local focus state.
   const [focusByWindow, setFocusByWindow] = createSignal<Map<string, string | null>>(new Map())
 
+  /**
+   * This store's OWN `RenderTree` -> `LayoutNodeLocal` conversions, kept out of
+   * `renderTreeToLocal`'s shared map.
+   *
+   * The `reconcile` below updates a matched node's fields IN PLACE, so whatever
+   * it is handed is writable state, not a value. The shared map's node would be
+   * scribbled on for every other consumer; a fresh conversion per tick would
+   * throw away the identity `reconcile` and `tileSetsByWindow` both key on. A
+   * private cache keeps both -- identity across ticks that leave a window's inner
+   * tree alone, and a mutation surface no other module can observe.
+   */
+  const windowTrees: LocalTreeCache = new WeakMap()
+
   // Raw projection memo: produces a fresh ordered FloatingWindowState
   // array every time the CRDT speculative state, zOrder, or focusByWindow
   // changes. The values here are throw-away refs — they feed into the
@@ -152,12 +178,12 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
       return []
     const result: FloatingWindowState[] = []
     const focusMap = focusByWindow()
-    // Straight off the shared projection: it already resolved every window's
-    // geometry and inner tree, through the same `floatingWindowToRendered` this
-    // used to call itself.
+    // Straight off the shared projection: `project()` already resolved every
+    // window's geometry and inner tree. It used to be re-derived here from raw
+    // state, which walked the whole state again per tick AND was a second
+    // implementation of the projection's floating-window rules.
     for (const rendered of proj.workspaces.get(wsId)?.floatingWindows ?? []) {
-      const layoutRoot = renderTreeToLocal(rendered.innerTree)
-        ?? { type: 'leaf' as const, id: rendered.rootNodeId || `__empty_${rendered.windowId}` }
+      const layoutRoot = windowLayoutRoot(rendered, windowTrees)
       const fallbackFocus = firstLeafId(layoutRoot) ?? null
       const localFocus = focusMap.get(rendered.windowId)
       result.push({
@@ -203,19 +229,21 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
   // (and its inner TilingLayout / TabBar / Terminal subtree). The
   // result was visibly sluggish drag and resize.
   //
-  // `reconcile` keyed by `id` with `merge: true` mutates the existing
-  // store entries in place when ids match — same array element ref
-  // across frames, but individual fields update granularly. Crucially,
-  // `merge: true` preserves NESTED refs (notably `layoutRoot`) when
-  // the diff finds no field-level change inside them, so downstream
-  // memos keyed on `layoutRoot` (e.g. `tileSetsByWindow`) don't
-  // invalidate on geometry-only ticks. With `merge: false` every
-  // pendingVersion bump replaced `layoutRoot` ref-by-ref even when
-  // the inner tree hadn't moved, undermining the structural-equality
-  // gate further down — the tests in this file's `projection ref
-  // stability` block pin both layers (per-window Set ref-stable
-  // across drag/resize scrubs, Map ref-stable across geometry-only
-  // batches, invalidation on real splits).
+  // `reconcile` keyed by `id` mutates the existing store entries in place when
+  // ids match — same array element ref across frames, but individual fields
+  // update granularly. It recurses into any nested object whose `id` matches
+  // too, so a `layoutRoot` the projection left alone is compared and left
+  // untouched, and downstream memos keyed on it (e.g. `tileSetsByWindow`) don't
+  // invalidate on geometry-only ticks. The tests in this file's `projection ref
+  // stability` block pin both layers (per-window Set ref-stable across
+  // drag/resize scrubs, Map ref-stable across geometry-only batches,
+  // invalidation on real splits).
+  //
+  // NOTE that "in place" is literal: on a tick where the inner tree DID change,
+  // reconcile writes the new fields into the node it retained rather than
+  // swapping the reference. The nodes it writes come from this store's own
+  // `windowTrees` cache, so those writes cannot reach any other consumer of
+  // `renderTreeToLocal`.
   const [storeState, setStoreState] = createStore<{ list: FloatingWindowState[] }>({ list: [] })
   // `createComputed` (not `createEffect` or `createRenderEffect`) is
   // the only primitive that propagates synchronously inside the same
@@ -234,7 +262,7 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
   // propagation pass" — it joins the same queue as memos and runs
   // before user effects.
   createComputed(() => {
-    setStoreState('list', reconcile(rawProjection(), { key: 'id', merge: true }))
+    setStoreState('list', reconcile(rawProjection(), { key: 'id' }))
   })
 
   // Internal accessor used by every helper memo / mutator that needs
@@ -249,13 +277,18 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
   } as FloatingWindowStoreState
 
   // Per-window leaf-id sets, computed in a single pass over the
-  // reconcile-backed `projectedWindows()`. With `reconcile({merge:
-  // true})` above, each window entry's `layoutRoot` ref is preserved
-  // across CRDT ticks that don't change its inner tree, so this memo
-  // only re-runs (and only emits a new Map) when a window's tree
-  // actually mutates. The structural `equals` check below is a
-  // defense-in-depth backstop for the (rare) case where the upstream
-  // diff produces a same-content fresh ref.
+  // reconcile-backed `projectedWindows()`. Each window entry's
+  // `layoutRoot` ref survives a CRDT tick that didn't change its inner
+  // tree, so this memo only re-runs (and only emits a new Map) when a
+  // window's tree actually mutates. That preservation is the `key: 'id'`
+  // match above -- Solid's `applyState` returns early on an identical
+  // ref, and otherwise recurses into the id-matched entry and writes
+  // fields into the node it retained instead of replacing it. (It is
+  // NOT the `merge` option, which reaches only the array branch and was
+  // dropped once that was checked against Solid's source.) The
+  // structural `equals` check below is a defense-in-depth backstop for
+  // the (rare) case where the upstream diff produces a same-content
+  // fresh ref.
   const tileSetsByWindow = createMemo<Map<string, ReadonlySet<string>>>(
     () => {
       const out = new Map<string, ReadonlySet<string>>()
@@ -321,11 +354,10 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
     // can no longer answer from two different walks of the state.
     for (const [wsId, ws] of proj.workspaces) {
       for (const rendered of ws.floatingWindows) {
-        // Same empty-tree fallback as `rawProjection`, so a window with no
-        // resolvable inner tree is still LIVE here. Dropping it would make the
-        // GC below treat it as tombstoned and evict its focus entry.
-        const local = renderTreeToLocal(rendered.innerTree)
-          ?? { type: 'leaf' as const, id: rendered.rootNodeId || `__empty_${rendered.windowId}` }
+        // A window with no resolvable inner tree is still LIVE here. Dropping it
+        // would make the GC below treat it as tombstoned and evict its focus
+        // entry.
+        const local = windowLayoutRoot(rendered, windowTrees)
         trees.set(rendered.windowId, local)
         let bucket = tilesByWorkspace.get(wsId)
         if (!bucket) {
@@ -691,8 +723,16 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
       return floatingTileIndex().tileToWindow.get(tileId) ?? null
     },
 
-    /** Floating tile ids in the ACTIVE workspace (the rendered slice). */
-    getAllTileIds(): string[] {
+    /**
+     * Floating tile ids in the ACTIVE workspace (the rendered slice).
+     *
+     * `readonly`, matching `layoutStore.getAllTileIds`: this is the memo's
+     * RETAINED array, handed to every caller until the memo next re-runs, so an
+     * in-place sort by one of them reorders the rest. (`getAllTileIdsFor` below
+     * builds a fresh array per call and is safe to mutate -- hence the
+     * different type.)
+     */
+    getAllTileIds(): readonly string[] {
       return allFloatingTileIdsMemo()
     },
 

@@ -13,10 +13,10 @@ import (
 )
 
 // RunTabClose tombstones a tab via UserCRDT.SubmitOps and dispatches
-// worker-side teardown (CloseAgent / CloseTerminal). The hub's
-// remove-wins semantics mean the tab id is dead afterward; recreating
-// at the UI level mints a fresh id. The resolver derives workspace +
-// tab-type from --tab-id when only the id is given.
+// worker-side teardown (CloseAgent / CloseTerminal / RevokeFileTabPath).
+// The hub's remove-wins semantics mean the tab id is dead afterward;
+// recreating at the UI level mints a fresh id. The resolver derives
+// workspace + tab-type from --tab-id when only the id is given.
 //
 // --worktree governs what happens to a tab's git worktree when this
 // is the last tab on that worktree (mirrors the frontend's last-tab
@@ -31,7 +31,9 @@ import (
 // last tab on a non-worktree branch that still has uncommitted /
 // unpushed changes, --worktree is REQUIRED — omitting it fails with
 // invalid_request. This mirrors the frontend's forced-choice dialog:
-// the worker doesn't pick a default, so neither does the CLI.
+// the worker doesn't pick a default, so neither does the CLI. It
+// applies to file tabs too: a file tab holds a worktree open and sits
+// on a branch exactly like the other two types do.
 //
 // Closing the calling tab itself kills its PTY mid-response, so
 // `guardTabClose` rejects that case unless --force is supplied.
@@ -68,25 +70,19 @@ func RunTabClose(rawCtx any, args []string) error {
 			return err
 		}
 
-		// `tab close` on an agent/terminal tab issues up to three inner-RPCs
-		// against the SAME worker -- InspectLastTabClose, an optional
-		// PushBranch, and the CloseAgent/CloseTerminal teardown -- with the
-		// CRDT tombstone in between. Hoisting one Noise_NK channel over the
-		// sequence pays the handshake once rather than per call.
+		// `tab close` issues up to three inner-RPCs against the SAME worker --
+		// InspectLastTabClose, an optional PushBranch, and the
+		// CloseAgent/CloseTerminal/RevokeFileTabPath teardown -- with the CRDT
+		// tombstone in between. Hoisting one Noise_NK channel over the sequence
+		// pays the handshake once rather than per call.
 		//
 		// Opening is best-effort on purpose: a failure must not abort the
 		// close, because a tab whose worker is gone still has to be
 		// tombstoneable. withBestEffortWorkerChannel falls back to opening per
 		// call, which reproduces the exact channel_open_failed code this
-		// command's unreachable-worker fallback keys on. File tabs are path
-		// registrations with no worker-side state, so they bind no worker at
-		// all and make no worker call.
-		bindWorker := got.WorkerID
-		if tt == leapmuxv1.TabType_TAB_TYPE_FILE {
-			bindWorker = ""
-		}
+		// command's unreachable-worker fallback keys on.
 		var w workerCall
-		if err := withBestEffortWorkerChannel(ctx, c, bindWorker, func(bound workerCall) error {
+		if err := withBestEffortWorkerChannel(ctx, c, got.WorkerID, func(bound workerCall) error {
 			w = bound
 			return nil
 		}); err != nil {
@@ -96,39 +92,42 @@ func RunTabClose(rawCtx any, args []string) error {
 			return w.Call(ctx, method, in, out)
 		}
 
-		// Last-tab worktree gate. Only agent / terminal tabs have worker-
-		// side worktree state; file tabs skip both the inspect and the
-		// worker-close dispatch (they're path registrations, no PTY).
+		// Last-tab worktree gate, for every tab type. A file tab holds a
+		// worktree open exactly like an agent or terminal does (the worker
+		// ref-counts worktree_tabs type-agnostically) and answers branch
+		// questions from its own working dir, so skipping the inspect for it
+		// meant the CLI closed the last tab on a worktree without the
+		// forced --worktree choice the UI puts in front of the same close.
 		worktreeAction := wt.worktreeAction()
 		var inspectHint string
-		if tt != leapmuxv1.TabType_TAB_TYPE_FILE {
-			inspected, ierr := inspectLastTabCloseBest(callWorker, tt, got.TabID)
-			if ierr != nil {
-				// Worker unreachable / not found is the same fallback the
-				// frontend uses: skip the dialog, proceed with implicit
-				// KEEP. The CRDT tombstone still runs and the worker's
-				// reconciler eventually catches up.
-				if !isWorkerUnreachable(ierr) {
-					return remote.EmitErrorWith("inspect_failed", ierr)
+		inspected, ierr := inspectLastTabCloseBest(callWorker, tt, got.TabID)
+		if ierr != nil {
+			// Worker unreachable / not found is the same fallback the
+			// frontend uses: skip the dialog, proceed with implicit
+			// KEEP. The CRDT tombstone still runs and the worker's
+			// reconciler eventually catches up.
+			if !isWorkerUnreachable(ierr) {
+				return remote.EmitErrorWith("inspect_failed", ierr)
+			}
+		} else if inspected.GetShouldPrompt() {
+			if wt == closeWorktreeUnspecified {
+				return remote.EmitError("invalid_request", lastTabPromptMessage(inspected))
+			}
+			if wt == closeWorktreePush {
+				if !inspected.GetGitState().GetCanPush() {
+					return remote.EmitError("invalid_request", "cannot push: "+pushBlockedReason(inspected))
 				}
-			} else if inspected.GetShouldPrompt() {
-				if wt == closeWorktreeUnspecified {
-					return remote.EmitError("invalid_request", lastTabPromptMessage(inspected))
-				}
-				if wt == closeWorktreePush {
-					if !inspected.GetGitState().GetCanPush() {
-						return remote.EmitError("invalid_request", "cannot push: "+pushBlockedReason(inspected))
-					}
-					if err := callWorker("PushBranch", &leapmuxv1.PushBranchRequest{TabType: tt, TabId: got.TabID}, &leapmuxv1.PushBranchResponse{}); err != nil {
-						return emitInnerRPCError(err)
-					}
+				if err := callWorker("PushBranch", &leapmuxv1.PushBranchRequest{WorkingDir: inspected.GetWorkingDir()}, &leapmuxv1.PushBranchResponse{}); err != nil {
+					return emitInnerRPCError(err)
 				}
 			}
-			// Carry the degraded-close hint into the output so a CLI user
-			// sees the close proceeded without the git-state check (mirrors
-			// the frontend's warn toast on the same field).
-			inspectHint = inspected.GetErrorHint()
 		}
+		// Carry the degraded-close hint into the output so a CLI user
+		// sees the close proceeded without the git-state check (mirrors
+		// the frontend's warn toast on the same field). Safe on the
+		// unreachable-worker path above: `inspected` is nil there, and a
+		// generated getter on a nil message answers the zero value.
+		inspectHint = inspected.GetErrorHint()
 
 		if err := cc.submitOps([]*leapmuxv1.CrdtOp{opTombstoneTab(cc.bs, tt, got.TabID)}); err != nil {
 			return err
@@ -283,10 +282,25 @@ func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.T
 				WorktreeAction: action,
 			},
 			&leapmuxv1.CloseTerminalResponse{})
+	case leapmuxv1.TabType_TAB_TYPE_FILE:
+		// A file tab DOES have a worker-side row: worker_file_tabs, plus the
+		// worktree_tabs link that ref-counts its worktree. Revoking is what
+		// drives the shared closeTabCommon flow -- the same one CloseAgent and
+		// CloseTerminal drive -- so `--worktree=discard` actually removes the
+		// worktree and the link does not linger as a strand for the orphan
+		// reconciler to sweep later. This used to fall through to the default
+		// and dispatch nothing, on the belief that the CRDT tombstone was the
+		// whole teardown; it is not, and the frontend's own file-tab close has
+		// always called this RPC.
+		return call("RevokeFileTabPath",
+			&leapmuxv1.RevokeFileTabPathRequest{
+				TabId:          got.TabID,
+				WorktreeAction: action,
+			},
+			&leapmuxv1.RevokeFileTabPathResponse{})
 	default:
-		// FILE tabs have no worker-side row to close (the CRDT tombstone is the
-		// whole teardown), and UNSPECIFIED never reaches here -- the caller
-		// resolved a concrete tab before dispatching.
+		// UNSPECIFIED never reaches here -- the caller resolved a concrete tab
+		// before dispatching.
 		return nil
 	}
 }

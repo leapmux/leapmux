@@ -44,8 +44,10 @@ export interface BaseTab {
   mru?: number
   workingDir?: string
   createdAt?: string
-  // ---- Git status (populated for AGENT & TERMINAL tabs; FILE tabs
-  // inherit their working-tree's status indirectly via the file path). ----
+  // ---- Git status. Populated for EVERY tab type: a file tab carries a
+  // `workingDir` of its own (the tab it was opened from), so `syncGitStatusToTabs`
+  // matches it by containment the same way it matches agents and terminals. The
+  // file path is only the fallback for a tab whose dir has not arrived yet. ----
   gitBranch?: string
   gitOriginUrl?: string
   /**
@@ -129,7 +131,7 @@ export interface TerminalTab extends BaseTab {
 
 /**
  * FILE tab. Path + display mode are the canonical inputs; per-file
- * git status flows through `fileTabPaths` + `gitFileStatusStore`.
+ * git status flows through `gitFileStatusStore`.
  */
 export interface FileTab extends BaseTab {
   type: TabType.FILE
@@ -156,16 +158,6 @@ export function isTerminalTab(t: Tab): t is TerminalTab {
 
 export function isFileTab(t: Tab): t is FileTab {
   return t.type === TabType.FILE
-}
-
-/**
- * True for the tab kinds the worker can push a branch from. FILE tabs
- * carry no working dir on the worker side (the file path is encrypted
- * client-side and resolved through fileTabPaths), so they can't anchor
- * a push or any other branch-context operation.
- */
-export function isPushableTab(t: Tab): t is AgentTab | TerminalTab {
-  return t.type === TabType.AGENT || t.type === TabType.TERMINAL
 }
 
 /** The four tab fields derived from git status. */

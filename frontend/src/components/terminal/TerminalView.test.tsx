@@ -141,6 +141,57 @@ describe('terminalView', () => {
     releaseSpy.mockRestore()
   })
 
+  /**
+   * A `TerminalTab` is a join result (see tabView), rebuilt whenever any field it
+   * derives from `tabMetadata` changes -- an OSC title the shell emits per prompt,
+   * a status transition, a cols/rows write, the MRU stamp every click leaves. When
+   * the row list was keyed on that OBJECT, each of those disposed the row and
+   * mounted a fresh one, tearing down and re-creating the xterm instance and its
+   * pooled WebGL context. It LOOKED fine only because teardown serializes the
+   * scrollback and the replacement repaints it.
+   */
+  it('keeps the terminal container mounted when its tab object is rebuilt', async () => {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    const tab = (title: string): TerminalTab => ({
+      id: 'term-1',
+      type: TabType.TERMINAL,
+      workspaceId: 'ws-1',
+      title,
+      screen: new Uint8Array(),
+    })
+    const [terminals, setTerminals] = createSignal<TerminalTab[]>([tab('bash')])
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={terminals()}
+          activeTerminalId="term-1"
+          visible
+          tileFocused={false}
+          onInput={vi.fn()}
+          onResize={vi.fn()}
+          onTitleChange={vi.fn()}
+          onBell={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+
+    const paneFor = (id: string) => container.querySelector(`[data-terminal-id="${id}"]`)
+    await waitFor(() => expect(paneFor('term-1')).not.toBeNull())
+    const before = paneFor('term-1')
+    const createCalls = mockCreateTerminalInstance.mock.calls.length
+
+    // A fresh object with the SAME id -- exactly what the join hands back after any
+    // metadata write on this tab.
+    setTerminals([tab('zsh — ~/repo')])
+    await Promise.resolve()
+
+    expect(paneFor('term-1'), 'the container is the SAME DOM node').toBe(before)
+    expect(mockCreateTerminalInstance.mock.calls.length, 'and no xterm was re-created').toBe(createCalls)
+  })
+
   it('does not forward bell notifications during snapshot replay', async () => {
     const instance = makeMockTerminalInstance()
     mockCreateTerminalInstance.mockReturnValue(instance)

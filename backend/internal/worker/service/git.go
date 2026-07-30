@@ -445,7 +445,23 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// killed at pushBranchTimeout.
 		ctx, cancel := context.WithTimeout(bgCtx(), pushBranchTimeout)
 		defer cancel()
-		if err := svc.pushBranch(ctx, r.GetTabType(), r.GetTabId()); err != nil {
+		workingDir := r.GetWorkingDir()
+		if workingDir == "" {
+			sendInvalidArgument(sender, "working_dir is required")
+			return
+		}
+		// The dir is client-supplied and about to host `git add -A` + commit +
+		// push, so it has to be one this caller demonstrably has a tab in.
+		owns, err := svc.userOwnsLiveTabInDir(ctx, userID, workingDir)
+		if err != nil {
+			sendInternalError(sender, err.Error())
+			return
+		}
+		if !owns {
+			sendInvalidArgument(sender, "no open tab in that directory")
+			return
+		}
+		if err := svc.pushBranch(ctx, workingDir); err != nil {
 			sendInternalError(sender, err.Error())
 			return
 		}
@@ -773,7 +789,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	}
 
 	if tabCtx == nil {
-		loaded, err := svc.loadTabGitContext(ctx, tabType, tabID)
+		loaded, err := svc.loadTabGitContext(ctx, tabType, tabID, userID)
 		trace("git_ctx_done")
 		if err != nil {
 			// Non-worktree tab whose working dir is not (or no longer)
@@ -788,7 +804,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 			// this single error; we can't distinguish here, so the hint
 			// covers both. pushBranch — the other loadTabGitContext caller —
 			// is not close-blocking and still returns this error as-is.)
-			workingDir, _ := svc.getTabWorkingDir(ctx, tabType, tabID)
+			workingDir, _ := svc.getTabWorkingDir(ctx, tabType, tabID, userID)
 			slog.Warn("inspectLastTabClose: loadTabGitContext failed; closing without prompt",
 				"tab_type", tabType, "tab_id", tabID, "working_dir", workingDir, "error", err)
 			trace("git_ctx_failed")
@@ -804,13 +820,17 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		Target:     leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
 		RepoRoot:   tabCtx.repoRoot,
 		BranchName: tabCtx.branchName,
+		// Echoed so a client that answers the prompt with "push" hands this
+		// exact dir back to PushBranch instead of re-deriving one that might
+		// not match a tab's recorded working dir.
+		WorkingDir: tabCtx.workingDir,
 	}
 
 	// Non-worktree fast path: if there are sibling tabs on the same
 	// branch, we'll never prompt regardless of git state — skip diff
 	// and push.
 	if !tabCtx.isWorktree {
-		hasOther, err := svc.hasOtherNonWorktreeTabOnBranch(ctx, tabType, tabID, tabCtx.repoRoot, tabCtx.branchName)
+		hasOther, err := svc.hasOtherNonWorktreeTabOnBranch(ctx, tabType, tabID, userID, tabCtx.repoRoot, tabCtx.branchName)
 		trace("branch_count_done")
 		if err != nil {
 			// This sibling-count scan used to hard-block the close
@@ -1593,8 +1613,11 @@ func createBranchInDir(ctx context.Context, workingDir, newBranch, baseBranch st
 	return nil
 }
 
-func (svc *Service) pushBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID string) error {
-	tabCtx, err := svc.loadTabGitContext(ctx, tabType, tabID)
+// userID scopes the FILE-tab working-dir lookup; see getTabWorkingDir. It is
+// what lets the last-tab dialog's Push button work from a file tab, which is
+// the only tab left on a worktree often enough to matter.
+func (svc *Service) pushBranch(ctx context.Context, workingDir string) error {
+	tabCtx, err := svc.loadGitContextForDir(ctx, workingDir)
 	if err != nil {
 		return err
 	}
@@ -1719,12 +1742,20 @@ func resolvePushStatus(ctx context.Context, dir, branchName string) (pushStatus,
 	return pushStatusForPath(ctx, dir, branchName)
 }
 
-func (svc *Service) loadTabGitContext(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (*tabGitContext, error) {
-	workingDir, err := svc.getTabWorkingDir(ctx, tabType, tabID)
+// userID scopes the FILE-tab working-dir lookup; see getTabWorkingDir.
+func (svc *Service) loadTabGitContext(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID string) (*tabGitContext, error) {
+	workingDir, err := svc.getTabWorkingDir(ctx, tabType, tabID, userID)
 	if err != nil {
 		return nil, err
 	}
+	return svc.loadGitContextForDir(ctx, workingDir)
+}
 
+// loadGitContextForDir is loadTabGitContext once the tab has been reduced to a
+// directory, which is the only thing the tab ever contributed. Callers that
+// already hold a dir (PushBranch) use it directly rather than round-tripping
+// through a tab id whose worker-side row may not exist.
+func (svc *Service) loadGitContextForDir(ctx context.Context, workingDir string) (*tabGitContext, error) {
 	info, err := queryGitPathInfo(ctx, workingDir)
 	if err != nil {
 		return nil, errors.New("tab is not in a git repository")
@@ -1761,7 +1792,38 @@ func (svc *Service) loadTabGitContext(ctx context.Context, tabType leapmuxv1.Tab
 	return tabCtx, nil
 }
 
-func (svc *Service) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabType, tabID string) (string, error) {
+// getTabWorkingDir resolves the directory a tab's git questions are answered
+// from. Every tab type has one: agents and terminals carry it on their own row,
+// and a file tab carries the working dir of the tab it was opened from (see the
+// worker_file_tabs.working_dir column comment).
+//
+// userID is only consulted for FILE tabs, whose ids are unique within a user
+// rather than globally — worker_file_tabs is keyed by (user_id, tab_id), so the
+// owner is half the lookup. AGENT/TERMINAL ids are minted server-side and
+// globally unique, so their callers may pass "" HERE.
+//
+// That latitude stops at this function. `hasOtherNonWorktreeTabOnBranch` takes
+// the same string and requires a real owner whatever the closing tab's type is,
+// because its FILE leg always runs: an agent close still has to see the user's
+// file tabs to know whether it is the last tab on the branch.
+func (svc *Service) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID string) (string, error) {
+	dir, err := svc.readTabWorkingDir(ctx, tabType, tabID, userID)
+	if err != nil {
+		return "", err
+	}
+	// All three working_dir columns are `NOT NULL DEFAULT ''`, so "absent" and
+	// "empty" are the same value at rest, and `git -C ""` does not fail -- it
+	// answers for the worker process's own cwd, exactly like the relative dirs
+	// normalizeWorkingDir refuses at the write points. Refusing the blank here
+	// covers every row those writers did not produce with one check instead of
+	// three per-type column constraints.
+	if dir == "" {
+		return "", fmt.Errorf("tab %q has no working directory recorded", tabID)
+	}
+	return dir, nil
+}
+
+func (svc *Service) readTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID string) (string, error) {
 	switch tabType {
 	case leapmuxv1.TabType_TAB_TYPE_AGENT:
 		agentRow, err := svc.Queries.GetAgentByID(ctx, tabID)
@@ -1775,19 +1837,51 @@ func (svc *Service) getTabWorkingDir(ctx context.Context, tabType leapmuxv1.TabT
 			return "", err
 		}
 		return terminalRow.WorkingDir, nil
+	case leapmuxv1.TabType_TAB_TYPE_FILE:
+		loc, err := svc.FileTabPaths.Get(ctx, userID, tabID)
+		if err != nil {
+			return "", fmt.Errorf("resolve file tab working dir: %w", err)
+		}
+		return loc.WorkingDir, nil
 	default:
 		return "", errors.New("unsupported tab type")
 	}
 }
 
-// branchProbeConcurrency caps the number of `git rev-parse` forks issued
-// in parallel by a single hasOtherNonWorktreeTabOnBranch scan. The probes
+// branchProbeConcurrency caps the number of `git rev-parse` forks a single
+// hasOtherNonWorktreeTabOnBranch CALL may have in flight at once. The probes
 // are CPU+IO light but each forks a subprocess; 6 keeps the worker from
 // thrashing on workspaces with hundreds of open tabs while still hiding
 // rev-parse latency for the typical few-tab case.
+//
+// Enforced by branchInfoProbe, which is allocated once per call and shared by
+// every per-type scan under it. It used to be a SetLimit on each scan's OWN
+// errgroup -- and those scans run concurrently, so the number here was the
+// number per LEG: 12 with agents+terminals, 18 once the file-tab leg landed,
+// 24 for the next tab type. Holding the budget at the fork site instead makes
+// it independent of how the callers are fanned out.
 const branchProbeConcurrency = 6
 
-func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, repoRoot, branchName string) (bool, error) {
+// hasOtherNonWorktreeTabOnBranch reports whether any OTHER open tab sits on the
+// same (repoRoot, branchName) as the one being closed. All three tab types
+// count: each carries a working dir the probe can resolve a branch from, and a
+// ref-count that reads only two of the three is wrong in both directions --
+// closing an agent would announce "last tab on this branch" with the user's
+// file tab still open on it, and closing that file tab would announce the same
+// with the agent still running.
+//
+// userID scopes the FILE leg only; see getTabWorkingDir.
+func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID, repoRoot, branchName string) (bool, error) {
+	// Validate the owner BEFORE anything is launched. The FILE leg needs it
+	// (see its launch below), and refusing after the other two scans are
+	// already running would abandon their goroutines: nothing would reach the
+	// single g.Wait(), so their errors would be dropped and their rev-parse
+	// forks left to be torn down by the deferred cancel().
+	owner, ok := userid.New(userID)
+	if !ok {
+		return false, errors.New("branch sibling scan: owner required to scope the file-tab leg")
+	}
+
 	// gitPathInfo lookups dedupe at two levels:
 	//   - `cache` persists results so post-completion lookups skip the fork
 	//     (matters when two terminals share a workingDir and the second
@@ -1795,88 +1889,84 @@ func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType 
 	//   - `sf` coalesces in-flight lookups so concurrent misses for the
 	//     same key wait on the first goroutine instead of each forking
 	//     their own rev-parse (matters when an agent and terminal in the
-	//     same dir race to probe).
-	probe := newBranchInfoProbe()
+	//     same dir race to probe, and now when a file tab shares the dir
+	//     of the agent it was opened from — the common case, not a corner).
+	probe := newBranchInfoProbe(branchProbeConcurrency)
 
-	// Fan out the agents/terminals scans against a cancellable ctx so the
-	// first match aborts the other scan's in-flight rev-parse calls.
+	// One cancellable ctx so the first match aborts the remaining in-flight
+	// rev-parse calls.
 	gctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	scan := func(query string, skipType leapmuxv1.TabType) (bool, error) {
-		dirs, err := svc.collectTabDirs(gctx, query, tabID, tabType == skipType)
-		if err != nil {
-			return false, err
-		}
-		// Per-scan bounded fanout. The shared probe ensures dirs that
-		// also appear in the sibling scan don't refork.
-		probeG, probeCtx := errgroup.WithContext(gctx)
-		probeG.SetLimit(branchProbeConcurrency)
-		var hit atomic.Bool
-		for _, dir := range dirs {
-			if hit.Load() {
-				break
-			}
-			probeG.Go(func() error {
-				if hit.Load() {
-					return nil
-				}
-				matches, err := probe.matches(probeCtx, dir, repoRoot, branchName)
-				if err == nil && matches {
-					hit.Store(true)
-				}
-				return nil
-			})
-		}
-		_ = probeG.Wait()
-		return hit.Load(), nil
-	}
-
-	g := new(errgroup.Group)
-	var agentHit, terminalHit bool
-	g.Go(func() error {
-		hit, err := scan(`SELECT id, working_dir FROM agents WHERE closed_at IS NULL`, leapmuxv1.TabType_TAB_TYPE_AGENT)
-		if err != nil {
-			return err
-		}
-		if hit {
-			agentHit = true
-			cancel()
-		}
-		return nil
-	})
-	g.Go(func() error {
-		hit, err := scan(`SELECT id, working_dir FROM terminals WHERE closed_at IS NULL`, leapmuxv1.TabType_TAB_TYPE_TERMINAL)
-		if err != nil {
-			return err
-		}
-		if hit {
-			terminalHit = true
-			cancel()
-		}
-		return nil
-	})
-	if err := g.Wait(); err != nil {
-		// One scan may have errored because its sibling cancelled the ctx
-		// after finding a hit — that's not a real failure.
-		if (agentHit || terminalHit) && errors.Is(err, context.Canceled) {
-			return true, nil
-		}
+	// ONE query over `tab_locations`, which is where the per-type rules live now
+	// -- which tables hold tabs, what "open" means for each (agents/terminals
+	// stamp closed_at; a file tab is hard-deleted, so presence IS openness), and
+	// which types carry an owner. This used to be three hand-written SELECTs
+	// fanned out across three goroutines, so each of those rules was stated three
+	// times and a fourth tab type would have needed a fourth copy.
+	//
+	// The owner predicate is why a blank owner is refused at the top of this
+	// function rather than passed through. `getTabWorkingDir` tells AGENT/TERMINAL
+	// callers they may pass "" -- their ids are globally unique -- and this scan
+	// takes that same string. Bound blank, `user_id = ?` would match no file-tab
+	// row (the table's CHECK forbids a blank owner), so the FILE arm would
+	// silently report "no siblings": closing the last agent on a branch would
+	// announce itself as the last tab with the user's file tab still open on it,
+	// and offer to delete the branch.
+	//
+	// Blank working dirs are dropped in SQL for the reason `getTabWorkingDir`
+	// refuses one: `git -C ""` does not fail, it answers for the worker process's
+	// own cwd, so a blank row would be matched against an unrelated repository.
+	dirs, err := svc.collectTabDirs(gctx, `
+		SELECT tab_type, tab_id, working_dir
+		FROM tab_locations
+		WHERE working_dir <> '' AND (user_id = '' OR user_id = ?)`,
+		[]any{owner.String()}, tabType, tabID)
+	if err != nil {
 		return false, err
 	}
-	return agentHit || terminalHit, nil
+
+	probeG, probeCtx := errgroup.WithContext(gctx)
+	// Goroutine bound. The FORK budget lives on the probe (see
+	// branchProbeConcurrency), which is what makes it per-call rather than
+	// per-scan.
+	probeG.SetLimit(branchProbeConcurrency)
+	var hit atomic.Bool
+	for _, dir := range dirs {
+		if hit.Load() {
+			break
+		}
+		probeG.Go(func() error {
+			if hit.Load() {
+				return nil
+			}
+			matches, err := probe.matches(probeCtx, dir, repoRoot, branchName)
+			if err == nil && matches {
+				hit.Store(true)
+				cancel()
+			}
+			return nil
+		})
+	}
+	_ = probeG.Wait()
+	return hit.Load(), nil
 }
 
-// collectTabDirs reads (id, working_dir) rows from the given query into a
-// slice of working_dir values, skipping the caller's own tabID when the
-// query targets the caller's tab type. Reading rows synchronously up
-// front means the DB iterator doesn't have to be safe against concurrent
-// probe goroutines below. The row loop checks `ctx` between scans so a
-// sibling errgroup scan that found a hit and cancelled the shared ctx
-// aborts the drain instead of paying full SQL load latency on a
-// workspace with many tabs.
-func (svc *Service) collectTabDirs(ctx context.Context, query, tabID string, skipSelf bool) ([]string, error) {
-	rows, err := svc.DB.QueryContext(ctx, query)
+// collectTabDirs reads (tab_type, tab_id, working_dir) rows into a slice of
+// working dirs, dropping the caller's OWN tab. Reading rows synchronously up
+// front means the DB iterator doesn't have to be safe against the concurrent
+// probe goroutines below. The row loop checks `ctx` between scans so a probe
+// that found a hit and cancelled aborts the drain instead of paying full SQL
+// load latency on a workspace with many tabs.
+//
+// The self-skip matches on (tab_type, tab_id), not on tab_id alone. Across the
+// unified relation an id is not unique by itself: agent and terminal ids are
+// globally unique, but a file tab id is minted client-side as
+// `file-<millis>-<counter>` and only unique within a user, so a bare id match
+// could drop a DIFFERENT tab that happens to share the string -- counting one
+// fewer sibling and prompting to delete a branch someone is still on.
+func (svc *Service) collectTabDirs(ctx context.Context, query string, args []any, selfType leapmuxv1.TabType, selfID string) ([]string, error) {
+	rows, err := svc.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1890,16 +1980,47 @@ func (svc *Service) collectTabDirs(ctx context.Context, query, tabID string, ski
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		var tabType int32
 		var id, workingDir string
-		if err := rows.Scan(&id, &workingDir); err != nil {
+		if err := rows.Scan(&tabType, &id, &workingDir); err != nil {
 			return nil, err
 		}
-		if skipSelf && id == tabID {
+		if leapmuxv1.TabType(tabType) == selfType && id == selfID {
 			continue
 		}
 		dirs = append(dirs, workingDir)
 	}
 	return dirs, rows.Err()
+}
+
+// userOwnsLiveTabInDir reports whether `workingDir` is the working dir of some
+// OPEN tab this caller owns.
+//
+// The authorization floor for a client-supplied directory that a mutating git
+// chain (`add -A`, `commit`, `push`) will run in. Naming a tab id used to give
+// this implicitly -- you could only push where a tab you could name lived -- and
+// this restores the same guarantee without the single-anchor fragility that
+// indirection carried.
+//
+// Exact match, not containment: every client that pushes is sending back a
+// `working_dir` it received from this worker for a tab it can see, so an exact
+// comparison is what that value supports. A prefix check would additionally
+// admit every parent directory of a tab's dir, up to and including the
+// filesystem root.
+func (svc *Service) userOwnsLiveTabInDir(ctx context.Context, owner userid.UserID, workingDir string) (bool, error) {
+	// `user_id = ''` is the agent/terminal arm: those ids are globally unique
+	// and carry no owner in `tab_locations` (see the view's doc), and the git
+	// handlers are already gated to the worker's owner, so matching them here is
+	// the same reach a tab id gave.
+	var n int
+	err := svc.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM tab_locations
+		WHERE working_dir = ? AND (user_id = '' OR user_id = ?)`,
+		workingDir, owner.String()).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // branchInfoProbe coalesces gitPathInfo lookups for a single
@@ -1920,10 +2041,27 @@ type branchInfoProbe struct {
 	mu    sync.Mutex
 	cache map[string]*gitPathInfo
 	sf    singleflight.Group
+	// forks is a counting semaphore over the `git rev-parse` subprocess, held
+	// only while `query` runs. One probe per hasOtherNonWorktreeTabOnBranch
+	// call means ONE budget per call, however many per-type scans fan out
+	// under it -- see branchProbeConcurrency.
+	forks chan struct{}
+	// query is queryGitPathInfo in production; a field so the probe's own unit
+	// tests can drive the cache, the coalescing, the cancellation retry and the
+	// fork budget without forking real git into real repositories.
+	query func(ctx context.Context, dirPath string) (*gitPathInfo, error)
 }
 
-func newBranchInfoProbe() *branchInfoProbe {
-	return &branchInfoProbe{cache: map[string]*gitPathInfo{}}
+func newBranchInfoProbe(maxForks int) *branchInfoProbe {
+	if maxForks < 1 {
+		// An unbuffered channel would make every acquire below block forever.
+		maxForks = 1
+	}
+	return &branchInfoProbe{
+		cache: map[string]*gitPathInfo{},
+		forks: make(chan struct{}, maxForks),
+		query: queryGitPathInfo,
+	}
 }
 
 // matches reports whether a tab's workingDir resolves to repoRoot and is
@@ -1968,7 +2106,18 @@ func (p *branchInfoProbe) lookup(ctx context.Context, workingDir string) (*gitPa
 			}
 			p.mu.Unlock()
 
-			fetched, err := queryGitPathInfo(ctx, workingDir)
+			// Acquired INSIDE sf.Do so only the singleflight LEADER holds a
+			// token: joined waiters block on singleflight rather than on the
+			// semaphore, so a burst of probes for one dir cannot occupy slots
+			// other dirs need. p.mu is released above, so a blocked acquire
+			// cannot wedge the cache.
+			select {
+			case p.forks <- struct{}{}:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			fetched, err := p.query(ctx, workingDir)
+			<-p.forks
 			if err != nil {
 				return nil, err
 			}

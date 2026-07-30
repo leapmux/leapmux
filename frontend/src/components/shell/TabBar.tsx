@@ -20,6 +20,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useMruProviders } from '~/hooks/useMruProviders'
+import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
 import { canCloseTab, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
 import { isTerminalTab } from '~/stores/tab.types'
@@ -59,6 +60,17 @@ const TabTextWithTooltip: Component<{ label: string, status?: TerminalStatus }> 
       </span>
     </Tooltip>
   )
+}
+
+/**
+ * A terminal tab's status, or `undefined` for the other kinds.
+ *
+ * Takes the tab by VALUE so `isTerminalTab` can narrow it: the rows read their
+ * tab through an accessor now, and two calls to that accessor are two separate
+ * expressions, so a guard on the first cannot narrow the second.
+ */
+function terminalStatusOf(tab: Tab): TerminalStatus | undefined {
+  return isTerminalTab(tab) ? tab.status : undefined
 }
 
 function tabTypeLabel(type: TabType): string {
@@ -173,7 +185,14 @@ export const TabBar: Component<TabBarProps> = (props) => {
     setEditingTabKey(null)
   }
 
-  const ids = () => props.tabs.map(t => tabKey(t))
+  /**
+   * Rows keyed on TAB KEYS, not on the `Tab` objects -- see {@link createKeyedRows}.
+   *
+   * This strip is where that matters most: a row holds the inline rename
+   * `<input>`, so remounting it mid-rename destroys the element the user is
+   * typing into, and it holds `createSortable`'s drag handle.
+   */
+  const { keys: ids, byKey: tabByKey } = createKeyedRows(() => props.tabs, tabKey)
 
   const handleTabChange = (value: string) => {
     const tab = props.tabs.find(t => tabKey(t) === value)
@@ -205,33 +224,37 @@ export const TabBar: Component<TabBarProps> = (props) => {
   }
   catch { /* DragDropProvider context not available */ }
 
-  const renderTab = (tab: Tab, sortable?: ReturnType<typeof createSortable>) => {
+  // `tab` is an ACCESSOR, not a value: the row outlives any single `Tab` object
+  // now that the `<For>` keys on `ids()`, so every field has to be read through
+  // it to stay live. Reading it once here would freeze the row at whatever the
+  // tab looked like when it mounted.
+  const renderTab = (tab: () => Tab, sortable?: ReturnType<typeof createSortable>) => {
     return (
       <div
         role="tab"
         ref={sortable}
         tabIndex={0}
-        aria-selected={props.activeTabKey === tabKey(tab)}
+        aria-selected={props.activeTabKey === tabKey(tab())}
         class={styles.tab}
         classList={{ [styles.tabDragging]: sortable?.isActiveDraggable }}
         style={sortable?.transform ? transformStyle(sortable.transform) : undefined}
         data-testid="tab"
-        data-tab-type={tabTypeLabel(tab.type)}
-        data-tab-id={tab.id}
-        data-terminal-status={isTerminalTab(tab) ? tab.status : undefined}
-        onClick={() => handleTabChange(tabKey(tab))}
+        data-tab-type={tabTypeLabel(tab().type)}
+        data-tab-id={tab().id}
+        data-terminal-status={terminalStatusOf(tab())}
+        onClick={() => handleTabChange(tabKey(tab()))}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
-            handleTabChange(tabKey(tab))
+            handleTabChange(tabKey(tab()))
           }
         }}
         onAuxClick={(e: MouseEvent) => {
           if (e.button === 1) {
             e.preventDefault()
-            if ((props.readOnly && tab.type !== TabType.FILE) || props.closingTabKeys?.has(tabKey(tab)))
+            if ((props.readOnly && tab().type !== TabType.FILE) || props.closingTabKeys?.has(tabKey(tab())))
               return
-            props.onClose(tab)
+            props.onClose(tab())
           }
         }}
         onContextMenu={(e: MouseEvent) => {
@@ -240,16 +263,16 @@ export const TabBar: Component<TabBarProps> = (props) => {
         onDblClick={(e: MouseEvent) => {
           e.preventDefault()
           e.stopPropagation()
-          if (tab.type !== TabType.FILE && !props.readOnly)
-            startEditing(tab)
+          if (tab().type !== TabType.FILE && !props.readOnly)
+            startEditing(tab())
         }}
       >
         <span class={styles.tabIcon}>
-          <TabTypeIcon tab={tab} />
+          <TabTypeIcon tab={tab()} />
         </span>
         <Show
-          when={editingTabKey() === tabKey(tab)}
-          fallback={<TabTextWithTooltip label={tabDisplayLabel(tab)} status={isTerminalTab(tab) ? tab.status : undefined} />}
+          when={editingTabKey() === tabKey(tab())}
+          fallback={<TabTextWithTooltip label={tabDisplayLabel(tab())} status={terminalStatusOf(tab())} />}
         >
           <input
             class={styles.tabEditInput}
@@ -260,13 +283,13 @@ export const TabBar: Component<TabBarProps> = (props) => {
               e.stopPropagation()
               if (e.key === 'Enter') {
                 e.preventDefault()
-                commitEdit(tab)
+                commitEdit(tab())
               }
               else if (e.key === 'Escape') {
                 cancelEdit()
               }
             }}
-            onBlur={() => commitEdit(tab)}
+            onBlur={() => commitEdit(tab())}
             onClick={e => e.stopPropagation()}
             ref={(el) => {
               requestAnimationFrame(() => {
@@ -276,21 +299,21 @@ export const TabBar: Component<TabBarProps> = (props) => {
             }}
           />
         </Show>
-        <Show when={tab.hasNotification}>
+        <Show when={tab().hasNotification}>
           <span class={styles.tabNotification} data-testid="tab-notification" />
         </Show>
-        <Show when={canCloseTab(props.readOnly, tab)}>
+        <Show when={canCloseTab(props.readOnly, tab())}>
           <IconButton
             icon={X}
             class={styles.tabClose}
-            state={props.closingTabKeys?.has(tabKey(tab)) ? IconButtonState.Loading : IconButtonState.Enabled}
+            state={props.closingTabKeys?.has(tabKey(tab())) ? IconButtonState.Loading : IconButtonState.Enabled}
             data-testid="tab-close"
             onPointerDown={e => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation()
-              if (props.closingTabKeys?.has(tabKey(tab)))
+              if (props.closingTabKeys?.has(tabKey(tab())))
                 return
-              props.onClose(tab)
+              props.onClose(tab())
             }}
           />
         </Show>
@@ -394,22 +417,31 @@ export const TabBar: Component<TabBarProps> = (props) => {
         }}
       >
         <ErrorBoundary fallback={(
-          <For each={props.tabs}>
+          // No sortable: this fallback exists to render the strip when the drag
+          // machinery is what threw, so it must not touch it.
+          <KeyedFor each={ids()} lookup={key => tabByKey().get(key)}>
             {tab => renderTab(tab)}
-          </For>
+          </KeyedFor>
         )}
         >
           <SortableProvider ids={ids()}>
-            <For each={props.tabs}>
-              {(tab) => {
-                let sortable: ReturnType<typeof createSortable> | undefined
+            <KeyedFor
+              each={ids()}
+              lookup={key => tabByKey().get(key)}
+              rowSetup={(key) => {
                 try {
-                  sortable = createSortable(tabKey(tab))
+                  // The key is the row's identity for the whole of its life now,
+                  // so the sortable id is fixed at creation rather than re-derived
+                  // from a `Tab` the row no longer owns. Created HERE, in the
+                  // for-row owner, so it outlives a tick where the lookup misses.
+                  return createSortable(key)
                 }
                 catch { /* DnD context not ready */ }
-                return renderTab(tab, sortable)
+                return undefined
               }}
-            </For>
+            >
+              {(tab, _key, sortable) => renderTab(tab, sortable)}
+            </KeyedFor>
           </SortableProvider>
         </ErrorBoundary>
       </div>

@@ -1,10 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-
-/** Open a new terminal via the dedicated terminal button in the tab bar. */
-async function openTerminalViaUI(page: Page) {
-  await page.locator('[data-testid="new-terminal-button"]').click()
-}
+import { openTerminalViaUI } from './helpers/ui'
 
 /** Number of terminals currently holding a live WebGL context. */
 function webglTerminalCount(page: Page): Promise<number> {

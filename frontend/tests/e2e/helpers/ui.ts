@@ -172,10 +172,49 @@ export async function openAgentViaUI(page: Page) {
 }
 
 /**
+ * Wait until the app has resolved a WORKING DIRECTORY for the active tab.
+ *
+ * `waitForWorkspaceReady` returns as soon as a tab element exists, which happens
+ * the moment the CRDT projection lands -- but a projected tab carries only
+ * tile/position/worker. Everything else, `workingDir` included, arrives later
+ * from the worker (`useTabHydrators` -> `ListAgents` / `ListTerminals`). Any
+ * action whose precondition is the active tab's directory therefore races page
+ * load, and loses on a cold instance.
+ *
+ * Waits on the Files section's RESOLVED working dir, which the app publishes as
+ * `data-working-dir` -- the app's own statement that the context has landed, not
+ * a proxy we invented for the tests.
+ *
+ * Emphatically NOT the tree root node, which this used to wait for. That node is
+ * gated only on `workerId` (available from the CRDT TabRecord immediately) and
+ * renders against a `props.workingDir || '~'` fallback, so it attaches while the
+ * dir is still empty -- i.e. it was already on screen at exactly the moment the
+ * race it was supposed to close was open, and the specs kept their original
+ * flake. A non-empty `data-working-dir` cannot be produced by the fallback.
+ *
+ * `attached`, NOT `visible`: whether the sidebar is EXPANDED is a layout question
+ * (it collapses under the mobile-layout breakpoint, so a spec that shrinks the
+ * viewport first would wait forever on a visibility check) and is orthogonal to
+ * whether the directory resolved. Attachment is exactly the half we mean.
+ *
+ * Fails loudly on timeout rather than proceeding, so a genuinely broken
+ * hydration surfaces here instead of as a confusing downstream assertion.
+ */
+export async function waitForActiveTabContext(page: Page) {
+  await page.locator('[data-working-dir]:not([data-working-dir=""])').first().waitFor({ state: 'attached' })
+}
+
+/**
  * Open a new terminal in the currently selected workspace.
  * Clicks the terminal button in the tab bar.
+ *
+ * Waits for the active tab's context first: the handler reads the directory
+ * SYNCHRONOUSLY on click and, finding none, opens the "new terminal" dialog to
+ * ask the user instead -- a one-shot bail with no retry, so a click that lands
+ * too early yields no terminal at all and every later assertion times out.
  */
 export async function openTerminalViaUI(page: Page) {
+  await waitForActiveTabContext(page)
   await page.locator('[data-testid="new-terminal-button"]').click()
 }
 

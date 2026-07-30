@@ -117,6 +117,33 @@ export interface TabStampTarget {
 }
 
 /**
+ * The path a tab's repo membership is decided by, or `''` when it has none.
+ *
+ * FALSY-checked, not nullish-checked. `tab.workingDir` is routinely the empty
+ * STRING rather than absent: the local file-open path seeds it from
+ * `getCurrentTabContext()`, which answers `''` until worker hydration lands. A
+ * `??` here would pass that `''` through as the containment path, and each
+ * caller's `if (!containmentPath) continue` would then skip the tab outright --
+ * so a freshly-opened file tab would sit outside every git-status match, with no
+ * branch group and no diff badge, until the worker echo arrived, instead of
+ * falling back to its own path for that one round trip.
+ *
+ * The FILE fallback is narrow and temporary by design: it answers for the repo
+ * the file physically sits in, which is the same answer the worker will send
+ * back for a file tab opened without an originating dir
+ * (`resolveFileTabWorkingDir` falls back to the file's own directory). It can be
+ * deleted outright once every path that creates a file tab supplies a dir.
+ *
+ * One function rather than two inlined copies because the two sites MUST agree:
+ * the second builds the fingerprint that decides when the first re-runs, so a
+ * tab either site admits and the other skips is a tab that never gets stamped,
+ * or one that re-stamps forever.
+ */
+function containmentPathFor(tab: Tab): string {
+  return tab.workingDir || (tab.type === TabType.FILE ? tab.filePath : '') || ''
+}
+
+/**
  * Stamp matching tabs with the diff/branch/origin fields from a
  * GetGitFileStatus response, without touching the gitFileStatusStore
  * singleton. The reactive {@link syncGitStatusToTabs} effect routes the
@@ -183,8 +210,7 @@ export function applyGitStatusToTabs(
     // Same repo path on a different worker is a different repo.
     if ((tab.workerId ?? '') !== workerId)
       continue
-    const containmentPath = tab.workingDir
-      ?? (tab.type === TabType.FILE ? tab.filePath : undefined)
+    const containmentPath = containmentPathFor(tab)
     if (!containmentPath)
       continue
     if (tab.gitToplevel) {
@@ -275,8 +301,7 @@ export function syncGitStatusToTabs(opts: SyncGitStatusToTabsOpts): void {
   const unstampedTabsSignature = createMemo<Set<string>>(() => {
     const parts = new Set<string>()
     for (const tab of view.all()) {
-      const containmentPath = tab.workingDir
-        ?? (tab.type === TabType.FILE ? tab.filePath : undefined)
+      const containmentPath = containmentPathFor(tab)
       if (!containmentPath)
         continue
       parts.add(`${tab.type}\0${tab.id}\0${containmentPath}\0${tab.gitToplevel ?? ''}`)

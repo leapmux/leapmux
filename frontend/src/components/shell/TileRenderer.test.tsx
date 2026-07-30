@@ -2,6 +2,7 @@ import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
@@ -26,6 +27,12 @@ vi.mock('~/context/PreferencesContext', () => ({
   }),
 }))
 
+vi.mock('~/components/fileviewer/FileViewer', () => ({
+  FileViewer: (props: { rootPath?: string, homeDir?: string }) => (
+    <div data-testid="file-viewer" data-root={props.rootPath} data-home={props.homeDir} />
+  ),
+}))
+
 vi.mock('~/components/terminal/TerminalView', () => ({
   TerminalView: (props: { terminals: Array<{ id: string }> }) => (
     <div data-testid="terminal-view">
@@ -44,9 +51,13 @@ type RendererSetup = ReturnType<typeof createTestTabStores> & {
    * back off the join, which is the only shape the renderer ever sees.
    */
   addTerminal: (id: string, tileId: string, title?: string) => Tab
+  /** Same, for an AGENT tab -- the pane whose identity the tests below assert on. */
+  addAgent: (id: string, tileId: string, title?: string) => Tab
+  /** Same, for a FILE tab. */
+  addFile: (id: string, tileId: string) => Tab
 }
 
-function renderRenderer(s: RendererSetup, focusedTileId: string) {
+function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentContext = () => ({ workingDir: '/repo', homeDir: '/home/me' })) {
   return render(() => {
     const r = createTileRenderer({
       // Same factory production uses, so the test exercises the real
@@ -95,7 +106,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string) {
         isActiveWorkspaceArchived: () => false,
         activeWorkspace: () => ({ id: 'workspace-1' }),
         getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/repo', homeDir: '/home/me', gitToplevel: '/repo' }),
-        getMruAgentContext: () => ({ workingDir: '/repo', homeDir: '/home/me' }),
+        getMruAgentContext,
       },
       tab: {
         handleTabSelect: () => {},
@@ -157,8 +168,120 @@ function createSetup(): RendererSetup {
       stores.selection.setActiveById(TabType.TERMINAL, id)
       return stores.view.getById(TabType.TERMINAL, id)!
     },
+    addAgent(id, tileId, title = 'Agent') {
+      nextPosition += 1
+      emitAddTab({ type: TabType.AGENT, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
+      stores.metadata.patch(id, { title, workingDir: '/repo', agentStatus: AgentStatus.ACTIVE })
+      stores.selection.setActiveById(TabType.AGENT, id)
+      return stores.view.getById(TabType.AGENT, id)!
+    },
+    addFile(id, tileId) {
+      nextPosition += 1
+      emitAddTab({ type: TabType.FILE, id, tileId, position: `p${nextPosition}`, workerId: 'worker-1' })
+      stores.metadata.patch(id, { title: id, filePath: `/repo/${id}.ts`, workingDir: '/repo' })
+      stores.selection.setActiveById(TabType.FILE, id)
+      return stores.view.getById(TabType.FILE, id)!
+    },
   }
 }
+
+/**
+ * A pane's identity is its TAB ID, not the joined `Tab` object.
+ *
+ * `Tab` is rebuilt whenever any field it joins from `tabMetadata` changes -- the
+ * MRU stamp a click writes, a title rename, a git badge refresh, an agent status
+ * flip. `<For>` keys by item identity, so keying the panes on the object made every
+ * one of those tear down and rebuild the whole pane: the chat transcript's DOM went
+ * with it, taking the user's in-progress text selection, each lifted per-message
+ * expand/collapse choice, and the reading position.
+ */
+/**
+ * The MRU-agent context is one walk per tick, not one per pane.
+ *
+ * `getMruAgentContext` sorts the whole workspace's tabs, and the file pane used
+ * to read it through two separate Solid prop getters (`rootPath`, `homeDir`) --
+ * so N open file panes paid 2N sorts, and because the getters' tracked sources
+ * include the account-wide tab join, ANY tab's MRU stamp or rename re-ran all of
+ * them. That is the same per-metadata-patch account-wide recomputation the tab
+ * join was restructured to eliminate.
+ */
+describe('tileRenderer mru agent context', () => {
+  it('walks the MRU order once per tick, not once per file pane', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addFile('f1', tileId)
+    s.addFile('f2', tileId)
+    const getMruAgentContext = vi.fn(() => ({ workingDir: '/repo', homeDir: '/home/me' }))
+
+    renderRenderer(s, tileId, getMruAgentContext)
+    await screen.findAllByTestId('file-viewer')
+
+    // Two panes x two prop getters = 4 walks before the memo; the load-bearing
+    // property is that the count does not scale with the number of panes.
+    expect(getMruAgentContext.mock.calls.length).toBeLessThan(3)
+  })
+
+  /**
+   * "Copy relative path" is relative to the FILE TAB's own dir, not the MRU
+   * agent's. Keyed on the agent it was a silent no-op in a workspace with no
+   * agent tab -- `getMruAgentContext` answers `''` there and `relativizePath`
+   * hands back the absolute path unchanged -- and it answered for the wrong
+   * checkout whenever the file was opened from a different one than the agent
+   * the user last clicked.
+   */
+  it('roots the file pane at the tab\'s own working dir, with no agent present', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addFile('f1', tileId)
+    // No agent anywhere, so the old MRU base would have been ''.
+    const getMruAgentContext = vi.fn(() => ({ workingDir: '', homeDir: '' }))
+
+    renderRenderer(s, tileId, getMruAgentContext)
+    const viewer = await screen.findByTestId('file-viewer')
+
+    expect(viewer.getAttribute('data-root')).toBe('/repo')
+  })
+})
+
+describe('tileRenderer pane identity', () => {
+  it('keeps the agent pane mounted across a tab-metadata change', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId)
+    renderRenderer(s, tileId)
+
+    const pane = await screen.findByTestId('chat-container')
+
+    // The unprompted worker-sourced writes that land on a tab the user is reading.
+    s.metadata.patch('a1', { title: 'Renamed', gitDiffAdded: 7, hasNotification: true })
+    await waitFor(() => expect(s.view.getAgentTab('a1')?.title).toBe('Renamed'))
+
+    expect(screen.getByTestId('chat-container'), 'the pane is the SAME DOM node').toBe(pane)
+  })
+
+  // The FILE pane is built from the same `tileFileTabIds` memo and the same
+  // `<For>` shape, so the agent case above guards both constructions. It has no
+  // unit test of its own because every `FileViewer` testid is content-state
+  // dependent (`text-view`, `markdown-view`, ...) and needs a worker RPC this
+  // harness cannot serve; the file-view half is covered end to end by the
+  // text-selection spec in 037-quote-and-mention.
+  it('keeps the agent pane mounted when a click re-activates the already-active tab', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    const tab = s.addAgent('a1', tileId)
+    renderRenderer(s, tileId)
+
+    const pane = await screen.findByTestId('chat-container')
+
+    // Exactly what every click inside a tile does (TileRenderer's `onFocus`), and
+    // what the click ending a drag-select used to do to the selection.
+    s.selection.setActive(tab)
+    s.selection.setActive(s.view.getAgentTab('a1')!)
+    await Promise.resolve()
+
+    expect(screen.getByTestId('chat-container'), 'the pane is the SAME DOM node').toBe(pane)
+  })
+})
 
 describe('tileRenderer close-tile flow', () => {
   it('opens the CloseTileDialog when closing a tile that has tabs', async () => {

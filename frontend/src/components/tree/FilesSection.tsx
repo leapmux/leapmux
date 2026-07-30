@@ -198,7 +198,14 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   })
 
   return (
-    <div class={styles.wrapper}>
+    // `data-working-dir` carries the RESOLVED dir, unlike the tree below, which
+    // falls back to `~` so it can render something while the dir is still
+    // hydrating. E2E needs the distinction: several actions (opening a terminal
+    // from the tab bar) read the active tab's dir synchronously on click and
+    // take a one-shot degraded branch when it is empty, so a spec must be able
+    // to wait for the real thing rather than for a placeholder that is already
+    // on screen.
+    <div class={styles.wrapper} data-working-dir={props.workingDir}>
       <Show when={props.gitStatusStore.state.isGitRepo}>
         <div class={styles.tabBar} data-testid="files-filter-tab-bar">
           <For each={FILTER_TABS}>

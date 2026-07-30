@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, loginViaToken, openWorkspace, reopenWorkspace, waitForLayoutSave } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, loginViaToken, openTerminalViaUI, openWorkspace, reopenWorkspace, waitForLayoutSave } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -127,7 +127,7 @@ test.describe('Full Hub+Worker Restart', () => {
     const saved = waitForLayoutSave(page)
 
     // Open a terminal via the tab bar
-    await page.locator('[data-testid="new-terminal-button"]').click()
+    await openTerminalViaUI(page)
 
     // Wait for the terminal tab to appear and xterm to render
     const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
@@ -180,7 +180,7 @@ test.describe('Full Hub+Worker Restart', () => {
   test('should recover exited terminal title and screen after reloading before worker reconnects', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
     const saved = waitForLayoutSave(page)
 
-    await page.locator('[data-testid="new-terminal-button"]').click()
+    await openTerminalViaUI(page)
 
     const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
     await expect(terminalTab).toBeVisible()

@@ -253,6 +253,36 @@ describe('syncGitStatusToTabs', () => {
     })
   })
 
+  // `workingDir: ''` is the NORMAL state of a just-opened file tab, not a
+  // corner case: the local open path seeds it from `getCurrentTabContext()`,
+  // which answers `''` until worker hydration lands. A nullish-coalescing
+  // fallback passes that empty string through as the containment path, and the
+  // `if (!containmentPath) continue` guard then drops the tab from the match
+  // entirely -- so it renders with no branch group and no diff badge until the
+  // worker echo arrives, instead of falling back to its own path meanwhile.
+  it('stamps a FILE tab whose workingDir is the empty string', async () => {
+    await withSync(async ({ add, get, refresh }) => {
+      add(TabType.FILE, 'seeded', { filePath: '/repo/src/foo.ts', workingDir: '' })
+
+      mockGetGitFileStatus.mockResolvedValueOnce({
+        repoRoot: '/repo',
+        toplevel: '/repo',
+        originUrl: 'https://example.com/repo.git',
+        currentBranch: 'main',
+        files: [
+          makeEntry({ path: 'foo.ts', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 3, linesDeleted: 0 }),
+        ],
+      })
+
+      await refresh('worker1', '/repo')
+
+      const t = get(TabType.FILE, 'seeded')
+      expect(t?.gitBranch).toBe('main')
+      expect(t?.gitToplevel).toBe('/repo')
+      expect(t?.gitDiffAdded).toBe(3)
+    })
+  })
+
   it('does not stamp a FILE tab whose filePath lives outside repoRoot', async () => {
     await withSync(async ({ add, get, refresh }) => {
       // FILE tab outside the focused repo's tree — must stay unstamped.

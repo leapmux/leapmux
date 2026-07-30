@@ -278,14 +278,19 @@ describe('buildTilePredicateMap', () => {
 })
 
 /**
- * Structural equality for the projected tree.
+ * Structural equality for the projected tree -- the BACKSTOP behind identity.
  *
- * `project()` allocates a fresh graph per call, so a memo over it never dedupes
- * by identity and re-propagates on EVERY CRDT tick -- including the ~60/s
- * stream a floating-window drag emits and every remote op in a workspace the
- * user is not looking at. That churn silently defeated `useFocusInvariant`'s
- * `on([focusedTileId, root])` and `TileRenderer`'s per-root predicate memos,
- * both of which document themselves as bounded.
+ * `project()`'s `ProjectionCache` and `renderTreeToLocal`'s memo normally keep
+ * an untouched workspace's node identical across a tick, so this returns on its
+ * first line. It exists for the case they cannot cover: the uncached
+ * `project(state)` these unit tests call.
+ *
+ * Without either layer a memo over the projection re-propagates on EVERY CRDT
+ * tick -- including the ~60/s stream a floating-window drag emits and every
+ * remote op in a workspace the user is not looking at. That churn silently
+ * defeated `useFocusInvariant`'s `on([focusedTileId, root])` and
+ * `TileRenderer`'s per-root predicate memos, both of which document themselves
+ * as bounded.
  */
 describe('sameLayoutNode', () => {
   it('treats a structurally identical rebuild as equal', () => {

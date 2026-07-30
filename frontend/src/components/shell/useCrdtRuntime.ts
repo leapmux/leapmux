@@ -4,7 +4,7 @@ import type { createActiveClientStore } from '~/lib/presence/activeClient'
 import { createEffect, createMemo, createSignal } from 'solid-js'
 import { showWarnToast } from '~/components/common/Toast'
 import { KEY_CLIENT_ID, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
-import { HLCClock, PendingOpsManager, project, setCRDTBridge } from '~/lib/crdt'
+import { createProjectionMemo, HLCClock, PendingOpsManager, setCRDTBridge } from '~/lib/crdt'
 import { randomUUID } from '~/lib/idGenerator'
 import { createOpsSubmitter } from './useOpsSubmitter'
 import { useUserEvents } from './useUserEvents'
@@ -89,10 +89,18 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     undefined,
     { equals: false },
   )
-  const projection = createMemo(() => {
-    const state = crdtState()
-    return state ? project(state) : null
-  })
+  // The `equals: false` above means the projection memo BODY runs on every CRDT
+  // tick -- ~2x the frame rate while a tile is dragged, since each frame's
+  // optimistic `submit` is followed by the `BatchCommitted` that triggers
+  // `recomputeSpeculative`. Running the body is cheap either way; what was not
+  // is that every one of those ticks used to hand the WHOLE APP a fresh graph,
+  // so a drag in one workspace re-derived every other workspace's tree and every
+  // tab in the account. `createProjectionMemo`'s cache reuses whatever the tick
+  // left alone and returns the IDENTICAL `Projection` object when nothing
+  // observable moved, so the memo's default `equals` stops propagation dead. See
+  // `ProjectionCache` for why identity comparison against the live records is
+  // sound rather than a remembered dirty set.
+  const projection = createProjectionMemo(crdtState)
 
   // Stable client_id for this browser session. Used as the HLC author
   // for op-stamping and as the `op_id` salt — the local random nanoid

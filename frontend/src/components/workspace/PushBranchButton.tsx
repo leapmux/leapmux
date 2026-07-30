@@ -1,6 +1,5 @@
 import type { Component } from 'solid-js'
 import type { BranchGitState } from '~/generated/leapmux/v1/git_pb'
-import type { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { Spinner } from '~/components/common/Spinner'
@@ -9,8 +8,18 @@ import { useDialogSubmit } from '~/hooks/useDialogSubmit'
 
 interface PushBranchButtonProps {
   workerId: string
-  /** Any tab in the branch group — they all share the working dir. */
-  tab: { type: TabType, id: string }
+  /**
+   * Directory to push from.
+   *
+   * A dir rather than an anchor tab, because the tab was only ever a way to
+   * look one up on the worker -- and for a FILE tab that lookup goes through
+   * `worker_file_tabs`, a row the client writes fire-and-forget and a peer's
+   * close hard-deletes, so it could be gone while the tab was still on screen.
+   * Callers pass a dir they already hold locally (a tab's `workingDir`, or the
+   * one the inspect response echoed back), so the push depends on no worker row
+   * at all. The worker still refuses a dir the caller has no open tab in.
+   */
+  workingDir: string
   /**
    * Fresh inspect snapshot. Drives the button label only
    * ("Commit and Push" vs. "Push"). The server-side push always re-probes
@@ -38,10 +47,7 @@ export const PushBranchButton: Component<PushBranchButtonProps> = (props) => {
 
   const handleClick = () => {
     void run(async () => {
-      await workerRpc.pushBranch(props.workerId, {
-        tabType: props.tab.type,
-        tabId: props.tab.id,
-      })
+      await workerRpc.pushBranch(props.workerId, { workingDir: props.workingDir })
       await props.onPushed()
       showInfoToast('Branch pushed successfully')
     })

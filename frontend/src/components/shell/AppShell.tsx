@@ -30,7 +30,6 @@ import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { assertNever } from '~/lib/assertNever'
 import { KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
-import { createFileTabPathsStore } from '~/lib/fileTabPaths'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createLogger } from '~/lib/logger'
 import { setDashboardTitle, setWorkspaceTitle } from '~/lib/pageTitle'
@@ -203,7 +202,6 @@ export const AppShell: Component = () => {
   // Cache of file-tab paths fed by WatchWorkerPrivateEvents
   // bootstrap replay + GetFileTabPath fallback. Components consult
   // this for FILE-tab titles instead of asking the hub.
-  const fileTabPaths = createFileTabPathsStore()
 
   // No reconciler. `tabView` joins the projection with `tabMetadata` on read, so
   // there is no second copy of tile_id / position / worker_id to drift, nothing
@@ -223,7 +221,6 @@ export const AppShell: Component = () => {
   useTabHydrators({
     view: tabView,
     metadata: tabMetadata,
-    fileTabPaths,
     // Worker liveness, so a worker coming back re-arms the tabs that gave up on
     // it. The sidebar already tracks this off `WORKERS_CHANGED`; hydration had
     // no other way to learn it, because a worker reconnecting changes nothing
@@ -261,7 +258,6 @@ export const AppShell: Component = () => {
   useWorkerPrivateStreams({
     view: tabView,
     metadata: tabMetadata,
-    fileTabPaths,
   })
 
   // Late-bound ref: set once useTabOperations is initialized (after useWorkspaceConnection).
@@ -531,17 +527,17 @@ export const AppShell: Component = () => {
 
   // Get working directory and home directory from the MRU agent tab
   const getMruAgentContext = (): Pick<TabContext, 'workingDir' | 'homeDir'> => {
-    const agentPrefix = `${TabType.AGENT}:`
-    const mruKey = tabView.mruOrder(workspace.activeWorkspaceId() ?? '')
-      .map(t => tabKey(t))
-      .find(k => k.startsWith(agentPrefix))
-    if (!mruKey)
+    // Straight `.find` on the sorted tabs. Mapping every tab to a `${type}:${id}`
+    // key first, matching that on a string prefix, then slicing the id back out
+    // to re-look-up the tab allocated one string per tab and a second lookup for
+    // the winner -- `mruOrder` already returns the assembled `Tab` objects.
+    const agent = tabView.mruOrder(workspace.activeWorkspaceId() ?? '')
+      .find(t => t.type === TabType.AGENT)
+    if (!agent)
       return { workingDir: '', homeDir: '' }
-    const agentId = mruKey.slice(agentPrefix.length)
-    const agent = tabView.getAgentTab(agentId)
     return {
-      workingDir: agent?.workingDir ?? '',
-      homeDir: workerInfoStore.getHomeDir(agent?.workerId ?? ''),
+      workingDir: agent.workingDir ?? '',
+      homeDir: workerInfoStore.getHomeDir(agent.workerId ?? ''),
     }
   }
 

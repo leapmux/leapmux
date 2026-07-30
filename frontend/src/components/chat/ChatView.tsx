@@ -303,7 +303,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     getToolResultParsedBySpanId: props.lookups?.getToolResultParsedBySpanId,
   }))
 
-  let contentRef: HTMLDivElement | undefined
   // The scroll container (also handed to scroll.attachListRef below). Read
   // non-reactively by isRowNearViewport at worker-dispatch time.
   let listEl: HTMLElement | undefined
@@ -929,16 +928,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             <div class={styles.messageListSpacer} />
             <SelectionQuotePopover
               class={styles.messageListSelectionRoot}
-              containerRef={contentRef}
               onQuote={text => props.onQuote?.(formatChatQuote(text))}
               onSelectionActiveChange={setTextSelectionActive}
             >
-              <div
-                ref={(el) => {
-                  contentRef = el
-                }}
-                class={styles.messageListContent}
-              >
+              <div class={styles.messageListContent}>
                 {/*
                   Virtualized list: only rows in/near the viewport are mounted,
                   absolutely positioned by translateY inside a spacer sized to

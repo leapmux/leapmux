@@ -1,8 +1,9 @@
 -- name: UpsertWorkerFileTab :exec
-INSERT INTO worker_file_tabs (user_id, tab_id, file_path)
-VALUES (?, ?, ?)
+INSERT INTO worker_file_tabs (user_id, tab_id, file_path, working_dir)
+VALUES (?, ?, ?, ?)
 ON CONFLICT (user_id, tab_id) DO UPDATE SET
-    file_path = excluded.file_path;
+    file_path = excluded.file_path,
+    working_dir = excluded.working_dir;
 
 -- name: GetWorkerFileTab :one
 SELECT * FROM worker_file_tabs WHERE user_id = ? AND tab_id = ?;

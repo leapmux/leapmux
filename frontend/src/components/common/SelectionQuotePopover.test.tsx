@@ -21,7 +21,6 @@ describe('selection quote popover', () => {
     const onSelectionActiveChange = vi.fn()
     render(() => (
       <SelectionQuotePopover
-        containerRef={undefined}
         onQuote={vi.fn()}
         onSelectionActiveChange={onSelectionActiveChange}
       >
@@ -54,7 +53,6 @@ describe('selection quote popover', () => {
     const { container } = render(() => (
       <SelectionQuotePopover
         class="non-shrinking-scroll-root"
-        containerRef={undefined}
         onQuote={vi.fn()}
       >
         <p>content</p>
@@ -78,7 +76,6 @@ describe('selection quote popover', () => {
     const onSelectionActiveChange = vi.fn()
     const rendered = render(() => (
       <SelectionQuotePopover
-        containerRef={undefined}
         onQuote={vi.fn()}
         onSelectionActiveChange={onSelectionActiveChange}
       >
@@ -127,7 +124,6 @@ describe('selection quote popover', () => {
     try {
       render(() => (
         <SelectionQuotePopover
-          containerRef={undefined}
           onQuote={vi.fn()}
           onSelectionActiveChange={onSelectionActiveChange}
         >

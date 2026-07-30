@@ -11,54 +11,77 @@ export interface RecordedToast {
 }
 
 /**
- * Install a toast recorder on the page.
- * This monkey-patches `window.ot.toast` so that every toast message is
- * captured in `window.__recordedToasts` for later retrieval.
+ * Install a toast recorder on the page: every toast rendered while it is
+ * installed is captured in `window.__recordedToasts` for later retrieval.
  *
  * Must be called **before** navigating to the app (e.g. before loginViaUI).
  * Works across page reloads because it uses `addInitScript`.
+ *
+ * Recording is done by WATCHING THE DOM, not by patching oat. The previous
+ * version monkey-patched `window.ot.toast` / `window.ot.toastEl`, and recorded
+ * nothing at all: the app renders through `window.ot.toast.el(...)` (see
+ * src/components/common/Toast.tsx), oat installs `window.ot` in a way the
+ * interposed setter never saw, and replacing `ot.toast` with a bare function
+ * dropped the `.el` the app then called. Every
+ * `expect(dangerToasts).toHaveLength(0)` written against it therefore passed
+ * on an empty list that could never fill.
+ *
+ * The DOM is the one surface every toast has to reach to be a toast at all --
+ * `renderToast` builds `<output data-variant=…><div class="toast-message">` and
+ * hands it to oat -- so observing insertions is both simpler and immune to how
+ * oat is packaged.
+ *
+ * Note the recorder is APPEND-ONLY and outlives each toast's ~3s on-screen
+ * life, which is what makes it usable for "nothing was warned about"
+ * assertions: a toast that came and went still counts.
  */
 export async function installToastRecorder(page: Page) {
   await page.addInitScript(() => {
     ;(window as any).__recordedToasts = [] as RecordedToast[]
 
-    // Intercept window.ot assignment to monkey-patch toast() and toastEl()
-    let _ot: any
-    Object.defineProperty(window, 'ot', {
-      configurable: true,
-      get() {
-        return _ot
-      },
-      set(val: any) {
-        if (val && typeof val.toast === 'function') {
-          const original = val.toast
-          const patched = function (message: string, title?: string, options?: any) {
-            ;(window as any).__recordedToasts.push({
-              message,
-              variant: options?.variant ?? '',
-              timestamp: Date.now(),
-            })
-            return original.call(val, message, title, options)
+    const RECORDED_ATTR = 'data-e2e-toast-recorded'
+
+    const record = (el: Element) => {
+      if (!(el instanceof HTMLElement) || !el.hasAttribute('data-variant'))
+        return
+      // One toast, one entry. oat inserts the element into its own container,
+      // so the observer sees it arrive twice -- once as the container's subtree
+      // and once on its own -- and a doubled log reads like the app fired the
+      // same toast twice.
+      if (el.hasAttribute(RECORDED_ATTR))
+        return
+      el.setAttribute(RECORDED_ATTR, '')
+
+      const recorded = (window as any).__recordedToasts as RecordedToast[]
+      recorded.push({
+        message: el.querySelector('.toast-message')?.textContent ?? el.textContent ?? '',
+        variant: el.getAttribute('data-variant') ?? '',
+        timestamp: Date.now(),
+      })
+    }
+
+    const observer = new MutationObserver((records) => {
+      for (const r of records) {
+        for (const node of r.addedNodes) {
+          if (!(node instanceof HTMLElement))
+            continue
+          // The toast may be inserted directly or inside oat's own wrapper.
+          if (node.tagName === 'OUTPUT') {
+            record(node)
           }
-          // Preserve .clear method
-          patched.clear = original.clear
-          val.toast = patched
-        }
-        if (val && typeof val.toastEl === 'function') {
-          const originalEl = val.toastEl
-          val.toastEl = function (element: HTMLElement, options?: any) {
-            const msg = element.querySelector('.toast-message')
-            ;(window as any).__recordedToasts.push({
-              message: msg?.textContent ?? '',
-              variant: element.getAttribute('data-variant') ?? '',
-              timestamp: Date.now(),
-            })
-            return originalEl.call(val, element, options)
+          else {
+            node.querySelectorAll('output[data-variant]').forEach(record)
           }
         }
-        _ot = val
-      },
+      }
     })
+    // `document`, not `document.documentElement`: an init script runs before
+    // any page script, which is early enough that the root element may not
+    // exist yet -- and `observe(null, …)` throws, taking the whole recorder
+    // down silently while `__recordedToasts` sits there as a plausible empty
+    // array. `document` is always present and subtree:true reaches the same
+    // nodes.
+    observer.observe(document, { childList: true, subtree: true })
   })
 }
 

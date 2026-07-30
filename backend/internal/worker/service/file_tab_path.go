@@ -15,8 +15,8 @@ import (
 )
 
 // FileTabPathStore is the worker-local store of (user_id, tab_id) →
-// file_path. The hub never sees these rows; clients fetch them via
-// WatchWorkerPrivateEvents (which carries the path over the existing E2EE
+// (file_path, working_dir). The hub never sees these rows; clients fetch them
+// via WatchWorkerPrivateEvents (which carries both over the existing E2EE
 // channel) or one-shot GetFileTabPath.
 type FileTabPathStore struct {
 	q      *db.Queries
@@ -29,17 +29,34 @@ func NewFileTabPathStore(q *db.Queries, events *PrivateEventsBus) *FileTabPathSt
 	return &FileTabPathStore{q: q, events: events}
 }
 
-// Register persists a (user_id, tab_id, file_path) tuple and broadcasts
-// FileTabPathRegistered on the owner's private-event stream.
+// Register persists a (user_id, tab_id, file_path, working_dir) tuple and
+// broadcasts FileTabPathRegistered on the owner's private-event stream.
 func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathParams) error {
 	owner, ok := userid.New(p.UserID)
 	if !ok || p.TabID == "" || p.FilePath == "" {
 		return fmt.Errorf("register file tab path: required field empty")
 	}
+	// Absolute, and refused here rather than normalized: a relative path has no
+	// meaningful base on this side. The worker's own CWD is the only one
+	// available and it is never the client's, so `filepath.Dir("notes.txt")`
+	// would store "." and hand every reader below -- linkFileTabToWorktree,
+	// getTabWorkingDir, the branch-sibling scan -- a `git -C .` that answers for
+	// whatever repo the worker process happens to sit in. Both callers already
+	// promise absolute (`leapmux remote tab open --path` documents it, and the
+	// UI sends a tree path), so this refuses a caller that broke its contract
+	// instead of silently binding the tab to the wrong repository.
+	if !filepath.IsAbs(p.FilePath) {
+		return fmt.Errorf("register file tab path: file_path must be absolute, got %q", p.FilePath)
+	}
+	workingDir, err := resolveFileTabWorkingDir(p.WorkingDir, p.FilePath)
+	if err != nil {
+		return fmt.Errorf("register file tab path: %w", err)
+	}
 	if err := s.q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
-		UserID:   owner.String(),
-		TabID:    p.TabID,
-		FilePath: p.FilePath,
+		UserID:     owner.String(),
+		TabID:      p.TabID,
+		FilePath:   p.FilePath,
+		WorkingDir: workingDir,
 	}); err != nil {
 		return fmt.Errorf("upsert worker_file_tab: %w", err)
 	}
@@ -51,29 +68,67 @@ func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathPa
 	// last-tab close path decides "no siblings remain", and `git
 	// worktree remove` runs while this file tab is still open — the
 	// editor then ENOENTs on a dir that was just rm-rf'd. Mirror the
-	// agent/terminal worktree-linkage path: probe the file's directory
-	// once via `git rev-parse`, then exact-match the canonical top-
-	// level against the tracked worktrees. Best-effort: a path outside
-	// any tracked worktree leaves the file tab unbound, matching today's
+	// agent/terminal worktree-linkage path: probe the directory once
+	// via `git rev-parse`, then exact-match the canonical top-level
+	// against the tracked worktrees. Best-effort: a dir outside any
+	// tracked worktree leaves the file tab unbound, matching today's
 	// behavior for non-worktree files.
-	s.linkFileTabToWorktree(ctx, owner.String(), p.FilePath, p.TabID)
+	s.linkFileTabToWorktree(ctx, owner.String(), filepath.Dir(p.FilePath), p.TabID)
 	if s.events != nil {
-		s.events.PublishFileTabPathRegistered(owner, p.TabID, p.FilePath)
+		s.events.PublishFileTabPathRegistered(owner, p.TabID, p.FilePath, workingDir)
 	}
 	return nil
 }
 
-// linkFileTabToWorktree associates a file tab with the worktree that
-// contains its on-disk path, if one is tracked. Failure here is
-// non-fatal — the file tab is still registered, it just won't count
-// toward sibling-tab checks in the last-tab close path.
+// resolveFileTabWorkingDir picks the working dir a file tab is stored with:
+// the originating tab's, or the file's own directory when the caller has no
+// originating tab to name. The UI always names one; `leapmux remote tab open
+// --type=file` names the spawning tab's dir when it runs inside one
+// ($LEAPMUX_REMOTE_WORKING_DIR) and nothing when run from a plain shell, which
+// is the case the fallback exists for.
+//
+// Normalizing HERE, once at write time, is what lets every reader --
+// getTabWorkingDir, linkFileTabToWorktree, the branch-sibling scan -- just read
+// the column. A fallback evaluated per read is the same rule stated in three
+// places, and three places is where they drift: the close path would then be
+// able to answer for a different directory than the link that decides whether
+// that close removes a worktree.
+//
+// It is literally the same normalizer agents.working_dir and terminals.working_dir
+// go through at their own write points (OpenAgent, OpenTerminal) -- only the
+// fallback differs, so that is the parameter. Without it a `--working-dir
+// '~/proj'` -- which the CLI forwards raw -- is stored literally, and `git -C
+// '~/proj'` cannot resolve it, dropping the tab straight back into the "not
+// readable as a git repository" degraded close this column exists to eliminate.
+// Three writers of the same fact have to agree on what it means, and sharing the
+// function is what makes them agree rather than a comment asking them to.
+func resolveFileTabWorkingDir(workingDir, filePath string) (string, error) {
+	return normalizeWorkingDir(workingDir, filepath.Dir(filePath))
+}
+
+// linkFileTabToWorktree associates a file tab with the worktree the directory it
+// is given sits in, if one is tracked. Failure here is non-fatal — the file tab
+// is still registered, it just won't count toward sibling-tab checks in the
+// last-tab close path.
+//
+// Callers pass the FILE'S OWN directory, not the tab's working_dir, and the two
+// answer genuinely different questions. working_dir is the tab's git IDENTITY:
+// which branch group it renders in, which branch a push targets — inherited from
+// the tab it was opened from, because that is the context the user opened it in.
+// This link is a REF-COUNT on a directory that can be deleted: it decides whether
+// `git worktree remove` may rm-rf a tree while an editor is still mounted inside
+// it. Only physical containment can answer that. Keying it on working_dir instead
+// silently unlinks every file opened from one checkout into another — an agent in
+// the main repo opening a file inside a linked worktree — and CountWorktreeTabs
+// then underreports, which is exactly the "editor ENOENTs on a dir that was just
+// rm-rf'd" hazard Register's comment above says this linkage exists to prevent.
 //
 // userID is stamped onto the worktree_tabs row so worktree_tab_liveness can
 // scope its FILE-tab join by user: file tab ids are only unique within a user
 // (worker_file_tabs is keyed by (user_id, tab_id)), so without it a multi-user
 // worker could match a different user's live file tab and mark a strand live.
-func (s *FileTabPathStore) linkFileTabToWorktree(ctx context.Context, userID, filePath, tabID string) {
-	info, err := queryGitPathInfo(ctx, filepath.Dir(filePath))
+func (s *FileTabPathStore) linkFileTabToWorktree(ctx context.Context, userID, fileDir, tabID string) {
+	info, err := queryGitPathInfo(ctx, fileDir)
 	if err != nil || info == nil || !info.IsWorktree {
 		return
 	}
@@ -107,9 +162,9 @@ func (s *FileTabPathStore) linkFileTabToWorktree(ctx context.Context, userID, fi
 // worktree's ref-count, so a sibling AGENT/TERMINAL close could
 // `git worktree remove` the dir while the editor is still mounted.
 //
-// Lexically pre-filter to files under worktreePath so we don't probe
-// every file tab on the worker, then reuse linkFileTabToWorktree, which
-// re-probes git and links only files that genuinely resolve to a tracked
+// Lexically pre-filter to tabs whose FILE sits under worktreePath so we
+// don't probe every file tab on the worker, then reuse linkFileTabToWorktree,
+// which re-probes git and links only dirs that genuinely resolve to a tracked
 // worktree (so a path in a nested submodule/worktree isn't mis-linked).
 // Best-effort: errors are logged, never surfaced — an un-backfilled link
 // degrades to today's behavior (the FILE tab just doesn't ref-count).
@@ -121,16 +176,27 @@ func (s *FileTabPathStore) BackfillWorktreeLinks(ctx context.Context, worktreePa
 	}
 	canonicalWorktree := pathutil.Canonicalize(worktreePath)
 	for _, row := range rows {
-		// Canonicalize both sides: worker_file_tabs stores the raw client
-		// path, which may differ from the symlink-resolved worktree path.
-		if !pathutil.HasPathPrefix(pathutil.Canonicalize(filepath.Dir(row.FilePath)), canonicalWorktree) {
+		// The FILE'S OWN directory on both the filter and the probe, matching
+		// what Register links on -- this is a ref-count on a deletable directory,
+		// so it follows where the file physically is, not the working_dir the tab
+		// inherited from whatever opened it (see linkFileTabToWorktree).
+		// Canonicalize both sides: worker_file_tabs stores the raw client path,
+		// which may differ from the symlink-resolved worktree path.
+		fileDir := filepath.Dir(row.FilePath)
+		if !pathutil.HasPathPrefix(pathutil.Canonicalize(fileDir), canonicalWorktree) {
 			continue
 		}
-		s.linkFileTabToWorktree(ctx, row.UserID, row.FilePath, row.TabID)
+		s.linkFileTabToWorktree(ctx, row.UserID, fileDir, row.TabID)
 	}
 }
 
-// Get returns the file_path for a tab, or ErrFileTabPathNotFound if absent.
+// Get returns the stored row for a tab, or ErrFileTabPathNotFound if absent.
+//
+// Both columns come back together rather than through a path-only read plus a
+// second working-dir read: they are one fact about one tab, and the two callers
+// (the GetFileTabPath handler answering a client, getTabWorkingDir answering
+// the git paths) would otherwise be able to observe them from different rows
+// across a concurrent re-register.
 //
 // A blank userID is refused rather than bound: worker_file_tabs is keyed by
 // (user_id, tab_id), so the owner is half the identity of the row being read.
@@ -150,19 +216,28 @@ func (s *FileTabPathStore) BackfillWorktreeLinks(ctx context.Context, worktreePa
 // operands, so one refusal reads as one statement. (It did not always -- the
 // rule once matched a bare `!ok` only, and this guard was split in two purely
 // to stay visible to it.)
-func (s *FileTabPathStore) Get(ctx context.Context, userID, tabID string) (filePath string, err error) {
+func (s *FileTabPathStore) Get(ctx context.Context, userID, tabID string) (FileTabLocation, error) {
 	owner, ok := userid.New(userID)
 	if !ok || tabID == "" {
-		return "", fmt.Errorf("get file tab path: required field empty")
+		return FileTabLocation{}, fmt.Errorf("get file tab path: required field empty")
 	}
 	row, err := s.q.GetWorkerFileTab(ctx, db.GetWorkerFileTabParams{UserID: owner.String(), TabID: tabID})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", ErrFileTabPathNotFound
+			return FileTabLocation{}, ErrFileTabPathNotFound
 		}
-		return "", err
+		return FileTabLocation{}, err
 	}
-	return row.FilePath, nil
+	return FileTabLocation{FilePath: row.FilePath, WorkingDir: row.WorkingDir}, nil
+}
+
+// FileTabLocation is where a file tab points: the file it shows, and the
+// working dir it answers git questions from. See the working_dir column comment
+// in the worker's initial migration for why the second is not derived from the
+// first.
+type FileTabLocation struct {
+	FilePath   string
+	WorkingDir string
 }
 
 // RevokeRow deletes the worker_file_tab row and broadcasts
@@ -229,8 +304,9 @@ func (s *FileTabPathStore) SnapshotForOwner(ctx context.Context, owner userid.Us
 		out = append(out, &leapmuxv1.WorkerPrivateEvent{
 			Event: &leapmuxv1.WorkerPrivateEvent_FileTabPathRegistered{
 				FileTabPathRegistered: &leapmuxv1.FileTabPathRegistered{
-					TabId:    r.TabID,
-					FilePath: r.FilePath,
+					TabId:      r.TabID,
+					FilePath:   r.FilePath,
+					WorkingDir: r.WorkingDir,
 				},
 			},
 		})
@@ -238,11 +314,13 @@ func (s *FileTabPathStore) SnapshotForOwner(ctx context.Context, owner userid.Us
 	return out, nil
 }
 
-// RegisterFileTabPathParams is the input shape for Register.
+// RegisterFileTabPathParams is the input shape for Register. WorkingDir is
+// optional; see resolveFileTabWorkingDir for what an empty one resolves to.
 type RegisterFileTabPathParams struct {
-	UserID   string
-	TabID    string
-	FilePath string
+	UserID     string
+	TabID      string
+	FilePath   string
+	WorkingDir string
 }
 
 // ErrFileTabPathNotFound is returned when the requested tab has no

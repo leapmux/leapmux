@@ -128,7 +128,10 @@ test.describe('Workspace UX Enhancements', () => {
       }
       await expect(page.locator('[data-testid="tab"]')).toHaveCount(0)
 
-      // Click the new terminal button — should open dialog, not show a toast
+      // Click the button DIRECTLY, not through `openTerminalViaUI`: that helper
+      // waits for the active tab's working directory, and this test's whole
+      // subject is the no-tab state where there is no such context and the
+      // dialog is the correct answer. Waiting for it here would hang forever.
       await page.locator('[data-testid="new-terminal-button"]').click()
       await expect(page.getByRole('heading', { name: 'New Terminal' })).toBeVisible()
 

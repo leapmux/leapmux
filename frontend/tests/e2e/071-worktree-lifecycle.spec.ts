@@ -324,7 +324,7 @@ test.describe('Worktree Lifecycle', () => {
     expect(inspect.shouldPrompt).toBe(true)
     expect(inspect.hasUncommittedChanges).toBe(true)
 
-    await pushBranchViaAPI(hubUrl, adminToken, workerId, TabType.AGENT, agents[0].id)
+    await pushBranchViaAPI(hubUrl, adminToken, workerId, agents[0].workingDir)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
     const lastMessage = execSync('git log -1 --pretty=%s', { cwd: worktreeDir }).toString().trim()

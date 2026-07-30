@@ -86,9 +86,10 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			agentID := id.Generate()
 			agent.TraceStartupPhase(agentID, "handler_begin")
 
-			workingDir := expandTilde(r.GetWorkingDir())
-			if workingDir == "" {
-				workingDir = svc.HomeDir
+			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir)
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
 			}
 
 			// Validate git-mode options on the sync path so bad input (invalid
@@ -974,16 +975,10 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// error to retry from.
 	registerOwnerGatedStream(d, "WatchWorkerPrivateEvents",
 		func(_ context.Context, caller userid.UserID, _ *leapmuxv1.WatchWorkerPrivateEventsRequest, sender channel.ResponseWriter) {
-			if svc.PrivateEvents == nil {
-				return
-			}
 			_ = svc.PrivateEvents.SnapshotAndSubscribe(
 				bgCtx(),
 				caller,
 				func(owner userid.UserID) []*leapmuxv1.WorkerPrivateEvent {
-					if svc.FileTabPaths == nil {
-						return nil
-					}
 					snapshot, err := svc.FileTabPaths.SnapshotForOwner(bgCtx(), owner)
 					if err != nil {
 						return nil
@@ -1010,12 +1005,21 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				sendInvalidArgument(sender, "tab_id, file_path are required")
 				return
 			}
-			if svc.FileTabPaths == nil {
-				sendInternalError(sender, "file tab path store unavailable")
-				return
-			}
 			if err := svc.FileTabPaths.Register(bgCtx(), RegisterFileTabPathParams{
-				UserID: userID.String(), TabID: r.GetTabId(), FilePath: r.GetFilePath(),
+				UserID:   userID.String(),
+				TabID:    r.GetTabId(),
+				FilePath: r.GetFilePath(),
+				// Passed through raw: an empty working_dir is the documented
+				// "no originating tab" case, and judging a non-empty one is the
+				// store's job, not this handler's. `normalizeWorkingDir` does
+				// both there -- fills the empty case from the file's own
+				// directory, and REFUSES a relative one, because `git -C` reads
+				// a relative path against the worker process's cwd and would
+				// quietly answer for the wrong repository rather than fail. A
+				// bogus but absolute dir is left to degrade the way a deleted
+				// working dir does: the git probes fail and the close path
+				// takes its tolerant branch.
+				WorkingDir: r.GetWorkingDir(),
 			}); err != nil {
 				sendInternalError(sender, err.Error())
 				return
@@ -1031,14 +1035,10 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			sendInvalidArgument(sender, "tab_id is required")
 			return
 		}
-		if svc.FileTabPaths == nil {
-			sendInternalError(sender, "file tab path store unavailable")
-			return
-		}
 		// The lookup binds the caller as half the (user_id, tab_id) key, so a
 		// tab id another user minted resolves to NOT_FOUND rather than to
 		// their row -- which is the whole reason the store is owner-keyed.
-		path, err := svc.FileTabPaths.Get(ctx, userID.String(), r.GetTabId())
+		loc, err := svc.FileTabPaths.Get(ctx, userID.String(), r.GetTabId())
 		if err != nil {
 			if errors.Is(err, ErrFileTabPathNotFound) {
 				sendNotFoundError(sender, "file tab path not found")
@@ -1047,7 +1047,10 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			sendInternalError(sender, err.Error())
 			return
 		}
-		sendProtoResponse(sender, &leapmuxv1.GetFileTabPathResponse{FilePath: path})
+		sendProtoResponse(sender, &leapmuxv1.GetFileTabPathResponse{
+			FilePath:   loc.FilePath,
+			WorkingDir: loc.WorkingDir,
+		})
 	})
 
 	// RevokeFileTabPath deletes the (tab_id -> path) row and runs the
@@ -1061,10 +1064,6 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerOwnerGated(d, "RevokeFileTabPath", dispatchTracked, func(_ context.Context, userID userid.UserID, r *leapmuxv1.RevokeFileTabPathRequest, sender channel.ResponseWriter) {
 		if r.GetTabId() == "" {
 			sendInvalidArgument(sender, "tab_id is required")
-			return
-		}
-		if svc.FileTabPaths == nil {
-			sendInternalError(sender, "file tab path store unavailable")
 			return
 		}
 		// Drive the shared closeTabCommon flow so the worktree-tab link

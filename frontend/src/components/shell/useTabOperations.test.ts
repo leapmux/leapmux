@@ -163,17 +163,54 @@ describe('useTabOperations', () => {
   })
 
   describe('file-tab E2EE worker round-trip', () => {
-    it('handleFileOpen calls RegisterFileTabPath with the local path', async () => {
+    it('handleFileOpen calls RegisterFileTabPath with the local path and the originating tab\'s working dir', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
-          ops.handleFileOpen('/tmp/myfile.go')
+          ops.handleFileOpen('/tmp/nested/myfile.go')
           // Allow the fire-and-forget E2EE call to dispatch.
           await Promise.resolve()
           expect(mockRegisterFileTabPath).toHaveBeenCalledTimes(1)
           const [workerId, req] = mockRegisterFileTabPath.mock.calls[0]
           expect(workerId).toBe('w-1')
-          expect((req as { filePath: string }).filePath).toBe('/tmp/myfile.go')
+          // The working dir is the CONTEXT's, not the file's own directory:
+          // it is what the worker answers this tab's branch-context questions
+          // from (last-tab close, sibling scan, push), so it has to name the
+          // repo the user is working in rather than wherever the file sits.
+          expect(req).toMatchObject({
+            filePath: '/tmp/nested/myfile.go',
+            workingDir: '/tmp',
+          })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('handleFileOpen seeds the new tab with the originating tab\'s git group', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view, metadata } = setup()
+          // The active agent knows its repo. Stamp the fields the sidebar
+          // groups on; without the seed the file tab renders ungrouped until
+          // the next git-status refresh reaches it.
+          metadata.patch('agent-a', {
+            workingDir: '/tmp',
+            gitBranch: 'feature',
+            gitOriginUrl: 'https://example.com/o/r.git',
+            gitToplevel: '/tmp',
+            gitIsWorktree: false,
+          })
+          ops.handleFileOpen('/tmp/myfile.go')
+          const opened = view.forWorkspace('ws-test').find(t => t.type === TabType.FILE)
+          expect(opened).toMatchObject({
+            gitBranch: 'feature',
+            gitOriginUrl: 'https://example.com/o/r.git',
+            gitToplevel: '/tmp',
+            gitIsWorktree: false,
+            workingDir: '/tmp',
+          })
         }
         finally {
           dispose()
