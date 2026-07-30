@@ -19,11 +19,11 @@ import (
 
 func TestListAgents_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	svc, d, w := setupTestService(t)
 
 	for _, id := range []string{"a1", "a2", "a3"} {
 		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-			ID: id, WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+			ID: id, WorkingDir: "/tmp", HomeDir: "/tmp",
 		}))
 	}
 
@@ -40,7 +40,7 @@ func TestListAgents_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 }
 
 func TestListAgents_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
-	_, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	_, d, w := setupTestService(t)
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{},
@@ -53,7 +53,7 @@ func TestListAgents_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
 }
 
 func TestListAgents_NonexistentIDs_ReturnsEmpty(t *testing.T) {
-	_, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	_, d, w := setupTestService(t)
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{"nonexistent-1", "nonexistent-2"},
@@ -67,12 +67,12 @@ func TestListAgents_NonexistentIDs_ReturnsEmpty(t *testing.T) {
 
 func TestListAgents_ClosedTabsFiltered(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
-	require.NoError(t, svc.Queries.CloseAgent(ctx, "a1"))
+	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "a1")))
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
 		TabIds: []string{"a1"},
@@ -86,13 +86,13 @@ func TestListAgents_ClosedTabsFiltered(t *testing.T) {
 
 func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a2", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "a2", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
@@ -105,95 +105,15 @@ func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
 	assert.Len(t, resp.GetAgents(), 2)
 }
 
-func TestListAgents_AccessibleWorkspaceAllowed(t *testing.T) {
-	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
-
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
-	}))
-
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
-		TabIds: []string{"a1"},
-	}, w)
-
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ListAgentsResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.Len(t, resp.GetAgents(), 1, "agent in accessible workspace should be returned")
-}
-
-func TestListAgents_InaccessibleWorkspaceDenied(t *testing.T) {
-	ctx := context.Background()
-	// Channel only has access to ws-A.
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
-
-	// Agent is in ws-B (not accessible).
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a1", WorkspaceID: "ws-B", WorkingDir: "/tmp", HomeDir: "/tmp",
-	}))
-
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
-		TabIds: []string{"a1"},
-	}, w)
-
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ListAgentsResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetAgents(), "agent in inaccessible workspace should be filtered out")
-}
-
-func TestListAgents_MixedAccess(t *testing.T) {
-	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
-
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
-	}))
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a2", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
-	}))
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a3", WorkspaceID: "ws-B", WorkingDir: "/tmp", HomeDir: "/tmp",
-	}))
-
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
-		TabIds: []string{"a1", "a2", "a3"},
-	}, w)
-
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ListAgentsResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.Len(t, resp.GetAgents(), 2, "only agents in ws-A should be returned")
-}
-
-func TestListAgents_NoAccessibleWorkspaceSetDenied(t *testing.T) {
-	ctx := context.Background()
-	svc, d, w := setupTestService(t)
-
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
-	}))
-
-	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
-		TabIds: []string{"a1"},
-	}, w)
-
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ListAgentsResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetAgents(), "a nil accessible-workspace set must fail closed")
-}
-
 // --- ListTerminals by IDs ---
 
 func TestListTerminals_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	svc, d, w := setupTestService(t)
 
 	for _, id := range []string{"t1", "t2", "t3"} {
 		require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-			ID: id, WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+			ID: id, WorkingDir: "/tmp", HomeDir: "/tmp",
 			Cols: 80, Rows: 24, Screen: []byte("screen"),
 		}))
 	}
@@ -211,7 +131,7 @@ func TestListTerminals_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 }
 
 func TestListTerminals_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
-	_, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	_, d, w := setupTestService(t)
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{},
@@ -224,7 +144,7 @@ func TestListTerminals_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
 }
 
 func TestListTerminals_NonexistentIDs_ReturnsEmpty(t *testing.T) {
-	_, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	_, d, w := setupTestService(t)
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"nonexistent"},
@@ -248,7 +168,7 @@ func TestListTerminals_NonexistentIDs_ReturnsEmpty(t *testing.T) {
 // already fails the call on the same error; this asserts ListTerminals does
 // too.
 func TestListTerminals_DBReadFailure_ErrorsRatherThanStampingAbsent(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	svc, d, w := setupTestService(t)
 
 	// Closing the pool is the deterministic way to induce the failure this
 	// handler must survive: a read error on an otherwise well-formed request.
@@ -265,10 +185,10 @@ func TestListTerminals_DBReadFailure_ErrorsRatherThanStampingAbsent(t *testing.T
 
 func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "t1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "t1", WorkingDir: "/tmp", HomeDir: "/tmp",
 		Cols: 80, Rows: 24, Screen: []byte("screen"),
 		ClosedAt: sqltime.SQLiteNullTimeOf(time.Now()),
 	}))
@@ -290,11 +210,11 @@ func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 // against a dead terminal resolves to "caught up" with no replay.
 func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
+	svc, d, w := setupTestService(t)
 
 	screen := []byte("some persisted screen content")
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "t-db", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "t-db", WorkingDir: "/tmp", HomeDir: "/tmp",
 		Cols: 80, Rows: 24, Screen: screen,
 	}))
 
@@ -324,8 +244,8 @@ func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
 // ScreenSnapshotSince read at different moments diverged.
 func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
-	startTestTerminal(t, svc, ctx, "t-live", "ws-A")
+	svc, d, w := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "t-live")
 
 	marker := []byte("live_offset_test_marker")
 	require.True(t, svc.Terminals.AppendOutput("t-live", marker))
@@ -359,8 +279,8 @@ func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 // retained ring.
 func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
-	startTestTerminal(t, svc, ctx, "t-altrefresh", "ws-A")
+	svc, d, w := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "t-altrefresh")
 	fillerLen := injectAltScreenAndFlushPastRing(t, svc, "t-altrefresh")
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
@@ -383,52 +303,12 @@ func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	assert.Equal(t, int64(len("\x1b[?1049h")+fillerLen), ti.GetScreenEndOffset(),
 		"screen_end_offset reflects total PTY bytes, not screen-payload length (which includes the synthesized prefix)")
 }
-
-func TestListTerminals_InaccessibleWorkspaceDenied(t *testing.T) {
-	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
-
-	// Terminal in inaccessible workspace.
-	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "t1", WorkspaceID: "ws-B", WorkingDir: "/tmp", HomeDir: "/tmp",
-		Cols: 80, Rows: 24, Screen: []byte("screen"),
-	}))
-
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
-		TabIds: []string{"t1"},
-	}, w)
-
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ListTerminalsResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetTerminals(), "terminal in inaccessible workspace should be filtered out")
-}
-
-func TestListTerminals_NoAccessibleWorkspaceSetDenied(t *testing.T) {
+func TestWatchEvents_ListAgentsByIDsErrorReturnsInternalStreamError(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
-	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: "t1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
-		Cols: 80, Rows: 24, Screen: []byte("screen"),
-	}))
-
-	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
-		TabIds: []string{"t1"},
-	}, w)
-
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ListTerminalsResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.Empty(t, resp.GetTerminals(), "a nil accessible-workspace set must fail closed")
-}
-
-func TestWatchEvents_ListAgentsByIDsErrorReturnsInternalStreamError(t *testing.T) {
-	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-A"))
-
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "a1", WorkspaceID: "ws-A", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "FROM agents WHERE id IN"})
 

@@ -363,8 +363,12 @@ func (m *Manager) ClearContext(agentID string) (string, bool) {
 	return p.ClearContext()
 }
 
-// defaultModelForList resolves which model id should carry the IsDefault badge
-// for this (possibly account-specific) list. Priority:
+// defaultModelIDForList resolves which model id should carry the default badge for a
+// (possibly account-specific) model list, given the list's ids, the id the list already
+// designates as default (marked) and the highest-preference entry present (first) --
+// both "" when the list designates none. It is the ONE place the badge ladder lives;
+// withModelGroupDefaultMarked reduces the projected "model" option group to these three
+// arguments on every OptionGroups read. Priority:
 //  1. The explicit LEAPMUX_*_DEFAULT_MODEL operator override.
 //  2. A provider-reported default the list itself designates -- for Claude Code
 //     this is the CLI's DefaultModelSentinel ("default") entry, which tracks the
@@ -375,27 +379,11 @@ func (m *Manager) ClearContext(agentID string) (string, bool) {
 //     sentinel), fall back to the highest-preference entry present so the picker
 //     still shows a badge.
 //
-// Returning "" means "don't touch the list's existing badges": that's the case
-// for a provider with no configured default at all (ACP providers registered with
-// nil defaultModels, which self-mark the currently-selected model in
-// buildACPModels). The step-3 fallback is gated on a non-empty configured default
-// precisely so it doesn't clobber that per-agent marking.
-func defaultModelForList(models []*ModelInfo, provider leapmuxv1.AgentProvider) string {
-	ids := make([]string, 0, len(models))
-	for _, m := range models {
-		if m != nil {
-			ids = append(ids, m.Id)
-		}
-	}
-	return defaultModelIDForList(ids, markedModelID(models), firstModelID(models), provider)
-}
-
-// defaultModelIDForList runs the default-model badge ladder over a plain id list plus the id
-// the list already flags as default (marked) and the highest-preference entry present (first),
-// both "" when the list designates none. The ModelInfo catalog (defaultModelForList) and the
-// projected "model" option group (withModelGroupDefaultMarked) each reduce to this, so the
-// ladder lives in ONE place and the hot OptionGroups read path skips a proto<->ModelInfo
-// round-trip. See defaultModelForList for the priority rationale.
+// Returning "" means "don't touch the list's existing default": that's the case for a
+// provider with no configured default at all (ACP providers registered with nil
+// defaultModels, which self-mark the currently-selected model in buildACPModels). The
+// step-3 fallback is gated on a non-empty configured default precisely so it doesn't
+// clobber that per-agent marking.
 func defaultModelIDForList(ids []string, marked, first string, provider leapmuxv1.AgentProvider) string {
 	if env := DefaultModelEnvOverride(provider); env != "" {
 		// Honor the operator override only when it actually names a model in this
@@ -404,8 +392,8 @@ func defaultModelIDForList(ids []string, marked, first string, provider leapmuxv
 		// qualified "claude-opus-4-8[1m]" against the catalog's "opus[1m]", or a
 		// model the account simply doesn't offer -- falls through to the rest of
 		// the ladder so the picker still shows a default badge. Returning an absent
-		// id unconditionally would make withDefaultModelMarked clear IsDefault from
-		// every entry (none match) and badge nothing.
+		// id unconditionally would leave withModelGroupDefaultMarked pointing the
+		// group's DefaultValue at an id none of its options carry, badging nothing.
 		//
 		// This step outranks the sentinel (step 2) deliberately: an explicit operator
 		// override naming the account's resolved concrete model (which
@@ -463,66 +451,6 @@ func matchModelID(ids []string, provider leapmuxv1.AgentProvider, id string) str
 		}
 	}
 	return ""
-}
-
-// markedModelID returns the id of the first model already flagged IsDefault, or ""
-// if none is. firstModelID returns the id of the first non-nil model, or "". Both
-// tolerate nil-bearing slices (the catalogs are treated as possibly nil-bearing).
-func markedModelID(models []*ModelInfo) string {
-	for _, m := range models {
-		if m != nil && m.IsDefault {
-			return m.Id
-		}
-	}
-	return ""
-}
-
-func firstModelID(models []*ModelInfo) string {
-	for _, m := range models {
-		if m != nil {
-			return m.Id
-		}
-	}
-	return ""
-}
-
-func withDefaultModelMarked(models []*ModelInfo, provider leapmuxv1.AgentProvider) []*ModelInfo {
-	if len(models) == 0 {
-		return nil
-	}
-
-	defaultModel := defaultModelForList(models, provider)
-	if defaultModel == "" {
-		return models
-	}
-
-	// Fast path: if every model already has the correct IsDefault, reuse the input.
-	needsCopy := false
-	for _, model := range models {
-		if model != nil && model.IsDefault != (model.Id == defaultModel) {
-			needsCopy = true
-			break
-		}
-	}
-	if !needsCopy {
-		return models
-	}
-
-	out := make([]*ModelInfo, len(models))
-	for i, model := range models {
-		if model == nil {
-			continue
-		}
-		shouldBeDefault := model.Id == defaultModel
-		if model.IsDefault == shouldBeDefault {
-			out[i] = model
-		} else {
-			c := model.clone()
-			c.IsDefault = shouldBeDefault
-			out[i] = c
-		}
-	}
-	return out
 }
 
 // OptionGroups returns every configuration axis for an agent as config option
@@ -806,8 +734,8 @@ func withModelGroupDefaultMarked(groups []*leapmuxv1.AvailableOptionGroup, provi
 	}
 	// The group's existing DefaultValue is the already-designated default (the option flagged
 	// default), but only when it is actually one of the options; ids[0] is the highest-
-	// preference present entry. This mirrors the markedModelID/firstModelID reduction
-	// defaultModelForList performs on a ModelInfo catalog, without allocating throwaway ModelInfos.
+	// preference present entry. Reducing the group to these three ids is what lets the hot
+	// OptionGroups read path share the ladder without a proto<->ModelInfo round-trip.
 	marked := ""
 	if slices.Contains(ids, mg.GetDefaultValue()) {
 		marked = mg.GetDefaultValue()

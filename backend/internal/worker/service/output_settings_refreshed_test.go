@@ -50,11 +50,10 @@ func (s settingsSeed) options() string {
 func newRefreshTestFixture(t *testing.T, seed settingsSeed) refreshTestFixture {
 	t.Helper()
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -494,12 +493,11 @@ func TestPersistSettingsRefresh_ClearsExtraWithEmptyValue(t *testing.T) {
 // must never wipe the persisted one.
 func TestPersistCatalogIfChanged(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	const copilot = leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: copilot,

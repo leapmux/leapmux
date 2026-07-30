@@ -65,13 +65,6 @@ type channelSession struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	reassembly *reassembler // per-channel chunk-reassembly state machine (see chunker.go)
-	// accessibleWorkspaceIDs is mutated AFTER channel open (CreateWorkspace
-	// adds entries on demand) while WatchEvents and other handlers
-	// concurrently read the same set on every event broadcast. Guard the
-	// map under awsMu — Manager.mu only protects the sessions registry,
-	// not the inner per-session map.
-	awsMu                  sync.RWMutex
-	accessibleWorkspaceIDs map[string]bool // workspaces the user can access (set from ChannelOpenRequest)
 	// lastRekeyAt is the handshake time until the first successful in-band
 	// rekey, then the time of the latest accepted rekey. Captured via
 	// time.Now(); Go embeds a monotonic reading so MinRekeyInterval checks
@@ -248,12 +241,11 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 	// not an anonymous caller -- it is the Hub failing to say who this is, which it
 	// has no legitimate path to do. Refuse rather than install a session with one.
 	//
-	// A session's UserID is the only identity the workspace-scoped families (agent,
-	// terminal, tab moves, cleanup) ever see, and they gate on the Hub-supplied
-	// accessible-workspace set rather than on the id -- so an empty one is not
-	// self-limiting there the way it is for the machine-scoped families, which
-	// requireWorkerOwner separately fails closed on. It would simply run as nobody,
-	// and every audit line for the session would record nobody.
+	// A session's UserID is the ONLY thing scoping every handler on this channel:
+	// requireWorkerOwner matches it against the Worker's registrant, and the
+	// owner-scoped stores (worker_file_tabs, worktree_tabs) bind it as half their
+	// key. An empty one would simply run as nobody -- denied by requireWorkerOwner
+	// but reaching no row either way, with every audit line recording nobody.
 	//
 	// This is the fourth boundary of this handshake, and the same rule the other
 	// three already apply: requireWorkerOwner refuses an empty identity on either
@@ -323,12 +315,6 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		)
 	}
 
-	// Build accessible workspace ID set from the Hub-provided list.
-	awsIDs := make(map[string]bool, len(req.GetAccessibleWorkspaceIds()))
-	for _, wsID := range req.GetAccessibleWorkspaceIds() {
-		awsIDs[wsID] = true
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 
 	m.mu.Lock()
@@ -367,13 +353,12 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 			lifetime:       ctx,
 			errorSends:     make(chan errorSend, errorSendQueueSize),
 		},
-		ctx:                    ctx,
-		cancel:                 cancel,
-		reassembly:             newReassembler(reassembledMax, m.maxIncompleteChunked),
-		accessibleWorkspaceIDs: awsIDs,
-		lastRekeyAt:            time.Now(),
-		compositeKey:           m.compositeKey,
-		encryptionMode:         m.encryptionMode,
+		ctx:            ctx,
+		cancel:         cancel,
+		reassembly:     newReassembler(reassembledMax, m.maxIncompleteChunked),
+		lastRekeyAt:    time.Now(),
+		compositeKey:   m.compositeKey,
+		encryptionMode: m.encryptionMode,
 	}
 	m.sessions[req.GetChannelId()] = sess
 	// Observe while still holding m.mu so HandleClose cannot Release
@@ -403,7 +388,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 
 // getSession looks up a channel's session under the manager's read lock and
 // releases the lock before returning, so callers hold only the per-session
-// locks (awsMu, the reassembler's implicit single-goroutine access) while they
+// state (the reassembler's implicit single-goroutine access) while they
 // act on it. It is the one place the "RLock, look up m.sessions, RUnlock, bail
 // on miss" contract lives, so a new read-side Manager method cannot get the
 // locking subtly wrong. HandleClose is the deliberate exception: it takes the
@@ -413,58 +398,6 @@ func (m *Manager) getSession(channelID string) (*channelSession, bool) {
 	defer m.mu.RUnlock()
 	sess, ok := m.sessions[channelID]
 	return sess, ok
-}
-
-// AccessibleWorkspaceIDs returns the set of workspace IDs accessible to the
-// user on the given channel. Returns nil if the channel is not found.
-//
-// Returns a defensive copy: AddAccessibleWorkspaceID mutates the underlying
-// map and we can't hand a live map reference to callers under nothing but
-// an RLock — once they release it, a concurrent Add would race their next
-// iteration. Callers iterate the result without further synchronisation.
-//
-// Prefer IsWorkspaceAccessible for a single membership check: it does one map
-// lookup under the RLock with no copy, where this method allocates and copies
-// the whole set, which the per-RPC access gates used to do on every request.
-func (m *Manager) AccessibleWorkspaceIDs(channelID string) map[string]bool {
-	sess, ok := m.getSession(channelID)
-	if !ok {
-		return nil
-	}
-	sess.awsMu.RLock()
-	defer sess.awsMu.RUnlock()
-	out := make(map[string]bool, len(sess.accessibleWorkspaceIDs))
-	for id, v := range sess.accessibleWorkspaceIDs {
-		out[id] = v
-	}
-	return out
-}
-
-// IsWorkspaceAccessible reports whether workspaceID is in the channel's
-// accessible set, with a single map lookup and no copy. It is the per-RPC
-// membership check the access gates (requireAccessibleWorkspace and friends)
-// call on virtually every workspace-scoped request, so it must stay O(1).
-func (m *Manager) IsWorkspaceAccessible(channelID, workspaceID string) bool {
-	sess, ok := m.getSession(channelID)
-	if !ok {
-		return false
-	}
-	sess.awsMu.RLock()
-	defer sess.awsMu.RUnlock()
-	return sess.accessibleWorkspaceIDs[workspaceID]
-}
-
-// AddAccessibleWorkspaceID adds a workspace ID to the channel's accessible
-// set. This is needed when a workspace is created after the channel was
-// opened, so that subsequent WatchEvents calls can see the new workspace.
-func (m *Manager) AddAccessibleWorkspaceID(channelID, workspaceID string) {
-	sess, ok := m.getSession(channelID)
-	if !ok {
-		return
-	}
-	sess.awsMu.Lock()
-	sess.accessibleWorkspaceIDs[workspaceID] = true
-	sess.awsMu.Unlock()
 }
 
 // HandleMessage processes an encrypted ChannelMessage from the Hub.

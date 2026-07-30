@@ -22,7 +22,7 @@ func RunAgentSendControlResponse(rawCtx any, args []string) error {
 			}
 			return nil
 		},
-		body: func(ctx context.Context, c *remote.Client, workerID, agentID, _ string) error {
+		body: func(ctx context.Context, c *remote.Client, workerID, agentID string) error {
 			if err := callInnerRPC(ctx, c, workerID, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
 				AgentId: agentID,
 				Content: []byte(content),

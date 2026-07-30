@@ -5,6 +5,7 @@ package remoteipc
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -46,6 +47,32 @@ func TestStreamCollector_TerminalFrameFinishesTheStream(t *testing.T) {
 		}
 		require.Error(t, c.err)
 		assert.Contains(t, c.err.Error(), "not found", "the reason must reach the caller")
+	})
+
+	t.Run("a clean end frame reports its delivery failure, like SendResponse does", func(t *testing.T) {
+		// The asymmetry this pins: SendResponse assigned onMsg's error straight to
+		// its terminal outcome, while SendStream looked only at IsError -- so a
+		// clean End frame whose delivery FAILED settled as success and the caller
+		// was told the stream completed. Which of two equivalent reply shapes the
+		// handler happened to use decided the outcome.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		sendErr := errors.New("connect stream send failed")
+		c := newStreamCollector(ctx, "stream-1", func(*leapmuxv1.StreamInnerEnvelope) error { return sendErr })
+
+		// The handler still learns of it via the return value...
+		require.Error(t, c.SendStream(&leapmuxv1.InnerStreamMessage{End: true}))
+
+		waited := make(chan struct{})
+		go func() { defer close(waited); c.wait() }()
+		select {
+		case <-waited:
+		case <-time.After(2 * time.Second):
+			t.Fatal("a clean end frame did not terminate the stream")
+		}
+		// ...and so does the CALLER, which is what was missing.
+		require.Error(t, c.err, "a delivery failure on a clean End frame must not settle as success")
+		assert.Contains(t, c.err.Error(), "connect stream send failed")
 	})
 
 	t.Run("an end frame finishes without an error", func(t *testing.T) {

@@ -16,7 +16,6 @@ import { formatErrorMessage } from '~/lib/errors'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
 
 interface NewTerminalDialogProps {
-  workspaceId: string
   defaultWorkerId?: string
   defaultWorkingDir?: string
   onCreated: (terminalId: string, workerId: string, workingDir: string, title: string) => void
@@ -38,7 +37,7 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
       const id = worker.workerId()
       if (!id)
         return null
-      return { workspaceId: props.workspaceId, workerId: id }
+      return { workerId: id }
     },
     err => setError(formatErrorMessage(err, 'Failed to load shells')),
   )
@@ -58,7 +57,6 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
 
   const submitDisabled = () => isTerminalCreateDisabled({
     submitting: submitting.loading(),
-    workspaceId: props.workspaceId,
     workerId: worker.workerId(),
     workingDir: worker.workingDir(),
     shell: shell(),
@@ -67,7 +65,6 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
 
   const handleSubmit = formHandler(submitDisabled, async () => {
     const resp = await workerRpc.openTerminal(worker.workerId(), {
-      workspaceId: props.workspaceId,
       cols: DEFAULT_TERMINAL_COLS,
       rows: DEFAULT_TERMINAL_ROWS,
       workingDir: worker.workingDir(),

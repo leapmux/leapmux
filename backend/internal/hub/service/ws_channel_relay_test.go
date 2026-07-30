@@ -439,7 +439,6 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
 		WorkerID:         workerID,
-		WorkspaceID:      workspaceID,
 		IssuedForTabID:   "tab-1",
 		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		SecretHash:       tv.HashSecret(secret),
@@ -453,7 +452,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	scopedChannelID := id.Generate()
 	cm.RegisterWithAuthInfo(unscopedChannelID, workerID, userID, channelmgr.AuthInfo{}, nil)
 	cm.RegisterWithAuthInfo(scopedChannelID, workerID, userID, channelmgr.AuthInfo{
-		Credential: auth.DelegationCredential(tokenID, workspaceID, workerID),
+		Credential: auth.DelegationCredential(tokenID, workerID),
 	}, nil)
 
 	workerMsgs := make(chan *leapmuxv1.ConnectResponse, 4)

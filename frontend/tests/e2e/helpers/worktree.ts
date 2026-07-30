@@ -3,6 +3,7 @@ import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import {
+  AgentStatus,
   CloseAgentRequestSchema,
   CloseAgentResponseSchema,
   ListAgentsRequestSchema,
@@ -110,14 +111,18 @@ export async function createWorkspaceWithWorktreeViaAPI(
     worktreeBranch,
   })
 
-  // OpenAgent now returns synchronously with status=STARTING and the
-  // worktree is created asynchronously during phased startup (#194).
-  // Tests expect `existsSync(worktreeDir)` to be true immediately
-  // after this helper returns, so wait until the worker has actually
-  // materialized the worktree on disk. The path matches the worker's
-  // worktree placement convention: `<dirname(workingDir)>/<basename(workingDir)>-worktrees/<branch>`.
-  const parent = dirname(realpathSync(workingDir))
-  const expectedWorktreeDir = join(parent, `${basename(workingDir)}-worktrees`, worktreeBranch)
+  // OpenAgent returns synchronously with status=STARTING and the worktree is
+  // created asynchronously during phased startup (#194). Tests expect
+  // `existsSync(worktreeDir)` to be true immediately after this helper returns,
+  // so wait until the worker has actually materialized it on disk.
+  //
+  // The path is anchored on the MAIN REPO ROOT, matching the worker's placement
+  // convention. Deriving it from `workingDir` (as this did) is wrong whenever the
+  // working dir is itself a linked worktree: the worker still places the new
+  // worktree beside the main repo, so the helper waited out its full timeout on a
+  // path that never appears.
+  const repoRoot = mainRepoRoot(workingDir)
+  const expectedWorktreeDir = join(dirname(repoRoot), `${basename(repoRoot)}-worktrees`, worktreeBranch)
   const deadline = Date.now() + 30_000
   while (!existsSync(expectedWorktreeDir)) {
     if (Date.now() > deadline) {
@@ -132,6 +137,67 @@ export async function createWorkspaceWithWorktreeViaAPI(
 }
 
 /**
+ * The MAIN repository's root for `dir`, even when `dir` is a linked worktree.
+ *
+ * `--show-toplevel` would answer the worktree's own root, which is exactly the
+ * trap this exists to avoid. `--git-common-dir` resolves to the main repo's
+ * `.git` from any worktree, so its parent is the main root.
+ */
+function mainRepoRoot(dir: string): string {
+  const commonDir = execSync('git rev-parse --path-format=absolute --git-common-dir', { cwd: dir })
+    .toString()
+    .trim()
+  return realpathSync(dirname(commonDir))
+}
+
+/**
+ * Wait until the workspace holds `expectedCount` agents and none is still
+ * AGENT_STATUS_STARTING.
+ *
+ * `waitForAgentsViaAPI` waits only for an agent to APPEAR, which OpenAgent
+ * satisfies as soon as the DB row exists. The git-mode work (creating a worktree,
+ * checking a branch out) and the `worktree_tabs` registration both happen on the
+ * async startup goroutine AFTER that. So a test that acts on those effects --
+ * reading the branch off disk, or closing a sibling tab and expecting the
+ * worktree to still be referenced -- has to wait for startup, not for arrival.
+ * Reading immediately is a race that fails more often than it passes.
+ */
+export async function waitForAgentStartupViaAPI(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  workspaceId: string,
+  expectedCount = 1,
+  timeoutMs = 30_000,
+  intervalMs = 200,
+): Promise<Array<{ id: string, workingDir: string, status: number, startupError: string }>> {
+  const deadline = Date.now() + timeoutMs
+  while (true) {
+    const agents = await listAgentsViaAPI(hubUrl, token, workerId, workspaceId)
+    // A FAILED startup is terminal, so waiting longer cannot help -- and it is
+    // the interesting case: the git-mode work is what failed, so every
+    // downstream assertion (the worktree exists, the branch is checked out)
+    // would report a confusing false instead of the worker's actual error.
+    const failed = agents.filter(a => a.status === AgentStatus.STARTUP_FAILED)
+    if (failed.length > 0) {
+      throw new Error(
+        `waitForAgentStartupViaAPI: agent startup failed: ${failed.map(a => `${a.id}: ${a.startupError || '(no startup_error reported)'}`).join('; ')}`,
+      )
+    }
+    if (agents.length >= expectedCount && agents.every(a => a.status !== AgentStatus.STARTING)) {
+      return agents
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `waitForAgentStartupViaAPI: ${expectedCount} agent(s) did not finish starting within ${timeoutMs}ms `
+        + `(saw ${JSON.stringify(agents)})`,
+      )
+    }
+    await new Promise(r => setTimeout(r, intervalMs))
+  }
+}
+
+/**
  * Close a terminal via E2EE channel. Pass `worktreeAction` to atomically
  * remove the worktree after the PTY/DB cleanup (REMOVE) or keep it (KEEP).
  */
@@ -139,7 +205,6 @@ export async function closeTerminalViaAPI(
   hubUrl: string,
   token: string,
   workerId: string,
-  workspaceId: string,
   terminalId: string,
   worktreeAction: WorktreeAction = WorktreeAction.KEEP,
 ): Promise<{ worktreePath: string, worktreeId: string, failureMessage: string, failureDetail: string }> {
@@ -149,7 +214,7 @@ export async function closeTerminalViaAPI(
     'CloseTerminal',
     CloseTerminalRequestSchema,
     CloseTerminalResponseSchema,
-    { workspaceId, terminalId, worktreeAction },
+    { terminalId, worktreeAction },
   )
   const result = resp.result
   return {
@@ -202,7 +267,7 @@ export async function waitForAgentsViaAPI(
   workspaceId: string,
   timeoutMs = 15_000,
   intervalMs = 200,
-): Promise<Array<{ id: string, workingDir: string }>> {
+): Promise<Array<{ id: string, workingDir: string, status: number, startupError: string }>> {
   const deadline = Date.now() + timeoutMs
   while (true) {
     const agents = await listAgentsViaAPI(hubUrl, token, workerId, workspaceId)
@@ -226,7 +291,7 @@ export async function listAgentsViaAPI(
   token: string,
   workerId: string,
   workspaceId: string,
-): Promise<Array<{ id: string, workingDir: string }>> {
+): Promise<Array<{ id: string, workingDir: string, status: number, startupError: string }>> {
   // Get tab IDs from the hub's ListTabs endpoint.
   const tabsRes = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
     method: 'POST',
@@ -260,7 +325,7 @@ export async function listAgentsViaAPI(
     // Treat as transient; caller retries via waitForAgentsViaAPI.
     return []
   }
-  return (resp.agents ?? []).map(a => ({ id: a.id, workingDir: a.workingDir }))
+  return (resp.agents ?? []).map(a => ({ id: a.id, workingDir: a.workingDir, status: a.status, startupError: a.startupError }))
 }
 
 /**

@@ -45,7 +45,7 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 		// erroring on the duplicate primary key.
 		ownedRows[0].Position = "a-updated"
 		require.NoError(t, st.WorkspaceTabIndex().BulkUpsertOwned(ctx, ownedRows))
-		row, err := st.WorkspaceTabIndex().GetOwned(ctx, store.GetOwnedTabParams{UserID: owner, WorkspaceID: wsA, TabID: "o1"})
+		row, err := st.WorkspaceTabIndex().GetOwned(ctx, store.GetOwnedTabParams{UserID: owner, TabID: "o1"})
 		require.NoError(t, err)
 		assert.Equal(t, "a-updated", row.Position)
 
@@ -253,19 +253,24 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 		require.Len(t, all, 3)
 
 		row, err := st.WorkspaceTabIndex().GetOwned(ctx, store.GetOwnedTabParams{
-			UserID: ownerA, WorkspaceID: wsA, TabID: sharedTabID,
+			UserID: ownerA, TabID: sharedTabID,
 		})
 		require.NoError(t, err)
 		assert.Equal(t, userA.ID, row.UserID, "GetOwned must return the requesting owner's row")
 		assert.Equal(t, workerA.ID, row.WorkerID,
 			"and with it the requesting owner's worker -- this is what gates a delegation mint")
 
-		workers, err := st.WorkspaceTabIndex().ListDistinctWorkersByWorkspace(ctx, store.ListDistinctWorkersByWorkspaceParams{
+		owned, err := st.WorkspaceTabIndex().ListOwnedTabsByWorkspace(ctx, store.ListOwnedTabsByWorkspaceParams{
 			UserID: ownerA, WorkspaceID: wsA,
 		})
 		require.NoError(t, err)
-		assert.ElementsMatch(t, []string{workerA.ID}, workers,
-			"a workspace delete must not fan out to a stranger's worker")
+		require.Len(t, owned, 1, "a workspace delete must not fan out to a stranger's worker")
+		assert.Equal(t, workerA.ID, owned[0].WorkerID)
+		// The tab identity travels with the worker, which is the reason this
+		// read returns rows rather than a DISTINCT worker projection: the
+		// Worker stores no workspace id, so the cleanup call has to name the
+		// tabs it wants torn down.
+		assert.Equal(t, sharedTabID, owned[0].TabID)
 
 		byWorker, err := st.WorkspaceTabIndex().ListOwnedByWorker(ctx, store.ListOwnedTabsByWorkerParams{
 			UserID: ownerA, WorkerID: workerA.ID,
@@ -279,15 +284,13 @@ func (s *Suite) testWorkspaceTabIndex(t *testing.T) {
 
 		// A zero owner names nobody, so it must read nothing rather than
 		// binding "" and matching every blank-owner row (see OwnerFilter).
-		_, err = st.WorkspaceTabIndex().GetOwned(ctx, store.GetOwnedTabParams{
-			WorkspaceID: wsA, TabID: sharedTabID,
-		})
+		_, err = st.WorkspaceTabIndex().GetOwned(ctx, store.GetOwnedTabParams{TabID: sharedTabID})
 		assert.ErrorIs(t, err, store.ErrNotFound, "an unminted owner owns nothing")
-		blankWorkers, err := st.WorkspaceTabIndex().ListDistinctWorkersByWorkspace(ctx, store.ListDistinctWorkersByWorkspaceParams{
+		blankOwned, err := st.WorkspaceTabIndex().ListOwnedTabsByWorkspace(ctx, store.ListOwnedTabsByWorkspaceParams{
 			WorkspaceID: wsA,
 		})
 		require.NoError(t, err)
-		assert.Empty(t, blankWorkers)
+		assert.Empty(t, blankOwned)
 		blankTabs, err := st.WorkspaceTabIndex().ListOwnedByWorker(ctx, store.ListOwnedTabsByWorkerParams{
 			WorkerID: workerA.ID,
 		})

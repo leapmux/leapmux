@@ -1,13 +1,12 @@
 -- name: CreateDelegationToken :exec
 INSERT INTO delegation_tokens (
-    id, user_id, worker_id, workspace_id, agent_id, terminal_id,
+    id, user_id, worker_id, agent_id, terminal_id,
     issued_for_tab_id, issued_for_tab_type, secret_hash, refresh_hash,
     expires_at, refresh_expires_at, auth_generation
 ) VALUES (
     sqlc.arg(id),
     sqlc.arg(user_id),
     sqlc.arg(worker_id),
-    sqlc.arg(workspace_id),
     sqlc.arg(agent_id),
     sqlc.arg(terminal_id),
     sqlc.arg(issued_for_tab_id),

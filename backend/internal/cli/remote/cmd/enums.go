@@ -141,7 +141,6 @@ func agentInfoToMap(a *leapmuxv1.AgentInfo) map[string]any {
 	groups := a.GetOptionGroups()
 	return map[string]any{
 		"id":               a.GetId(),
-		"workspace_id":     a.GetWorkspaceId(),
 		"title":            a.GetTitle(),
 		"model":            optionids.CurrentValue(groups, optionids.Model),
 		"status":           agentStatusName(a.GetStatus()),

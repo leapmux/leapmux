@@ -464,8 +464,9 @@ func isRecoverableCloseCode(code websocket.StatusCode) bool {
 		// above) reconnects cleanly.
 		websocket.StatusNoStatusRcvd:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // WebSocketCloseDetails converts a WebSocket read result into the close

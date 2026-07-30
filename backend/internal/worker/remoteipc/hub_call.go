@@ -14,9 +14,9 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 )
 
-// HubWorkspaceBridge implements HubBridge by talking to the hub's
+// HubUnaryBridge implements HubBridge by talking to the hub's
 // WorkspaceService, WorkerManagementService, and UserCRDT services over
-// ConnectRPC, authenticated with a per-(user, workspace) delegation-token
+// ConnectRPC, authenticated with a per-user delegation-token
 // bearer.
 //
 // Method dispatch is by bare method name (the "hub." namespace prefix
@@ -24,42 +24,42 @@ import (
 // shared `internal/hubrpc.Registry` — the CLI's `hubCallDirect` walks
 // the same table, so adding a hub method requires editing one entry.
 //
-// **Why per-method dispatch instead of a single transparent proxy?**
-// The bridge is the security boundary that picks the delegation
-// scope, and it has to know which workspace_id to mint against. Some
-// requests carry workspace_id in the payload (GetTab, AddTab, …) and
-// some don't (ListWorkspaces, ListWorkers). Per-method dispatch makes
-// the policy explicit at every call site rather than buried in a
-// generic proxy that would have to introspect the request.
+// **Why a method table instead of a single transparent proxy?**
+// Not for security -- the delegation scope is uniform now (`{UserID}`), and
+// this type never inspects a payload. The table is a TYPING requirement:
+// CallHub receives raw bytes and has to produce a typed Connect call, so it
+// needs each method's request/response constructors and invoker. That is what
+// `hubrpc.Registry` supplies, and sharing it with the CLI's `hubCallDirect`
+// means adding a hub method is one entry rather than two parallel switches.
 //
-// **Why mirror HubWorkspaceStreamer instead of folding both into one
+// **Why mirror HubEventStreamer instead of folding both into one
 // type?** Streaming and unary go through different ConnectRPC code
 // paths (`stream.Receive()` loop vs. unary `Response.Msg`) and pool
 // differently. Sharing a delegation provider + http transport keeps
 // the duplication small while letting each lane evolve independently.
-type HubWorkspaceBridge struct {
+type HubUnaryBridge struct {
 	Delegation crossworker.DelegationProvider
 	HTTPClient *http.Client
 	ConnectURL string
 }
 
-// NewHubWorkspaceBridge returns a bridge that mints delegation
+// NewHubUnaryBridge returns a bridge that mints delegation
 // bearers via dp and forwards unary hub RPCs to hubURL. The transport
-// matches HubWorkspaceStreamer's so both lanes share connection pool
+// matches HubEventStreamer's so both lanes share connection pool
 // behavior over `unix:` / `npipe:` and real HTTPS hubs alike.
-func NewHubWorkspaceBridge(hubURL string, dp crossworker.DelegationProvider) *HubWorkspaceBridge {
+func NewHubUnaryBridge(hubURL string, dp crossworker.DelegationProvider) *HubUnaryBridge {
 	httpClient, connectURL := streamClientForHubURL(hubURL)
-	return &HubWorkspaceBridge{
+	return &HubUnaryBridge{
 		Delegation: dp,
 		HTTPClient: httpClient,
 		ConnectURL: connectURL,
 	}
 }
 
-// CallHub satisfies HubBridge. workspaceID is the delegation scope
-// the router resolved from the IPC request; method is the bare hub
-// method name (e.g. "GetTab", "AddTab", "ListWorkspaces").
-func (b *HubWorkspaceBridge) CallHub(ctx context.Context, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
+// CallHub satisfies HubBridge. method is the bare hub method name (e.g.
+// "GetTab", "AddTab", "ListWorkspaces"); the delegation bearer is minted for
+// userID alone.
+func (b *HubUnaryBridge) CallHub(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error) {
 	if b.Delegation == nil {
 		return nil, errors.New("remoteipc: delegation provider not configured")
 	}
@@ -75,14 +75,7 @@ func (b *HubWorkspaceBridge) CallHub(ctx context.Context, userID userid.UserID, 
 	if err := proto.Unmarshal(payload, in); err != nil {
 		return nil, fmt.Errorf("remoteipc: decode %s request: %w", method, err)
 	}
-	scope := scopeFromRequest(in)
-	if scope == "" {
-		scope = workspaceID
-	}
-	if scope == "" {
-		return nil, fmt.Errorf("remoteipc: %s requires a workspace scope (set --workspace-id or invoke from inside an agent)", method)
-	}
-	bearer, err := b.Delegation.GetBearer(ctx, crossworker.DelegationScope{UserID: userID, WorkspaceID: scope})
+	bearer, err := b.Delegation.GetBearer(ctx, crossworker.DelegationScope{UserID: userID})
 	if err != nil {
 		return nil, fmt.Errorf("delegation bearer: %w", err)
 	}
@@ -90,18 +83,6 @@ func (b *HubWorkspaceBridge) CallHub(ctx context.Context, userID userid.UserID, 
 		return nil, err
 	}
 	return proto.Marshal(out)
-}
-
-// scopeFromRequest pulls the workspace_id field out of a request when
-// the proto carries one. Methods with no workspace_id (ListWorkspaces,
-// CreateWorkspace, ListWorkers) return "" and the caller falls back
-// to the router-supplied scope.
-func scopeFromRequest(in proto.Message) string {
-	type workspaceScoped interface{ GetWorkspaceId() string }
-	if ws, ok := in.(workspaceScoped); ok {
-		return ws.GetWorkspaceId()
-	}
-	return ""
 }
 
 // bearerInterceptor sets `Authorization: Bearer <token>` on every

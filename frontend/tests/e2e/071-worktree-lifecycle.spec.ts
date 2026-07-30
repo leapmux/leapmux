@@ -132,12 +132,12 @@ test.describe('Worktree Lifecycle', () => {
       'OpenTerminal',
       OpenTerminalRequestSchema,
       OpenTerminalResponseSchema,
-      { workspaceId, workerId, cols: 80, rows: 24, workingDir: repoDir, useWorktreePath: worktreeDir },
+      { workerId, cols: 80, rows: 24, workingDir: repoDir, useWorktreePath: worktreeDir },
     )
     const terminalId = termResp2.terminalId
 
     // Close the terminal — agent still holds reference, worktree should persist
-    await closeTerminalViaAPI(hubUrl, adminToken, workerId, workspaceId, terminalId)
+    await closeTerminalViaAPI(hubUrl, adminToken, workerId, terminalId)
     expect(existsSync(worktreeDir)).toBe(true)
 
     // Now close the agent (last tab)
@@ -422,7 +422,12 @@ test.describe('Worktree Lifecycle', () => {
 
     // Dialog appears BEFORE tab closes
     await expect(page.getByRole('heading', { name: 'Close Last Tab' })).toBeVisible()
-    await expect(page.getByRole('dialog').getByText('test-repo-dialog-worktrees/dialog-branch')).toBeVisible()
+    // `.first()`: the dialog renders the worktree path TWICE -- once in the
+    // "You are closing the last tab for worktree <path>." sentence and once in
+    // BranchStatusInfo's "Worktree: <path>" line -- so a bare locator is a
+    // strict-mode violation. Either occurrence proves the dialog is showing
+    // this worktree, which is all this assertion is for.
+    await expect(page.getByRole('dialog').getByText('test-repo-dialog-worktrees/dialog-branch').first()).toBeVisible()
 
     // Dialog should show the branch name
     await expect(page.getByRole('dialog').getByText('dialog-branch', { exact: true })).toBeVisible()

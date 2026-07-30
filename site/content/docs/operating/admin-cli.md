@@ -539,7 +539,7 @@ Delegation tokens are minted by Workers for the agents and terminals they spawn.
 | --- | --- | --- |
 | `--user` | (empty) | User ID; empty walks all users (capped at 1000). |
 
-Columns (tab-aligned): `ID  USER  WORKER  WORKSPACE  AGENT  TERMINAL  CREATED  EXPIRES` (`AGENT`/`TERMINAL` show `-` when empty).
+Columns (tab-aligned): `ID  USER  WORKER  AGENT  TERMINAL  CREATED  EXPIRES  REVOKED` (`AGENT`/`TERMINAL` show `-` when empty).
 
 ### `delegation-token revoke`
 

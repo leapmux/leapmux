@@ -14,13 +14,12 @@ import (
 )
 
 func TestCloseAgent_CancelsPendingSchedules(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 	require.NoError(t, svc.Queries.UpsertAutoContinueSchedule(bgCtx(), db.UpsertAutoContinueScheduleParams{
 		AgentID:       "agent-1",
@@ -44,13 +43,12 @@ func TestCloseAgent_CancelsPendingSchedules(t *testing.T) {
 }
 
 func TestCleanupWorkspace_CancelsPendingSchedules(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/tmp",
 	}))
 	require.NoError(t, svc.Queries.UpsertAutoContinueSchedule(bgCtx(), db.UpsertAutoContinueScheduleParams{
 		AgentID:       "agent-1",
@@ -62,7 +60,9 @@ func TestCleanupWorkspace_CancelsPendingSchedules(t *testing.T) {
 		SourcePayload: []byte{},
 	}))
 
-	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{WorkspaceId: "ws-1"}, w)
+	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{
+		Tabs: []*leapmuxv1.TabRef{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"}},
+	}, w)
 	require.Empty(t, w.errors)
 
 	row, err := svc.Queries.GetAutoContinueSchedule(bgCtx(), db.GetAutoContinueScheduleParams{

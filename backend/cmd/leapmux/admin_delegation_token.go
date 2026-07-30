@@ -44,7 +44,7 @@ func runDelegationTokenList(cmd adminCmdCtx, args []string) error {
 			return classifyListError("list delegation tokens", err)
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-		_, _ = fmt.Fprintln(w, "ID\tUSER\tWORKER\tWORKSPACE\tAGENT\tTERMINAL\tCREATED\tEXPIRES\tREVOKED")
+		_, _ = fmt.Fprintln(w, "ID\tUSER\tWORKER\tAGENT\tTERMINAL\tCREATED\tEXPIRES\tREVOKED")
 		for _, t := range page.Rows {
 			writeDelegationTokenRow(w, t.DelegationToken, ownerLabel(t.OwnerUsername, t.OwnerDeleted))
 		}
@@ -61,8 +61,8 @@ func writeDelegationTokenRow(w *tabwriter.Writer, t store.DelegationToken, userL
 	if t.RevokedAt != nil {
 		revoked = timefmt.Format(*t.RevokedAt)
 	}
-	_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-		t.ID, userLabel, t.WorkerID, t.WorkspaceID,
+	_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		t.ID, userLabel, t.WorkerID,
 		cmp.Or(t.AgentID, "-"), cmp.Or(t.TerminalID, "-"),
 		timefmt.Format(t.CreatedAt), timefmt.Format(t.ExpiresAt), revoked)
 }

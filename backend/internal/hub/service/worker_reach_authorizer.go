@@ -59,9 +59,9 @@ func (a *WorkerReachAuthorizer) AuthorizeWorkerReach(ctx context.Context, user *
 //
 // It is called from AuthorizeWorkerReach rather than from each entrypoint: that is
 // the one place that answers "may this principal reach this worker", so folding the
-// bound into it scopes every worker-directed call -- OpenChannel,
-// GetWorkerHandshakeParams, and PrepareWorkspaceAccess -- and any future one, which
-// now inherits it by construction rather than by remembering to call it. Bolted onto
+// bound into it scopes every worker-directed call -- OpenChannel and
+// GetWorkerHandshakeParams -- and any future one, which now inherits it by
+// construction rather than by remembering to call it. Bolted onto
 // OpenChannel alone it left GetWorkerHandshakeParams -- which asks the identical
 // question one line apart -- still willing to hand a cross-tenant bearer the victim
 // worker's key bundle, live encryption mode, and online status.

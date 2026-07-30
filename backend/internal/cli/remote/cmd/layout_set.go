@@ -365,6 +365,9 @@ func validateAndNormalizeTree(t *targetNode, path string) error {
 			}
 			t.ColRatios = normalized
 		}
+	default:
+		// UNSPECIFIED is rejected by the guard above this switch, so no other
+		// kind reaches here.
 	}
 	for i, child := range t.Children {
 		if err := validateAndNormalizeTree(child, fmt.Sprintf("%s.children[%d]", path, i)); err != nil {
@@ -401,6 +404,9 @@ func appendNodeShapeOps(ops []*leapmuxv1.CrdtOp, bs *CRDTBootstrap, nodeID strin
 		if len(target.ColRatios) > 0 {
 			ops = append(ops, opSetNodeColRatios(bs, nodeID, target.ColRatios))
 		}
+	default:
+		// LEAF has no shape registers to set, and validateTargetNode already
+		// rejected UNSPECIFIED, so the kind op appended above is the whole shape.
 	}
 	return ops
 }

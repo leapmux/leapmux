@@ -40,27 +40,6 @@ func (m *ModelInfo) GetContextWindow() int64 {
 	return m.ContextWindow
 }
 
-// clone returns a deep copy: the SupportedEfforts slice and its *EffortInfo elements
-// are copied too, not aliased. Today callers only re-badge the scalar IsDefault, but a
-// shallow copy would let a future caller that mutates an effort through the clone
-// corrupt the shared static catalog every model with that effort list points at.
-func (m *ModelInfo) clone() *ModelInfo {
-	if m == nil {
-		return nil
-	}
-	c := *m
-	if m.SupportedEfforts != nil {
-		c.SupportedEfforts = make([]*EffortInfo, len(m.SupportedEfforts))
-		for i, e := range m.SupportedEfforts {
-			if e != nil {
-				ec := *e
-				c.SupportedEfforts[i] = &ec
-			}
-		}
-	}
-	return &c
-}
-
 // equal reports whether two model entries carry identical catalog data,
 // including their supported-effort lists. Used to detect a genuine catalog
 // change vs an idempotent re-report.

@@ -32,7 +32,7 @@ func RunAgentSet(rawCtx any, args []string) error {
 			settings.Options = opts
 			return nil
 		},
-		body: func(ctx context.Context, c *remote.Client, workerID, agentID, _ string) error {
+		body: func(ctx context.Context, c *remote.Client, workerID, agentID string) error {
 			resp := &leapmuxv1.UpdateAgentSettingsResponse{}
 			if err := callInnerRPC(ctx, c, workerID, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 				AgentId:  agentID,

@@ -49,7 +49,7 @@ func RunTabList(rawCtx any, args []string) error {
 			req.WorkspaceIds = []string{got.WorkspaceID}
 		}
 		var resp leapmuxv1.ListTabsResponse
-		return hubCallUnaryEmitOn(ctx, c, "ListTabs", got.WorkspaceID, req, &resp, func() any {
+		return hubCallUnaryEmitOn(ctx, c, "ListTabs", req, &resp, func() any {
 			tabs := filterTabsByType(resp.GetTabs(), wantedType)
 			return map[string]any{"tabs": workspaceTabsToList(tabs)}
 		})
@@ -77,7 +77,7 @@ func RunTabGet(rawCtx any, args []string) error {
 			TabType:     got.TabType,
 		}
 		var resp leapmuxv1.GetTabResponse
-		return hubCallUnaryEmitOn(ctx, c, "GetTab", got.WorkspaceID, req, &resp,
+		return hubCallUnaryEmitOn(ctx, c, "GetTab", req, &resp,
 			func() any { return workspaceTabToMap(resp.GetTab()) })
 	})
 }

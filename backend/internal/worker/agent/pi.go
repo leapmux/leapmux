@@ -254,6 +254,9 @@ func (a *PiAgent) SendInput(content string, attachments []*leapmuxv1.Attachment)
 				"data":     base64.StdEncoding.EncodeToString(attachment.data),
 				"mimeType": attachment.mimeType,
 			})
+		case attachmentKindPDF, attachmentKindBinary:
+			// Pi's prompt payload carries text and images only, so the
+			// attachment is omitted rather than sent as junk text.
 		}
 	}
 

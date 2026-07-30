@@ -94,7 +94,6 @@ func openAgentAndAddTab(ctx context.Context, c *remote.Client, w workerCall, arg
 	// Initial option selections (model / effort / permission mode), built once.
 	options := spawnOptions(args.Model, args.Effort, args.PermissionMode)
 	req := &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   args.WorkspaceID,
 		WorkerId:      args.WorkerID,
 		AgentProvider: args.Provider,
 		Options:       options,
@@ -281,7 +280,6 @@ func openTerminalAndAddTab(ctx context.Context, c *remote.Client, w workerCall, 
 	// (terminal.Open). The frontend resizes the PTY as soon as the
 	// user attaches.
 	req := &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId:   args.WorkspaceID,
 		WorkerId:      args.WorkerID,
 		WorkingDir:    args.WorkingDir,
 		Shell:         args.Shell,
@@ -297,8 +295,7 @@ func openTerminalAndAddTab(ctx context.Context, c *remote.Client, w workerCall, 
 	// paying a second Noise_NK handshake for it defeats the hoist.
 	rollback := func() {
 		_ = w.CallEmit(ctx, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{
-			WorkspaceId: args.WorkspaceID,
-			TerminalId:  terminalID,
+			TerminalId: terminalID,
 		}, nil)
 	}
 	resolvedTileID, position, err := addTabToCRDT(ctx, c, args.WorkspaceID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, args.TileID, args.Position, args.WorkerID, rollback)

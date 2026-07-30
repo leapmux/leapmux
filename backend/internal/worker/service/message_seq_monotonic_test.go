@@ -19,9 +19,9 @@ import (
 // could not tell the deleted row from the new one that took its seq.
 func TestMessageSeq_NotReusedAfterTailDelete(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
 	mk := func(id string) int64 {
@@ -63,9 +63,9 @@ func TestMessageSeq_NotReusedAfterTailDelete(t *testing.T) {
 // above a since-deleted tail's freed seq.
 func TestMessageSeq_ReseqUsesHighWater(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: "/tmp", HomeDir: "/tmp",
+		ID: "agent-1", WorkingDir: "/tmp", HomeDir: "/tmp",
 	}))
 
 	mk := func(id string) int64 {

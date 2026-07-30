@@ -20,18 +20,17 @@ import (
 
 func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	workDir := t.TempDir()
 
 	// Create an agent in the DB with a session ID already set
 	// (simulates a previously running agent that established a session).
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  workDir,
-		HomeDir:     t.TempDir(),
-		Options:     marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
+		ID:         "agent-1",
+		WorkingDir: workDir,
+		HomeDir:    t.TempDir(),
+		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
 		AgentSessionID: "old-session-id",
@@ -74,16 +73,15 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 
 func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	// Create an agent with resumed=1 (simulates a resumed session).
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-resumed",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Options:     marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
-		Resumed:     1,
+		ID:         "agent-resumed",
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
+		Resumed:    1,
 	}))
 	// Set a session ID (simulates the init message storing it).
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
@@ -103,15 +101,14 @@ func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
 
 func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	// Create an agent (non-resumed).
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-clear",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Options:     marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
+		ID:         "agent-clear",
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 	}))
 
 	// Simulate agent startup: set initial session ID.
@@ -171,15 +168,14 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 
 func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	// Create a non-resumed agent (simulates opening a fresh tab).
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-idle",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Options:     marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
+		ID:         "agent-idle",
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 	}))
 	// Simulate Claude Code's init message storing a session ID.
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
@@ -218,15 +214,14 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 
 func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Create an agent with a session ID.
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Options:     marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
+		ID:         "agent-1",
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Options:    marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
 		AgentSessionID: "old-session-id",
@@ -259,7 +254,7 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 
 func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// OpenCode is an ACP provider (no model-dependent groups), so a server-driven config option
 	// it surfaces -- like opencode_mode -- is model-independent and lives only in the
@@ -268,7 +263,6 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 	// one by construction.)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
@@ -342,11 +336,10 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 // model switch.
 func TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
@@ -396,11 +389,10 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+			svc, d, w := setupTestService(t)
 
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID:            "agent-1",
-				WorkspaceID:   "ws-1",
 				WorkingDir:    t.TempDir(),
 				HomeDir:       t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -436,11 +428,10 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 // TestUpdateAgentSettings_ModelSwitchEffortBySupport.)
 func TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -483,11 +474,10 @@ func TestUpdateAgentSettings_UnsupportedEffortWithoutModelSwitch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+			svc, d, w := setupTestService(t)
 
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID:            "agent-1",
-				WorkspaceID:   "ws-1",
 				WorkingDir:    t.TempDir(),
 				HomeDir:       t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -520,11 +510,10 @@ func TestUpdateAgentSettings_UnsupportedEffortWithoutModelSwitch(t *testing.T) {
 // until a relaunch clamped it.
 func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -562,11 +551,10 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 // key deletion, so without the sanitize-time skip the persisted option would be silently wiped.
 func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -597,11 +585,11 @@ func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 // it with a stale full-map blob.
 func TestCASPersistAgentOptions_PreservesConcurrentKeyOnRetry(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	stale := marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]"})
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       stale,
 	}))
@@ -629,11 +617,11 @@ func TestCASPersistAgentOptions_PreservesConcurrentKeyOnRetry(t *testing.T) {
 // leave the row diverged from the running agent until the next refresh).
 func TestCASPersistAgentOptions_ReassertsOverConcurrentClear(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	stale := marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"})
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       stale,
 	}))
@@ -659,11 +647,11 @@ func TestCASPersistAgentOptions_ReassertsOverConcurrentClear(t *testing.T) {
 // write and returns the live row as the settled value.
 func TestCASPersistAgentOptions_TrueNoOpAgainstLiveRow(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	row := marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"})
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-1", WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       row,
 	}))
@@ -683,11 +671,10 @@ func TestCASPersistAgentOptions_TrueNoOpAgainstLiveRow(t *testing.T) {
 // didn't change the model at all; the normalized comparison fixes it.
 func TestUpdateAgentSettings_RespelledModelKeepsEffort(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -721,11 +708,10 @@ func TestUpdateAgentSettings_RespelledModelKeepsEffort(t *testing.T) {
 // exercises the second clause (EffortSupportedByModel) rather than the model-switch clause.
 func TestUpdateAgentSettings_AliasedModelKeepsExplicitEffort(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -758,11 +744,10 @@ func TestUpdateAgentSettings_AliasedModelKeepsExplicitEffort(t *testing.T) {
 // leak the raw id; passing the new model rebuilds the effort group and resolves the name.
 func TestUpdateAgentSettings_OfflineEffortLabelUsesNewModelCatalog(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -794,11 +779,10 @@ func TestUpdateAgentSettings_OfflineEffortLabelUsesNewModelCatalog(t *testing.T)
 // settings_changed notification for a change the agent never applies.
 func TestUpdateAgentSettings_DropsForeignSecondaryAxis(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
@@ -847,11 +831,10 @@ func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+			svc, d, w := setupTestService(t)
 
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID:            "agent-1",
-				WorkspaceID:   "ws-1",
 				WorkingDir:    t.TempDir(),
 				HomeDir:       t.TempDir(),
 				AgentProvider: tc.provider,
@@ -878,11 +861,10 @@ func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 // (a declared extra in KnownOptionIDs, not a static well-known axis) is persisted.
 func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -911,11 +893,10 @@ func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 // over-aggressive KnownOptionIDs silently dropping a legitimate setting.
 func TestUpdateAgentSettings_KeepsKnownWellKnownAxis(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -941,11 +922,10 @@ func TestUpdateAgentSettings_KeepsKnownWellKnownAxis(t *testing.T) {
 // For Cursor (no effort axis) the reply carries no effort key.
 func TestUpdateAgentSettings_ResponseCarriesConfirmedOptions(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
@@ -973,12 +953,11 @@ func TestUpdateAgentSettings_ResponseCarriesConfirmedOptions(t *testing.T) {
 // option-group catalog must be broadcast separately after the restart handoff persists it.
 func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, w := setupTestService(t)
 	const agentID = "agent-1"
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -1083,11 +1062,10 @@ func lastSettingsChangedChanges(t *testing.T, w *testResponseWriter) map[string]
 
 func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-opencode",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
@@ -1124,13 +1102,12 @@ func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T
 // notifications include a non-empty old value.
 func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	// Agent created with empty options (like the OpenAgent handler does
 	// when no extraSettings are provided by the frontend).
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-opencode",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
@@ -1180,11 +1157,10 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 // preserved rather than clobbered.
 func TestPersistConfirmedAgentSettings_PreservesConcurrentlyMergedKey(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-cp",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
@@ -1222,11 +1198,10 @@ func TestPersistConfirmedAgentSettings_PreservesConcurrentlyMergedKey(t *testing
 
 func TestPersistConfirmedAgentSettings_PersistsAvailableOptionGroups(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-goose",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
@@ -1310,7 +1285,7 @@ func TestSettleConfirmedOptions_DropsReconciledAwayProviderDefault(t *testing.T)
 // must omit such an axis -- there is no new value to name, and emitting it renders a dangling arrow
 // with a blank target -- while still announcing the genuine model change that caused the drop.
 func TestBuildSettingsChanges_OrphanedAxisNotAnnounced(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	dbAgent := &db.Agent{ID: "agent-1", AgentProvider: claude, OptionGroups: "[]"}
 
@@ -1337,10 +1312,10 @@ func TestBuildSettingsChanges_OrphanedAxisNotAnnounced(t *testing.T) {
 // expected_option_groups guard, which persistConfirmedAgentSettings now uses.
 func TestSetAgentOptionGroupsIfUnchanged_KeepsConcurrentCatalog(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: "agent-cas", WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: "agent-cas", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "auto"}),
 	}))
@@ -1382,7 +1357,7 @@ func seedConfirmedSettingsAgent(t *testing.T, svc *Service, id string, options m
 	t.Helper()
 	ctx := context.Background()
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID: id, WorkspaceID: "ws-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		ID: id, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(options),
 	}))
@@ -1398,7 +1373,7 @@ func seedConfirmedSettingsAgent(t *testing.T, svc *Service, id string, options m
 // columns move together rather than via two separately-observable writes.
 func TestCasPersistConfirmedSettings_AtomicWritePreservesConcurrentKeyAndWritesCatalog(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	priorCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
 		{Id: agent.OptionIDModel, Label: "Model", Options: []*leapmuxv1.AvailableOption{{Id: "opus"}}},
 	})
@@ -1427,7 +1402,7 @@ func TestCasPersistConfirmedSettings_AtomicWritePreservesConcurrentKeyAndWritesC
 // the options but the gated catalog CAS no-ops, keeping the richer catalog rather than clobbering it.
 func TestCasPersistConfirmedSettings_KeepsConcurrentlyDiscoveredRicherCatalog(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	priorCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
 		{Id: agent.OptionIDModel, Label: "Model", Options: []*leapmuxv1.AvailableOption{{Id: "opus"}}},
 	})
@@ -1455,7 +1430,7 @@ func TestCasPersistConfirmedSettings_KeepsConcurrentlyDiscoveredRicherCatalog(t 
 // while the stored catalog is left intact rather than overwritten with a truncated one.
 func TestCasPersistConfirmedSettings_EmptyCatalogParamsLeaveCatalogUntouched(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	priorCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
 		{Id: agent.OptionIDModel, Label: "Model", Options: []*leapmuxv1.AvailableOption{{Id: "opus"}}},
 	})
@@ -1478,7 +1453,7 @@ func TestCasPersistConfirmedSettings_EmptyCatalogParamsLeaveCatalogUntouched(t *
 // never converges. The handoff's richer catalog must still land.
 func TestCasPersistConfirmedSettings_AssertsCatalogWhenIdenticalBlobLandedConcurrently(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	narrowerCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
 		{Id: agent.OptionIDModel, Label: "Model", Options: []*leapmuxv1.AvailableOption{{Id: "sonnet"}}},
 	})
@@ -1510,7 +1485,7 @@ func TestCasPersistConfirmedSettings_AssertsCatalogWhenIdenticalBlobLandedConcur
 // catalog rather than clobbering it with this handoff's own catalog.
 func TestCasPersistConfirmedSettings_KeepsRicherCatalogWhenIdenticalBlobAndCatalogGrewConcurrently(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	priorCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
 		{Id: agent.OptionIDModel, Label: "Model", Options: []*leapmuxv1.AvailableOption{{Id: "opus"}}},
 	})
@@ -1556,11 +1531,10 @@ func TestMarshalOptionGroups_ErrorsRatherThanTruncating(t *testing.T) {
 
 func TestUpdateAgentSettings_BroadcastsGoosePermissionModeLabels(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-goose",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
@@ -1620,11 +1594,10 @@ func TestUpdateAgentSettings_BroadcastsGoosePermissionModeLabels(t *testing.T) {
 // settings-label cache being primed and never renders a raw mode id.
 func TestNotifyPermissionModeChanged_ResolvesLabels(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-goose",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
@@ -1651,11 +1624,10 @@ func TestNotifyPermissionModeChanged_ResolvesLabels(t *testing.T) {
 
 func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -1695,11 +1667,10 @@ func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testin
 // and does NOT eagerly write the DB -- it falls through to the generic raw-forward path.
 func TestSendAgentRawMessage_SetPermissionModeIgnoredForNonClaudeProvider(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -1834,7 +1805,7 @@ func modelOptionGroups(idName ...[2]string) []*leapmuxv1.AvailableOptionGroup {
 // The label must instead resolve against the catalog persisted on the agent row,
 // captured while Opus was still the active model.
 func TestBuildSettingsChanges_OldModelDroppedFromLiveCatalog(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 
 	// Live (post-switch) catalog: relaunched onto Fable, so Opus is gone.
@@ -1887,7 +1858,7 @@ func TestBuildSettingsChanges_OldModelDroppedFromLiveCatalog(t *testing.T) {
 // spurious "Permission Mode (default)" the user never chose. A first set to a NON-default value IS
 // a real choice and is still announced.
 func TestBuildSettingsChanges_SkipsDefaultMaterializationFirstSet(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT // ACP: no model-dependent groups, cache served as-is
 
 	// A catalog whose permissionMode group has DefaultValue "default".

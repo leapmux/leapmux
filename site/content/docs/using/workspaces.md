@@ -93,7 +93,7 @@ To rename a workspace, either:
 - Double-click the workspace row, or
 - Open the row's context menu (the **⋯** button) and choose **Rename**.
 
-The title becomes an inline input pre-filled with the current name. Press **Enter** or click away to commit; press **Escape** to cancel. An empty value cancels the rename. If the rename fails, you will see a **Failed to rename workspace** toast.
+The title becomes an inline input pre-filled with the current name. Press **Enter** or click away to commit; press **Escape** to cancel. An empty value cancels the rename. If the rename fails, the workspace keeps its previous name.
 
 ## Moving and archiving
 
@@ -118,7 +118,7 @@ To delete a workspace, open the workspace context menu and choose **Delete** (sh
 > **Delete workspace**
 > Are you sure you want to delete this workspace? This cannot be undone.
 
-On confirm, the Hub deletes the workspace and tells the Frontend which Workers hosted its tabs; the Frontend then cleans up Worker-side resources for the workspace over the encrypted channel. If the deleted workspace was the active one, LeapMux switches you to your first non-archived workspace (or shows the empty "Create a new workspace…" state if none remain). If deletion fails, you will see a **Failed to delete workspace** toast.
+On confirm, the workspace goes and everything it held is cleaned up: its agents and terminals are stopped, and any worktree the workspace was the last thing referencing is reclaimed shortly afterwards by the Worker's housekeeping pass — unless it holds uncommitted changes or commits no remote has, in which case it is left on disk for you. A Worker that is unreachable at that moment catches up the next time it connects. If the deleted workspace was the active one, LeapMux switches you to your first non-archived workspace (or shows the empty "Create a new workspace…" state if none remain). If deletion fails, the workspace is left in place.
 
 > **Warning:** Deletion is final from your point of view — there is no undelete in the UI.
 
@@ -127,6 +127,8 @@ On confirm, the Hub deletes the workspace and tells the Frontend which Workers h
 Click any workspace row in the sidebar to switch to it. On mobile, this also closes the open sidebar overlay.
 
 Every workspace is live at all times, not just the one on screen — switching is instant because there is nothing to load. A change made on another device to a workspace you are not currently looking at lands right away, so its sidebar row, tab titles and diff badges are already correct when you switch in.
+
+Dragging a tab to another workspace, or closing one, applies immediately and syncs to your other clients. Layout is the Hub's to keep, so a tab whose Worker cannot be reached moves and closes just the same; that Worker catches up on its side — stopping processes, releasing worktrees nothing references — the next time it connects.
 
 Your active workspace is remembered in the browser, per account, so a reload or a fresh visit reopens the one you were last on. If that workspace is gone — deleted from another device, say — LeapMux falls back to the first one in your list rather than showing an error.
 

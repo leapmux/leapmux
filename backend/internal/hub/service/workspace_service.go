@@ -12,7 +12,6 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/nilcheck"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -22,32 +21,26 @@ import (
 // This service owns the workspace metadata table plus read-only tab
 // views fed by the CRDT manager's workspace_tab_rendered index.
 type WorkspaceService struct {
-	store         store.Store
-	registry      *crdt.Registry
-	channelCloser WorkspaceChannelCloser
-}
-
-// WorkspaceChannelCloser removes channels whose worker-side workspace
-// snapshot became stale after the workspace was deleted.
-type WorkspaceChannelCloser interface {
-	CloseChannelsByUsersForWorkspace(workspaceID string, userIDs []string) int
+	store    store.Store
+	registry *crdt.Registry
 }
 
 // NewWorkspaceService creates a new WorkspaceService. registry is optional;
-// when set, workspace lifecycle drives the CRDT outbox. channelCloser is
-// required because workspace deletion must invalidate worker-side snapshots.
+// when set, workspace lifecycle drives the CRDT outbox.
+//
+// There is no channel-closer dependency any more. Deleting a workspace used to
+// have to tear down every E2EE channel that carried the user's
+// accessible-workspace snapshot, because the snapshot was seeded at open time
+// and could not shrink. A channel now carries no workspace set at all, so a
+// deleted workspace leaves nothing stale on it -- the worker's own tabs are
+// reaped by CleanupWorkspace and, as a backstop, the orphan reconciler.
 func NewWorkspaceService(
 	st store.Store,
 	registry *crdt.Registry,
-	channelCloser WorkspaceChannelCloser,
 ) *WorkspaceService {
-	if nilcheck.IsNilDependency(channelCloser) {
-		panic("workspace service requires a workspace channel closer")
-	}
 	return &WorkspaceService{
-		store:         st,
-		registry:      registry,
-		channelCloser: channelCloser,
+		store:    st,
+		registry: registry,
 	}
 }
 
@@ -91,11 +84,10 @@ func loadWorkspaceOr404(ctx context.Context, st store.Store, workspaceID string)
 // read handler and a write handler run the SAME check -- the only thing that
 // differs is the denial message, which the caller supplies. Routing both
 // through one core keeps "read access == write access" structural so the two
-// cannot drift on what a non-owner sees. It does NOT check the delegation
-// workspace scope -- callers apply that guard first, with the error code their
-// operation requires (loadWorkspaceForRead uses NotFound so a scoped bearer
-// cannot probe existence; PrepareWorkspaceAccess uses PermissionDenied for an
-// explicit prepare-access request).
+// cannot drift on what a non-owner sees. There is no second, delegation-scope
+// guard in front of it any more: a delegation bearer authenticates as its owner
+// and carries that owner's reach across every workspace they own, so ownership
+// IS the whole check.
 func loadOwnedWorkspaceOr403(ctx context.Context, st store.Store, workspaceID string, userID userid.UserID, denyMsg string) (*store.Workspace, error) {
 	ws, err := loadWorkspaceOr404(ctx, st, workspaceID)
 	if err != nil {
@@ -107,17 +99,10 @@ func loadOwnedWorkspaceOr403(ctx context.Context, st store.Store, workspaceID st
 	return ws, nil
 }
 
-// loadWorkspaceForRead is the single loader every workspace-read handler goes
-// through, so it centrally enforces the delegation workspace scope: a scoped
-// bearer may only reach its own delegated workspace, and a mismatch fails closed
-// with NotFound (not PermissionDenied) so it cannot probe which other workspaces
-// exist. Enforcing the scope here -- rather than as a per-handler guard -- means
-// a new read handler cannot forget the check and leak cross-scope access.
 // readWorkspaceOrNotFound loads a workspace for reading and collapses the two
 // existence-revealing codes into notFound.
 //
-// PermissionDenied and NotFound both become notFound so a non-owner (or a
-// delegation bearer probing outside its scope) cannot tell "exists but not
+// PermissionDenied and NotFound both become notFound so a non-owner cannot tell "exists but not
 // yours" from "does not exist". Anything else passes through unchanged: a
 // transient Internal must stay retryable rather than becoming the permanent
 // answer a NotFound is.
@@ -136,10 +121,15 @@ func readWorkspaceOrNotFound(ctx context.Context, st store.Store, workspaceID st
 	return ws, nil
 }
 
+// loadWorkspaceForRead is the single loader every workspace-read handler goes
+// through, so ownership is enforced in one place rather than as a per-handler
+// guard a new read handler could forget.
+//
+// It no longer enforces a delegation WORKSPACE scope, because there is no such
+// scope any more: a delegation bearer authenticates as its user and reaches
+// exactly what that user owns. What still bounds a bearer is which MACHINE it
+// may reach.
 func loadWorkspaceForRead(ctx context.Context, st store.Store, workspaceID string, user *auth.UserInfo) (*store.Workspace, error) {
-	if err := requireDelegationWorkspaceOrNotFound(user, workspaceID, "workspace not found"); err != nil {
-		return nil, err
-	}
 	return loadOwnedWorkspaceOr403(ctx, st, workspaceID, user.ID, "no access to workspace")
 }
 
@@ -202,28 +192,10 @@ func (s *WorkspaceService) ListWorkspaces(
 	if err != nil {
 		return nil, err
 	}
-	// Delegation bearers are pinned to a single workspace at mint
-	// time (`auth.UserInfo.Credential.WorkspaceScopeID()`). Mirror
-	// ChannelService.OpenChannel's "narrow accessible-workspace
-	// reasoning to this single id" rule on the read side so a leaked
-	// delegation token cannot enumerate the user's full grant set.
-	// loadWorkspaceForRead returns NotFound for soft-deleted rows and
-	// PermissionDenied for revoked access — both collapse to an
-	// empty list here.
-	if user.Credential.IsDelegation() {
-		ws, err := loadWorkspaceForRead(ctx, s.store, user.Credential.WorkspaceScopeID(), user)
-		if err != nil {
-			code := connect.CodeOf(err)
-			if code == connect.CodeNotFound || code == connect.CodePermissionDenied {
-				return connect.NewResponse(&leapmuxv1.ListWorkspacesResponse{}), nil
-			}
-			return nil, err
-		}
-		return connect.NewResponse(&leapmuxv1.ListWorkspacesResponse{
-			Workspaces: []*leapmuxv1.Workspace{workspaceToProto(ws)},
-		}), nil
-	}
 	// Owner-only listing: every workspace the authenticated user owns.
+	// A delegation bearer sees the same list -- it authenticates AS the owner,
+	// and the axis that still bounds it is which WORKER it may reach, not which
+	// workspace it may read.
 	workspaces, err := s.store.Workspaces().ListAccessible(ctx, store.ListAccessibleWorkspacesParams{
 		UserID: user.ID,
 	})
@@ -312,8 +284,10 @@ func (s *WorkspaceService) DeleteWorkspace(
 	}
 	workspaceID := req.Msg.GetWorkspaceId()
 
-	var workerIDs []string
-	var affectedUserIDs []string
+	var (
+		workerIDs  []string
+		workerTabs []*leapmuxv1.WorkerTabs
+	)
 	if err := s.runLifecycleMutation(ctx, lifecycleMutation{
 		OpType: crdt.LifecycleOpDelete,
 		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.CrdtOp, error) {
@@ -324,24 +298,30 @@ func (s *WorkspaceService) DeleteWorkspace(
 			// The fan-out is scoped to the deleting owner. workspace_tab_owned
 			// is keyed by (user_id, tab_id), and workspace_id is a plain FK, so
 			// a row another user wrote against this workspace_id would
-			// otherwise contribute its worker here -- and unlike the
-			// row-returning reads, a DISTINCT worker_id projection carries no
-			// owner for the caller to filter on afterwards.
+			// otherwise contribute its worker here.
+			//
+			// Read INSIDE this transaction, and read as ROWS rather than as a
+			// DISTINCT worker projection: the caller has to name the tabs it
+			// wants torn down (the Worker stores no workspace id), and taking
+			// both facts from one atomic read of the authoritative table is what
+			// stops a tab opened mid-delete from being missed.
 			//
 			// user.ID rather than ws.OwnerUserID: loadOwnedWorkspaceOr403 above
 			// already refused a non-owner (auth.IsOwner compares exactly these
 			// two), so they hold the same id and user.ID is the typed one --
 			// the same value SoftDelete binds a few lines below.
-			workerIDs, err = tx.WorkspaceTabIndex().ListDistinctWorkersByWorkspace(ctx, store.ListDistinctWorkersByWorkspaceParams{
+			tabs, err := tx.WorkspaceTabIndex().ListOwnedTabsByWorkspace(ctx, store.ListOwnedTabsByWorkspaceParams{
 				UserID:      user.ID,
 				WorkspaceID: workspaceID,
 			})
 			if err != nil {
-				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workspace workers: %w", err))
+				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workspace tabs: %w", err))
 			}
-			// The owner is the only user whose open channels announced this
-			// workspace; their worker-side snapshots must be invalidated.
-			affectedUserIDs = []string{ws.OwnerUserID}
+			workerTabs = groupTabsByWorker(tabs)
+			workerIDs = make([]string, 0, len(workerTabs))
+			for _, wt := range workerTabs {
+				workerIDs = append(workerIDs, wt.GetWorkerId())
+			}
 			rows, err := tx.Workspaces().SoftDelete(ctx, store.SoftDeleteWorkspaceParams{
 				ID:          workspaceID,
 				OwnerUserID: user.ID,
@@ -361,9 +341,33 @@ func (s *WorkspaceService) DeleteWorkspace(
 	}); err != nil {
 		return nil, err
 	}
-	s.channelCloser.CloseChannelsByUsersForWorkspace(workspaceID, affectedUserIDs)
-
 	return connect.NewResponse(&leapmuxv1.DeleteWorkspaceResponse{
-		WorkerIds: workerIDs,
+		WorkerTabs: workerTabs,
 	}), nil
+}
+
+// groupTabsByWorker turns the flat (worker_id, tab_type, tab_id) read into the
+// per-worker fan-out shape the response carries. Rows arrive ordered by
+// worker_id, so grouping is a single pass and the output order is stable --
+// which keeps the response, and the tests asserting on it, deterministic.
+//
+// Rows with an empty worker_id are dropped: a tab no machine hosts has nothing
+// to tear down, and binding it to a blank worker would send one caller's
+// cleanup to nobody.
+func groupTabsByWorker(tabs []store.OwnedTabRef) []*leapmuxv1.WorkerTabs {
+	var out []*leapmuxv1.WorkerTabs
+	byWorker := make(map[string]*leapmuxv1.WorkerTabs, len(tabs))
+	for _, t := range tabs {
+		if t.WorkerID == "" {
+			continue
+		}
+		wt, ok := byWorker[t.WorkerID]
+		if !ok {
+			wt = &leapmuxv1.WorkerTabs{WorkerId: t.WorkerID}
+			byWorker[t.WorkerID] = wt
+			out = append(out, wt)
+		}
+		wt.Tabs = append(wt.Tabs, &leapmuxv1.TabRef{TabType: t.TabType, TabId: t.TabID})
+	}
+	return out
 }

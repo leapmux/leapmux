@@ -219,8 +219,12 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// post-construction injection or initialization-order hazards).
 	crdtJournal := service.NewCRDTJournal(st)
 	crdtAuth := service.NewCRDTAuthChecker(st)
+	// wMgr is already built above, so the nudger can be constructed here and
+	// handed to every manager -- no post-construction injection.
+	reconcileNudger := service.NewReconcileNudger(wMgr, slog.Default())
 	crdtRegistry := crdt.NewRegistry(func(ctx context.Context, owner userid.UserID) (*crdt.Manager, error) {
-		mgr := crdt.NewManager(owner, crdtJournal, crdtAuth, slog.Default(), time.Now)
+		mgr := crdt.NewManager(owner, crdtJournal, crdtAuth, slog.Default(), time.Now,
+			crdt.WithReconcileNudger(reconcileNudger))
 		if err := mgr.Bootstrap(ctx); err != nil {
 			return nil, err
 		}
@@ -279,7 +283,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
 	mux.Handle(sectionPath, sectionHandler)
 
-	workspaceSvc := service.NewWorkspaceService(st, crdtRegistry, channelSvc)
+	workspaceSvc := service.NewWorkspaceService(st, crdtRegistry)
 	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
 	mux.Handle(workspacePath, workspaceHandler)
 

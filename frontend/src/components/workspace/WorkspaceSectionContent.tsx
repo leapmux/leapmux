@@ -62,6 +62,7 @@ export interface WorkspaceSectionContentProps {
    * collide across distinct workers or working directories.
    */
   workerInfoFn?: (id: string) => WorkerInfo | null
+  isWorkerKnownOnline?: (workerId: string) => boolean
   onChangeBranch?: (ref: BranchRef) => void
   onDeleteBranch?: (ref: BranchRef) => void
 }
@@ -307,6 +308,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         readOnly={props.readOnly}
                         workspaceId={id}
                         workerInfoFn={props.workerInfoFn}
+                        isWorkerKnownOnline={props.isWorkerKnownOnline}
                         onChangeBranch={props.onChangeBranch}
                         onDeleteBranch={props.onDeleteBranch}
                       />

@@ -1,7 +1,7 @@
 import { create, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WorkerPrivateEventSchema } from '~/generated/leapmux/v1/worker_private_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { WorkspacePrivateEventSchema } from '~/generated/leapmux/v1/workspace_private_pb'
 
 // Mock the E2EE channel transport so we can drive connect / message / error
 // entirely from the test.
@@ -13,17 +13,8 @@ vi.mock('~/api/workerRpc', () => ({
   },
 }))
 
-vi.mock('~/api/workspaceAccess', () => ({ ensureWorkspaceAccess: vi.fn() }))
-
 const { channelManager } = await import('~/api/workerRpc')
-const { ensureWorkspaceAccess } = await import('~/api/workspaceAccess')
-const { ChannelError } = await import('./channelError')
-const { openWorkerPrivateEventStream } = await import('./workspacePrivateEvents')
-
-/** What the worker's `registerWorkspaceGatedStream` gate sends back. */
-function notAccessibleError(): Error {
-  return new ChannelError('stream', 'workspace not accessible', 7 /* PermissionDenied */)
-}
+const { openWorkerPrivateEventStream } = await import('./workerPrivateEvents')
 
 interface FakeStream {
   requestId: string
@@ -57,10 +48,10 @@ function makeFakeStream(): { handle: unknown, control: FakeStream } {
 }
 
 function encodeTabRenamed(tabId: string): Uint8Array {
-  const evt = create(WorkspacePrivateEventSchema, {
+  const evt = create(WorkerPrivateEventSchema, {
     event: { case: 'tabRenamed', value: { tabId, tabType: TabType.UNSPECIFIED, title: 'T', originClientId: 'c' } },
   })
-  return toBinary(WorkspacePrivateEventSchema, evt)
+  return toBinary(WorkerPrivateEventSchema, evt)
 }
 
 describe('openWorkerPrivateEventStream reconnect backoff', () => {
@@ -79,9 +70,6 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     getOrOpenChannel.mockReset()
     stream.mockReset()
     removeStreamListener.mockReset()
-    // Default: nothing to repair. Cases that exercise the denial path opt in.
-    vi.mocked(ensureWorkspaceAccess).mockReset()
-    vi.mocked(ensureWorkspaceAccess).mockResolvedValue(false)
     getOrOpenChannel.mockResolvedValue('chan')
     stream.mockImplementation(() => {
       const s = makeFakeStream()
@@ -103,7 +91,7 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
   }
 
   it('backs off exponentially on repeated failures and resets after a healthy message', async () => {
-    const stop = openWorkerPrivateEventStream({ workspaceId: 'ws', workerId: 'w', onTabRenamed: () => {} })
+    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
     await tick(0)
     expect(stream).toHaveBeenCalledTimes(1)
 
@@ -126,9 +114,8 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     const renamed: string[] = []
     stop()
     const stop2 = openWorkerPrivateEventStream({
-      workspaceId: 'ws',
       workerId: 'w',
-      onTabRenamed: e => renamed.push(e.tabId),
+      onTabRenamed: (e: { tabId: string }) => renamed.push(e.tabId),
     })
     await tick(0)
     const baseline = stream.mock.calls.length
@@ -148,7 +135,7 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
   })
 
   it('stops reconnecting after teardown', async () => {
-    const stop = openWorkerPrivateEventStream({ workspaceId: 'ws', workerId: 'w', onTabRenamed: () => {} })
+    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
     await tick(0)
     expect(stream).toHaveBeenCalledTimes(1)
 
@@ -171,7 +158,7 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     }))
 
     const renamed: string[] = []
-    const stop = openWorkerPrivateEventStream({ workspaceId: 'ws', workerId: 'w', onTabRenamed: e => renamed.push(e.tabId) })
+    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: (e: { tabId: string }) => renamed.push(e.tabId) })
     await tick(0)
     // Still awaiting the channel open: no stream registered yet.
     expect(stream).toHaveBeenCalledTimes(0)
@@ -187,91 +174,5 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     expect(stream).toHaveBeenCalledTimes(0)
     expect(removeStreamListener).not.toHaveBeenCalled()
     expect(renamed).toEqual([])
-  })
-
-  /**
-   * A channel's accessible set is seeded at OpenChannel time and grows only
-   * through PrepareWorkspaceAccess, so a workspace created after this page's
-   * channel opened -- by the `leapmux remote` CLI, by another session -- is
-   * refused by the workspace gate no matter how many times the stream re-dials.
-   * Reconnecting is not a fix for it; announcing the workspace is.
-   */
-  describe('workspace-not-accessible repair', () => {
-    it('announces the workspace and reconnects without waiting out the backoff', async () => {
-      vi.mocked(ensureWorkspaceAccess).mockResolvedValue(true)
-      const stop = openWorkerPrivateEventStream({ workspaceId: 'ws', workerId: 'w', onTabRenamed: () => {} })
-      await tick(0)
-      expect(stream).toHaveBeenCalledTimes(1)
-
-      streams[0].emitError(notAccessibleError())
-      // No timer advance at all: the reconnect rides the announcement, so the
-      // stream is back up before the 250ms backoff would even have fired.
-      await tick(0)
-      expect(ensureWorkspaceAccess).toHaveBeenCalledWith('w', 'ws')
-      expect(stream, 'reconnected immediately').toHaveBeenCalledTimes(2)
-
-      stop()
-    })
-
-    it('falls back to the backoff once the workspace has already been announced', async () => {
-      vi.mocked(ensureWorkspaceAccess).mockResolvedValue(false)
-      const stop = openWorkerPrivateEventStream({ workspaceId: 'ws', workerId: 'w', onTabRenamed: () => {} })
-      await tick(0)
-
-      streams[0].emitError(notAccessibleError())
-      await tick(0)
-      expect(stream, 'announcing changed nothing, so do not re-dial into the same refusal')
-        .toHaveBeenCalledTimes(1)
-      await tick(250)
-      expect(stream, 'the ordinary backoff still owns the retry').toHaveBeenCalledTimes(2)
-
-      stop()
-    })
-
-    it('does not announce for an ordinary transport drop', async () => {
-      const stop = openWorkerPrivateEventStream({ workspaceId: 'ws', workerId: 'w', onTabRenamed: () => {} })
-      await tick(0)
-
-      streams[0].emitError(new Error('drop'))
-      await tick(250)
-      expect(ensureWorkspaceAccess, 'access is not what a dropped socket is missing')
-        .not
-        .toHaveBeenCalled()
-      expect(stream).toHaveBeenCalledTimes(2)
-
-      stop()
-    })
-
-    it('backs off when the announcement itself fails', async () => {
-      vi.mocked(ensureWorkspaceAccess).mockRejectedValue(new Error('hub unreachable'))
-      const stop = openWorkerPrivateEventStream({ workspaceId: 'ws', workerId: 'w', onTabRenamed: () => {} })
-      await tick(0)
-
-      streams[0].emitError(notAccessibleError())
-      await tick(0)
-      expect(stream, 'a failed repair must not reconnect immediately').toHaveBeenCalledTimes(1)
-      await tick(250)
-      expect(stream, 'and the backoff retries the announcement with it').toHaveBeenCalledTimes(2)
-
-      stop()
-    })
-
-    it('does not reconnect when torn down while announcing', async () => {
-      let announce: (fresh: boolean) => void = () => {}
-      vi.mocked(ensureWorkspaceAccess).mockReturnValue(new Promise<boolean>((res) => {
-        announce = res
-      }))
-      const stop = openWorkerPrivateEventStream({ workspaceId: 'ws', workerId: 'w', onTabRenamed: () => {} })
-      await tick(0)
-
-      streams[0].emitError(notAccessibleError())
-      await tick(0)
-      stop()
-      announce(true)
-      await tick(0)
-
-      expect(stream, 'the immediate-reconnect path must honour teardown too')
-        .toHaveBeenCalledTimes(1)
-    })
   })
 })

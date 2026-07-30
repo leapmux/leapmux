@@ -17,10 +17,9 @@ import (
 	"github.com/leapmux/leapmux/locallisten"
 )
 
-// DelegationStore is the in-memory cache of (user_id, workspace_id) →
-// delegation token used by the per-agent IPC server. It also knows how
-// to mint a fresh token via the hub's /worker/delegation-tokens/mint
-// endpoint.
+// DelegationStore is the in-memory cache of user_id -> delegation token
+// used by the per-agent IPC server. It also knows how to mint a fresh
+// token via the hub's /worker/delegation-tokens/mint endpoint.
 //
 // The store re-mints when the cached access token is within
 // `MintGracePeriod` of expiry; refresh-token rotation is handled
@@ -44,7 +43,7 @@ type DelegationStore struct {
 	// MintMaxAttempts caps total attempts when the hub returns
 	// "tab not owned by calling worker" (403). This races with
 	// AddTab propagation: the worker AddTab's the tab and may try
-	// to mint before the hub-side workspace_tabs row is visible.
+	// to mint before the hub-side workspace_tab_owned row is visible.
 	// Retries use exponential backoff starting at MintRetryBackoff.
 	MintMaxAttempts  int
 	MintRetryBackoff time.Duration
@@ -54,23 +53,50 @@ type DelegationStore struct {
 	mu       sync.Mutex
 	cached   map[string]cachedDelegation
 	refcount map[string]int
-	// tabs holds the (issued_for_tab_id, issued_for_tab_type) per
-	// (user, workspace) slot. Populated by Acquire at spawn time and
-	// read by mintOnce. The hub's /worker/delegation-tokens/mint
-	// endpoint requires a tab the calling worker owns; without this
-	// the mint returns 400 "user_id, workspace_id, issued_for_tab_id
-	// are required".
+	// inflight collapses concurrent first-time mints for one slot. Without it,
+	// two callers that miss the cache together each POST the hub's mint endpoint
+	// and each get a DISTINCT token_id; the loser's id is overwritten in `cached`
+	// and never reaches revokeTokenID, so its credential stays live until its TTL
+	// with nothing able to revoke it.
 	//
-	// First Acquire wins: concurrent spawns for the same
-	// (user, workspace) share one cached bearer, so they share one
-	// provenance tab. The hub validates "worker owns this tab",
-	// which is true for any tab the worker hosts in this workspace.
-	tabs map[string]tabRef
+	// The race became reachable when the key collapsed from (user, workspace) to
+	// user alone: two spawns in two different workspaces on one worker used to
+	// occupy separate slots and mint separately by design, and now share one.
+	// crossworker.Client already singleflights channel opens (see channelOpen)
+	// for the same reason one layer up.
+	inflight map[string]*mintFlight
+
+	// LiveTab supplies the mint's provenance tab. Required for minting; see
+	// LiveTabProvider.
+	LiveTab LiveTabProvider
 }
 
+// LiveTabProvider answers "which tab does this worker currently host?" for the
+// mint's issued_for_tab_id. Injected rather than read from a local map, and
+// injected as a closure so this package keeps no dependency on the worker DB.
+//
+// It replaces a shadow set that Acquire/Release maintained alongside the real
+// inventory. That set was a second source of truth for a fact the worker's own
+// agents/terminals tables already hold, and it could drift from them in ways that
+// broke every subsequent mint: a Release that never ran (a panic in a cleanup, a
+// close path added later that bypasses the registry) left a dead tab id behind,
+// and the hub answered 403 "tab not owned by calling worker" for it forever.
+// Nothing pruned it, because a 403 is exactly what a not-yet-propagated tab looks
+// like. Reading the live tables instead makes a missed Release cost nothing.
+type LiveTabProvider func() (tabID string, tabType int32, ok bool)
+
+// tabRef is one tab's mint provenance: which tab, and of what type.
 type tabRef struct {
 	ID   string
 	Type int32
+}
+
+// mintFlight is one in-progress mint that later arrivals wait on rather than
+// duplicating. done is closed once tok/err are final.
+type mintFlight struct {
+	done chan struct{}
+	tok  mintedToken
+	err  error
 }
 
 type cachedDelegation struct {
@@ -93,7 +119,7 @@ func NewDelegationStore(hubURL, workerAuthToken, workerID string) *DelegationSto
 		requestBaseURL:   requestBaseURL,
 		cached:           make(map[string]cachedDelegation),
 		refcount:         make(map[string]int),
-		tabs:             make(map[string]tabRef),
+		inflight:         make(map[string]*mintFlight),
 	}
 }
 
@@ -110,39 +136,64 @@ func delegationHTTPClient(hubURL string) (*http.Client, string) {
 	)
 }
 
-// delegationKey is the cache/refcount/tab key for one (user, workspace)
-// delegation slot. Every map in this store is keyed by it, so the three maps
-// cannot drift apart the way six hand-built concatenations could: change the
-// shape here and every reader follows.
+// delegationKey is the cache/refcount/tab key for one user's delegation slot.
+// Every map in this store is keyed by it, so the three maps cannot drift
+// apart the way three hand-built projections could: change the shape here and
+// every reader follows.
 //
-// The user component is the minted id's underlying string -- the maps are
-// string-keyed because userid.UserID is deliberately non-comparable.
-func delegationKey(userID userid.UserID, workspaceID string) string {
-	return userID.String() + "|" + workspaceID
+// It is the minted id's underlying string -- the maps are string-keyed
+// because userid.UserID is deliberately non-comparable.
+func delegationKey(userID userid.UserID) string {
+	return userID.String()
 }
 
-// GetBearer satisfies DelegationProvider. Cache key includes
-// workspace_id since each delegation row is scoped to one workspace.
+// GetBearer satisfies DelegationProvider.
 func (s *DelegationStore) GetBearer(ctx context.Context, scope DelegationScope) (string, error) {
-	if scope.UserID.IsZero() || scope.WorkspaceID == "" {
-		return "", errors.New("crossworker: user_id and workspace_id required")
+	if scope.UserID.IsZero() {
+		return "", errors.New("crossworker: user_id required")
 	}
-	key := delegationKey(scope.UserID, scope.WorkspaceID)
+	key := delegationKey(scope.UserID)
 	s.mu.Lock()
 	if c, ok := s.cached[key]; ok && time.Until(c.expiresAt) > s.MintGracePeriod {
 		bearer := c.bearer
 		s.mu.Unlock()
 		return bearer, nil
 	}
+	// Join an in-flight mint for this slot instead of starting a second one.
+	if fl, joined := s.inflight[key]; joined {
+		s.mu.Unlock()
+		select {
+		case <-fl.done:
+			if fl.err != nil {
+				return "", fl.err
+			}
+			return fl.tok.Access, nil
+		case <-ctx.Done():
+			// Leaving is safe: the leader owns the flight's cleanup, so abandoning
+			// it here cannot strand the slot for the next caller.
+			return "", ctx.Err()
+		}
+	}
+	fl := &mintFlight{done: make(chan struct{})}
+	s.inflight[key] = fl
 	s.mu.Unlock()
 
 	minted, err := s.mint(ctx, scope)
+
+	s.mu.Lock()
+	fl.tok, fl.err = minted, err
+	delete(s.inflight, key)
+	if err == nil {
+		s.cached[key] = cachedDelegation{bearer: minted.Access, tokenID: minted.TokenID, expiresAt: minted.ExpiresAt}
+	}
+	s.mu.Unlock()
+	// Closed after the map writes, so a joiner that wakes immediately observes a
+	// cache already holding this token rather than racing back into a fresh miss.
+	close(fl.done)
+
 	if err != nil {
 		return "", err
 	}
-	s.mu.Lock()
-	s.cached[key] = cachedDelegation{bearer: minted.Access, tokenID: minted.TokenID, expiresAt: minted.ExpiresAt}
-	s.mu.Unlock()
 	return minted.Access, nil
 }
 
@@ -197,7 +248,7 @@ func (s *DelegationStore) mint(ctx context.Context, scope DelegationScope) (mint
 			return minted, nil
 		}
 		// Only the AddTab → mint propagation race is worth retrying;
-		// every other error (auth, missing workspace) is permanent.
+		// every other error (auth, unknown tab) is permanent.
 		var propErr *tabPropagationError
 		if !errors.As(mErr, &propErr) {
 			return mintedToken{}, backoff.Permanent(mErr)
@@ -207,15 +258,16 @@ func (s *DelegationStore) mint(ctx context.Context, scope DelegationScope) (mint
 }
 
 func (s *DelegationStore) mintOnce(ctx context.Context, scope DelegationScope) (mintedToken, error) {
-	s.mu.Lock()
-	tab, hasTab := s.tabs[delegationKey(scope.UserID, scope.WorkspaceID)]
-	s.mu.Unlock()
-	if !hasTab || tab.ID == "" {
-		return mintedToken{}, fmt.Errorf("delegation mint: no tab registered for (user=%s, workspace=%s); Acquire must run with tab_id at spawn time", scope.UserID.String(), scope.WorkspaceID)
+	if s.LiveTab == nil {
+		return mintedToken{}, errors.New("delegation mint: no LiveTabProvider wired")
 	}
+	tabID, tabType, ok := s.LiveTab()
+	if !ok || tabID == "" {
+		return mintedToken{}, fmt.Errorf("delegation mint: this worker hosts no open tab for user=%s", scope.UserID.String())
+	}
+	tab := tabRef{ID: tabID, Type: tabType}
 	body, _ := json.Marshal(map[string]any{
 		"user_id":             scope.UserID.String(),
-		"workspace_id":        scope.WorkspaceID,
 		"issued_for_tab_id":   tab.ID,
 		"issued_for_tab_type": tab.Type,
 		"agent_id":            scope.AgentID,
@@ -262,51 +314,49 @@ func (s *DelegationStore) mintOnce(ctx context.Context, scope DelegationScope) (
 }
 
 // Acquire records that one more spawn (agent / opted-in terminal)
-// references the (user, workspace) bearer slot, along with the
-// spawn's tab identity. The tab identity is what the hub validates
-// at /worker/delegation-tokens/mint: the worker must own
-// (workspace_id, tab_id). Pairs with Release at teardown so the
-// last referencing spawn triggers a hub-side revoke instead of
-// leaving the row to expire on its own.
+// references the user's bearer slot, along with the spawn's tab identity.
+// The tab identity is what the hub validates at
+// /worker/delegation-tokens/mint: the worker must own the tab. Pairs with
+// Release at teardown so the last referencing spawn triggers a hub-side
+// revoke instead of leaving the row to expire on its own.
 //
 // Acquire does NOT mint a token — minting stays lazy via GetBearer
 // so agents that never make hub-bound calls don't create unused
 // delegation rows.
 //
-// First Acquire wins on tab identity: when several spawns share one
-// (user, workspace) cache entry, the first spawn's tab supplies the
-// `issued_for_tab_id` of the eventual mint. The hub validates "this
-// worker owns that tab", which is true for any tab in this
-// workspace this worker hosts.
-func (s *DelegationStore) Acquire(userID userid.UserID, workspaceID, tabID string, tabType int32) {
-	if userID.IsZero() || workspaceID == "" {
+// Spawns sharing one user's cache entry each contribute their own tab, and a
+// mint picks any live one as `issued_for_tab_id`. The hub validates "this
+// worker owns that tab", which holds for any tab this worker currently hosts --
+// so the set must track live spawns, not merely the first one ever seen.
+func (s *DelegationStore) Acquire(userID userid.UserID) {
+	if userID.IsZero() {
 		return
 	}
-	key := delegationKey(userID, workspaceID)
+	key := delegationKey(userID)
 	s.mu.Lock()
 	s.refcount[key]++
-	if tabID != "" {
-		if _, has := s.tabs[key]; !has {
-			s.tabs[key] = tabRef{ID: tabID, Type: tabType}
-		}
-	}
 	s.mu.Unlock()
 }
 
-// Release decrements the refcount for (userID, workspaceID). When it
-// reaches zero AND a bearer was minted at some point, the cached row
-// is dropped and the hub is notified to revoke it. Returns the
-// hub-side revoke error so the caller can log it (revocation failures
-// are non-fatal — the row will expire — but worth surfacing).
+// Release decrements the refcount for userID and retires tabID from the
+// provenance set. When the refcount reaches zero AND a bearer was minted at
+// some point, the cached row is dropped and the hub is notified to revoke it.
+// Returns the hub-side revoke error so the caller can log it (revocation
+// failures are non-fatal — the row will expire — but worth surfacing).
+//
+// tabID is the RELEASING spawn's own tab, and passing it is what keeps the
+// provenance set live. Dropping only at refcount zero left a closed spawn's tab
+// as the mint's `issued_for_tab_id` for as long as any sibling survived, which
+// the hub then refused as "tab not owned by calling worker".
 //
 // The cache delete and the refcount drop happen under one lock so a
-// concurrent Acquire+GetBearer for the same (user, workspace) cannot
-// observe a half-released state and reuse a soon-to-be-revoked bearer.
-func (s *DelegationStore) Release(ctx context.Context, userID userid.UserID, workspaceID string) error {
-	if userID.IsZero() || workspaceID == "" {
+// concurrent Acquire+GetBearer for the same user cannot observe a
+// half-released state and reuse a soon-to-be-revoked bearer.
+func (s *DelegationStore) Release(ctx context.Context, userID userid.UserID) error {
+	if userID.IsZero() {
 		return nil
 	}
-	key := delegationKey(userID, workspaceID)
+	key := delegationKey(userID)
 	s.mu.Lock()
 	if s.refcount[key] > 0 {
 		s.refcount[key]--
@@ -316,7 +366,6 @@ func (s *DelegationStore) Release(ctx context.Context, userID userid.UserID, wor
 		return nil
 	}
 	delete(s.refcount, key)
-	delete(s.tabs, key)
 	c, hasCached := s.cached[key]
 	if hasCached {
 		delete(s.cached, key)
@@ -326,24 +375,6 @@ func (s *DelegationStore) Release(ctx context.Context, userID userid.UserID, wor
 		return nil
 	}
 	return s.revokeTokenID(ctx, c.tokenID)
-}
-
-// Invalidate drops the cached bearer for (userID, workspaceID) without
-// notifying the hub -- the shape a 401-handling path needs, which observes that
-// a hub-side revocation has already happened and must not re-post a revoke.
-//
-// No caller has that shape today: every live path retires its slot through
-// Release. It is exported (and tested) as the counterpart to Release for a
-// caller that learns of an external revocation, so the drop-without-notify
-// semantics live here rather than being open-coded against the cache map.
-func (s *DelegationStore) Invalidate(userID userid.UserID, workspaceID string) {
-	if userID.IsZero() || workspaceID == "" {
-		return
-	}
-	key := delegationKey(userID, workspaceID)
-	s.mu.Lock()
-	delete(s.cached, key)
-	s.mu.Unlock()
 }
 
 // SweepExpired drops cached delegation rows whose access token expired
@@ -368,7 +399,6 @@ func (s *DelegationStore) SweepExpired(cutoff time.Time) int {
 			continue
 		}
 		delete(s.cached, key)
-		delete(s.tabs, key)
 		dropped++
 	}
 	return dropped
@@ -396,35 +426,8 @@ func (s *DelegationStore) RunJanitor(ctx context.Context, interval time.Duration
 	}
 }
 
-// Revoke notifies the hub to revoke the delegation token cached under
-// (userID, workspaceID). Idempotent. It is the manual-revoke entrypoint and has
-// no caller today: everything driving spawn lifecycle uses Release, which also
-// clears the refcount, and a lifecycle caller must keep doing so -- Revoke drops
-// the bearer while leaving the slot referenced, so the next GetBearer mints a
-// replacement.
-func (s *DelegationStore) Revoke(ctx context.Context, userID userid.UserID, workspaceID string) error {
-	// Refused rather than looked up, matching its three siblings. No slot with a
-	// blank user component can exist -- Acquire and GetBearer both refuse an
-	// unminted id before writing one -- so this cannot change an outcome; it
-	// keeps a reader from having to prove that to know why one entrypoint
-	// differs.
-	if userID.IsZero() || workspaceID == "" {
-		return nil
-	}
-	key := delegationKey(userID, workspaceID)
-	s.mu.Lock()
-	c, ok := s.cached[key]
-	delete(s.cached, key)
-	s.mu.Unlock()
-	if !ok || c.tokenID == "" {
-		return nil
-	}
-	return s.revokeTokenID(ctx, c.tokenID)
-}
-
-// revokeTokenID is the hub-call portion of Revoke / Release, factored
-// out so both paths (the public Revoke and the refcount-driven
-// Release) post the same payload.
+// revokeTokenID is the hub-call portion of Release, factored out so the
+// refcount-driven retirement and any future revoke path post the same payload.
 func (s *DelegationStore) revokeTokenID(ctx context.Context, tokenID string) error {
 	if tokenID == "" {
 		return nil

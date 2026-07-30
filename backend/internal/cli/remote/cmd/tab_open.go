@@ -205,7 +205,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 					errors.New("no worker hosts this workspace yet; pass --worker-id explicitly"))
 			}
 		}
-		if err := registerFileTabPath(cc.ctx, cc.c, workerID, workspaceID, tabID, filePath); err != nil {
+		if err := registerFileTabPath(cc.ctx, cc.c, workerID, tabID, filePath); err != nil {
 			return remote.EmitErrorWith("worker_register_failed", err)
 		}
 		ops := []*leapmuxv1.CrdtOp{
@@ -225,8 +225,9 @@ func RunTabOpen(rawCtx any, args []string) error {
 		out := tabOpenEnvelope(tabID, tabType, workspaceID, workerID, resolvedTileID, resolvedPos)
 		out["path"] = filePath
 		return remote.EmitData(out)
+	default:
+		return remote.EmitError("invalid_request", "--type must be agent|terminal|file")
 	}
-	return remote.EmitError("invalid_request", "--type must be agent|terminal|file")
 }
 
 // tabOpenEnvelope is the shared shape every `tab open` response emits:
@@ -249,11 +250,10 @@ func tabOpenEnvelope(tabID, tabType, workspaceID, workerID, tileID, position str
 // inner-RPC over E2EE so the file path stays off the hub. The
 // returned response is empty on success; any worker-side error is
 // surfaced as a wrapped codedRPCError.
-func registerFileTabPath(ctx context.Context, c *remote.Client, workerID, workspaceID, tabID, filePath string) error {
+func registerFileTabPath(ctx context.Context, c *remote.Client, workerID, tabID, filePath string) error {
 	req := &leapmuxv1.RegisterFileTabPathRequest{
-		WorkspaceId: workspaceID,
-		TabId:       tabID,
-		FilePath:    filePath,
+		TabId:    tabID,
+		FilePath: filePath,
 	}
 	var resp leapmuxv1.RegisterFileTabPathResponse
 	return callInnerRPCBest(ctx, c, workerID, "RegisterFileTabPath", req, &resp)

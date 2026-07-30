@@ -44,8 +44,31 @@ interface UseTabOperationsOpts {
   focusEditor: () => void
   getScrollState: () => SavedViewportScroll | undefined
   setFileTreePath: (path: string) => void
-  /** Active workspace id used for file-tab E2EE worker RPCs. */
+  /**
+   * Active workspace id, for the layout-side reads only:
+   * `activeTabForWorkspace`, `ownerWorkspaceFor` and `view.forWorkspace`. No
+   * worker RPC in this module takes a workspace id any more.
+   */
   getActiveWorkspaceId: () => string | undefined
+  /**
+   * The hub's last-known liveness for a worker: `false` only when the worker
+   * list positively reports it offline, `undefined` when the list has not
+   * mentioned the id.
+   *
+   * Feeds [isWorkerUnreachable]'s transport arm, which decides whether to skip
+   * the uncommitted-work dialog and retire a tab. That is a destructive
+   * decision, so an unknown reading must NOT count as offline -- see the note
+   * on that function.
+   */
+  /**
+   * Tri-state liveness for the DESTRUCTIVE close path: `false` only when the
+   * worker list positively reports the worker offline, `undefined` when it has
+   * not mentioned it. Named for the state, not as an `is*` predicate, because the
+   * sidebar carries a same-shaped but fail-OPEN `isWorkerKnownOnline` and the two
+   * are structurally assignable -- so the names are what keep a fail-open boolean
+   * from reaching the path that retires a tab.
+   */
+  workerOnlineState: (workerId: string) => boolean | undefined
 }
 
 export function useTabOperations(opts: UseTabOperationsOpts) {
@@ -207,7 +230,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * so the three tab types follow the same pattern (sync local
    * cleanup + fire-and-forget worker RPC + toast on failure). The
    * worker drives the unified closeTabCommon flow on its side; the
-   * revoke is keyed by tabId, so unlike closeTerminal it needs no
+   * revoke is keyed by tabId -- as every tab-close RPC now is, so it needs no
    * workspaceId.
    */
   const handleFileClose = (tabId: string, workerId: string, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
@@ -239,48 +262,23 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * (idempotent close).
    */
   const closeTabWithAction = (tab: Tab, worktreeAction: WorktreeAction): Promise<CloseTabResult | undefined> => {
-    // Cross-workspace branch: the tab belongs to a workspace that isn't the
-    // one on screen (DeleteBranchDialog opened on another workspace's branch
-    // row). The tab itself is perfectly visible -- every workspace is in the
-    // one projection -- but the agent/terminal helpers below drive the ACTIVE
-    // workspace's session and worker context, so the close RPC has to be sent
-    // directly against the tab's own workerId and workspace.
-    const crossWorkspaceWsId = ownerWorkspaceFor(tab)
-    if (crossWorkspaceWsId) {
-      const workerId = tab.workerId ?? ''
-      let closeResult: Promise<CloseTabResult | undefined> = Promise.resolve(undefined)
-      if (workerId) {
-        if (tab.type === TabType.AGENT) {
-          closeResult = awaitCloseResult(workerRpc.closeAgent(workerId, { agentId: tab.id, worktreeAction }), 'Failed to close agent')
-        }
-        else if (tab.type === TabType.TERMINAL) {
-          closeResult = awaitCloseResult(
-            workerRpc.closeTerminal(workerId, {
-              workspaceId: crossWorkspaceWsId,
-              terminalId: tab.id,
-              worktreeAction,
-            }),
-            'Failed to close terminal',
-          )
-        }
-        else if (tab.type === TabType.FILE) {
-          closeResult = handleFileClose(tab.id, workerId, worktreeAction)
-        }
-      }
-      else {
-        // No worker id on the snapshot tab, so the close RPC can't fire
-        // and a REMOVE can't reach the worktree. Don't drop it silently.
-        warnWorktreeUnreachable(worktreeAction)
-      }
-      // One tombstone, wherever the tab lives. The projection drops it from
-      // every view — this client's sidebar included — and from peer clients,
-      // with no second write to keep some other representation in step.
-      emitRemoveTab(tab.type, tab.id)
-      // Skip migrateFocusAfterTabClose / removeEmptyFloatingWindowForTile
-      // — those operate on the ACTIVE layout, and the closed tab's
-      // tileId belongs to the inactive workspace.
-      return closeResult
-    }
+    // A tab in a workspace that is not the one on screen (DeleteBranchDialog
+    // opened on another workspace's branch row) closes through the SAME ladder
+    // as any other. Only the two trailing layout steps are skipped, because
+    // migrateFocusAfterTabClose / removeEmptyFloatingWindowForTile operate on
+    // the ACTIVE layout and this tab's tileId belongs to an inactive workspace.
+    //
+    // It used to take a separate branch that fired the worker RPC itself. That
+    // existed only to pass the tab's own `workspaceId` into the call, which the
+    // request no longer carries -- and the duplicate had already drifted into a
+    // leak: it skipped the agent-side `clearAgent` / `clearAttachments` /
+    // `chatStore.forgetAgent`, so closing an agent tab in an inactive workspace
+    // stranded its loaded window, live tail, command streams and span index,
+    // and it skipped `disposeTerminalInstance`, which is the last chance to
+    // reclaim a terminal's pooled WebGL slot after a cross-workspace move.
+    // The shared handlers resolve a cross-workspace tab fine on their own:
+    // getAgentTab / getTerminalTab read `byKey()`, which spans every workspace.
+    const closesInactiveWorkspace = ownerWorkspaceFor(tab) !== null
 
     let closeResult: Promise<CloseTabResult | undefined>
     if (tab.type === TabType.AGENT) {
@@ -308,8 +306,10 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     else {
       return Promise.resolve(undefined)
     }
-    migrateFocusAfterTabClose(tab.tileId)
-    removeEmptyFloatingWindowForTile(tab.tileId)
+    if (!closesInactiveWorkspace) {
+      migrateFocusAfterTabClose(tab.tileId)
+      removeEmptyFloatingWindowForTile(tab.tileId)
+    }
     return closeResult
   }
 
@@ -402,17 +402,21 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // phase below mutates stores synchronously and fires the worker
     // close + hub unregister RPCs as fire-and-forget.
     //
-    // Orphan-worker fallback: when the worker referenced by the tab
-    // no longer exists / isn't reachable, the inspection RPC fails
-    // with a NotFound-class connect error. Without the carve-out
-    // below the user gets a "Failed to prepare tab close" toast and
-    // the tab stays put — there's no way to clean up a stale row.
+    // Unreachable-worker fallback: when the worker referenced by the tab no
+    // longer exists, isn't reachable, or is merely OFFLINE, the inspection RPC
+    // fails -- with a NotFound-class connect error from the hub leg, or a
+    // transport ChannelError once the hub tears down the channels an offline
+    // worker was carrying. Without the carve-out below the user gets a "Failed
+    // to prepare tab close" toast and the tab stays put — there's no way to
+    // clean up a stale row, and no way to close a tab while the machine that
+    // owns it is asleep.
     // The CLI's `tab close` does the same fallback (`isWorkerUnreachable` in
-    // cmd/preflight.go); keep these two predicates in sync. Note the CLI's half
-    // additionally depends on remoteipc.relayError preserving the upstream
-    // connect code -- this side always talks to the hub directly, so it sees
-    // the real code either way, which is why the CLI's copy could silently
-    // stop matching while this one kept working.
+    // cmd/preflight.go); keep the CONNECT-CODE halves of these two predicates in
+    // sync (the channel leg is browser-only). Note the CLI's half additionally
+    // depends on remoteipc.relayError preserving the upstream connect code --
+    // this side always talks to the hub directly, so it sees the real code
+    // either way, which is why the CLI's copy could silently stop matching
+    // while this one kept working.
     let worktreeAction: WorktreeAction = WorktreeAction.KEEP
     try {
       const workerId = tab.workerId ?? ''
@@ -440,17 +444,37 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       }
     }
     catch (err) {
-      if (!isWorkerUnreachable(err)) {
+      if (!isWorkerUnreachable(err, opts.workerOnlineState(tab.workerId ?? ''))) {
         showWarnToast('Failed to prepare tab close', err)
         return false
       }
-      // Worker is gone for an existence/auth reason. We can't ask
-      // it about worktree state, so skip the dialog and fall
-      // through to commit. The downstream worker RPCs (closeAgent /
-      // closeTerminal / revokeFileTabPath) are already fire-and-forget
-      // — they'll fail with the same code, get caught, and just toast.
-      // The CRDT tombstone still runs and removes the orphan row.
+      // The worker list positively reports this worker offline. We can't ask
+      // it about worktree state, so skip the dialog and fall through to
+      // commit. The downstream worker RPCs (closeAgent / closeTerminal /
+      // revokeFileTabPath) are already fire-and-forget — they'll fail the
+      // same way, get caught, and just toast. The CRDT tombstone still runs
+      // and removes the row; the worker's orphan reconciler stops the process
+      // when it next learns the tab is gone.
       showInfoToast('Worker is unreachable; removing the tab without closing it.')
+      // A REMOVE cannot be honoured with nothing to run `git worktree remove`,
+      // so report the downgrade and pin KEEP. Both statements are guards: the
+      // only route into this catch today is a rejected inspect, which is
+      // reached before the prompt can raise the action above KEEP. Stating the
+      // invariant here is what keeps that true if an await is ever added after
+      // the prompt.
+      //
+      // Note KEEP is NOT what the worktree gets, and that asymmetry is why
+      // the reap needs its own guard rather than trusting this pin. An ONLINE
+      // KEEP close calls unregisterTab, dropping the worktree to zero links,
+      // which ListOrphanCandidateWorktrees deliberately excludes -- so the
+      // directory survives indefinitely. Here the choice never reaches the
+      // worker, the tab's rows close on their own, and every worktree_tabs
+      // link becomes a strand, which is exactly the shape the reconciler
+      // reaps. Service.worktreeHoldsUnsavedWork is what stops that reap from
+      // discarding uncommitted or unpushed work the user was never asked
+      // about.
+      warnWorktreeUnreachable(worktreeAction)
+      worktreeAction = WorktreeAction.KEEP
     }
     finally {
       removeClosingTabKey(key)
@@ -520,25 +544,26 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       },
     )
 
-    // E2EE worker-side path registration. The hub never sees the
-    // path; the worker persists `(tab_id, workspace_id, file_path)`
-    // and emits FileTabPathRegistered on the workspace's private-event
-    // stream so peer clients populate their local fileTabPaths cache.
-    // Fire-and-forget — failure here doesn't unmount the locally-added
-    // tab; the user can retry by re-opening.
-    const wsId = getActiveWorkspaceId()
-    if (wsId) {
-      workerRpc.registerFileTabPath(ctx.workerId, {
-        workspaceId: wsId,
-        tabId,
-        filePath: path,
-      }).catch(() => {
-        // Roll back the optimistic add so the user sees the failure
-        // surface (and isn't left with a tab whose path peers can't
-        // resolve).
-        emitRemoveTab(TabType.FILE, tabId)
-      })
-    }
+    // E2EE worker-side path registration. The hub never sees the path; the
+    // worker persists `(user_id, tab_id, file_path)` and emits
+    // FileTabPathRegistered on its OWN private-event stream so peer clients
+    // populate their local fileTabPaths cache.
+    //
+    // Unconditional. This used to be gated on an active workspace id, left over
+    // from when the request carried one -- a guard on a value the call no longer
+    // sends, whose only effect would have been to skip the registration and
+    // leave the tab permanently unresolvable to peers.
+    //
+    // Fire-and-forget — failure here doesn't unmount the locally-added tab; the
+    // user can retry by re-opening.
+    workerRpc.registerFileTabPath(ctx.workerId, {
+      tabId,
+      filePath: path,
+    }).catch(() => {
+      // Roll back the optimistic add so the user sees the failure surface (and
+      // isn't left with a tab whose path peers can't resolve).
+      emitRemoveTab(TabType.FILE, tabId)
+    })
   }
 
   // Reset file tree selection when active tab changes

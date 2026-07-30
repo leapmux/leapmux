@@ -14,8 +14,6 @@ func TestCredentialIdentityKindsAreMutuallyExclusive(t *testing.T) {
 	assert.Equal(t, "session-1", session.SessionID())
 	_, _, bearer := session.Bearer()
 	assert.False(t, bearer)
-	assert.Empty(t, session.WorkspaceScopeID())
-
 	assert.Empty(t, session.WorkerScopeID())
 
 	api := APICredential("api-1")
@@ -24,15 +22,13 @@ func TestCredentialIdentityKindsAreMutuallyExclusive(t *testing.T) {
 	assert.Equal(t, BearerKindAPI, kind)
 	assert.Equal(t, "api-1", tokenID)
 	assert.Empty(t, api.SessionID())
-	assert.Empty(t, api.WorkspaceScopeID())
 	assert.Empty(t, api.WorkerScopeID())
 
-	delegation := DelegationCredential("delegation-1", "workspace-1", "worker-mint")
+	delegation := DelegationCredential("delegation-1", "worker-mint")
 	kind, tokenID, bearer = delegation.Bearer()
 	require.True(t, bearer)
 	assert.Equal(t, BearerKindDelegation, kind)
 	assert.Equal(t, "delegation-1", tokenID)
-	assert.Equal(t, "workspace-1", delegation.WorkspaceScopeID())
 	assert.Equal(t, "worker-mint", delegation.WorkerScopeID())
 	assert.Empty(t, delegation.SessionID())
 }
@@ -42,12 +38,12 @@ func TestCredentialIdentityKindsAreMutuallyExclusive(t *testing.T) {
 // an empty minter is TestCredentialIdentityRejectsIncompleteStoredCredentials'
 // job; this pins where a *populated* one is allowed to matter.
 func TestCredentialIdentityWorkerScope(t *testing.T) {
-	a := DelegationCredential("token", "workspace", "worker-1")
-	b := DelegationCredential("token", "workspace", "worker-2")
+	a := DelegationCredential("token", "worker-1")
+	b := DelegationCredential("token", "worker-2")
 
-	// The minter is part of the whole-identity comparison, exactly as the
-	// workspace scope is: Matches backs userCanUseChannel, so two credentials
-	// differing in any scope must not be interchangeable there.
+	// The minter is part of the whole-identity comparison, and is now the ONLY
+	// scope in it: Matches backs userCanUseChannel, so two credentials differing
+	// in their minter must not be interchangeable there.
 	assert.False(t, a.Matches(b), "a differing minter is a differing identity")
 
 	// ...but it must NOT reach the CRDT actor key. PrincipalKey is derived from
@@ -71,10 +67,10 @@ func TestCredentialIdentityBearerRef(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, NewBearerRef(BearerKindAPI, "token"), apiRef)
 
-	delegationRef, ok := DelegationCredential("token", "workspace-1", "worker-mint").BearerRef()
+	delegationRef, ok := DelegationCredential("token", "worker-mint").BearerRef()
 	require.True(t, ok)
 	assert.Equal(t, NewBearerRef(BearerKindDelegation, "token"), delegationRef,
-		"the delegation workspace scope is not part of the bearer-row key")
+		"the delegation minter scope is not part of the bearer-row key")
 
 	// Same token id, different table kind -> distinct keys (usable as map keys).
 	assert.NotEqual(t, apiRef, delegationRef,
@@ -87,26 +83,25 @@ func TestCredentialIdentityBearerRef(t *testing.T) {
 func TestCredentialIdentityRejectsIncompleteStoredCredentials(t *testing.T) {
 	assert.Panics(t, func() { SessionCredential("") })
 	assert.Panics(t, func() { APICredential("") })
-	assert.Panics(t, func() { DelegationCredential("token", "", "worker-mint") })
-	assert.Panics(t, func() { DelegationCredential("", "workspace", "worker-mint") })
-	// The minter is as required as the other two: it is what bounds WHERE the token
+	assert.Panics(t, func() { DelegationCredential("", "worker-mint") })
+	// The minter is as required as the token id: it is what bounds WHERE the token
 	// may be used, and delegation_tokens.worker_id is NOT NULL, so an empty one means
 	// a code path dropped it rather than a data case.
-	assert.Panics(t, func() { DelegationCredential("token", "workspace", "") })
+	assert.Panics(t, func() { DelegationCredential("token", "") })
 }
 
 func TestCredentialIdentityMatchesWholeIdentity(t *testing.T) {
 	assert.True(t, APICredential("token").Matches(APICredential("token")))
-	assert.False(t, APICredential("token").Matches(DelegationCredential("token", "workspace", "worker-mint")))
-	assert.False(t, DelegationCredential("token", "workspace-1", "worker-mint").Matches(
-		DelegationCredential("token", "workspace-2", "worker-mint")))
+	assert.False(t, APICredential("token").Matches(DelegationCredential("token", "worker-mint")))
+	assert.False(t, DelegationCredential("token", "worker-1").Matches(
+		DelegationCredential("token", "worker-2")))
 }
 
 func TestPrincipalKeyIsKindDistinct(t *testing.T) {
 	assert.Equal(t, "session:s1", SessionCredential("s1").PrincipalKey())
 
 	apiKey := APICredential("t").PrincipalKey()
-	delegationKey := DelegationCredential("t", "w", "worker-mint").PrincipalKey()
+	delegationKey := DelegationCredential("t", "worker-mint").PrincipalKey()
 	assert.Equal(t, fmt.Sprintf("bearer:%02x:t", byte(BearerKindAPI)), apiKey)
 	assert.Equal(t, fmt.Sprintf("bearer:%02x:t", byte(BearerKindDelegation)), delegationKey)
 	// The same token id under different bearer kinds must not collapse to one

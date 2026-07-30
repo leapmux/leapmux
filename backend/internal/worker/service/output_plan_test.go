@@ -88,7 +88,6 @@ func createTestAgent(t *testing.T, queries *db.Queries, agentID, title string) {
 	t.Helper()
 	require.NoError(t, queries.CreateAgent(context.Background(), db.CreateAgentParams{
 		ID:            agentID,
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		Title:         title,

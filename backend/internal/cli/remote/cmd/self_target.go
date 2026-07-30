@@ -45,7 +45,7 @@ func locateCallingTab(ctx context.Context, c *remote.Client) (workspaceID, tileI
 		TabId:   self,
 	}
 	var resp leapmuxv1.LocateTabResponse
-	if err := hubCallUnary(ctx, c, "LocateTab", "", req, &resp); err != nil {
+	if err := hubCallUnary(ctx, c, "LocateTab", req, &resp); err != nil {
 		return "", ""
 	}
 	t := resp.GetTab()

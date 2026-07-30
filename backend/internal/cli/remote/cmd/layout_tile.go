@@ -247,6 +247,9 @@ func RunTileClose(rawCtx any, args []string) error {
 	case withTabsMove:
 		out["tabs_moved"] = len(tabsAffected)
 		out["heir_tile_id"] = heirID
+	default:
+		// withTabsUnspecified means the flag was absent, which handlers reject
+		// before reaching here, so the zero counts above stand.
 	}
 	return remote.EmitData(out)
 }

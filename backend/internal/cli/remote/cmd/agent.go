@@ -37,7 +37,7 @@ func RunAgentSend(rawCtx any, args []string) error {
 			}
 			return nil
 		},
-		body: func(ctx context.Context, c *remote.Client, workerID, agentID, _ string) error {
+		body: func(ctx context.Context, c *remote.Client, workerID, agentID string) error {
 			if err := callInnerRPC(ctx, c, workerID, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{AgentId: agentID, Content: message}, nil); err != nil {
 				return err
 			}
@@ -52,7 +52,7 @@ func RunAgentInterrupt(rawCtx any, args []string) error {
 		setup: func(fs *flag.FlagSet) {
 			fs.StringVar(&reason, "reason", "", "audit reason")
 		},
-		body: func(ctx context.Context, c *remote.Client, workerID, agentID, _ string) error {
+		body: func(ctx context.Context, c *remote.Client, workerID, agentID string) error {
 			if err := callInnerRPC(ctx, c, workerID, "InterruptAgent", &leapmuxv1.InterruptAgentRequest{AgentId: agentID, Reason: reason}, nil); err != nil {
 				return err
 			}
@@ -68,7 +68,7 @@ func RunAgentInterrupt(rawCtx any, args []string) error {
 // worker already filters by id and we only ever want one row.
 func RunAgentGet(rawCtx any, args []string) error {
 	return withResolvedAgent(rawCtx, args, agentScaffoldOpts{
-		body: func(ctx context.Context, c *remote.Client, workerID, agentID, _ string) error {
+		body: func(ctx context.Context, c *remote.Client, workerID, agentID string) error {
 			var resp leapmuxv1.ListAgentsResponse
 			if err := callInnerRPC(ctx, c, workerID, "ListAgents", &leapmuxv1.ListAgentsRequest{TabIds: []string{agentID}}, &resp); err != nil {
 				return err

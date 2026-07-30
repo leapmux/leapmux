@@ -30,40 +30,34 @@ type LocalDispatcher interface {
 // hub's E2EE channel relay. The implementation lives in
 // internal/worker/crossworker.
 //
-// workspaceID is the delegation-bearer scope: it both keys the channel
-// pool and feeds the mint request, so the same (target, user) pair on
-// a different workspace gets a fresh Noise session.
+// The delegation bearer it authenticates with is scoped to (user, minting
+// worker), so the channel pool keys on (target, user) alone.
 type CrossWorkerClient interface {
-	CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error)
-	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error
+	CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error)
+	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error
 }
 
 // HubClient is the subset of the worker's hub-bound client the router
 // uses. Lets the router make user-scoped calls to hub services on
 // behalf of the spawning user (with a delegation token, when minted).
-//
-// workspaceID is the delegation scope. The router fills it from the
-// IPC request's WorkspaceId, falling back to the spawning agent's
-// workspace when callers leave it blank — a delegation token's scope
-// is `(user_id, workspace_id)` so the bridge always needs a concrete
-// workspace to mint against.
 type HubClient interface {
-	CallInner(ctx context.Context, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error)
+	CallInner(ctx context.Context, userID userid.UserID, method string, payload []byte) ([]byte, error)
 }
 
 // HubStreamer forwards a server-streaming hub RPC. The implementation
 // authenticates with a delegation-token bearer minted for the spawned
-// agent's user/workspace pair. payload is a marshalled request proto;
+// agent's user. payload is a marshalled request proto;
 // onPayload receives marshalled response protos.
 type HubStreamer interface {
 	StreamHub(ctx context.Context, userID userid.UserID, method string, payload []byte, onPayload func([]byte) error) error
 }
 
-// LocalAuthorizers is the subset of service.Service the router uses to
-// stash a per-stream WorkspaceAuthorizer that worker handlers consult
-// instead of the channelmgr lookup.
-type LocalAuthorizers interface {
-	RegisterLocalAuthorizer(streamID string, workspaceIDs []string)
+// LocalStreams is the subset of service.Service the router uses to retire
+// the per-stream state a local-IPC dispatch leaves behind (today, the event
+// subscriptions keyed by the synthetic stream id). Local-IPC ids never reach
+// the channel manager's close callback, so nothing else would ever sweep them
+// -- see service.ReleaseLocalStream.
+type LocalStreams interface {
 	ReleaseLocalStream(streamID string)
 }
 
@@ -76,13 +70,11 @@ type LocalAuthorizers interface {
 type Router struct {
 	WorkerID        string
 	UserID          userid.UserID
-	WorkspaceIDs    []string
 	LocalDispatcher LocalDispatcher
 	CrossWorker     CrossWorkerClient
 	Hub             HubClient
 	HubStreams      HubStreamer
-	Authorizers     LocalAuthorizers
-	WorkspaceFilter func(workspaceID string) bool
+	Streams         LocalStreams
 	// Now overrides time.Now for tests that want to advance the
 	// SweepStaleCancellers clock without sleeping. Defaults to
 	// time.Now when nil.
@@ -111,12 +103,8 @@ func (r *Router) now() time.Time {
 	return time.Now()
 }
 
-// CallInner executes a unary inner-RPC. workspaceID, when non-empty,
-// is checked against the bearer's scope.
-func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID, workspaceID string) (*leapmuxv1.CallInnerResponse, error) {
-	if workspaceID != "" && r.WorkspaceFilter != nil && !r.WorkspaceFilter(workspaceID) {
-		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("workspace not in scope"))
-	}
+// CallInner executes a unary inner-RPC.
+func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID string) (*leapmuxv1.CallInnerResponse, error) {
 	switch ns := namespaceOf(method); ns {
 	case namespaceWorker:
 		bare := stripNamespace(method)
@@ -126,7 +114,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		if r.CrossWorker == nil {
 			return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("cross-worker client not configured"))
 		}
-		out, err := r.CrossWorker.CallInner(ctx, targetWorkerID, r.UserID, r.scopeWorkspaceID(workspaceID), bare, payload)
+		out, err := r.CrossWorker.CallInner(ctx, targetWorkerID, r.UserID, bare, payload)
 		if err != nil {
 			return nil, relayError(err)
 		}
@@ -135,7 +123,7 @@ func (r *Router) CallInner(ctx context.Context, info TokenInfo, method string, p
 		if r.Hub == nil {
 			return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("hub client not configured"))
 		}
-		out, err := r.Hub.CallInner(ctx, r.UserID, r.scopeWorkspaceID(workspaceID), stripNamespace(method), payload)
+		out, err := r.Hub.CallInner(ctx, r.UserID, stripNamespace(method), payload)
 		if err != nil {
 			return nil, relayError(err)
 		}
@@ -176,15 +164,14 @@ func relayError(err error) error {
 	return connect.NewError(connect.CodeInternal, err)
 }
 
-// withLocalAuthorizer registers a per-request synthetic stream id with
-// the authorizer registry, runs fn, then unregisters. Pairs the
-// dispatchLocal / streamLocal lifecycle in one place so both call
-// sites can't drift on register/unregister symmetry.
-func (r *Router) withLocalAuthorizer(info TokenInfo, fn func(streamID string)) {
+// withLocalStream mints a synthetic stream id for one local-IPC dispatch,
+// runs fn under it, then retires whatever the dispatch registered against it.
+// Pairs the dispatchLocal / streamLocal lifecycle in one place so both call
+// sites can't drift on mint/release symmetry.
+func (r *Router) withLocalStream(info TokenInfo, fn func(streamID string)) {
 	streamID := newLocalStreamID(info)
-	if r.Authorizers != nil {
-		r.Authorizers.RegisterLocalAuthorizer(streamID, r.WorkspaceIDs)
-		defer r.Authorizers.ReleaseLocalStream(streamID)
+	if r.Streams != nil {
+		defer r.Streams.ReleaseLocalStream(streamID)
 	}
 	fn(streamID)
 }
@@ -203,7 +190,7 @@ func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method strin
 		}
 	}
 	collector := &responseCollector{}
-	r.withLocalAuthorizer(info, func(streamID string) {
+	r.withLocalStream(info, func(streamID string) {
 		collector.streamID = streamID
 		r.LocalDispatcher.DispatchWith(ctx, r.UserID, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 	})
@@ -211,10 +198,7 @@ func (r *Router) dispatchLocal(ctx context.Context, info TokenInfo, method strin
 }
 
 // StreamInner runs a server-streaming inner RPC.
-func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID, workspaceID, clientReqID string, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
-	if workspaceID != "" && r.WorkspaceFilter != nil && !r.WorkspaceFilter(workspaceID) {
-		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("workspace not in scope"))
-	}
+func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string, payload []byte, targetWorkerID, clientReqID string, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if clientReqID != "" {
@@ -231,7 +215,7 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 		if r.CrossWorker == nil {
 			return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("cross-worker client not configured"))
 		}
-		return r.CrossWorker.StreamInner(streamCtx, targetWorkerID, r.UserID, r.scopeWorkspaceID(workspaceID), bare, payload, func(m *leapmuxv1.InnerStreamMessage) {
+		return r.CrossWorker.StreamInner(streamCtx, targetWorkerID, r.UserID, bare, payload, func(m *leapmuxv1.InnerStreamMessage) {
 			_ = onMsg(&leapmuxv1.StreamInnerEnvelope{
 				Payload:      m.GetPayload(),
 				End:          m.GetEnd(),
@@ -258,27 +242,12 @@ func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string,
 		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("local dispatcher not configured"))
 	}
 	var collector *streamCollector
-	r.withLocalAuthorizer(info, func(streamID string) {
+	r.withLocalStream(info, func(streamID string) {
 		collector = newStreamCollector(ctx, streamID, onMsg)
 		r.LocalDispatcher.DispatchWith(ctx, r.UserID, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 		collector.wait()
 	})
-	return collector.err
-}
-
-// scopeWorkspaceID picks the delegation-bearer scope for hub-bound
-// calls: prefer the IPC request's workspace_id (callers can target a
-// sibling workspace they have access to), otherwise fall back to the
-// spawning agent's workspace. Empty when neither is available — the
-// bridge will surface a clear "missing workspace" error.
-func (r *Router) scopeWorkspaceID(requestWorkspaceID string) string {
-	if requestWorkspaceID != "" {
-		return requestWorkspaceID
-	}
-	if len(r.WorkspaceIDs) > 0 {
-		return r.WorkspaceIDs[0]
-	}
-	return ""
+	return collector.outcome()
 }
 
 // CancelStream cancels an active stream by client_request_id.
@@ -374,10 +343,20 @@ func (c *responseCollector) toResponse() *leapmuxv1.CallInnerResponse {
 
 // streamCollector adapts SendStream calls into onMsg invocations and
 // blocks until the handler emits a non-streaming terminal response or
-// the ctx is cancelled. err writes happen inside finish() (CAS-gated
-// to a single writer) and the reader only runs after wait() returns,
-// which observes `close(c.done)` — so the close-of-done provides the
-// happens-before edge and no mutex is needed.
+// the ctx is cancelled.
+//
+// Terminating is two steps, and the ORDER is the whole contract: claim() takes
+// sole ownership of err via CAS, then settle(err) records it and only then
+// closes done. Doing it the other way -- close first, assign after -- released
+// wait() BEFORE the write, so the reader raced the writer and a stream error
+// could be reported to the caller as success. That is reachable whenever a
+// terminal frame arrives from a goroutine other than the handler's own (a
+// WatchEvents broadcast, a rejected streaming request), which this commit made
+// commonplace by answering streaming denials as stream frames.
+//
+// err is additionally mutex-guarded so the read in streamLocal is ordered
+// against the write even when wait() returns via ctx cancellation rather than
+// via done.
 type streamCollector struct {
 	ctx      context.Context
 	onMsg    func(*leapmuxv1.StreamInnerEnvelope) error
@@ -385,7 +364,9 @@ type streamCollector struct {
 
 	finished atomic.Bool
 	done     chan struct{}
-	err      error
+
+	mu  sync.Mutex
+	err error
 }
 
 func newStreamCollector(ctx context.Context, streamID string, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) *streamCollector {
@@ -397,27 +378,43 @@ func newStreamCollector(ctx context.Context, streamID string, onMsg func(*leapmu
 	}
 }
 
-// finish marks the collector terminal. Returns true when the caller
-// is the first writer to reach this state — callers that observe
-// false MUST NOT touch c.err (someone else owns it now). Closes done
-// so wait() can unblock without waiting for ctx cancellation.
-func (c *streamCollector) finish() bool {
-	if !c.finished.CompareAndSwap(false, true) {
-		return false
-	}
+// claim marks the collector terminal and returns true when the caller is the
+// first to reach this state. Only that caller may call settle; anyone observing
+// false MUST NOT touch err (someone else owns it now).
+//
+// claim does NOT release wait() -- settle does. Every claim must be followed by
+// exactly one settle, or a caller blocks until its own context expires.
+func (c *streamCollector) claim() bool {
+	return c.finished.CompareAndSwap(false, true)
+}
+
+// settle records the terminal error (nil for success) and releases wait().
+// Called exactly once, by whoever won claim.
+func (c *streamCollector) settle(err error) {
+	c.mu.Lock()
+	c.err = err
+	c.mu.Unlock()
 	close(c.done)
-	return true
+}
+
+// outcome reports the terminal error, or nil when the stream ended cleanly or
+// the context was cancelled before any terminal frame arrived.
+func (c *streamCollector) outcome() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
 }
 
 func (c *streamCollector) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
-	if !c.finish() {
+	if !c.claim() {
 		return nil
 	}
 	if resp == nil {
+		c.settle(nil)
 		return nil
 	}
 	if resp.GetIsError() {
-		c.err = fmt.Errorf("rpc error: %s", resp.GetErrorMessage())
+		c.settle(fmt.Errorf("rpc error: %s", resp.GetErrorMessage()))
 		return nil
 	}
 	// A streaming handler that signals completion via SendResponse may
@@ -429,22 +426,22 @@ func (c *streamCollector) SendResponse(resp *leapmuxv1.InnerRpcResponse) error {
 	// silently corrupted the stream end. Skip the forward only when
 	// there is no payload — an empty SendResponse is the documented
 	// "done, nothing more" signal.
+	var terminal error
 	if len(resp.GetPayload()) > 0 {
-		if onMsgErr := c.onMsg(&leapmuxv1.StreamInnerEnvelope{
+		terminal = c.onMsg(&leapmuxv1.StreamInnerEnvelope{
 			Payload: resp.GetPayload(),
 			End:     true,
-		}); onMsgErr != nil {
-			c.err = onMsgErr
-		}
+		})
 	}
+	c.settle(terminal)
 	return nil
 }
 
 func (c *streamCollector) SendError(code int32, msg string) error {
-	if !c.finish() {
+	if !c.claim() {
 		return nil
 	}
-	c.err = fmt.Errorf("rpc error %d: %s", code, msg)
+	c.settle(fmt.Errorf("rpc error %d: %s", code, msg))
 	return nil
 }
 
@@ -469,8 +466,19 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 	// until its own context expired, because the frame that WAS the ending
 	// did not look like one to this type.
 	if m.GetEnd() || m.GetIsError() {
-		if c.finish() && m.GetIsError() {
-			c.err = fmt.Errorf("rpc error %d: %s", m.GetErrorCode(), m.GetErrorMessage())
+		if c.claim() {
+			// `terminal` starts as onMsg's error, so a delivery failure on a CLEAN
+			// End frame is reported rather than settled as success. SendResponse
+			// already assigns onMsg's result straight to its terminal outcome; this
+			// path used to look only at IsError, so the outcome a caller saw
+			// depended on which of two equivalent reply shapes the handler chose.
+			terminal := err
+			if m.GetIsError() {
+				// An explicit error frame names the failure better than a local
+				// send error would, so it wins.
+				terminal = fmt.Errorf("rpc error %d: %s", m.GetErrorCode(), m.GetErrorMessage())
+			}
+			c.settle(terminal)
 		}
 	}
 	return err
@@ -479,11 +487,14 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 func (c *streamCollector) ChannelID() string   { return c.streamID }
 func (*streamCollector) MaxPayloadBudget() int { return 0 }
 
-// wait blocks until either the handler signals completion (via
-// SendResponse / SendError → finish) or the request context is
-// cancelled. Observing finish lets us release the authorizer
-// registration as soon as the handler returns, even if the gRPC
-// client hasn't closed the stream yet.
+// wait blocks until either the handler signals completion or the request
+// context is cancelled.
+//
+// Three paths settle the collector, each through claim/settle so only the first
+// wins: SendResponse, SendError, and a terminal SendStream frame (an End or an
+// IsError). Observing that lets withLocalStream release the stream's registered
+// watchers and event subscriptions as soon as the handler returns, rather than
+// waiting for the connect-rpc client to close the stream.
 func (c *streamCollector) wait() {
 	select {
 	case <-c.done:
@@ -520,11 +531,9 @@ func stripNamespace(method string) string {
 // correlation works), and request-id is a fresh nanoid per call so
 // each stream has its own row in the watcher map.
 //
-// Plan reference: "Wire the LocalIPCAuthorizer to provide a stable
-// synthetic ID for the lifetime of each ConnectRPC server-streaming
-// RPC" — using the agent/terminal id satisfies "stable for the
-// bearer" while the per-request suffix keeps every WatchEvents
-// registration distinct.
+// The id has to be stable for the lifetime of one server-streaming RPC and
+// distinct per call: the agent/terminal id gives the first, and the
+// per-request suffix keeps every WatchEvents registration its own row.
 func newLocalStreamID(info TokenInfo) string {
 	return service.LocalIPCStreamPrefix + tokenIdentitySegment(info) + ":" + id.Generate()
 }

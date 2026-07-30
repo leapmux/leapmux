@@ -39,7 +39,7 @@ const (
 
 	// connectControlReserve is the slice of connectQueueMaxBytes that data
 	// paths (Send / EnqueueWait) leave free for must-deliver receive-goroutine
-	// control frames (ChannelOpenResp, ChannelAccessUpdateAck, DeregisterAck,
+	// control frames (ChannelOpenResp, DeregisterAck,
 	// nonce-desync CLOSE). Sized for many tiny control frames; a saturated
 	// bulk burst must not silently drop a handshake/teardown frame.
 	connectControlReserve = 256 * 1024
@@ -72,13 +72,18 @@ type Client struct {
 	// The worker should clear its state and shut down gracefully.
 	OnDeregister func()
 
+	// OnReconcileNudge is called when the Hub asks this worker to run its
+	// orphan reconciler now, because a CRDT batch tombstoned a tab this worker
+	// hosts. Unsolicited, like the heartbeat.
+	OnReconcileNudge func()
+
 	// OnTabSyncResponse is called when the Hub replies to the connect-
-	// time WorkspaceTabsSync with its orphan / reassignment
+	// time WorkerTabInventory with its orphan / reassignment
 	// classification. Wired by the runner to trigger an immediate
 	// orphan-reconciler pass so reconnects converge worker state with
 	// the hub's CRDT-derived `workspace_tab_owned` view without
 	// waiting for the periodic interval.
-	OnTabSyncResponse func(*leapmuxv1.WorkspaceTabsSyncResponse)
+	OnTabSyncResponse func(*leapmuxv1.WorkerTabInventoryResponse)
 
 	// OnWorkerIdentity is called with the owner the Hub delivers as the FIRST
 	// message on every Connect stream, before it publishes the connection -- so it
@@ -100,9 +105,9 @@ type Client struct {
 	// EncryptionMode is the Worker's encryption mode.
 	EncryptionMode leapmuxv1.EncryptionMode
 
-	// TabSyncProvider returns the current tab state for WorkspaceTabsSync
+	// TabSyncProvider returns the current tab state for WorkerTabInventory
 	// on connect. Set by the runner after initializing the worker service.
-	TabSyncProvider func() *leapmuxv1.WorkspaceTabsSync
+	TabSyncProvider func() *leapmuxv1.WorkerTabInventory
 
 	mu           sync.Mutex
 	stream       *connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse]
@@ -382,8 +387,8 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	if c.TabSyncProvider != nil {
 		if tabSync := c.TabSyncProvider(); tabSync != nil {
 			if err := c.Send(&leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_WorkspaceTabsSync{
-					WorkspaceTabsSync: tabSync,
+				Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{
+					WorkerTabInventory: tabSync,
 				},
 			}); err != nil {
 				slog.Warn("failed to send workspace tabs sync", "error", err)
@@ -425,12 +430,14 @@ func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 	case *leapmuxv1.ConnectResponse_ChannelClose:
 		c.handleChannelClose(payload.ChannelClose)
 
-	case *leapmuxv1.ConnectResponse_ChannelAccessUpdate:
-		c.handleChannelAccessUpdate(msg.GetRequestId(), payload.ChannelAccessUpdate)
+	case *leapmuxv1.ConnectResponse_ReconcileNudge:
+		if c.OnReconcileNudge != nil {
+			c.OnReconcileNudge()
+		}
 
-	case *leapmuxv1.ConnectResponse_WorkspaceTabsSyncResp:
+	case *leapmuxv1.ConnectResponse_WorkerTabInventoryResp:
 		if c.OnTabSyncResponse != nil {
-			c.OnTabSyncResponse(payload.WorkspaceTabsSyncResp)
+			c.OnTabSyncResponse(payload.WorkerTabInventoryResp)
 		}
 
 	case *leapmuxv1.ConnectResponse_WorkerIdentity:

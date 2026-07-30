@@ -262,8 +262,11 @@ func (r EntityRef) ToJSON() map[string]any {
 		return map[string]any{"window_id": r.WindowID}
 	case EntityKindWorkspaceRoot:
 		return map[string]any{"workspace_id": r.WorkspaceID}
+	default:
+		// EntityKindUnknown, per the doc above: an empty object keeps the JSON
+		// shape stable across every op variant.
+		return map[string]any{}
 	}
-	return map[string]any{}
 }
 
 // OpTarget extracts the EntityRef an op acts on.

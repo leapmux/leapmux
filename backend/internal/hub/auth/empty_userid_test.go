@@ -181,7 +181,7 @@ func TestZeroUserIDDenies(t *testing.T) {
 				// minter is a real stranger's worker and what remains pinned is
 				// the reach, not the pairing.
 				zeroPrincipal := &auth.UserInfo{
-					Credential: auth.DelegationCredential("d-zero", "ws-1", strangerWorker.ID),
+					Credential: auth.DelegationCredential("d-zero", strangerWorker.ID),
 				}
 				scope, err := auth.ResolveDelegationWorkerScope(ctx, st, zeroPrincipal)
 				require.NoError(t, err)
@@ -195,7 +195,7 @@ func TestZeroUserIDDenies(t *testing.T) {
 				ownerWorker2 := storetest.SeedWorker(t, st, owner.ID)
 				ownerPrincipal := &auth.UserInfo{
 					ID:         ownerID,
-					Credential: auth.DelegationCredential("d-owner", "ws-1", worker.ID),
+					Credential: auth.DelegationCredential("d-owner", worker.ID),
 				}
 				ownerScope, err := auth.ResolveDelegationWorkerScope(ctx, st, ownerPrincipal)
 				require.NoError(t, err)
@@ -205,7 +205,7 @@ func TestZeroUserIDDenies(t *testing.T) {
 				// The enforcing wrapper around the same comparison: a zero
 				// principal must be refused for any worker but the minter.
 				zeroPrincipal := &auth.UserInfo{
-					Credential: auth.DelegationCredential("d-zero", "ws-1", strangerWorker.ID),
+					Credential: auth.DelegationCredential("d-zero", strangerWorker.ID),
 				}
 				require.NoError(t,
 					auth.CheckDelegationWorkerScope(ctx, st, zeroPrincipal, strangerWorker.ID),
@@ -221,7 +221,7 @@ func TestZeroUserIDDenies(t *testing.T) {
 				// a real user.
 				cache := auth.NewDelegationScopeCache(st)
 				zeroPrincipal := &auth.UserInfo{
-					Credential: auth.DelegationCredential("d-zero", "ws-1", strangerWorker.ID),
+					Credential: auth.DelegationCredential("d-zero", strangerWorker.ID),
 				}
 				scope, err := cache.Resolve(ctx, zeroPrincipal)
 				require.NoError(t, err)

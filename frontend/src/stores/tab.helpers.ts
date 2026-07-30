@@ -297,7 +297,6 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     return undefined
   return {
     id: tab.id,
-    workspaceId: '',
     workerId: tab.workerId ?? '',
     workerName: '',
     workingDir: tab.workingDir ?? '',

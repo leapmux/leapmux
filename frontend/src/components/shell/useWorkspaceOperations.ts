@@ -220,13 +220,23 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
     }
     const done = startWorkspaceLoading(workspaceId)
     try {
-      // 1. Hub soft-deletes the workspace and returns worker IDs that had tabs.
+      // 1. Hub soft-deletes the workspace and answers with each hosting worker
+      //    AND the tabs it must tear down, read inside the delete transaction.
+      //
+      //    This client used to snapshot the tab list itself beforehand, from the
+      //    local CRDT projection. That was three bugs: a tab a peer opened
+      //    between the read and the delete was missed, the accessor was optional
+      //    so a caller that omitted it silently asked every worker to close
+      //    nothing, and the projection it read is a strict SUBSET of the owned
+      //    tabs -- so a projection-hidden tab was unreachable rather than late.
       const resp = await workspaceClient.deleteWorkspace({ workspaceId })
 
-      // 2. Clean up resources on each worker via E2EE.
+      // 2. Clean up resources on each worker via E2EE. Each worker gets exactly
+      //    its own tabs; tab ids are unique per USER, not per worker, so a tab
+      //    id sent to the wrong machine would close a live tab there.
       await Promise.all(
-        resp.workerIds.map(wid =>
-          workerRpc.cleanupWorkspace(wid, { workspaceId }).catch(() => {}),
+        resp.workerTabs.map(wt =>
+          workerRpc.cleanupWorkspace(wt.workerId, { tabs: wt.tabs }).catch(() => {}),
         ),
       )
 

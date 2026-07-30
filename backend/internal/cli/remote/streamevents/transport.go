@@ -193,8 +193,7 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 // (`LEAPMUX_REMOTE_SOCK`). The router on the worker side proxies the
 // stream to the appropriate inner-RPC handler.
 type LocalIPCTransport struct {
-	client      leapmuxv1connect.RemoteIPCServiceClient
-	workspaceID string
+	client leapmuxv1connect.RemoteIPCServiceClient
 	// targetWorkerID is the worker the WatchEvents subscription is
 	// for. Local-IPC routes to the spawning worker by default; this
 	// lets `events --include agent,terminal` direct subscriptions to
@@ -203,10 +202,10 @@ type LocalIPCTransport struct {
 	logger         *slog.Logger
 }
 
-// NewLocalIPCTransport wires the local-IPC client + workspace + target. A nil
+// NewLocalIPCTransport wires the local-IPC client + target. A nil
 // logger falls back to slog.Default() so a malformed frame is never nil-deref.
-func NewLocalIPCTransport(client leapmuxv1connect.RemoteIPCServiceClient, workspaceID, targetWorkerID string, logger *slog.Logger) *LocalIPCTransport {
-	return &LocalIPCTransport{client: client, workspaceID: workspaceID, targetWorkerID: targetWorkerID, logger: transportLogger(logger)}
+func NewLocalIPCTransport(client leapmuxv1connect.RemoteIPCServiceClient, targetWorkerID string, logger *slog.Logger) *LocalIPCTransport {
+	return &LocalIPCTransport{client: client, targetWorkerID: targetWorkerID, logger: transportLogger(logger)}
 }
 
 // OpenWatchEvents implements Transport.
@@ -225,7 +224,6 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 		Method:         "worker.WatchEvents",
 		Payload:        payload,
 		TargetWorkerId: t.targetWorkerID,
-		WorkspaceId:    t.workspaceID,
 	}))
 	if err != nil {
 		cancel()

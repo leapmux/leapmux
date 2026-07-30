@@ -116,13 +116,7 @@ async function openAgent(harness: MultiWorkerHarness, workerId: string, workspac
   const { getUserEventsSubscription, seedTabIntoWorkspace } = await import('./helpers/crdt')
   const channel = await createTestChannelManager(harness.hubUrl, harness.adminToken)
 
-  // Every cross-worker channel needs the workspace marked
-  // accessible on the worker side before the workspace-scoped RPC
-  // lands; this matches what `helpers/api.ts:openAgentViaAPI` does.
-  await hubPost(harness, '/leapmux.v1.ChannelService/PrepareWorkspaceAccess', { workerId, workspaceId })
-
   const resp = await channel.callWorker(workerId, 'OpenAgent', OpenAgentRequestSchema, OpenAgentResponseSchema, {
-    workspaceId,
     workerId,
     workingDir: '',
   })

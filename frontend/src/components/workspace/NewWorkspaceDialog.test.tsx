@@ -5,7 +5,6 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
-import { ensureWorkspaceAccess } from '~/api/workspaceAccess'
 import { AgentInfoSchema, AgentProvider, AgentStatus, OpenAgentResponseSchema } from '~/generated/leapmux/v1/agent_pb'
 import { CreateWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
@@ -46,8 +45,6 @@ vi.mock('~/api/workerRpc', () => ({
   listDirectory: vi.fn(),
 }))
 
-vi.mock('~/api/workspaceAccess', () => ({ ensureWorkspaceAccess: vi.fn() }))
-
 // Partial mock: the dialog imports `seedTabIntoNewWorkspace` through the
 // barrel, and the barrel's other exports (op builders, the bridge) are pulled
 // in by the same import graph.
@@ -71,7 +68,6 @@ vi.mock('~/components/tree/DirectoryTree', () => ({
 /** What the worker reports back for the agent the dialog opens. */
 const AGENT = create(AgentInfoSchema, {
   id: 'agent-1',
-  workspaceId: NEW_WORKSPACE_ID,
   workerId: WORKER_ID,
   title: 'Agent Mimi',
   workingDir: WORKING_DIR,
@@ -95,7 +91,6 @@ beforeEach(() => {
     create(CreateWorkspaceResponseSchema, { workspaceId: NEW_WORKSPACE_ID }),
   )
   vi.mocked(workspaceClient.deleteWorkspace).mockResolvedValue(create(DeleteWorkspaceResponseSchema, {}))
-  vi.mocked(ensureWorkspaceAccess).mockResolvedValue(true)
   vi.mocked(workerRpc.openAgent).mockResolvedValue(
     create(OpenAgentResponseSchema, { agent: AGENT }),
   )
@@ -127,56 +122,22 @@ async function submitDialog(): Promise<void> {
 }
 
 describe('newWorkspaceDialog', () => {
-  /**
-   * The workspace is brand new, so no channel this page holds was seeded with
-   * it at `OpenChannel` time. `OpenAgent` on it is refused until
-   * `PrepareWorkspaceAccess` has run and been acked -- announcing AFTER the
-   * open, or not awaiting it, puts the two in a race the dialog loses roughly
-   * every time.
-   */
-  it('announces the new workspace before opening an agent in it', async () => {
-    let announce: (fresh: boolean) => void = () => {}
-    vi.mocked(ensureWorkspaceAccess).mockReturnValue(new Promise<boolean>((res) => {
-      announce = res
-    }))
+  it('opens the agent on the new workspace\'s worker', async () => {
+    // No announcement step. A channel carries no workspace set any more, so a
+    // workspace created after it opened needs nothing done to it before
+    // OpenAgent will be served -- which is what makes the first agent in a
+    // freshly-created workspace work without an out-of-band repair.
     renderDialog()
 
     await submitDialog()
 
     await waitFor(() => {
-      expect(ensureWorkspaceAccess).toHaveBeenCalledWith(WORKER_ID, NEW_WORKSPACE_ID)
-    })
-    expect(workerRpc.openAgent, 'the agent must wait for the announcement to be acked')
-      .not
-      .toHaveBeenCalled()
-
-    announce(true)
-
-    await waitFor(() => {
       expect(workerRpc.openAgent).toHaveBeenCalledOnce()
     })
     expect(workerRpc.openAgent).toHaveBeenCalledWith(WORKER_ID, expect.objectContaining({
-      workspaceId: NEW_WORKSPACE_ID,
       agentProvider: AgentProvider.CLAUDE_CODE,
       workingDir: WORKING_DIR,
     }))
-  })
-
-  it('opens the agent even when the announcer reports nothing new', async () => {
-    // `ensure` answers false when the pair was already announced. Elsewhere
-    // that answer ends a repair loop, but here it is not a failure and must not
-    // be treated as one: it only means some other caller announced this
-    // workspace first, which is exactly the state OpenAgent needs.
-    vi.mocked(ensureWorkspaceAccess).mockResolvedValue(false)
-    const props = renderDialog()
-
-    await submitDialog()
-
-    await waitFor(() => {
-      expect(props.onCreated).toHaveBeenCalledWith(NEW_WORKSPACE_ID)
-    })
-    expect(workerRpc.openAgent).toHaveBeenCalledOnce()
-    expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
   })
 
   it('sends the trimmed title to the hub', async () => {
@@ -253,22 +214,6 @@ describe('newWorkspaceDialog', () => {
       expect(await screen.findByText('worker exploded')).toBeInTheDocument()
     })
 
-    it('deletes the workspace when the announcement fails', async () => {
-      vi.mocked(ensureWorkspaceAccess).mockRejectedValue(new Error('hub unreachable'))
-      const props = renderDialog()
-
-      await submitDialog()
-
-      await waitFor(() => {
-        expect(workspaceClient.deleteWorkspace).toHaveBeenCalledWith({ workspaceId: NEW_WORKSPACE_ID })
-      })
-      // An unannounced workspace is one `OpenAgent` would be refused on, so
-      // there is nothing to gain by trying it anyway.
-      expect(workerRpc.openAgent).not.toHaveBeenCalled()
-      expect(props.onCreated).not.toHaveBeenCalled()
-      expect(await screen.findByText('hub unreachable')).toBeInTheDocument()
-    })
-
     it('has nothing to roll back when the workspace itself fails to be created', async () => {
       vi.mocked(workspaceClient.createWorkspace).mockRejectedValue(new Error('quota exceeded'))
       renderDialog()
@@ -277,14 +222,13 @@ describe('newWorkspaceDialog', () => {
 
       expect(await screen.findByText('quota exceeded')).toBeInTheDocument()
       expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
-      expect(ensureWorkspaceAccess).not.toHaveBeenCalled()
+      expect(workerRpc.openAgent).not.toHaveBeenCalled()
     })
 
     it('fails loudly, and without a rollback, when the response carries no workspace id', async () => {
       // A workspace id is the only handle on what was just created. Proceeding
-      // with an empty one would announce and open an agent against "", and
-      // deleting "" would be a delete request for whatever the hub resolves an
-      // empty id to.
+      // with an empty one would seed the agent's tab into "", and deleting ""
+      // would be a delete request for whatever the hub resolves an empty id to.
       vi.mocked(workspaceClient.createWorkspace).mockResolvedValue(
         create(CreateWorkspaceResponseSchema, { workspaceId: '' }),
       )
@@ -293,7 +237,7 @@ describe('newWorkspaceDialog', () => {
       await submitDialog()
 
       expect(await screen.findByText('No workspace ID in response')).toBeInTheDocument()
-      expect(ensureWorkspaceAccess).not.toHaveBeenCalled()
+      expect(workerRpc.openAgent).not.toHaveBeenCalled()
       expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
       expect(props.onCreated).not.toHaveBeenCalled()
     })

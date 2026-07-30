@@ -254,7 +254,6 @@ type Terminal struct {
 // Options configures a new Terminal.
 type Options struct {
 	ID            string
-	WorkspaceID   string
 	Shell         string
 	WorkingDir    string
 	ShellStartDir string

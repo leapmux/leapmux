@@ -165,7 +165,6 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
     <>
       <Show when={props.dialogs.newAgent.isOpen()}>
         <NewAgentDialog
-          workspaceId={props.activeWorkspace()?.id ?? ''}
           defaultWorkerId={props.getCurrentTabContext().workerId}
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
           availableProviders={props.availableProviders}
@@ -181,7 +180,6 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
 
       <Show when={props.dialogs.newTerminal.isOpen()}>
         <NewTerminalDialog
-          workspaceId={props.activeWorkspace()?.id ?? ''}
           defaultWorkerId={props.getCurrentTabContext().workerId}
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
           onCreated={(terminalId, workerId, workingDir, title) => {

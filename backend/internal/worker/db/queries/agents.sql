@@ -1,25 +1,37 @@
 -- name: CreateAgent :exec
-INSERT INTO agents (id, workspace_id, working_dir, home_dir, title, options, agent_provider, resumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO agents (id, working_dir, home_dir, title, options, agent_provider, resumed) VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetAgentByID :one
 SELECT * FROM agents WHERE id = ?;
 
--- name: ListOpenAgentIDsByWorkspaceID :many
-SELECT id FROM agents WHERE workspace_id = ? AND closed_at IS NULL;
+-- GetAgentID is the existence probe behind requireAgentID: it answers
+-- sql.ErrNoRows for an unknown id while reading only the primary key, so a
+-- handler that needs no agent fields (close, interrupt) does not deserialize
+-- the options / option_groups JSON blobs SELECT * would.
+-- name: GetAgentID :one
+SELECT id FROM agents WHERE id = ?;
 
 -- name: ListAllOpenAgentIDs :many
 SELECT id FROM agents WHERE closed_at IS NULL;
 
--- name: ListAllAgentIDsAndWorkspaces :many
-SELECT id, workspace_id FROM agents;
+-- name: ListAllAgentIDs :many
+SELECT id FROM agents;
 
--- name: CloseAgent :exec
+-- name: CloseAgent :execresult
+-- closed_at IS NULL makes this idempotent, which the retention sweep depends
+-- on. The orphan reconciler re-closes rows it finds absent from the hub's
+-- list, and ListAllAgentIDs returns closed rows too -- so without this guard
+-- every hourly pass re-stamps closed_at = now on every already-closed row,
+-- the `closed_at < cutoff` retention delete never matches again, and the rows
+-- (plus their cascaded messages) accumulate for the machine's lifetime.
+--
+-- :execresult, not :exec, because the affected-row count is the ONLY signal
+-- that distinguishes "this close retired a live agent" from "the row was
+-- already closed". closeTabCommon needs that to decide whether a
+-- WORKTREE_ACTION_REMOVE is a user-confirmed delete or a stale client asking
+-- to force-remove a directory nobody is looking at.
 UPDATE agents SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE id = ?;
-
--- name: CloseOpenAgentsByWorkspace :exec
-UPDATE agents SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE workspace_id = ? AND closed_at IS NULL;
+WHERE id = ? AND closed_at IS NULL;
 
 -- name: RenameAgent :execresult
 UPDATE agents SET title = ? WHERE id = ?;
@@ -134,12 +146,6 @@ UPDATE agents SET plan_file_path = ?, plan_title = ? WHERE id = ?;
 
 -- name: UpdateAgentPlanAndTitle :exec
 UPDATE agents SET plan_file_path = ?, plan_title = ?, title = ? WHERE id = ?;
-
--- name: GetAgentWorkspaceID :one
-SELECT workspace_id FROM agents WHERE id = ?;
-
--- name: UpdateAgentWorkspace :exec
-UPDATE agents SET workspace_id = ? WHERE id = ?;
 
 -- name: ListAgentsByIDs :many
 SELECT * FROM agents WHERE id IN (sqlc.slice('ids')) AND closed_at IS NULL;

@@ -50,10 +50,8 @@ func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1
 // registerTerminalHandlers registers all terminal-related RPC handlers.
 func registerTerminalHandlers(d registrar, svc *Service) {
 	// OpenTerminal starts a new PTY terminal session.
-	registerWorkspaceGated(d, "OpenTerminal",
+	registerOwnerGated(d, "OpenTerminal", dispatchPlain,
 		func(ctx context.Context, userID userid.UserID, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
-			workspaceID := r.GetWorkspaceId()
-
 			cols := r.GetCols()
 			if cols == 0 {
 				cols = 80
@@ -102,7 +100,6 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			terminalTitle := pickTerminalTitle()
 			if upsertErr := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 				ID:            terminalID,
-				WorkspaceID:   workspaceID,
 				WorkingDir:    plan.PlannedWorkingDir,
 				HomeDir:       svc.HomeDir,
 				ShellStartDir: shellStartDir,
@@ -116,6 +113,10 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				sendInternalError(sender, "failed to persist terminal")
 				return
 			}
+			// Same window as the agent path: the row is durable and reapable, but
+			// its cleanup is only registered once spawnRemoteIPC runs. See
+			// cleanupRegistry.claim.
+			svc.terminalCleanups.claim(terminalID)
 
 			// Register the startup in the registry with a cancel ctx so
 			// CloseTerminal during phase 0 aborts executeGitMode, and seed
@@ -136,15 +137,13 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// unusually slow factory doesn't stretch the synchronous RPC
 			// latency the user sees.
 			spawnInfo := TerminalSpawnInfo{
-				UserID:      userID,
-				WorkspaceID: workspaceID,
-				WorkerID:    svc.WorkerID,
-				TabID:       terminalID,
-				WorkingDir:  plan.PlannedWorkingDir,
+				UserID:     userID,
+				WorkerID:   svc.WorkerID,
+				TabID:      terminalID,
+				WorkingDir: plan.PlannedWorkingDir,
 			}
 			go svc.runTerminalStartup(startupCtx, terminal.Options{
 				ID:            terminalID,
-				WorkspaceID:   workspaceID,
 				Shell:         shell,
 				WorkingDir:    plan.PlannedWorkingDir,
 				ShellStartDir: shellStartDir,
@@ -220,15 +219,13 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				fallbackOffset = dbTerm.ScreenLength.Int64
 			}
 			spawnInfo := TerminalSpawnInfo{
-				UserID:      userID,
-				WorkspaceID: dbTerm.WorkspaceID,
-				WorkerID:    svc.WorkerID,
-				TabID:       terminalID,
-				WorkingDir:  dbTerm.WorkingDir,
+				UserID:     userID,
+				WorkerID:   svc.WorkerID,
+				TabID:      terminalID,
+				WorkingDir: dbTerm.WorkingDir,
 			}
 			go svc.runTerminalRestart(startupCtx, terminal.Options{
 				ID:            terminalID,
-				WorkspaceID:   dbTerm.WorkspaceID,
 				Shell:         shell,
 				WorkingDir:    dbTerm.WorkingDir,
 				ShellStartDir: dbTerm.ShellStartDir,
@@ -238,7 +235,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// CloseTerminal stops and removes a terminal session.
-	registerTerminalGatedByIDTracked(d, "CloseTerminal",
+	registerTerminalGatedByID(d, "CloseTerminal", dispatchTracked,
 		func(_ context.Context, userID userid.UserID, r *leapmuxv1.CloseTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -249,23 +246,12 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// the tab from the UI. The TerminalStartup goroutine's
 			// trailing rollback work is tracked separately by
 			// TerminalStartup.WaitForInFlight and drained in Shutdown.
-			result := svc.closeTabCommon(
-				leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-				terminalID,
-				userID.String(),
-				r.GetWorktreeAction(),
-				func() {
-					svc.TerminalStartup.cancelAndClear(terminalID)
-					svc.Terminals.RemoveTerminal(terminalID)
-					svc.terminalCleanups.run(terminalID)
-				},
-				func() error { return svc.Queries.CloseTerminal(bgCtx(), terminalID) },
-			)
+			result := svc.closeTerminalTabCommon(userID.String(), terminalID, r.GetWorktreeAction(), dropWorktreeLink)
 			sendProtoResponse(sender, &leapmuxv1.CloseTerminalResponse{Result: result})
 		})
 
 	// SendInput sends input data to a terminal.
-	registerTerminalGatedByID(d, "SendInput",
+	registerTerminalGatedByID(d, "SendInput", dispatchPlain,
 		func(_ context.Context, _ userid.UserID, r *leapmuxv1.SendInputRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -283,7 +269,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// ResizeTerminal changes a terminal's dimensions.
-	registerTerminalGatedByID(d, "ResizeTerminal",
+	registerTerminalGatedByID(d, "ResizeTerminal", dispatchPlain,
 		func(_ context.Context, _ userid.UserID, r *leapmuxv1.ResizeTerminalRequest, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
@@ -331,7 +317,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// intervals (kept short so a title set right before shell exit reaches
 	// the worker before the close handler persists meta to DB).
 	registerTerminalGated(d, "UpdateTerminalTitle",
-		func(_ context.Context, _ userid.UserID, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
+		func(_ context.Context, userID userid.UserID, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
 			title := r.GetTitle()
@@ -344,7 +330,6 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// Persist to DB so it survives restarts.
 			if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
 				ID:            dbTerm.ID,
-				WorkspaceID:   dbTerm.WorkspaceID,
 				WorkingDir:    dbTerm.WorkingDir,
 				HomeDir:       dbTerm.HomeDir,
 				ShellStartDir: dbTerm.ShellStartDir,
@@ -363,7 +348,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 			if svc.PrivateEvents != nil {
 				svc.PrivateEvents.PublishTabRenamed(
-					dbTerm.WorkspaceID, terminalID, leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+					userID, terminalID, leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 					title, sender.ChannelID(),
 				)
 			}
@@ -371,46 +356,25 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
 		})
 
-	// ListTerminals returns all terminal tabs for a workspace.
+	// ListTerminals resolves the records behind a set of terminal tab ids.
 	// Uses the in-memory terminal manager for running terminals and falls
 	// back to saved terminal records for terminals that have already exited
 	// and been removed from the manager.
-	registerSetFiltered(d, "ListTerminals", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
-		var r leapmuxv1.ListTerminalsRequest
-		if err := unmarshalRequest(req, &r); err != nil {
-			sendInvalidArgument(sender, "invalid request")
-			return
-		}
-
+	registerOwnerGated(d, "ListTerminals", dispatchPlain, func(ctx context.Context, _ userid.UserID, r *leapmuxv1.ListTerminalsRequest, sender channel.ResponseWriter) {
 		tabIDs := r.GetTabIds()
 		if len(tabIDs) == 0 {
 			sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{})
 			return
 		}
 
-		// Filter by access control: only return terminals in accessible
-		// workspaces. AuthorizerFor abstracts over E2EE channels and
-		// local-IPC streams (which have no channel id but carry a token
-		// scope registered at request entry).
-		accessibleWsIDs := svc.AuthorizerFor(sender.ChannelID()).AccessibleSet()
-
 		// Collect from the in-memory manager and DB-only rows, recording
 		// each terminal's resolved git directory (see gitutil.ResolveGitDir)
 		// so BatchGetGitStatus can dedupe across terminals that share a repo.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
-		// Ids we DO hold a record for but must not serve on this channel yet.
-		// Reported as NOT_ACCESSIBLE, rather than as a bare omission the client
-		// would have to treat as permanent: it names a condition the client can
-		// repair (PrepareWorkspaceAccess) instead of one it can only wait out.
-		hidden := map[string]bool{}
 		var terminals []*leapmuxv1.TerminalInfo
 		var gitDirs []string
 		for _, e := range entries {
-			if !accessibleWsIDs[e.Meta.WorkspaceID] {
-				hidden[e.ID] = true
-				continue
-			}
 			seen[e.ID] = true
 			ti := &leapmuxv1.TerminalInfo{
 				TerminalId:      e.ID,
@@ -451,10 +415,6 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			if seen[ts.ID] {
 				continue
 			}
-			if !accessibleWsIDs[ts.WorkspaceID] {
-				hidden[ts.ID] = true
-				continue
-			}
 			seen[ts.ID] = true
 			status, startupError, startupMessage := svc.deriveTerminalStatus(&ts)
 			// DB-persisted screen is just the bytes; the backend has no
@@ -493,16 +453,16 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 		sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{
 			Terminals: terminals,
-			Verdicts:  tabHydrationVerdicts(tabIDs, seen, hidden),
+			Verdicts:  tabHydrationVerdicts(tabIDs, seen),
 		})
 	})
 
 	// ListAvailableShells returns the shells installed on this worker.
 	// Owner-only: like sysinfo, it discloses machine-scoped state (which
 	// shell binaries are present on the host), so a non-owner channel --
-	// notably a workspace-pinned delegation bearer -- must not reach it. The
-	// worker owner's own agents (via the local-IPC remote CLI, which
-	// dispatches with the owner's user id) still pass this gate.
+	// notably a delegation bearer minted for a different user -- must not
+	// reach it. The worker owner's own agents (via the local-IPC remote CLI,
+	// which dispatches with the owner's user id) still pass this gate.
 	registerOwnerOnly(d, "ListAvailableShells", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.ListAvailableShellsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
@@ -668,7 +628,7 @@ func (svc *Service) runTerminalRestart(
 	// runs -- RestartTerminal refuses synchronously while IsRunning -- so there
 	// is no live shell whose remote control needs preserving, and leaving the
 	// old cleanup registered would strand a listening unix socket plus an
-	// unrevoked (user, workspace) delegation bearer for a process that is gone.
+	// unrevoked per-user delegation bearer for a process that is gone.
 	var newCleanup func()
 	remoteEnvs, ipcErr := svc.spawnRemoteIPC("terminal", terminalID, "restart", func(_ string, fn func()) {
 		newCleanup = fn

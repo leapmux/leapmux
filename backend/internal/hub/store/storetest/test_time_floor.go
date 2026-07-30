@@ -65,7 +65,6 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "floor-user")
 		worker := SeedWorker(t, st, user.ID)
-		wsID := SeedWorkspace(t, st, user.ID, "floor-ws")
 		base := floorProbeBase()
 
 		tokenID := id.Generate()
@@ -75,7 +74,6 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			ID:               tokenID,
 			UserID:           userid.MustNew(user.ID),
 			WorkerID:         worker.ID,
-			WorkspaceID:      wsID,
 			SecretHash:       []byte("secret"),
 			ExpiresAt:        expiresAt,
 			RefreshExpiresAt: &refreshExpiresAt,

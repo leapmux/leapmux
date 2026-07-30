@@ -1,4 +1,3 @@
-import type { BatchOutcome } from './useOpsSubmitter'
 import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
 import type { Projection } from '~/lib/crdt'
 import type { createActiveClientStore } from '~/lib/presence/activeClient'
@@ -59,8 +58,6 @@ export interface CrdtRuntime {
   effectiveClientId: () => string
   /** Stable per-session client id used as the HLC author and op_id salt. */
   ownClientId: string
-  /** Batch-id → callback, for handlers that must react to a specific batch. */
-  batchResultHandlers: Map<string, (outcome: BatchOutcome) => void>
 }
 
 export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
@@ -132,11 +129,6 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     setPendingMgr(new PendingOpsManager(uid, new HLCClock(ownClientId), bumpPending))
   })
 
-  // Hook for batch-result callbacks (cross-workspace move rollback,
-  // etc.). Populated by the submitter and consulted by AppShell-level
-  // handlers that need to react to specific batch ids.
-  const batchResultHandlers = new Map<string, (outcome: BatchOutcome) => void>()
-
   // Open the per-user `/ws/userevents` subscription once the user id is
   // known. The hook stays live across workspace switches; per-
   // workspace stores slice the materialized state instead.
@@ -171,11 +163,6 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
   const opsSubmitter = createOpsSubmitter({
     pending: () => pendingMgr(),
     reconnect: () => userEvents.reconnect(),
-    onBatchResult: (batchId, outcome) => {
-      const cb = batchResultHandlers.get(batchId)
-      if (cb)
-        cb(outcome)
-    },
   })
 
   // Wire the global CRDT bridge so the imperative stores can emit op
@@ -206,5 +193,5 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
       },
     })
   })
-  return { crdtState, projection, userEvents, effectiveClientId, ownClientId, batchResultHandlers }
+  return { crdtState, projection, userEvents, effectiveClientId, ownClientId }
 }

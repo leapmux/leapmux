@@ -19,11 +19,10 @@ import (
 // for a reconnect-and-replay round trip.
 func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -58,11 +57,10 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 // was open.
 func TestClearAgentRuntimeState_NoPendingIsNoOp(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-empty",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,

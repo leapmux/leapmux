@@ -25,8 +25,7 @@ import (
 // other fields should call dispatch directly.
 func dispatchRestart(d *channel.Dispatcher, terminalID string, w *testResponseWriter) {
 	dispatch(d, "RestartTerminal", &leapmuxv1.RestartTerminalRequest{
-		WorkspaceId: "ws-1",
-		TerminalId:  terminalID,
+		TerminalId: terminalID,
 		// Match openTerminalViaRPC's wide-cols workaround: cmd.exe's
 		// long-path prompt + `exit 42` wraps at 80 cols and ConPTY's
 		// cooked-mode editor then reads the line as just `exit`.
@@ -81,10 +80,10 @@ func (f *fakeRemoteIPC) snapshot() (tokens []string, pending, executed int) {
 func TestRestartTerminal_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	ipc := &fakeRemoteIPC{}
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"), withRemoteIPC(ipc))
+	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
 	defer drainAllInFlight(svc)
 
-	terminalID := openTerminalViaRPC(t, svc, d, w, "ws-1", t.TempDir())
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 	exitTerminalAndWait(t, svc, d, terminalID, "")
 	testutil.AssertEventually(t, func() bool {
 		row, err := svc.Queries.GetTerminal(ctx, terminalID)
@@ -138,11 +137,11 @@ func TestRestartTerminal_HappyPath(t *testing.T) {
 // the alive PTY isn't orphaned.
 func TestRestartTerminal_StillRunning(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	const id = "tm-still-running"
-	startTestTerminal(t, svc, ctx, id, "ws-1")
+	startTestTerminal(t, svc, ctx, id)
 	// Wait for the manager to consider the PTY live so the
 	// HasTerminal/!IsExited guard inside the handler fires reliably.
 	testutil.AssertEventually(t, func() bool {
@@ -165,22 +164,21 @@ func TestRestartTerminal_StillRunning(t *testing.T) {
 // cached lastOffset.
 func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 	ctx := context.Background()
-	svc, d, _ := setupTestService(t, withWorkspaces("ws-1"), withRemoteIPC(&fakeRemoteIPC{}))
+	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
 
 	const id = "tm-worker-restart"
 	workingDir := t.TempDir()
 	persistedScreen := []byte("old session output\r\n[Worker disconnected - Press Enter to restart]\r\n")
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          id,
-		WorkspaceID: "ws-1",
-		WorkingDir:  workingDir,
-		HomeDir:     svc.HomeDir,
-		Shell:       testutil.TestShell(),
-		Cols:        80,
-		Rows:        25,
-		Screen:      persistedScreen,
-		ExitCode:    int64(exitCodeUnknown),
+		ID:         id,
+		WorkingDir: workingDir,
+		HomeDir:    svc.HomeDir,
+		Shell:      testutil.TestShell(),
+		Cols:       80,
+		Rows:       25,
+		Screen:     persistedScreen,
+		ExitCode:   int64(exitCodeUnknown),
 	}))
 
 	require.False(t, svc.Terminals.HasTerminal(id), "no in-memory entry pre-restart")
@@ -215,8 +213,8 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 // double-stack notices.
 func TestPersistTerminalOnExit_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	startTestTerminal(t, svc, ctx, "term-1", "ws-1")
+	svc, _, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "term-1")
 
 	// Seed the live screen with some baseline content so the notice has
 	// something to follow — the empty-screen path hits a different branch
@@ -242,8 +240,8 @@ func TestPersistTerminalOnExit_Idempotent(t *testing.T) {
 // exit handler's persist must leave the real exit code intact.
 func TestPersistTerminalOnExit_ShutdownDoesNotClobberRealExitCode(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	startTestTerminal(t, svc, ctx, "term-race", "ws-1")
+	svc, _, _ := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "term-race")
 	require.True(t, svc.Terminals.AppendOutput("term-race", []byte("hello")))
 
 	// Exit handler arrives first with a real exit code.
@@ -295,12 +293,12 @@ func TestFormatTerminalExitedNotice(t *testing.T) {
 // STARTING entry directly so we don't have to time a real startup.
 func TestRestartTerminal_StartupInProgress(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	const id = "tm-startup-busy"
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: id, WorkspaceID: "ws-1", Cols: 80, Rows: 25, Shell: testutil.TestShell(), Screen: []byte{},
+		ID: id, Cols: 80, Rows: 25, Shell: testutil.TestShell(), Screen: []byte{},
 	}))
 
 	svc.TerminalStartup.begin(id, func() {})
@@ -324,16 +322,14 @@ func TestRestartTerminal_StartupInProgress(t *testing.T) {
 // Manager replaces a defined subset of meta fields on restart; title
 // must stay in the preserved set.
 func TestRestartTerminal_PreservesTitle(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"), withRemoteIPC(&fakeRemoteIPC{}))
+	svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
 
-	terminalID := openTerminalViaRPC(t, svc, d, w, "ws-1", t.TempDir())
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 
 	const newTitle = "user-renamed: ~/dir"
 	w2 := newTestWriter()
-	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
-		WorkspaceId: "ws-1", TerminalId: terminalID, Title: newTitle,
-	}, w2)
+	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: terminalID, Title: newTitle}, w2)
 	require.Empty(t, w2.errors)
 
 	exitTerminalAndWait(t, svc, d, terminalID, "")
@@ -361,11 +357,11 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("uses db shell when no in-memory entry exists", func(t *testing.T) {
-		svc, d, w := setupTestService(t, withWorkspaces("ws-1"), withRemoteIPC(&fakeRemoteIPC{}))
+		svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 		defer drainAllInFlight(svc)
 		const id = "tm-db-shell"
 		require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-			ID: id, WorkspaceID: "ws-1", WorkingDir: t.TempDir(),
+			ID: id, WorkingDir: t.TempDir(),
 			Shell: testutil.TestShell(),
 			Cols:  80, Rows: 25, Screen: []byte{},
 		}))
@@ -381,11 +377,11 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 	})
 
 	t.Run("rejects when db shell is empty", func(t *testing.T) {
-		svc, d, w := setupTestService(t, withWorkspaces("ws-1"), withRemoteIPC(&fakeRemoteIPC{}))
+		svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 		defer drainAllInFlight(svc)
 		const id = "tm-no-shell"
 		require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-			ID: id, WorkspaceID: "ws-1", WorkingDir: t.TempDir(),
+			ID: id, WorkingDir: t.TempDir(),
 			// Shell intentionally empty to mimic a row written by code
 			// that forgot to plumb shell through. The handler must
 			// reject rather than silently swap in a different binary.
@@ -415,18 +411,18 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 // race produces.)
 func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"), withRemoteIPC(&fakeRemoteIPC{}))
+	svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
 
 	const id = "tm-close-race"
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID: id, WorkspaceID: "ws-1", WorkingDir: t.TempDir(),
+		ID: id, WorkingDir: t.TempDir(),
 		Shell: testutil.TestShell(),
 		Cols:  80, Rows: 25, Screen: []byte{},
 	}))
 	// Mimic a CloseTerminal that won the race: closed_at is already set
 	// when the RestartTerminal request lands.
-	require.NoError(t, svc.Queries.CloseTerminal(ctx, id))
+	require.NoError(t, closeErr(svc.Queries.CloseTerminal(ctx, id)))
 
 	dispatchRestart(d, id, w)
 	require.Empty(t, w.errors)

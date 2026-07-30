@@ -237,6 +237,7 @@ interface RowEditingContextValue {
 interface BranchActionsContextValue {
   onChangeBranch?: (ref: BranchRef) => void
   onDeleteBranch?: (ref: BranchRef) => void
+  isWorkerKnownOnline?: (workerId: string) => boolean
 }
 
 const RowSelectionContext = createContext<RowSelectionContextValue>()
@@ -301,6 +302,15 @@ const BranchGroupRow: Component<{
   const actions = useBranchActions()
   const branchStats = createMemo(() => diffStatsFromTabFields(props.branch()))
   const collapseKey = createMemo(() => collapseKeyForBranch(props.repoKey, props.branchKey))
+  // Both menu items need this row's Worker: Change reads the branch state from
+  // it, Delete mutates it. Undefined when they are usable -- see
+  // BranchContextMenu.disabledReason.
+  const menuDisabledReason = createMemo(() => {
+    const isOnline = actions.isWorkerKnownOnline
+    if (!isOnline || isOnline(props.branch().workerId))
+      return undefined
+    return 'This Worker is offline. Branch actions need the machine the repository is on.'
+  })
   return (
     <>
       <div
@@ -334,6 +344,7 @@ const BranchGroupRow: Component<{
         <Show when={!sel.readOnly() && props.branch().branchName !== null && props.branch().gitToplevel !== '' && actions.onChangeBranch && actions.onDeleteBranch}>
           <div class={sidebarActions}>
             <BranchContextMenu
+              disabledReason={menuDisabledReason()}
               onChangeBranch={() => actions.onChangeBranch!(buildBranchRef(sel.workspaceId(), props.branch()))}
               onDeleteBranch={() => actions.onDeleteBranch!(buildBranchRef(sel.workspaceId(), props.branch()))}
             />
@@ -440,6 +451,17 @@ export interface WorkspaceTabTreeProps {
    * raw `workerId` and absolute toplevel path are used as fallbacks.
    */
   workerInfoFn?: (id: string) => WorkerInfo | null
+  /**
+   * Whether a Worker is currently reachable, read from the last state the Hub
+   * pushed -- never probed here. The branch menu re-renders on every tree
+   * recompute, so anything that touched the network would show up as menu lag.
+   *
+   * Answers `true` for a Worker it has no state for. Only a POSITIVE offline
+   * reading disables the menu: an id missing from the Worker list means the
+   * list has not loaded yet as often as it means the machine is gone, and
+   * greying out a working action is worse than letting one fail.
+   */
+  isWorkerKnownOnline?: (workerId: string) => boolean
   onChangeBranch?: (ref: BranchRef) => void
   onDeleteBranch?: (ref: BranchRef) => void
 }
@@ -624,6 +646,9 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     },
     get onDeleteBranch() {
       return props.onDeleteBranch
+    },
+    get isWorkerKnownOnline() {
+      return props.isWorkerKnownOnline
     },
   }
 

@@ -24,7 +24,7 @@ func RunWorkerGet(rawCtx any, args []string) error {
 	}
 	return resolveAndEmit(hub, resolve.Need{WorkerID: true}, in, func(ctx context.Context, c *remote.Client, got resolve.Resolved) error {
 		var resp leapmuxv1.GetWorkerResponse
-		return hubCallUnaryEmitOn(ctx, c, "GetWorker", "",
+		return hubCallUnaryEmitOn(ctx, c, "GetWorker",
 			&leapmuxv1.GetWorkerRequest{WorkerId: got.WorkerID}, &resp,
 			func() any { return resp.GetWorker() })
 	})
@@ -38,7 +38,7 @@ func RunWorkerList(rawCtx any, args []string) error {
 		return err
 	}
 	var resp leapmuxv1.ListWorkersResponse
-	return hubUnaryEmit(hub, "ListWorkers", "",
+	return hubUnaryEmit(hub, "ListWorkers",
 		&leapmuxv1.ListWorkersRequest{}, &resp,
 		func() any { return resp.GetWorkers() })
 }

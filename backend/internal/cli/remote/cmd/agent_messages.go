@@ -42,7 +42,7 @@ func RunAgentMessages(rawCtx any, args []string) error {
 			fs.BoolVar(&follow, "follow", false, "tail new messages indefinitely")
 		},
 		noDeadline: true,
-		body: func(ctx context.Context, c *remote.Client, workerID, agentID, workspaceID string) error {
+		body: func(ctx context.Context, c *remote.Client, workerID, agentID string) error {
 			req, err := listMessagesPageRequest(agentID, anchor, cursorSeq, limit)
 			if err != nil {
 				return err
@@ -79,7 +79,7 @@ func RunAgentMessages(rawCtx any, args []string) error {
 			}
 			cursor := resumeCursorFor(req, resp.GetMessages(), resp.LatestSeq)
 
-			return tailAgentMessages(ctx, c, workerID, agentID, workspaceID, cursor, em)
+			return tailAgentMessages(ctx, c, workerID, agentID, cursor, em)
 		},
 	})
 }
@@ -399,7 +399,7 @@ func drainBacklog(ctx context.Context, agentID string, cursor *streamevents.Agen
 // Output format: each line is the AgentChatMessage proto rendered via
 // the same encoder the polling implementation used, so external
 // scripts written against the old behaviour keep working byte-for-byte.
-func tailAgentMessages(ctx context.Context, c *remote.Client, workerID, agentID, workspaceID string,
+func tailAgentMessages(ctx context.Context, c *remote.Client, workerID, agentID string,
 	startSeq int64, em *lineEmitter,
 ) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -410,7 +410,7 @@ func tailAgentMessages(ctx context.Context, c *remote.Client, workerID, agentID,
 	// terminals cursor stays empty — we don't subscribe terminals here.
 	terminals := streamevents.NewTerminalCursor()
 
-	transport, err := newAgentMessagesTransport(ctx, c, workerID, workspaceID)
+	transport, err := newAgentMessagesTransport(ctx, c, workerID)
 	if err != nil {
 		return remote.EmitErrorWith("subscribe_failed", err)
 	}
@@ -562,7 +562,7 @@ type agentMessagesTransport struct {
 	close     func()
 }
 
-func newAgentMessagesTransport(ctx context.Context, c *remote.Client, workerID, workspaceID string) (*agentMessagesTransport, error) {
+func newAgentMessagesTransport(ctx context.Context, c *remote.Client, workerID string) (*agentMessagesTransport, error) {
 	if c.IsLocal() {
 		// Local-IPC mode: route via RemoteIPCService.StreamInner.
 		// workerID may be empty; the router resolves the spawning
@@ -573,7 +573,7 @@ func newAgentMessagesTransport(ctx context.Context, c *remote.Client, workerID, 
 			return nil, err
 		}
 		return &agentMessagesTransport{
-			transport: streamevents.NewLocalIPCTransport(ipc, workspaceID, workerID, slog.Default()),
+			transport: streamevents.NewLocalIPCTransport(ipc, workerID, slog.Default()),
 			close:     func() {},
 		}, nil
 	}

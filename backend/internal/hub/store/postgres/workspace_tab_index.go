@@ -202,20 +202,20 @@ func (s *workspaceTabIndexStore) ListOwnedByWorker(ctx context.Context, p store.
 	return store.MapSlice(rows, ownedTabRowFromDB), nil
 }
 
-func (s *workspaceTabIndexStore) ListDistinctWorkersByWorkspace(ctx context.Context, p store.ListDistinctWorkersByWorkspaceParams) ([]string, error) {
+func (s *workspaceTabIndexStore) ListOwnedTabsByWorkspace(ctx context.Context, p store.ListOwnedTabsByWorkspaceParams) ([]store.OwnedTabRef, error) {
 	owner, ok := userid.OwnerFilter(p.UserID)
 	if !ok {
 		// See ListOwnedByWorker above.
 		return nil, nil
 	}
-	rows, err := s.conn.q.ListDistinctWorkersByWorkspace(ctx, gendb.ListDistinctWorkersByWorkspaceParams{
+	rows, err := s.conn.q.ListOwnedTabsByWorkspace(ctx, gendb.ListOwnedTabsByWorkspaceParams{
 		UserID:      owner,
 		WorkspaceID: p.WorkspaceID,
 	})
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return rows, nil
+	return store.MapSlice(rows, ownedTabRefFromDB), nil
 }
 
 func (s *workspaceTabIndexStore) GetOwned(ctx context.Context, p store.GetOwnedTabParams) (*store.WorkspaceTabRow, error) {
@@ -226,9 +226,8 @@ func (s *workspaceTabIndexStore) GetOwned(ctx context.Context, p store.GetOwnedT
 		return nil, store.ErrNotFound
 	}
 	row, err := s.conn.q.GetOwnedTab(ctx, gendb.GetOwnedTabParams{
-		UserID:      owner,
-		WorkspaceID: p.WorkspaceID,
-		TabID:       p.TabID,
+		UserID: owner,
+		TabID:  p.TabID,
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -344,6 +343,19 @@ func (s *workspaceTabIndexStore) LocateAccessibleRendered(ctx context.Context, p
 	}
 	out := renderedTabRowFromDB(row)
 	return &out, nil
+}
+
+// ownedTabRefFromDB converts one ListOwnedTabsByWorkspace row to the store's
+// (worker_id, tab_type, tab_id) triple. Named beside ownedTabRowFromDB and used
+// through store.MapSlice for the same reason: the conversion is the one place the
+// generated column types meet the store's, so it should exist once per dialect
+// rather than being open-coded in the query method.
+func ownedTabRefFromDB(r gendb.ListOwnedTabsByWorkspaceRow) store.OwnedTabRef {
+	return store.OwnedTabRef{
+		WorkerID: r.WorkerID,
+		TabType:  leapmuxv1.TabType(r.TabType),
+		TabID:    r.TabID,
+	}
 }
 
 // ownedTabRowFromDB converts one generated workspace_tab_owned row to the store

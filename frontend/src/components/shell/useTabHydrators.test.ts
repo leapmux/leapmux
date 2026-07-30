@@ -8,7 +8,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
 import { createFileTabPathsStore } from '~/lib/fileTabPaths'
 import { isFileTab } from '~/stores/tab.types'
-import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
+import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
 import { useTabHydrators } from './useTabHydrators'
@@ -16,16 +16,11 @@ import { useTabHydrators } from './useTabHydrators'
 const mockListAgents = vi.fn()
 const mockListTerminals = vi.fn()
 const mockGetFileTabPath = vi.fn()
-const mockEnsureWorkspaceAccess = vi.fn()
 
 vi.mock('~/api/workerRpc', () => ({
   listAgents: (...a: unknown[]) => mockListAgents(...a),
   listTerminals: (...a: unknown[]) => mockListTerminals(...a),
   getFileTabPath: (...a: unknown[]) => mockGetFileTabPath(...a),
-}))
-
-vi.mock('~/api/workspaceAccess', () => ({
-  ensureWorkspaceAccess: (...a: unknown[]) => mockEnsureWorkspaceAccess(...a),
 }))
 
 beforeEach(() => {
@@ -34,11 +29,7 @@ beforeEach(() => {
   mockListTerminals.mockReset()
   mockListTerminals.mockResolvedValue({ terminals: [], verdicts: [] })
   mockGetFileTabPath.mockReset()
-  mockGetFileTabPath.mockResolvedValue({ workspaceId: 'ws-test', filePath: '/repo/x.ts' })
-  // Default: the pair was already announced, so nothing changed and the caller
-  // falls back to its backoff. Cases that exercise the repair opt into `true`.
-  mockEnsureWorkspaceAccess.mockReset()
-  mockEnsureWorkspaceAccess.mockResolvedValue(false)
+  mockGetFileTabPath.mockResolvedValue({ filePath: '/repo/x.ts' })
 })
 
 afterEach(() => setCRDTBridge(null))
@@ -670,14 +661,14 @@ describe('useTabHydrators', () => {
       }
     })
 
-    it('keeps retrying a tab whose workspace the channel cannot see yet', async () => {
+    it('keeps retrying a tab the worker answered for with no verdict', async () => {
       vi.useFakeTimers()
       try {
         mockListTerminals.mockResolvedValue({
           terminals: [terminalInfo('t1')],
           verdicts: [
             { tabId: 't1', status: TabHydrationStatus.FOUND },
-            { tabId: 't2', status: TabHydrationStatus.NOT_ACCESSIBLE },
+            { tabId: 't2', status: TabHydrationStatus.UNSPECIFIED },
           ],
         })
         const s = setup()
@@ -699,241 +690,6 @@ describe('useTabHydrators', () => {
       finally {
         vi.useRealTimers()
       }
-    })
-
-    /**
-     * NOT_ACCESSIBLE is the one pending verdict the client can repair. The
-     * channel's accessible set is seeded at OpenChannel time and grows ONLY via
-     * PrepareWorkspaceAccess, so a workspace created after this page's channel
-     * opened -- by the `leapmux remote` CLI, by another session -- is refused
-     * forever no matter how often the worker is re-asked. The client announces
-     * the workspace and re-batches instead of waiting for a transition nothing
-     * performs.
-     */
-    describe('not-accessible repair', () => {
-      const notAccessible = {
-        terminals: [terminalInfo('t1')],
-        verdicts: [
-          { tabId: 't1', status: TabHydrationStatus.FOUND },
-          { tabId: 't2', status: TabHydrationStatus.NOT_ACCESSIBLE },
-        ],
-      }
-
-      it('announces the blocked workspace and re-fetches at once', async () => {
-        mockEnsureWorkspaceAccess.mockResolvedValue(true)
-        mockListTerminals
-          .mockResolvedValueOnce(notAccessible)
-          .mockResolvedValue({
-            terminals: [terminalInfo('t2', { title: 'now visible' })],
-            verdicts: [{ tabId: 't2', status: TabHydrationStatus.FOUND }],
-          })
-        const s = setup()
-        const d = createRoot((dispose) => {
-          s.add(TabType.TERMINAL, 't1')
-          s.add(TabType.TERMINAL, 't2')
-          s.mount()
-          return dispose
-        })
-        await flush()
-        await flush()
-        await flush()
-        await flush()
-
-        expect(mockEnsureWorkspaceAccess, 'the tab carries the workspace to announce')
-          .toHaveBeenCalledWith('w1', 'ws-test')
-        // No timer was involved: the re-fetch rides the announcement, not the
-        // backoff. Under real timers a scheduled retry could not have fired.
-        expect(mockListTerminals).toHaveBeenCalledTimes(2)
-        expect(mockListTerminals.mock.calls[1][1].tabIds, 'only the blocked tab').toEqual(['t2'])
-        expect(s.metadata.get('t2')?.title, 'and it hydrates without a reload').toBe('now visible')
-        d()
-      })
-
-      /**
-       * One batch spans every workspace that has tabs on the worker, so it can
-       * be refused for several at once. All of them must be announced in this
-       * one pass: the repair deliberately does not recurse (its re-batch runs
-       * with repair disabled), so a workspace left out here would have nothing
-       * to fix it but the bounded backoff, which is what the repair exists to
-       * avoid relying on.
-       */
-      it('announces every blocked workspace in one pass', async () => {
-        mockEnsureWorkspaceAccess.mockResolvedValue(true)
-        mockListTerminals.mockResolvedValue({
-          terminals: [],
-          verdicts: [
-            { tabId: 'here', status: TabHydrationStatus.NOT_ACCESSIBLE },
-            { tabId: 'there', status: TabHydrationStatus.NOT_ACCESSIBLE },
-          ],
-        })
-        const s = setup('ws-here')
-        const d = createRoot((dispose) => {
-          seedWorkspace(s.harness, 'ws-there', 'tile-there')
-          emitAddTab({ type: TabType.TERMINAL, id: 'here', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
-          emitAddTab({ type: TabType.TERMINAL, id: 'there', tileId: 'tile-there', position: 'a', workerId: 'w1' })
-          s.mount()
-          return dispose
-        })
-        await flush()
-        await flush()
-        await flush()
-        await flush()
-
-        expect(
-          mockEnsureWorkspaceAccess.mock.calls.map(c => c[1]).sort(),
-          'both workspaces, deduped to one announcement each',
-        ).toEqual(['ws-here', 'ws-there'])
-        d()
-      })
-
-      /**
-       * The tabs can be closed (by the user, or by another client) while the
-       * announcement is in flight. Re-batching the original list would then ask
-       * the worker about tabs that no longer exist, so the repair re-derives the
-       * pending set and simply clears the backoff when nothing is left.
-       */
-      it('does not re-fetch tabs that were closed while announcing', async () => {
-        let releaseAnnounce: (fresh: boolean) => void = () => {}
-        mockEnsureWorkspaceAccess.mockReturnValue(new Promise<boolean>((res) => {
-          releaseAnnounce = res
-        }))
-        mockListTerminals.mockResolvedValue({
-          terminals: [],
-          verdicts: [{ tabId: 't1', status: TabHydrationStatus.NOT_ACCESSIBLE }],
-        })
-        const s = setup()
-        const d = createRoot((dispose) => {
-          s.add(TabType.TERMINAL, 't1')
-          s.mount()
-          return dispose
-        })
-        await flush()
-        await flush()
-        expect(mockListTerminals).toHaveBeenCalledTimes(1)
-
-        emitRemoveTab(TabType.TERMINAL, 't1')
-        releaseAnnounce(true)
-        await flush()
-        await flush()
-        await flush()
-
-        expect(mockListTerminals, 'nothing pending, so nothing to re-ask').toHaveBeenCalledTimes(1)
-        d()
-      })
-
-      /**
-       * A verdict the client does not recognise -- including none at all, from a
-       * worker predating verdicts -- is retried, but it is NOT evidence that
-       * access is what is missing. Announcing on it would put a hub RPC behind
-       * every unrelated partial reply.
-       */
-      it('does not announce for a tab the worker gave no verdict for', async () => {
-        mockEnsureWorkspaceAccess.mockResolvedValue(true)
-        mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1')], verdicts: [] })
-        const s = setup()
-        const d = createRoot((dispose) => {
-          s.add(TabType.TERMINAL, 't1')
-          s.add(TabType.TERMINAL, 't2')
-          s.mount()
-          return dispose
-        })
-        await flush()
-        await flush()
-        await flush()
-
-        expect(mockEnsureWorkspaceAccess, 'only NOT_ACCESSIBLE names an access problem')
-          .not
-          .toHaveBeenCalled()
-        d()
-      })
-
-      it('does not re-fetch when the workspace was already announced', async () => {
-        vi.useFakeTimers()
-        try {
-          // What the real announcer returns for a pair it has already announced.
-          mockEnsureWorkspaceAccess.mockResolvedValue(false)
-          mockListTerminals.mockResolvedValue(notAccessible)
-          const s = setup()
-          const d = createRoot((dispose) => {
-            s.add(TabType.TERMINAL, 't1')
-            s.add(TabType.TERMINAL, 't2')
-            s.mount()
-            return dispose
-          })
-          await vi.advanceTimersByTimeAsync(0)
-
-          expect(mockEnsureWorkspaceAccess).toHaveBeenCalledTimes(1)
-          expect(
-            mockListTerminals,
-            'the channel already knew, so re-asking now would be refused identically',
-          ).toHaveBeenCalledTimes(1)
-          d()
-        }
-        finally {
-          vi.useRealTimers()
-        }
-      })
-
-      it('repairs at most once, then falls back to the backoff', async () => {
-        vi.useFakeTimers()
-        try {
-          // Always claims a fresh announcement. Even so the repair must not
-          // re-enter itself: the re-batch it issues runs with repair disabled,
-          // so the two cannot drive each other.
-          mockEnsureWorkspaceAccess.mockResolvedValue(true)
-          mockListTerminals.mockResolvedValue(notAccessible)
-          const s = setup()
-          const d = createRoot((dispose) => {
-            s.add(TabType.TERMINAL, 't1')
-            s.add(TabType.TERMINAL, 't2')
-            s.mount()
-            return dispose
-          })
-          await vi.advanceTimersByTimeAsync(0)
-
-          // No timer has fired yet, so both calls are the repair path: the
-          // original, and the one re-batch the announcement earned.
-          expect(mockListTerminals).toHaveBeenCalledTimes(2)
-          expect(mockEnsureWorkspaceAccess, 'the re-batch cannot ask again').toHaveBeenCalledTimes(1)
-
-          // From here it is the ordinary bounded backoff, which gives up.
-          await vi.advanceTimersByTimeAsync(120_000)
-          const calls = mockListTerminals.mock.calls.length
-          expect(calls, 'the backoff kept re-asking').toBeGreaterThan(2)
-          expect(calls, 'but gave up rather than polling for the life of the page').toBeLessThan(20)
-          d()
-        }
-        finally {
-          vi.useRealTimers()
-        }
-      })
-
-      it('falls back to the backoff when the announcement fails', async () => {
-        vi.useFakeTimers()
-        try {
-          mockEnsureWorkspaceAccess.mockRejectedValue(new Error('hub unreachable'))
-          mockListTerminals.mockResolvedValue(notAccessible)
-          const s = setup()
-          const d = createRoot((dispose) => {
-            s.add(TabType.TERMINAL, 't1')
-            s.add(TabType.TERMINAL, 't2')
-            s.mount()
-            return dispose
-          })
-          await vi.advanceTimersByTimeAsync(0)
-          expect(mockListTerminals, 'a failed repair must not re-fetch immediately').toHaveBeenCalledTimes(1)
-
-          // The backoff owns it now, and re-entering the repair on each attempt
-          // is what gives a transient hub failure another chance.
-          await vi.advanceTimersByTimeAsync(1_000)
-          expect(mockListTerminals.mock.calls.length).toBeGreaterThan(1)
-          expect(mockEnsureWorkspaceAccess.mock.calls.length).toBeGreaterThan(1)
-          d()
-        }
-        finally {
-          vi.useRealTimers()
-        }
-      })
     })
 
     it('treats an unrecognised verdict as retryable', async () => {

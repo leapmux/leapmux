@@ -58,6 +58,10 @@ Each branch row has a **`...`** context menu with exactly two items:
 
 The menu is hidden when the row is read-only, when the group has no current branch at all (the `(no branch)` group — an unborn HEAD or an un-stamped tab), or when the tab has not yet been stamped with a git toplevel path. A detached-HEAD-with-commits row keeps its menu, since it carries a short-SHA label.
 
+Both items need the Worker the repository is on: one reads the branch state, the other changes it. When that Worker is offline, the items stay in the menu but are greyed out, and hovering one explains why. They are shown rather than hidden on purpose — a row that silently loses its menu reads as a bug, whereas a dimmed item tells you which machine to bring back.
+
+LeapMux decides this from the Worker list it already has, never by probing the machine — the menu is rebuilt every time the sidebar tree changes, and a network round trip there would show up as lag. A consequence worth knowing: a Worker that has just started, and that the list has not caught up with, is treated as reachable, so its items stay clickable and the action itself reports the failure. Greying out a working action on a stale reading would be the worse mistake.
+
 ## Choosing a branch or worktree when you open a tab
 
 When you open a new agent, a new terminal, or a new workspace against a git repository, the dialog shows a **`Git options`** panel. While LeapMux probes the repository it shows a **Loading branch info** spinner; if the directory is not a git repository or the probe fails, it shows **Git probe failed: *hint*** instead.
@@ -165,21 +169,19 @@ Deletion behaves differently depending on whether the branch is a linked worktre
 
 There is no "switch to" picker. The status block notes that the group's tabs *will be stopped*. Clicking **Delete branch** closes **every** tab in the group and asks the Worker to remove the worktree. The Worker reference-counts the worktree and, when the last tab referencing it closes, runs `git worktree remove`, deletes the branch (if no other worktree uses it), and removes its tracking record.
 
-You will see one of these outcomes as a toast:
+The tabs always close. LeapMux then reports which of these happened to the worktree:
 
-| Outcome | Toast |
-|---|---|
-| Worktree removed | **Worktree removed** |
-| Still open elsewhere | **Tabs closed; worktree still in use elsewhere** |
-| Could not confirm removal | **Tabs closed; could not confirm worktree removal** |
-| Worktree was not tracked by LeapMux | **Tabs closed (worktree was not tracked)** |
-| Tracked but nothing removed | **Tabs closed; worktree not removed** |
+- it was removed;
+- it is still in use elsewhere, so it stays;
+- its removal could not be confirmed;
+- it was not tracked by LeapMux, so the directory stays on disk;
+- it was tracked, but nothing was removed.
 
 > **Note:** A worktree created outside LeapMux (a raw `git worktree add`) has no tracking record. LeapMux closes the tabs but leaves the directory on disk for you to remove manually.
 
 ### Deleting a regular branch
 
-For a branch in the main checkout, you must tell LeapMux where to leave HEAD. The dialog shows **Switch this working directory to:** and a branch selector listing every branch except the one being deleted. On **Delete branch**, the Worker checks out your chosen target, then force-deletes the doomed branch. Tabs keep running on the switched-to branch. Success toast: **Branch deleted**.
+For a branch in the main checkout, you must tell LeapMux where to leave HEAD. The dialog shows **Switch this working directory to:** and a branch selector listing every branch except the one being deleted. On **Delete branch**, the Worker checks out your chosen target, then force-deletes the doomed branch. Tabs keep running on the switched-to branch.
 
 If the branch you are deleting is the **only** branch, the selector is replaced by the error **Cannot delete the only branch. Create another branch first.** and the button stays disabled.
 
@@ -194,12 +196,7 @@ Both the Delete branch dialog and the close-last-tab confirmation surface a push
 | Has uncommitted changes | **Commit and Push** |
 | Clean working copy, but unpushed commits or no remote branch | **Push** |
 
-**Commit and Push** stages everything (`git add -A`) and makes a `WIP` commit before pushing. **Push** just pushes. If the branch has no upstream yet, LeapMux sets one up (`git push -u origin <branch>`). The push is bounded at 60 seconds.
-
-| Result | Toast |
-|---|---|
-| Success | **Branch pushed successfully** |
-| Failure | **Failed to push branch** |
+**Commit and Push** stages everything (`git add -A`) and makes a `WIP` commit before pushing. **Push** just pushes. If the branch has no upstream yet, LeapMux sets one up (`git push -u origin <branch>`). The push is bounded at 60 seconds, and LeapMux reports whether it succeeded.
 
 Pushing requires an `origin` remote and a real branch name — a detached HEAD cannot be pushed. If there is no remote, the push is refused.
 
@@ -236,12 +233,18 @@ and shows the same [branch status block](#branch-status-indicators). Its buttons
 |---|---|
 | **Cancel** | Aborts the close — nothing happens. |
 | **Push** / **Commit and Push** | Pushes your work first (shown only when there is pushable work). |
-| **Delete** (worktree targets only) | Closes the tabs and schedules the worktree for removal (toast: **Worktree will be removed**). |
+| **Delete** (worktree targets only) | Closes the tabs and schedules the worktree for removal. |
 | **Close anyway** | Closes the tab(s) but keeps the worktree on disk. |
 
 > **Warning:** **Close anyway** does not push or delete — it just closes the tab. Any uncommitted changes stay on disk in the worktree, but you lose the tab pointing at it. Use **Push** / **Commit and Push** first if the status block shows work you care about.
 
-> **Note:** Worktree removal is always tied to closing tabs — there is no separate "remove worktree" command. A worktree is removed only when its last tab closes with **Delete**. If the Worker is unreachable when you close, LeapMux skips the dialog and removes the tab locally with the toast *Worker is unreachable; removing the tab without closing it.*
+> **Note:** A worktree is only ever removed as part of closing the tabs that reference it; nothing removes one out from under a live tab. There are two ways to ask for it: **Delete** in this dialog, which applies to the last tab referencing that worktree, or [**Delete branch...**](#deleting-a-linked-worktree) on the worktree's branch row, which closes the whole group at once. Either way the Worker removes the worktree when the last reference goes.
+
+> **Note:** This dialog needs the Worker, because only the Worker can read the branch's git state. When the Worker is offline, LeapMux closes the tab without the dialog and the tab disappears from every session. A **Delete** cannot be requested in that state — there is nothing available to run `git worktree remove`.
+>
+> The worktree is not kept indefinitely, though. Once the Worker is back it stops the process, and its housekeeping pass reclaims a worktree no tab references any more. It will **not** reclaim one holding uncommitted changes or commits no remote has: that directory is left on disk for you, and reclaimed only after the work is committed and pushed.
+>
+> So closing a tab while its Worker is offline is safe for your work, but it is not the same as **Close anyway** — that choice keeps the worktree whatever its state, whereas here a clean worktree is reclaimed for you.
 
 ## Where git operations run
 

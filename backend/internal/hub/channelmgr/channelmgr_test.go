@@ -883,7 +883,7 @@ func TestCloseByBearer_IsScopedByBearerKind(t *testing.T) {
 		Credential: auth.APICredential("same-id"),
 	}, func() { apiCancelled = true })
 	m.RegisterWithAuthInfo("ch-delegation", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("same-id", "ws-1", "worker-mint"),
+		Credential: auth.DelegationCredential("same-id", "worker-mint"),
 	}, func() { delegationCancelled = true })
 
 	closed := m.CloseByBearer(auth.NewBearerRef(auth.BearerKindDelegation, "same-id"))
@@ -897,40 +897,6 @@ func TestCloseByBearer_IsScopedByBearerKind(t *testing.T) {
 	assert.True(t, delegationCancelled)
 	assert.True(t, m.Exists("ch-api"))
 	assert.False(t, m.Exists("ch-delegation"))
-}
-
-// AuthorizedChannelIDsForUserWorker owns only the routing filter (same user,
-// same worker); the authorization predicate (supplied by the service) gates the
-// rest. This locks down the routing + predicate plumbing after the delegation
-// policy moved to the service layer.
-func TestAuthorizedChannelIDsForUserWorker_FiltersByRoutingAndPredicate(t *testing.T) {
-	m := New(0)
-	m.RegisterWithAuthInfo("keep", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("delegation-1", "ws-1", "worker-mint"),
-	}, nil)
-	m.RegisterWithAuthInfo("rejected-by-predicate", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("delegation-1", "ws-2", "worker-mint"),
-	}, nil)
-	m.RegisterWithAuthInfo("wrong-worker", "w2", "u1", AuthInfo{}, nil)
-	m.RegisterWithAuthInfo("wrong-user", "w1", "u2", AuthInfo{}, nil)
-
-	got := m.AuthorizedChannelIDsForUserWorker("u1", "w1", func(info ChannelInfo) bool {
-		return info.AuthInfo.Credential.WorkspaceScopeID() == "ws-1"
-	})
-
-	assert.ElementsMatch(t, []string{"keep"}, got)
-}
-
-// A nil predicate returns every same-user, same-worker channel.
-func TestAuthorizedChannelIDsForUserWorker_NilPredicateReturnsAllRouted(t *testing.T) {
-	m := New(0)
-	m.RegisterWithAuthInfo("a", "w1", "u1", AuthInfo{}, nil)
-	m.RegisterWithAuthInfo("b", "w1", "u1", AuthInfo{}, nil)
-	m.RegisterWithAuthInfo("other-worker", "w2", "u1", AuthInfo{}, nil)
-
-	got := m.AuthorizedChannelIDsForUserWorker("u1", "w1", nil)
-
-	assert.ElementsMatch(t, []string{"a", "b"}, got)
 }
 
 // TestCloseByBearer_EmptyTokenIDIsNoop locks down the safety check:
@@ -1333,40 +1299,6 @@ func TestExpireDueChannelsConcurrent_WedgedChannelDoesNotBlockOthers(t *testing.
 		t.Fatal("sweep did not complete after the wedged channel was released")
 	}
 	assert.False(t, m.Exists("A"), "A is torn down once its opMu is released")
-}
-
-// CloseByUsers closes only the selected users' channels that pass the caller's
-// predicate; empty user IDs are ignored and unselected users are untouched. The
-// workspace-scope policy itself is tested in the service layer.
-func TestCloseByUsers_DropsOnlySelectedUsersPassingPredicate(t *testing.T) {
-	m := New(0)
-	m.RegisterWithAuthInfo("u1-first", "w1", "u1", AuthInfo{}, nil)
-	m.RegisterWithAuthInfo("u1-second", "w2", "u1", AuthInfo{}, nil)
-	m.RegisterWithAuthInfo("u1-matching-delegation", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("delegation-1", "revoked-workspace", "worker-mint"),
-	}, nil)
-	m.RegisterWithAuthInfo("u1-unrelated-delegation", "w1", "u1", AuthInfo{
-		Credential: auth.DelegationCredential("delegation-2", "other-workspace", "worker-mint"),
-	}, nil)
-	m.RegisterWithAuthInfo("u2-retained", "w1", "u2", AuthInfo{}, nil)
-	m.RegisterWithAuthInfo("empty-user-retained", "w1", "", AuthInfo{}, nil)
-
-	closed := m.CloseByUsers([]string{"", "u1", "u1"}, func(info ChannelInfo) bool {
-		scope := info.AuthInfo.Credential.WorkspaceScopeID()
-		return scope == "" || scope == "revoked-workspace"
-	})
-	closedIDs := make([]string, 0, len(closed))
-	for _, channel := range closed {
-		closedIDs = append(closedIDs, channel.ChannelID)
-	}
-
-	assert.ElementsMatch(t, []string{"u1-first", "u1-second", "u1-matching-delegation"}, closedIDs)
-	assert.False(t, m.Exists("u1-first"))
-	assert.False(t, m.Exists("u1-second"))
-	assert.False(t, m.Exists("u1-matching-delegation"))
-	assert.True(t, m.Exists("u1-unrelated-delegation"))
-	assert.True(t, m.Exists("u2-retained"))
-	assert.True(t, m.Exists("empty-user-retained"))
 }
 
 func TestCloseByUserRevocation_DropsOnlyOlderUserGeneration(t *testing.T) {

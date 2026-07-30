@@ -18,7 +18,6 @@ import { useAgentProviderSelection } from '~/hooks/useAgentProviderSelection'
 import { useWorkerDialog } from '~/hooks/useWorkerDialog'
 
 interface NewAgentDialogProps {
-  workspaceId: string
   defaultWorkerId?: string
   defaultWorkingDir?: string
   defaultAgentProvider?: AgentProvider
@@ -47,7 +46,6 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
 
   const submitDisabled = () => isAgentCreateDisabled({
     submitting: submitting.loading(),
-    workspaceId: props.workspaceId,
     workerId: worker.workerId(),
     workingDir: worker.workingDir(),
     noProviders: noProviders(),
@@ -63,7 +61,6 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     if (provider === undefined)
       throw new Error('No agent provider available')
     const resp = await workerRpc.openAgent(worker.workerId(), {
-      workspaceId: props.workspaceId,
       agentProvider: provider,
       // title omitted: worker picks "Agent <Name>" from the shared pool.
       workerId: worker.workerId(),

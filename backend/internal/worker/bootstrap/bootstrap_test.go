@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -18,6 +20,14 @@ import (
 
 func setupTestDB(t *testing.T) *db.Queries {
 	t.Helper()
+	queries, _ := setupTestDBWithHandle(t)
+	return queries
+}
+
+// setupTestDBWithHandle also hands back the raw *sql.DB, for the few tests
+// that need to break the schema to exercise a read-failure path.
+func setupTestDBWithHandle(t *testing.T) (*db.Queries, *sql.DB) {
+	t.Helper()
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
@@ -25,12 +35,13 @@ func setupTestDB(t *testing.T) *db.Queries {
 	err = workerdb.Migrate(sqlDB)
 	require.NoError(t, err)
 
-	return db.New(sqlDB)
+	return db.New(sqlDB), sqlDB
 }
 
 func TestBuildTabSync_Empty(t *testing.T) {
 	queries := setupTestDB(t)
-	sync := BuildTabSync(queries)
+	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	require.NoError(t, err)
 
 	require.NotNil(t, sync)
 	assert.Empty(t, sync.GetTabs())
@@ -42,42 +53,39 @@ func TestBuildTabSync_AgentsFromDB(t *testing.T) {
 
 	// Insert agents directly into the DB (simulating persisted state).
 	err := queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
 	})
 	require.NoError(t, err)
 
 	err = queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-2",
-		WorkspaceID: "ws-2",
-		WorkingDir:  "/tmp",
+		ID:         "agent-2",
+		WorkingDir: "/tmp",
 	})
 	require.NoError(t, err)
 
 	// Close agent-2 to verify closed agents are still included.
-	err = queries.CloseAgent(ctx, "agent-2")
+	_, err = queries.CloseAgent(ctx, "agent-2")
 	require.NoError(t, err)
 
-	sync := BuildTabSync(queries)
+	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	require.NoError(t, err)
 
 	require.NotNil(t, sync)
 	assert.Len(t, sync.GetTabs(), 2)
 
 	// Collect tabs into a map for order-independent assertion.
-	tabMap := make(map[string]*leapmuxv1.WorkspaceTabEntry)
+	tabMap := make(map[string]*leapmuxv1.TabRef)
 	for _, tab := range sync.GetTabs() {
 		tabMap[tab.GetTabId()] = tab
 	}
 
 	agent1Tab := tabMap["agent-1"]
 	require.NotNil(t, agent1Tab)
-	assert.Equal(t, "ws-1", agent1Tab.GetWorkspaceId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, agent1Tab.GetTabType())
 
 	agent2Tab := tabMap["agent-2"]
 	require.NotNil(t, agent2Tab)
-	assert.Equal(t, "ws-2", agent2Tab.GetWorkspaceId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, agent2Tab.GetTabType())
 }
 
@@ -86,21 +94,20 @@ func TestBuildTabSync_TerminalsFromDB(t *testing.T) {
 	ctx := context.Background()
 
 	err := queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          "term-1",
-		WorkspaceID: "ws-1",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte("screen data"),
+		ID:     "term-1",
+		Cols:   80,
+		Rows:   24,
+		Screen: []byte("screen data"),
 	})
 	require.NoError(t, err)
 
-	sync := BuildTabSync(queries)
+	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	require.NoError(t, err)
 
 	require.NotNil(t, sync)
 	assert.Len(t, sync.GetTabs(), 1)
 
 	tab := sync.GetTabs()[0]
-	assert.Equal(t, "ws-1", tab.GetWorkspaceId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, tab.GetTabType())
 	assert.Equal(t, "term-1", tab.GetTabId())
 }
@@ -111,22 +118,21 @@ func TestBuildTabSync_MixedAgentsAndTerminals(t *testing.T) {
 
 	// Add an agent and a terminal.
 	err := queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:          "agent-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
 	})
 	require.NoError(t, err)
 
 	err = queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
-		ID:          "term-1",
-		WorkspaceID: "ws-1",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte("data"),
+		ID:     "term-1",
+		Cols:   80,
+		Rows:   24,
+		Screen: []byte("data"),
 	})
 	require.NoError(t, err)
 
-	sync := BuildTabSync(queries)
+	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	require.NoError(t, err)
 
 	require.NotNil(t, sync)
 	assert.Len(t, sync.GetTabs(), 2)
@@ -138,6 +144,85 @@ func TestBuildTabSync_MixedAgentsAndTerminals(t *testing.T) {
 	}
 	assert.Equal(t, 1, types[leapmuxv1.TabType_TAB_TYPE_AGENT])
 	assert.Equal(t, 1, types[leapmuxv1.TabType_TAB_TYPE_TERMINAL])
+}
+
+// TestBuildTabSync_ReportsFileTabsScopedToTheOwner pins the completeness of the
+// report, not merely that file tabs "appear". The hub tombstones every owned tab
+// the report omits, and a file tab's CRDT row carries a worker_id, so it IS in the
+// hub's owned list -- omitting the FILE arm deleted the user's open file tabs from
+// every session on every single reconnect.
+//
+// It also pins the OWNER scoping, which is the other half of being correct here.
+// This test previously asserted the opposite -- that both owners' rows are
+// reported, on the reasoning that "the hub asks a worker for everything it hosts".
+// The wire disagrees: the report carries no user axis, so the hub attributes all
+// of it to the connecting registrant. A row belonging to a stale second owner
+// (ClearState removes state.json, not worker.db, and workers.registered_by is
+// never UPDATEd) would therefore be read as the registrant's, and a colliding
+// client-minted id -- worker_file_tabs is PK'd (user_id, tab_id) precisely because
+// those ids are unique only within a user -- would suppress a tombstone the real
+// owner's tab was due, resurrecting a file tab they closed elsewhere.
+func TestBuildTabSync_ReportsFileTabsScopedToTheOwner(t *testing.T) {
+	queries := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, queries.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
+		UserID:   "user-1",
+		TabID:    "file-1",
+		FilePath: "/tmp/a.go",
+	}))
+	// A stale second owner's row, which must NOT be attributed to user-1.
+	require.NoError(t, queries.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
+		UserID:   "user-2",
+		TabID:    "file-2",
+		FilePath: "/tmp/b.go",
+	}))
+
+	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	require.NoError(t, err)
+
+	reported := make(map[string]leapmuxv1.TabType)
+	for _, tab := range sync.GetTabs() {
+		reported[tab.GetTabId()] = tab.GetTabType()
+	}
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_FILE, reported["file-1"],
+		"the connecting owner's file tab must be reported")
+	assert.NotContains(t, reported, "file-2",
+		"another owner's file tab must not be reported as this registrant's, or it suppresses a tombstone that owner's tab was due")
+}
+
+// TestBuildTabSync_RefusesWithoutARegisteredOwner pins the fail-closed half: with
+// no owner there is no one to attribute the report to, and sending it anyway is
+// how foreign rows would be claimed by whoever connects next.
+func TestBuildTabSync_RefusesWithoutARegisteredOwner(t *testing.T) {
+	queries := setupTestDB(t)
+	_, err := BuildTabSync(queries, userid.UserID{})
+	require.Error(t, err, "an unminted owner must refuse rather than report every row on the machine")
+}
+
+// TestBuildTabSync_ReadFailureIsAnErrorNotAnEmptyReport pins the other half of
+// the completeness contract. An empty report is indistinguishable from "this
+// worker hosts nothing", which the hub answers by tombstoning everything it
+// believes the worker owns -- so a transient read failure must surface as an
+// error and suppress the send, never degrade into a partial inventory.
+func TestBuildTabSync_ReadFailureIsAnErrorNotAnEmptyReport(t *testing.T) {
+	queries, sqlDB := setupTestDBWithHandle(t)
+	ctx := context.Background()
+
+	require.NoError(t, queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:         "agent-1",
+		WorkingDir: "/tmp",
+	}))
+	// Drop the terminals table so the middle read fails after the agent read
+	// has already succeeded -- the exact shape that produced a truncated,
+	// agent-only report.
+	_, execErr := sqlDB.Exec(`DROP TABLE terminals`)
+	require.NoError(t, execErr)
+
+	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+
+	require.Error(t, err, "a failed read must be reported, not swallowed")
+	assert.Nil(t, sync, "no partial report may escape")
 }
 
 // wireForTest assembles a Wiring against an in-memory DB and an

@@ -24,25 +24,42 @@ import (
 // itself. Connect is similarly authenticated by the long-lived
 // auth_token in its own header.
 //
+// "Public" here means "the handler authenticates itself", NOT "anyone may
+// call it". Each worker-facing entry below refuses without a credential of its
+// own; the exemption only keeps the interceptor from rejecting that credential
+// as neither a session cookie nor an `lmx_` API token. Adding a procedure that
+// does NOT authenticate itself is an auth bypass.
+//
+// The credential differs by entry, so do not assume one mechanism: Register
+// consumes a registration KEY, Connect resolves a worker auth_token directly
+// through Workers().GetByAuthToken, and ListOwnedTabsForWorker goes through
+// AuthenticateWorkerBearer. The rationale map in the package's test names the
+// mechanism per entry, which is the check that keeps this list honest.
+//
 // Procedure names come from the generated `leapmuxv1connect` constants
 // so a rename in the proto definition turns a typo here into a build
 // error instead of a silent auth bypass.
 var publicProcedures = map[string]bool{
-	leapmuxv1connect.AuthServiceLoginProcedure:                 true,
-	leapmuxv1connect.AuthServiceSignUpProcedure:                true,
-	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:         true,
-	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:   true,
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:    true,
-	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:     true,
-	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure: true,
-	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:   true,
+	leapmuxv1connect.AuthServiceLoginProcedure:               true,
+	leapmuxv1connect.AuthServiceSignUpProcedure:              true,
+	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:       true,
+	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure: true,
+	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:  true,
+	// Same worker auth_token as Connect, on a plain unary RPC rather than the
+	// stream. The worker's orphan reconciler is the only caller, and it is what
+	// converges a worker after a close or a cross-workspace move that landed
+	// while the worker was offline -- so without this entry the interceptor
+	// answers `unauthenticated` and the worker never learns a tab is gone.
+	leapmuxv1connect.WorkerReconcilerServiceListOwnedTabsForWorkerProcedure: true,
+	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                  true,
+	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:              true,
+	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:                true,
 }
 
 var delegationAllowedProcedures = map[string]bool{
 	leapmuxv1connect.ChannelServiceGetWorkerHandshakeParamsProcedure: true,
 	leapmuxv1connect.ChannelServiceOpenChannelProcedure:              true,
 	leapmuxv1connect.ChannelServiceCloseChannelProcedure:             true,
-	leapmuxv1connect.ChannelServicePrepareWorkspaceAccessProcedure:   true,
 	leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure:         true,
 	leapmuxv1connect.WorkspaceServiceGetWorkspaceProcedure:           true,
 	leapmuxv1connect.WorkspaceServiceListTabsProcedure:               true,

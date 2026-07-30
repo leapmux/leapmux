@@ -54,11 +54,10 @@ func (f *noIdentityRemoteIPC) TerminalSpawning(info TerminalSpawnInfo) ([]string
 func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) {
 	ctx := context.Background()
 	ipc := &noIdentityRemoteIPC{failFrom: 1}
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"), withRemoteIPC(ipc))
+	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId: "ws-1",
-		WorkingDir:  t.TempDir(),
+		WorkingDir: t.TempDir(),
 	}, w)
 
 	// The caller is told, but that alone is not enough -- see below.
@@ -80,10 +79,10 @@ func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) 
 
 	// The row must name its own cause, for every watcher and not just the
 	// caller that happened to be connected.
-	ids, err := svc.Queries.ListAllAgentIDsAndWorkspaces(ctx)
+	ids, err := svc.Queries.ListAllAgentIDs(ctx)
 	require.NoError(t, err)
 	require.Len(t, ids, 1, "the agent row was committed before the identity check")
-	row, err := svc.Queries.GetAgentByID(ctx, ids[0].ID)
+	row, err := svc.Queries.GetAgentByID(ctx, ids[0])
 	require.NoError(t, err)
 	assert.NotEmpty(t, row.StartupError,
 		"a spawn refused for a missing identity must persist why, or the tab is a phantom")
@@ -107,7 +106,7 @@ func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) 
 // needs its socket. It does not: RestartTerminal refuses synchronously while
 // IsRunning, so by the time this goroutine runs the old PTY has already exited.
 // Skipping the retire leaks a listening unix socket and an unrevoked
-// (user, workspace) delegation bearer for a process that is gone, and nothing
+// per-user delegation bearer for a process that is gone, and nothing
 // later comes along to clean them up because the restart never happens.
 //
 // The fixture below exits the terminal first for exactly that reason -- it is
@@ -116,10 +115,10 @@ func TestRestartTerminal_MissingIdentityFailsAndRetiresPreviousToken(t *testing.
 	// Fail the SECOND spawn: the initial open must succeed so there is a live
 	// token for the restart to retire.
 	ipc := &noIdentityRemoteIPC{failFrom: 2}
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"), withRemoteIPC(ipc))
+	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
 	defer drainAllInFlight(svc)
 
-	terminalID := openTerminalViaRPC(t, svc, d, w, "ws-1", t.TempDir())
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 	require.Equal(t, 1, ipc.calls, "the initial open mints a token")
 	require.Zero(t, ipc.cleanups, "nothing has retired it yet")

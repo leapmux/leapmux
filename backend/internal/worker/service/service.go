@@ -115,8 +115,8 @@ type Service struct {
 	// non-nil after New.
 	PrivateEvents *PrivateEventsBus
 
-	// FileTabPaths persists (user_id, tab_id) -> (workspace_id,
-	// file_path) for FILE-typed tabs. Always non-nil after New.
+	// FileTabPaths persists (user_id, tab_id) -> file_path for
+	// FILE-typed tabs. Always non-nil after New.
 	// The hub never sees these rows; clients fetch paths over E2EE.
 	FileTabPaths *FileTabPathStore
 
@@ -145,18 +145,18 @@ type Service struct {
 	// never call RegisterAll; Shutdown's nil guard covers those.
 	tunnels atomic.Pointer[tunnelManager]
 
+	// stopBackgroundLoops stops the service's background convergence loops (today
+	// the orphan reconciler) and blocks until an in-flight pass returns. Assigned
+	// by bootstrap after the loops start, read by Shutdown. See
+	// SetStopBackgroundLoops for why it cannot be part of Config.
+	stopBackgroundLoops func()
+
 	// agentCleanups / terminalCleanups hold per-tab cleanup callbacks
 	// registered by spawn*RemoteIPC and fired on close (or before a
 	// restart mints a new token). Same shape, two embeddings keep the
 	// terminal-vs-agent intent at the call site.
 	agentCleanups    cleanupRegistry
 	terminalCleanups cleanupRegistry
-
-	// localAuthorizers maps synthetic local-IPC stream ids to their
-	// LocalIPCAuthorizer. The router populates the entry around each
-	// dispatch so requireAccessibleWorkspace can answer access checks
-	// for callers that don't have an E2EE channel.
-	localAuthorizers sync.Map
 
 	// worktreeRemovalLocks serializes the read-modify-remove sequence
 	// (drop tab link -> count remaining -> `git worktree remove`) per
@@ -168,13 +168,32 @@ type Service struct {
 	// contend. Entries are never deleted (bounded by the worker's
 	// distinct-worktree count over its lifetime).
 	worktreeRemovalLocks sync.Map
-}
 
-// worktreeRemovalLock returns the per-worktree mutex that serializes the
-// count-then-remove critical section in closeTabCommon.
-func (svc *Service) worktreeRemovalLock(worktreeID string) *sync.Mutex {
-	v, _ := svc.worktreeRemovalLocks.LoadOrStore(worktreeID, &sync.Mutex{})
-	return v.(*sync.Mutex)
+	// gitIndexLocks serializes INDEX-MUTATING git commands per repository:
+	// `worktree add`/`remove`, `checkout`, `checkout -b`, `branch -D`, `add -A`,
+	// `commit`, `push`. Git guards its own index with `index.lock` and simply
+	// FAILS when another process holds it -- "Unable to create
+	// '.git/worktrees/<branch>/index.lock': File exists. Another git process
+	// seems to be running in this repository" -- so two of the worker's own git
+	// commands in one repo do not queue, they break the loser.
+	//
+	// That is reachable on ordinary paths, not just under test load: two agents
+	// can be starting in the same repository at once (each running its git-mode
+	// mutation on its own startup goroutine), and DeleteBranchDialog fires every
+	// tab's REMOVE close concurrently.
+	//
+	// Keyed by MAIN REPO ROOT (gitPathInfo.RepoRoot), not by working dir: linked
+	// worktrees share one object store and one `.git/worktrees/` admin tree, so a
+	// checkout inside a worktree and a `worktree add` in the main repo contend on
+	// the same locks. Keying by working dir would let exactly the observed failure
+	// through. Entries are never deleted, bounded by the worker's distinct-repo
+	// count over its lifetime.
+	//
+	// LOCK ORDER: worktreeRemovalLocks (outer) -> gitIndexLocks (inner).
+	// closeTabCommon holds the per-worktree removal lock across a sequence that
+	// ends in `git worktree remove`, so the inner acquisition happens there.
+	// Nothing may take a removal lock while holding an index lock.
+	gitIndexLocks sync.Map
 }
 
 // cleanupRegistry holds id → cleanup callbacks under a single mutex.
@@ -183,21 +202,79 @@ func (svc *Service) worktreeRemovalLock(worktreeID string) *sync.Mutex {
 type cleanupRegistry struct {
 	mu sync.Mutex
 	m  map[string]func()
+	// claimed holds ids whose row exists but whose cleanup has not been
+	// registered yet -- the startup window between createAgentRecord / the
+	// terminal upsert and spawnRemoteIPC's register call.
+	claimed map[string]struct{}
+	// closedWhileClaimed holds claimed ids that run() was called for before their
+	// cleanup arrived. register() sees the mark and retires the new resource
+	// immediately instead of storing a cleanup for a tab that is already closed.
+	//
+	// Without this pair, a reap landing in that window made run() a silent no-op
+	// and the cleanup registered afterwards was never fired by anyone: the tab's
+	// unix-socket listener stayed open and its delegation token unrevoked for the
+	// life of the worker process. It is also what lets the orphan reconciler read
+	// only OPEN rows -- it no longer needs to re-tear-down closed rows on every
+	// pass just to cover this gap.
+	closedWhileClaimed map[string]struct{}
+}
+
+// claim records that id's row exists and a cleanup for it is coming. Callers
+// claim as soon as the row is durable, and must abandonClaim if they abort
+// before registering.
+func (r *cleanupRegistry) claim(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.claimed == nil {
+		r.claimed = map[string]struct{}{}
+	}
+	r.claimed[id] = struct{}{}
+}
+
+// abandonClaim drops a claim whose spawn aborted before registering, so a failed
+// startup cannot leave an entry behind.
+func (r *cleanupRegistry) abandonClaim(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.claimed, id)
+	delete(r.closedWhileClaimed, id)
 }
 
 func (r *cleanupRegistry) register(id string, fn func()) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	if _, closed := r.closedWhileClaimed[id]; closed {
+		// The tab was closed while this spawn was still starting. Retire the
+		// resource now rather than storing a cleanup nobody will ever run.
+		delete(r.closedWhileClaimed, id)
+		delete(r.claimed, id)
+		r.mu.Unlock()
+		if fn != nil {
+			fn()
+		}
+		return
+	}
+	delete(r.claimed, id)
 	if r.m == nil {
 		r.m = map[string]func(){}
 	}
 	r.m[id] = fn
+	r.mu.Unlock()
 }
 
 func (r *cleanupRegistry) run(id string) {
 	r.mu.Lock()
 	fn, ok := r.m[id]
 	delete(r.m, id)
+	if !ok {
+		if _, claimed := r.claimed[id]; claimed {
+			// A cleanup is still on its way; leave a mark for register to act on.
+			delete(r.claimed, id)
+			if r.closedWhileClaimed == nil {
+				r.closedWhileClaimed = map[string]struct{}{}
+			}
+			r.closedWhileClaimed[id] = struct{}{}
+		}
+	}
 	r.mu.Unlock()
 	if ok && fn != nil {
 		fn()
@@ -281,7 +358,7 @@ func (svc *Service) agentAPITimeout() time.Duration {
 type Config struct {
 	// Enforced: New panics without Channels or Send, since a Service
 	// missing either cannot answer a single RPC.
-	Channels *channel.Manager // E2EE channel manager (for workspace access lookups)
+	Channels *channel.Manager // E2EE channel manager (for session lookups)
 	Send     SendFunc         // Forwards messages to the Hub via WebSocket
 
 	// Supplied by every worker entry point, but NOT validated: a zero
@@ -450,6 +527,20 @@ func (svc *Service) RestoreState() {
 // stopped dispatching new OpenAgent/OpenTerminal/CloseAgent/CloseTerminal
 // requests; otherwise the Wait calls below can race with a fresh Add.
 func (svc *Service) Shutdown() {
+	// Stop the background convergence loops FIRST, and before the drains below.
+	//
+	// The orphan reconciler runs teardowns of its own (Close*TabForReconcile ->
+	// closeTabCommon), and those are NOT registered with svc.Cleanup: only the
+	// dispatcher's tracked handlers are. So the Cleanup.Wait below does not cover
+	// them, and the worker entry points run Shutdown BEFORE cancelling the
+	// context the reconciler is bound to -- leaving a nudge-triggered pass free to
+	// run DB writes and remote-IPC teardown straight into the deferred
+	// sqlDB.Close(). Stop() blocks until the in-flight pass returns, which closes
+	// that window.
+	if stop := svc.stopBackgroundLoops; stop != nil {
+		stop()
+	}
+
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
 	// trailing DB writes and filesystem work land before the caller
 	// closes the DB or removes data directories.
@@ -465,6 +556,15 @@ func (svc *Service) Shutdown() {
 	// count tidy for an orderly shutdown and for tests that call Shutdown.
 	if t := svc.tunnels.Load(); t != nil {
 		t.Stop()
+	}
+
+	// Retire the private-event subscribers for the same reason. Each one parks
+	// a goroutine on a background context (the handler deliberately passes
+	// bgCtx, so a closing channel does not end the subscription), and nothing
+	// else ever released them -- Stop existed but had no caller anywhere in the
+	// repo's history.
+	if svc.PrivateEvents != nil {
+		svc.PrivateEvents.Stop()
 	}
 
 	for _, tid := range svc.Terminals.ListTerminalIDs() {
@@ -553,7 +653,6 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 	// the zero value here is a no-op on the existing row.
 	params := db.UpsertTerminalParams{
 		ID:            tid,
-		WorkspaceID:   src.WorkspaceID,
 		WorkingDir:    src.WorkingDir,
 		HomeDir:       svc.HomeDir,
 		ShellStartDir: src.ShellStartDir,
@@ -571,13 +670,14 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 }
 
 // ownerOnlyRegistrar registers handlers that ONLY the worker's registered owner
-// may call.
+// may call -- which, since the Worker stopped tracking workspaces, is every
+// handler except Ping.
 //
-// It exists so the machine-scoped families cannot register an ungated handler by
-// accident: they are handed this instead of the raw *channel.Dispatcher, so the
-// gate is a property of where the handler is registered rather than a line each
-// author must remember. Both Register and RegisterTracked are wrapped -- gating
-// only one would leave a silent hole (git uses both). Each Register also records
+// It exists so a family cannot register an ungated handler by accident: it is
+// handed this instead of the raw *channel.Dispatcher, so the gate is a property
+// of where the handler is registered rather than a line each author must
+// remember. Both Register and RegisterTracked are wrapped -- gating only one
+// would leave a silent hole (git uses both). Each Register also records
 // gateOwnerOnly on the shared registrar so TestEveryRegisteredMethodIsClassified
 // sees the method without replaying the family register functions.
 type ownerOnlyRegistrar struct {
@@ -597,8 +697,50 @@ func (o ownerOnlyRegistrar) Register(method string, handler channel.HandlerFunc)
 	o.r.register(method, gateOwnerOnly, dispatchPlain, o.gate(handler))
 }
 
+// RegisterMode is Register/RegisterTracked selected by an argument, so a gated
+// helper can take the dispatch axis as a parameter instead of existing twice.
+// Streaming is deliberately NOT reachable here: RegisterStream applies gateStream
+// (a stream-frame denial) rather than gate, and the unary-vs-stream shape is what
+// the methodShape table pins -- routing it through the same argument would let a
+// caller pick a unary denial for a streaming method.
+func (o ownerOnlyRegistrar) RegisterMode(method string, mode dispatchMode, handler channel.HandlerFunc) {
+	switch mode {
+	case dispatchTracked:
+		o.RegisterTracked(method, handler)
+	case dispatchPlain, dispatchStreaming:
+		// dispatchStreaming cannot arrive: the streaming helpers call
+		// RegisterStream directly. Treating it as plain here would silently give a
+		// streaming method a unary denial, so it is grouped with plain only to keep
+		// the switch exhaustive.
+		o.Register(method, handler)
+	}
+}
+
 func (o ownerOnlyRegistrar) RegisterTracked(method string, handler channel.HandlerFunc) {
 	o.r.register(method, gateOwnerOnly, dispatchTracked, o.gate(handler))
+}
+
+// gateStream is gate for a STREAMING method: same predicate, different denial
+// encoding (a stream frame, so the receiver has an End to terminate on -- see
+// sendStreamError).
+func (o ownerOnlyRegistrar) gateStream(handler channel.HandlerFunc) channel.HandlerFunc {
+	return func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+		if !requireWorkerOwnerStream(o.r.svc, userID, sender) {
+			return
+		}
+		handler(ctx, userID, req, sender)
+	}
+}
+
+// RegisterStream is the streaming lane's entry point, and it exists so the
+// streaming helpers cannot record gateOwnerOnly without also applying it.
+//
+// The two stream helpers used to call r.register directly and re-implement the
+// gate inline, which made "recorded owner-gated but never gated" a one-line
+// mistake nothing would catch. Routing them through here leaves gateOwnerOnly
+// mentioned in exactly three places, all inside this type.
+func (o ownerOnlyRegistrar) RegisterStream(method string, handler channel.HandlerFunc) {
+	o.r.register(method, gateOwnerOnly, dispatchStreaming, o.gateStream(handler))
 }
 
 // SetRegisteredBy seeds the worker's owner before the Hub has delivered one.
@@ -619,6 +761,17 @@ func (svc *Service) SetRegisteredBy(userID userid.UserID) {
 		return
 	}
 	svc.registeredBy.Store(&userID)
+}
+
+// SetStopBackgroundLoops registers a function that stops the service's background
+// convergence loops and blocks until an in-flight pass returns. Shutdown calls it
+// before any drain.
+//
+// Wired late, like Service.RemoteIPC: the loops need a fully-built Service, so
+// they cannot exist when New runs. Left unset -- every test that never starts
+// them -- Shutdown skips it.
+func (svc *Service) SetStopBackgroundLoops(stop func()) {
+	svc.stopBackgroundLoops = stop
 }
 
 // UpdateRegisteredBy applies an owner the Hub delivered on connect.
@@ -664,21 +817,23 @@ func (svc *Service) RegisteredBy() userid.UserID {
 // requireWorkerOwner gates a handler on the caller being the worker's own
 // registered owner, rejecting everyone else.
 //
-// It is the right gate for the families whose reach is the MACHINE rather than a
-// workspace -- tunnels (arbitrary TCP out of the host), the file and git handlers
-// (any absolute path; validate.SanitizePath normalizes and blocks traversal, it
-// does not confine to a root), and sysinfo (which discloses the owner's home
-// path). The owner already has all of this: their agents run as them on their own
-// machine, so granting it over the channel adds nothing. Anyone ELSE holding a
-// channel must not have it -- notably a delegation bearer, which is pinned to one
-// workspace and is handed to a prompt-injectable agent. The Hub only ever opens a
-// channel for the worker's own owner, so this gate is defence in depth today; it is
-// what keeps any future way of reaching a worker failing closed rather than
-// silently exposing the filesystem.
+// It is the ONLY authorization axis the Worker has, and that is by construction
+// rather than by simplification: a Worker is registered by exactly one user
+// (workers.registered_by), it stores no workspace id, and the Hub opens a
+// channel only for that user -- so "the caller owns this Worker" and "the caller
+// owns every row this Worker holds" are the same statement. There is nothing
+// finer to narrow on.
 //
-// Workspace-scoped families (agent, terminal, tab moves, cleanup) must NOT use
-// this: they legitimately serve non-owners and gate on the Hub-supplied
-// accessible-workspace set instead (requireAccessibleWorkspace and friends).
+// It matters most for the families whose reach is the MACHINE -- tunnels
+// (arbitrary TCP out of the host), the file and git handlers (any absolute path;
+// validate.SanitizePath normalizes and blocks traversal, it does not confine to
+// a root), and sysinfo (which discloses the owner's home path). The owner
+// already has all of this: their agents run as them on their own machine, so
+// granting it over the channel adds nothing. Anyone ELSE holding a channel must
+// not have it. Since the Hub only ever opens a channel for the worker's own
+// owner, the gate is defence in depth today; it is what keeps any future way of
+// reaching a Worker failing closed rather than silently exposing the filesystem.
+//
 // An empty id on either side is refused rather than matched. MatchesUser
 // fails closed when either side is zero, so a worker whose owner never got populated
 // would refuse a caller the Hub named with an empty user id -- a gate whose
@@ -689,10 +844,39 @@ func (svc *Service) RegisteredBy() userid.UserID {
 // ordering non-load-bearing. Its sibling in this package's Hub counterpart
 // (verifyDelegationWorkerScope) refuses an unrecorded minter for the same reason.
 func requireWorkerOwner(svc *Service, userID userid.UserID, sender channel.ResponseWriter) bool {
-	if userID.MatchesUser(svc.RegisteredBy()) {
+	if callerIsWorkerOwner(svc, userID) {
 		return true
 	}
-	sendPermissionDenied(sender, "only the worker owner may use this")
+	sendPermissionDenied(sender, workerOwnerDenial)
+	return false
+}
+
+// callerIsWorkerOwner is the ownership predicate both gates share, and
+// workerOwnerDenial the message both send. Extracted because the unary and
+// streaming gates are otherwise identical and differ only in how they encode the
+// refusal: with the check written out twice, a change to the predicate could
+// land in one and miss the other, and no test asserts either message string.
+func callerIsWorkerOwner(svc *Service, userID userid.UserID) bool {
+	return userID.MatchesUser(svc.RegisteredBy())
+}
+
+// workerOwnerDenial is quoted in crossworker/client.go's comments, so keep the
+// wording and this constant in step.
+const workerOwnerDenial = "only the worker owner may use this"
+
+// requireWorkerOwnerStream is requireWorkerOwner for a STREAMING method: the
+// refusal goes out as a stream frame.
+//
+// A unary InnerRpcResponse on a correlation id the browser holds in
+// streamListeners is dropped on arrival, so a unary denial here would leave the
+// caller subscribed to a stream that never carries anything and never errors --
+// the exact failure the methodShape table exists to catch, in its
+// security-relevant half.
+func requireWorkerOwnerStream(svc *Service, userID userid.UserID, sender channel.ResponseWriter) bool {
+	if callerIsWorkerOwner(svc, userID) {
+		return true
+	}
+	sendStreamError(sender, codes.PermissionDenied, workerOwnerDenial)
 	return false
 }
 
@@ -701,20 +885,13 @@ func requireWorkerOwner(svc *Service, userID userid.UserID, sender channel.Respo
 // Every method records a methodGate at registration time (default-deny: a
 // method with no recorded gate fails TestEveryRegisteredMethodIsClassified):
 //
-//   - gateOwnerOnly  — machine-scoped families (file/git/sysinfo/tunnel) via
-//     ownerOnlyRegistrar, plus the capability probes ListAvailableShells /
-//     ListAvailableProviders (which enumerate installed shells/agent CLIs) via
-//     registerOwnerOnly; only the worker owner may call.
-//   - gateWorkspace  — structural workspace gate via registerWorkspaceGated /
-//     registerAgentGated / registerTerminalGated (+ Tracked / ByID /
-//     ForRestart variants). Unmarshal + access check run before the handler
-//     body; the ByID variants authorize via a workspace_id-only lookup for
+//   - gateOwnerOnly — everything, via ownerOnlyRegistrar directly (the
+//     machine-scoped file/git/sysinfo/tunnel families) or via the typed
+//     registerOwnerGated / registerAgentGated / registerTerminalGated helpers
+//     that layer an unmarshal and a row load on top of the same gate. The
+//     ByID variants resolve the tab through an id-only existence probe for
 //     handlers that never read the row.
-//   - gateInBody     — heterogeneous in-body gates (file-tab-path dual checks,
-//     MoveTabWorkspace TabType switch); probe-enforced completeness.
-//   - gateSetFilter  — ListAgents / ListTerminals / WatchEvents filter via
-//     AccessibleSet(); denial is an empty result, not PERMISSION_DENIED.
-//   - gateNone       — Ping; a liveness probe that does no work and discloses
+//   - gateNone      — Ping; a liveness probe that does no work and discloses
 //     nothing, ungated by design.
 //
 // RegisterAll also binds svc.Cleanup as the drain every RegisterTracked
@@ -748,13 +925,12 @@ func registerAllClassified(d *channel.Dispatcher, svc *Service) (map[string]meth
 	r := newRegistrar(d, svc)
 	registerPingHandler(r, svc)
 	// Machine-scoped: owner-only by construction (see ownerOnlyRegistrar).
-	ownerOnly := ownerOnlyRegistrar{r: r}
+	ownerOnly := r.ownerOnly()
 	registerFileHandlers(ownerOnly, svc)
 	registerGitHandlers(ownerOnly, svc)
 	registerTerminalHandlers(r, svc)
 	registerAgentHandlers(r, svc)
 	registerCleanupHandlers(r, svc)
-	registerTabMoveHandlers(r, svc)
 	registerSysInfoHandlers(ownerOnly, svc)
 	tunnels := registerTunnelHandlers(ownerOnly)
 	// Swap in the new manager and Stop the prior one it displaced. A
@@ -925,12 +1101,14 @@ func sendInvalidArgument(sender channel.ResponseWriter, msg string) {
 
 // sendStreamError reports a terminal failure on a STREAMING method.
 //
-// The sender helpers above emit an InnerRpcResponse, which the frontend
-// routes through pendingRequests. A streaming call's correlation id lives
-// in streamListeners instead, and deliverResponse drops a frame it finds
-// no pending request for -- so an ordinary SendError on a stream is
-// discarded silently and the client waits forever. Streaming handlers
-// must report failure in-band, as an InnerStreamMessage with IsError.
+// The sender helpers above emit an InnerRpcResponse, which the frontend routes
+// through pendingRequests. A streaming call's correlation id lives in
+// streamListeners instead. That frame is not lost -- deliverResponse has an arm
+// that hands a unary ERROR on a stream id to the listener's onError -- but it
+// carries no End flag, so a receiver cannot terminate on it generically, and the
+// sibling non-error case IS dropped. Streaming handlers therefore report failure
+// in-band, as an InnerStreamMessage with IsError, so one reply shape covers every
+// outcome on the stream.
 func sendStreamError(sender channel.ResponseWriter, code codes.Code, msg string) {
 	_ = sender.SendStream(&leapmuxv1.InnerStreamMessage{
 		// End as well as IsError: this frame ENDS the stream, and saying so
@@ -970,128 +1148,6 @@ func sendValidationError(sender channel.ResponseWriter, err error) {
 	default:
 		sendInvalidArgument(sender, err.Error())
 	}
-}
-
-// requireAccessibleWorkspace verifies the workspace_id is accessible on the
-// sender's channel. Sends PERMISSION_DENIED and returns false when the channel
-// has no context or the workspace is not in its accessible set (populated at
-// channel handshake by the hub's list of workspaces the user owns). The
-// caller is responsible for rejecting empty workspace_id up front.
-//
-// Authorization is delegated to AuthorizerFor so both E2EE channels
-// (channelmgr-backed) and local-IPC callers (registered LocalIPCAuthorizer)
-// take the same code path. Callers that need the authorizer for follow-up
-// checks (list filters, watcher subscriber ids) should use
-// AuthorizerFor directly.
-func (svc *Service) requireAccessibleWorkspace(sender channel.ResponseWriter, workspaceID string) bool {
-	if !svc.workspaceAccessible(sender.ChannelID(), workspaceID) {
-		sendPermissionDenied(sender, "workspace is not accessible")
-		return false
-	}
-	return true
-}
-
-// workspaceAccessible is requireAccessibleWorkspace's decision without
-// its reply. It exists for callers that must shape their own denial --
-// a streaming registration, whose errors have to be stream frames -- so
-// they can ask the same question rather than reimplementing it.
-func (svc *Service) workspaceAccessible(channelID, workspaceID string) bool {
-	return svc.AuthorizerFor(channelID).IsAccessible(workspaceID)
-}
-
-// requireAccessibleAgent looks up the agent and verifies its workspace is
-// accessible on the sender's channel. Sends the appropriate error response
-// and returns ok=false on empty id, missing row, db error, or denial. The
-// returned Agent is the freshly-loaded row so callers can reuse it.
-func (svc *Service) requireAccessibleAgent(sender channel.ResponseWriter, agentID string) (db.Agent, bool) {
-	return requireAccessibleRow(
-		svc, sender, agentID, "agent",
-		svc.Queries.GetAgentByID,
-		func(a db.Agent) string { return a.WorkspaceID },
-	)
-}
-
-// requireAccessibleTerminal looks up the terminal and verifies its workspace
-// is accessible on the sender's channel. Mirror of requireAccessibleAgent.
-func (svc *Service) requireAccessibleTerminal(sender channel.ResponseWriter, terminalID string) (db.Terminal, bool) {
-	return requireAccessibleRow(
-		svc, sender, terminalID, "terminal",
-		svc.Queries.GetTerminal,
-		func(t db.Terminal) string { return t.WorkspaceID },
-	)
-}
-
-// requireAccessibleTerminalForRestart is the narrow-query variant used
-// by the RestartTerminal handler: returns metadata + length(screen)
-// without loading the screen BLOB. See GetTerminalForRestart for why.
-func (svc *Service) requireAccessibleTerminalForRestart(sender channel.ResponseWriter, terminalID string) (db.GetTerminalForRestartRow, bool) {
-	return requireAccessibleRow(
-		svc, sender, terminalID, "terminal",
-		svc.Queries.GetTerminalForRestart,
-		func(t db.GetTerminalForRestartRow) string { return t.WorkspaceID },
-	)
-}
-
-// requireAccessibleAgentID verifies the agent's workspace is accessible
-// without loading the full row: GetAgentWorkspaceID fetches only the
-// workspace_id column, skipping the options / option-group JSON blobs a
-// full GetAgentByID deserializes. Both queries share the bare `id = ?`
-// predicate, so the error mapping (empty id, missing row, db error,
-// denial) is identical to requireAccessibleAgent — use that one instead
-// when the handler body needs the row.
-func (svc *Service) requireAccessibleAgentID(sender channel.ResponseWriter, agentID string) bool {
-	_, ok := requireAccessibleRow(
-		svc, sender, agentID, "agent",
-		svc.Queries.GetAgentWorkspaceID,
-		func(wsID string) string { return wsID },
-	)
-	return ok
-}
-
-// requireAccessibleTerminalID is the terminal mirror of
-// requireAccessibleAgentID: a workspace_id-only lookup that skips the
-// screen BLOB a full GetTerminal would read. Same predicate and error
-// mapping as requireAccessibleTerminal.
-func (svc *Service) requireAccessibleTerminalID(sender channel.ResponseWriter, terminalID string) bool {
-	_, ok := requireAccessibleRow(
-		svc, sender, terminalID, "terminal",
-		svc.Queries.GetTerminalWorkspaceID,
-		func(wsID string) string { return wsID },
-	)
-	return ok
-}
-
-// requireAccessibleRow factors the ACL + error-mapping shell shared by
-// every "load a row by id, then check workspace access" helper. kind is
-// the user-facing entity label embedded in error messages ("agent",
-// "terminal"); fetch is the sqlc query; workspaceID extracts the row's
-// workspace id for the access check.
-func requireAccessibleRow[T any](
-	svc *Service,
-	sender channel.ResponseWriter,
-	id, kind string,
-	fetch func(context.Context, string) (T, error),
-	workspaceID func(T) string,
-) (T, bool) {
-	var zero T
-	if id == "" {
-		sendInvalidArgument(sender, kind+"_id is required")
-		return zero, false
-	}
-	row, err := fetch(bgCtx(), id)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			sendNotFoundError(sender, kind+" not found")
-			return zero, false
-		}
-		slog.Error("failed to load "+kind+" for access check", kind+"_id", id, "error", err)
-		sendInternalError(sender, "failed to load "+kind)
-		return zero, false
-	}
-	if !svc.requireAccessibleWorkspace(sender, workspaceID(row)) {
-		return zero, false
-	}
-	return row, true
 }
 
 // sanitizeOptionalTitle normalizes an OpenAgent/OpenTerminal title. An empty

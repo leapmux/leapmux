@@ -1,9 +1,12 @@
 -- +goose Up
 
--- Agents (1:N per workspace; workspace_id is a hub-owned ID, no local FK)
+-- Agents. No workspace_id: which workspace a tab lives in is CRDT state the
+-- Hub owns, derived from the tab's tile at projection time. A copy here would
+-- be a second source of truth that goes stale on every cross-workspace move,
+-- and nothing on the Worker reads it -- every row here belongs to the Worker's
+-- single registrant.
 CREATE TABLE agents (
     id               TEXT PRIMARY KEY,
-    workspace_id     TEXT NOT NULL,
     working_dir      TEXT NOT NULL DEFAULT '',
     home_dir                 TEXT    NOT NULL DEFAULT '',
     plan_file_path           TEXT    NOT NULL DEFAULT '',
@@ -30,7 +33,6 @@ CREATE TABLE agents (
     created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at        DATETIME
 );
-CREATE INDEX idx_agents_workspace_id ON agents(workspace_id);
 CREATE INDEX idx_agents_closed_at ON agents(closed_at) WHERE closed_at IS NOT NULL;
 
 -- Messages (verbatim storage, per agent)
@@ -145,10 +147,9 @@ CREATE TABLE worktrees (
 CREATE UNIQUE INDEX idx_worktrees_path ON worktrees(worktree_path) WHERE deleted_at IS NULL;
 CREATE INDEX idx_worktrees_deleted_at ON worktrees(deleted_at) WHERE deleted_at IS NOT NULL;
 
--- Terminals (1:N per workspace; workspace_id is a hub-owned ID, no local FK)
+-- Terminals. No workspace_id, for the same reason as agents above.
 CREATE TABLE terminals (
     id            TEXT PRIMARY KEY,
-    workspace_id  TEXT NOT NULL,
     working_dir   TEXT NOT NULL DEFAULT '',
     home_dir      TEXT NOT NULL DEFAULT '',
     shell_start_dir TEXT NOT NULL DEFAULT '',
@@ -162,7 +163,6 @@ CREATE TABLE terminals (
     created_at    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     closed_at     DATETIME
 );
-CREATE INDEX idx_terminals_workspace_id ON terminals(workspace_id);
 CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS NOT NULL;
 
 -- Junction: which tabs use which LeapMux-created worktree.
@@ -225,26 +225,27 @@ SELECT
 FROM worktree_tabs t;
 
 -- File-tab paths kept E2EE on the worker. The hub never sees these
--- rows; clients fetch paths over WatchWorkspacePrivateEvents and
+-- rows; clients fetch paths over WatchWorkerPrivateEvents and
 -- GetFileTabPath. tab_id is unique within a user but not across users,
 -- so the primary key includes user_id.
+--
+-- user_id therefore stays while workspace_id goes: it is an ID-UNIQUENESS
+-- requirement, not a tenancy one (see worktree_tab_liveness above).
 CREATE TABLE worker_file_tabs (
     -- CHECK (user_id <> ''): the worker's database has no users table, so the
     -- hub's REFERENCES users(id) floor cannot reach here. FileTabPathStore
     -- refuses a blank owner in Go, but a blank row that got in any other way
-    -- would be permanently unclearable -- Get/RevokeRow/Relocate all refuse an
+    -- would be permanently unclearable -- Get/RevokeRow both refuse an
     -- unminted owner, and the reconciler's scope check skips it -- while
     -- worktree_tab_liveness's FILE leg (which matches f.user_id = t.user_id and
     -- relies on '' never matching a real file-tab row) would start reading
     -- agent/terminal links as live and leak their worktrees.
     user_id      TEXT NOT NULL CHECK (user_id <> ''),
     tab_id       TEXT NOT NULL,
-    workspace_id TEXT NOT NULL,
     file_path    TEXT NOT NULL,
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (user_id, tab_id)
 );
-CREATE INDEX idx_worker_file_tabs_workspace ON worker_file_tabs(user_id, workspace_id);
 
 -- Provider-neutral to-do rows. Populated incrementally by the worker
 -- output handler in response to Claude TodoWrite/Task*, Codex

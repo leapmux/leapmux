@@ -353,7 +353,6 @@ CREATE TABLE delegation_tokens (
     id                            TEXT COLLATE "C" PRIMARY KEY,
     user_id                       TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     worker_id                     TEXT COLLATE "C" NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
-    workspace_id                  TEXT COLLATE "C" NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     agent_id                      TEXT COLLATE "C" NOT NULL DEFAULT '',
     terminal_id                   TEXT COLLATE "C" NOT NULL DEFAULT '',
     issued_for_tab_id             TEXT COLLATE "C" NOT NULL DEFAULT '',
@@ -369,7 +368,6 @@ CREATE TABLE delegation_tokens (
 );
 CREATE INDEX idx_delegation_tokens_user ON delegation_tokens(user_id);
 CREATE INDEX idx_delegation_tokens_worker_agent ON delegation_tokens(worker_id, agent_id);
-CREATE INDEX idx_delegation_tokens_workspace ON delegation_tokens(workspace_id);
 CREATE INDEX idx_delegation_tokens_revoked_at ON delegation_tokens(revoked_at) WHERE revoked_at IS NOT NULL;
 -- Keyset index for the admin ListAllDelegationTokens listing (see
 -- idx_api_tokens_created_at for the rationale).

@@ -20,11 +20,10 @@ import (
 // it as `unsupported_provider`).
 func TestCreateMessageRow_RejectsUnspecifiedProvider(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
@@ -64,11 +63,10 @@ func TestCreateMessageRow_RejectsUnspecifiedProvider(t *testing.T) {
 
 func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
@@ -99,12 +97,11 @@ func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
 // provider before reaching here, so this guard is a backstop.
 func TestCreateAgentRecord_RejectsUnspecifiedProvider(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	base := func(id string, provider leapmuxv1.AgentProvider) db.CreateAgentParams {
 		return db.CreateAgentParams{
 			ID:            id,
-			WorkspaceID:   "ws-1",
 			WorkingDir:    t.TempDir(),
 			HomeDir:       t.TempDir(),
 			Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),

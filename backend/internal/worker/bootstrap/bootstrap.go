@@ -20,11 +20,14 @@ package bootstrap
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
@@ -94,7 +97,7 @@ type Wiring struct {
 // Nothing the connect loop can reach is published until every handler is
 // registered behind it.
 func Wire(p Params) *Wiring {
-	// Built first because the service needs it for workspace access
+	// Built first because the service needs it for channel-session
 	// lookups. Its close callback is attached below, once there is a
 	// service for it to reach.
 	channelMgr := channel.NewManager(
@@ -213,6 +216,11 @@ func newRemoteIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dis
 	var delegation *crossworker.DelegationStore
 	if pins != nil {
 		delegation = crossworker.NewDelegationStore(p.HubURL, p.AuthToken, p.WorkerID)
+		// The mint's issued_for_tab_id comes from the worker's OWN open-tab tables,
+		// which are the authority on what this machine hosts. Wired as a closure so
+		// crossworker keeps no dependency on the worker DB -- the same shape
+		// TabSyncProvider below uses, and for the same reason.
+		delegation.LiveTab = liveTabForMint(db.New(p.DB))
 		// Defense-in-depth: a periodic sweep drops cached delegation rows
 		// whose access token has expired AND whose refcount fell to zero
 		// through an abnormal Release path. The healthy lifecycle
@@ -225,12 +233,12 @@ func newRemoteIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dis
 	var hubStreams remoteipc.HubStreamer
 	var hubBridge remoteipc.HubBridge
 	if delegation != nil {
-		hubStreams = remoteipc.NewHubWorkspaceStreamer(p.HubURL, delegation)
+		hubStreams = remoteipc.NewHubEventStreamer(p.HubURL, delegation)
 		// HubBridge mirrors HubStreamer for unary hub-bound RPCs
 		// (workspace/tab/tile/layout). Wired with the same delegation
-		// store so streaming and unary share a single (user, workspace) ->
-		// bearer cache and one revoke path.
-		hubBridge = remoteipc.NewHubWorkspaceBridge(p.HubURL, delegation)
+		// store so streaming and unary share a single user -> bearer cache
+		// and one revoke path.
+		hubBridge = remoteipc.NewHubUnaryBridge(p.HubURL, delegation)
 	}
 
 	return &remoteipc.Factory{
@@ -239,8 +247,32 @@ func newRemoteIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dis
 		CrossWorker: cwClient,
 		HubBridge:   hubBridge,
 		HubStreams:  hubStreams,
-		Authorizers: svc,
+		Streams:     svc,
 		Delegation:  delegation,
+	}
+}
+
+// liveTabForMint answers "a tab this worker currently hosts" for the delegation
+// mint, preferring an agent and falling back to a terminal.
+//
+// Any open tab will do: the hub validates "does this worker own that tab", which
+// holds for every tab it hosts, so the mint only needs ONE. Reading it live is what
+// removed the shadow set Acquire/Release used to maintain -- a second source of
+// truth for the same fact that could outlive the tab it named and 403 every
+// subsequent mint.
+//
+// A read error answers "none": the caller turns that into a mint failure the
+// backoff retries, which is the same shape a not-yet-propagated tab already takes.
+func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
+	return func() (string, int32, bool) {
+		ctx := context.Background()
+		if ids, err := queries.ListAllOpenAgentIDs(ctx); err == nil && len(ids) > 0 {
+			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_AGENT), true
+		}
+		if ids, err := queries.ListAllOpenTerminalIDs(ctx); err == nil && len(ids) > 0 {
+			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_TERMINAL), true
+		}
+		return "", 0, false
 	}
 }
 
@@ -249,15 +281,24 @@ func newRemoteIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dis
 func startBackgroundLoops(p Params, svc *service.Service) {
 	queries := db.New(p.DB)
 
-	// Provide workspace tab sync data on connect.
-	p.Client.TabSyncProvider = func() *leapmuxv1.WorkspaceTabsSync {
-		return BuildTabSync(queries)
+	// Provide workspace tab sync data on connect. A nil return means "send
+	// nothing", which is the only safe answer to a failed read: the hub
+	// tombstones every owned tab a report omits, so shipping a partial
+	// inventory would delete the user's tabs. Skipping the exchange costs a
+	// reconnect's worth of convergence, and the reconciler's own pass retries.
+	p.Client.TabSyncProvider = func() *leapmuxv1.WorkerTabInventory {
+		sync, err := BuildTabSync(queries, svc.RegisteredBy())
+		if err != nil {
+			slog.Warn("tab sync: skipping the report rather than sending a partial inventory", "error", err)
+			return nil
+		}
+		return sync
 	}
 
-	// Periodic orphan reconciler: walks worker-local file-tab rows against
-	// the hub's CRDT-derived workspace_tab_owned view and drops /
-	// relocates rows the CRDT no longer agrees with. Runs once at startup
-	// and every hour after; cancelled on ctx done.
+	// Periodic orphan reconciler: walks worker-local rows against the hub's
+	// CRDT-derived workspace_tab_owned view and drops the rows the CRDT no
+	// longer agrees with. Runs once at startup and every hour after;
+	// cancelled on ctx done.
 	reconciler := service.NewOrphanReconciler(
 		queries,
 		svc.FileTabPaths,
@@ -265,28 +306,35 @@ func startBackgroundLoops(p Params, svc *service.Service) {
 			return p.Client.ListOwnedTabsForWorker(rctx)
 		},
 		service.OrphanReconcilerOptions{
-			// Stop the in-memory exec.Cmd / PTY alongside the DB closed_at
-			// write. Without these, an orphan reconcile only stops future
-			// respawns; the live subprocess keeps running until the worker
-			// itself exits.
-			Agents:    svc.Agents,
-			Terminals: svc.Terminals,
 			// Reclaim worktrees whose tab links are all startup-race
 			// strands (no live tab references them). Backstops the startup
 			// link guards so a close that raced startup can't leak the
 			// worktree dir.
 			ReapWorktree: svc.ReapOrphanWorktree,
+			CloseTab:     svc.CloseTabForReconcile,
 		},
 	)
 	go reconciler.Run(p.Ctx)
+	// Hand Shutdown a way to stop it. The reconciler's own teardowns are not
+	// registered with svc.Cleanup, and the entry points call Shutdown BEFORE
+	// cancelling p.Ctx, so without this a nudge-triggered pass could still be
+	// writing when the caller closes the DB.
+	svc.SetStopBackgroundLoops(reconciler.Stop)
 
-	// The Hub's connect-time WorkspaceTabsSync reply only signals that the
+	// The Hub's connect-time WorkerTabInventory reply only signals that the
 	// hub has finished its side of the reconciliation; trigger the
 	// worker-side reconciler so this worker converges on every reconnect
 	// (not just on the hourly tick).
-	p.Client.OnTabSyncResponse = func(*leapmuxv1.WorkspaceTabsSyncResponse) {
+	p.Client.OnTabSyncResponse = func(*leapmuxv1.WorkerTabInventoryResponse) {
 		reconciler.Trigger()
 	}
+
+	// The Hub also nudges mid-session, when a CRDT batch tombstones a tab this
+	// worker hosts. Without it the reconciler was the only route for a close
+	// whose E2EE RPC failed, or one performed CRDT-only by a peer client or
+	// `leapmux remote tab close` -- and it only ran hourly, so the agent
+	// subprocess kept running (and burning tokens) until the next tick.
+	p.Client.OnReconcileNudge = reconciler.Trigger
 
 	// Periodically reclaim in-memory agent tracker state orphaned by a
 	// closed/deleted agent that never routed through a cleanup path (the
@@ -309,35 +357,91 @@ func StartRetentionLoops(ctx context.Context, sqlDB *sql.DB, dataDir string) {
 	service.StartPlanArchiveLoop(ctx, dataDir, db.New(sqlDB))
 }
 
-// BuildTabSync constructs a WorkspaceTabsSync message from the worker's
-// database: all agents and all terminals.
-func BuildTabSync(queries *db.Queries) *leapmuxv1.WorkspaceTabsSync {
+// BuildTabSync constructs a WorkerTabInventory message from the worker's
+// database: every agent, terminal and file tab it hosts.
+//
+// The report must be COMPLETE or not sent at all, which is why this returns an
+// error rather than a best-effort message. The hub treats it as authoritative
+// by omission: handleWorkspaceTabsSync deletes the reported (tab_type, tab_id)
+// keys from its own owned-tab list and submits a TombstoneTabOp for every
+// leftover. So a tab type this function forgets, or a query whose failure it
+// swallows, is not a missing entry -- it is an instruction to delete the user's
+// tabs. All three types are listed here for that reason, and every read error
+// aborts: the caller sends nothing and the next reconnect (or the reconciler's
+// own pass) tries again.
+func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTabInventory, error) {
 	ctx := context.Background()
-	var tabs []*leapmuxv1.WorkspaceTabEntry
+	// The report carries no user axis on the wire, so the hub attributes ALL of it
+	// to the connecting worker's registrant. Refusing an unminted owner is what
+	// keeps that attribution honest: without one we cannot tell whose file tabs
+	// these are, and reporting them anyway is how a foreign row would suppress a
+	// tombstone the real owner's tab was due.
+	if owner.IsZero() {
+		return nil, errors.New("tab sync: no registered owner yet")
+	}
 
-	// Add agent tabs from DB (includes both active and closed agents).
-	agents, err := queries.ListAllAgentIDsAndWorkspaces(ctx)
-	if err == nil {
-		for _, agent := range agents {
-			tabs = append(tabs, &leapmuxv1.WorkspaceTabEntry{
-				WorkspaceId: agent.WorkspaceID,
-				TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-				TabId:       agent.ID,
-			})
+	var tabs []*leapmuxv1.TabRef
+	// One default-less switch over every TabType, so `exhaustive` (enabled in
+	// .golangci.yml) fails the BUILD when a type is added. That matters more here
+	// than almost anywhere: the hub tombstones every owned tab this report omits,
+	// so a forgotten arm silently deletes the user's tabs of that type on every
+	// reconnect. Three hand-written loops with nothing tying them to the enum is
+	// exactly how the FILE arm came to be missing.
+	for _, tabType := range []leapmuxv1.TabType{
+		leapmuxv1.TabType_TAB_TYPE_AGENT,
+		leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		leapmuxv1.TabType_TAB_TYPE_FILE,
+		leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED,
+	} {
+		var ids []string
+		var err error
+		switch tabType {
+		case leapmuxv1.TabType_TAB_TYPE_AGENT:
+			// Active and closed alike: a closed row the hub no longer lists is what
+			// the reconciler converges, so omitting it would hide the divergence.
+			ids, err = queries.ListAllAgentIDs(ctx)
+		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
+			ids, err = queries.ListAllTerminalIDs(ctx)
+		case leapmuxv1.TabType_TAB_TYPE_FILE:
+			// A file tab's CRDT row carries a worker_id (the frontend stamps
+			// ctx.workerId and the validator rejects a live tab without one), so it
+			// lands in workspace_tab_owned and comes back from ListOwnedByWorker,
+			// which applies no tab-type filter. Omitting this arm tombstoned every
+			// file tab on the worker on every single reconnect.
+			//
+			// Scoped to the owner, unlike the two above: worker_file_tabs is PK'd on
+			// (user_id, tab_id) because file-tab ids are client-minted and unique
+			// only within a user, and a stale second owner's rows can outlive a
+			// deregister (ClearState removes state.json, not worker.db).
+			ids, err = fileTabIDsForOwner(ctx, queries, owner)
+		case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
+			// Not a hostable tab type; nothing to report.
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("list %s ids: %w", tabType, err)
+		}
+		for _, id := range ids {
+			tabs = append(tabs, &leapmuxv1.TabRef{TabType: tabType, TabId: id})
 		}
 	}
 
-	// Add terminal tabs from DB.
-	terminals, err := queries.ListAllTerminals(ctx)
-	if err == nil {
-		for _, t := range terminals {
-			tabs = append(tabs, &leapmuxv1.WorkspaceTabEntry{
-				WorkspaceId: t.WorkspaceID,
-				TabType:     leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-				TabId:       t.ID,
-			})
-		}
-	}
+	return &leapmuxv1.WorkerTabInventory{Tabs: tabs}, nil
+}
 
-	return &leapmuxv1.WorkspaceTabsSync{Tabs: tabs}
+// fileTabIDsForOwner returns owner's file-tab ids, dropping any row belonging to
+// a different user. See the FILE arm of BuildTabSync for why the filter matters.
+func fileTabIDsForOwner(ctx context.Context, queries *db.Queries, owner userid.UserID) ([]string, error) {
+	rows, err := queries.ListAllWorkerFileTabs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, ft := range rows {
+		if !owner.Matches(ft.UserID) {
+			continue
+		}
+		ids = append(ids, ft.TabID)
+	}
+	return ids, nil
 }

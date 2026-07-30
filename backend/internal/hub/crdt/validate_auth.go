@@ -68,39 +68,35 @@ type workspaceReaderBatch interface {
 	CanAccessWorkspaceForUsers(ctx context.Context, workspaceID string, userIDs []string) (map[string]bool, error)
 }
 
-// workspaceScopedAuthChecker narrows an AuthChecker to the scopes a delegation
-// bearer's credential carries: one workspace it may write to, and the set of
-// workers its minting worker is entitled to reach. Both are upper bounds applied
-// BEFORE the inner checker, so a scope can only ever subtract access, never add it.
-type workspaceScopedAuthChecker struct {
-	inner       AuthChecker
-	workspaceID string
-	// workerScope, when non-nil, bounds which worker ids the ops may reference.
+// workerScopedAuthChecker narrows an AuthChecker to the one scope a delegation
+// bearer's credential still carries: the set of workers its minting worker is
+// entitled to reach. It is an upper bound applied BEFORE the inner checker, so
+// it can only ever subtract access, never add it.
+//
+// The workspace bound that used to sit beside it is gone. A Worker serves one
+// user and stores no workspace id, so pinning a bearer to one workspace
+// narrowed nothing an agent could not already reach through its own tab; what
+// it must not reach is another MACHINE of the same user, which is what this
+// answers.
+type workerScopedAuthChecker struct {
+	inner AuthChecker
+	// workerScope bounds which worker ids the ops may reference. Never nil --
+	// scopedAuthChecker returns inner untouched when there is nothing to bound.
 	// See SubmitInput.WorkerScope for why this is a predicate and not an id.
 	workerScope func(workerID string) bool
 }
 
-// scopedAuthChecker wraps inner with whichever of the two scopes are present,
-// returning inner untouched when neither is -- the session/API-credential case.
-func scopedAuthChecker(inner AuthChecker, workspaceID string, workerScope func(string) bool) AuthChecker {
-	if workspaceID == "" && workerScope == nil {
+// scopedAuthChecker wraps inner with the worker bound when the credential
+// carries one, returning inner untouched when it does not -- the session /
+// API-credential case.
+func scopedAuthChecker(inner AuthChecker, workerScope func(string) bool) AuthChecker {
+	if workerScope == nil {
 		return inner
 	}
-	return workspaceScopedAuthChecker{inner: inner, workspaceID: workspaceID, workerScope: workerScope}
+	return workerScopedAuthChecker{inner: inner, workerScope: workerScope}
 }
 
-// outOfWorkspaceScope reports whether workspaceID falls outside the credential's
-// workspace bound. A checker carrying no workspace bound (worker-scoped only)
-// constrains nothing here -- guarding on the bound's presence rather than comparing
-// against it keeps an empty a.workspaceID from denying every workspace.
-func (a workspaceScopedAuthChecker) outOfWorkspaceScope(workspaceID string) bool {
-	return a.workspaceID != "" && workspaceID != a.workspaceID
-}
-
-func (a workspaceScopedAuthChecker) CanAccessWorkspace(ctx context.Context, workspaceID, principalID string) (bool, error) {
-	if a.outOfWorkspaceScope(workspaceID) {
-		return false, nil
-	}
+func (a workerScopedAuthChecker) CanAccessWorkspace(ctx context.Context, workspaceID, principalID string) (bool, error) {
 	return a.inner.CanAccessWorkspace(ctx, workspaceID, principalID)
 }
 
@@ -109,23 +105,18 @@ func (a workspaceScopedAuthChecker) CanAccessWorkspace(ctx context.Context, work
 // principal has any claim to the worker at all, and the scope answers whether THIS
 // bearer -- which may be carrying an identity its minting worker was merely lent --
 // is entitled to reach it.
-func (a workspaceScopedAuthChecker) CanUseWorker(ctx context.Context, workerID, principalID string) (bool, error) {
-	if a.workerScope != nil && !a.workerScope(workerID) {
+func (a workerScopedAuthChecker) CanUseWorker(ctx context.Context, workerID, principalID string) (bool, error) {
+	if !a.workerScope(workerID) {
 		return false, nil
 	}
 	return a.inner.CanUseWorker(ctx, workerID, principalID)
 }
 
 // CanAccessWorkspaceForUsers forwards the OPTIONAL workspaceReaderBatch
-// capability with the credential's workspace bound applied, so wrapping a
-// batch-capable checker can never silently drop a caller off the batched
-// fast path onto N per-user loads. An out-of-scope workspace denies every
-// user (an empty map), exactly as the per-op CanAccessWorkspace denies each
-// individually.
-func (a workspaceScopedAuthChecker) CanAccessWorkspaceForUsers(ctx context.Context, workspaceID string, userIDs []string) (map[string]bool, error) {
-	if a.outOfWorkspaceScope(workspaceID) {
-		return map[string]bool{}, nil
-	}
+// capability, so wrapping a batch-capable checker can never silently drop a
+// caller off the batched fast path onto N per-user loads. The worker bound
+// says nothing about workspace readability, so this is a pure forward.
+func (a workerScopedAuthChecker) CanAccessWorkspaceForUsers(ctx context.Context, workspaceID string, userIDs []string) (map[string]bool, error) {
 	return accessWorkspaceForUsers(ctx, a.inner, workspaceID, userIDs)
 }
 

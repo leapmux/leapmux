@@ -1,34 +1,27 @@
 /**
  * A workspace created by the CLI while the page is already open must still work.
  *
- * A worker channel is told which workspaces it may serve exactly once, in
- * `ChannelOpenRequest.accessible_workspace_ids`, and that set grows only when
- * somebody calls `PrepareWorkspaceAccess`. The browser used to call it from one
- * place -- its own new-workspace dialog. `leapmux remote` never calls it at all
- * and does not need to: it opens a fresh channel per invocation, so its own
- * channel is seeded with the workspace it just created.
+ * This used to be a bug with a whole protocol behind it. A worker channel was
+ * told which workspaces it may serve exactly once, at OpenChannel time, and
+ * that set grew only when somebody called `PrepareWorkspaceAccess`. A workspace
+ * that came into existence AFTER a channel opened was invisible to it: the tabs
+ * projected into the sidebar from the CRDT but never hydrated, because the
+ * worker answered NOT_ACCESSIBLE to every ListAgents and the client could only
+ * re-ask and be refused again until a reload re-seeded the channel.
  *
- * An already-open browser channel gets neither. Its tabs projected into the
- * sidebar from the CRDT but never hydrated -- the worker answered
- * NOT_ACCESSIBLE to every ListAgents and the client could only re-ask and be
- * refused again, until a reload re-opened the channel with a fresh seed. The
- * client now repairs it instead: NOT_ACCESSIBLE (and the matching
- * PermissionDenied on the private-event stream) triggers
- * `PrepareWorkspaceAccess` for the tab's workspace, then one re-fetch.
+ * The announcement protocol is gone. A worker serves exactly one user and
+ * stores no workspace id, so a channel carries no workspace set to be stale
+ * about -- there is nothing to announce and nothing to repair. This spec stays
+ * because the USER-VISIBLE outcome is still worth pinning: an agent the CLI
+ * opens in a workspace created after page load hydrates, with no reload.
  *
- * WHY THIS IS AN E2E. Nothing smaller reproduces it. The defect lives in the
- * seam between three processes -- the hub's open-time seed, the worker's live
- * accessible set, and the browser's hydration -- and each one is individually
- * correct. Three details of the setup are load-bearing, and getting any of them
- * wrong makes the spec pass against the bug:
+ * WHY THIS IS AN E2E. Nothing smaller covers the seam between three processes
+ * -- the hub's channel open, the worker's authorization, and the browser's
+ * hydration. Two details of the setup are load-bearing:
  *
- *   - the workspace must be created by the CLI, not by `openAgentViaAPI`. That
- *     helper calls `PrepareWorkspaceAccess` with the admin session cookie, and
- *     an unscoped caller's fan-out reaches EVERY channel that user holds on the
- *     worker (`channelWorkspaceUpdateAuthorized` admits `channelScope == ""`) --
- *     including the browser's, which repairs the defect for free;
  *   - the page must not reload afterwards, because `page.goto` re-opens the
- *     channel with a fresh DB seed that already contains the workspace; and
+ *     channel and would hide a regression that only affects an already-open
+ *     one; and
  *   - the assertion must be the TAB LABEL. The pane renders its chat editor
  *     either way and never shows the "Agent not found." placeholder here, so
  *     both of those pass against an unhydrated tab. `tabDisplayLabel` falls back
@@ -56,13 +49,13 @@ function devModeTokenSource(server: ServerInfo): { hubUrl: string, adminToken: s
   return { hubUrl: server.hubUrl, adminToken: server.adminToken, dataDir: join(server.dataDir, 'hub') }
 }
 
-test.describe('out-of-band workspace access', () => {
+test.describe('cli-created workspace hydrates', () => {
   test('an agent the CLI opens in a workspace created after page load still hydrates', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     const cli = await mintCLITokenForAdmin(devModeTokenSource(leapmuxServer))
 
     // Workspace ONE exists before the browser starts, so the page has somewhere
-    // to land and its channel opens seeded with this workspace only.
+    // to land and opens its worker channel while only this workspace exists.
     const first = await createWorkspaceViaAPI(hubUrl, adminToken, `access-first-${Date.now()}`)
     let second: string | undefined
     try {
@@ -73,8 +66,8 @@ test.describe('out-of-band workspace access', () => {
       // the worker -- the precondition the whole spec rests on.
       await expect(tabById(page, firstAgentId)).toHaveText(HYDRATED_AGENT_LABEL)
 
-      // Workspace TWO comes from the CLI, with the page already up. Nothing in
-      // this path announces it on the browser's channel.
+      // Workspace TWO comes from the CLI, with the page already up. The
+      // browser's channel was opened before it existed.
       const created = await runCLI(cli, [
         'workspace',
         'create',
@@ -98,7 +91,7 @@ test.describe('out-of-band workspace access', () => {
       await expect(tab).toBeVisible()
       await expect(
         tab,
-        'a bare "Agent" here means the channel was never granted access to the CLI-made workspace',
+        'a bare "Agent" here means the already-open channel could not serve the CLI-made workspace',
       ).toHaveText(HYDRATED_AGENT_LABEL)
     }
     finally {

@@ -40,14 +40,13 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// agents: created_at DEFAULT + closed_at via CloseAgent's strftime.
 	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    "/tmp",
 		HomeDir:       "/home",
 		Title:         "agent",
 		Options:       "{}",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	require.NoError(t, queries.CloseAgent(ctx, "agent-1"))
+	require.NoError(t, closeErr(queries.CloseAgent(ctx, "agent-1")))
 
 	// messages.created_at is Go-bound on every persisted chat message.
 	_, err := queries.CreateMessage(ctx, gendb.CreateMessageParams{
@@ -68,29 +67,27 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// overwrite the bound value and hide the layout it stored). term-2 covers
 	// the CloseTerminal strftime path.
 	require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
-		ID:          "term-1",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/home",
-		Shell:       "/bin/zsh",
-		Title:       "terminal",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte{},
-		ClosedAt:    sqltime.SQLiteNullTimeOf(now),
+		ID:         "term-1",
+		WorkingDir: "/tmp",
+		HomeDir:    "/home",
+		Shell:      "/bin/zsh",
+		Title:      "terminal",
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte{},
+		ClosedAt:   sqltime.SQLiteNullTimeOf(now),
 	}))
 	require.NoError(t, queries.UpsertTerminal(ctx, gendb.UpsertTerminalParams{
-		ID:          "term-2",
-		WorkspaceID: "ws-1",
-		WorkingDir:  "/tmp",
-		HomeDir:     "/home",
-		Shell:       "/bin/zsh",
-		Title:       "terminal-2",
-		Cols:        80,
-		Rows:        24,
-		Screen:      []byte{},
+		ID:         "term-2",
+		WorkingDir: "/tmp",
+		HomeDir:    "/home",
+		Shell:      "/bin/zsh",
+		Title:      "terminal-2",
+		Cols:       80,
+		Rows:       24,
+		Screen:     []byte{},
 	}))
-	require.NoError(t, queries.CloseTerminal(ctx, "term-2"))
+	require.NoError(t, closeErr(queries.CloseTerminal(ctx, "term-2")))
 
 	// worktrees: deleted_at via DeleteWorktree's strftime.
 	require.NoError(t, queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
@@ -130,10 +127,9 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 
 	// worker_file_tabs.created_at via the column DEFAULT on UpsertWorkerFileTab.
 	require.NoError(t, queries.UpsertWorkerFileTab(ctx, gendb.UpsertWorkerFileTabParams{
-		UserID:      "user-1",
-		TabID:       "tab-1",
-		WorkspaceID: "ws-1",
-		FilePath:    "/tmp/file.txt",
+		UserID:   "user-1",
+		TabID:    "tab-1",
+		FilePath: "/tmp/file.txt",
 	}))
 
 	offenders, columns, err := sqlitedb.FindNonCanonicalDatetimes(ctx, sqlDB, "goose_db_version")

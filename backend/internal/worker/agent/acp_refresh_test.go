@@ -356,36 +356,6 @@ func TestOpenCodeClearContextDropsHiddenCurrentPrimaryAgent(t *testing.T) {
 		"the refresh carries the kept primary agent, not the dropped hidden current")
 }
 
-func TestKiloClearContextRefreshesPrimaryAgent(t *testing.T) {
-	agent, _ := newKiloAgentForRPCWithResponder(t, func(method string) json.RawMessage {
-		if method == acpMethodSessionNew {
-			return json.RawMessage(`{
-				"sessionId": "session-2",
-				"models": {"currentModelId": "anthropic/claude-sonnet-4"},
-				"modes":  {"currentModeId": "code"}
-			}`)
-		}
-		return json.RawMessage(`{}`)
-	})
-	agent.model = "anthropic/claude-opus-4"
-	agent.currentPrimaryAgent = "plan"
-	sink := &testSink{}
-	agent.sink = sink
-	agent.reapplySettings = agent.reapplyModelAndSecondary
-	agent.refreshFromSession = agent.applySessionRefresh
-
-	sessionID, ok := agent.ClearContext()
-	require.True(t, ok)
-	assert.Equal(t, "session-2", sessionID)
-	assert.Equal(t, "anthropic/claude-sonnet-4", agent.model)
-	assert.Equal(t, "code", agent.currentPrimaryAgent)
-
-	require.Equal(t, 1, sink.SettingsRefreshCount())
-	refresh := sink.LastSettingsRefresh()
-	assert.Equal(t, "anthropic/claude-sonnet-4", refresh.Model)
-	assert.Equal(t, "code", refresh.Options[OptionIDPrimaryAgent])
-}
-
 // S4: ClearContext refreshes the available-model list (not just the current id)
 // from the new session, including the configOptions channel OpenCode/Kilo use.
 func TestOpenCodeClearContextRefreshesAvailableModels(t *testing.T) {

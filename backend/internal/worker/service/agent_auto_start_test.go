@@ -21,11 +21,10 @@ import (
 // concurrently; with it, the second blocks until the first finishes.
 func TestEnsureAgentRunning_SerializesConcurrentColdStarts(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -75,7 +74,7 @@ func TestEnsureAgentRunning_SerializesConcurrentColdStarts(t *testing.T) {
 // pulses but no progress affordance is shown beneath it.
 func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	// Mock a successful auto-start so the happy path is exercised without
 	// spawning a real subprocess.
@@ -85,7 +84,6 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -129,7 +127,7 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 // surfacing the failure as a per-message delivery_error instead).
 func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
 		return nil, assert.AnError
@@ -137,7 +135,6 @@ func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            "agent-1",
-		WorkspaceID:   "ws-1",
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -174,6 +171,8 @@ func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 			if startupFailedIdx == -1 {
 				startupFailedIdx = i
 			}
+		default:
+			// This test only orders STARTING / INACTIVE / STARTUP_FAILED.
 		}
 	}
 

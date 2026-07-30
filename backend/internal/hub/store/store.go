@@ -271,16 +271,23 @@ type WorkspaceTabIndexStore interface {
 	// ListOwnedTabsForWorkerResponse.owner_user_id) rather than let a
 	// narrower scope read as a wider absence. A zero UserID returns nil.
 	ListOwnedByWorker(ctx context.Context, p ListOwnedTabsByWorkerParams) ([]WorkspaceTabRow, error)
-	// ListDistinctWorkersByWorkspace returns the distinct worker ids that
-	// p.UserID's tabs in p.WorkspaceID are hosted on. A zero UserID returns
-	// nil. Owner-scoped because the projection drops the owner column, so a
-	// caller cannot filter a foreign worker back out of the result.
-	ListDistinctWorkersByWorkspace(ctx context.Context, p ListDistinctWorkersByWorkspaceParams) ([]string, error)
+	// ListOwnedTabsByWorkspace returns every tab p.UserID holds in
+	// p.WorkspaceID, as (worker_id, tab_type, tab_id). A zero UserID returns
+	// nil. Owner-scoped because the caller cannot filter a foreign owner's rows
+	// back out of the result.
+	//
+	// Called INSIDE the workspace-delete transaction, which is the point: the
+	// worker fan-out and the per-worker tab list come from one atomic read of
+	// the authoritative projection, so no tab can slip in between them and no
+	// caller has to resolve its own list beforehand.
+	ListOwnedTabsByWorkspace(ctx context.Context, p ListOwnedTabsByWorkspaceParams) ([]OwnedTabRef, error)
 	// GetOwned returns the single workspace_tab_owned row identified
-	// by (user_id, workspace_id, tab_id), or ErrNotFound. The indexed
-	// point-lookup mirrors GetRendered and lets the delegation
+	// by (user_id, tab_id) -- the table's primary key -- or ErrNotFound. It takes
+	// no workspace: the mint-time check asks "does this user own this tab on this
+	// worker", and which workspace holds it is not part of that question. The
+	// indexed point-lookup mirrors GetRendered and lets the delegation
 	// handler's mint-time propagation wait poll a single row instead
-	// of materializing every owned tab in the workspace. A zero
+	// of materializing every owned tab the user has. A zero
 	// p.UserID is ErrNotFound: it is an ownership gate, so it must
 	// never bind a blank owner (see OwnerFilter).
 	GetOwned(ctx context.Context, p GetOwnedTabParams) (*WorkspaceTabRow, error)

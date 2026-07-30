@@ -17,18 +17,16 @@ import (
 func TestTokenStore_RegisterLookup(t *testing.T) {
 	store := remoteipc.NewTokenStore()
 	info := remoteipc.TokenInfo{
-		UserID:      userid.MustNew("u-1"),
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "agent-1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		UserID:   userid.MustNew("u-1"),
+		WorkerID: "worker-A",
+		TabID:    "agent-1",
+		TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
 	}
 	store.Register("raw-token", info)
 
 	got, err := store.Lookup("raw-token")
 	require.NoError(t, err)
 	assert.Equal(t, info.UserID, got.UserID)
-	assert.Equal(t, info.WorkspaceID, got.WorkspaceID)
 	assert.Equal(t, info.TabID, got.TabID)
 	assert.Equal(t, info.TabType, got.TabType)
 }
@@ -73,11 +71,10 @@ func TestTokenStore_RevokeIdempotent(t *testing.T) {
 
 func TestEnvVars_NoSessionCookieLeak(t *testing.T) {
 	envs := remoteipc.EnvVars("unix:/tmp/sock", "raw-token", remoteipc.TokenInfo{
-		UserID:      userid.MustNew("u-1"),
-		WorkspaceID: "ws-1",
-		WorkerID:    "worker-A",
-		TabID:       "agent-1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		UserID:   userid.MustNew("u-1"),
+		WorkerID: "worker-A",
+		TabID:    "agent-1",
+		TabType:  leapmuxv1.TabType_TAB_TYPE_AGENT,
 	})
 	for _, e := range envs {
 		// The plan's threat model explicitly forbids leaking session

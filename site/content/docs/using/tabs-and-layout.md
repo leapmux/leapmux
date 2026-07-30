@@ -56,7 +56,7 @@ A small dot on a tab (a **notification indicator**) means the tab has unseen act
 
 Double-click an **agent** or **terminal** tab to rename it inline. Press `Enter` to commit, `Escape` to cancel; clicking away also commits. Empty or unchanged names are ignored.
 
-> **Note:** File tabs cannot be renamed, and tabs in a read-only (archived) workspace cannot be renamed. Renaming an agent also updates the agent's name on the Worker; if that fails you'll see a "Failed to rename agent" toast. The new name is kept locally but may not match the agent on the Worker.
+> **Note:** File tabs cannot be renamed, and tabs in a read-only (archived) workspace cannot be renamed. Renaming an agent also updates the agent's name on the Worker; if that update fails, the new name is kept locally and may not match the agent on the Worker.
 
 ### Closing tabs
 
@@ -66,6 +66,8 @@ Closing certain tabs triggers a confirmation:
 
 - Closing the **last tab tied to a git worktree**, or the last non-worktree tab for a **branch with uncommitted or unpushed work**, raises the **Close last tab** dialog (see below).
 - Closing a tab is also what happens when you choose "Close all tabs" in a close-tile / close-grid / close-window dialog — each tab is closed one at a time, so you may see a last-tab prompt for one of them.
+
+If the tab's Worker cannot be reached — it is offline, asleep, or has been deregistered — LeapMux has nobody to ask about git state, so it skips the dialog and closes the tab immediately. The Worker stops the agent or terminal process the next time it connects, and releases the worktree once it has confirmed no tab still references it.
 
 #### The "Close last tab" dialog
 

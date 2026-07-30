@@ -418,6 +418,10 @@ func (svc *Service) applyControlResponsePlanModeMutations(agentID string, dbAgen
 		if plan.exitPlanClearingContext() {
 			go svc.initiatePlanExecution(agentID, targetMode)
 		}
+	case agent.PlanModeControlNone, agent.PlanModeControlPrompt:
+		// Neither transitions the permission mode from this path: None carries no
+		// plan-mode intent at all, and Prompt is resolved on the plan-prompt path
+		// (which owns its own Default fallback via resolveTargetMode).
 	}
 }
 

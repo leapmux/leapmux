@@ -1149,11 +1149,11 @@ func (ch *Channel) recvLoop() {
 			}
 
 		case *leapmuxv1.InnerMessage_RekeyAck:
-			ch.handleRekeyAck(kind.RekeyAck.GetDhPub())
+			ch.handleRekeyAck(correlationID, kind.RekeyAck.GetDhPub())
 
 		case *leapmuxv1.InnerMessage_RekeyReject:
 			retryAfter := time.Duration(kind.RekeyReject.GetRetryAfterMs()) * time.Millisecond
-			ch.handleRekeyReject(retryAfter)
+			ch.handleRekeyReject(correlationID, retryAfter)
 
 		case *leapmuxv1.InnerMessage_RekeyRequest:
 			// Clients initiate; workers never send Request to us.

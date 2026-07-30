@@ -244,6 +244,167 @@ describe('workspaceTabTree interactions', () => {
     expect(onChangeBranch).not.toHaveBeenCalled()
   })
 
+  it('disables both branch actions when the row\'s worker is known offline', async () => {
+    const onChangeBranch = vi.fn()
+    const onDeleteBranch = vi.fn()
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[gitTab('a1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        isWorkerKnownOnline={() => false}
+        onChangeBranch={onChangeBranch}
+        onDeleteBranch={onDeleteBranch}
+      />
+    ))
+
+    const branchRow = screen.getByTestId('tab-tree-branch-group')
+    await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
+
+    // Disabled, not hidden: the row keeps its menu so the absence of the
+    // action is explained rather than looking like a missing feature.
+    const change = screen.getByText('Change branch...') as HTMLButtonElement
+    const del = screen.getByText('Delete branch...') as HTMLButtonElement
+    expect(change.disabled).toBe(true)
+    expect(del.disabled).toBe(true)
+    expect(change.title).toContain('offline')
+    expect(del.title).toContain('offline')
+
+    // And a click cannot get through to the dialog.
+    await fireEvent.click(change)
+    await fireEvent.click(del)
+    expect(onChangeBranch).not.toHaveBeenCalled()
+    expect(onDeleteBranch).not.toHaveBeenCalled()
+  })
+
+  it('leaves both branch actions enabled when the row\'s worker is online', async () => {
+    const onChangeBranch = vi.fn()
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[gitTab('a1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        isWorkerKnownOnline={workerId => workerId === 'w1'}
+        onChangeBranch={onChangeBranch}
+        onDeleteBranch={() => {}}
+      />
+    ))
+
+    const branchRow = screen.getByTestId('tab-tree-branch-group')
+    await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
+
+    const change = screen.getByText('Change branch...') as HTMLButtonElement
+    expect(change.disabled).toBe(false)
+    expect(change.title).toBe('')
+    await fireEvent.click(change)
+    expect(onChangeBranch).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Fail OPEN, not closed. The accessor is optional, and the Worker list it
+   * reads is empty on first paint, so "no answer" must not read as "offline" --
+   * greying out a working action is worse than letting one fail with an error
+   * the user can act on.
+   */
+  it('leaves the branch actions enabled when worker liveness is unknown', async () => {
+    const onChangeBranch = vi.fn()
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[gitTab('a1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        onChangeBranch={onChangeBranch}
+        onDeleteBranch={() => {}}
+      />
+    ))
+
+    const branchRow = screen.getByTestId('tab-tree-branch-group')
+    await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
+    await fireEvent.click(screen.getByText('Change branch...'))
+    expect(onChangeBranch).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * The gate has to track, not just read once. Its whole premise is that the
+   * menu renders from the last Worker state the Hub pushed, so when a
+   * WORKERS_CHANGED frame flips a Worker back online the already-open menu must
+   * become usable without a remount.
+   */
+  it('re-enables the branch actions when the worker comes back online', async () => {
+    const [online, setOnline] = createSignal(false)
+    const onChangeBranch = vi.fn()
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[gitTab('a1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        isWorkerKnownOnline={() => online()}
+        onChangeBranch={onChangeBranch}
+        onDeleteBranch={() => {}}
+      />
+    ))
+
+    const branchRow = screen.getByTestId('tab-tree-branch-group')
+    await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
+    expect((screen.getByText('Change branch...') as HTMLButtonElement).disabled).toBe(true)
+
+    setOnline(true)
+    expect((screen.getByText('Change branch...') as HTMLButtonElement).disabled).toBe(false)
+    await fireEvent.click(screen.getByText('Change branch...'))
+    expect(onChangeBranch).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Gating is per branch row, not per tree. One offline Worker must not disable
+   * the actions on a row hosted by a different, reachable one -- a real shape,
+   * since a workspace's tabs can be spread across machines.
+   */
+  it('gates each branch row on its own worker', async () => {
+    const offlineTab = { ...gitTab('a2'), workerId: 'w2', gitToplevel: '/home/user/Workspaces/other' } as Tab
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[gitTab('a1'), offlineTab]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        isWorkerKnownOnline={workerId => workerId === 'w1'}
+        onChangeBranch={() => {}}
+        onDeleteBranch={() => {}}
+      />
+    ))
+
+    const rows = screen.getAllByTestId('tab-tree-branch-group')
+    expect(rows).toHaveLength(2)
+
+    // Identified by BRANCH LABEL, not by position, and asserted per row rather
+    // than by counting. Counting "one disabled, one enabled" passes an INVERTED
+    // gate too, which is the whole property this test claims to check. The
+    // earlier `items.find(...) ?? items[0]` fallback made it worse: a DOM change
+    // that broke containment silently sampled the first row twice, and the
+    // counts still held.
+    const disabledByBranch = new Map<string, boolean>()
+    for (const row of rows) {
+      await fireEvent.click(row.querySelector('button') as HTMLButtonElement)
+      const items = screen.getAllByText('Change branch...') as HTMLButtonElement[]
+      const own = items.find(i => row.contains(i))
+      expect(own, 'each row must render its own menu item').toBeTruthy()
+      disabledByBranch.set(row.textContent ?? '', own!.disabled)
+    }
+
+    const entries = [...disabledByBranch.entries()]
+    expect(entries).toHaveLength(2)
+    // w1 is online, w2 is not, so the row whose worktree path names "other"
+    // (the w2 tab) is the one that must be gated.
+    const offlineRow = entries.find(([label]) => label.includes('other'))
+    const onlineRow = entries.find(([label]) => !label.includes('other'))
+    expect(offlineRow?.[1], 'the row on the OFFLINE worker must be disabled').toBe(true)
+    expect(onlineRow?.[1], 'the row on the ONLINE worker must stay enabled').toBe(false)
+  })
+
   it('hides the branch menu when readOnly is true', () => {
     render(() => (
       <WorkspaceTabTree

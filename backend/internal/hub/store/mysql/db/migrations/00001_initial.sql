@@ -397,7 +397,6 @@ CREATE TABLE delegation_tokens (
     id                            VARCHAR(255) PRIMARY KEY,
     user_id                       VARCHAR(255) NOT NULL,
     worker_id                     VARCHAR(255) NOT NULL,
-    workspace_id                  VARCHAR(255) NOT NULL,
     agent_id                      VARCHAR(255) NOT NULL DEFAULT '',
     terminal_id                   VARCHAR(255) NOT NULL DEFAULT '',
     issued_for_tab_id             VARCHAR(255) NOT NULL DEFAULT '',
@@ -411,11 +410,9 @@ CREATE TABLE delegation_tokens (
     refresh_expires_at            DATETIME(3),
     revoked_at                    DATETIME(3),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE,
-    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+    FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_delegation_tokens_worker_agent ON delegation_tokens(worker_id, agent_id);
-CREATE INDEX idx_delegation_tokens_workspace ON delegation_tokens(workspace_id);
 CREATE INDEX idx_delegation_tokens_revoked_at ON delegation_tokens(revoked_at);
 -- Keyset index for the admin ListAllDelegationTokens listing (see
 -- idx_api_tokens_created_at for the rationale).

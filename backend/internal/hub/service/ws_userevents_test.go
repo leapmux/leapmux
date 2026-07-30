@@ -7,10 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/util/userid"
-
 	"github.com/coder/websocket"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
@@ -23,13 +20,26 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-func TestUserEventsHandler_DelegationScopesInitialMaterialized(t *testing.T) {
+// TestUserEventsHandler_RevokingTheBearerClosesTheSubscription is the surviving
+// half of a test deleted with the workspace scope axis.
+//
+// That test asserted three things; two were about the per-workspace narrowing
+// this commit removed, but its tail was not: it pinned that evicting a bearer
+// from the session cache CLOSES the `/ws/userevents` socket it authenticated.
+// That property lives in `ws_userevents.go`'s authLease binding, which is
+// untouched and still load-bearing -- a revoked delegation bearer left streaming
+// a user's entire CRDT is the failure it prevents.
+//
+// Nothing replaced it: the only other eviction-closes-the-socket test dials
+// `/ws/channel`, a different endpoint, so this file's endpoint had no direct
+// coverage at all.
+func TestUserEventsHandler_RevokingTheBearerClosesTheSubscription(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	user := storetest.SeedUser(t, st, "alice")
-	allowedWS := storetest.SeedWorkspace(t, st, user.ID, "Allowed")
-	siblingWS := storetest.SeedWorkspace(t, st, user.ID, "Sibling")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "Allowed")
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:              workerID,
@@ -50,7 +60,6 @@ func TestUserEventsHandler_DelegationScopesInitialMaterialized(t *testing.T) {
 		ID:               tokenID,
 		UserID:           userid.MustNew(user.ID),
 		WorkerID:         workerID,
-		WorkspaceID:      allowedWS,
 		IssuedForTabID:   "tab-1",
 		IssuedForTabType: int32(leapmuxv1.TabType_TAB_TYPE_AGENT),
 		SecretHash:       tv.HashSecret(secret),
@@ -58,16 +67,14 @@ func TestUserEventsHandler_DelegationScopesInitialMaterialized(t *testing.T) {
 	}))
 
 	j := newMemJournal()
-	var mgr *crdt.Manager
 	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
-		require.Equal(t, user.ID, want.String())
-		mgr = crdt.NewManager(want, j, allowAllAuth{}, nil, time.Now)
+		mgr := crdt.NewManager(want, j, allowAllAuth{}, nil, time.Now)
 		require.NoError(t, mgr.Bootstrap(ctx))
 		mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
-			s.Workspaces[allowedWS] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: allowedWS, RootNodeId: "root-allowed"}
-			s.Workspaces[siblingWS] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: siblingWS, RootNodeId: "root-sibling"}
+			s.Workspaces[workspaceID] = &leapmuxv1.WorkspaceContentsRecord{
+				WorkspaceId: workspaceID, RootNodeId: "root-allowed",
+			}
 			s.Nodes["root-allowed"] = &leapmuxv1.NodeRecord{NodeId: "root-allowed"}
-			s.Nodes["root-sibling"] = &leapmuxv1.NodeRecord{NodeId: "root-sibling"}
 		})
 		return mgr, nil
 	}, nil)
@@ -81,40 +88,27 @@ func TestUserEventsHandler_DelegationScopesInitialMaterialized(t *testing.T) {
 	defer cancel()
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
-	wsURL := "ws" + srv.URL[len("http"):]
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: hdr})
+	conn, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], &websocket.DialOptions{HTTPHeader: hdr})
 	require.NoError(t, err)
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
+	// The subscription is live: the initial materialized state arrives, and a
+	// delegation bearer sees what its user owns (no workspace narrowing any more).
 	payload, err := channelwire.ReadFramedBytes(ctx, conn)
 	require.NoError(t, err)
 	event := &leapmuxv1.WatchUserEvent{}
 	require.NoError(t, proto.Unmarshal(payload, event))
-	initial := event.GetInitial()
-	require.NotNil(t, initial)
-
-	assert.Contains(t, initial.GetWorkspaces(), allowedWS)
-	assert.NotContains(t, initial.GetWorkspaces(), siblingWS,
-		"delegation bearer must not receive sibling workspace materialized state")
-
-	// The connect-time delegation scope is immutable. Even though the
-	// underlying user owns siblingWS, a later lifecycle expansion must
-	// not add it to this bearer-scoped subscription.
-	mgr.BroadcastWorkspaceCreated(context.Background(), siblingWS, "Sibling", "root-sibling")
-	mgr.BroadcastWorkspaceCreated(context.Background(), allowedWS, "Allowed", "root-allowed")
-	payload, err = channelwire.ReadFramedBytes(ctx, conn)
-	require.NoError(t, err)
-	event.Reset()
-	require.NoError(t, proto.Unmarshal(payload, event))
-	require.NotNil(t, event.GetCreated())
-	assert.Equal(t, allowedWS, event.GetCreated().GetWorkspaceId(),
-		"the first post-connect lifecycle event must remain inside the delegation scope")
+	require.NotNil(t, event.GetInitial())
+	require.Contains(t, event.GetInitial().GetWorkspaces(), workspaceID)
 
 	sessionCache.EvictBearer(auth.NewBearerRef(auth.BearerKindDelegation, tokenID))
+
 	readCtx, cancelRead := context.WithTimeout(context.Background(), time.Second)
 	defer cancelRead()
 	_, err = channelwire.ReadFramedBytes(readCtx, conn)
 	require.Error(t, err, "revoking the delegation bearer must close the user-event subscription")
+	// DeadlineExceeded would mean the socket simply went quiet, which is the
+	// failure: the lease was cancelled and the stream stayed open.
 	require.NotErrorIs(t, err, context.DeadlineExceeded,
 		"the user-event subscription remained open after its authenticated lease was cancelled")
 }

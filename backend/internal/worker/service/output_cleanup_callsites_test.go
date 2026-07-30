@@ -27,7 +27,6 @@ func seedPendingControlRequest(t *testing.T, ctx context.Context, svc *Service, 
 
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID:            agentID,
-		WorkspaceID:   workspaceID,
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
@@ -61,7 +60,7 @@ func assertControlRequestsCleared(t *testing.T, ctx context.Context, svc *Servic
 // the next WatchEvents replay would re-emit as unanswerable prompts.
 func TestCloseAgent_ClearsPendingControlRequests(t *testing.T) {
 	ctx := context.Background()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	requestID := seedPendingControlRequest(t, ctx, svc, w, "agent-close", "ws-1")
@@ -80,7 +79,7 @@ func TestCloseAgent_ClearsPendingControlRequests(t *testing.T) {
 // namespace, so any stale row would be unanswerable by it.
 func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	// Mock a successful restart so the test exercises only the cleanup
@@ -103,7 +102,7 @@ func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T)
 // with a fresh context.
 func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
@@ -128,7 +127,7 @@ func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 // TestRelaunchOnExitPreservesNotificationThread).
 func TestSubprocessCrash_DropsPendingControlRequests(t *testing.T) {
 	ctx := context.Background()
-	svc, _, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	// Mirror runner.go's wiring: every subprocess exit drops pending control

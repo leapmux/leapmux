@@ -315,22 +315,6 @@ func TestCRDTService_UpdatePresence_RequiresAuth(t *testing.T) {
 	require.True(t, errors.As(err, &ce))
 	assert.Equal(t, connect.CodeUnauthenticated, ce.Code())
 }
-
-func TestCRDTService_UpdatePresence_DelegationRejectsSiblingWorkspace(t *testing.T) {
-	env := setupCRDTService(t)
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:         userid.MustNew(env.userID),
-		Credential: auth.DelegationCredential("test-delegation", "w1", "worker-mint"),
-	})
-
-	_, err := env.svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
-		WorkspaceId: "w2",
-	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
-		"a delegated presence heartbeat must not advertise activity in a sibling workspace")
-}
-
 func TestCRDTService_GetMaterialized_DelegationEmptyAccessDoesNotAllowAll(t *testing.T) {
 	env := setupCRDTService(t)
 	st := hubtestutil.OpenTestStore(t)
@@ -339,7 +323,7 @@ func TestCRDTService_GetMaterialized_DelegationEmptyAccessDoesNotAllowAll(t *tes
 	svc := service.NewCRDTService(st, env.registry, nil, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:         userid.MustNew(user.ID),
-		Credential: auth.DelegationCredential("test-delegation", "missing-workspace", "worker-mint"),
+		Credential: auth.DelegationCredential("test-delegation", "worker-mint"),
 	})
 
 	resp, err := svc.GetMaterialized(ctx, connect.NewRequest(&leapmuxv1.GetMaterializedRequest{}))
@@ -373,11 +357,12 @@ func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *test
 		workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "Owned")
 		svc := service.NewCRDTService(st, env.registry, nil, nil)
 
-		// A delegation credential pinned to the right workspace still cannot
-		// heartbeat for a user who does not own it: access is owner-only.
+		// A delegation credential still cannot heartbeat for a user who does
+		// not own the workspace: access is owner-only, and dropping the
+		// workspace axis from the token did not widen that.
 		ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 			ID:         userid.MustNew(other.ID),
-			Credential: auth.DelegationCredential("delegation-token", workspaceID, "worker-mint"),
+			Credential: auth.DelegationCredential("delegation-token", "worker-mint"),
 		})
 		_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
 			WorkspaceId: workspaceID,
@@ -385,6 +370,40 @@ func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *test
 		require.Error(t, err)
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	})
+}
+
+// TestCRDTService_UpdatePresence_DelegationReachesOwnersOtherWorkspace pins the
+// boundary this change deliberately gave up.
+//
+// A delegation bearer used to be pinned to the single workspace it was minted
+// for, so a heartbeat for a sibling workspace was PERMISSION_DENIED even when
+// the same user owned both. The token now carries the owner's identity across
+// every workspace they own; the only bound left is which Worker it may reach
+// (auth.DelegationWorkerScope, covered in internal/hub/crdt's
+// TestScopedAuthChecker_WorkerScopeDeniesBeforeInnerCheck).
+//
+// This asserts the ALLOW side on purpose. The deny side that survives -- a
+// different user's workspace -- is the subtest above; without this one, a
+// future re-narrowing of the token would silently pass the whole suite.
+func TestCRDTService_UpdatePresence_DelegationReachesOwnersOtherWorkspace(t *testing.T) {
+	env := setupCRDTService(t)
+	st := hubtestutil.OpenTestStore(t)
+	owner := storetest.SeedUser(t, st, "sibling-owner")
+	// Two workspaces, one owner. The bearer's provenance is the first; the
+	// heartbeat targets the second.
+	_ = storetest.SeedWorkspace(t, st, owner.ID, "Minted For")
+	sibling := storetest.SeedWorkspace(t, st, owner.ID, "Sibling")
+	svc := service.NewCRDTService(st, env.registry, nil, nil)
+
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
+		ID:         userid.MustNew(owner.ID),
+		Credential: auth.DelegationCredential("delegation-token", "worker-mint"),
+	})
+	_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
+		WorkspaceId: sibling,
+	}))
+	require.NoError(t, err,
+		"a delegated heartbeat must reach every workspace its owner owns")
 }
 
 // TestCRDTService_UpdatePresence_ClientIDNamespaces asserts that
@@ -408,7 +427,7 @@ func TestCRDTService_UpdatePresence_ClientIDNamespaces(t *testing.T) {
 		},
 		{
 			name:     "delegation bearer includes its kind",
-			info:     &auth.UserInfo{Credential: auth.DelegationCredential("shared-id", "w1", "worker-mint")},
+			info:     &auth.UserInfo{Credential: auth.DelegationCredential("shared-id", "worker-mint")},
 			expected: "bearer:64:shared-id",
 		},
 		{
@@ -549,40 +568,4 @@ func TestResolveAllowedWorkspaces_ZeroUserIDRefusesUnderBothArms(t *testing.T) {
 			assert.Nil(t, allowed)
 		})
 	}
-}
-
-func TestResolveAllowedWorkspacesForUser_DelegationPinsScope(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	ctx := context.Background()
-	user := storetest.SeedUser(t, st, "alice")
-	pinned := storetest.SeedWorkspace(t, st, user.ID, "Pinned")
-	sibling := storetest.SeedWorkspace(t, st, user.ID, "Sibling")
-	info := &auth.UserInfo{
-		ID:         userid.MustNew(user.ID),
-		Credential: auth.DelegationCredential("test-delegation", pinned, "worker-mint"),
-	}
-
-	allowed, err := service.ResolveAllowedWorkspacesForUserForTest(ctx, st, nil, info)
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{pinned}, allowed,
-		"an empty delegated workspace request must expand to the pinned workspace only")
-
-	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, []string{pinned}, info)
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{pinned}, allowed)
-
-	_, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, []string{sibling}, info)
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
-		"explicit sibling workspace requests must fail closed instead of silently widening")
-
-	// A delegation request naming ONLY blank ids is the emptyResult branch: it must
-	// deny (resolve to nothing), NOT fall through to the pinned workspace the way a
-	// genuinely-empty request does, and NOT widen to every readable workspace the way
-	// a non-delegation empty request does. This is the case the middle bool return of
-	// delegationScopedWorkspaceRequest disambiguates.
-	allowed, err = service.ResolveAllowedWorkspacesForUserForTest(ctx, st, []string{""}, info)
-	require.NoError(t, err)
-	assert.Empty(t, allowed,
-		"a delegated request of only blank workspace ids must resolve to no workspaces, not the pinned one")
 }

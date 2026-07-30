@@ -24,29 +24,26 @@ import (
 // call and had its own hand-copied 30s.
 const channelOpenTimeout = tunnel.DefaultChannelOpenTimeout
 
-// DelegationScope identifies the (user, workspace) the bearer is
-// minted against, plus the spawn provenance (agent_id OR terminal_id —
-// the hub uses these for the audit log). UserID and WorkspaceID are
-// required; the spawn identifiers may be empty for hub-facing calls
-// without a specific spawn provenance.
+// DelegationScope identifies the user the bearer is minted for, plus the
+// spawn provenance (agent_id OR terminal_id — the hub uses these for the
+// audit log). UserID is required; the spawn identifiers may be empty for
+// hub-facing calls without a specific spawn provenance.
 type DelegationScope struct {
-	UserID      userid.UserID
-	WorkspaceID string
-	AgentID     string
-	TerminalID  string
+	UserID     userid.UserID
+	AgentID    string
+	TerminalID string
 }
 
-// DelegationProvider supplies a fresh delegation-token bearer for the
-// (user, workspace) pair the spawning worker needs to act on. The
-// implementation calls the hub's /worker/delegation-tokens/mint
-// endpoint with the worker's own AuthToken and caches the result.
+// DelegationProvider supplies a fresh delegation-token bearer for the user
+// the spawning worker needs to act as. The implementation calls the hub's
+// /worker/delegation-tokens/mint endpoint with the worker's own AuthToken
+// and caches the result.
 type DelegationProvider interface {
 	GetBearer(ctx context.Context, scope DelegationScope) (string, error)
 }
 
-// Client maintains a pool of E2EE channels keyed by
-// (target_worker, user, workspace) so calls with different delegation scopes
-// never share a Noise_NK session.
+// Client maintains a pool of E2EE channels keyed by (target_worker, user) so
+// calls with different delegation scopes never share a Noise_NK session.
 //
 // All hub calls (GetWorkerHandshakeParams, OpenChannel, /ws/channel)
 // authenticate with a delegation token obtained via DelegationProvider.
@@ -65,15 +62,14 @@ type Client struct {
 }
 
 type clientKey struct {
-	WorkerID    string
-	UserID      string
-	WorkspaceID string
+	WorkerID string
+	UserID   string
 }
 
 // channelOpen is a single in-flight channel open shared by every caller that
-// requested the same (worker, user, workspace) while it runs, so a burst of
-// concurrent calls mints one delegation token and dials one Noise_NK handshake
-// instead of N (all but one otherwise discarded).
+// requested the same (worker, user) while it runs, so a burst of concurrent
+// calls mints one delegation token and dials one Noise_NK handshake instead
+// of N (all but one otherwise discarded).
 type channelOpen struct {
 	done chan struct{}
 	ch   *tunnel.Channel
@@ -99,14 +95,11 @@ func New(lifetimeCtx context.Context, hubURL string, pins *PinStore, dp Delegati
 
 // channelFor returns a (cached) E2EE channel to targetWorkerID for
 // scope.UserID. Mints a fresh delegation token + channel on cache miss.
-//
-// scope.WorkspaceID is forwarded to the delegation mint call so the
-// token's scope matches the eventual call site.
 func (c *Client) channelFor(ctx context.Context, targetWorkerID string, scope DelegationScope) (*tunnel.Channel, error) {
 	if err := c.validateOpen(targetWorkerID, scope); err != nil {
 		return nil, err
 	}
-	key := clientKey{WorkerID: targetWorkerID, UserID: scope.UserID.String(), WorkspaceID: scope.WorkspaceID}
+	key := clientKey{WorkerID: targetWorkerID, UserID: scope.UserID.String()}
 
 	c.mu.Lock()
 	if existing, ok := c.channels[key]; ok && existing != nil {
@@ -193,9 +186,6 @@ func (c *Client) validateOpen(targetWorkerID string, scope DelegationScope) erro
 	if scope.UserID.IsZero() {
 		return errors.New("crossworker: user_id required")
 	}
-	if scope.WorkspaceID == "" {
-		return errors.New("crossworker: workspace_id required")
-	}
 	return nil
 }
 
@@ -254,12 +244,11 @@ func (c *Client) openChannel(parent context.Context, targetWorkerID string, scop
 	return tunnel.OpenChannel(openCtx, c.HubURL, targetWorkerID, openOpts)
 }
 
-// CallInner sends a unary inner RPC to a sibling worker. workspaceID
-// is the delegation scope used both for minting the bearer and for
-// keying the channel pool — the same `(user, worker)` pair on a
-// different workspace gets a separate Noise_NK session.
-func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte) ([]byte, error) {
-	ch, err := c.channelFor(ctx, targetWorkerID, DelegationScope{UserID: userID, WorkspaceID: workspaceID})
+// CallInner sends a unary inner RPC to a sibling worker. userID is the
+// delegation scope used both for minting the bearer and for keying the
+// channel pool.
+func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error) {
+	ch, err := c.channelFor(ctx, targetWorkerID, DelegationScope{UserID: userID})
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +261,7 @@ func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID us
 
 // StreamInner subscribes to a server-streaming inner RPC and invokes
 // onMsg for every message. Returns when the stream ends or ctx is
-// cancelled. workspaceID semantics match CallInner.
+// cancelled. userID semantics match CallInner.
 //
 // Unlike CallInner this does NOT use the pooled channel: it opens a
 // dedicated one and closes it when the stream ends.
@@ -286,8 +275,8 @@ func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID us
 // CLI simply stops receiving events and never learns why. Pooling is a
 // connection-reuse optimisation; it must not make two independent
 // subscribers share an identity.
-func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, workspaceID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
-	ch, err := c.dedicatedChannel(ctx, targetWorkerID, DelegationScope{UserID: userID, WorkspaceID: workspaceID})
+func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
+	ch, err := c.dedicatedChannel(ctx, targetWorkerID, DelegationScope{UserID: userID})
 	if err != nil {
 		return err
 	}

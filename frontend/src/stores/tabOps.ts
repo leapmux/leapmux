@@ -104,9 +104,9 @@ export function emitMoveTabToTile(type: TabType, id: string, tileId: string): st
  *
  * Returns the BATCH ID -- like every sibling emitter here -- or null when the
  * drag was a no-op. Deliberately not the computed rank: both are `string | null`,
- * so returning the rank would type-check at a caller that registers a
- * `batchResultHandlers` entry from it (as `useCrossWorkspaceMove` does with the
- * others) and key that map on a LexoRank, whose rollback could then never fire.
+ * so returning the rank would type-check at a caller that correlates the
+ * submitter's later `BatchResult` by it, and that correlation could then
+ * never match.
  */
 export function emitReorderTabs(tabsInTile: Tab[], fromKey: string, toKey: string): string | null {
   const fromIdx = tabsInTile.findIndex(t => tabKey(t) === fromKey)

@@ -35,17 +35,14 @@ func requireInvalidArgument(t *testing.T, w *testResponseWriter) string {
 
 func countAgentRows(t *testing.T, svc *Service) int {
 	t.Helper()
-	rows, err := svc.Queries.ListAllAgentIDsAndWorkspaces(context.Background())
+	rows, err := svc.Queries.ListAllAgentIDs(context.Background())
 	require.NoError(t, err)
 	return len(rows)
 }
 
 func countTerminalRows(t *testing.T, svc *Service) int {
 	t.Helper()
-	// Any existing "count" query would work; reuse the broad
-	// ListTerminalsByIDs with a wildcard-ish inputs or fall back to a
-	// per-workspace count. The service has ListTerminalsByWorkspace.
-	rows, err := svc.Queries.ListTerminalsByWorkspace(context.Background(), "ws-1")
+	rows, err := svc.Queries.ListAllTerminalIDs(context.Background())
 	require.NoError(t, err)
 	return len(rows)
 }
@@ -54,11 +51,10 @@ func countTerminalRows(t *testing.T, svc *Service) int {
 
 func TestOpenAgent_Validate_BranchNameSyntax(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: "feature/ bad name", // contains space -> rejected by ValidateBranchName
@@ -71,11 +67,10 @@ func TestOpenAgent_Validate_BranchNameSyntax(t *testing.T) {
 
 func TestOpenAgent_Validate_WorkingDirNotGitRepo(t *testing.T) {
 	notARepo := t.TempDir()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     notARepo,
 		CreateWorktree: true,
 		WorktreeBranch: "feature/x",
@@ -90,11 +85,10 @@ func TestOpenAgent_Validate_BranchAlreadyExists(t *testing.T) {
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: "feature/taken",
@@ -107,11 +101,10 @@ func TestOpenAgent_Validate_BranchAlreadyExists(t *testing.T) {
 
 func TestOpenAgent_Validate_BaseBranchMissing(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:        "ws-1",
 		WorkingDir:         repoDir,
 		CreateWorktree:     true,
 		WorktreeBranch:     "feature/x",
@@ -129,10 +122,9 @@ func TestOpenAgent_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 	require.NoError(t, os.MkdirAll(worktreePath, 0o755))
 
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: branchName,
@@ -145,11 +137,10 @@ func TestOpenAgent_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 
 func TestOpenAgent_Validate_CheckoutBranchMissing(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CheckoutBranch: "nonexistent",
 	}, w)
@@ -163,11 +154,10 @@ func TestOpenAgent_Validate_CreateBranchAlreadyExists(t *testing.T) {
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:  "ws-1",
 		WorkingDir:   repoDir,
 		CreateBranch: "feature/taken",
 	}, w)
@@ -182,10 +172,9 @@ func TestOpenAgent_Validate_UseWorktreePathUnknown(t *testing.T) {
 	bogusPath := filepath.Join(t.TempDir(), "bogus")
 	require.NoError(t, os.MkdirAll(bogusPath, 0o755))
 
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:     "ws-1",
 		WorkingDir:      repoDir,
 		UseWorktreePath: bogusPath,
 	}, w)
@@ -199,14 +188,13 @@ func TestOpenAgent_Validate_UseWorktreePathUnknown(t *testing.T) {
 
 func TestOpenAgent_Validate_TitleTooLong(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	longTitle := strings.Repeat("a", 256) // exceeds the 128-char cap
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId: "ws-1",
-		WorkingDir:  repoDir,
-		Title:       longTitle,
+		WorkingDir: repoDir,
+		Title:      longTitle,
 	}, w)
 
 	msg := requireInvalidArgument(t, w)
@@ -216,13 +204,12 @@ func TestOpenAgent_Validate_TitleTooLong(t *testing.T) {
 
 func TestOpenAgent_Validate_TitleStripsControlChars(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId: "ws-1",
-		WorkingDir:  repoDir,
-		Title:       "Hello\x00World", // NUL byte — stripped by SanitizeName
+		WorkingDir: repoDir,
+		Title:      "Hello\x00World", // NUL byte — stripped by SanitizeName
 	}, w)
 
 	// Title sanitization strips control chars rather than rejecting outright;
@@ -231,21 +218,20 @@ func TestOpenAgent_Validate_TitleStripsControlChars(t *testing.T) {
 	require.Len(t, w.responses, 1)
 	require.Equal(t, 1, countAgentRows(t, svc))
 
-	rows, err := svc.Queries.ListAllAgentIDsAndWorkspaces(context.Background())
+	rows, err := svc.Queries.ListAllAgentIDs(context.Background())
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	agent, err := svc.Queries.GetAgentByID(context.Background(), rows[0].ID)
+	agent, err := svc.Queries.GetAgentByID(context.Background(), rows[0])
 	require.NoError(t, err)
 	assert.Equal(t, "HelloWorld", agent.Title)
 }
 
 func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		AgentSessionId: "session\x00bad",
 	}, w)
@@ -261,11 +247,10 @@ func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 // than reaching the provider and dying at startup (an opaque dead agent).
 func TestOpenAgent_Validate_RejectsUnknownPermissionMode(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    repoDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       map[string]string{"permissionMode": "bogus-mode"},
@@ -281,11 +266,10 @@ func TestOpenAgent_Validate_RejectsUnknownPermissionMode(t *testing.T) {
 // must NOT be rejected -- the spawn proceeds and the running session validates it.
 func TestOpenAgent_Validate_DoesNotRejectUnknownModel(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    repoDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       map[string]string{"model": "a-future-model-not-in-the-seed"},
@@ -300,11 +284,10 @@ func TestOpenAgent_Validate_DoesNotRejectUnknownModel(t *testing.T) {
 // over-reject and break a normal spawn that pins a legitimate mode.
 func TestOpenAgent_Validate_AcceptsValidPermissionMode(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkspaceId:   "ws-1",
 		WorkingDir:    repoDir,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       map[string]string{"permissionMode": "plan"},
@@ -319,11 +302,10 @@ func TestOpenAgent_Validate_AcceptsValidPermissionMode(t *testing.T) {
 
 func TestOpenTerminal_Validate_BranchNameSyntax(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: "feature/ bad name",
@@ -336,11 +318,10 @@ func TestOpenTerminal_Validate_BranchNameSyntax(t *testing.T) {
 
 func TestOpenTerminal_Validate_WorkingDirNotGitRepo(t *testing.T) {
 	notARepo := t.TempDir()
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     notARepo,
 		CreateWorktree: true,
 		WorktreeBranch: "feature/x",
@@ -355,11 +336,10 @@ func TestOpenTerminal_Validate_BranchAlreadyExists(t *testing.T) {
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: "feature/taken",
@@ -375,11 +355,10 @@ func TestOpenTerminal_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 	branchName := "feature/terminal-collide"
 	worktreePath := expectedWorktreePath(repoDir, branchName)
 	require.NoError(t, os.MkdirAll(worktreePath, 0o755))
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CreateWorktree: true,
 		WorktreeBranch: branchName,
@@ -392,11 +371,10 @@ func TestOpenTerminal_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 
 func TestOpenTerminal_Validate_CheckoutBranchMissing(t *testing.T) {
 	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
+	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
-		WorkspaceId:    "ws-1",
 		WorkingDir:     repoDir,
 		CheckoutBranch: "nonexistent",
 		Shell:          testutil.TestShell(),

@@ -60,6 +60,20 @@ type tunnelConn struct {
 type halfCloseEntry struct {
 	tc           *tunnelConn
 	lastActivity atomic.Int64
+	// now is the manager's clock, copied here at markHalfClosed so the lock-free
+	// write path can stamp lastActivity without reaching back through the conn to
+	// the manager. Both sides of the reaper therefore read ONE clock, which is what
+	// lets a test drive the whole decision deterministically.
+	now func() time.Time
+}
+
+// stamp records activity on this entry using the manager's clock.
+func (e *halfCloseEntry) stamp() {
+	now := e.now
+	if now == nil {
+		now = time.Now
+	}
+	e.lastActivity.Store(now().UnixNano())
 }
 
 // tunnelflow.MaxWriteSeqLookahead (the write-gate NAK bound writeSeqGate.waitTurn enforces) and
@@ -122,6 +136,14 @@ type tunnelManager struct {
 	// conn is never inserted, so a quiet interactive session cannot be mis-reaped.
 	halfClosed map[string]*halfCloseEntry
 
+	// now is the clock every idle-reaper decision reads: the lastActivity stamp on
+	// markHalfClosed and on each write, and the sweep's deadline. One seam for all
+	// three, because a test that controls only some of them is still racing the
+	// wall clock -- which is what made the write-activity test flaky, since it
+	// asserted survival across a real 60ms budget that a loaded machine can blow
+	// through between two writes. Defaults to time.Now.
+	now func() time.Time
+
 	// sweeper drives the half-closed idle reaper. Lazily started on the first
 	// markHalfClosed; once started it runs until Stop (it does NOT self-stop when
 	// halfClosed drains). Lazy start means a fully-live workload (the steady state)
@@ -135,7 +157,17 @@ func newTunnelManager() *tunnelManager {
 		opening:    make(map[string]context.CancelFunc),
 		canceled:   newCancelMarkers(),
 		halfClosed: make(map[string]*halfCloseEntry),
+		now:        time.Now,
 	}
+}
+
+// nowFn returns the manager's clock, defaulting to time.Now so a manager built
+// as a zero value (a few tests do) still works.
+func (m *tunnelManager) nowFn() func() time.Time {
+	if m == nil || m.now == nil {
+		return time.Now
+	}
+	return m.now
 }
 
 func (m *tunnelManager) get(connID string) *tunnelConn {
@@ -366,8 +398,8 @@ func (m *tunnelManager) markHalfClosed(connID string, tc *tunnelConn) {
 	if old := m.halfClosed[connID]; old != nil && old.tc != tc {
 		m.detachHalfClosedLocked(connID, old.tc)
 	}
-	e := &halfCloseEntry{tc: tc}
-	e.lastActivity.Store(time.Now().UnixNano())
+	e := &halfCloseEntry{tc: tc, now: m.nowFn()}
+	e.stamp()
 	m.halfClosed[connID] = e
 	tc.halfCloseTrack.Store(e)
 	m.sweeper.ensureRunning(m)
@@ -434,7 +466,7 @@ func (m *tunnelManager) runHalfCloseSweeper(stop <-chan struct{}, done chan<- st
 		case <-stop:
 			return
 		case <-ticker.C:
-			m.sweepHalfClosed(time.Now(), idle)
+			m.sweepHalfClosed(m.nowFn()(), idle)
 		}
 	}
 }
@@ -754,6 +786,9 @@ func (tc *tunnelConn) writeData(ctx context.Context, seq uint64, data []byte, cl
 		return net.ErrClosed
 	case writeTurnRejected:
 		return errWriteSeqRejected
+	case writeTurnProceed:
+		// This seq holds the turn; fall through to the bound check and write
+		// below, which run under the writeGate.advance defer.
 	}
 	defer tc.writeGate.advance()
 	// Enforce the chunk bound the send window is denominated in. Conn.Write splits
@@ -806,7 +841,7 @@ func (tc *tunnelConn) writeData(ctx context.Context, seq uint64, data []byte, cl
 	// so the conn is reclaimed promptly rather than parked for a full idle window.
 	if !closeWrite {
 		if e := tc.halfCloseTrack.Load(); e != nil {
-			e.lastActivity.Store(time.Now().UnixNano())
+			e.stamp()
 		}
 	}
 	if closeWrite {

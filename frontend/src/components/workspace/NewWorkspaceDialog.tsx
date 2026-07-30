@@ -5,7 +5,6 @@ import { generateSlug } from 'random-word-slugs'
 import { createMemo, createSignal, Show } from 'solid-js'
 import { workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
-import { ensureWorkspaceAccess } from '~/api/workspaceAccess'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { labelRow } from '~/components/common/Dialog.css'
@@ -88,14 +87,7 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
       // enum 0.
       if (provider === undefined)
         throw new Error('No agent provider available')
-      // The workspace was created after this page's channels opened, so no
-      // channel knows about it and OpenAgent below would be refused. Announce
-      // it through the shared announcer rather than calling the RPC directly,
-      // so the hydration and private-event repair paths inherit the fact that
-      // this pair is already announced instead of re-announcing it.
-      await ensureWorkspaceAccess(wid, wsResp.workspaceId)
       const agentResp = await workerRpc.openAgent(wid, {
-        workspaceId: wsResp.workspaceId,
         agentProvider: provider,
         // title omitted: worker picks "Agent <Name>" from the shared pool.
         workerId: wid,

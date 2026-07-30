@@ -293,16 +293,11 @@ func (h *handler) Whoami(ctx context.Context, req *connect.Request[leapmuxv1.Who
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("no token"))
 	}
-	scope := &leapmuxv1.RemoteScope{
-		WorkspaceIds: []string{info.WorkspaceID},
-	}
 	return connect.NewResponse(&leapmuxv1.WhoamiResponse{
-		UserId:      info.UserID.String(),
-		WorkspaceId: info.WorkspaceID,
-		WorkerId:    info.WorkerID,
-		TabId:       info.TabID,
-		TabType:     info.TabType,
-		Scope:       scope,
+		UserId:   info.UserID.String(),
+		WorkerId: info.WorkerID,
+		TabId:    info.TabID,
+		TabType:  info.TabType,
 	}), nil
 }
 
@@ -313,7 +308,7 @@ func (h *handler) CallInner(ctx context.Context, req *connect.Request[leapmuxv1.
 	}
 	resp, err := h.router.CallInner(ctx, info,
 		req.Msg.GetMethod(), req.Msg.GetPayload(),
-		req.Msg.GetTargetWorkerId(), req.Msg.GetWorkspaceId())
+		req.Msg.GetTargetWorkerId())
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +322,7 @@ func (h *handler) StreamInner(ctx context.Context, req *connect.Request[leapmuxv
 	}
 	return h.router.StreamInner(ctx, info,
 		req.Msg.GetMethod(), req.Msg.GetPayload(),
-		req.Msg.GetTargetWorkerId(), req.Msg.GetWorkspaceId(),
+		req.Msg.GetTargetWorkerId(),
 		req.Msg.GetClientRequestId(),
 		func(env *leapmuxv1.StreamInnerEnvelope) error {
 			return stream.Send(env)

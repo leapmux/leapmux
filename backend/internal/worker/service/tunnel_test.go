@@ -396,9 +396,27 @@ func TestTunnelHalfCloseReaper_ReclaimsOnIdle(t *testing.T) {
 // side -- delivering io.EOF to the worker's read loop -- while keeping its read
 // side open to drain the worker's writes, which is exactly the target-half-close
 // shape the reaper is built for.
+//
+// The reaper's clock is INJECTED and the sweep is driven directly, rather than
+// letting a background ticker race real time. The previous version wrote in a loop
+// with real sleeps and asserted survival across a real 60ms idle budget, which a
+// loaded machine can blow through between two writes -- so it failed under the
+// full parallel suite while passing in isolation. Nothing here now depends on how
+// fast the machine is.
 func TestTunnelHalfCloseReaper_WriteActivityResetsClock(t *testing.T) {
 	manager := newTunnelManager()
-	idle := withShortHalfCloseReaper(t, manager)
+	// A controlled clock, read by BOTH the activity stamp and the sweep deadline.
+	clock := time.Now()
+	manager.now = func() time.Time { return clock }
+	// Disable the background sweeper: a non-positive interval makes the goroutine
+	// exit without ticking, so every sweep below is one this test asked for.
+	idleOrig, sweepOrig := halfCloseIdleTimeout, halfCloseSweepInterval
+	const idle = 60 * time.Second
+	halfCloseIdleTimeout, halfCloseSweepInterval = idle, 0
+	t.Cleanup(func() {
+		halfCloseIdleTimeout, halfCloseSweepInterval = idleOrig, sweepOrig
+		manager.Stop()
+	})
 	const connID = "half-closed-active"
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -440,28 +458,31 @@ func TestTunnelHalfCloseReaper_WriteActivityResetsClock(t *testing.T) {
 	peerDone := make(chan struct{})
 	go func() { defer close(peerDone); _, _ = io.Copy(io.Discard, peer) }()
 
-	// Keep writing well past the idle deadline. Each write bumps lastActivity, so
-	// the reaper must NOT reclaim the conn while the upload progresses.
-	deadline := time.Now().Add(idle * 5)
+	// Advance most of the way to the deadline, then write. Each write bumps
+	// lastActivity, so the conn must survive a sweep taken PAST the original
+	// deadline -- which is the whole claim.
 	var seq uint64
-	for time.Now().Before(deadline) {
-		if err := tc.writeData(ctx, seq, []byte("x"), false); err != nil {
-			t.Fatalf("writeData failed mid-upload at seq %d: %v", seq, err)
-		}
+	for range 5 {
+		clock = clock.Add(idle - time.Second)
+		require.NoError(t, tc.writeData(ctx, seq, []byte("x"), false),
+			"writeData failed mid-upload at seq %d", seq)
 		seq++
-		// The conn surviving THIS long proves writes reset the clock: the idle
-		// window elapsed ~5x over while writes were progressing.
+		// One second past where the PREVIOUS activity would have expired. Without
+		// the per-write bump this reaps immediately.
+		clock = clock.Add(2 * time.Second)
+		manager.sweepHalfClosed(clock, idle)
 		require.NotNil(t, manager.get(connID),
 			"an active upload must not be reaped mid-transfer (reaped at seq %d)", seq)
-		// Sleep a fraction of the idle window between writes to let a reaper tick
-		// (or several) land; if the clock were not reset, the conn would be gone.
-		time.Sleep(halfCloseSweepInterval)
+		require.False(t, tc.closed.Load(), "...nor closed (seq %d)", seq)
 	}
 
-	// Stop writing. Now the clock expires and the reaper reclaims the conn.
-	testutil.AssertEventually(t, func() bool { return manager.get(connID) == nil },
+	// Stop writing. Now the clock expires and the very next sweep reclaims it --
+	// deterministically, with no polling.
+	clock = clock.Add(idle + time.Second)
+	manager.sweepHalfClosed(clock, idle)
+	assert.Nil(t, manager.get(connID),
 		"a half-closed conn must be reaped once writes stop and the idle window elapses")
-	assert.True(t, tc.closed.Load())
+	assert.True(t, tc.closed.Load(), "the reaper must close the conn it reaps")
 	cancel()
 	<-peerDone
 }

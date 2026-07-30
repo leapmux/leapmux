@@ -1366,7 +1366,7 @@ func TestLaunchOmitsEffort(t *testing.T) {
 }
 
 // TestEffortResolver_NilGuard verifies the catalog-walking capability checks
-// tolerate nil entries (matching FindAvailableModel/withDefaultModelMarked), so a
+// tolerate nil entries (matching FindAvailableModel/modelOptionGroup), so a
 // nil-bearing catalog can't panic the effort/ultracode lookups.
 func TestEffortResolver_NilGuard(t *testing.T) {
 	r := newEffortResolver([]*ModelInfo{nil, {Id: "opus", SupportedEfforts: claudeEffortXHighMax}, nil})
@@ -2305,7 +2305,7 @@ func TestClaudeSupportedEfforts_OnlyUnknownLevels(t *testing.T) {
 
 // TestConvertClaudeModels_SentinelOwnsReservedDefaultID verifies the account-default
 // sentinel is identified by its RAW value ("default") and OWNS the reserved "default"
-// id. Launch (buildModelEffortArgs) and the badge logic (defaultModelForList) treat
+// id. Launch (buildModelEffortArgs) and the badge logic (defaultModelIDForList) treat
 // id=="default" as the sentinel, so a concrete model whose value merely normalizes to
 // "default" can't share that id: it is dropped deterministically rather than
 // masquerading as the sentinel (S3).
@@ -2569,26 +2569,26 @@ func TestBuildStartupFlagSettings_AppliesEffortWhenDynamicAddsEfforts(t *testing
 	assert.False(t, hasLevel, "auto effort keeps the CLI default even when dynamic offers efforts")
 }
 
-// TestWithDefaultModelMarked_ClaudeDefaultSentinel verifies the default badge
-// tracks the account: the CLI's "default" sentinel entry is marked when present,
-// an operator env override wins over it, and a list without the sentinel falls
-// back to the configured default.
-func TestWithDefaultModelMarked_ClaudeDefaultSentinel(t *testing.T) {
+// TestModelGroupDefault_ClaudeDefaultSentinel verifies the default badge tracks the
+// account: the CLI's "default" sentinel entry is marked when present, an operator env
+// override wins over it, and a list without the sentinel falls back to the
+// highest-preference entry present.
+func TestModelGroupDefault_ClaudeDefaultSentinel(t *testing.T) {
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "") // hermetic: ignore any ambient override
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 
 	// Account-specific list (no opus[1m]) that includes the CLI "default"
-	// sentinel: the sentinel carries the IsDefault badge.
+	// sentinel: the sentinel carries the default badge.
 	withSentinel := []*ModelInfo{
 		{Id: "default", DisplayName: "Default (recommended)"},
 		{Id: "claude-fable-5[1m]", DisplayName: "Fable"},
 		{Id: "sonnet", DisplayName: "Sonnet"},
 	}
-	assert.Equal(t, "default", markedModelID(withDefaultModelMarked(withSentinel, claude)))
+	assert.Equal(t, "default", derivedModelDefault(t, withSentinel, claude))
 
 	// The static catalog carries the sentinel, so it is marked there too.
 	assert.Equal(t, "default", DefaultModel(claude))
-	assert.Equal(t, "default", markedModelID(withDefaultModelMarked(claudeCodeAvailableModels, claude)))
+	assert.Equal(t, "default", derivedModelDefault(t, claudeCodeAvailableModels, claude))
 
 	// A list missing the sentinel (a CLI that doesn't report it) falls back to
 	// the highest-preference entry present, so the picker still shows a default
@@ -2597,11 +2597,11 @@ func TestWithDefaultModelMarked_ClaudeDefaultSentinel(t *testing.T) {
 		{Id: "opus[1m]", DisplayName: "Opus (1M context)"},
 		{Id: "sonnet", DisplayName: "Sonnet"},
 	}
-	assert.Equal(t, "opus[1m]", markedModelID(withDefaultModelMarked(noSentinel, claude)))
+	assert.Equal(t, "opus[1m]", derivedModelDefault(t, noSentinel, claude))
 
 	// Operator override wins over the CLI sentinel.
 	t.Setenv("LEAPMUX_CLAUDE_DEFAULT_MODEL", "sonnet")
-	assert.Equal(t, "sonnet", markedModelID(withDefaultModelMarked(withSentinel, claude)))
+	assert.Equal(t, "sonnet", derivedModelDefault(t, withSentinel, claude))
 }
 
 // TestUpdateSettings_SwitchToDefaultRestarts verifies that switching to the

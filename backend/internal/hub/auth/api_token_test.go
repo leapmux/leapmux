@@ -55,7 +55,6 @@ func seedWorkerAndWorkspace(t *testing.T, st store.Store, userID string) (worker
 		MlkemPublicKey:  []byte("test-mlkem"),
 		SlhdsaPublicKey: []byte("test-slhdsa"),
 	}))
-	workspaceID = id.Generate()
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          workspaceID,
 		OwnerUserID: userid.MustNew(userID),
@@ -737,17 +736,16 @@ func TestTokenValidator_AcceptsValidDelegationBearer(t *testing.T) {
 	userID := seedUser(t, st)
 	v, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	workerID, workspaceID := seedWorkerAndWorkspace(t, st, userID)
+	workerID, _ := seedWorkerAndWorkspace(t, st, userID)
 
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
-		SecretHash:  v.HashSecret(secret),
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ID:         tokenID,
+		UserID:     userid.MustNew(userID),
+		WorkerID:   workerID,
+		SecretHash: v.HashSecret(secret),
+		ExpiresAt:  time.Now().Add(time.Hour),
 	}))
 
 	info, err := v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
@@ -765,17 +763,16 @@ func TestTokenValidator_RejectsExpiredDelegation(t *testing.T) {
 	userID := seedUser(t, st)
 	v, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	workerID, workspaceID := seedWorkerAndWorkspace(t, st, userID)
+	workerID, _ := seedWorkerAndWorkspace(t, st, userID)
 
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
-		SecretHash:  v.HashSecret(secret),
-		ExpiresAt:   time.Now().Add(-time.Minute),
+		ID:         tokenID,
+		UserID:     userid.MustNew(userID),
+		WorkerID:   workerID,
+		SecretHash: v.HashSecret(secret),
+		ExpiresAt:  time.Now().Add(-time.Minute),
 	}))
 
 	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
@@ -787,17 +784,16 @@ func TestTokenValidator_RejectsRevokedDelegation(t *testing.T) {
 	userID := seedUser(t, st)
 	v, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	workerID, workspaceID := seedWorkerAndWorkspace(t, st, userID)
+	workerID, _ := seedWorkerAndWorkspace(t, st, userID)
 
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		ID:          tokenID,
-		UserID:      userid.MustNew(userID),
-		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
-		SecretHash:  v.HashSecret(secret),
-		ExpiresAt:   time.Now().Add(time.Hour),
+		ID:         tokenID,
+		UserID:     userid.MustNew(userID),
+		WorkerID:   workerID,
+		SecretHash: v.HashSecret(secret),
+		ExpiresAt:  time.Now().Add(time.Hour),
 	}))
 	_, err = st.DelegationTokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -912,7 +908,7 @@ func TestVerifyBearerSecret(t *testing.T) {
 func TestVerifyBearerSecret_DelegationToken(t *testing.T) {
 	st := newTestStore(t)
 	userID := seedUser(t, st)
-	workerID, workspaceID := seedWorkerAndWorkspace(t, st, userID)
+	workerID, _ := seedWorkerAndWorkspace(t, st, userID)
 	v, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
@@ -923,7 +919,6 @@ func TestVerifyBearerSecret_DelegationToken(t *testing.T) {
 		ID:          tokenID,
 		UserID:      userid.MustNew(userID),
 		WorkerID:    workerID,
-		WorkspaceID: workspaceID,
 		SecretHash:  v.HashSecret(secret),
 		RefreshHash: v.HashSecret(refreshSecret),
 		ExpiresAt:   time.Now().Add(time.Hour),

@@ -632,35 +632,60 @@ func TestManager_DedupeByOpID_DifferentPrincipal_RejectsUnauthorized(t *testing.
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_OP_ID_COLLISION_UNAUTHORIZED, rejected.GetReason())
 }
 
-func TestManager_WorkspaceScopeRejectsSiblingSubmit(t *testing.T) {
+// A delegation bearer may write across every workspace its user owns. The
+// workspace pin that used to refuse a sibling is gone: a Worker serves one user
+// and stores no workspace id, so pinning narrowed nothing an agent could not
+// already reach through its own tab. What still narrows it is the WORKER bound
+// (TestManager_WorkerScopeRejectsForeignWorker below).
+func TestManager_WorkspaceScopeNoLongerRejectsSiblingSubmit(t *testing.T) {
 	mgr, _, _ := runManager(t, "user-1", allowAll{}, 5_500)
 	seedRootInternal(t, mgr, "w1", "root1")
 	seedRootInternal(t, mgr, "w2", "root2")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
+	// A bearer bounded to its minting worker, which is the only bound left.
+	workerScope := func(workerID string) bool { return workerID == "wkr1" }
+
 	allowed, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch:            epoch,
-		PrincipalID:      "user",
-		OriginClient:     "c1",
-		WorkspaceScopeID: "w1",
-		Batches:          []*leapmuxv1.OpBatch{addTabBatch(t, "scope-allowed", "t-pinned", "root1", "wkr1", "p1")},
+		Epoch:        epoch,
+		PrincipalID:  "user",
+		OriginClient: "c1",
+		WorkerScope:  workerScope,
+		Batches:      []*leapmuxv1.OpBatch{addTabBatch(t, "scope-allowed", "t-pinned", "root1", "wkr1", "p1")},
 	})
 	require.NoError(t, err)
-	require.NotNil(t, allowed[0].GetCommitted(),
-		"workspace-scoped submits must still allow ops inside the pinned workspace")
+	require.NotNil(t, allowed[0].GetCommitted())
+
+	sibling, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch:        epoch,
+		PrincipalID:  "user",
+		OriginClient: "c1",
+		WorkerScope:  workerScope,
+		Batches:      []*leapmuxv1.OpBatch{addTabBatch(t, "sibling-allowed", "t-sibling", "root2", "wkr1", "p1")},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, sibling[0].GetCommitted(),
+		"a delegation bearer authenticates as its user, so a second workspace of that user is writable")
+}
+
+// The half that MUST NOT regress: the worker bound still refuses a tab pointed
+// at a machine the minting worker was never entitled to reach.
+func TestManager_WorkerScopeRejectsForeignWorker(t *testing.T) {
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 5_700)
+	seedRootInternal(t, mgr, "w1", "root1")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
 	r, err := mgr.Submit(context.Background(), crdt.SubmitInput{
-		Epoch:            epoch,
-		PrincipalID:      "user",
-		OriginClient:     "c1",
-		WorkspaceScopeID: "w1",
-		Batches:          []*leapmuxv1.OpBatch{addTabBatch(t, "scope-denied", "t-sibling", "root2", "wkr1", "p1")},
+		Epoch:        epoch,
+		PrincipalID:  "user",
+		OriginClient: "c1",
+		WorkerScope:  func(workerID string) bool { return workerID == "minter" },
+		Batches:      []*leapmuxv1.OpBatch{addTabBatch(t, "worker-denied", "t-foreign", "root1", "other-worker", "p1")},
 	})
 	require.NoError(t, err)
 	rejected := r[0].GetRejected()
-	require.NotNil(t, rejected)
-	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_FORBIDDEN_WORKSPACE, rejected.GetReason(),
-		"workspace-scoped submits must reject ops targeting a sibling workspace even when the underlying auth checker would allow it")
+	require.NotNil(t, rejected,
+		"a bearer must not bind a tab to a worker outside its minter's reach, even though allowAll would permit it")
 }
 
 func TestManager_Epoch0_RejectedAsEpochRequired(t *testing.T) {

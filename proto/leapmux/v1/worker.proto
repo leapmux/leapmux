@@ -45,19 +45,21 @@ message ListOwnedTabsForWorkerResponse {
   string owner_user_id = 2;
 }
 
+// OwnedTab names one tab the Hub still knows about, for the worker's orphan
+// reconciler. It carries IDENTITY only -- no workspace, tile or position: the
+// reconciler's whole question is "does the Hub still list this tab?", and a
+// Worker that stores none of that placement state has nothing to compare it
+// against.
 message OwnedTab {
-  string  workspace_id = 1;
-  TabType tab_type     = 2;
-  string  tab_id       = 3;
-  string  tile_id      = 4;
-  string  position     = 5;
+  TabType tab_type = 1;
+  string  tab_id   = 2;
   // Owner of the row in workspace_tab_owned, which is keyed by
   // (user_id, tab_id). FILE tab ids are unique only within a user, so the
   // worker's orphan reconciler needs the owner to match a hub row against the
   // right local worker_file_tabs row -- without it, a row belonging to another
   // user misses the lookup and is reaped as an orphan. AGENT/TERMINAL ids are
   // globally unique, so their reconciliation ignores this field.
-  string  user_id      = 6;
+  string  user_id  = 3;
 }
 
 // WorkerManagementService is called BY Frontend on Hub via ConnectRPC.
@@ -196,33 +198,33 @@ message ConnectRequest {
   oneof payload {
     // Lifecycle
     DeregisterAck deregister_ack = 10;
-    WorkspaceTabsSync workspace_tabs_sync = 11;
+    WorkerTabInventory worker_tab_inventory = 11;
     // E2EE channels
     ChannelOpenResponse channel_open_resp = 12;
     ChannelMessage channel_message_resp = 13;
     // Health
     Heartbeat heartbeat = 14;
-    // Access control
-    ChannelAccessUpdateAck channel_access_update_ack = 15;
   }
 }
 
-// WorkspaceTabsSync is sent by a worker on connect to reconcile its tab
-// state with the hub's CRDT-derived workspace_tab_owned view. The hub
-// replies with WorkspaceTabsSyncResponse instructing the worker to drop
-// orphaned local entities or update local workspace bookkeeping for
-// tabs the CRDT has moved.
-message WorkspaceTabsSync {
-  repeated WorkspaceTabEntry tabs = 1;
+// WorkerTabInventory is the whole-machine tab report a worker sends on connect,
+// reconciled against the hub's CRDT-derived workspace_tab_owned view. The hub
+// replies with WorkerTabInventoryResponse, whose only effect is to trigger a
+// reconcile pass.
+//
+// Named for the worker, not a workspace: it was WorkspaceTabsSync, but it has
+// never been per-workspace and now carries no workspace field at all -- the last
+// "Workspace" name in a family this change otherwise renamed
+// (WatchWorkerPrivateEvents, WorkerPrivateService, WorkerPrivateEvent,
+// HubUnaryBridge, SnapshotForOwner).
+//
+// The hub TOMBSTONES every owned tab this report omits, so an omission is a
+// deletion of the user's tabs. BuildTabSync is what must stay exhaustive.
+message WorkerTabInventory {
+  repeated TabRef tabs = 1;
 }
 
-message WorkspaceTabEntry {
-  string workspace_id = 1;
-  TabType tab_type = 2;
-  string tab_id = 3;
-}
-
-// WorkspaceTabsSyncResponse acknowledges a tab-sync. It is deliberately EMPTY:
+// WorkerTabInventoryResponse acknowledges a tab-sync. It is deliberately EMPTY:
 // its only effect on the worker is to trigger a reconcile pass.
 //
 // It once carried `orphan_tab_ids` and `reassignments`, a per-tab
@@ -236,7 +238,7 @@ message WorkspaceTabEntry {
 //
 // If a hub-driven classification is ever wanted again, it needs an owner axis
 // on the request before the fields come back.
-message WorkspaceTabsSyncResponse {}
+message WorkerTabInventoryResponse {}
 
 // ConnectResponse wraps all messages from Hub to Worker.
 message ConnectResponse {
@@ -253,13 +255,29 @@ message ConnectResponse {
     ChannelCloseNotification channel_close = 15;
     // Health
     Heartbeat heartbeat = 16;
-    // Access control
-    ChannelAccessUpdate channel_access_update = 17;
     // Workspace-tabs sync result (carried in the same request_id as the
-    // worker's WorkspaceTabsSync ConnectRequest payload).
-    WorkspaceTabsSyncResponse workspace_tabs_sync_resp = 18;
+    // worker's WorkerTabInventory ConnectRequest payload).
+    WorkerTabInventoryResponse worker_tab_inventory_resp = 17;
+    // Convergence nudge (unsolicited, like heartbeat).
+    ReconcileNudge reconcile_nudge = 18;
   }
 }
+
+// ReconcileNudge asks a worker to run its orphan reconciler now.
+//
+// Sent when a CRDT batch tombstones a tab the worker hosts. Closing a tab is a
+// CRDT op, and the worker learns of it either through the close RPC or, when
+// that never arrives, through the reconciler -- which otherwise runs on an
+// hourly timer and is triggered only by the worker's own reconnect handshake. So
+// a close whose RPC failed against a still-CONNECTED worker, or one a peer
+// client or `leapmux remote tab close` performed CRDT-only, left the agent
+// subprocess running (and, for an active agent, burning tokens) for up to an
+// hour, its worktree for up to two passes more.
+//
+// Carries no tab ids on purpose. The reconciler already re-reads the hub's
+// authoritative owned-tab list on every pass, so a nudge only has to say "now";
+// naming the tabs would add a second, staler source of truth for the same fact.
+message ReconcileNudge {}
 
 // WorkerIdentity tells a worker who owns it. The Hub sends it as the FIRST message
 // on every Connect stream, before the connection is registered with the worker
@@ -281,21 +299,6 @@ message WorkerIdentity {
   // User ID that registered this worker. Never empty.
   string registered_by = 1;
 }
-
-// ChannelAccessUpdate is sent by the Hub to a Worker when a new workspace
-// becomes accessible to a channel (e.g. after the user creates a workspace).
-// The Worker adds the workspace ID to the channel's accessible set and
-// replies with ChannelAccessUpdateAck using the request's request_id so the
-// Hub can wait for the update to land before responding to the caller.
-message ChannelAccessUpdate {
-  string channel_id = 1;
-  string workspace_id = 2;
-}
-
-// ChannelAccessUpdateAck confirms the Worker has added the workspace ID to
-// the channel's accessible set. The matching request_id is carried on the
-// ConnectRequest envelope.
-message ChannelAccessUpdateAck {}
 
 // --- Notification messages (used in bidi stream) ---
 

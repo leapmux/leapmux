@@ -52,17 +52,16 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 	sockURL := shortIPCSocket(t)
 	rawToken := remoteipc.MintToken()
 	info := remoteipc.TokenInfo{
-		UserID:      userid.MustNew("u-1"),
-		WorkerID:    "worker-A",
-		WorkspaceID: "ws-1",
-		TabID:       "term-1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		UserID:   userid.MustNew("u-1"),
+		WorkerID: "worker-A",
+		TabID:    "term-1",
+		TabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 	}
 	srv, err := remoteipc.Listen(remoteipc.Options{
 		SocketURL: sockURL,
 		Token:     rawToken,
 		TokenInfo: info,
-		Router:    &remoteipc.Router{WorkerID: "worker-A", UserID: userid.MustNew("u-1"), WorkspaceIDs: []string{"ws-1"}},
+		Router:    &remoteipc.Router{WorkerID: "worker-A", UserID: userid.MustNew("u-1")},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Close() })
@@ -81,7 +80,6 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "u-1", resp.Msg.GetUserId())
 	assert.Equal(t, "worker-A", resp.Msg.GetWorkerId())
-	assert.Equal(t, "ws-1", resp.Msg.GetWorkspaceId())
 	assert.Equal(t, "term-1", resp.Msg.GetTabId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, resp.Msg.GetTabType())
 }
@@ -105,11 +103,10 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 	sockURL := shortIPCSocket(t)
 	rawToken := remoteipc.MintToken()
 	info := remoteipc.TokenInfo{
-		UserID:      userid.MustNew("u-1"),
-		WorkerID:    "worker-A",
-		WorkspaceID: "ws-1",
-		TabID:       "term-1",
-		TabType:     leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		UserID:   userid.MustNew("u-1"),
+		WorkerID: "worker-A",
+		TabID:    "term-1",
+		TabType:  leapmuxv1.TabType_TAB_TYPE_TERMINAL,
 	}
 	// The router accepts any streaming method via a recording local
 	// dispatcher. The test doesn't care what the stream returns —
@@ -121,9 +118,8 @@ func TestNewClientFromEnv_LocalStreamingAttachesAuth(t *testing.T) {
 		Token:     rawToken,
 		TokenInfo: info,
 		Router: &remoteipc.Router{
-			WorkerID:     "worker-A",
-			UserID:       userid.MustNew("u-1"),
-			WorkspaceIDs: []string{"ws-1"},
+			WorkerID: "worker-A",
+			UserID:   userid.MustNew("u-1"),
 		},
 	})
 	require.NoError(t, err)

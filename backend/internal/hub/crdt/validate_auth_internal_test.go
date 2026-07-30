@@ -25,11 +25,11 @@ func (r *recordingChecker) CanUseWorker(_ context.Context, workerID, _ string) (
 	return true, nil
 }
 
-// A credential with neither scope must not be wrapped at all: the session/API case
-// pays for no decorator and no predicate.
+// A credential with no worker bound must not be wrapped at all: the session/API
+// case pays for no decorator and no predicate.
 func TestScopedAuthChecker_UnscopedReturnsInnerUntouched(t *testing.T) {
 	inner := &recordingChecker{}
-	assert.Same(t, AuthChecker(inner), scopedAuthChecker(inner, "", nil),
+	assert.Same(t, AuthChecker(inner), scopedAuthChecker(inner, nil),
 		"a credential with no scope must not be wrapped")
 }
 
@@ -41,7 +41,7 @@ func TestScopedAuthChecker_WorkerScopeDeniesBeforeInnerCheck(t *testing.T) {
 	inner := &recordingChecker{}
 	// The bound the auth package resolves for a bearer minted by "minter": only the
 	// minter itself is in reach.
-	checker := scopedAuthChecker(inner, "ws-1", func(workerID string) bool { return workerID == "minter" })
+	checker := scopedAuthChecker(inner, func(workerID string) bool { return workerID == "minter" })
 
 	ok, err := checker.CanUseWorker(ctx, "victim-worker", "victim")
 	require.NoError(t, err)
@@ -60,7 +60,7 @@ func TestScopedAuthChecker_WorkerScopeDeniesBeforeInnerCheck(t *testing.T) {
 // denies must stay denied.
 func TestScopedAuthChecker_WorkerScopeCannotGrantAccess(t *testing.T) {
 	denyInner := workerScopeDenyAll{}
-	checker := scopedAuthChecker(denyInner, "ws-1", func(string) bool { return true })
+	checker := scopedAuthChecker(denyInner, func(string) bool { return true })
 
 	ok, err := checker.CanUseWorker(context.Background(), "any", "p1")
 	require.NoError(t, err)
@@ -76,34 +76,22 @@ func (workerScopeDenyAll) CanUseWorker(context.Context, string, string) (bool, e
 	return false, nil
 }
 
-// A worker-scoped checker carrying NO workspace bound must not deny every
-// workspace. Comparing an empty a.workspaceID against a real id would reject every
-// access while looking like a scope check -- the failure mode is total and silent.
-func TestScopedAuthChecker_WorkerScopeAloneDoesNotGateWorkspaces(t *testing.T) {
+// The worker bound gates WORKERS only. It must not gate workspaces as a side
+// effect: a delegation bearer authenticates AS its user, so every workspace
+// that user owns is legitimately readable, and a bearer that could only see one
+// of them is the behaviour this change deliberately retired.
+func TestScopedAuthChecker_WorkerScopeDoesNotGateWorkspaces(t *testing.T) {
 	ctx := context.Background()
 	inner := &recordingChecker{}
-	checker := scopedAuthChecker(inner, "", func(string) bool { return true })
+	checker := scopedAuthChecker(inner, func(workerID string) bool { return workerID == "minter" })
 
-	ok, err := checker.CanAccessWorkspace(ctx, "ws-anything", "p1")
-	require.NoError(t, err)
-	assert.True(t, ok, "a checker with no workspace bound must not gate workspaces")
-	assert.Equal(t, []string{"ws-anything"}, inner.workspacesAsked)
-}
-
-// The workspace bound still works, and still works alongside a worker bound.
-func TestScopedAuthChecker_WorkspaceScopeStillGates(t *testing.T) {
-	ctx := context.Background()
-	inner := &recordingChecker{}
-	checker := scopedAuthChecker(inner, "ws-1", func(string) bool { return true })
-
-	ok, err := checker.CanAccessWorkspace(ctx, "ws-2", "p1")
-	require.NoError(t, err)
-	assert.False(t, ok, "a workspace outside the delegation scope must be denied")
-	assert.Empty(t, inner.workspacesAsked)
-
-	ok, err = checker.CanAccessWorkspace(ctx, "ws-1", "p1")
-	require.NoError(t, err)
-	assert.True(t, ok)
+	for _, ws := range []string{"ws-1", "ws-2"} {
+		ok, err := checker.CanAccessWorkspace(ctx, ws, "p1")
+		require.NoError(t, err)
+		assert.True(t, ok, "a worker bound must not gate workspace %s", ws)
+	}
+	assert.Equal(t, []string{"ws-1", "ws-2"}, inner.workspacesAsked,
+		"every workspace question must reach the inner checker unchanged")
 }
 
 // batchRecordingChecker also implements the optional workspaceReaderBatch
@@ -129,9 +117,9 @@ func (b *batchRecordingChecker) CanAccessWorkspaceForUsers(_ context.Context, _ 
 func TestScopedAuthChecker_ForwardsBatchCapability(t *testing.T) {
 	ctx := context.Background()
 	inner := &batchRecordingChecker{}
-	// A worker-only scope leaves workspace access ungated, so the batch call
-	// reaches inner for the in-scope workspace unchanged.
-	scoped := scopedAuthChecker(inner, "", func(string) bool { return true })
+	// The worker scope leaves workspace access ungated, so the batch call
+	// reaches inner unchanged.
+	scoped := scopedAuthChecker(inner, func(string) bool { return true })
 	batch, ok := scoped.(workspaceReaderBatch)
 	require.True(t, ok, "the scoped wrapper must expose workspaceReaderBatch")
 
@@ -142,26 +130,13 @@ func TestScopedAuthChecker_ForwardsBatchCapability(t *testing.T) {
 	assert.Empty(t, inner.workspacesAsked, "the per-user fallback must not run when the batch form exists")
 }
 
-// A workspace-scoped bearer's batch call must deny every user for an
-// out-of-scope workspace, exactly as the per-op CanAccessWorkspace denies each.
-func TestScopedAuthChecker_BatchRespectsWorkspaceScope(t *testing.T) {
-	ctx := context.Background()
-	inner := &batchRecordingChecker{}
-	scoped := scopedAuthChecker(inner, "ws-1", nil).(workspaceReaderBatch)
-
-	res, err := scoped.CanAccessWorkspaceForUsers(ctx, "ws-2", []string{"u1", "u2"})
-	require.NoError(t, err)
-	assert.Empty(t, res, "an out-of-scope workspace denies every user")
-	assert.Equal(t, 0, inner.batchCalls, "inner must not be consulted for an out-of-scope workspace")
-}
-
 // When inner lacks the batch capability, the wrapper falls back to a per-user
 // CanAccessWorkspace loop and still forwards -- so a caller keying on the
 // capability never sees it vanish just because a wrapper was applied.
 func TestScopedAuthChecker_BatchFallsBackToPerUser(t *testing.T) {
 	ctx := context.Background()
 	inner := &recordingChecker{} // no CanAccessWorkspaceForUsers
-	scoped := scopedAuthChecker(inner, "", func(string) bool { return true }).(workspaceReaderBatch)
+	scoped := scopedAuthChecker(inner, func(string) bool { return true }).(workspaceReaderBatch)
 
 	res, err := scoped.CanAccessWorkspaceForUsers(ctx, "ws-1", []string{"u1", "u2"})
 	require.NoError(t, err)

@@ -344,11 +344,10 @@ describe('tabOps', () => {
       })
     })
 
-    // Every sibling emitter returns the batch id so a caller can correlate a
-    // later `BatchResult` -- `useCrossWorkspaceMove` registers a rollback that
-    // way. This one used to return the computed rank instead. Both are
-    // `string | null`, so a caller keying `batchResultHandlers` off it would
-    // type-check and its rollback would simply never fire.
+    // Every sibling emitter returns the batch id so a caller can correlate
+    // the submitter's later `BatchResult` with the batch it enqueued. This one
+    // used to return the computed rank instead. Both are `string | null`, so
+    // the correlation would type-check and then silently never match.
     it('returns the batch id, like every sibling emitter', () => {
       withTestBridge((harness) => {
         const tabs = [

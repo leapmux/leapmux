@@ -2,7 +2,12 @@ package service
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -25,25 +30,23 @@ const (
 	codeFailedPrecondition = int32(9)
 )
 
-// seedAgent and seedTerminal create minimal DB rows in the given workspace.
-func seedAgent(t *testing.T, svc *Service, agentID, workspaceID string) {
+// seedAgent and seedTerminal create minimal DB rows.
+func seedAgent(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
 	require.NoError(t, svc.Queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID:          agentID,
-		WorkspaceID: workspaceID,
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
+		ID:         agentID,
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
 	}))
 }
 
-func seedTerminal(t *testing.T, svc *Service, terminalID, workspaceID string) {
+func seedTerminal(t *testing.T, svc *Service, terminalID string) {
 	t.Helper()
 	require.NoError(t, svc.Queries.UpsertTerminal(context.Background(), db.UpsertTerminalParams{
-		ID:          terminalID,
-		WorkspaceID: workspaceID,
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Screen:      []byte{},
+		ID:         terminalID,
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Screen:     []byte{},
 	}))
 }
 
@@ -129,7 +132,7 @@ func useridFromTest(s string) userid.UserID {
 func TestAccessControl_AgentHandlers_NotFound(t *testing.T) {
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
+			_, d, w := setupTestService(t)
 
 			dispatch(d, tc.method, tc.req("agent-missing"), w)
 
@@ -145,7 +148,7 @@ func TestAccessControl_AgentHandlers_NotFound(t *testing.T) {
 func TestAccessControl_AgentHandlers_EmptyID(t *testing.T) {
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
+			_, d, w := setupTestService(t)
 
 			dispatch(d, tc.method, tc.req(""), w)
 
@@ -158,7 +161,7 @@ func TestAccessControl_AgentHandlers_EmptyID(t *testing.T) {
 func TestAccessControl_TerminalHandlers_NotFound(t *testing.T) {
 	for _, tc := range terminalHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
+			_, d, w := setupTestService(t)
 
 			dispatch(d, tc.method, tc.req("term-missing"), w)
 
@@ -172,7 +175,7 @@ func TestAccessControl_TerminalHandlers_NotFound(t *testing.T) {
 func TestAccessControl_TerminalHandlers_EmptyID(t *testing.T) {
 	for _, tc := range terminalHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
-			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
+			_, d, w := setupTestService(t)
 
 			dispatch(d, tc.method, tc.req(""), w)
 
@@ -190,8 +193,8 @@ func TestAccessControl_TerminalHandlers_EmptyID(t *testing.T) {
 
 func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
 	t.Run("RenameAgent", func(t *testing.T) {
-		svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-		seedAgent(t, svc, "agent-1", "ws-1")
+		svc, d, w := setupTestService(t)
+		seedAgent(t, svc, "agent-1")
 
 		dispatch(d, "RenameAgent", &leapmuxv1.RenameAgentRequest{
 			AgentId: "agent-1",
@@ -203,8 +206,8 @@ func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
 	})
 
 	t.Run("ListAgentMessages", func(t *testing.T) {
-		svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-		seedAgent(t, svc, "agent-1", "ws-1")
+		svc, d, w := setupTestService(t)
+		seedAgent(t, svc, "agent-1")
 
 		dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{AgentId: "agent-1"}, w)
 		require.Empty(t, w.errors)
@@ -213,8 +216,8 @@ func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
 }
 
 func TestAccessControl_TerminalHandlers_HappyPath(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-	seedTerminal(t, svc, "term-1", "ws-1")
+	svc, d, w := setupTestService(t)
+	seedTerminal(t, svc, "term-1")
 
 	dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{
 		TerminalId: "term-1",
@@ -225,315 +228,161 @@ func TestAccessControl_TerminalHandlers_HappyPath(t *testing.T) {
 	require.Len(t, w.responses, 1)
 }
 
-// gatedMethodProbe describes one foreign-workspace denial probe for a method
-// classified gateWorkspace or gateInBody. Completeness is enforced by
-// TestAccessControl_GatedMethodProbesAreComplete against registerAllWithGates.
-type gatedMethodProbe struct {
+// ownerGatedProbe describes one non-owner denial probe for a method the
+// registrar wires behind the owner gate. Completeness is enforced by
+// TestAccessControl_OwnerGatedProbesAreComplete against registerAllWithGates.
+//
+// The gate replaced here was the per-workspace one. It is gone because there is
+// nothing left for it to narrow: a Worker is registered by exactly one user and
+// stores no workspace id, so "the caller owns this Worker" and "the caller owns
+// every row it holds" are the same statement. What still has to be proved, and
+// is proved below, is that EVERY method is behind that one gate -- an ungated
+// handler would parse and act on a stranger's request.
+type ownerGatedProbe struct {
 	name   string
 	method string
-	seed   func(t *testing.T, svc *Service)
 	req    func() proto.Message
 }
 
-func seedForeignFileTab(t *testing.T, svc *Service, tabID, workspaceID string) {
-	t.Helper()
-	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
-	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		UserID:      "user-1",
-		TabID:       tabID,
-		WorkspaceID: workspaceID,
-		FilePath:    "/tmp/probe.txt",
-	}))
-}
-
-// gatedMethodProbes covers every gateWorkspace ∪ gateInBody method with at
-// least one foreign-workspace denial. Derived entries reuse agentHandlerCases
-// / terminalHandlerCases; the residue is hand-written.
-var gatedMethodProbes = func() []gatedMethodProbe {
-	var probes []gatedMethodProbe
+// ownerGatedProbes covers every gateOwnerOnly method that takes a typed request
+// with at least one non-owner denial. Derived entries reuse agentHandlerCases /
+// terminalHandlerCases; the residue is hand-written.
+var ownerGatedProbes = func() []ownerGatedProbe {
+	var probes []ownerGatedProbe
 	for _, tc := range agentHandlerCases {
-		probes = append(probes, gatedMethodProbe{
+		probes = append(probes, ownerGatedProbe{
 			name:   tc.method,
 			method: tc.method,
-			seed:   func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-other", "ws-other") },
-			req:    func() proto.Message { return tc.req("agent-other") },
+			req:    func() proto.Message { return tc.req("agent-1") },
 		})
 	}
 	for _, tc := range terminalHandlerCases {
-		probes = append(probes, gatedMethodProbe{
+		probes = append(probes, ownerGatedProbe{
 			name:   tc.method,
 			method: tc.method,
-			seed:   func(t *testing.T, svc *Service) { seedTerminal(t, svc, "term-other", "ws-other") },
-			req:    func() proto.Message { return tc.req("term-other") },
+			req:    func() proto.Message { return tc.req("term-1") },
 		})
 	}
 	probes = append(probes,
-		gatedMethodProbe{
-			name:   "OpenAgent",
-			method: "OpenAgent",
-			seed:   func(*testing.T, *Service) {},
-			req: func() proto.Message {
-				return &leapmuxv1.OpenAgentRequest{WorkspaceId: "ws-other", WorkingDir: "/tmp"}
-			},
-		},
-		gatedMethodProbe{
-			name:   "OpenTerminal",
-			method: "OpenTerminal",
-			seed:   func(*testing.T, *Service) {},
-			req: func() proto.Message {
-				return &leapmuxv1.OpenTerminalRequest{WorkspaceId: "ws-other", WorkingDir: "/tmp"}
-			},
-		},
-		gatedMethodProbe{
-			name:   "WatchWorkspacePrivateEvents",
-			method: "WatchWorkspacePrivateEvents",
-			seed:   func(*testing.T, *Service) {},
-			req: func() proto.Message {
-				return &leapmuxv1.WatchWorkspacePrivateEventsRequest{WorkspaceId: "ws-other"}
-			},
-		},
-		gatedMethodProbe{
-			name:   "RegisterFileTabPath",
-			method: "RegisterFileTabPath",
-			seed:   func(*testing.T, *Service) {},
-			req: func() proto.Message {
-				return &leapmuxv1.RegisterFileTabPathRequest{
-					TabId: "tab-1", WorkspaceId: "ws-other", FilePath: "/tmp/x",
-				}
-			},
-		},
-		gatedMethodProbe{
-			name:   "CleanupWorkspace",
-			method: "CleanupWorkspace",
-			seed:   func(*testing.T, *Service) {},
-			req: func() proto.Message {
-				return &leapmuxv1.CleanupWorkspaceRequest{WorkspaceId: "ws-other"}
-			},
-		},
-		gatedMethodProbe{
-			name:   "GetFileTabPath",
-			method: "GetFileTabPath",
-			seed:   func(t *testing.T, svc *Service) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
-			req: func() proto.Message {
-				return &leapmuxv1.GetFileTabPathRequest{TabId: "file-tab-other"}
-			},
-		},
-		gatedMethodProbe{
-			name:   "RevokeFileTabPath",
-			method: "RevokeFileTabPath",
-			seed:   func(t *testing.T, svc *Service) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
-			req: func() proto.Message {
-				return &leapmuxv1.RevokeFileTabPathRequest{TabId: "file-tab-other"}
-			},
-		},
-		gatedMethodProbe{
-			name:   "RelocateFileTabPath/foreign-source",
-			method: "RelocateFileTabPath",
-			seed:   func(t *testing.T, svc *Service) { seedForeignFileTab(t, svc, "file-tab-other", "ws-other") },
-			req: func() proto.Message {
-				return &leapmuxv1.RelocateFileTabPathRequest{
-					TabId: "file-tab-other", NewWorkspaceId: "ws-1",
-				}
-			},
-		},
-		gatedMethodProbe{
-			name:   "RelocateFileTabPath/foreign-destination",
-			method: "RelocateFileTabPath",
-			seed: func(t *testing.T, svc *Service) {
-				seedForeignFileTab(t, svc, "file-tab-mine", "ws-1")
-			},
-			req: func() proto.Message {
-				return &leapmuxv1.RelocateFileTabPathRequest{
-					TabId: "file-tab-mine", NewWorkspaceId: "ws-other",
-				}
-			},
-		},
-		gatedMethodProbe{
-			name:   "MoveTabWorkspace",
-			method: "MoveTabWorkspace",
-			seed:   func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-other", "ws-other") },
-			req: func() proto.Message {
-				return &leapmuxv1.MoveTabWorkspaceRequest{
-					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-					TabId:   "agent-other", NewWorkspaceId: "ws-1",
-				}
-			},
-		},
+		ownerGatedProbe{"OpenAgent", "OpenAgent", func() proto.Message {
+			return &leapmuxv1.OpenAgentRequest{WorkingDir: "/tmp"}
+		}},
+		ownerGatedProbe{"OpenTerminal", "OpenTerminal", func() proto.Message {
+			return &leapmuxv1.OpenTerminalRequest{WorkingDir: "/tmp"}
+		}},
+		ownerGatedProbe{"WatchWorkerPrivateEvents", "WatchWorkerPrivateEvents", func() proto.Message {
+			return &leapmuxv1.WatchWorkerPrivateEventsRequest{}
+		}},
+		ownerGatedProbe{"RegisterFileTabPath", "RegisterFileTabPath", func() proto.Message {
+			return &leapmuxv1.RegisterFileTabPathRequest{TabId: "tab-1", FilePath: "/tmp/x"}
+		}},
+		ownerGatedProbe{"CleanupWorkspace", "CleanupWorkspace", func() proto.Message {
+			return &leapmuxv1.CleanupWorkspaceRequest{}
+		}},
+		ownerGatedProbe{"GetFileTabPath", "GetFileTabPath", func() proto.Message {
+			return &leapmuxv1.GetFileTabPathRequest{TabId: "tab-1"}
+		}},
+		ownerGatedProbe{"RevokeFileTabPath", "RevokeFileTabPath", func() proto.Message {
+			return &leapmuxv1.RevokeFileTabPathRequest{TabId: "tab-1"}
+		}},
+		ownerGatedProbe{"ListAgents", "ListAgents", func() proto.Message {
+			return &leapmuxv1.ListAgentsRequest{TabIds: []string{"agent-1"}}
+		}},
+		ownerGatedProbe{"ListTerminals", "ListTerminals", func() proto.Message {
+			return &leapmuxv1.ListTerminalsRequest{TabIds: []string{"term-1"}}
+		}},
+		ownerGatedProbe{"WatchEvents", "WatchEvents", func() proto.Message {
+			return &leapmuxv1.WatchEventsRequest{
+				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
+			}
+		}},
 	)
 	return probes
 }()
 
-func TestAccessControl_GatedMethods_DenyForeignWorkspace(t *testing.T) {
-	for _, tc := range gatedMethodProbes {
+// A caller who is NOT the worker's registrant must be refused by every one of
+// these, with no row read and no response.
+//
+// The rows exist and the ids are real: the point is that ownership, not
+// existence, is what decides. A probe that passed because the row was missing
+// would prove nothing.
+func TestAccessControl_OwnerGatedMethods_DenyOtherUser(t *testing.T) {
+	for _, tc := range ownerGatedProbes {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-			tc.seed(t, svc)
+			svc, d, w := setupTestService(t)
+			seedAgent(t, svc, "agent-1")
+			seedTerminal(t, svc, "term-1")
 
-			dispatch(d, tc.method, tc.req(), w)
+			// "user-2" holds a valid channel but does not own this worker.
+			dispatchAs(d, userid.MustNew("user-2"), tc.method, tc.req(), w)
 
 			// rejections(), not w.errors: a streaming method reports its
 			// denial as a stream frame, and the denial is what this asserts.
 			rejected := w.rejections()
 			require.Len(t, rejected, 1, "%s: expected one error", tc.name)
 			assert.Equal(t, codePermissionDenied, rejected[0].code, "%s: expected PERMISSION_DENIED", tc.name)
-			// Pin the denial message too, not just the code: a change that keeps
-			// PERMISSION_DENIED but blanks or leaks the reason (e.g. echoing the
-			// workspace_id) would otherwise slip through. Recovers the message
-			// assertion the deleted open_workspace_required_test.go carried, now
-			// across every gated method rather than just OpenAgent/OpenTerminal.
-			assert.Contains(t, rejected[0].message, "not accessible", "%s: denial should name the access failure", tc.name)
+			assert.Contains(t, rejected[0].message, "only the worker owner", "%s: denial should name the owner gate", tc.name)
 			assert.Empty(t, w.responses, "%s: no response should be sent", tc.name)
 		})
 	}
 }
 
-func TestAccessControl_GatedMethodProbesAreComplete(t *testing.T) {
-	svc, _, _ := setupTestService(t)
-	gates := registerAllWithGates(channel.NewDispatcher(), svc)
+// TestStreamingDenialArrivesAsAStreamFrame pins the SHAPE of a streaming
+// method's refusal, which is this commit's headline gate change and which
+// nothing asserted.
+//
+// TestMachineScopedFamiliesAreOwnerOnly already covers every owner-gated method
+// denying a non-owner, but it checks through `rejections()`, which folds unary
+// errors and error stream frames into one list -- so it passes whichever shape
+// the gate emits. That is exactly the distinction that mattered: a streaming
+// method whose gate answered unary left the browser holding a stream
+// subscription with no End frame to terminate on.
+//
+// Asserted per streaming method, from the registration table, so a new streaming
+// method is covered the moment it is registered.
+func TestStreamingDenialArrivesAsAStreamFrame(t *testing.T) {
+	svc, d, _ := setupTestService(t)
+	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
 
-	var expected []string
-	for method, gate := range gates {
-		if gate == gateWorkspace || gate == gateInBody {
-			expected = append(expected, method)
+	var streaming []string
+	for method, shape := range shapes {
+		if shape == shapeStream {
+			streaming = append(streaming, method)
 		}
 	}
+	require.NotEmpty(t, streaming, "there must be streaming methods to check")
 
-	seen := make(map[string]bool)
-	var probed []string
-	for _, p := range gatedMethodProbes {
-		if !seen[p.method] {
-			seen[p.method] = true
-			probed = append(probed, p.method)
-		}
-	}
-	assert.ElementsMatch(t, expected, probed,
-		"gatedMethodProbes must cover exactly the gateWorkspace ∪ gateInBody methods from registerAllWithGates")
-}
+	for _, method := range streaming {
+		t.Run(method, func(t *testing.T) {
+			w := newTestWriter()
+			d.DispatchWith(context.Background(), userid.MustNew("user-2"), &leapmuxv1.InnerRpcRequest{
+				Method: method,
+			}, w)
 
-// TestAccessControl_WorkspaceFieldMethods_EmptyWorkspaceID covers the
-// gateWorkspace methods whose workspace id is a request field (as opposed to
-// a loaded row): registerWorkspaceGated's empty-id branch must fire before
-// any handler code runs. Row-gated methods' empty-id branch is covered by
-// the *_EmptyID tests driven from agentHandlerCases / terminalHandlerCases.
-func TestAccessControl_WorkspaceFieldMethods_EmptyWorkspaceID(t *testing.T) {
-	cases := []struct {
-		method string
-		req    proto.Message
-	}{
-		{"OpenAgent", &leapmuxv1.OpenAgentRequest{WorkingDir: "/tmp"}},
-		{"OpenTerminal", &leapmuxv1.OpenTerminalRequest{WorkingDir: "/tmp"}},
-		{"WatchWorkspacePrivateEvents", &leapmuxv1.WatchWorkspacePrivateEventsRequest{}},
-		// Every other required field is set, so the assertion also pins the
-		// ordering: workspace_id is validated in the registrar BEFORE the
-		// handler's own required-field check gets a say.
-		{"RegisterFileTabPath", &leapmuxv1.RegisterFileTabPathRequest{
-			TabId: "tab-1", FilePath: "/tmp/x",
-		}},
-		{"CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.method, func(t *testing.T) {
-			_, d, w := setupTestService(t, withWorkspaces("ws-1"))
-
-			dispatch(d, tc.method, tc.req, w)
-
-			rejected := w.rejections()
-			require.Len(t, rejected, 1, "%s: expected one error", tc.method)
-			assert.Equal(t, codeInvalidArgument, rejected[0].code, "%s: expected INVALID_ARGUMENT", tc.method)
-			assert.Equal(t, "workspace_id is required", rejected[0].message, tc.method)
-			assert.Empty(t, w.responses, "%s: no response should be sent", tc.method)
+			assert.Empty(t, w.errors,
+				"a streaming method must not answer a denial with a unary error frame")
+			frames := w.streamsSnapshot()
+			require.Len(t, frames, 1, "the denial must arrive as exactly one stream frame")
+			assert.True(t, frames[0].GetIsError(), "the frame must be flagged as an error")
+			assert.True(t, frames[0].GetEnd(),
+				"and as terminal, so a receiver can end the stream on it generically")
+			assert.Equal(t, int32(codePermissionDenied), frames[0].GetErrorCode())
 		})
 	}
 }
 
-// MoveTabWorkspace-specific tests. The source and destination checks both
-// need coverage because the pre-audit bug was that only the destination was
-// validated — any tab could be stolen into a workspace the caller owns.
-
-func TestMoveTabWorkspace_RejectsStealingAgentFromOtherWorkspace(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-mine"))
-	seedAgent(t, svc, "agent-theirs", "ws-theirs")
-
-	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
-		TabType:        leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:          "agent-theirs",
-		NewWorkspaceId: "ws-mine",
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codePermissionDenied, w.errors[0].code)
-	assert.Empty(t, w.responses)
-
-	// The agent must still belong to the original workspace.
-	row, err := svc.Queries.GetAgentByID(context.Background(), "agent-theirs")
-	require.NoError(t, err)
-	assert.Equal(t, "ws-theirs", row.WorkspaceID, "agent must not have been moved")
-}
-
-func TestMoveTabWorkspace_RejectsStealingTerminalFromOtherWorkspace(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-mine"))
-	seedTerminal(t, svc, "term-theirs", "ws-theirs")
-
-	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
-		TabType:        leapmuxv1.TabType_TAB_TYPE_TERMINAL,
-		TabId:          "term-theirs",
-		NewWorkspaceId: "ws-mine",
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codePermissionDenied, w.errors[0].code)
-
-	row, err := svc.Queries.GetTerminal(context.Background(), "term-theirs")
-	require.NoError(t, err)
-	assert.Equal(t, "ws-theirs", row.WorkspaceID, "terminal must not have been moved")
-}
-
-func TestMoveTabWorkspace_RejectsInaccessibleDestination(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-	seedAgent(t, svc, "agent-1", "ws-1")
-
-	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
-		TabType:        leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:          "agent-1",
-		NewWorkspaceId: "ws-other",
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codePermissionDenied, w.errors[0].code)
-
-	row, err := svc.Queries.GetAgentByID(context.Background(), "agent-1")
-	require.NoError(t, err)
-	assert.Equal(t, "ws-1", row.WorkspaceID, "agent must not have been moved")
-}
-
-func TestMoveTabWorkspace_AllowsMoveBetweenAccessibleWorkspaces(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-src", "ws-dst"))
-	seedAgent(t, svc, "agent-1", "ws-src")
-
-	dispatch(d, "MoveTabWorkspace", &leapmuxv1.MoveTabWorkspaceRequest{
-		TabType:        leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabId:          "agent-1",
-		NewWorkspaceId: "ws-dst",
-	}, w)
-
-	require.Empty(t, w.errors)
-	require.Len(t, w.responses, 1)
-
-	row, err := svc.Queries.GetAgentByID(context.Background(), "agent-1")
-	require.NoError(t, err)
-	assert.Equal(t, "ws-dst", row.WorkspaceID)
-}
-
-// CleanupWorkspace tests. The accessible set is add-only per channel, so a
-// previously-accessible workspace (freshly deleted at the hub) stays cleanable.
-// A workspace never added to the set must be rejected.
-
-func TestCleanupWorkspace_AllowsAccessibleWorkspace(t *testing.T) {
-	svc, d, w := setupTestService(t, withWorkspaces("ws-1"))
-	seedAgent(t, svc, "agent-1", "ws-1")
+// CleanupWorkspace takes the tab list the caller resolved before the hub
+// dropped the workspace: the worker tracks no workspace id, so it cannot
+// enumerate the set itself.
+func TestCleanupWorkspace_ClosesTheNamedTabs(t *testing.T) {
+	svc, d, w := setupTestService(t)
+	seedAgent(t, svc, "agent-1")
+	seedAgent(t, svc, "agent-untouched")
 
 	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{
-		WorkspaceId: "ws-1",
+		Tabs: []*leapmuxv1.TabRef{
+			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"},
+		},
 	}, w)
 
 	require.Empty(t, w.errors)
@@ -541,7 +390,29 @@ func TestCleanupWorkspace_AllowsAccessibleWorkspace(t *testing.T) {
 
 	row, err := svc.Queries.GetAgentByID(context.Background(), "agent-1")
 	require.NoError(t, err)
-	assert.True(t, row.ClosedAt.Valid, "agent should be soft-closed by cleanup")
+	assert.True(t, row.ClosedAt.Valid, "the named agent should be soft-closed by cleanup")
+
+	// A tab the caller did not name is untouched. That is not a gap: the list
+	// is a best effort snapshot, and the orphan reconciler is what converges
+	// anything it missed.
+	other, err := svc.Queries.GetAgentByID(context.Background(), "agent-untouched")
+	require.NoError(t, err)
+	assert.False(t, other.ClosedAt.Valid, "cleanup must not close a tab the caller did not name")
+}
+
+// An empty tab list is a legitimate request (a workspace that held nothing on
+// this worker), not an error, and must not be read as "close everything".
+func TestCleanupWorkspace_EmptyTabListClosesNothing(t *testing.T) {
+	svc, d, w := setupTestService(t)
+	seedAgent(t, svc, "agent-1")
+
+	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{}, w)
+
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	row, err := svc.Queries.GetAgentByID(context.Background(), "agent-1")
+	require.NoError(t, err)
+	assert.False(t, row.ClosedAt.Valid, "an empty list must close nothing")
 }
 
 // The machine-scoped families -- file, git, sysinfo, tunnel -- must admit ONLY
@@ -551,8 +422,7 @@ func TestCleanupWorkspace_AllowsAccessibleWorkspace(t *testing.T) {
 // normalizes a path and blocks traversal, but does NOT confine it to a root, so
 // any absolute path is fair game. That is fine for the owner (their agents already
 // run as them on their own machine) and must be denied to everyone else -- above
-// all a delegation bearer, which is pinned to one workspace and handed to a
-// prompt-injectable agent.
+// all a delegation bearer, which is handed to a prompt-injectable agent.
 //
 // Methods are enumerated from the gateOwnerOnly bucket of registerAllWithGates
 // rather than by replaying the four family register functions. An empty payload
@@ -561,10 +431,11 @@ func TestCleanupWorkspace_AllowsAccessibleWorkspace(t *testing.T) {
 // being built -- which is itself the property worth pinning (an ungated handler
 // would get as far as parsing attacker-supplied bytes).
 //
-// Workspace-scoped gating is enforced structurally via registerWorkspaceGated /
-// registerAgentGated / registerTerminalGated (and Tracked / ForRestart variants),
-// with gateInBody residue covered by gatedMethodProbes. Completeness is asserted
-// by TestAccessControl_GatedMethodProbesAreComplete and
+// Tab-scoped methods sit behind the SAME gate, wired structurally via
+// registerOwnerGated / registerAgentGated / registerTerminalGated (and the
+// Tracked / ByID / ForRestart variants); their per-method denials are covered by
+// ownerGatedProbes. Completeness is asserted by
+// TestAccessControl_OwnerGatedProbesAreComplete and
 // TestEveryRegisteredMethodIsClassified.
 func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 	svc, d, _ := setupTestService(t)
@@ -586,8 +457,12 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 				Method: method,
 			}, w)
 
-			require.Len(t, w.errors, 1, "a non-owner must be refused")
-			assert.Equal(t, codePermissionDenied, w.errors[0].code)
+			// rejections(), not w.errors: a streaming method reports its
+			// denial as a stream frame -- a unary reply on a correlation id the
+			// client holds as a stream is dropped on arrival.
+			rejected := w.rejections()
+			require.Len(t, rejected, 1, "a non-owner must be refused")
+			assert.Equal(t, codePermissionDenied, rejected[0].code)
 			assert.Empty(t, w.responses, "a refused call must return no data")
 		})
 	}
@@ -628,17 +503,12 @@ func TestEveryRegisteredMethodIsClassified(t *testing.T) {
 	assert.ElementsMatch(t, d.Methods(), gated,
 		"every method RegisterAll wires must have a recorded methodGate")
 
-	var setFilter, ungated []string
+	var ungated []string
 	for method, gate := range gates {
-		switch gate {
-		case gateSetFilter:
-			setFilter = append(setFilter, method)
-		case gateNone:
+		if gate == gateNone {
 			ungated = append(ungated, method)
 		}
 	}
-	assert.ElementsMatch(t, []string{"ListAgents", "ListTerminals", "WatchEvents"}, setFilter,
-		"gateSetFilter additions must be an explicit reviewed decision")
 	assert.ElementsMatch(t, []string{"Ping"}, ungated,
 		"gateNone additions must be an explicit reviewed decision")
 }
@@ -646,14 +516,17 @@ func TestEveryRegisteredMethodIsClassified(t *testing.T) {
 // TestEveryStreamingMethodIsRegisteredAsStreaming is the reply-shape
 // companion to the gate check above.
 //
-// A method that answers with stream frames but is registered through a
-// unary helper compiles and passes its own tests; it fails only in
-// production, silently. The browser registers the correlation id as a
-// stream, so the unary error frame a gate rejection or a panic produces
-// is dropped on arrival -- no error, no retry, a subscription that never
-// starts. WatchWorkspacePrivateEvents shipped that way, which is why the
-// list below is explicit: adding to it should be a reviewed decision, and
-// forgetting to add to it should be a red build.
+// A method that answers with stream frames but is registered through a unary
+// helper compiles and passes its own tests; it fails only in production. The
+// browser holds the correlation id as a stream, so a unary reply carries no End
+// for it to terminate on, and a non-error unary payload there is dropped
+// outright. WatchWorkerPrivateEvents shipped that way.
+//
+// This list is the reviewed set: adding to it should be a decision, and losing
+// an entry should be a red build. It does NOT catch a NEW method that streams
+// but was registered unary -- `shapes` is derived from which helper was called,
+// so it can only restate that choice. TestNoUnaryHandlerSendsStreamFrames below
+// checks the direction this one cannot.
 func TestEveryStreamingMethodIsRegisteredAsStreaming(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
@@ -666,7 +539,7 @@ func TestEveryStreamingMethodIsRegisteredAsStreaming(t *testing.T) {
 	}
 
 	assert.ElementsMatch(t,
-		[]string{"WatchEvents", "WatchWorkspacePrivateEvents"}, streaming,
+		[]string{"WatchEvents", "WatchWorkerPrivateEvents"}, streaming,
 		"a method that answers with SendStream must be registered through a "+
 			"streaming helper, so its panics and gate rejections reach the client "+
 			"in the shape it is listening for")
@@ -766,4 +639,233 @@ func TestMachineScopedFamiliesAllowOwnerOutsideHome(t *testing.T) {
 	w2 := newTestWriter()
 	dispatch(d, "StatFile", &leapmuxv1.StatFileRequest{Path: outsideHome}, w2)
 	require.Empty(t, w2.errors, "the owner may stat outside their home directory")
+}
+
+// TestNoUnaryHandlerSendsStreamFrames checks the direction
+// TestEveryStreamingMethodIsRegisteredAsStreaming structurally cannot.
+//
+// That test reads `shapes`, which registrar.register derives from the dispatch
+// MODE -- i.e. from which helper the author called. So it restates the choice
+// rather than verifying it, and a brand-new handler that calls SendStream while
+// registered through a unary helper passes it. That is precisely the bug this
+// commit fixed on WatchWorkerPrivateEvents, so the invariant needs a source of
+// truth outside the registration call: what the handler body actually does.
+//
+// Parses this package and flags any registration whose handler reaches a
+// stream-emitting call (SendStream / sendStreamError) while registered unary.
+// Deliberately shallow -- it matches the handler function literal or the named
+// function passed at the registration site, not an arbitrary call graph -- which
+// is enough, because a handler that streams does so directly through its
+// ResponseWriter.
+func TestNoUnaryHandlerSendsStreamFrames(t *testing.T) {
+	// Parsed file by file rather than through parser.ParseDir, which is
+	// deprecated (it ignores build tags when grouping files into packages).
+	// Grouping is irrelevant here -- every non-test .go file in this directory is
+	// package service by definition of the directory.
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+	var files []*ast.File
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, name, nil, 0)
+		require.NoError(t, perr, "parsing %s", name)
+		files = append(files, f)
+	}
+	require.NotEmpty(t, files, "the service package must have source files to scan")
+
+	// Handler bodies that emit stream frames, by enclosing function name.
+	streamers := map[string]bool{}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				switch x := n.(type) {
+				case *ast.SelectorExpr:
+					if x.Sel.Name == "SendStream" {
+						streamers[fn.Name.Name] = true
+					}
+				case *ast.Ident:
+					if x.Name == "sendStreamError" {
+						streamers[fn.Name.Name] = true
+					}
+				}
+				return true
+			})
+		}
+	}
+	require.Contains(t, streamers, "sendStreamError",
+		"the detector must at minimum see sendStreamError's own body -- if it does not, it is matching nothing")
+
+	// Every method registered through a UNARY helper, with why we believe its
+	// handler streams: either the named function it passes is a known streamer, or
+	// the inline literal it passes emits stream frames itself.
+	offenders := map[string]string{}
+	scanned := 0
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			name, ok := registrarHelperName(call)
+			if !ok || streamingHelpers[name] {
+				return true
+			}
+			method, handler, lit, ok := registrationMethodAndHandler(call)
+			if !ok {
+				return true
+			}
+			scanned++
+			switch {
+			case handler != "" && streamers[handler]:
+				offenders[method] = "its handler " + handler
+			// An inline literal is the common shape, and the streamers map cannot
+			// see it: that scan attributes a literal's body to the ENCLOSING
+			// function, not to the registration. Inspect it here instead --
+			// missing this is what let the mutation "register
+			// WatchWorkerPrivateEvents unary" slip past an earlier version.
+			case lit != nil && emitsStreamFrames(lit):
+				offenders[method] = "its inline handler"
+			}
+			return true
+		})
+	}
+	require.Positive(t, scanned, "the scan must find unary registrations")
+
+	for method, why := range offenders {
+		assert.Fail(t,
+			"streaming handler registered as unary",
+			"%s is registered through a UNARY helper but %s emits stream frames; register it "+
+				"with a streaming helper so its denials and panics reach the client in the shape "+
+				"it is listening for", method, why)
+	}
+}
+
+// emitsStreamFrames reports whether n's subtree calls SendStream or
+// sendStreamError.
+func emitsStreamFrames(n ast.Node) bool {
+	found := false
+	ast.Inspect(n, func(node ast.Node) bool {
+		switch x := node.(type) {
+		case *ast.SelectorExpr:
+			if x.Sel.Name == "SendStream" {
+				found = true
+			}
+		case *ast.Ident:
+			if x.Name == "sendStreamError" {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// registrarHelperName returns the called registrar helper's name, if the call is
+// one. Covers both the bare `registerX(...)` form and `d.registerX(...)`.
+// streamingHelpers is the set of registration helpers that reach
+// Dispatcher.RegisterStream, derived from the source rather than guessed from the
+// helper's NAME.
+//
+// The name test it replaces ("does the helper contain 'Stream'?") was a string
+// match standing in for a structural fact, and it constrained unrelated design:
+// folding the streaming axis into a dispatchMode argument would have renamed the
+// helper out of the match and silently reclassified a streaming registration as
+// unary, flagging its legitimate SendStream. Deriving it means the classification
+// follows the code.
+var streamingHelpers = func() map[string]bool {
+	fset := token.NewFileSet()
+	out := map[string]bool{}
+	for _, file := range []string{"registrar.go", "service.go"} {
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			panic("streamingHelpers: parsing " + file + ": " + err.Error())
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			var reachesStream, reachesUnary bool
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				switch sel.Sel.Name {
+				case "RegisterStream":
+					reachesStream = true
+				case "Register", "RegisterTracked":
+					reachesUnary = true
+				}
+				return true
+			})
+			// Streaming-ONLY. The low-level register() dispatches every mode, so it
+			// reaches RegisterStream too -- but a call site going through it is not
+			// thereby streaming, and treating it as such would skip a real unary
+			// registration.
+			if reachesStream && !reachesUnary {
+				out[fn.Name.Name] = true
+			}
+		}
+	}
+	if len(out) == 0 {
+		panic("streamingHelpers: found no helper reaching RegisterStream -- the scan is broken, not the code")
+	}
+	return out
+}()
+
+func registrarHelperName(call *ast.CallExpr) (string, bool) {
+	switch fn := call.Fun.(type) {
+	case *ast.Ident:
+		if strings.HasPrefix(fn.Name, "register") {
+			return fn.Name, true
+		}
+	case *ast.SelectorExpr:
+		if strings.HasPrefix(fn.Sel.Name, "register") || strings.HasPrefix(fn.Sel.Name, "Register") {
+			return fn.Sel.Name, true
+		}
+	case *ast.IndexExpr:
+		// The generic helpers: registerOwnerGated[T, PT](...).
+		if id, ok := fn.X.(*ast.Ident); ok && strings.HasPrefix(id.Name, "register") {
+			return id.Name, true
+		}
+	case *ast.IndexListExpr:
+		if id, ok := fn.X.(*ast.Ident); ok && strings.HasPrefix(id.Name, "register") {
+			return id.Name, true
+		}
+	}
+	return "", false
+}
+
+// registrationMethodAndHandler pulls the method-name literal out of a
+// registration call, plus whichever handler form it passes: a named function, an
+// inline literal, or a factory call. Returns ok=false for a call with no
+// string-literal method.
+func registrationMethodAndHandler(call *ast.CallExpr) (method, handler string, lit *ast.FuncLit, ok bool) {
+	for _, arg := range call.Args {
+		switch a := arg.(type) {
+		case *ast.BasicLit:
+			if a.Kind == token.STRING && method == "" {
+				method = strings.Trim(a.Value, `"`)
+			}
+		case *ast.Ident:
+			handler = a.Name
+		case *ast.FuncLit:
+			lit = a
+		case *ast.CallExpr:
+			// e.g. handleCleanupWorkspace(svc) -- the factory IS the handler.
+			if id, idOK := a.Fun.(*ast.Ident); idOK {
+				handler = id.Name
+			}
+		}
+	}
+	return method, handler, lit, method != ""
 }

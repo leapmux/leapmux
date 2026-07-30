@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -358,4 +359,136 @@ func TestManager_AuditLookupTimeoutDoesNotWedgeStop(t *testing.T) {
 		t.Fatal("Manager.Stop() wedged: the audit goroutine's CanUseWorker lookup " +
 			"was not bounded, so a hanging auth checker hangs the hub Shutdown")
 	}
+}
+
+// recordingNudger captures every NudgeReconcile call.
+type recordingNudger struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (n *recordingNudger) NudgeReconcile(workerID string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, workerID)
+}
+
+func (n *recordingNudger) snapshot() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.calls...)
+}
+
+// TestManager_TombstoneNudgesTheHostingWorker pins the convergence nudge.
+//
+// A tab close is a CRDT op. The worker learns of it through the E2EE close RPC
+// or, when that never arrives, through its orphan reconciler -- which runs
+// hourly and was triggered only by the worker's own reconnect handshake. So a
+// close whose RPC failed against a still-connected worker, or one a peer client
+// or `leapmux remote tab close` performed CRDT-only, left the agent subprocess
+// running for up to an hour. The nudge makes convergence round-trip bound.
+//
+// Asserting DEDUPLICATION as well as delivery: a batch closing several tabs on
+// one machine must nudge it once, not once per tab.
+func TestManager_TombstoneNudgesTheHostingWorker(t *testing.T) {
+	nudger := &recordingNudger{}
+	j := newFakeJournal()
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, orphanTabAuthChecker{},
+		slog.New(slog.NewJSONHandler(io.Discard, nil)), newIncrementingClock(1_000),
+		crdt.WithReconcileNudger(nudger))
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	seedRootInternal(t, mgr, "ws-1", "root-1")
+	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{
+			addTabBatch(t, "seed-a", "tab-a", "root-1", "w-host", "p1"),
+			addTabBatch(t, "seed-b", "tab-b", "root-1", "w-host", "p2"),
+		},
+	})
+	require.NoError(t, err)
+	// Only tombstones should nudge; the adds above must not have.
+	require.Empty(t, nudger.snapshot(), "adding a tab has no local state to release")
+
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: []*leapmuxv1.OpBatch{{
+			BatchId: "ts-batch",
+			Ops: []*leapmuxv1.CrdtOp{
+				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+				}}},
+				{OpId: "ts-b", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b",
+				}}},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, results[0].GetCommitted(), "tombstone must commit: %v", results[0])
+	mgr.WaitForAudits()
+	// Nudges are dispatched on their own goroutine (an uninterruptible worker
+	// send must not run on the single per-user submit loop), and they are NOT
+	// tracked by auditWG, so WaitForAudits alone would leave this racy.
+	mgr.WaitForNudges()
+
+	assert.Equal(t, []string{"w-host"}, nudger.snapshot(),
+		"the hosting worker must be nudged exactly once for a batch that closed two of its tabs")
+}
+
+// TestManager_InternalTombstoneNudgesTheHostingWorker covers the path a
+// workspace delete actually takes. applyLifecycleDelete tombstones the
+// workspace's tabs via SubmitInternal, so the batch arrives with Internal=true.
+//
+// The nudge used to sit inside the `!in.Internal` block that gates the orphan
+// AUDIT, which meant deleting a workspace never nudged the worker still hosting
+// its tabs -- so those agent subprocesses kept running until the worker's hourly
+// reconcile tick. The frontend's own per-worker CleanupWorkspace RPC is
+// fire-and-forget (`.catch(() => {})`), so nothing else covered it.
+func TestManager_InternalTombstoneNudgesTheHostingWorker(t *testing.T) {
+	nudger := &recordingNudger{}
+	j := newFakeJournal()
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, orphanTabAuthChecker{},
+		slog.New(slog.NewJSONHandler(io.Discard, nil)), newIncrementingClock(1_000),
+		crdt.WithReconcileNudger(nudger))
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	seedRootInternal(t, mgr, "ws-1", "root-1")
+	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{
+			addTabBatch(t, "seed-a", "tab-a", "root-1", "w-host", "p1"),
+		},
+	})
+	require.NoError(t, err)
+	require.Empty(t, nudger.snapshot(), "adding a tab has no local state to release")
+
+	// The shape applyLifecycleDelete produces: an INTERNAL batch of tombstones.
+	results, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{{
+			BatchId: "internal-ts",
+			Ops: []*leapmuxv1.CrdtOp{
+				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+				}}},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, results[0].GetCommitted(), "internal tombstone must commit: %v", results[0])
+	mgr.WaitForNudges()
+
+	assert.Equal(t, []string{"w-host"}, nudger.snapshot(),
+		"an internal tombstone batch -- how a workspace delete closes its tabs -- must still nudge the hosting worker")
 }

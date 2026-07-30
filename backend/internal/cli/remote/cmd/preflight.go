@@ -119,7 +119,7 @@ func isPreflightDenied(err error) bool {
 // stray error envelope ahead of the command's real output.
 func listAccessibleWorkers(ctx context.Context, c *remote.Client) (map[string]*leapmuxv1.Worker, error) {
 	var resp leapmuxv1.ListWorkersResponse
-	if err := hubCallUnary(ctx, c, "ListWorkers", "", &leapmuxv1.ListWorkersRequest{}, &resp); err != nil {
+	if err := hubCallUnary(ctx, c, "ListWorkers", &leapmuxv1.ListWorkersRequest{}, &resp); err != nil {
 		return nil, err
 	}
 	out := make(map[string]*leapmuxv1.Worker, len(resp.GetWorkers()))
@@ -238,6 +238,7 @@ func classifyConnectCode(err error) bool {
 		connect.CodeUnauthenticated,
 		connect.CodeUnavailable:
 		return true
+	default:
+		return false
 	}
-	return false
 }

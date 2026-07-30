@@ -90,12 +90,11 @@ func (s *CRDTService) SubmitOps(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get manager: %w", err))
 	}
 	results, err := mgr.Submit(ctx, crdt.SubmitInput{
-		Epoch:            req.Msg.GetEpoch(),
-		Batches:          req.Msg.GetBatches(),
-		PrincipalID:      user.ID.String(),
-		OriginClient:     user.ID.String(),
-		WorkspaceScopeID: user.Credential.WorkspaceScopeID(),
-		WorkerScope:      workerScopePredicate(workerScope),
+		Epoch:        req.Msg.GetEpoch(),
+		Batches:      req.Msg.GetBatches(),
+		PrincipalID:  user.ID.String(),
+		OriginClient: user.ID.String(),
+		WorkerScope:  workerScopePredicate(workerScope),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -154,9 +153,6 @@ func (s *CRDTService) UpdatePresence(
 ) (*connect.Response[leapmuxv1.UpdatePresenceResponse], error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
-		return nil, err
-	}
-	if err := requireDelegationWorkspace(user, req.Msg.GetWorkspaceId()); err != nil {
 		return nil, err
 	}
 	allowed, err := auth.WorkspaceCanAccess(ctx, s.store, req.Msg.GetWorkspaceId(), user.ID)
@@ -225,14 +221,10 @@ func resolveAllowedWorkspacesForUser(ctx context.Context, st store.Store, reques
 	if user == nil {
 		return nil, fmt.Errorf("not authenticated")
 	}
-	scoped, err := delegationScopedWorkspaceRequest(user, requested)
-	if err != nil {
-		return nil, err
-	}
-	if scoped.Deny {
-		return nil, nil
-	}
-	return resolveAllowedWorkspaces(ctx, st, scoped.Workspaces, user.ID)
+	// No credential-kind branch. A delegation bearer resolves to exactly what a
+	// session does -- every workspace its user owns -- because it authenticates
+	// AS that user and carries no workspace bound.
+	return resolveAllowedWorkspaces(ctx, st, requested, user.ID)
 }
 
 // resolveAllowedWorkspaces is the per-user workspace filter used by

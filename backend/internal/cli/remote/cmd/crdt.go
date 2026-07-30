@@ -48,7 +48,7 @@ type CRDTBootstrap struct {
 // both hub-bound clients (`--hub <url>` calls the hub directly with
 // the bearer token) and worker-spawned local-IPC clients (the
 // worker's `RemoteIPCService.CallInner` route proxies the same unary
-// RPC using the agent's per-(user, workspace) delegation bearer).
+// RPC using the agent's per-user delegation bearer).
 // Tenancy is the authenticated session, implied by the bearer -- no
 // user_id is sent on the wire.
 func crdtBootstrap(ctx context.Context, c *remote.Client, workspaceIDs []string) (*CRDTBootstrap, error) {
@@ -81,7 +81,7 @@ func crdtBootstrapHub(ctx context.Context, c *remote.Client, workspaceIDs []stri
 	// `/ws/userevents` path requires per CLI invocation.
 	req := &leapmuxv1.GetMaterializedRequest{WorkspaceIds: workspaceIDs}
 	var resp leapmuxv1.GetMaterializedResponse
-	if err := hubCallUnary(ctx, c, "GetMaterialized", "", req, &resp); err != nil {
+	if err := hubCallUnary(ctx, c, "GetMaterialized", req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.GetState(), nil
@@ -99,9 +99,6 @@ func crdtBootstrapLocal(ctx context.Context, c *remote.Client, workspaceIDs []st
 	innerReq := &leapmuxv1.CallInnerRequest{
 		Method:  "hub.GetMaterialized",
 		Payload: payload,
-	}
-	if len(workspaceIDs) > 0 {
-		innerReq.WorkspaceId = workspaceIDs[0]
 	}
 	ipc, err := c.RemoteIPCService()
 	if err != nil {
@@ -144,9 +141,6 @@ func streamWatchUserLocal(
 		Method:          "hub.WatchUser",
 		Payload:         payload,
 		ClientRequestId: id.Generate(),
-	}
-	if len(workspaceIDs) > 0 {
-		streamReq.WorkspaceId = workspaceIDs[0]
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -201,7 +195,7 @@ func crdtSubmitBatch(
 		Batches: []*leapmuxv1.OpBatch{batch},
 	}
 	var resp leapmuxv1.SubmitOpsResponse
-	if err := hubCallUnary(ctx, c, "SubmitOps", workspaceID, req, &resp); err != nil {
+	if err := hubCallUnary(ctx, c, "SubmitOps", req, &resp); err != nil {
 		return nil, err
 	}
 	if len(resp.GetResults()) != 1 {

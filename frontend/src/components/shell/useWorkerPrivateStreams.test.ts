@@ -10,18 +10,18 @@ import { createTestTabStores } from '~/test-support/tabStores'
 import { useWorkerPrivateStreams } from './useWorkerPrivateStreams'
 
 interface OpenedStream {
-  workspaceId: string
   workerId: string
   onTabRenamed: (evt: { tabId: string, title: string }) => void
+  onFileTabPathRegistered: (evt: { tabId: string, filePath: string }) => void
   closed: boolean
 }
 
 const opened: OpenedStream[] = []
 const mockOpen = vi.fn((o: Record<string, unknown>) => {
   const rec: OpenedStream = {
-    workspaceId: o.workspaceId as string,
     workerId: o.workerId as string,
     onTabRenamed: o.onTabRenamed as OpenedStream['onTabRenamed'],
+    onFileTabPathRegistered: o.onFileTabPathRegistered as OpenedStream['onFileTabPathRegistered'],
     closed: false,
   }
   opened.push(rec)
@@ -30,7 +30,7 @@ const mockOpen = vi.fn((o: Record<string, unknown>) => {
   }
 })
 
-vi.mock('~/lib/workspacePrivateEvents', () => ({
+vi.mock('~/lib/workerPrivateEvents', () => ({
   openWorkerPrivateEventStream: (o: Record<string, unknown>) => mockOpen(o),
 }))
 
@@ -74,8 +74,7 @@ describe('useWorkerPrivateStreams', () => {
       s.run()
       await flush()
 
-      const pairs = opened.map(o => `${o.workspaceId}::${o.workerId}`).sort()
-      expect(pairs).toEqual([`${WS}::w1`, 'ws-other::w2'])
+      expect(opened.map(o => o.workerId).sort()).toEqual(['w1', 'w2'])
       dispose()
     })
   })
@@ -88,7 +87,7 @@ describe('useWorkerPrivateStreams', () => {
       s.run()
       await flush()
 
-      const stream = opened.find(o => o.workspaceId === 'ws-other')
+      const stream = opened.find(o => o.workerId === 'w2')
       expect(stream, 'the off-screen workspace must have a stream at all').toBeDefined()
       stream!.onTabRenamed({ tabId: 'a2', title: 'Renamed elsewhere' })
 
@@ -97,15 +96,55 @@ describe('useWorkerPrivateStreams', () => {
     })
   })
 
-  it('opens one stream per (workspace, worker) pair, not per tab', async () => {
+  /**
+   * ONE stream per worker, whatever the workspace spread. The pair-keyed shape
+   * this replaced opened N of them for the same channel and — worse — derived
+   * the pair set from tabs that already existed, so a workspace with no tabs
+   * yet had no subscription at all.
+   */
+  it('opens one stream per worker regardless of how many workspaces it hosts tabs in', async () => {
     await createRoot(async (dispose) => {
       const s = mount()
+      seedWorkspace(s.harness, 'ws-other', 'other-root')
       emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
       emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: s.harness.rootTileId, position: 'b', workerId: 'w1' })
+      emitAddTab({ type: TabType.AGENT, id: 'a3', tileId: 'other-root', position: 'a', workerId: 'w1' })
       s.run()
       await flush()
 
       expect(opened).toHaveLength(1)
+      expect(opened[0].workerId).toBe('w1')
+      dispose()
+    })
+  })
+
+  /**
+   * The subscription must not depend on the workspace already holding a tab.
+   * A worker that hosts a tab ANYWHERE is subscribed, so the first tab opened
+   * in a brand-new (or so-far empty) workspace — by the `leapmux remote` CLI,
+   * by another session — is delivered on the stream that is already up.
+   */
+  it('keeps the worker stream up for a workspace that holds no tabs yet', async () => {
+    await createRoot(async (dispose) => {
+      const s = mount()
+      // An empty second workspace: nothing in it, so a (workspace, worker) key
+      // would have produced no stream for it at all.
+      seedWorkspace(s.harness, 'ws-empty', 'empty-root')
+      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a', workerId: 'w1' })
+      s.run()
+      await flush()
+
+      expect(opened).toHaveLength(1)
+      const before = opened.length
+
+      // The first tab lands in the empty workspace on the SAME worker. No new
+      // stream is needed, and none is opened — the live one already covers it.
+      emitAddTab({ type: TabType.FILE, id: 'f1', tileId: 'empty-root', position: 'a', workerId: 'w1' })
+      await flush()
+
+      expect(opened).toHaveLength(before)
+      opened[0].onFileTabPathRegistered({ tabId: 'f1', filePath: '/repo/new.ts' })
+      expect(s.fileTabPaths.pathFor('f1')).toBe('/repo/new.ts')
       dispose()
     })
   })

@@ -111,8 +111,8 @@ func (s *replaySink) alive() bool { return s.dead == nil }
 // It replays messages per each agent entry's replay mode (LATEST page, or
 // AFTER_CURSOR from its cursor_seq), sends a statusChange marker, replays
 // pending control requests, then streams live events.
-// Access control: only agents/terminals in workspaces accessible to the
-// user (via the channel's accessible_workspace_ids) are watched.
+// Access control is the owner gate the handler is registered behind; the
+// per-entity filtering below is existence, not authorization.
 //
 // Dispatcher ctx is intentionally not threaded: the handler returns
 // after registering watchers + completing the synchronous replay, but
@@ -136,9 +136,8 @@ func handleWatchEvents(svc *Service) channel.HandlerFunc {
 		// UnwatchAll is called with when the channel closes -- taking both
 		// from the writer keeps them the same string by construction.
 		channelID := sender.ChannelID()
-		allowedWorkspaces := svc.AuthorizerFor(channelID).AccessibleSet()
 
-		// Filter agents by access control and register watchers FIRST
+		// Resolve the requested agents and register watchers FIRST
 		// so no broadcasts are missed during the replay phase. Retain
 		// the fetched rows so the replay loop below doesn't have to
 		// re-fetch them. A single batched SELECT replaces N GetAgentByID
@@ -189,7 +188,7 @@ func handleWatchEvents(svc *Service) channel.HandlerFunc {
 		for _, agentEntry := range agentEntries {
 			agentID := agentEntry.GetAgentId()
 			agentRow, ok := agentRowsByID[agentID]
-			if !ok || !allowedWorkspaces[agentRow.WorkspaceID] {
+			if !ok {
 				rejectedAgentIDs = append(rejectedAgentIDs, agentID)
 				continue
 			}
@@ -233,7 +232,7 @@ func handleWatchEvents(svc *Service) channel.HandlerFunc {
 		var rejectedTerminalIDs []string
 		for _, termID := range requestedTerminalIDs {
 			termRow, ok := termRowsByID[termID]
-			if !ok || !allowedWorkspaces[termRow.WorkspaceID] {
+			if !ok {
 				rejectedTerminalIDs = append(rejectedTerminalIDs, termID)
 				continue
 			}
@@ -243,7 +242,7 @@ func handleWatchEvents(svc *Service) channel.HandlerFunc {
 
 		// Log any rejected entities for diagnostics.
 		if len(rejectedAgentIDs) > 0 || len(rejectedTerminalIDs) > 0 {
-			slog.Warn("WatchEvents: some requested entities not accessible",
+			slog.Warn("WatchEvents: some requested entities were not found",
 				"rejected_agents", rejectedAgentIDs,
 				"rejected_terminals", rejectedTerminalIDs,
 				"verified_agents", len(verifiedAgents),
@@ -271,15 +270,15 @@ func handleWatchEvents(svc *Service) channel.HandlerFunc {
 			svc.Watchers.UnwatchAll(channelID)
 			return
 		case len(verifiedAgents) == 0 && len(verifiedTerminalIDs) == 0:
-			// The client named entities and every one was rejected. Its
-			// interest is unsatisfiable, but that is not the same as "it
-			// wants nothing" -- an empty accessible-workspace set on a
-			// channel whose access info has not landed yet produces this
-			// too. Keep what is registered, rebind it to this stream, and
-			// let the error trip the client's retry.
+			// The client named entities and this worker holds none of them.
+			// Its interest is unsatisfiable, but that is not the same as "it
+			// wants nothing" -- a client racing a tab that has not been
+			// created here yet produces this too. Keep what is registered,
+			// rebind it to this stream, and let the error trip the client's
+			// retry.
 			svc.Watchers.RebindWatches(channelID, sender)
 			sendStreamError(sender, codes.NotFound,
-				fmt.Sprintf("agents %v and/or terminals %v not found or not accessible",
+				fmt.Sprintf("agents %v and/or terminals %v not found",
 					rejectedAgentIDs, rejectedTerminalIDs))
 			return
 		default:
@@ -291,17 +290,15 @@ func handleWatchEvents(svc *Service) channel.HandlerFunc {
 			// rejected entity while reporting success, and this is only
 			// correct because every rejection reachable today is DURABLE:
 			// ListAgentsByIDs fails all-or-nothing (the error path returns
-			// above), and an accessible-workspace set is only ever added to
-			// after the channel opens. So a rejected agent is one that is
-			// closed or was never granted -- unsubscribing it is right, and
-			// the client is not waiting on it.
+			// above), so a rejected agent is one that is closed or that this
+			// worker never held -- unsubscribing it is right, and the client
+			// is not waiting on it.
 			//
 			// Introduce a TRANSIENT rejection -- a chunked or partial id
-			// lookup, an access set that can shrink -- and this silently
-			// becomes a bug: that entity's tab loses its subscription with
-			// no error frame, so nothing retries and it stays blank until
-			// reload. Whoever adds one needs to make partial rejection
-			// report itself; see
+			// lookup, say -- and this silently becomes a bug: that entity's
+			// tab loses its subscription with no error frame, so nothing
+			// retries and it stays blank until reload. Whoever adds one
+			// needs to make partial rejection report itself; see
 			// https://github.com/leapmux/leapmux/issues/314.
 			svc.Watchers.SetAgentWatches(channelID, verifiedAgentIDs, sender)
 			if termLookupFailed {

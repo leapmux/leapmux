@@ -436,6 +436,9 @@ func buildCodexInputBlocks(content string, classified []classifiedAttachment) []
 				"type": "image",
 				"url":  encodeDataURI(attachment.mimeType, attachment.data),
 			})
+		case attachmentKindPDF, attachmentKindBinary:
+			// Codex's input items have no representation for either, so the
+			// attachment is omitted from the turn rather than sent as junk text.
 		}
 	}
 	return input

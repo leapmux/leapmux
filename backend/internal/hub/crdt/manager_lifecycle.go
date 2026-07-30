@@ -317,6 +317,9 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 						"workspace_id", wsID, "row_id", row.ID, "reason", "TOMBSTONED_TARGET (root tombstoned, record absent)")
 					continue
 				}
+			default:
+				// Every other reason means the seed batch never committed, so it
+				// falls through to the contract-and-surface path below.
 			}
 			// Any other rejection means the seed batch never committed, so no
 			// m.state mutation landed: contract the filter expansion and surface

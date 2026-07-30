@@ -170,11 +170,10 @@ func TestPlanArchive_NonYearSubdirsIgnored(t *testing.T) {
 func makeAgentWithPlanPath(t *testing.T, queries *db.Queries, agentID, planPath string) {
 	t.Helper()
 	require.NoError(t, queries.CreateAgent(context.Background(), db.CreateAgentParams{
-		ID:          agentID,
-		WorkspaceID: "ws-1",
-		WorkingDir:  t.TempDir(),
-		HomeDir:     t.TempDir(),
-		Title:       "test agent",
+		ID:         agentID,
+		WorkingDir: t.TempDir(),
+		HomeDir:    t.TempDir(),
+		Title:      "test agent",
 	}))
 	require.NoError(t, queries.UpdateAgentPlan(context.Background(), db.UpdateAgentPlanParams{
 		PlanFilePath: planPath,

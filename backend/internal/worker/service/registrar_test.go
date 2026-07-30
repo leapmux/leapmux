@@ -15,110 +15,17 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-func TestRegisterWorkspaceGated_InvalidPayload(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	d := channel.NewDispatcher()
-	r := newRegistrar(d, svc)
-
-	called := false
-	registerWorkspaceGated(r, "ProbeOpen",
-		func(context.Context, userid.UserID, *leapmuxv1.OpenAgentRequest, channel.ResponseWriter) {
-			called = true
-		})
-
-	w := newTestWriter()
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
-		Method:  "ProbeOpen",
-		Payload: []byte("not-a-proto"),
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codeInvalidArgument, w.errors[0].code)
-	assert.Equal(t, "invalid request", w.errors[0].message)
-	assert.False(t, called)
-}
-
-func TestRegisterWorkspaceGated_EmptyWorkspaceID(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	d := channel.NewDispatcher()
-	r := newRegistrar(d, svc)
-
-	called := false
-	registerWorkspaceGated(r, "ProbeOpen",
-		func(context.Context, userid.UserID, *leapmuxv1.OpenAgentRequest, channel.ResponseWriter) {
-			called = true
-		})
-
-	w := newTestWriter()
-	payload, err := proto.Marshal(&leapmuxv1.OpenAgentRequest{})
-	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
-		Method: "ProbeOpen", Payload: payload,
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codeInvalidArgument, w.errors[0].code)
-	assert.Equal(t, "workspace_id is required", w.errors[0].message)
-	assert.False(t, called)
-}
-
-func TestRegisterWorkspaceGated_ForeignWorkspaceShortCircuits(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	d := channel.NewDispatcher()
-	r := newRegistrar(d, svc)
-
-	called := false
-	registerWorkspaceGated(r, "ProbeOpen",
-		func(context.Context, userid.UserID, *leapmuxv1.OpenAgentRequest, channel.ResponseWriter) {
-			called = true
-		})
-
-	w := newTestWriter()
-	payload, err := proto.Marshal(&leapmuxv1.OpenAgentRequest{WorkspaceId: "ws-other"})
-	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
-		Method: "ProbeOpen", Payload: payload,
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codePermissionDenied, w.errors[0].code)
-	assert.False(t, called)
-}
-
-func TestRegisterWorkspaceGated_PassesDecodedRequest(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	d := channel.NewDispatcher()
-	r := newRegistrar(d, svc)
-
-	var gotWS string
-	registerWorkspaceGated(r, "ProbeOpen",
-		func(_ context.Context, _ userid.UserID, req *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
-			gotWS = req.GetWorkspaceId()
-			sendProtoResponse(sender, &leapmuxv1.OpenAgentResponse{})
-		})
-
-	w := newTestWriter()
-	payload, err := proto.Marshal(&leapmuxv1.OpenAgentRequest{WorkspaceId: "ws-1"})
-	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
-		Method: "ProbeOpen", Payload: payload,
-	}, w)
-
-	require.Empty(t, w.errors)
-	assert.Equal(t, "ws-1", gotWS)
-}
-
 func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	seedAgent(t, svc, "agent-1", "ws-1")
+	svc, _, _ := setupTestService(t)
+	seedAgent(t, svc, "agent-1")
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
 
-	var gotID, gotWS string
+	var gotID, gotDir string
 	registerAgentGated(r, "ProbeAgent",
 		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.RenameAgentRequest, row db.Agent, sender channel.ResponseWriter) {
 			gotID = row.ID
-			gotWS = row.WorkspaceID
+			gotDir = row.WorkingDir
 			sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{})
 		})
 
@@ -131,41 +38,17 @@ func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
 
 	require.Empty(t, w.errors)
 	assert.Equal(t, "agent-1", gotID)
-	assert.Equal(t, "ws-1", gotWS)
-}
-
-func TestRegisterAgentGated_ForeignWorkspaceShortCircuits(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	seedAgent(t, svc, "agent-other", "ws-other")
-	d := channel.NewDispatcher()
-	r := newRegistrar(d, svc)
-
-	called := false
-	registerAgentGated(r, "ProbeAgent",
-		func(context.Context, userid.UserID, *leapmuxv1.RenameAgentRequest, db.Agent, channel.ResponseWriter) {
-			called = true
-		})
-
-	w := newTestWriter()
-	payload, err := proto.Marshal(&leapmuxv1.RenameAgentRequest{AgentId: "agent-other", Title: "x"})
-	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
-		Method: "ProbeAgent", Payload: payload,
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codePermissionDenied, w.errors[0].code)
-	assert.False(t, called)
+	assert.NotEmpty(t, gotDir, "the loaded row is passed through, not just its id")
 }
 
 func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	seedAgent(t, svc, "agent-1", "ws-1")
+	svc, _, _ := setupTestService(t)
+	seedAgent(t, svc, "agent-1")
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
 
 	var gotID string
-	registerAgentGatedByID(r, "ProbeAgentID",
+	registerAgentGatedByID(r, "ProbeAgentID", dispatchPlain,
 		func(_ context.Context, _ userid.UserID, req *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			gotID = req.GetAgentId()
 			sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
@@ -182,65 +65,17 @@ func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
 	assert.Equal(t, "agent-1", gotID)
 }
 
-func TestRegisterAgentGatedByID_ForeignWorkspaceShortCircuits(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	seedAgent(t, svc, "agent-other", "ws-other")
-	d := channel.NewDispatcher()
-	r := newRegistrar(d, svc)
-
-	called := false
-	registerAgentGatedByID(r, "ProbeAgentID",
-		func(context.Context, userid.UserID, *leapmuxv1.InterruptAgentRequest, channel.ResponseWriter) {
-			called = true
-		})
-
-	w := newTestWriter()
-	payload, err := proto.Marshal(&leapmuxv1.InterruptAgentRequest{AgentId: "agent-other"})
-	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
-		Method: "ProbeAgentID", Payload: payload,
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codePermissionDenied, w.errors[0].code)
-	assert.False(t, called)
-}
-
-func TestRegisterTerminalGatedByID_ForeignWorkspaceShortCircuits(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	seedTerminal(t, svc, "term-other", "ws-other")
-	d := channel.NewDispatcher()
-	r := newRegistrar(d, svc)
-
-	called := false
-	registerTerminalGatedByID(r, "ProbeTermID",
-		func(context.Context, userid.UserID, *leapmuxv1.SendInputRequest, channel.ResponseWriter) {
-			called = true
-		})
-
-	w := newTestWriter()
-	payload, err := proto.Marshal(&leapmuxv1.SendInputRequest{TerminalId: "term-other"})
-	require.NoError(t, err)
-	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
-		Method: "ProbeTermID", Payload: payload,
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, codePermissionDenied, w.errors[0].code)
-	assert.False(t, called)
-}
-
 func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	seedTerminal(t, svc, "term-1", "ws-1")
+	svc, _, _ := setupTestService(t)
+	seedTerminal(t, svc, "term-1")
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
 
-	var gotID, gotWS string
+	var gotID, gotDir string
 	registerTerminalGated(r, "ProbeTerm",
 		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.UpdateTerminalTitleRequest, row db.Terminal, sender channel.ResponseWriter) {
 			gotID = row.ID
-			gotWS = row.WorkspaceID
+			gotDir = row.WorkingDir
 			sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
 		})
 
@@ -253,19 +88,19 @@ func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
 
 	require.Empty(t, w.errors)
 	assert.Equal(t, "term-1", gotID)
-	assert.Equal(t, "ws-1", gotWS)
+	assert.NotEmpty(t, gotDir, "the loaded row is passed through, not just its id")
 }
 
 func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
-	seedTerminal(t, svc, "term-1", "ws-1")
+	svc, _, _ := setupTestService(t)
+	seedTerminal(t, svc, "term-1")
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
 
-	var gotWS string
+	var gotDir string
 	registerTerminalForRestartGated(r, "ProbeRestart",
 		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.RestartTerminalRequest, row db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
-			gotWS = row.WorkspaceID
+			gotDir = row.WorkingDir
 			sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
 		})
 
@@ -277,7 +112,7 @@ func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
 	}, w)
 
 	require.Empty(t, w.errors)
-	assert.Equal(t, "ws-1", gotWS)
+	assert.NotEmpty(t, gotDir, "the narrow restart row is passed through")
 }
 
 // TestGatedTrackedHelpersTrackInFlightDispatches pins that every *Tracked
@@ -293,10 +128,10 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 		req      proto.Message
 	}{
 		{
-			name: "registerAgentGatedByIDTracked",
-			seed: func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-1", "ws-1") },
+			name: "registerAgentGatedByID+dispatchTracked",
+			seed: func(t *testing.T, svc *Service) { seedAgent(t, svc, "agent-1") },
 			register: func(r registrar, method string, block func()) {
-				registerAgentGatedByIDTracked(r, method,
+				registerAgentGatedByID(r, method, dispatchTracked,
 					func(context.Context, userid.UserID, *leapmuxv1.CloseAgentRequest, channel.ResponseWriter) {
 						block()
 					})
@@ -304,10 +139,10 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			req: &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"},
 		},
 		{
-			name: "registerTerminalGatedByIDTracked",
-			seed: func(t *testing.T, svc *Service) { seedTerminal(t, svc, "term-1", "ws-1") },
+			name: "registerTerminalGatedByID+dispatchTracked",
+			seed: func(t *testing.T, svc *Service) { seedTerminal(t, svc, "term-1") },
 			register: func(r registrar, method string, block func()) {
-				registerTerminalGatedByIDTracked(r, method,
+				registerTerminalGatedByID(r, method, dispatchTracked,
 					func(context.Context, userid.UserID, *leapmuxv1.CloseTerminalRequest, channel.ResponseWriter) {
 						block()
 					})
@@ -315,11 +150,11 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			req: &leapmuxv1.CloseTerminalRequest{TerminalId: "term-1"},
 		},
 		{
-			name: "registerInBodyGatedTracked",
+			name: "registerOwnerGated+dispatchTracked",
 			seed: func(*testing.T, *Service) {},
 			register: func(r registrar, method string, block func()) {
-				registerInBodyGatedTracked(r, method,
-					func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {
+				registerOwnerGated(r, method, dispatchTracked,
+					func(context.Context, userid.UserID, *leapmuxv1.RevokeFileTabPathRequest, channel.ResponseWriter) {
 						block()
 					})
 			},
@@ -328,7 +163,7 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+			svc, _, _ := setupTestService(t)
 			tc.seed(t, svc)
 			d := channel.NewDispatcher()
 			var wg sync.WaitGroup
@@ -368,7 +203,7 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 }
 
 func TestRegistrarPanicsOnDuplicateMethod(t *testing.T) {
-	svc, _, _ := setupTestService(t, withWorkspaces("ws-1"))
+	svc, _, _ := setupTestService(t)
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
 
@@ -376,4 +211,72 @@ func TestRegistrarPanicsOnDuplicateMethod(t *testing.T) {
 	assert.Panics(t, func() {
 		registerUngated(r, "Dup", func(context.Context, userid.UserID, *leapmuxv1.InnerRpcRequest, channel.ResponseWriter) {})
 	})
+}
+
+// TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument restores coverage
+// deleted with the workspace gate.
+//
+// `decodeInto` still implements the rule for every owner-gated method -- a
+// payload that fails to unmarshal answers INVALID_ARGUMENT and the handler is
+// never entered -- but nothing exercised it any more: every other dispatch in
+// this package passes a `proto.Marshal`ed payload, so removing the guard, or
+// forwarding the failed decode to the handler, would compile and pass the whole
+// suite. At runtime a garbled request would then run the handler against a
+// ZERO-VALUED message. That is not always harmless: ListAgents / ListTerminals /
+// CleanupWorkspace have no empty-field guard of their own and would answer a
+// SUCCESSFUL empty response, so the caller sees "no agents" rather than an error.
+func TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	d := channel.NewDispatcher()
+	r := newRegistrar(d, svc)
+
+	called := false
+	registerOwnerGated(r, "ProbeInvalid", dispatchPlain,
+		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.ListAgentsRequest, _ channel.ResponseWriter) {
+			called = true
+		})
+
+	w := newTestWriter()
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+		Method: "ProbeInvalid", Payload: []byte("not-a-proto"),
+	}, w)
+
+	require.Len(t, w.errors, 1, "a malformed payload must be refused")
+	assert.Equal(t, codeInvalidArgument, w.errors[0].code)
+	assert.Equal(t, "invalid request", w.errors[0].message)
+	assert.False(t, called, "the handler must never see a request that failed to decode")
+	assert.Empty(t, w.responses, "and no response may be sent")
+}
+
+// TestRegisterOwnerGatedStream_InvalidPayloadAnswersStreamError is the streaming
+// half, and the shape matters as much as the code: a streaming method's failures
+// must arrive as stream frames so the receiver has an End to terminate on.
+//
+// Asserts `w.errors` is EMPTY rather than going through `rejections()`, which
+// folds both shapes together and would pass either way -- the fold is exactly
+// what let this distinction go unchecked.
+func TestRegisterOwnerGatedStream_InvalidPayloadAnswersStreamError(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	d := channel.NewDispatcher()
+	r := newRegistrar(d, svc)
+
+	called := false
+	registerOwnerGatedStream(r, "ProbeInvalidStream",
+		func(_ context.Context, _ userid.UserID, _ *leapmuxv1.WatchEventsRequest, _ channel.ResponseWriter) {
+			called = true
+		})
+
+	w := newTestWriter()
+	d.DispatchWith(context.Background(), userid.MustNew("user-1"), &leapmuxv1.InnerRpcRequest{
+		Method: "ProbeInvalidStream", Payload: []byte("not-a-proto"),
+	}, w)
+
+	assert.Empty(t, w.errors, "a streaming method must not answer with a unary error frame")
+	frames := w.streamsSnapshot()
+	require.Len(t, frames, 1, "the refusal must arrive as exactly one stream frame")
+	assert.True(t, frames[0].GetIsError())
+	assert.True(t, frames[0].GetEnd(), "and be terminal")
+	assert.Equal(t, int32(codeInvalidArgument), frames[0].GetErrorCode())
+	assert.Equal(t, "invalid request", frames[0].GetErrorMessage())
+	assert.False(t, called, "the handler must never see a request that failed to decode")
 }
