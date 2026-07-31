@@ -14,6 +14,8 @@ import (
 // state for agents the DB no longer lists as open (closed or deleted), while leaving an
 // open-but-inactive agent's state intact (it is retained for a possible relaunch).
 func TestSweepOrphanedAgentState(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)

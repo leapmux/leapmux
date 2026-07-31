@@ -55,6 +55,8 @@ func setupNotifThreadTest(t *testing.T, provider leapmuxv1.AgentProvider) (agent
 }
 
 func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
+	t.Parallel()
+
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	firstNotif, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
@@ -78,6 +80,8 @@ func TestNotificationThreading_MergesOnlyAdjacentNotifications(t *testing.T) {
 // LEAPMUX-source platform notification must produce two separate
 // notification rows, each carrying a truthful per-thread source.
 func TestNotificationThreading_CrossSourceProducesSeparateThreads(t *testing.T) {
+	t.Parallel()
+
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	agentNotif, err := json.Marshal(map[string]any{"type": "system", "subtype": "status", "status": "compacting"})
 	require.NoError(t, err)
@@ -99,6 +103,8 @@ func TestNotificationThreading_CrossSourceProducesSeparateThreads(t *testing.T) 
 }
 
 func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
+	t.Parallel()
+
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	firstNotif, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
@@ -136,6 +142,8 @@ func TestNotificationThreading_NonNotificationBreaksAdjacency(t *testing.T) {
 // calling the full ClearAgentRuntimeState (which clears lastNotifThread via
 // CleanupAgent); the fix routes onExit through ClearPendingControlRequests instead.
 func TestRelaunchOnExitPreservesNotificationThread(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -177,6 +185,8 @@ func TestRelaunchOnExitPreservesNotificationThread(t *testing.T) {
 }
 
 func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testing.T) {
+	t.Parallel()
+
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	starting := raw(t, codexStartupStatus("codex_apps", "starting", nil))
 	ready := raw(t, codexStartupStatus("codex_apps", "ready", nil))
@@ -206,6 +216,8 @@ func TestNotificationThreading_CodexStartupStatusConsolidatesInWrapper(t *testin
 }
 
 func TestNotificationThreading_CodexMetadataNotificationsPersistAsAgentWrapper(t *testing.T) {
+	t.Parallel()
+
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	skillsChanged := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
 	remoteControlChanged := raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
@@ -226,6 +238,8 @@ func TestNotificationThreading_CodexMetadataNotificationsPersistAsAgentWrapper(t
 }
 
 func TestNotificationThreading_CodexMetadataNotificationsSurviveMixedThread(t *testing.T) {
+	t.Parallel()
+
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	starting := raw(t, codexStartupStatus("codex_apps", "starting", nil))
 	skillsChanged := raw(t, codexMethod("skills/changed", map[string]interface{}{}))
@@ -262,6 +276,8 @@ func TestNotificationThreading_CodexMetadataNotificationsSurviveMixedThread(t *t
 // to byte-identical wrapper.Messages does not bump the row's seq. A flapping
 // remoteControl/status/changed should not produce a DB write per arrival.
 func TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite(t *testing.T) {
+	t.Parallel()
+
 	sink, listRows := setupNotifThreadTest(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	payload := raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
 		"status":        "disabled",

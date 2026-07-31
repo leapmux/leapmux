@@ -50,6 +50,8 @@ func countTerminalRows(t *testing.T, svc *Service) int {
 // ---------- OpenAgent: git-mode validation ----------
 
 func TestOpenAgent_Validate_BranchNameSyntax(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -66,6 +68,8 @@ func TestOpenAgent_Validate_BranchNameSyntax(t *testing.T) {
 }
 
 func TestOpenAgent_Validate_WorkingDirNotGitRepo(t *testing.T) {
+	t.Parallel()
+
 	notARepo := t.TempDir()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -82,6 +86,8 @@ func TestOpenAgent_Validate_WorkingDirNotGitRepo(t *testing.T) {
 }
 
 func TestOpenAgent_Validate_BranchAlreadyExists(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
@@ -100,6 +106,8 @@ func TestOpenAgent_Validate_BranchAlreadyExists(t *testing.T) {
 }
 
 func TestOpenAgent_Validate_BaseBranchMissing(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -117,9 +125,11 @@ func TestOpenAgent_Validate_BaseBranchMissing(t *testing.T) {
 }
 
 func TestOpenAgent_Validate_WorktreePathAlreadyPresent(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	branchName := "feature/collide"
-	worktreePath := expectedWorktreePath(repoDir, branchName)
+	worktreePath := expectedWorktreePath(t, repoDir, branchName)
 	require.NoError(t, os.MkdirAll(worktreePath, 0o755))
 
 	svc, d, w := setupTestService(t)
@@ -136,6 +146,8 @@ func TestOpenAgent_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 }
 
 func TestOpenAgent_Validate_CheckoutBranchMissing(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -151,6 +163,8 @@ func TestOpenAgent_Validate_CheckoutBranchMissing(t *testing.T) {
 }
 
 func TestOpenAgent_Validate_CreateBranchAlreadyExists(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
@@ -168,6 +182,8 @@ func TestOpenAgent_Validate_CreateBranchAlreadyExists(t *testing.T) {
 }
 
 func TestOpenAgent_Validate_UseWorktreePathUnknown(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	bogusPath := filepath.Join(t.TempDir(), "bogus")
 	require.NoError(t, os.MkdirAll(bogusPath, 0o755))
@@ -187,6 +203,8 @@ func TestOpenAgent_Validate_UseWorktreePathUnknown(t *testing.T) {
 // ---------- OpenAgent: title + session ID validation ----------
 
 func TestOpenAgent_Validate_TitleTooLong(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -203,6 +221,8 @@ func TestOpenAgent_Validate_TitleTooLong(t *testing.T) {
 }
 
 func TestOpenAgent_Validate_TitleStripsControlChars(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -227,6 +247,8 @@ func TestOpenAgent_Validate_TitleStripsControlChars(t *testing.T) {
 }
 
 func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -246,6 +268,8 @@ func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 // InvalidArgument BEFORE any DB row is created -- so a CLI typo surfaces as a clear error rather
 // than reaching the provider and dying at startup (an opaque dead agent).
 func TestOpenAgent_Validate_RejectsUnknownPermissionMode(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -265,6 +289,8 @@ func TestOpenAgent_Validate_RejectsUnknownPermissionMode(t *testing.T) {
 // seeding only a fallback, so a model absent from the seed (but maybe valid in the live catalog)
 // must NOT be rejected -- the spawn proceeds and the running session validates it.
 func TestOpenAgent_Validate_DoesNotRejectUnknownModel(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -283,6 +309,8 @@ func TestOpenAgent_Validate_DoesNotRejectUnknownModel(t *testing.T) {
 // A VALID explicitly-requested permission mode must NOT be rejected -- the validation must not
 // over-reject and break a normal spawn that pins a legitimate mode.
 func TestOpenAgent_Validate_AcceptsValidPermissionMode(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -301,6 +329,8 @@ func TestOpenAgent_Validate_AcceptsValidPermissionMode(t *testing.T) {
 // ---------- OpenTerminal mirrors of the git-mode cases ----------
 
 func TestOpenTerminal_Validate_BranchNameSyntax(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -317,6 +347,8 @@ func TestOpenTerminal_Validate_BranchNameSyntax(t *testing.T) {
 }
 
 func TestOpenTerminal_Validate_WorkingDirNotGitRepo(t *testing.T) {
+	t.Parallel()
+
 	notARepo := t.TempDir()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -333,6 +365,8 @@ func TestOpenTerminal_Validate_WorkingDirNotGitRepo(t *testing.T) {
 }
 
 func TestOpenTerminal_Validate_BranchAlreadyExists(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
@@ -351,9 +385,11 @@ func TestOpenTerminal_Validate_BranchAlreadyExists(t *testing.T) {
 }
 
 func TestOpenTerminal_Validate_WorktreePathAlreadyPresent(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	branchName := "feature/terminal-collide"
-	worktreePath := expectedWorktreePath(repoDir, branchName)
+	worktreePath := expectedWorktreePath(t, repoDir, branchName)
 	require.NoError(t, os.MkdirAll(worktreePath, 0o755))
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -370,6 +406,8 @@ func TestOpenTerminal_Validate_WorktreePathAlreadyPresent(t *testing.T) {
 }
 
 func TestOpenTerminal_Validate_CheckoutBranchMissing(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)

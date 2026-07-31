@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { clickTreeContextItem, loginViaToken, openTreeContextMenu, openWorkspace, treeRow } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 const ABSOLUTE_PATH_RE = /^\//
@@ -22,11 +22,11 @@ test.describe('DirectoryTree', () => {
       await expect(rootNode).toBeVisible()
 
       // Children should be visible (root is always expanded)
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
 
       // Clicking root should NOT collapse it (root is uncollapsible)
       await rootNode.click()
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -46,10 +46,7 @@ test.describe('DirectoryTree', () => {
       await expect(rootNode).toBeVisible()
 
       // Hover the root node and open context menu
-      await rootNode.hover()
-      const contextButton = rootNode.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
+      await openTreeContextMenu(page, rootNode)
 
       // All 4 menu items should be visible for a directory (use :visible to scope to the open popover)
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toBeVisible()
@@ -71,17 +68,13 @@ test.describe('DirectoryTree', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for the file tree to load
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
 
       // Hover on package.json file and open context menu. We anchor on the
       // tree-row testid because the label is now nested inside a Tooltip
       // span pair, so `.locator('..')` from the text no longer lands on the
       // row hosting the context button.
-      const treeRow = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' }).first()
-      await treeRow.hover()
-      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
+      await openTreeContextMenu(page, treeRow(page, 'package.json'))
 
       // 3 items: mention, copy path, copy relative path — but NOT terminal
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toBeVisible()
@@ -106,16 +99,9 @@ test.describe('DirectoryTree', () => {
       const rootNode = page.locator('[data-testid="tree-root-node"]')
       await expect(rootNode).toBeVisible()
 
-      // Hover and open context menu on the root directory
-      await rootNode.hover()
-      const contextButton = rootNode.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
-
-      // Click "Open a terminal tab here"
-      const terminalButton = page.locator('[data-testid="tree-open-terminal-button"]:visible')
-      await expect(terminalButton).toBeVisible()
-      await terminalButton.click()
+      // Open the root directory's context menu and click "Open a terminal tab
+      // here" as one retried unit -- same detach hazard as the copy-path test.
+      await clickTreeContextItem(page, rootNode, 'tree-open-terminal-button')
 
       // A terminal tab should appear
       const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
@@ -136,20 +122,14 @@ test.describe('DirectoryTree', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for file tree
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
 
-      // Open context menu on package.json (anchored to tree-row testid; see
-      // earlier note about the Tooltip span wrap).
-      const treeRow = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' }).first()
-      await treeRow.hover()
-      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
-
-      // Click "Copy path" from the visible dropdown
-      const copyPathButton = page.locator('[data-testid="tree-copy-path-button"]:visible')
-      await expect(copyPathButton).toBeVisible()
-      await copyPathButton.click()
+      // Open the context menu on package.json and click "Copy path" as ONE
+      // retried unit (anchored to tree-row testid; see earlier note about the
+      // Tooltip span wrap). Opening and clicking as two separate steps lets a
+      // sidebar re-render between them detach the item mid-click -- which is
+      // what "element was detached from the DOM" was reporting here.
+      await clickTreeContextItem(page, treeRow(page, 'package.json'), 'tree-copy-path-button')
 
       // Clipboard should contain the absolute path (ends with /package.json)
       const clipboardText = await page.evaluate(() => navigator.clipboard.readText())
@@ -172,7 +152,7 @@ test.describe('DirectoryTree', () => {
       // Wait for tree to load
       const rootNode = page.locator('[data-testid="tree-root-node"]')
       await expect(rootNode).toBeVisible()
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
 
       // Expand "src" to add more items to the tree
       const srcNode = page.locator('span:text-is("src")').first()
@@ -183,7 +163,7 @@ test.describe('DirectoryTree', () => {
       // Select a file to change selectedPath away from "src".
       // This is needed because clicking src again to collapse only triggers
       // the scroll-on-select effect when selectedPath actually changes.
-      const fileNode = page.getByText('package.json')
+      const fileNode = treeRow(page, 'package.json')
       await fileNode.click()
       await page.waitForTimeout(200)
 
@@ -263,7 +243,7 @@ test.describe('DirectoryTree', () => {
       // Wait for tree to load — root is expanded by default
       const rootNode = page.locator('[data-testid="tree-root-node"]')
       await expect(rootNode).toBeVisible()
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
 
       // Expand "src" directory (child of root = frontend/)
       const srcNode = page.locator('span:text-is("src")').first()
@@ -281,7 +261,7 @@ test.describe('DirectoryTree', () => {
       await page.waitForTimeout(300)
 
       // Root should still be expanded — root-level items still visible
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
       // "src" is a root child, so it should still be visible
       await expect(srcNode).toBeVisible()
       // But "components" (child of src) should be hidden because src is collapsed
@@ -333,7 +313,7 @@ test.describe('DirectoryTree', () => {
       // Wait for tree to load
       const rootNode = page.locator('[data-testid="tree-root-node"]')
       await expect(rootNode).toBeVisible()
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
 
       // Expand "src" directory
       const srcNode = page.locator('span:text-is("src")').first()

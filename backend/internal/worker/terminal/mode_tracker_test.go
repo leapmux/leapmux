@@ -20,6 +20,8 @@ func feedString(t *modeTracker, s string) {
 // field, the canonical reset sequence flips it back, and snapshotPrefix
 // reflects the current state.
 func TestModeTracker_PerModeSetReset(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name           string
 		setSeq         string
@@ -56,6 +58,8 @@ func TestModeTracker_PerModeSetReset(t *testing.T) {
 // codes; emission must always normalize to 1049 so xterm gets the most
 // complete restore (1049 == save cursor + alt screen).
 func TestModeTracker_AltScreenAliases(t *testing.T) {
+	t.Parallel()
+
 	for _, seq := range []string{"\x1b[?47h", "\x1b[?1047h", "\x1b[?1049h"} {
 		tr := &modeTracker{}
 		feedString(tr, seq)
@@ -68,6 +72,8 @@ func TestModeTracker_AltScreenAliases(t *testing.T) {
 // parameters must update each field independently. xterm accepts this
 // form even though most programs split into separate sequences.
 func TestModeTracker_MultiParamCSI(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b[?25;7l") // hide cursor + autowrap off in one go.
 	prefix := string(tr.snapshotPrefix())
@@ -80,6 +86,8 @@ func TestModeTracker_MultiParamCSI(t *testing.T) {
 // the invariant that makes the tracker safe to call from inside Write —
 // PTY chunks split at arbitrary boundaries.
 func TestModeTracker_PartialAcrossFeeds(t *testing.T) {
+	t.Parallel()
+
 	full := "\x1b[?1049h"
 	for split := 1; split < len(full); split++ {
 		tr := &modeTracker{}
@@ -95,6 +103,8 @@ func TestModeTracker_PartialAcrossFeeds(t *testing.T) {
 // untouched. This is the cheap-out that keeps SGR explicitly out of
 // scope.
 func TestModeTracker_UnknownFinalByte(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b[31m\x1b[2J\x1b[5n\x1b[H")
 	assert.Nil(t, tr.snapshotPrefix(),
@@ -105,6 +115,8 @@ func TestModeTracker_UnknownFinalByte(t *testing.T) {
 // must not pollute state. Verifies that ground-state bytes are truly
 // no-ops, not accidentally mutating the tracker.
 func TestModeTracker_MixedPrintableAndCSI(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "hello\x1b[?25lworld")
 	assert.Equal(t, []byte("\x1b[?25l"), tr.snapshotPrefix())
@@ -116,6 +128,8 @@ func TestModeTracker_MixedPrintableAndCSI(t *testing.T) {
 // returning control to the shell. After that, snapshotPrefix MUST be
 // nil so we don't strand reconnecting clients in alt screen.
 func TestModeTracker_SetThenResetReturnsDefault(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b[?1049h\x1b[?25l\x1b[?2004h")
 	require.NotNil(t, tr.snapshotPrefix())
@@ -127,6 +141,8 @@ func TestModeTracker_SetThenResetReturnsDefault(t *testing.T) {
 // TestModeTracker_FreshIsDefault: the zero value of modeTracker matches
 // xterm's default state. No allocation, no prefix, no surprises.
 func TestModeTracker_FreshIsDefault(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	assert.Nil(t, tr.snapshotPrefix())
 }
@@ -136,6 +152,8 @@ func TestModeTracker_FreshIsDefault(t *testing.T) {
 // right buffer), then cursor, autowrap, app-cursor-keys, bracketed
 // paste, mouse track, mouse encoding, then title.
 func TestModeTracker_EmissionOrdering(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b[?2004h\x1b[?25l\x1b[?1049h\x1b[?1006h\x1b[?1002h\x1b[?7l\x1b[?1h\x1b]0;hello\x07")
 	prefix := string(tr.snapshotPrefix())
@@ -163,6 +181,8 @@ func TestModeTracker_EmissionOrdering(t *testing.T) {
 // bound, and must leave the parser in a recoverable state for the next
 // real sequence.
 func TestModeTracker_ParamBufOverflow(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	// 200 bytes of "1;" is way past the 64-byte cap.
 	overflow := "\x1b[" + strings.Repeat("1;", 200) + "h"
@@ -180,6 +200,8 @@ func TestModeTracker_ParamBufOverflow(t *testing.T) {
 // must not reset the other. Real programs (e.g. neovim) toggle these
 // separately on focus events.
 func TestModeTracker_MouseEncodingOrthogonal(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b[?1006h\x1b[?1002h")
 	prefix := string(tr.snapshotPrefix())
@@ -197,6 +219,8 @@ func TestModeTracker_MouseEncodingOrthogonal(t *testing.T) {
 // TestModeTracker_OSC_BEL: OSC 0 with BEL terminator captures the
 // title and round-trips through snapshotPrefix.
 func TestModeTracker_OSC_BEL(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b]0;hello\x07")
 	prefix := tr.snapshotPrefix()
@@ -207,6 +231,8 @@ func TestModeTracker_OSC_BEL(t *testing.T) {
 // TestModeTracker_OSC_ST: OSC 2 with ST (\x1b\\) terminator. Less
 // common than BEL but spec-compliant; some terminals emit it.
 func TestModeTracker_OSC_ST(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b]2;world\x1b\\")
 	prefix := tr.snapshotPrefix()
@@ -217,6 +243,8 @@ func TestModeTracker_OSC_ST(t *testing.T) {
 // TestModeTracker_OSC_BodyOverflow: an OSC body longer than oscBufCap
 // must be dropped silently. Previous title (or nil) must persist.
 func TestModeTracker_OSC_BodyOverflow(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b]0;previous\x07")
 	require.Equal(t, []byte("\x1b]0;previous\x07"), tr.snapshotPrefix())
@@ -233,6 +261,8 @@ func TestModeTracker_OSC_BodyOverflow(t *testing.T) {
 // Without this, a malformed program could silently disable mode tracking
 // for everything that follows.
 func TestModeTracker_OSC_AbortedByNewEscape(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b]0;partial\x1b[?1049h")
 	prefix := tr.snapshotPrefix()
@@ -246,6 +276,8 @@ func TestModeTracker_OSC_AbortedByNewEscape(t *testing.T) {
 // the very end of the prefix so it doesn't get clobbered by mode
 // resets that some terminals emit on cursor visibility changes.
 func TestModeTracker_TitleEmissionAfterModes(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b]0;myshell\x07\x1b[?25l\x1b[?1049h")
 	prefix := tr.snapshotPrefix()
@@ -260,6 +292,8 @@ func TestModeTracker_TitleEmissionAfterModes(t *testing.T) {
 // title. OSC 1 (icon name only, in xterm semantics) and unknown Ps
 // codes must be ignored — emission should not pick them up.
 func TestModeTracker_OSC_OtherPsIgnored(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b]1;icon\x07\x1b]7;cwd\x07")
 	assert.Nil(t, tr.snapshotPrefix(),
@@ -271,6 +305,8 @@ func TestModeTracker_OSC_OtherPsIgnored(t *testing.T) {
 // "ESC always cancels" rule and ensures we don't accumulate stale params
 // across a malformed sequence.
 func TestModeTracker_CSIInterruptedByEscape(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 	feedString(tr, "\x1b[?25\x1b[?1049h") // first CSI lacks final byte.
 	prefix := tr.snapshotPrefix()
@@ -283,6 +319,11 @@ func TestModeTracker_CSIInterruptedByEscape(t *testing.T) {
 // every PTY chunk; a single allocation here would cost us roughly one
 // per shell prompt across the worker.
 func TestModeTracker_NoAllocOnPlainText(t *testing.T) {
+	// NOT t.Parallel(): testing.AllocsPerRun pins GOMAXPROCS to 1 for the
+	// duration of its measurement and documents that its result is
+	// unreliable when other tests run concurrently -- a sibling's
+	// allocations land in this count.
+
 	tr := &modeTracker{}
 	plain := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog\n"), 100)
 	allocs := testing.AllocsPerRun(10, func() { tr.feed(plain) })
@@ -298,6 +339,11 @@ func TestModeTracker_NoAllocOnPlainText(t *testing.T) {
 // capacity; from there, repeated feeds of the same chunk must allocate
 // nothing.
 func TestModeTracker_NoAllocOnTypicalShellOutput(t *testing.T) {
+	// NOT t.Parallel(): testing.AllocsPerRun pins GOMAXPROCS to 1 for the
+	// duration of its measurement and documents that its result is
+	// unreliable when other tests run concurrently -- a sibling's
+	// allocations land in this count.
+
 	tr := &modeTracker{}
 	chunk := []byte("\x1b]0;me@host\x07\x1b[1;32muser@host\x1b[m:~$ ls\r\n")
 	tr.feed(chunk)

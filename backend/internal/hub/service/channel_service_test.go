@@ -137,6 +137,8 @@ func registerOnlineWorker(t *testing.T, env *channelTestEnv, workerID string, mo
 }
 
 func TestGetWorkerHandshakeParams(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -153,6 +155,8 @@ func TestGetWorkerHandshakeParams(t *testing.T) {
 }
 
 func TestGetWorkerHandshakeParams_NoKey(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -168,6 +172,8 @@ func TestGetWorkerHandshakeParams_NoKey(t *testing.T) {
 }
 
 func TestGetWorkerHandshakeParams_NotFound(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -179,6 +185,8 @@ func TestGetWorkerHandshakeParams_NotFound(t *testing.T) {
 }
 
 func TestGetWorkerHandshakeParams_EmptyWorkerID(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -190,6 +198,8 @@ func TestGetWorkerHandshakeParams_EmptyWorkerID(t *testing.T) {
 }
 
 func TestGetWorkerHandshakeParams_WorkerOffline(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -204,6 +214,8 @@ func TestGetWorkerHandshakeParams_WorkerOffline(t *testing.T) {
 }
 
 func TestGetWorkerHandshakeParams_RejectsStaleAuthGeneration(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	checker := &freshnessAfterNCalls{staleAfter: 0}
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, checker)
@@ -220,6 +232,8 @@ func TestGetWorkerHandshakeParams_RejectsStaleAuthGeneration(t *testing.T) {
 }
 
 func TestOpenChannel_WorkerOffline(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -237,6 +251,8 @@ func TestOpenChannel_WorkerOffline(t *testing.T) {
 }
 
 func TestOpenChannel_EmptyFields(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -252,6 +268,8 @@ func TestOpenChannel_EmptyFields(t *testing.T) {
 }
 
 func TestOpenChannel_WithMockWorker(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -310,6 +328,8 @@ func (allowAllAuthFreshness) CurrentCredentialExpiry(_ context.Context, u *auth.
 }
 
 func TestNewChannelServiceRequiresAuthFreshnessChecker(t *testing.T) {
+	t.Parallel()
+
 	require.Panics(t, func() {
 		service.NewChannelService(nil, nil, nil, nil, nil)
 	})
@@ -386,6 +406,8 @@ func setupDirectOpenChannelEnv(t *testing.T) *directOpenChannelEnv {
 }
 
 func TestOpenChannel_UnregistersWhenAuthRevokedDuringRegistration(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 
 	checker := &freshnessAfterNCalls{staleAfter: 1}
@@ -410,6 +432,8 @@ func TestOpenChannel_UnregistersWhenAuthRevokedDuringRegistration(t *testing.T) 
 }
 
 func TestOpenChannel_ClosesWorkerChannelWhenAuthRevokedDuringHandshake(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 2)
 	_, _ = env.worker.Register(&workermgr.Conn{
@@ -466,6 +490,8 @@ func TestOpenChannel_ClosesWorkerChannelWhenAuthRevokedDuringHandshake(t *testin
 }
 
 func TestOpenChannel_ClosesWorkerChannelWhenOpenSendFails(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 2)
 	_, _ = env.worker.Register(&workermgr.Conn{
@@ -503,6 +529,8 @@ func TestOpenChannel_ClosesWorkerChannelWhenOpenSendFails(t *testing.T) {
 }
 
 func TestOpenChannel_MapsWorkerErrorCodes(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name string
 		code leapmuxv1.ChannelOpenErrorCode
@@ -572,6 +600,8 @@ func TestOpenChannel_MapsWorkerErrorCodes(t *testing.T) {
 }
 
 func TestOpenChannel_RejectsErrorCodeOnlyWithoutErrorString(t *testing.T) {
+	t.Parallel()
+
 	// Hub must fail closed when ErrorCode is set even if Error is empty, so a
 	// buggy/hostile worker cannot fall through to the success path.
 	env := setupDirectOpenChannelEnv(t)
@@ -613,6 +643,8 @@ func TestOpenChannel_RejectsErrorCodeOnlyWithoutErrorString(t *testing.T) {
 }
 
 func TestOpenChannel_MapsInvalidMaxMessageSizeErrorCode(t *testing.T) {
+	t.Parallel()
+
 	// Kept as a focused alias of the table above for the original skew case.
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
@@ -651,6 +683,8 @@ func TestOpenChannel_MapsInvalidMaxMessageSizeErrorCode(t *testing.T) {
 }
 
 func TestOpenChannel_UnspecifiedWorkerErrorStaysInternal(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
 	_, _ = env.worker.Register(&workermgr.Conn{
@@ -687,6 +721,8 @@ func TestOpenChannel_UnspecifiedWorkerErrorStaysInternal(t *testing.T) {
 }
 
 func TestOpenChannel_RejectsWorkerEchoAboveHubMax(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	hubMax := 1 << 20 // 1 MiB — below the protocol default so an oversize echo is visible
 	env.channels = channelmgr.New(hubMax)
@@ -727,6 +763,8 @@ func TestOpenChannel_RejectsWorkerEchoAboveHubMax(t *testing.T) {
 }
 
 func TestOpenChannel_RejectsWorkerEchoInvalidMaxMessageSize(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name string
 		echo uint64
@@ -778,6 +816,8 @@ func TestOpenChannel_RejectsWorkerEchoInvalidMaxMessageSize(t *testing.T) {
 }
 
 func TestOpenChannel_AdoptsWorkerLoweredMaxMessageSize(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	hubMax := 200_000
 	lowered := 100_000
@@ -848,6 +888,8 @@ func TestOpenChannel_AdoptsWorkerLoweredMaxMessageSize(t *testing.T) {
 }
 
 func TestOpenChannel_ReturnsNegotiatedMaxMessageSize(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
 	_, _ = env.worker.Register(&workermgr.Conn{
@@ -888,6 +930,8 @@ func TestOpenChannel_ReturnsNegotiatedMaxMessageSize(t *testing.T) {
 // OpenChannel must announce the authenticated principal both to the worker
 // (ChannelOpenRequest.user_id) and back to the client (OpenChannelResponse.user_id).
 func TestOpenChannel_PropagatesAuthenticatedUserId(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
 	var announcedToWorker string
@@ -928,6 +972,8 @@ func TestOpenChannel_PropagatesAuthenticatedUserId(t *testing.T) {
 }
 
 func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 2)
 	_, _ = env.worker.Register(&workermgr.Conn{
@@ -981,6 +1027,8 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 }
 
 func TestCloseChannelsByBearer_DoesNotBlockOnWorkerSend(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	blocked := make(chan struct{})
 	started := make(chan struct{})
@@ -1017,6 +1065,8 @@ func TestCloseChannelsByBearer_DoesNotBlockOnWorkerSend(t *testing.T) {
 }
 
 func TestCloseChannelsByUserRevocation_BlockedWorkerDoesNotStarveHealthyWorker(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	blocked := make(chan struct{})
 	blockedStarted := make(chan struct{}, 1)
@@ -1068,6 +1118,8 @@ func TestCloseChannelsByUserRevocation_BlockedWorkerDoesNotStarveHealthyWorker(t
 }
 
 func TestCloseChannelsByUserRevocation_BoundsBlockedWorkerSenders(t *testing.T) {
+	t.Parallel()
+
 	env := setupDirectOpenChannelEnv(t)
 	blocked := make(chan struct{})
 	var active atomic.Int32
@@ -1103,6 +1155,8 @@ func TestCloseChannelsByUserRevocation_BoundsBlockedWorkerSenders(t *testing.T) 
 }
 
 func TestCloseChannel_NotFound(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -1114,6 +1168,8 @@ func TestCloseChannel_NotFound(t *testing.T) {
 }
 
 func TestCloseChannel_EmptyChannelID(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -1125,6 +1181,8 @@ func TestCloseChannel_EmptyChannelID(t *testing.T) {
 }
 
 func TestCloseChannel_Success(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -1151,6 +1209,8 @@ func TestCloseChannel_Success(t *testing.T) {
 }
 
 func TestCloseChannel_WrongUser(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	adminToken := env.adminToken(t)
@@ -1176,6 +1236,8 @@ func TestCloseChannel_WrongUser(t *testing.T) {
 }
 
 func TestGetWorkerHandshakeParams_Unauthenticated(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 
@@ -1186,6 +1248,8 @@ func TestGetWorkerHandshakeParams_Unauthenticated(t *testing.T) {
 }
 
 func TestGetWorkerHandshakeParams_Classic(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -1200,6 +1264,8 @@ func TestGetWorkerHandshakeParams_Classic(t *testing.T) {
 }
 
 func TestGetWorkerHandshakeParams_UnspecifiedDefaultsToPostQuantum(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -1216,6 +1282,8 @@ func TestGetWorkerHandshakeParams_UnspecifiedDefaultsToPostQuantum(t *testing.T)
 // --- Handshake scenario tests with different encryption modes ---
 
 func TestOpenChannel_PostQuantumHandshake(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)
@@ -1254,6 +1322,8 @@ func TestOpenChannel_PostQuantumHandshake(t *testing.T) {
 }
 
 func TestOpenChannel_ClassicHandshake(t *testing.T) {
+	t.Parallel()
+
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 	token := env.adminToken(t)

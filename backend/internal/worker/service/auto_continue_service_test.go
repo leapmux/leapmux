@@ -14,6 +14,8 @@ import (
 )
 
 func TestCloseAgent_CancelsPendingSchedules(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{
@@ -43,6 +45,8 @@ func TestCloseAgent_CancelsPendingSchedules(t *testing.T) {
 }
 
 func TestCleanupWorkspace_CancelsPendingSchedules(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 
 	require.NoError(t, svc.Queries.CreateAgent(bgCtx(), db.CreateAgentParams{

@@ -27,6 +27,8 @@ func newKiloAgentWithSink(sink OutputSink) *KiloAgent {
 }
 
 func TestHandleKiloOutput_AgentMessageChunk(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
@@ -42,6 +44,8 @@ func TestHandleKiloOutput_AgentMessageChunk(t *testing.T) {
 }
 
 func TestHandleKiloOutput_AgentThoughtChunk(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
@@ -64,6 +68,8 @@ func TestHandleKiloOutput_AgentThoughtChunk(t *testing.T) {
 }
 
 func TestHandleKiloPromptResponse_PersistsAssistantText(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
@@ -88,6 +94,8 @@ func TestHandleKiloPromptResponse_PersistsAssistantText(t *testing.T) {
 }
 
 func TestHandleKiloOutput_ToolCallOpensSpan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
@@ -107,6 +115,8 @@ func TestHandleKiloOutput_ToolCallOpensSpan(t *testing.T) {
 }
 
 func TestHandleKiloOutput_ToolCallUpdateCompleted(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
@@ -127,6 +137,8 @@ func TestHandleKiloOutput_ToolCallUpdateCompleted(t *testing.T) {
 }
 
 func TestHandleKiloOutput_UsageUpdate(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
@@ -144,6 +156,8 @@ func TestHandleKiloOutput_UsageUpdate(t *testing.T) {
 }
 
 func TestHandleKiloOutput_Plan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 
@@ -166,6 +180,8 @@ func TestHandleKiloOutput_Plan(t *testing.T) {
 }
 
 func TestHandleKiloOutput_RequestPermission(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newKiloAgentWithSink(sink)
 

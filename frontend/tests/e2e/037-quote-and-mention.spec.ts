@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { firstAssistantBubble, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, clickTreeContextItem, firstAssistantMessageRow, loginViaToken, openWorkspace, sendMessage, treeRow, waitForAgentIdle } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -15,12 +15,12 @@ test.describe('Quote and Mention', () => {
     await sendMessage(page, 'Say exactly: Hello world')
     await waitForAgentIdle(page)
 
-    // Find an assistant bubble row
-    const assistantBubble = firstAssistantBubble(page)
-    await expect(assistantBubble).toBeVisible()
+    // Find the assistant MESSAGE row -- not merely the first agent bubble, which
+    // can be a notice or turn-end divider with no reply button on it.
+    const messageRow = firstAssistantMessageRow(page)
+    await expect(messageRow).toBeVisible()
 
     // Hover the row to reveal the reply button (it's hidden by default via opacity: 0)
-    const messageRow = assistantBubble.locator('..')
     await messageRow.hover()
 
     // The reply button should become visible
@@ -43,9 +43,8 @@ test.describe('Quote and Mention', () => {
     await waitForAgentIdle(page)
 
     // Find an assistant bubble and click the quote button
-    const assistantBubble = firstAssistantBubble(page)
-    await expect(assistantBubble).toBeVisible()
-    const messageRow = assistantBubble.locator('..')
+    const messageRow = firstAssistantMessageRow(page)
+    await expect(messageRow).toBeVisible()
     await messageRow.hover()
     const quoteButton = messageRow.locator('[data-testid="message-quote"]')
     await expect(quoteButton).toBeVisible()
@@ -75,7 +74,7 @@ test.describe('Quote and Mention', () => {
     await waitForAgentIdle(page)
 
     // Find the assistant message content
-    const assistantBubble = firstAssistantBubble(page)
+    const assistantBubble = firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)
     await expect(assistantBubble).toBeVisible()
 
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')
@@ -105,7 +104,7 @@ test.describe('Quote and Mention', () => {
     await waitForAgentIdle(page)
 
     // Find the assistant message content
-    const assistantBubble = firstAssistantBubble(page)
+    const assistantBubble = firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)
     await expect(assistantBubble).toBeVisible()
 
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')
@@ -137,25 +136,13 @@ test.describe('Quote and Mention', () => {
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load — package.json should be visible
-      await expect(page.getByText('package.json')).toBeVisible()
+      const row = treeRow(page, 'package.json')
+      await expect(row).toBeVisible()
 
-      // Find the tree row containing package.json and hover it. We scope to
-      // the tree-row testid because the displayName text was wrapped in a
-      // Tooltip+labelWithStats span pair in c84657aa, so `.locator('..')`
-      // from the text no longer lands on the row that hosts the context
-      // button.
-      const treeRow = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' }).first()
-      await treeRow.hover()
-
-      // Click the context menu button (three dots) that appears on hover
-      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
-
-      // Click "Mention in chat" from the visible dropdown
-      const mentionButton = page.locator('[data-testid="tree-mention-button"]:visible')
-      await expect(mentionButton).toBeVisible()
-      await mentionButton.click()
+      // Open the menu and click "Mention in chat" as one retried unit: the
+      // sidebar element is rebuilt when the active tab context changes, which
+      // unmounts an already-open menu.
+      await clickTreeContextItem(page, row, 'tree-mention-button')
 
       // Verify the editor contains @package.json (the path is relative to cwd)
       await expect(editor).toContainText('@package.json')
@@ -182,10 +169,10 @@ test.describe('Quote and Mention', () => {
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
 
       // Click on package.json to open it as a file tab
-      await page.getByText('package.json').click()
+      await treeRow(page, 'package.json').click()
 
       // Wait for the file tab to appear and become active
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
@@ -238,10 +225,10 @@ test.describe('Quote and Mention', () => {
       await editor.pressSequentially('my draft text')
 
       // Wait for the file tree to load
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
 
       // Click on package.json to open it as a file tab
-      await page.getByText('package.json').click()
+      await treeRow(page, 'package.json').click()
 
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
       await expect(fileTab).toBeVisible()
@@ -280,32 +267,18 @@ test.describe('Quote and Mention', () => {
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load — package.json should be visible
-      await expect(page.getByText('package.json')).toBeVisible()
+      const row1 = treeRow(page, 'package.json')
+      await expect(row1).toBeVisible()
 
-      // First mention: hover, open context menu, and click mention for package.json
-      // (See note in the single-mention test about why we scope to tree-row.)
-      const treeRow1 = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' }).first()
-      await treeRow1.hover()
-      const contextButton1 = treeRow1.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton1).toBeVisible()
-      await contextButton1.click()
-      const mentionButton1 = page.locator('[data-testid="tree-mention-button"]:visible')
-      await expect(mentionButton1).toBeVisible()
-      await mentionButton1.click()
+      // First mention: open the context menu and click mention for package.json
+      await clickTreeContextItem(page, row1, 'tree-mention-button')
       await expect(editor).toContainText('@package.json')
 
       // Wait for the first context menu to fully close before interacting with the next node
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toHaveCount(0)
 
-      // Second mention: hover, open context menu, and click mention for tsconfig.json
-      const treeRow2 = page.locator('[data-testid="tree-row"]').filter({ hasText: 'tsconfig.json' }).first()
-      await treeRow2.hover()
-      const contextButton2 = treeRow2.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton2).toBeVisible()
-      await contextButton2.click()
-      const mentionButton2 = page.locator('[data-testid="tree-mention-button"]:visible')
-      await expect(mentionButton2).toBeVisible()
-      await mentionButton2.click()
+      // Second mention: open the context menu and click mention for tsconfig.json
+      await clickTreeContextItem(page, treeRow(page, 'tsconfig.json'), 'tree-mention-button')
 
       // Both mentions should be present and space-separated (not double-newline separated)
       await expect(editor).toContainText('@package.json @tsconfig.json')
@@ -332,10 +305,11 @@ test.describe('Quote and Mention', () => {
       await expect(editor).toBeVisible()
 
       // Wait for the file tree to load
-      await expect(page.getByText('package.json')).toBeVisible()
+      const row = treeRow(page, 'package.json')
+      await expect(row).toBeVisible()
 
       // Click on package.json to open it as a file tab
-      await page.getByText('package.json').click()
+      await row.click()
 
       // Wait for the file tab and content to load
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
@@ -345,15 +319,21 @@ test.describe('Quote and Mention', () => {
       const lineElements = page.locator('[data-line-num]')
       await expect(lineElements.first()).toBeVisible()
 
-      // Triple-click on a line to select text within the file view.
-      // Use nth(2) to avoid the floating DiffModeToolbar at the top.
-      await lineElements.nth(2).click({ clickCount: 3 })
-
-      // Wait for the quote popover to appear
-      await page.waitForTimeout(500)
-
+      // Triple-click a line to select text, retried as ONE unit with the popover
+      // it is supposed to raise. The viewer re-renders as syntax highlighting
+      // and the diff toolbar settle, and a click that lands mid-render selects
+      // nothing -- leaving the quote button to time out 120s later with no clue
+      // that the selection never happened.
+      // nth(2) avoids the floating DiffModeToolbar at the top.
       const quoteButton = page.locator('[data-testid="quote-selection-button"]')
-      await expect(quoteButton).toBeVisible()
+      await expect(async () => {
+        await lineElements.nth(2).click({ clickCount: 3 })
+        // Bounded rather than inheriting the global 120s: the enclosing
+        // toPass IS the retry loop, and an attempt that spent two minutes
+        // inside a single assertion would leave no budget for the re-click
+        // this block exists for.
+        await expect(quoteButton).toBeVisible({ timeout: 5000 })
+      }).toPass({ timeout: 45_000, intervals: [250, 500] })
 
       // Click the quote button
       await quoteButton.click()

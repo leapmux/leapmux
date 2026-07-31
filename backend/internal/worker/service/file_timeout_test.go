@@ -18,6 +18,8 @@ import (
 // no writer, approximating a macOS TCC-protected directory that never
 // returns).
 func TestReadDirNWithTimeout_OpenHang(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "stuck")
 	require.NoError(t, syscall.Mkfifo(fifo, 0o644))

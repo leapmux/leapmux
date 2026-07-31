@@ -20,6 +20,8 @@ import (
 // --- Unit tests for AvailableOptionGroups ---
 
 func TestAvailableOptionGroups_IncludesOutputStyles(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{
 		availableOutputStyles: []string{"default", "Explanatory", "Learning"},
 		outputStyle:           "Explanatory",
@@ -38,6 +40,8 @@ func TestAvailableOptionGroups_IncludesOutputStyles(t *testing.T) {
 }
 
 func TestAvailableOptionGroups_NoOutputStylesWhenEmpty(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{
 		alwaysThinking: "on",
 	}
@@ -46,6 +50,8 @@ func TestAvailableOptionGroups_NoOutputStylesWhenEmpty(t *testing.T) {
 }
 
 func TestAvailableOptionGroups_FastModeOn(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{
 		fastMode:       "on",
 		alwaysThinking: "on",
@@ -62,6 +68,8 @@ func TestAvailableOptionGroups_FastModeOn(t *testing.T) {
 }
 
 func TestAvailableOptionGroups_FastModeDefaultsToOff(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{
 		alwaysThinking: "on",
 	}
@@ -73,6 +81,8 @@ func TestAvailableOptionGroups_FastModeDefaultsToOff(t *testing.T) {
 }
 
 func TestAvailableOptionGroups_AlwaysIncludesThinking(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{
 		alwaysThinking: AlwaysThinkingOff,
 	}
@@ -89,6 +99,8 @@ func TestAvailableOptionGroups_AlwaysIncludesThinking(t *testing.T) {
 // thinking-type gate: "Adaptive" for first-party models, "On" for Haiku
 // (legacy type:"enabled"). The option ID stays "on" for all models.
 func TestAvailableOptionGroups_ThinkingLabelsByModel(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		model    string
 		wantName string
@@ -129,10 +141,19 @@ func TestAvailableOptionGroups_ThinkingLabelsByModel(t *testing.T) {
 // Each model option carries its model-dependent groups (effort + extended
 // thinking) in SubGroups, so the frontend can rebuild them the instant the
 // model selection changes -- without waiting for the relaunch a model switch
-// triggers. The carried groups are model-specific: Opus offers xhigh/ultracode
-// and an "Adaptive" thinking label; Sonnet drops xhigh; Haiku has no effort
-// group and an "On" thinking label.
+// triggers. The carried groups are model-specific: the effort-capable models
+// offer xhigh/ultracode and an "Adaptive" thinking label, while Haiku has no
+// effort group at all and an "On" thinking label.
+//
+// Sonnet used to be the "drops xhigh" case here. It no longer is: the CLI
+// reports xhigh for every effort-capable model, and this catalog is the
+// FALLBACK the live report replaces, so declaring otherwise made the effort
+// menu grow a tier the first time any settings change swapped one for the
+// other. The per-model narrowing itself is still covered -- by Haiku here, and
+// against synthetic level sets in claude_test.go's convertClaudeModels cases.
 func TestOptionGroups_ModelOptionsCarrySubGroups(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{model: "sonnet", alwaysThinking: AlwaysThinkingOn}
 	groups := a.OptionGroups()
 	modelGroup := optionids.GroupByID(groups, OptionIDModel)
@@ -165,12 +186,12 @@ func TestOptionGroups_ModelOptionsCarrySubGroups(t *testing.T) {
 	require.NotNil(t, opusThinking)
 	assert.Equal(t, "Adaptive", opusThinking.GetOptions()[0].GetName())
 
-	// Sonnet: effort drops xhigh (offers max) and defaults to high.
+	// Sonnet: same tiers as Opus, matching what the CLI reports for it.
 	sonnetEffort := subGroup("sonnet", OptionIDEffort)
 	require.NotNil(t, sonnetEffort)
-	assert.NotContains(t, effortIDs(sonnetEffort), EffortXHigh)
+	assert.Contains(t, effortIDs(sonnetEffort), EffortXHigh)
 	assert.Contains(t, effortIDs(sonnetEffort), "max")
-	assert.Equal(t, EffortHigh, sonnetEffort.GetDefaultValue())
+	assert.Equal(t, EffortXHigh, sonnetEffort.GetDefaultValue())
 
 	// Haiku: no effort group at all; thinking enabled label is "On".
 	assert.Nil(t, subGroup("haiku", OptionIDEffort), "Haiku has no effort group")
@@ -180,6 +201,8 @@ func TestOptionGroups_ModelOptionsCarrySubGroups(t *testing.T) {
 }
 
 func TestModelSupportsAdaptiveThinking(t *testing.T) {
+	t.Parallel()
+
 	// Expects the short alias. Fully-qualified IDs should be normalized
 	// via normalizeClaudeCodeModel before calling.
 	cases := map[string]bool{
@@ -199,6 +222,8 @@ func TestModelSupportsAdaptiveThinking(t *testing.T) {
 }
 
 func TestNormalizeClaudeCodeModel(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]string{
 		// Short aliases pass through.
 		"opus[1m]":   "opus[1m]",
@@ -263,6 +288,8 @@ func TestNormalizeClaudeCodeModel(t *testing.T) {
 // (both come from launchModel). wireClaudeMockAgent mirrors StartClaudeCode's a.model
 // initialization, so this also guards that the mock and production stay in sync.
 func TestStartClaudeCode_NormalizesLaunchModel(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
 		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1"},
@@ -284,6 +311,8 @@ func TestStartClaudeCode_NormalizesLaunchModel(t *testing.T) {
 }
 
 func TestFlagSettingThinking(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, false, flagSettingThinking(AlwaysThinkingOff))
 	assert.Nil(t, flagSettingThinking(AlwaysThinkingOn), "on → nil (lets Claude Code default-on kick in)")
 	assert.Nil(t, flagSettingThinking(""), "empty → nil")
@@ -293,6 +322,8 @@ func TestFlagSettingThinking(t *testing.T) {
 // --- Unit tests for CurrentSettings ---
 
 func TestCurrentSettings_IncludesExtraSettings(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{
 		processBase:             processBase{agentID: "test"},
 		model:                   "sonnet",
@@ -312,6 +343,8 @@ func TestCurrentSettings_IncludesExtraSettings(t *testing.T) {
 }
 
 func TestRefreshSettingsFromAgent_DoesNotReportPermissionMode(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
 		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1"},
@@ -336,6 +369,8 @@ func TestRefreshSettingsFromAgent_DoesNotReportPermissionMode(t *testing.T) {
 // --- Unit tests for UpdateSettings logic (no-op / validation) ---
 
 func TestUpdateSettings_NothingChanged(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -350,6 +385,8 @@ func TestUpdateSettings_NothingChanged(t *testing.T) {
 }
 
 func TestUpdateSettings_OutputStyleInvalid(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -366,6 +403,8 @@ func TestUpdateSettings_OutputStyleInvalid(t *testing.T) {
 }
 
 func TestUpdateSettings_ModelChange(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -382,6 +421,8 @@ func TestUpdateSettings_ModelChange(t *testing.T) {
 // is recognized as unchanged, so UpdateSettings sends no redundant "model" flag. A fast-mode
 // toggle rides along so an apply_flag_settings IS sent -- it must carry fastMode but NOT model.
 func TestUpdateSettings_RespelledModelSendsNoModelFlag(t *testing.T) {
+	t.Parallel()
+
 	recordPath := filepath.Join(t.TempDir(), "flags.jsonl")
 	a := newTestAgentWithControlProtocolEnv(t, "GO_HELPER_RECORD_REQUESTS="+recordPath)
 	defer stopTestAgent(a)
@@ -423,6 +464,8 @@ func readRecordedFlagSettings(t *testing.T, path string) []map[string]any {
 }
 
 func TestUpdateSettings_EffortChange(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -435,6 +478,8 @@ func TestUpdateSettings_EffortChange(t *testing.T) {
 }
 
 func TestUpdateSettings_PermissionModeChange(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -452,6 +497,8 @@ func TestUpdateSettings_PermissionModeChange(t *testing.T) {
 // stale autoModeAvailable=false (left by a transient startup probe failure) -- otherwise OptionGroups
 // would keep filtering "auto" out of the picker even though the session is running it.
 func TestUpdateSettings_AutoSwitchClearsStaleAutoModeAvailable(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -492,6 +539,8 @@ func newTestAgentWithDeferredPermissionMode(t *testing.T) *ClaudeCodeAgent {
 // optimistically; the deferred control_response later reconciles the confirmed value
 // (see TestClaudeHandleControlResponse_DeferredModeReconcilesInMemory).
 func TestUpdateSettings_PermissionModeDeferredAck(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithDeferredPermissionMode(t)
 	defer stopTestAgent(a)
 
@@ -508,6 +557,8 @@ func TestUpdateSettings_PermissionModeDeferredAck(t *testing.T) {
 // in-memory update the catalog would keep reporting the optimistic mode after the CLI settled
 // on a different one.
 func TestClaudeHandleControlResponse_DeferredModeReconcilesInMemory(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	a := &ClaudeCodeAgent{sink: sink}
 	// The live path recorded "plan" optimistically and remembered the deferred toggle's id.
@@ -530,6 +581,8 @@ func TestClaudeHandleControlResponse_DeferredModeReconcilesInMemory(t *testing.T
 // the awaited deferred toggle -- a stale/duplicate ack, an earlier (superseded) toggle's ack,
 // or any other mode-carrying response -- must NOT clobber the confirmed mode.
 func TestClaudeHandleControlResponse_IgnoresUncorrelatedMode(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	a := &ClaudeCodeAgent{sink: sink}
 	a.confirmedPermissionMode = PermissionModePlan
@@ -551,6 +604,8 @@ func TestClaudeHandleControlResponse_IgnoresUncorrelatedMode(t *testing.T) {
 // "auto", it proves the session can enter it, so a stale autoModeAvailable=false (left by a transient
 // startup probe failure) is cleared -- mirroring the live path -- so OptionGroups offers auto again.
 func TestClaudeHandleControlResponse_DeferredAutoClearsStaleAutoModeAvailable(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	a := &ClaudeCodeAgent{sink: sink}
 	a.autoModeAvailable = false // a transient startup probe failure left this stale
@@ -571,6 +626,8 @@ func TestClaudeHandleControlResponse_DeferredAutoClearsStaleAutoModeAvailable(t 
 // (requesting a restart) and leaves the confirmed mode unchanged -- the deferred-ack path is
 // scoped to timeouts only.
 func TestUpdateSettings_PermissionModeGenuineError(t *testing.T) {
+	t.Parallel()
+
 	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
 		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1", "GO_HELPER_ERROR_PERMISSION_MODE=1"},
 		Options{
@@ -597,6 +654,8 @@ func TestUpdateSettings_PermissionModeGenuineError(t *testing.T) {
 // every live apply succeeds, so no settings_changed for the model fires (and a.model is not folded
 // to the new value) before the restart applies the full requested settings atomically.
 func TestUpdateSettings_CombinedChangePermissionFailureDefersBroadcast(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
 		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1", "GO_HELPER_ERROR_PERMISSION_MODE=1"},
@@ -631,6 +690,8 @@ func TestUpdateSettings_CombinedChangePermissionFailureDefersBroadcast(t *testin
 // only way to hand control back to the CLI's own default is to re-spawn
 // without --effort.
 func TestUpdateSettings_AutoRequiresRestart(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -644,6 +705,8 @@ func TestUpdateSettings_AutoRequiresRestart(t *testing.T) {
 // TestUpdateSettings_AutoNoOpWhenAlreadyAuto verifies that a redundant
 // "auto"→"auto" update doesn't request a restart.
 func TestUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -655,6 +718,8 @@ func TestUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
 }
 
 func TestUpdateSettings_OutputStyleChange(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -670,6 +735,8 @@ func TestUpdateSettings_OutputStyleChange(t *testing.T) {
 }
 
 func TestUpdateSettings_FastModeOn(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -685,6 +752,8 @@ func TestUpdateSettings_FastModeOn(t *testing.T) {
 }
 
 func TestUpdateSettings_AlwaysThinkingOff(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -698,6 +767,8 @@ func TestUpdateSettings_AlwaysThinkingOff(t *testing.T) {
 }
 
 func TestUpdateSettings_FastModeOff(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -713,6 +784,8 @@ func TestUpdateSettings_FastModeOff(t *testing.T) {
 }
 
 func TestUpdateSettings_AlwaysThinkingOn(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -735,6 +808,8 @@ func TestUpdateSettings_AlwaysThinkingOn(t *testing.T) {
 // the confirmed value stale -- so the persisted baseline diverged from the UI and a
 // later toggle silently produced no notification (old==new) or a reversed one.
 func TestUpdateSettings_ToggleRoundTripTracksConfirmedValue(t *testing.T) {
+	t.Parallel()
+
 	t.Run("extended thinking on->off->on->off", func(t *testing.T) {
 		a := newTestAgentWithControlProtocol(t)
 		defer stopTestAgent(a)
@@ -769,6 +844,8 @@ func TestUpdateSettings_ToggleRoundTripTracksConfirmedValue(t *testing.T) {
 }
 
 func TestUpdateSettings_ApplyFlagSettingsFails(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -791,6 +868,8 @@ func TestUpdateSettings_ApplyFlagSettingsFails(t *testing.T) {
 }
 
 func TestUpdateSettings_MultipleChanges(t *testing.T) {
+	t.Parallel()
+
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 
@@ -813,6 +892,8 @@ func TestUpdateSettings_MultipleChanges(t *testing.T) {
 // --- Unit tests for handlePendingControlResponse parsing ---
 
 func TestHandlePendingControlResponse_ParsesInitializeFields(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{
 		processBase:    processBase{agentID: "test"},
 		pendingControl: make(map[string]chan<- claudeCodeControlResult),
@@ -843,6 +924,8 @@ func TestHandlePendingControlResponse_ParsesInitializeFields(t *testing.T) {
 }
 
 func TestHandlePendingControlResponse_ParsesModels(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{
 		processBase:    processBase{agentID: "test"},
 		pendingControl: make(map[string]chan<- claudeCodeControlResult),
@@ -894,6 +977,8 @@ func TestHandlePendingControlResponse_ParsesModels(t *testing.T) {
 }
 
 func TestHandlePendingControlResponse_ParsesGetSettingsResponse(t *testing.T) {
+	t.Parallel()
+
 	a := &ClaudeCodeAgent{
 		processBase:    processBase{agentID: "test"},
 		pendingControl: make(map[string]chan<- claudeCodeControlResult),
@@ -945,6 +1030,8 @@ func TestHandlePendingControlResponse_ParsesGetSettingsResponse(t *testing.T) {
 // control_request messages. It tracks settings state from apply_flag_settings
 // and returns it in get_settings responses.
 func TestHelperProcessWithControlProtocol(t *testing.T) {
+	t.Parallel()
+
 	if os.Getenv("GO_WANT_HELPER_PROCESS_CONTROL") != "1" {
 		return
 	}

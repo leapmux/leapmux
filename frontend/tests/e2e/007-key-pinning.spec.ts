@@ -97,9 +97,18 @@ test.describe('Key Pinning', () => {
     await waitForWorkspaceReady(page)
 
     // Verify the pin was updated to the real key (not the fake 'aa' key).
+    //
+    // Polled, not read once: accepting the dialog only RESOLVES the decision.
+    // The store hands the caller a `commit` closure that runs when the channel
+    // handshake it was blocking actually completes, so the new pin lands some
+    // time after the dialog dismisses and after the workspace shell renders. A
+    // single read here saw the tampered key every time.
+    await expect
+      .poll(async () => (await getKeyPin(page, workerId))?.publicKeyHex)
+      .not
+      .toBe('aa'.repeat(32))
     const updatedPin = await getKeyPin(page, workerId)
     expect(updatedPin).not.toBeNull()
-    expect(updatedPin.publicKeyHex).not.toBe('aa'.repeat(32))
     // Composite key: X25519 (32) + ML-KEM-1024 (1568) + SLH-DSA (64) = 1664 bytes = 3328 hex chars
     expect(updatedPin.publicKeyHex.length).toBe(3328)
   })

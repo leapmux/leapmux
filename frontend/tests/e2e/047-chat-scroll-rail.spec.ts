@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { waitForAgentIdle } from './helpers/ui'
+import { sendMessage, USER_BUBBLE_SELECTOR, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
  * Smoke test for the seq-space chat scroll rail. The geometry math, the marks store,
@@ -16,20 +16,11 @@ import { waitForAgentIdle } from './helpers/ui'
 // overflow the short viewport below -- otherwise the rail correctly hides itself.
 const LONG_MESSAGE = `Please just reply with "ok". Ignore this filler: ${'the quick brown fox jumps over the lazy dog. '.repeat(12)}`
 
-async function sendMessage(page: Page, message: string) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
-  await page.keyboard.type(message)
-  await page.keyboard.press('Meta+Enter')
-  await expect(editor).toHaveText('')
-}
-
 /** The virtual row wrapper (carries data-seq) for the Nth user message bubble. */
 function userRow(page: Page, nth: number) {
   return page
     .locator('[data-seq]')
-    .filter({ has: page.locator('[data-testid="message-bubble"][data-role="user"]') })
+    .filter({ has: page.locator(USER_BUBBLE_SELECTOR) })
     .nth(nth)
 }
 
@@ -47,7 +38,10 @@ test.describe('chat scroll rail', () => {
     // holds regardless of conversation length, so assert it up front.
     const scroller = page.locator('[data-chat-scroll-container="true"]')
     await expect(scroller).toBeVisible()
-    expect(await scroller.evaluate(el => getComputedStyle(el).scrollbarWidth)).toBe('none')
+    // Polled: the rail decides whether it owns scrolling from a MEASURED
+    // viewport height, so right after setViewportSize the native bar is still
+    // 'thin' until the resize observation lands.
+    await expect.poll(() => scroller.evaluate(el => getComputedStyle(el).scrollbarWidth)).toBe('none')
 
     // Send two messages, waiting for each turn to finish.
     await sendMessage(page, LONG_MESSAGE)
@@ -56,8 +50,7 @@ test.describe('chat scroll rail', () => {
     await waitForAgentIdle(page)
 
     // Two user messages landed (their server echoes carry real seqs).
-    const userBubbles = page.locator('[data-testid="message-bubble"][data-role="user"]')
-    await expect(userBubbles).toHaveCount(2)
+    await expect(userBubbles(page)).toHaveCount(2)
 
     // The tall bubbles overflow the short viewport, so the rail shows with a thumb.
     const rail = page.locator('[data-testid="chat-scroll-rail"]')

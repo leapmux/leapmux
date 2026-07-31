@@ -29,6 +29,8 @@ func createClaimTestAgent(t *testing.T, svc *Service, id string) {
 // per agent, and per token, a DIFFERENT token for the same request id claims fresh (the reused-instance
 // case), and CleanupAgent (which also runs on a transient restart) does NOT clear the durable claim.
 func TestClaimControlResponseAnswer(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 	createClaimTestAgent(t, svc, "agent-2")
@@ -66,6 +68,8 @@ func TestClaimControlResponseAnswer(t *testing.T) {
 // (agent_id, request_id, claim_token) primary key is the serialization point. Run with -race to also
 // exercise the shared *sql.DB.
 func TestClaimControlResponseAnswer_ConcurrentClaimsExactlyOneWins(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 
@@ -95,6 +99,8 @@ func TestClaimControlResponseAnswer_ConcurrentClaimsExactlyOneWins(t *testing.T)
 // false, so a transient DB error never silently drops the user's answer. A rare duplicate row is the
 // deliberate lesser evil.
 func TestClaimControlResponseAnswer_FailsOpenOnError(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	// No agent created -> the control_response_answers -> agents(id) foreign key rejects the INSERT.
 	assert.True(t, svc.Output.claimControlResponseAnswer("ghost-agent", "req-1", "tokA"),
@@ -110,6 +116,8 @@ func TestClaimControlResponseAnswer_FailsOpenOnError(t *testing.T) {
 // their echoed claim_token. Contrast the OLD release-based design, where a reused id reopened the dedup
 // window for the prior instance's lagging duplicate.
 func TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
 
@@ -139,6 +147,8 @@ func TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh(t *t
 // exactly the one it stored, so the paired BroadcastControlRequest can carry it without a second
 // GetControlRequest readback (and without the readback-failure window that broadcast an empty token).
 func TestPersistControlRequest_MintsFreshClaimTokenPerInstance(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")

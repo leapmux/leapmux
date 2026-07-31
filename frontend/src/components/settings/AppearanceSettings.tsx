@@ -1,4 +1,4 @@
-import type { Component } from 'solid-js'
+import type { Component, JSXElement } from 'solid-js'
 import type { ThemePreference } from '~/app'
 import type { DiffViewPreference, TurnEndSoundPreference } from '~/context/PreferencesContext'
 import type { TerminalThemePreference } from '~/lib/terminal'
@@ -28,24 +28,132 @@ const turnEndSoundOptions = [
   { value: 'ding-dong', label: 'Ding Dong' },
 ]
 
+/**
+ * One pill, as a member of a one-of-N group (role=radio).
+ *
+ * Selection used to be a CSS class alone, twelve times over, so a screen reader
+ * read each group as identical stateless buttons. `aria-pressed` fixed the
+ * "stateless" half and still described the wrong widget: these groups are all
+ * one-of-N, and a toggle button announces "pressed" with no group name and no
+ * set position, while promising it can be un-pressed (clicking the selected
+ * pill does nothing). role=radio inside a named role=radiogroup announces
+ * "Theme, Dark, radio button, checked, 2 of 3".
+ *
+ * Not exported: a pill outside a PillGroup has no radiogroup to belong to, and
+ * a lone role=radio is worse than a plain button. Use PillToggle for a genuine
+ * two-state control.
+ */
+function PillOption(props: {
+  selected: boolean
+  onClick: () => void
+  ref?: (el: HTMLButtonElement) => void
+  children: JSXElement
+}) {
+  return (
+    <button
+      class={props.selected ? styles.pillOptionActive : styles.pillOption}
+      role="radio"
+      aria-checked={props.selected}
+      // Roving: Tab reaches the GROUP, arrows move within it (see PillGroup).
+      tabIndex={props.selected ? 0 : -1}
+      ref={el => props.ref?.(el)}
+      onClick={() => props.onClick()}
+    >
+      {props.children}
+    </button>
+  )
+}
+
+/**
+ * A standalone two-state pill (role=button + aria-pressed).
+ *
+ * The one shape where aria-pressed IS correct: it toggles a single setting on
+ * and off rather than picking one of several, so "pressed" describes it and
+ * un-pressing is a real affordance.
+ */
+function PillToggle(props: { pressed: boolean, onClick: () => void, children: JSXElement }) {
+  return (
+    <button
+      class={props.pressed ? styles.pillOptionActive : styles.pillOption}
+      aria-pressed={props.pressed}
+      onClick={() => props.onClick()}
+    >
+      {props.children}
+    </button>
+  )
+}
+
+/**
+ * A one-of-N pill group: the radiogroup wrapper, its accessible name, and the
+ * arrow-key contract the role requires.
+ *
+ * `label` is what assistive tech announces on entry and is the piece a row of
+ * bare buttons never had -- the visible <h3> above each group is not associated
+ * with it in the accessibility tree.
+ */
+function PillGroup<T>(props: {
+  label: string
+  options: { value: T, label: JSXElement }[]
+  selected: (value: T) => boolean
+  onSelect: (value: T) => void
+}) {
+  const els: (HTMLButtonElement | undefined)[] = []
+  const selectAt = (i: number) => {
+    props.onSelect(props.options[i].value)
+    els[i]?.focus()
+  }
+  const onKeyDown = (e: KeyboardEvent) => {
+    const n = props.options.length
+    const i = props.options.findIndex(o => props.selected(o.value))
+    const cur = i < 0 ? 0 : i
+    const next
+      = e.key === 'ArrowRight' || e.key === 'ArrowDown'
+        ? (cur + 1) % n
+        : e.key === 'ArrowLeft' || e.key === 'ArrowUp'
+          ? (cur - 1 + n) % n
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? n - 1
+              : -1
+    if (next < 0)
+      return
+    e.preventDefault()
+    selectAt(next)
+  }
+  return (
+    <div class={styles.pillGroup} role="radiogroup" aria-label={props.label} onKeyDown={onKeyDown}>
+      <For each={props.options}>
+        {(opt, i) => (
+          <PillOption
+            selected={props.selected(opt.value)}
+            onClick={() => props.onSelect(opt.value)}
+            ref={(el) => { els[i()] = el }}
+          >
+            {opt.label}
+          </PillOption>
+        )}
+      </For>
+    </div>
+  )
+}
+
+// Exported for its unit test only: PillGroup carries the radiogroup semantics
+// and the arrow-key contract, and both are behaviour a screen-reader user
+// depends on rather than styling.
+export { PillGroup as PillGroupForTest }
+
+/** The "inherit the account setting" pill every browser-scoped group leads with. */
+const ACCOUNT_DEFAULT = { value: null, label: 'Use account default' }
+
 function renderThemeButtons(
+  label: string,
   current: () => string,
   onChange: (v: string) => void,
   options: { value: string, label: string }[],
 ) {
   return (
-    <div class={styles.pillGroup}>
-      <For each={options}>
-        {opt => (
-          <button
-            class={current() === opt.value ? styles.pillOptionActive : styles.pillOption}
-            onClick={() => onChange(opt.value)}
-          >
-            {opt.label}
-          </button>
-        )}
-      </For>
-    </div>
+    <PillGroup label={label} options={options} selected={v => current() === v} onSelect={onChange} />
   )
 }
 
@@ -56,111 +164,59 @@ export const BrowserAppearanceSettings: Component = () => {
     <>
       <div class={styles.section}>
         <h3>Theme</h3>
-        <div class={styles.pillGroup}>
-          <button
-            class={prefs.browserTheme() === null ? styles.pillOptionActive : styles.pillOption}
-            onClick={() => prefs.setBrowserTheme(null)}
-          >
-            Use account default
-          </button>
-          <For each={themeOptions}>
-            {opt => (
-              <button
-                class={prefs.browserTheme() === opt.value ? styles.pillOptionActive : styles.pillOption}
-                onClick={() => prefs.setBrowserTheme(opt.value as ThemePreference)}
-              >
-                {opt.label}
-              </button>
-            )}
-          </For>
-        </div>
+        <PillGroup
+          label="Theme"
+          options={[ACCOUNT_DEFAULT, ...themeOptions]}
+          selected={v => prefs.browserTheme() === v}
+          onSelect={v => prefs.setBrowserTheme(v as ThemePreference)}
+        />
       </div>
 
       <div class={styles.section}>
         <h3>Terminal Theme</h3>
-        <div class={styles.pillGroup}>
-          <button
-            class={prefs.browserTerminalTheme() === null ? styles.pillOptionActive : styles.pillOption}
-            onClick={() => prefs.setBrowserTerminalTheme(null)}
-          >
-            Use account default
-          </button>
-          <For each={terminalThemeOptions}>
-            {opt => (
-              <button
-                class={prefs.browserTerminalTheme() === opt.value ? styles.pillOptionActive : styles.pillOption}
-                onClick={() => prefs.setBrowserTerminalTheme(opt.value as TerminalThemePreference)}
-              >
-                {opt.label}
-              </button>
-            )}
-          </For>
-        </div>
+        <PillGroup
+          label="Terminal theme"
+          options={[ACCOUNT_DEFAULT, ...terminalThemeOptions]}
+          selected={v => prefs.browserTerminalTheme() === v}
+          onSelect={v => prefs.setBrowserTerminalTheme(v as TerminalThemePreference)}
+        />
       </div>
 
       <div class={styles.section}>
         <h3>Diff View</h3>
-        <div class={styles.pillGroup}>
-          <button
-            class={prefs.browserDiffView() === null ? styles.pillOptionActive : styles.pillOption}
-            onClick={() => prefs.setBrowserDiffView(null)}
-          >
-            Use account default
-          </button>
-          <For each={diffViewOptions}>
-            {opt => (
-              <button
-                class={prefs.browserDiffView() === opt.value ? styles.pillOptionActive : styles.pillOption}
-                onClick={() => prefs.setBrowserDiffView(opt.value as DiffViewPreference)}
-              >
-                {opt.label}
-              </button>
-            )}
-          </For>
-        </div>
+        <PillGroup
+          label="Diff view"
+          options={[ACCOUNT_DEFAULT, ...diffViewOptions]}
+          selected={v => prefs.browserDiffView() === v}
+          onSelect={v => prefs.setBrowserDiffView(v as DiffViewPreference)}
+        />
       </div>
 
       <div class={styles.section}>
         <h3>Turn End Sound</h3>
-        <div class={styles.pillGroup}>
-          <button
-            class={prefs.browserTurnEndSound() === null ? styles.pillOptionActive : styles.pillOption}
-            onClick={() => prefs.setBrowserTurnEndSound(null)}
-          >
-            Use account default
-          </button>
-          <For each={turnEndSoundOptions}>
-            {opt => (
-              <button
-                class={prefs.browserTurnEndSound() === opt.value ? styles.pillOptionActive : styles.pillOption}
-                onClick={() => prefs.setBrowserTurnEndSound(opt.value as TurnEndSoundPreference)}
-              >
-                {opt.label}
-              </button>
-            )}
-          </For>
-        </div>
+        <PillGroup
+          label="Turn end sound"
+          options={[ACCOUNT_DEFAULT, ...turnEndSoundOptions]}
+          selected={v => prefs.browserTurnEndSound() === v}
+          onSelect={v => prefs.setBrowserTurnEndSound(v as TurnEndSoundPreference)}
+        />
         <Show when={prefs.turnEndSound() !== 'none'}>
           <div class={styles.sliderGroup}>
             <div class={styles.volumeOverrideRow}>
               <span class={styles.fieldLabel}>Volume</span>
-              <button
-                aria-pressed={prefs.browserTurnEndSoundVolume() !== null}
+              <PillToggle
+                pressed={prefs.browserTurnEndSoundVolume() !== null}
                 onClick={() => {
-                  const pressed = !(prefs.browserTurnEndSoundVolume() !== null)
-                  if (pressed) {
+                  if (prefs.browserTurnEndSoundVolume() === null) {
                     prefs.setBrowserTurnEndSoundVolume(prefs.accountTurnEndSoundVolume())
                   }
                   else {
                     prefs.setBrowserTurnEndSoundVolume(null)
                   }
                 }}
-                class={prefs.browserTurnEndSoundVolume() !== null
-                  ? styles.pillOptionActive
-                  : styles.pillOption}
               >
                 {prefs.browserTurnEndSoundVolume() !== null ? 'Custom volume' : 'Use account default'}
-              </button>
+              </PillToggle>
             </div>
             <Show when={prefs.browserTurnEndSoundVolume() !== null}>
               <div class={styles.sliderRow}>
@@ -177,26 +233,12 @@ export const BrowserAppearanceSettings: Component = () => {
 
       <div class={styles.section}>
         <h3>Debug Logging</h3>
-        <div class={styles.pillGroup}>
-          <button
-            class={prefs.browserDebugLogging() === null ? styles.pillOptionActive : styles.pillOption}
-            onClick={() => prefs.setBrowserDebugLogging(null)}
-          >
-            Use account default
-          </button>
-          <button
-            class={prefs.browserDebugLogging() === true ? styles.pillOptionActive : styles.pillOption}
-            onClick={() => prefs.setBrowserDebugLogging(true)}
-          >
-            On
-          </button>
-          <button
-            class={prefs.browserDebugLogging() === false ? styles.pillOptionActive : styles.pillOption}
-            onClick={() => prefs.setBrowserDebugLogging(false)}
-          >
-            Off
-          </button>
-        </div>
+        <PillGroup
+          label="Debug logging"
+          options={[ACCOUNT_DEFAULT, ...[{ value: true, label: 'On' }, { value: false, label: 'Off' }]]}
+          selected={v => prefs.browserDebugLogging() === v}
+          onSelect={v => prefs.setBrowserDebugLogging(v)}
+        />
       </div>
     </>
   )
@@ -269,6 +311,7 @@ export const AccountAppearanceSettings: Component = () => {
       <div class={styles.section}>
         <h3>Theme</h3>
         {renderThemeButtons(
+          'Theme',
           () => prefs.accountTheme(),
           v => handleAccountThemeChange(v as ThemePreference),
           themeOptions,
@@ -278,6 +321,7 @@ export const AccountAppearanceSettings: Component = () => {
       <div class={styles.section}>
         <h3>Terminal Theme</h3>
         {renderThemeButtons(
+          'Terminal theme',
           () => prefs.accountTerminalTheme(),
           v => handleAccountTerminalThemeChange(v as TerminalThemePreference),
           terminalThemeOptions,
@@ -287,6 +331,7 @@ export const AccountAppearanceSettings: Component = () => {
       <div class={styles.section}>
         <h3>Diff View</h3>
         {renderThemeButtons(
+          'Diff view',
           () => prefs.accountDiffView(),
           v => handleAccountDiffViewChange(v as DiffViewPreference),
           diffViewOptions,
@@ -296,6 +341,7 @@ export const AccountAppearanceSettings: Component = () => {
       <div class={styles.section}>
         <h3>Turn End Sound</h3>
         {renderThemeButtons(
+          'Turn end sound',
           () => prefs.accountTurnEndSound(),
           v => handleAccountTurnEndSoundChange(v as TurnEndSoundPreference),
           turnEndSoundOptions,
@@ -317,6 +363,7 @@ export const AccountAppearanceSettings: Component = () => {
       <div class={styles.section}>
         <h3>Debug Logging</h3>
         {renderThemeButtons(
+          'Debug logging',
           () => prefs.accountDebugLogging() ? 'on' : 'off',
           v => handleAccountDebugLoggingChange(v === 'on'),
           [{ value: 'on', label: 'On' }, { value: 'off', label: 'Off' }],

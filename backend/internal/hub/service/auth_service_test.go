@@ -54,6 +54,8 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, closers ...auth.C
 }
 
 func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
+	t.Parallel()
+
 	assert.Panics(t, func() {
 		service.NewAuthService(nil, nil, nil, nil, nil, mail.Renderer{})
 	})
@@ -91,6 +93,8 @@ func (*sessionCloseRecorder) CloseChannelsByUserRevocation(string, int64) int { 
 func (*sessionCloseRecorder) RestampSessionGeneration(string, int64)          {}
 
 func TestAuthService_LoginSuccess(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfig())
 
 	resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -110,6 +114,8 @@ func TestAuthService_LoginSuccess(t *testing.T) {
 }
 
 func TestAuthService_LoginInvalidPassword(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -121,6 +127,8 @@ func TestAuthService_LoginInvalidPassword(t *testing.T) {
 }
 
 func TestAuthService_GetCurrentUser(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfig())
 
 	// Login first.
@@ -140,6 +148,8 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 }
 
 func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
@@ -148,6 +158,8 @@ func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
 }
 
 func TestAuthService_Login_EmptyUsername(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -159,6 +171,8 @@ func TestAuthService_Login_EmptyUsername(t *testing.T) {
 }
 
 func TestAuthService_Login_EmptyPassword(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfig())
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -170,6 +184,8 @@ func TestAuthService_Login_EmptyPassword(t *testing.T) {
 }
 
 func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfigWithSignup())
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -190,6 +206,8 @@ func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 }
 
 func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfig())
 
 	// Signup is disabled by default.
@@ -202,6 +220,8 @@ func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
 }
 
 func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfigWithSignup())
 
 	// First signup should succeed.
@@ -221,6 +241,8 @@ func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 }
 
 func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
+	t.Parallel()
+
 	client, st := setupAuthTestServer(t, testConfig())
 
 	// Login to get a token.
@@ -254,6 +276,8 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 }
 
 func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
+	t.Parallel()
+
 	client, st := setupAuthTestServer(t, testConfigWithSignup())
 
 	// Create a user with that email directly in the DB.
@@ -282,6 +306,8 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 }
 
 func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
+	t.Parallel()
+
 	_, st := setupAuthTestServer(t, testConfigWithSignup())
 	ctx := context.Background()
 
@@ -341,6 +367,8 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 }
 
 func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
+	t.Parallel()
+
 	client, st := setupAuthTestServer(t, testConfigWithSignup())
 	ctx := context.Background()
 
@@ -382,6 +410,8 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 }
 
 func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupAuthTestServer(t, testConfigWithSignup())
 
 	// First signup with empty email should succeed.
@@ -448,6 +478,8 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 }
 
 func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
+	t.Parallel()
+
 	userClient, _, st := setupVerificationGatingTestServer(t, true)
 
 	// Create a user with email_verified=0 directly via DB.
@@ -477,6 +509,8 @@ func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
 }
 
 func TestVerificationGating_AdminExempt(t *testing.T) {
+	t.Parallel()
+
 	userClient, _, st := setupVerificationGatingTestServer(t, true)
 
 	// The bootstrap admin has email_verified=0 by default (no email set).
@@ -493,6 +527,8 @@ func TestVerificationGating_AdminExempt(t *testing.T) {
 }
 
 func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
+	t.Parallel()
+
 	userClient, _, st := setupVerificationGatingTestServer(t, false)
 
 	// Create an unverified user.
@@ -523,6 +559,8 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 // --- SignUp with EmailVerificationRequired ---
 
 func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
+	t.Parallel()
+
 	cfg := testConfigWithSignup()
 	cfg.EmailVerificationRequired = true
 
@@ -567,6 +605,8 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 // --- Verification gating: allowed methods ---
 
 func TestVerificationGating_LogoutAllowed(t *testing.T) {
+	t.Parallel()
+
 	_, authClient, st := setupVerificationGatingTestServer(t, true)
 
 	// Create an unverified user.
@@ -596,6 +636,8 @@ func TestVerificationGating_LogoutAllowed(t *testing.T) {
 }
 
 func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
+	t.Parallel()
+
 	userClient, _, st := setupVerificationGatingTestServer(t, true)
 
 	// Create an unverified user.
@@ -629,6 +671,8 @@ func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
 }
 
 func TestAuthService_Logout(t *testing.T) {
+	t.Parallel()
+
 	closer := &sessionCloseRecorder{}
 	client, st := setupAuthTestServerBase(t, testConfig(), closer)
 	hubtestutil.CreateTestAdmin(t, st)
@@ -680,6 +724,8 @@ func (s sessionDeleteFailStore) Delete(context.Context, string) (int64, error) {
 }
 
 func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 	wrapped := sessionOverrideStore{
@@ -725,6 +771,8 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 // --- Setup mode tests ---
 
 func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
+	t.Parallel()
+
 	// Signup disabled, but no users exist — setup mode should kick in.
 	client, st := setupEmptyAuthTestServer(t, testConfig())
 
@@ -755,6 +803,8 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 }
 
 func TestSetupSignUp_EmptyEmail(t *testing.T) {
+	t.Parallel()
+
 	client, st := setupEmptyAuthTestServer(t, testConfig())
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -778,6 +828,8 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 }
 
 func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupEmptyAuthTestServer(t, testConfig())
 
 	// Before setup: setup_required should be true.
@@ -800,6 +852,8 @@ func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
 }
 
 func TestSetupSignUp_RejectedWhenUsersExist(t *testing.T) {
+	t.Parallel()
+
 	// Signup disabled, admin user already exists.
 	client, _ := setupAuthTestServer(t, testConfig())
 
@@ -813,6 +867,8 @@ func TestSetupSignUp_RejectedWhenUsersExist(t *testing.T) {
 }
 
 func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
+	t.Parallel()
+
 	cfg := testConfig()
 	cfg.SoloMode = true
 
@@ -848,6 +904,8 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 }
 
 func TestSetupSignUp_NormalSignupStillCreatesNonAdmin(t *testing.T) {
+	t.Parallel()
+
 	// Signup enabled + users already exist = normal non-admin signup.
 	client, st := setupAuthTestServer(t, testConfigWithSignup())
 
@@ -868,6 +926,8 @@ func TestSetupSignUp_NormalSignupStillCreatesNonAdmin(t *testing.T) {
 }
 
 func TestSetupSignUp_WithSignupEnabled(t *testing.T) {
+	t.Parallel()
+
 	// Signup enabled + no users = setup mode should still create admin.
 	client, st := setupEmptyAuthTestServer(t, testConfigWithSignup())
 
@@ -889,6 +949,8 @@ func TestSetupSignUp_WithSignupEnabled(t *testing.T) {
 }
 
 func TestSetupSignUp_RaceCondition(t *testing.T) {
+	t.Parallel()
+
 	// Two setup signups — only the first should succeed.
 	client, _ := setupEmptyAuthTestServer(t, testConfig())
 
@@ -911,6 +973,8 @@ func TestSetupSignUp_RaceCondition(t *testing.T) {
 }
 
 func TestSetupSignUp_ValidatesInputs(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupEmptyAuthTestServer(t, testConfig())
 
 	tests := []struct {
@@ -938,6 +1002,8 @@ func TestSetupSignUp_ValidatesInputs(t *testing.T) {
 }
 
 func TestGetSystemInfo_DevModeReportsSetupRequired(t *testing.T) {
+	t.Parallel()
+
 	cfg := testConfig()
 	cfg.DevMode = true
 
@@ -949,6 +1015,8 @@ func TestGetSystemInfo_DevModeReportsSetupRequired(t *testing.T) {
 }
 
 func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
+	t.Parallel()
+
 	t.Run("PublicURL wins over Listen", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.Listen = ":4327"
@@ -993,6 +1061,8 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 // admins control it through the same SMTP block they configure for
 // verification emails.
 func TestGetSystemInfo_EmailEnabled(t *testing.T) {
+	t.Parallel()
+
 	t.Run("false when SmtpHost is empty", func(t *testing.T) {
 		client, _ := setupEmptyAuthTestServer(t, testConfig())
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
@@ -1012,6 +1082,8 @@ func TestGetSystemInfo_EmailEnabled(t *testing.T) {
 }
 
 func TestSignUp_RejectsSoloAlways(t *testing.T) {
+	t.Parallel()
+
 	t.Run("setup mode", func(t *testing.T) {
 		client, _ := setupEmptyAuthTestServer(t, testConfig())
 
@@ -1042,6 +1114,8 @@ func TestSignUp_RejectsSoloAlways(t *testing.T) {
 }
 
 func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
+	t.Parallel()
+
 	client, _ := setupEmptyAuthTestServer(t, testConfig())
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -1055,6 +1129,8 @@ func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
 }
 
 func TestSignUp_RejectsAdminInPublicSignup(t *testing.T) {
+	t.Parallel()
+
 	// A seeded user exists, so isSetupMode=false and the public reservation applies.
 	client, _ := setupAuthTestServer(t, testConfigWithSignup())
 

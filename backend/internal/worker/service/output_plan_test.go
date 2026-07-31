@@ -96,6 +96,8 @@ func createTestAgent(t *testing.T, queries *db.Queries, agentID, title string) {
 }
 
 func TestUpdatePlan_FirstWrite_StoresCanonicalPath(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -115,6 +117,8 @@ func TestUpdatePlan_FirstWrite_StoresCanonicalPath(t *testing.T) {
 }
 
 func TestUpdatePlan_FirstWrite_TriggersAutoRenameForPlaceholderTitle(t *testing.T) {
+	t.Parallel()
+
 	h, queries, _ := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -126,6 +130,8 @@ func TestUpdatePlan_FirstWrite_TriggersAutoRenameForPlaceholderTitle(t *testing.
 }
 
 func TestUpdatePlan_FirstWrite_PreservesUserSetAgentTitle(t *testing.T) {
+	t.Parallel()
+
 	h, queries, _ := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "My custom title")
 
@@ -137,6 +143,8 @@ func TestUpdatePlan_FirstWrite_PreservesUserSetAgentTitle(t *testing.T) {
 }
 
 func TestUpdatePlan_RewriteSameTitleAndContent_IsNoOp(t *testing.T) {
+	t.Parallel()
+
 	h, queries, _ := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -159,6 +167,8 @@ func TestUpdatePlan_RewriteSameTitleAndContent_IsNoOp(t *testing.T) {
 }
 
 func TestUpdatePlan_RewriteSameTitleNewContent_SnapshotsPriorAndWritesCanonical(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -199,6 +209,8 @@ func TestUpdatePlan_RewriteSameTitleNewContent_SnapshotsPriorAndWritesCanonical(
 }
 
 func TestUpdatePlan_RewriteWithDifferentTitle_SnapshotsUnderOldNameAndWritesNew(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -227,6 +239,8 @@ func TestUpdatePlan_RewriteWithDifferentTitle_SnapshotsUnderOldNameAndWritesNew(
 }
 
 func TestUpdatePlan_FirstWriteWins_DirectoryStaysWithFirstMonth(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -253,6 +267,8 @@ func TestUpdatePlan_FirstWriteWins_DirectoryStaysWithFirstMonth(t *testing.T) {
 }
 
 func TestUpdatePlan_EmptyTitleFallsBackToUntitled(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -264,6 +280,8 @@ func TestUpdatePlan_EmptyTitleFallsBackToUntitled(t *testing.T) {
 }
 
 func TestUpdatePlan_EmptyTitleWritesFileButSkipsNotification(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -286,6 +304,8 @@ func TestUpdatePlan_EmptyTitleWritesFileButSkipsNotification(t *testing.T) {
 }
 
 func TestUpdatePlan_EmptyTitleStillNotifiesWhenPriorTitleExists(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -311,6 +331,8 @@ func TestUpdatePlan_EmptyTitleStillNotifiesWhenPriorTitleExists(t *testing.T) {
 }
 
 func TestUpdatePlan_TwoAgentsSameTitleDoNotCollide(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-A", "Agent Alice")
 	createTestAgent(t, queries, "agent-B", "Agent Bob")
@@ -339,6 +361,8 @@ func TestUpdatePlan_TwoAgentsSameTitleDoNotCollide(t *testing.T) {
 // remain the same: the prior file is snapshotted (freeing the slot), and the
 // new write claims that same slot rather than jumping to the next suffix.
 func TestUpdatePlan_RewriteReclaimsOwnCanonicalSlot(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-A", "Agent Alice")
 	createTestAgent(t, queries, "agent-B", "Agent Bob")
@@ -360,6 +384,8 @@ func TestUpdatePlan_RewriteReclaimsOwnCanonicalSlot(t *testing.T) {
 }
 
 func TestUpdatePlan_NotificationEmittedWithoutAutoRename(t *testing.T) {
+	t.Parallel()
+
 	h, queries, _ := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "User Set Title")
 
@@ -377,6 +403,8 @@ func TestUpdatePlan_NotificationEmittedWithoutAutoRename(t *testing.T) {
 }
 
 func TestUpdatePlan_NotificationEmittedWithUpdateAgentTitleFlag(t *testing.T) {
+	t.Parallel()
+
 	h, queries, _ := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -389,6 +417,8 @@ func TestUpdatePlan_NotificationEmittedWithUpdateAgentTitleFlag(t *testing.T) {
 }
 
 func TestUpdatePlan_ContentOnlyChange_DoesNotEmitNotification(t *testing.T) {
+	t.Parallel()
+
 	h, queries, _ := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -404,6 +434,8 @@ func TestUpdatePlan_ContentOnlyChange_DoesNotEmitNotification(t *testing.T) {
 }
 
 func TestUpdatePlan_EmptyContentReturnsEarlyWithoutDBOrFileWrites(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -422,6 +454,8 @@ func TestUpdatePlan_EmptyContentReturnsEarlyWithoutDBOrFileWrites(t *testing.T) 
 }
 
 func TestUpdatePlan_EmptyTitlePreservesExistingPlanTitle(t *testing.T) {
+	t.Parallel()
+
 	h, queries, _ := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -441,6 +475,8 @@ func TestUpdatePlan_EmptyTitlePreservesExistingPlanTitle(t *testing.T) {
 }
 
 func TestUpdatePlan_StalePriorPathDoesNotCrashRecovery(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -471,6 +507,8 @@ func TestUpdatePlan_StalePriorPathDoesNotCrashRecovery(t *testing.T) {
 }
 
 func TestUpdatePlan_SnapshotCollisionAppendsCounterSuffix(t *testing.T) {
+	t.Parallel()
+
 	h, queries, dataDir := newPlanHandler(t)
 	createTestAgent(t, queries, "agent-1", "Agent Olivia")
 
@@ -499,6 +537,8 @@ func TestUpdatePlan_SnapshotCollisionAppendsCounterSuffix(t *testing.T) {
 }
 
 func TestUpdatePlan_AutoRename_TitleEqualsPlanTitle(t *testing.T) {
+	t.Parallel()
+
 	// After a prior auto-rename, agentRow.Title == agentRow.PlanTitle. The
 	// next plan-title change should auto-rename again (the user has not
 	// manually set the tab title since the last plan).
@@ -520,6 +560,8 @@ func TestUpdatePlan_AutoRename_TitleEqualsPlanTitle(t *testing.T) {
 }
 
 func TestUpdatePlan_AutoRename_RespectsManualOverride(t *testing.T) {
+	t.Parallel()
+
 	// Once the user manually renames the tab to something other than
 	// PlanTitle, subsequent plan-title changes must NOT clobber it.
 	h, queries, _ := newPlanHandler(t)

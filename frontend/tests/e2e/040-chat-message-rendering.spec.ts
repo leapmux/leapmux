@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { assistantBubbles, firstAssistantBubble, waitForAgentIdle } from './helpers/ui'
+import { assistantBubbles, firstAssistantBubble, messageContents, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
  * Smoke test for end-to-end chat rendering: user input → real LLM response →
@@ -23,7 +23,7 @@ test.describe('Chat Message Rendering', () => {
     await waitForAgentIdle(page)
 
     // User bubble: shows the human text, NOT the raw JSON envelope.
-    const userBubble = page.locator('[data-testid="message-bubble"][data-role="user"]').first()
+    const userBubble = userBubbles(page).first()
     const userContent = userBubble.locator('[data-testid="message-content"]')
     await expect(userContent).toContainText('What is 1234 + 5678?')
     await expect(userContent).not.toContainText('{"content":')
@@ -31,7 +31,7 @@ test.describe('Chat Message Rendering', () => {
     // Assistant bubble: rendered as HTML markdown (at least one <p>),
     // not raw text.
     const assistantBubble = assistantBubbles(page).filter({
-      has: page.locator('[data-testid="message-content"] p'),
+      has: messageContents(page).locator('p'),
     }).first()
     const assistantContent = assistantBubble.locator('[data-testid="message-content"]')
     const paragraphs = await assistantContent.locator('p').count()

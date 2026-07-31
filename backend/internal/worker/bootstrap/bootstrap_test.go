@@ -32,7 +32,7 @@ func setupTestDBWithHandle(t *testing.T) (*db.Queries, *sql.DB) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
-	err = workerdb.Migrate(sqlDB)
+	err = workerdb.Migrate(context.Background(), sqlDB)
 	require.NoError(t, err)
 
 	return db.New(sqlDB), sqlDB
@@ -234,7 +234,7 @@ func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Cli
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, workerdb.Migrate(sqlDB))
+	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB))
 
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
@@ -256,7 +256,7 @@ func wireForTest(t *testing.T, mode leapmuxv1.EncryptionMode) (*Wiring, *hub.Cli
 		HomeDir:        t.TempDir(),
 		DataDir:        t.TempDir(),
 	})
-	t.Cleanup(w.Service.Shutdown)
+	t.Cleanup(w.Shutdown)
 	return w, client
 }
 
@@ -307,11 +307,34 @@ func TestWire_PerformsEveryStepBothEntryPointsRelyOn(t *testing.T) {
 	assert.NotNil(t, w.Service.FileTabPaths)
 }
 
+// TestWiring_ShutdownFlushesTheOutboundQueue pins the pairing that used to be
+// stated twice, in prose, in two entry points.
+//
+// Service.Shutdown broadcasts the terminal disconnect notice, but Client.Send
+// only ENQUEUES it: an entry point that tore the stream down straight afterwards
+// raced the drain and lost under load, and the loss is silent -- the writer
+// discards its queue and logs nothing, so the browser's terminal just stops.
+// One entry point cross-referenced the other as documentation, which is exactly
+// how a third would ship half of it. Wiring.Shutdown owns both halves now.
+func TestWiring_ShutdownFlushesTheOutboundQueue(t *testing.T) {
+	w, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
+
+	// A never-connected client has no writer, so FlushSends is a no-op that
+	// must still be REACHED -- and must not panic or error on the nil writer,
+	// since a worker can be shut down before it ever connects.
+	require.NoError(t, client.FlushSends())
+
+	// Shutdown is the single seam; calling it must not require the caller to
+	// remember the flush. Idempotent, because every exit path converges here.
+	w.Shutdown()
+	w.Shutdown()
+}
+
 func TestWire_PropagatesMaxMessageSize(t *testing.T) {
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, workerdb.Migrate(sqlDB))
+	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB))
 
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)

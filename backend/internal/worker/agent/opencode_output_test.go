@@ -27,6 +27,8 @@ func newOpenCodeAgentWithSink(sink OutputSink) *OpenCodeAgent {
 }
 
 func TestHandleOpenCodeOutput_AgentMessageChunk(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -42,6 +44,8 @@ func TestHandleOpenCodeOutput_AgentMessageChunk(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -71,6 +75,8 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk(t *testing.T) {
 // opencode/src/acp/agent.ts:513) used to produce one "Thinking" box per
 // token. They must coalesce into a single message.
 func TestHandleOpenCodeOutput_AgentThoughtChunk_TokenCoalescing(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -109,6 +115,8 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_TokenCoalescing(t *testing.T) {
 // paragraph break between adjacent markdown-heading sections, otherwise the
 // next title gets glued onto the previous body's last sentence.
 func TestHandleOpenCodeOutput_AgentThoughtChunk_MultipleNotifications(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -134,6 +142,8 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_MultipleNotifications(t *testing
 // Sentence-end + capital letter at the seam ("feedback.The") is the other
 // replay-style boundary that needs separation.
 func TestHandleOpenCodeOutput_AgentThoughtChunk_SentenceBoundary(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -154,6 +164,8 @@ func TestHandleOpenCodeOutput_AgentThoughtChunk_SentenceBoundary(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_ThoughtThenToolCallPreservesOrder(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -180,6 +192,8 @@ func TestHandleOpenCodeOutput_ThoughtThenToolCallPreservesOrder(t *testing.T) {
 // before the assistant text + result divider, otherwise they would either
 // be lost or persisted out of order after the reply.
 func TestHandleOpenCodeOutput_TrailingThoughtFlushedBeforeReply(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -203,6 +217,8 @@ func TestHandleOpenCodeOutput_TrailingThoughtFlushedBeforeReply(t *testing.T) {
 }
 
 func TestHandleOpenCodePromptResponse_PersistsAssistantText(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -231,6 +247,8 @@ func TestHandleOpenCodePromptResponse_PersistsAssistantText(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_ToolCallOpensSpan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -250,6 +268,8 @@ func TestHandleOpenCodeOutput_ToolCallOpensSpan(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_ToolCallUpdateInProgress(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -275,6 +295,8 @@ func TestHandleOpenCodeOutput_ToolCallUpdateInProgress(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_ToolCallUpdateCompleted(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -295,6 +317,8 @@ func TestHandleOpenCodeOutput_ToolCallUpdateCompleted(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_ToolCallUpdateFailed(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -312,6 +336,8 @@ func TestHandleOpenCodeOutput_ToolCallUpdateFailed(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_UsageUpdate(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -329,6 +355,8 @@ func TestHandleOpenCodeOutput_UsageUpdate(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_UsageUpdateNoCost(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -342,6 +370,8 @@ func TestHandleOpenCodeOutput_UsageUpdateNoCost(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_Plan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -365,6 +395,8 @@ func TestHandleOpenCodeOutput_Plan(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_RequestPermission(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -391,6 +423,8 @@ func TestHandleOpenCodeOutput_RequestPermission(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_RequestPermissionWithoutID(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -403,6 +437,8 @@ func TestHandleOpenCodeOutput_RequestPermissionWithoutID(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_UserMessageChunkIgnored(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -414,6 +450,8 @@ func TestHandleOpenCodeOutput_UserMessageChunkIgnored(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_AvailableCommandsUpdateIgnored(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -424,6 +462,8 @@ func TestHandleOpenCodeOutput_AvailableCommandsUpdateIgnored(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_UnknownMethod(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -434,6 +474,8 @@ func TestHandleOpenCodeOutput_UnknownMethod(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_ToolCallThenCompleted(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -462,6 +504,8 @@ func TestHandleOpenCodeOutput_ToolCallThenCompleted(t *testing.T) {
 }
 
 func TestUnwrapACPResult(t *testing.T) {
+	t.Parallel()
+
 	t.Run("unwraps role=result with content", func(t *testing.T) {
 		input := json.RawMessage(`{"id":"msg-1","role":"result","seq":4,"created_at":"2026-03-26T10:46:48.015Z","content":{"_meta":{},"stopReason":"end_turn","usage":{"totalTokens":100}}}`)
 		got := unwrapACPResult(input)
@@ -488,6 +532,8 @@ func TestUnwrapACPResult(t *testing.T) {
 }
 
 func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -508,6 +554,8 @@ func TestHandlePromptResponse_WrappedFormat(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_SessionUpdateResultRoleIgnored(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -519,6 +567,8 @@ func TestHandleOpenCodeOutput_SessionUpdateResultRoleIgnored(t *testing.T) {
 }
 
 func TestHandleOpenCodeOutput_ToolCallUpdateCompletedIncrementsToolUses(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -545,6 +595,8 @@ func acpMessageChunk(text string) []byte { return acpChunk("agent_message_chunk"
 func acpThoughtChunk(text string) []byte { return acpChunk("agent_thought_chunk", text) }
 
 func TestHandleACPOutput_MessageChunkAccumulatesThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -561,6 +613,8 @@ func TestHandleACPOutput_MessageChunkAccumulatesThinkingTokens(t *testing.T) {
 }
 
 func TestHandleACPOutput_ThoughtChunkAccumulatesThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -577,6 +631,8 @@ func TestHandleACPOutput_ThoughtChunkAccumulatesThinkingTokens(t *testing.T) {
 }
 
 func TestHandleACPOutput_AssistantTextAfterReasoningResetsViaFlush(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -595,6 +651,8 @@ func TestHandleACPOutput_AssistantTextAfterReasoningResetsViaFlush(t *testing.T)
 }
 
 func TestHandleACPOutput_ToolCallResetsThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	// Covers both sources: a tool call after assistant text (message->tool, no
 	// buffered thought to flush) and after reasoning (thought->tool). Either way
 	// the next phase's estimate must restart from zero.
@@ -622,6 +680,8 @@ func TestHandleACPOutput_ToolCallResetsThinkingTokens(t *testing.T) {
 }
 
 func TestHandleACPOutput_TurnEndResetsThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -637,6 +697,8 @@ func TestHandleACPOutput_TurnEndResetsThinkingTokens(t *testing.T) {
 }
 
 func TestHandleACPOutput_ReasoningAfterAssistantTextStartsFreshPhase(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -656,6 +718,8 @@ func TestHandleACPOutput_ReasoningAfterAssistantTextStartsFreshPhase(t *testing.
 }
 
 func TestHandleACPOutput_NilResultResetsThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -677,6 +741,8 @@ func TestHandleACPOutput_NilResultResetsThinkingTokens(t *testing.T) {
 }
 
 func TestHandleACPOutput_NilResultDropsBufferedAssistantText(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -696,6 +762,8 @@ func TestHandleACPOutput_NilResultDropsBufferedAssistantText(t *testing.T) {
 }
 
 func TestHandleACPOutput_ReasoningAfterCommittedToolDoesNotReclear(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -747,6 +815,8 @@ func persistedACPAssistantText(t *testing.T, sink *testSink) string {
 }
 
 func TestHandleACPOutput_PermissionRequestResetsThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 
@@ -762,6 +832,8 @@ func TestHandleACPOutput_PermissionRequestResetsThinkingTokens(t *testing.T) {
 }
 
 func TestHandleACPOutput_UnknownMethodResetsThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 

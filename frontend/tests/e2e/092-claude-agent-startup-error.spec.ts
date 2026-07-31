@@ -14,7 +14,7 @@ import {
   openAgentViaAPI,
 } from './helpers/api'
 import { startDevServer, stopDevServer } from './helpers/devServer'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { loginViaToken, openWorkspace, visibleOnly } from './helpers/ui'
 
 function startServerWithFailingClaude(): Promise<DevServerHandle> {
   return startDevServer({
@@ -70,7 +70,7 @@ test.describe('Claude Code agent startup error', () => {
     await editor.click()
     await page.keyboard.type('hello')
     await page.keyboard.press('Meta+Enter')
-    await expect(page.locator('[data-testid="message-error"]')).toBeVisible()
+    await expect(visibleOnly(page.getByTestId('message-error'))).toBeVisible()
 
     await deleteWorkspaceViaAPI(srv.hubUrl, srv.adminToken, workspaceId).catch(() => {})
     await context.close()

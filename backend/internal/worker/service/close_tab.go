@@ -34,6 +34,56 @@ const (
 	keepWorktreeLinkForReconciler
 )
 
+// closeWorktreeDisposition is what a close decided about a worktree the tab's
+// startup created, in the one case the close itself cannot act on it: the
+// startup goroutine is still running, so the worktree_tabs link the close
+// looks for may not be written yet.
+//
+// It exists because the outcome of closing a tab must NOT depend on whether
+// the close raced startup. Without it the startup goroutine treated every
+// close as a failed startup and force-removed the worktree -- discarding a
+// directory the user had just been shown a dialog about and explicitly asked
+// to keep, along with any uncommitted work in it.
+type closeWorktreeDisposition int
+
+const (
+	// keepWorktreeOnClose leaves the worktree alone: the close pinned KEEP,
+	// either as the user's explicit "Close anyway" or as the offline
+	// fallback. The link is never written, so the worktree ends at zero
+	// links -- exactly what an online KEEP close of a fully-started tab
+	// leaves behind, and deliberately excluded from orphan GC.
+	keepWorktreeOnClose closeWorktreeDisposition = iota
+	// removeWorktreeOnClose rolls the worktree back on the close's behalf.
+	// The user confirmed REMOVE in the last-tab (or delete-branch) dialog,
+	// which is the one path allowed to discard uncommitted work -- they were
+	// shown the dirty/unpushed counts first. The close could not honour it
+	// itself because the link did not exist yet.
+	removeWorktreeOnClose
+	// strandWorktreeOnClose writes the link even though the tab is already
+	// closed, so the row becomes the strand ListOrphanCandidateWorktrees
+	// selects. Reserved for a convergence close of a DELETED workspace: no
+	// user intent for the directory survives, so the orphan reconciler
+	// reclaims it under its own unsaved-work probe rather than this
+	// goroutine force-removing it unasked.
+	strandWorktreeOnClose
+)
+
+// closeWorktreeDispositionFor derives the disposition from the two things a
+// close already states. Kept next to both enums so the mapping cannot drift
+// from what dropWorktreeLink / keepWorktreeLinkForReconciler mean.
+func closeWorktreeDispositionFor(action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) closeWorktreeDisposition {
+	// Checked first: closeTabForConvergence pins the action to UNSPECIFIED, so
+	// the policy is the only thing that distinguishes a deleted workspace from
+	// a reconciler reap of a single tab.
+	if linkPolicy == keepWorktreeLinkForReconciler {
+		return strandWorktreeOnClose
+	}
+	if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE {
+		return removeWorktreeOnClose
+	}
+	return keepWorktreeOnClose
+}
+
 // closeFileTabCommon drives the shared closeTabCommon flow for FILE
 // tabs. It exists so the FILE close path uses the same worktree-tab
 // link drop and conditional `git worktree remove` machinery as
@@ -369,7 +419,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		action,
 		linkPolicy,
 		func() {
-			svc.AgentStartup.cancelAndClear(agentID)
+			svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(action, linkPolicy))
 			svc.Agents.StopAgent(agentID)
 			svc.Output.ClearAgentRuntimeState(agentID)
 			svc.agentCleanups.run(agentID)
@@ -390,7 +440,7 @@ func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action lea
 		action,
 		linkPolicy,
 		func() {
-			svc.TerminalStartup.cancelAndClear(terminalID)
+			svc.TerminalStartup.cancelAndClear(terminalID, closeWorktreeDispositionFor(action, linkPolicy))
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.terminalCleanups.run(terminalID)
 		},

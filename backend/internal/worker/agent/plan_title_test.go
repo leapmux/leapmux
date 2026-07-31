@@ -7,6 +7,8 @@ import (
 )
 
 func TestExtractPlanTitle(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		content string
@@ -152,6 +154,8 @@ func TestExtractPlanTitle(t *testing.T) {
 }
 
 func TestSanitizePlanFilenameTitle(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		title string

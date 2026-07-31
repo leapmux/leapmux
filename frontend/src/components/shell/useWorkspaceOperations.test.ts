@@ -1,7 +1,9 @@
+import type { Section, SectionItem } from '~/generated/leapmux/v1/section_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useWorkspaceOperations } from '~/components/shell/useWorkspaceOperations'
+import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createSectionStore } from '~/stores/section.store'
 
@@ -188,5 +190,110 @@ describe('useworkspaceoperations deleteworkspace', () => {
     finally {
       h.dispose()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildSectionGroups
+// ---------------------------------------------------------------------------
+
+function ws(id: string): Workspace {
+  return { id, title: id } as Workspace
+}
+
+function section(id: string, sectionType: SectionType): Section {
+  return { id, sectionType } as Section
+}
+
+function item(workspaceId: string, sectionId: string, position: string): SectionItem {
+  return { workspaceId, sectionId, position } as SectionItem
+}
+
+/**
+ * Builds the harness with a populated section store and workspace list, and
+ * returns the grouped result keyed by section id.
+ */
+function groupsFor(workspaces: Workspace[], sections: Section[], items: SectionItem[]) {
+  return createRoot((dispose) => {
+    const sectionStore = createSectionStore()
+    sectionStore.setSections(sections)
+    sectionStore.setItems(items)
+    const ops = useWorkspaceOperations({
+      workspaces: () => workspaces,
+      activeWorkspaceId: () => null,
+      sectionStore,
+      loadSections: async () => {},
+      onSelectWorkspace: () => {},
+      onNewWorkspace: () => {},
+      onRefreshWorkspaces: () => {},
+      onDeleteWorkspace: () => {},
+    })
+    const built = ops.buildSectionGroups(sections)
+    dispose()
+    return new Map(built.map(g => [g.section.id, g.workspaces.map(w => w.id)]))
+  })
+}
+
+describe('useworkspaceoperations buildsectiongroups', () => {
+  const inProgress = section('s-progress', SectionType.WORKSPACES_IN_PROGRESS)
+  const archived = section('s-archived', SectionType.WORKSPACES_ARCHIVED)
+
+  it('lists each section\'s workspaces in position order', () => {
+    const groups = groupsFor(
+      [ws('w1'), ws('w2')],
+      [inProgress, archived],
+      [item('w2', 's-progress', 'b'), item('w1', 's-progress', 'a')],
+    )
+    expect(groups.get('s-progress')).toEqual(['w1', 'w2'])
+    expect(groups.get('s-archived')).toEqual([])
+  })
+
+  it('renders a workspace once when the item table carries it twice', () => {
+    // A CLI- or cross-worker-created workspace reaches the client through both
+    // the CRDT projection and the lifecycle event, so the item table can hold
+    // two rows for it until they reconcile. Rendering per item put two nodes
+    // with the same `workspace-item-<id>` test id on screen -- a duplicated row
+    // for the user and a Playwright strict-mode violation for any spec that
+    // addresses the row by id.
+    const groups = groupsFor(
+      [ws('w1')],
+      [inProgress],
+      [item('w1', 's-progress', 'a'), item('w1', 's-progress', 'b')],
+    )
+    expect(groups.get('s-progress')).toEqual(['w1'])
+  })
+
+  it('renders a workspace once when it is assigned to two sections', () => {
+    // Mid-move the same workspace can hold an item in both the old and the new
+    // section. It must stay in ONE of them rather than appear in both.
+    const groups = groupsFor(
+      [ws('w1')],
+      [inProgress, archived],
+      [item('w1', 's-progress', 'a'), item('w1', 's-archived', 'a')],
+    )
+    const all = [...groups.values()].flat()
+    expect(all).toEqual(['w1'])
+  })
+
+  it('appends unassigned workspaces to the in-progress section exactly once', () => {
+    const groups = groupsFor(
+      [ws('w1'), ws('w2')],
+      [inProgress, archived],
+      [item('w1', 's-progress', 'a')],
+    )
+    expect(groups.get('s-progress')).toEqual(['w1', 'w2'])
+  })
+
+  it('does not append an unassigned workspace that a section already placed', () => {
+    // `unassigned` is computed from the whole item table, so a workspace whose
+    // only item lives in ARCHIVED is not unassigned -- but a workspace placed
+    // by a section during this very build must not be re-appended either.
+    const groups = groupsFor(
+      [ws('w1')],
+      [inProgress, archived],
+      [item('w1', 's-archived', 'a')],
+    )
+    expect(groups.get('s-archived')).toEqual(['w1'])
+    expect(groups.get('s-progress')).toEqual([])
   })
 })

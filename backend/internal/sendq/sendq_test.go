@@ -3,7 +3,6 @@ package sendq
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -24,6 +23,11 @@ const (
 	testFrameOverhead = 256
 	testWriteTimeout  = 10 * time.Second
 	testMaxStall      = 30 * time.Second
+
+	// testShortWriteTimeout is for the one test that wants the write
+	// watchdog to actually fire. Everywhere else testWriteTimeout is a
+	// deliberately generous "must not fire" value.
+	testShortWriteTimeout = 500 * time.Millisecond
 )
 
 func testFrame(correlationID uint64) *leapmuxv1.ChannelMessage {
@@ -149,10 +153,7 @@ func TestWriterDisconnectsAStalledClient(t *testing.T) {
 
 func TestWriterIdleConnectionIsNotTreatedAsStalled(t *testing.T) {
 	received := make(chan *leapmuxv1.ChannelMessage, 1)
-	srv, client, write, cancel := newWSWritePair(t, received)
-	defer cancel()
-	defer srv.Close()
-	defer func() { _ = client.Close(websocket.StatusNormalClosure, "") }()
+	write := newWSWritePair(t, received)
 
 	ctx := context.Background()
 	start := time.Now()
@@ -190,10 +191,7 @@ func TestWriterIdleConnectionIsNotTreatedAsStalled(t *testing.T) {
 
 func TestWriterLongBacklogSurvivesWhileItDrains(t *testing.T) {
 	received := make(chan *leapmuxv1.ChannelMessage, 8)
-	srv, client, write, cancel := newWSWritePair(t, received)
-	defer cancel()
-	defer srv.Close()
-	defer func() { _ = client.Close(websocket.StatusNormalClosure, "") }()
+	write := newWSWritePair(t, received)
 
 	var mu sync.Mutex
 	now := time.Now()
@@ -224,10 +222,7 @@ func TestWriterLongBacklogSurvivesWhileItDrains(t *testing.T) {
 
 func TestWriterPreservesFrameOrder(t *testing.T) {
 	received := make(chan *leapmuxv1.ChannelMessage, 64)
-	srv, client, write, cancel := newWSWritePair(t, received)
-	defer cancel()
-	defer srv.Close()
-	defer func() { _ = client.Close(websocket.StatusNormalClosure, "") }()
+	write := newWSWritePair(t, received)
 
 	w := New(context.Background(), Config[*leapmuxv1.ChannelMessage]{
 		Write: write, Size: frameSize, MaxBytes: testMaxBytes,
@@ -294,10 +289,7 @@ func TestWriterGiveUpCancels(t *testing.T) {
 	defer cancel()
 
 	received := make(chan *leapmuxv1.ChannelMessage, 1)
-	srv, client, write, pairCancel := newWSWritePair(t, received)
-	defer pairCancel()
-	defer srv.Close()
-	defer func() { _ = client.Close(websocket.StatusNormalClosure, "") }()
+	write := newWSWritePair(t, received)
 
 	var mu sync.Mutex
 	start := time.Now()
@@ -330,10 +322,6 @@ func TestWriterGiveUpCancels(t *testing.T) {
 }
 
 func TestWriterWriteTimeoutTearsDownAWedgedPeer(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer func() { _ = ln.Close() }()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -366,7 +354,12 @@ func TestWriterWriteTimeoutTearsDownAWedgedPeer(t *testing.T) {
 			return channelwire.WriteChannelMessage(ctx, conn, msg)
 		},
 		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
-		WriteTimeout: testWriteTimeout,
+		// The wedge is what is under test, not the length of the fuse: the
+		// peer below never reads, so its socket buffer fills within a few
+		// frames and stays full for the rest of the test. Configuring the
+		// production-shaped testWriteTimeout here would only park the test
+		// on the real clock for ten seconds to observe the same give-up.
+		WriteTimeout: testShortWriteTimeout,
 		OnGiveUp:     func(error) { close(gaveUp); cancel() },
 	})
 	defer w.Close()
@@ -381,7 +374,7 @@ func TestWriterWriteTimeoutTearsDownAWedgedPeer(t *testing.T) {
 
 	select {
 	case <-gaveUp:
-	case <-time.After(testWriteTimeout + 20*time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("a wedged peer was never timed out")
 	}
 }
@@ -528,9 +521,17 @@ func TestWriterOnDiscard(t *testing.T) {
 	assert.Greater(t, discardedBytes.Load(), int32(0))
 }
 
-func newWSWritePair(t *testing.T, received chan *leapmuxv1.ChannelMessage) (
-	*httptest.Server, *websocket.Conn, func(context.Context, *leapmuxv1.ChannelMessage) error, context.CancelFunc,
-) {
+// newWSWritePair stands up a loopback websocket pair and returns the Write
+// func a Writer should be configured with.
+//
+// Teardown is owned here, in one t.Cleanup with an explicit order, rather
+// than left to per-test defers -- and the order matters. The server handler
+// parks on <-ctx.Done(), so closing the CLIENT first writes a close frame to
+// a peer that will never reply, and coder/websocket then blocks the full 5s
+// closing-handshake timeout: a flat 5s of dead wall time on every test using
+// this helper. Cancelling first releases the handler, so the client's
+// handshake completes immediately.
+func newWSWritePair(t *testing.T, received chan *leapmuxv1.ChannelMessage) func(context.Context, *leapmuxv1.ChannelMessage) error {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -550,11 +551,18 @@ func newWSWritePair(t *testing.T, received chan *leapmuxv1.ChannelMessage) (
 		mu.Unlock()
 		close(accepted)
 		<-ctx.Done()
+		_ = c.Close(websocket.StatusNormalClosure, "")
 	}))
 
 	client, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], nil)
 	require.NoError(t, err)
 	client.SetReadLimit(channelwire.WSReadLimit)
+
+	t.Cleanup(func() {
+		cancel()
+		_ = client.Close(websocket.StatusNormalClosure, "")
+		srv.Close()
+	})
 
 	select {
 	case <-accepted:
@@ -582,7 +590,7 @@ func newWSWritePair(t *testing.T, received chan *leapmuxv1.ChannelMessage) (
 	write := func(wctx context.Context, msg *leapmuxv1.ChannelMessage) error {
 		return channelwire.WriteChannelMessage(wctx, conn, msg)
 	}
-	return srv, client, write, cancel
+	return write
 }
 
 func TestWriterWriteFailureGivesUp(t *testing.T) {
@@ -724,4 +732,199 @@ func TestWriterEnqueueWaitHonorsControlReserveCeiling(t *testing.T) {
 	err := w.EnqueueWait(ctx, testFrameOfSize(1, 801))
 	require.ErrorIs(t, err, ErrOverBudget,
 		"EnqueueWait must reject items larger than the data ceiling, not park forever")
+}
+
+// TestWriterFlushWaitsForTheLastWrite pins the guarantee graceful shutdown
+// rests on: after Flush returns, every frame enqueued before it was handed to
+// the transport.
+//
+// The gap it closes is that Enqueue returns once a frame is QUEUED and pop()
+// removes a frame BEFORE its Write runs, so neither an Enqueue return nor an
+// empty queue means the bytes left the process. A shutdown that broadcast and
+// immediately tore the connection down therefore dropped its own last words --
+// Close discards the queue silently.
+func TestWriterFlushWaitsForTheLastWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	var written atomic.Int64
+	w := New(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error {
+			<-release
+			written.Add(1)
+			return nil
+		},
+		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+	})
+	defer w.Close()
+
+	// Exactly ONE frame, deliberately. With several queued, a Flush that only
+	// looked at queue length would still park on frames 2..N and the test
+	// would pass without proving anything about the frame already popped. One
+	// frame empties the queue the instant the drain goroutine picks it up, so
+	// the only thing that can keep Flush waiting is the in-flight write.
+	const frames = 1
+	for i := 0; i < frames; i++ {
+		require.NoError(t, w.Enqueue(testFrame(uint64(i))))
+	}
+	// Wait for the drain goroutine to actually pop it, so "queue is empty" is
+	// true before Flush is called rather than becoming true during it.
+	require.Eventually(t, func() bool { return w.QueuedLen() == 0 },
+		2*time.Second, 5*time.Millisecond, "drain goroutine never popped the frame")
+
+	flushed := make(chan error, 1)
+	go func() { flushed <- w.Flush(context.Background()) }()
+
+	// The queue is empty but the frame has NOT reached the transport.
+	select {
+	case <-flushed:
+		t.Fatal("Flush returned while the popped frame was still being written")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case err := <-flushed:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Flush never returned after the writes completed")
+	}
+	assert.Equal(t, int64(frames), written.Load(),
+		"every enqueued frame must have reached the transport before Flush returned")
+}
+
+// TestWriterFlushHonoursItsDeadline: a peer that never drains must not hold
+// shutdown open forever.
+func TestWriterFlushHonoursItsDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w := New(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error { select {} },
+		Size:  frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+	})
+	defer w.Close()
+	require.NoError(t, w.Enqueue(testFrame(1)))
+
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer flushCancel()
+	assert.ErrorIs(t, w.Flush(flushCtx), context.DeadlineExceeded)
+}
+
+// TestWriterFlushOnIdleWriterReturnsImmediately: with nothing queued there is
+// no drain signal coming, so Flush must decide from state rather than park.
+func TestWriterFlushOnIdleWriterReturnsImmediately(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w := New(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error { return nil },
+		Size:  frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+	})
+	defer w.Close()
+
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), time.Second)
+	defer flushCancel()
+	assert.NoError(t, w.Flush(flushCtx))
+}
+
+// TestFlushAfterPopForTestReturnsPromptly pins the pop/finishWrite pairing
+// against the one exported path that pops without writing.
+//
+// pop() sets `writing` because the frame has left the queue but not the
+// process, and only finishWrite clears it. PopForTest skipped that, so the flag
+// stayed set forever and every later Flush on the writer parked until its
+// context expired -- which through Client.FlushSends is a 5s shutdown stall
+// plus a spurious "outbound queue did not drain" warning.
+func TestFlushAfterPopForTestReturnsPromptly(t *testing.T) {
+	t.Parallel()
+
+	w := newWriter(context.Background(), Config[string]{
+		Write:    func(context.Context, string) error { return nil },
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+	})
+	require.NoError(t, w.Enqueue("frame"))
+	got, ok := w.PopForTest()
+	require.True(t, ok)
+	require.Equal(t, "frame", got)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, w.Flush(ctx), "an emptied queue with no write in flight is drained")
+}
+
+// TestConcurrentFlushBothReturn pins `drained` as a broadcast rather than a
+// depth-1 signal. Flush is exported and nothing stops two goroutines from
+// calling it; with a coalescing send, whichever woke first consumed the only
+// value and the other parked with no producer left, then failed its own
+// context -- reporting a failed flush for a queue that drained fine.
+func TestConcurrentFlushBothReturn(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	w := New(context.Background(), Config[string]{
+		Write: func(context.Context, string) error {
+			<-release
+			return nil
+		},
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+	})
+	t.Cleanup(w.Close)
+	require.NoError(t, w.Enqueue("frame"))
+
+	// Wait until the drain goroutine is inside Write, so both flushers park.
+	require.Eventually(t, func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.writing
+	}, 2*time.Second, time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { errs <- w.Flush(ctx) }()
+	}
+	close(release)
+
+	for range 2 {
+		select {
+		case err := <-errs:
+			require.NoError(t, err, "every concurrent Flush must observe the drain")
+		case <-time.After(5 * time.Second):
+			t.Fatal("a concurrent Flush never returned")
+		}
+	}
+}
+
+// TestSignalDrainedWakesEveryWaiter is the deterministic core of the concurrent
+// -Flush case above: two parked Flush calls capture the SAME generation of
+// `drained` under the mutex, so the signal has to wake both. A depth-1
+// coalescing send wakes exactly one and leaves the other with no producer.
+func TestSignalDrainedWakesEveryWaiter(t *testing.T) {
+	t.Parallel()
+
+	w := newWriter(context.Background(), Config[string]{
+		Write:    func(context.Context, string) error { return nil },
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+	})
+
+	// What Flush captures before parking, twice over.
+	w.mu.Lock()
+	first, second := w.drained, w.drained
+	w.mu.Unlock()
+
+	w.signalDrained()
+
+	for i, ch := range []chan struct{}{first, second} {
+		select {
+		case <-ch:
+		default:
+			t.Fatalf("waiter %d was not woken by signalDrained", i)
+		}
+	}
 }

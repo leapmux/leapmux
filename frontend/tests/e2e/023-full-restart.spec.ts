@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, loginViaToken, openTerminalViaUI, openWorkspace, reopenWorkspace, waitForLayoutSave } from './helpers/ui'
+import { ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, expectUserMessage, loginViaToken, openTerminalViaUI, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, waitForLayoutSave } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -18,23 +18,15 @@ test.describe('Full Hub+Worker Restart', () => {
 
       // Step 1: Send a message and wait for a response
       await editor.click()
-      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
+      await page.keyboard.type(ARITHMETIC_PROMPT)
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
       // Wait for the assistant's response containing "6912"
-      await page.waitForFunction((sel: string) => {
-        const bubbles = document.querySelectorAll(sel)
-        for (const b of bubbles) {
-          if (/6,?912/.test(b.textContent ?? ''))
-            return true
-        }
-        return false
-      }, ASSISTANT_BUBBLE_SELECTOR)
+      await expectAssistantAnswer(page)
 
       // Verify the user message is also visible
-      const userBubbles = page.locator('[data-testid="message-bubble"][data-role="user"]')
-      await expect(userBubbles.first()).toContainText('1234 + 5678')
+      await expectUserMessage(page, '1234 + 5678')
 
       // Step 2: Stop Worker first (so agent is terminated), then stop Hub
       await stopWorker()
@@ -52,70 +44,28 @@ test.describe('Full Hub+Worker Restart', () => {
       await expect(editor).toBeVisible()
 
       // Verify the first conversation is still visible after restart (loaded from DB)
-      await page.waitForFunction((sel: string) => {
-        const userBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="user"]')
-        const asstBubbles = document.querySelectorAll(sel)
-        let hasUserMsg = false
-        let hasAssistantResp = false
-        for (const b of userBubbles) {
-          if (b.textContent?.includes('1234 + 5678'))
-            hasUserMsg = true
-        }
-        for (const b of asstBubbles) {
-          if (/6,?912/.test(b.textContent ?? ''))
-            hasAssistantResp = true
-        }
-        return hasUserMsg && hasAssistantResp
-      }, ASSISTANT_BUBBLE_SELECTOR)
+      await expectUserMessage(page, '1234 + 5678')
+      await expectAssistantAnswer(page)
 
       // Step 4: Send another message and wait for response. The second answer
       // ("3333") must not be a substring of the first ("6912"), otherwise this
       // wait would match the leftover first-turn bubble instead of the new one.
       await editor.click()
-      await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
+      await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response containing "3333"
-      await page.waitForFunction((sel: string) => {
-        const bubbles = document.querySelectorAll(sel)
-        for (const b of bubbles) {
-          if (/3,?333/.test(b.textContent ?? ''))
-            return true
-        }
-        return false
-      }, ASSISTANT_BUBBLE_SELECTOR)
+      await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
       // Step 5: Verify both conversations are visible in chat history.
-      await page.waitForFunction(() => {
-        const userBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="user"]')
-        let hasFirstQuestion = false
-        let hasSecondQuestion = false
-        for (const b of userBubbles) {
-          const text = b.textContent || ''
-          if (text.includes('1234 + 5678'))
-            hasFirstQuestion = true
-          if (text.includes('1111 + 2222'))
-            hasSecondQuestion = true
-        }
-        return hasFirstQuestion && hasSecondQuestion
-      })
+      await expectUserMessage(page, '1234 + 5678')
+      await expectUserMessage(page, '1111 + 2222')
 
       // Verify both assistant responses are present. The two answers ("6912"
       // and "3333") are mutually non-substring, so each check matches only its
       // own turn.
-      await page.waitForFunction((sel: string) => {
-        const asstBubbles = document.querySelectorAll(sel)
-        let hasFirstAnswer = false
-        let hasSecondAnswer = false
-        for (const b of asstBubbles) {
-          const text = b.textContent || ''
-          if (/6,?912/.test(text))
-            hasFirstAnswer = true
-          if (/3,?333/.test(text))
-            hasSecondAnswer = true
-        }
-        return hasFirstAnswer && hasSecondAnswer
-      }, ASSISTANT_BUBBLE_SELECTOR)
+      await expectAssistantAnswer(page)
+      await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

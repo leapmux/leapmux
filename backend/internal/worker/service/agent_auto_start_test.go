@@ -20,6 +20,8 @@ import (
 // the manager's agent map). Without the lock, both ensureAgentRunning calls enter startAgent
 // concurrently; with it, the second blocks until the first finishes.
 func TestEnsureAgentRunning_SerializesConcurrentColdStarts(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -73,6 +75,8 @@ func TestEnsureAgentRunning_SerializesConcurrentColdStarts(t *testing.T) {
 // just-typed message is queued behind the still-cold subprocess — the bubble
 // pulses but no progress affordance is shown beneath it.
 func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -126,6 +130,8 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 // existing design intentionally keeps it retryable on the next send by
 // surfacing the failure as a per-message delivery_error instead).
 func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 

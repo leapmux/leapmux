@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"sync"
+
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 )
 
 // The worker's git serialization locks, kept beside the git code they guard
@@ -26,8 +28,18 @@ func (svc *Service) worktreeRemovalLock(worktreeID string) *sync.Mutex {
 // panicking -- it degrades to one shared lock, which over-serializes but is
 // never wrong -- so a caller that failed to resolve the root still gets
 // mutual exclusion instead of the raw race.
+//
+// The key is CANONICALIZED here rather than at the call sites. One repo has
+// more than one spelling -- `/var/...` and `/private/var/...` name the same
+// directory on macOS, where $TMPDIR is a symlink -- and callers reach this
+// with whichever spelling their plan happened to carry. Two spellings meant
+// two mutexes, so two `git worktree add`s in one repository ran concurrently
+// and the loser died on `Unable to create '.git/worktrees/<branch>/index.lock':
+// File exists` -- the exact failure this lock exists to prevent, reintroduced
+// by the lock silently not being the same lock. Doing it here makes the
+// mistake unavailable to callers instead of asking each of them to remember.
 func (svc *Service) gitIndexLock(repoRoot string) *sync.Mutex {
-	v, _ := svc.gitIndexLocks.LoadOrStore(repoRoot, &sync.Mutex{})
+	v, _ := svc.gitIndexLocks.LoadOrStore(pathutil.Canonicalize(repoRoot), &sync.Mutex{})
 	return v.(*sync.Mutex)
 }
 

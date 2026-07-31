@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { workspaceRow } from './helpers/ui'
 
 /**
  * The context menu's item visibility (Rename / Share / Archive vs. Unarchive /
@@ -10,7 +11,7 @@ import { expect, test } from './fixtures'
  */
 test.describe('Workspace Context Menu', () => {
   test('rename via context menu and delete via two-step confirm round-trip the backend', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
     await expect(workspaceItem).toBeVisible()
 
     // ── Rename ──────────────────────────────────────────────────────────────

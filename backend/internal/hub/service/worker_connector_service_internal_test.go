@@ -21,6 +21,12 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
+// Tests in this file do NOT call t.Parallel(), unlike the rest of the package.
+// They swap slog's default handler to capture log output, and that handler is
+// process-global: run alongside a sibling, the buffer they assert on collects
+// whatever the sibling logged too. Everything else here owns its own store,
+// server and temp dirs and runs parallel.
+
 // tabSyncJournal is a minimal crdt.Journal that records, per user, the
 // tab ids every committed batch tombstoned. The worker tab-sync tests
 // assert tenancy by reading it: a tombstone that lands in the wrong

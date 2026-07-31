@@ -94,6 +94,8 @@ func newSessionInfoFixture(t *testing.T) (agent.OutputSink, *sessionInfoCapturin
 // every key is "new" (never seen before) so the broadcast carries the
 // full input map.
 func TestBroadcastSessionInfo_FirstCallShipsEverything(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newSessionInfoFixture(t)
 
 	sink.BroadcastSessionInfo(map[string]interface{}{"a": float64(1), "b": float64(2)})
@@ -107,6 +109,8 @@ func TestBroadcastSessionInfo_FirstCallShipsEverything(t *testing.T) {
 // TestBroadcastSessionInfo_IdenticalRepeatIsDeduped: a second call with
 // byte-identical content must not produce a wire event.
 func TestBroadcastSessionInfo_IdenticalRepeatIsDeduped(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newSessionInfoFixture(t)
 
 	payload := map[string]interface{}{"a": float64(1), "b": float64(2)}
@@ -120,6 +124,8 @@ func TestBroadcastSessionInfo_IdenticalRepeatIsDeduped(t *testing.T) {
 // that key crosses the wire — unchanged keys must be filtered out so
 // reactive consumers aren't woken for nothing.
 func TestBroadcastSessionInfo_PerKeyDelta(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newSessionInfoFixture(t)
 
 	sink.BroadcastSessionInfo(map[string]interface{}{"a": float64(1), "b": float64(2)})
@@ -139,6 +145,8 @@ func TestBroadcastSessionInfo_PerKeyDelta(t *testing.T) {
 // TestBroadcastSessionInfo_NewKeyPasses: a key that hasn't been seen
 // before is treated as a change and shipped.
 func TestBroadcastSessionInfo_NewKeyPasses(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newSessionInfoFixture(t)
 
 	sink.BroadcastSessionInfo(map[string]interface{}{"a": float64(1)})
@@ -156,6 +164,8 @@ func TestBroadcastSessionInfo_NewKeyPasses(t *testing.T) {
 // rate_limits) compare via reflect.DeepEqual; identical nested content
 // is deduped.
 func TestBroadcastSessionInfo_NestedMapDedup(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newSessionInfoFixture(t)
 
 	usage := map[string]interface{}{"tokens": float64(100), "context_window": float64(1000)}
@@ -171,6 +181,8 @@ func TestBroadcastSessionInfo_NestedMapDedup(t *testing.T) {
 // inside a nested map ships the full sub-map. We don't dedup recursively
 // because the frontend store merges by top-level key.
 func TestBroadcastSessionInfo_NestedMapChangeShipsWholeSubmap(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newSessionInfoFixture(t)
 
 	sink.BroadcastSessionInfo(map[string]interface{}{
@@ -191,6 +203,8 @@ func TestBroadcastSessionInfo_NestedMapChangeShipsWholeSubmap(t *testing.T) {
 // TestBroadcastSessionInfo_EmptyInputDoesNothing: an empty info map is
 // a no-op — neither comparison nor broadcast.
 func TestBroadcastSessionInfo_EmptyInputDoesNothing(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newSessionInfoFixture(t)
 
 	sink.BroadcastSessionInfo(map[string]interface{}{})
@@ -204,6 +218,8 @@ func TestBroadcastSessionInfo_EmptyInputDoesNothing(t *testing.T) {
 // a provider mistakenly switches encodings we want the frontend to see
 // the new shape rather than silently keep the old one.
 func TestBroadcastSessionInfo_ValueTypeChangeShips(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newSessionInfoFixture(t)
 
 	sink.BroadcastSessionInfo(map[string]interface{}{"a": float64(1)})
@@ -222,6 +238,8 @@ func TestBroadcastSessionInfo_ValueTypeChangeShips(t *testing.T) {
 // unchanged estimate must still ship -- otherwise the cleared counter would stay
 // hidden until a strictly different value arrived. Other keys stay deduped.
 func TestBroadcastSessionInfo_ThinkingTokensNeverDeduped(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newSessionInfoFixture(t)
 
 	// Two byte-identical thinking_tokens broadcasts both ship -- no dedup.
@@ -252,6 +270,8 @@ func TestBroadcastSessionInfo_ThinkingTokensNeverDeduped(t *testing.T) {
 // for duplicate payloads), but the implementation must not panic or
 // produce a data race.
 func TestBroadcastSessionInfo_ConcurrentCallsAreRaceFree(t *testing.T) {
+	t.Parallel()
+
 	sink, _ := newSessionInfoFixture(t)
 
 	const concurrency = 16

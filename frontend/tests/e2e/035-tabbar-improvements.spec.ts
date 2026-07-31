@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { openAgentViaUI } from './helpers/ui'
+import { messageContents, openAgentViaUI } from './helpers/ui'
 
 /**
  * Smoke test for the tab bar's new-agent flow. The TabBar component's
@@ -25,7 +25,7 @@ test.describe('TabBar Improvements', () => {
 
     // Wait for the assistant turn to land — the init message that carries
     // the session ID arrives alongside the first response.
-    await expect(page.locator('[data-testid="message-content"]', { hasText: 'hello' })).toBeVisible()
+    await expect(messageContents(page).filter({ hasText: 'hello' })).toBeVisible()
 
     await expect(page.locator('[data-testid="agent-info-trigger"]')).toBeVisible()
     await page.locator('[data-testid="agent-info-trigger"]').click()

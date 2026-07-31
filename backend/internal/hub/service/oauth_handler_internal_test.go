@@ -7,6 +7,8 @@ import (
 )
 
 func TestSanitizeRedirectURI(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		uri  string

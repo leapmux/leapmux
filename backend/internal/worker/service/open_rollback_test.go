@@ -39,10 +39,12 @@ func waitForStartupFailure(t *testing.T, svc *Service, id string) {
 }
 
 func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	repoDir := initRepo(t)
 	branchName := "feature/agent-worktree"
-	worktreePath := expectedWorktreePath(repoDir, branchName)
+	worktreePath := expectedWorktreePath(t, repoDir, branchName)
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -77,6 +79,8 @@ func directoryExists(path string) bool {
 }
 
 func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	originalBranch := currentBranchName(t, repoDir)
 	branchName := "feature/agent-branch"
@@ -102,6 +106,8 @@ func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 }
 
 func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	repoDir := initRepo(t)
 	originalCommit := strings.TrimSpace(mustGitOutput(t, ctx, repoDir, "rev-parse", "HEAD"))
@@ -131,10 +137,12 @@ func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing
 }
 
 func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	repoDir := initRepo(t)
 	branchName := "feature/terminal-worktree"
-	worktreePath := expectedWorktreePath(repoDir, branchName)
+	worktreePath := expectedWorktreePath(t, repoDir, branchName)
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -163,6 +171,8 @@ func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 }
 
 func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	originalBranch := currentBranchName(t, repoDir)
 	branchName := "feature/terminal-branch"
@@ -188,8 +198,21 @@ func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 	}
 }
 
-func expectedWorktreePath(repoDir, branchName string) string {
-	return filepath.Join(filepath.Dir(repoDir), filepath.Base(repoDir)+"-worktrees", branchName)
+// expectedWorktreePath is where the worker puts the worktree it creates for
+// branchName: a `<repo>-worktrees` sibling of the repo.
+//
+// repoDir is symlink-resolved first, because t.TempDir() hands back
+// /var/folders/... on macOS while the worker canonicalizes to the real
+// /private/var/... before storing worktree_path. Comparing the unresolved form
+// against the DB made every `GetWorktreeByPath(...) == sql.ErrNoRows`
+// assertion pass for the wrong reason -- the row was never findable by that
+// path whether or not the code under test had deleted it. os.Stat and git are
+// symlink-transparent, which is why only the DB lookups noticed.
+func expectedWorktreePath(t *testing.T, repoDir, branchName string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(repoDir)
+	require.NoError(t, err, "resolve repo dir")
+	return filepath.Join(filepath.Dir(resolved), filepath.Base(resolved)+"-worktrees", branchName)
 }
 
 func currentBranchName(t *testing.T, repoDir string) string {
@@ -217,10 +240,12 @@ func mustGitOutput(t *testing.T, ctx context.Context, repoDir string, args ...st
 // creation lives in runAgentStartup, a sync failure must leave the repo
 // untouched — there is literally nothing to roll back.
 func TestOpenAgent_NoWorktreeMutationOnCreateRecordFailure(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	repoDir := initRepo(t)
 	branchName := "feature/agent-create-failure"
-	worktreePath := expectedWorktreePath(repoDir, branchName)
+	worktreePath := expectedWorktreePath(t, repoDir, branchName)
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -247,6 +272,8 @@ func TestOpenAgent_NoWorktreeMutationOnCreateRecordFailure(t *testing.T) {
 // analogue: a failing createAgentRecord returns before `git checkout -b`
 // runs, so the repo's HEAD and branch set are unchanged.
 func TestOpenAgent_NoBranchMutationOnCreateRecordFailure(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	originalBranch := currentBranchName(t, repoDir)
 	branchName := "feature/agent-create-branch"
@@ -269,6 +296,8 @@ func TestOpenAgent_NoBranchMutationOnCreateRecordFailure(t *testing.T) {
 }
 
 func TestOpenTerminal_DoesNotRollBackSwitchBranchOnStartFailure(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/existing")
 	run(t, repoDir, "git", "checkout", "-")

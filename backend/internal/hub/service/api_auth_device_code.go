@@ -28,7 +28,7 @@ func (h *APIAuthHandler) handleDeviceAuthorization(w http.ResponseWriter, r *htt
 		UserCode:        userCode,
 		DeviceName:      deviceName,
 		IntervalSeconds: int64(DeviceCodePollInterval / time.Second),
-		ExpiresAt:       time.Now().Add(DeviceCodeTTL),
+		ExpiresAt:       h.now().Add(DeviceCodeTTL),
 	}); err != nil {
 		writeInternalError(w, "device authorization creation failed", err)
 		return

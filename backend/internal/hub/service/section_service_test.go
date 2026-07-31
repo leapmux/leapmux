@@ -84,6 +84,8 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 }
 
 func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	resp, err := env.client.ListSections(context.Background(), authedReq(
@@ -164,6 +166,8 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 }
 
 func TestSectionService_CreateSection(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	// Trigger auto-init of default sections.
@@ -184,6 +188,8 @@ func TestSectionService_CreateSection(t *testing.T) {
 }
 
 func TestSectionService_CreateSection_EmptyName(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	_, err := env.client.CreateSection(context.Background(), authedReq(
@@ -193,6 +199,8 @@ func TestSectionService_CreateSection_EmptyName(t *testing.T) {
 }
 
 func TestSectionService_RenameSection(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	_, _ = env.client.ListSections(context.Background(), authedReq(
@@ -221,6 +229,8 @@ func TestSectionService_RenameSection(t *testing.T) {
 }
 
 func TestSectionService_RenameSection_EmptyName(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	_, err := env.client.RenameSection(context.Background(), authedReq(
@@ -230,6 +240,8 @@ func TestSectionService_RenameSection_EmptyName(t *testing.T) {
 }
 
 func TestSectionService_DeleteSection(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	_, _ = env.client.ListSections(context.Background(), authedReq(
@@ -251,6 +263,8 @@ func TestSectionService_DeleteSection(t *testing.T) {
 }
 
 func TestSectionService_DeleteSection_WithItems(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 	ctx := context.Background()
 
@@ -322,6 +336,8 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 // item" into each section). On a tie the SQL planner picked an
 // order, and the sidebar shuffled across page refreshes.
 func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 	ctx := context.Background()
 
@@ -411,6 +427,8 @@ func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
 // move, but the code path through ListByUserID + the empty move loop +
 // the rows=0 Delete still exercises the sentinel-roll-back branch).
 func TestSectionService_DeleteSection_NotFoundOnBogusID(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 	ctx := context.Background()
 	_, err := env.client.ListSections(ctx, authedReq(
@@ -425,6 +443,8 @@ func TestSectionService_DeleteSection_NotFoundOnBogusID(t *testing.T) {
 }
 
 func TestSectionService_MoveSection(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	// Trigger auto-init.
@@ -462,6 +482,8 @@ func TestSectionService_MoveSection(t *testing.T) {
 }
 
 func TestSectionService_MoveWorkspace(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	// Create a workspace (hub-owned) so that the FK in workspace_section_items is satisfied.
@@ -503,6 +525,8 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 }
 
 func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	workspaceID := id.Generate()
@@ -568,6 +592,8 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 }
 
 func TestSectionService_Unauthenticated(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 
 	_, err := env.client.ListSections(context.Background(),
@@ -593,6 +619,8 @@ func TestSectionService_Unauthenticated(t *testing.T) {
 // is what keeps the assertion non-vacuous: a predicate that stopped comparing
 // would move this section.
 func TestMoveSectionDeniesZeroCallerOnBlankOwnedSection(t *testing.T) {
+	t.Parallel()
+
 	env := setupSectionTest(t)
 	ctx := context.Background()
 

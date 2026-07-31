@@ -94,6 +94,8 @@ func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWr
 // re-shipping the full settings/catalog payload while still making the
 // worker liveness bit truthful for older clients.
 func TestBroadcastGitStatus_EmitsPartialStatusChange(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newGitStatusFixture(t)
 
 	sink.BroadcastGitStatus()
@@ -117,6 +119,8 @@ func TestBroadcastGitStatus_EmitsPartialStatusChange(t *testing.T) {
 // invocation produces an event so the frontend always sees the latest
 // gitStatus snapshot.
 func TestBroadcastGitStatus_RepeatedCallsBroadcastEachTime(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newGitStatusFixture(t)
 
 	for i := 0; i < 3; i++ {
@@ -135,6 +139,8 @@ func TestBroadcastGitStatus_RepeatedCallsBroadcastEachTime(t *testing.T) {
 // the agent's stdout-read loop free of the git-subprocess + DB
 // latency, so the test polls.
 func TestPersistTurnEnd_AutoBroadcastsGitStatus(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newGitStatusFixture(t)
 
 	require.NoError(t, sink.PersistTurnEnd(
@@ -156,6 +162,8 @@ func TestPersistTurnEnd_AutoBroadcastsGitStatus(t *testing.T) {
 // PersistMessage calls must not pay the git-status cost on every
 // message.
 func TestPersistMessage_DoesNotBroadcastGitStatus(t *testing.T) {
+	t.Parallel()
+
 	sink, mock := newGitStatusFixture(t)
 
 	for _, source := range []leapmuxv1.MessageSource{

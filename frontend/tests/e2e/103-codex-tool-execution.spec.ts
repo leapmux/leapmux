@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex Tool Execution', () => {
   codexTest('shell command execution renders in chat', async ({ authenticatedCodexWorkspace, page }) => {
@@ -8,7 +8,7 @@ codexTest.describe('Codex Tool Execution', () => {
     await waitForAgentIdle(page, 120_000)
 
     // Look for the command execution rendering in the chat.
-    const chatArea = page.locator('[data-testid="message-content"]')
+    const chatArea = messageContents(page)
     const allText = await chatArea.allTextContents()
     const joined = allText.join(' ')
     expect(joined).toContain('codex-test-output')
@@ -19,7 +19,7 @@ codexTest.describe('Codex Tool Execution', () => {
     await sendMessage(page, 'Run this exact command: echo "hello-from-codex" && echo "done"')
     await waitForAgentIdle(page, 120_000)
 
-    const chatArea = page.locator('[data-testid="message-content"]')
+    const chatArea = messageContents(page)
     const allText = await chatArea.allTextContents()
     const joined = allText.join(' ')
     // Should contain the command output.
@@ -31,7 +31,7 @@ codexTest.describe('Codex Tool Execution', () => {
     await sendMessage(page, 'Create a file called /tmp/codex-test-file.txt with the content "codex was here"')
     await waitForAgentIdle(page, 120_000)
 
-    const chatArea = page.locator('[data-testid="message-content"]')
+    const chatArea = messageContents(page)
     const allText = await chatArea.allTextContents()
     const joined = allText.join(' ')
     // Should reference the file in some way.

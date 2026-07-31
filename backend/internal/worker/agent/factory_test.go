@@ -15,6 +15,8 @@ import (
 // nested one) while preserving the per-provider rc markers and auth/config the
 // providers re-add before the call.
 func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
+	t.Parallel()
+
 	// Assert against the production list itself rather than a hand-maintained
 	// subset, so EVERY scrub key is exercised and a newly-added key (or a typo
 	// in an oddly-shaped one like "_EXTENSION_OPENCODE_PORT") is automatically
@@ -91,6 +93,8 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 }
 
 func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
+	t.Parallel()
+
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -119,6 +123,8 @@ func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
 }
 
 func TestPermissionModeOrDefault(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name     string
 		provider leapmuxv1.AgentProvider
@@ -147,6 +153,8 @@ func TestPermissionModeOrDefault(t *testing.T) {
 // tolerates nil entries in the slice (its callers treat the catalog as possibly
 // nil-bearing, so the lookup must not panic on one).
 func TestFindAvailableModel(t *testing.T) {
+	t.Parallel()
+
 	models := []*ModelInfo{
 		nil,
 		{Id: "opus"},
@@ -167,6 +175,8 @@ func TestFindAvailableModel(t *testing.T) {
 // exactly what the service resolved into Options -- and an empty map reads back as
 // "" for every axis without panicking.
 func TestOptions_Accessors(t *testing.T) {
+	t.Parallel()
+
 	o := Options{Options: map[string]string{
 		OptionIDModel:          "opus[1m]",
 		OptionIDEffort:         "xhigh",
@@ -190,6 +200,8 @@ func TestOptions_Accessors(t *testing.T) {
 // provider's registered normalizer (the same one the live agent uses) rather than a
 // hand-maintained switch, and returns the id unchanged for a provider with none.
 func TestNormalizeModelID_FromRegistry(t *testing.T) {
+	t.Parallel()
+
 	// Claude collapses its fully-qualified CLI id into the alias space.
 	const claudeFull = "claude-opus-4-8[1m]"
 	assert.Equal(t, normalizeClaudeCodeModel(claudeFull),
@@ -218,6 +230,8 @@ func TestNormalizeModelID_FromRegistry(t *testing.T) {
 // Pi's pi_provider, the ACP server config options). A drift here either strips a
 // legitimate setting (under-listing) or re-admits a phantom (over-listing).
 func TestKnownOptionIDs(t *testing.T) {
+	t.Parallel()
+
 	has := func(provider leapmuxv1.AgentProvider, id string) bool {
 		return KnownOptionIDs(provider)[id]
 	}
@@ -305,6 +319,8 @@ func TestKnownOptionIDs(t *testing.T) {
 // agent serves before its session reports a catalog. The unmapped channel (Reasonix exposes no
 // secondary axis) resolves to nil.
 func TestRegisteredSecondaryFallback(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name        string
 		provider    leapmuxv1.AgentProvider

@@ -116,9 +116,40 @@ func ResolveGitDir(shellStartDir, workingDir string) string {
 // repo. The user-facing trade-off is that bubbled git error messages
 // (stderr surfaced via wrapGitErr) are English-only; we accept that
 // over silent wrong-answer correctness bugs.
+// GitOptionalLocksOff declines git's OPTIONAL index lock. Exported so the
+// processes LeapMux spawns into a repo it is also driving -- the agent and the
+// user's terminal shell -- can be given the same setting; see NewGitCmd for the
+// full rationale.
+const GitOptionalLocksOff = "GIT_OPTIONAL_LOCKS=0"
+
+// GIT_OPTIONAL_LOCKS=0 is what stops this worker's own read-only probes from
+// fighting its mutations. `git status` refreshes the on-disk index as a side
+// effect, and taking `.git/index.lock` to do it -- so a status poll (the file
+// tree's git decorations, the diff-stat refresh, the close-tab dialog's dirty
+// check) landing on the same repo as a `git checkout` makes ONE of them die
+// with:
+//
+//	fatal: Unable to create '<repo>/.git/index.lock': File exists.
+//	Another git process seems to be running in this repository, or the lock
+//	file may be stale
+//
+// Observed as an agent that "failed to start" mid-checkout under load, which
+// then rolled the checkout back and left the user on their original branch.
+// svc.withGitIndexLock cannot prevent it: the probes are reads, they are issued
+// from everywhere, and serializing them behind every mutation would stall the
+// UI. Declining the OPTIONAL lock is the targeted fix -- status still reports
+// correctly, it just skips writing the refreshed index back. Commands that
+// genuinely need the index lock (checkout, worktree add, branch -D) still take
+// it, so nothing that must be serialized stops being.
+//
+// This env var alone reaches only the worker's OWN commands, which is one of
+// three contenders in a repo LeapMux is driving. The agent subprocess and the
+// user's shell inherit the worker's environment, which never carries it, so
+// both are given it explicitly at spawn -- see agent.FinalizeAgentEnv and the
+// terminal spawn env.
 func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", GitOptionalLocksOff)
 	cmd.Stdin = nil
 	procutil.HideConsoleWindow(cmd)
 	return cmd

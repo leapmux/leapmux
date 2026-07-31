@@ -78,6 +78,8 @@ func (f *fakeRemoteIPC) snapshot() (tokens []string, pending, executed int) {
 // RestartTerminal → exit-again loop and verifies the exit notice carries
 // the right exit codes ("0" both times for a clean `exit`).
 func TestRestartTerminal_HappyPath(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	ipc := &fakeRemoteIPC{}
 	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
@@ -136,6 +138,8 @@ func TestRestartTerminal_HappyPath(t *testing.T) {
 // TestRestartTerminal_StillRunning rejects restarts on a live terminal so
 // the alive PTY isn't orphaned.
 func TestRestartTerminal_StillRunning(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -163,6 +167,8 @@ func TestRestartTerminal_StillRunning(t *testing.T) {
 // length so future end_offset values stay ahead of the frontend's
 // cached lastOffset.
 func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
@@ -212,6 +218,8 @@ func TestRestartTerminal_AfterWorkerRestart(t *testing.T) {
 // re-append the notice, so a worker-shutdown-then-exit race doesn't
 // double-stack notices.
 func TestPersistTerminalOnExit_Idempotent(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "term-1")
@@ -239,6 +247,8 @@ func TestPersistTerminalOnExit_Idempotent(t *testing.T) {
 // Shutdown (writes exitCodeUnknown): a Shutdown call landing AFTER the
 // exit handler's persist must leave the real exit code intact.
 func TestPersistTerminalOnExit_ShutdownDoesNotClobberRealExitCode(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "term-race")
@@ -262,6 +272,8 @@ func TestPersistTerminalOnExit_ShutdownDoesNotClobberRealExitCode(t *testing.T) 
 // surfaces here and not via the brittle string-search in higher-level
 // tests.
 func TestFormatTerminalExitedNotice(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name string
 		code int
@@ -292,6 +304,8 @@ func TestFormatTerminalExitedNotice(t *testing.T) {
 // id. The handler reads svc.TerminalStartup.status() — we seed a
 // STARTING entry directly so we don't have to time a real startup.
 func TestRestartTerminal_StartupInProgress(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -306,7 +320,7 @@ func TestRestartTerminal_StartupInProgress(t *testing.T) {
 	// the entry and runs the cancel — finish() is the matching Done()
 	// call. Without this, drainAllInFlight would block forever.
 	defer func() {
-		svc.TerminalStartup.cancelAndClear(id)
+		svc.TerminalStartup.cancelAndClear(id, keepWorktreeOnClose)
 		svc.TerminalStartup.finish()
 	}()
 
@@ -322,6 +336,8 @@ func TestRestartTerminal_StartupInProgress(t *testing.T) {
 // Manager replaces a defined subset of meta fields on restart; title
 // must stay in the preserved set.
 func TestRestartTerminal_PreservesTitle(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)
 
@@ -354,6 +370,8 @@ func TestRestartTerminal_PreservesTitle(t *testing.T) {
 // up front, so an empty value here is a real bug we surface rather
 // than mask).
 func TestRestartTerminal_ShellResolution(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	t.Run("uses db shell when no in-memory entry exists", func(t *testing.T) {
@@ -410,6 +428,8 @@ func TestRestartTerminal_ShellResolution(t *testing.T) {
 // to drive the same code path the real CloseTerminal-during-restart
 // race produces.)
 func TestRestartTerminal_CloseDuringRestart(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
 	defer drainAllInFlight(svc)

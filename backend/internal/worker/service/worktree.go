@@ -516,6 +516,14 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 	}
 	result := gitModeResult{Rollback: gitModeRollback{CreatedWorktree: rollback}}
 
+	// Logged BEFORE the lock, with the lock key, so a repeat of the
+	// `index.lock: File exists` failure below is readable from the log alone:
+	// two of these for one branch means two adds really did race (and, if their
+	// repo_root strings differ, that they serialized on different keys), while
+	// one means the leftover predates this process.
+	slog.Info("creating worktree",
+		"repo_root", plan.RepoRoot, "worktree_path", plan.WorktreePath, "branch_name", plan.BranchName)
+
 	// Under the repo's index lock: a concurrent checkout / commit / second
 	// worktree add in the same repository would otherwise make one of the two
 	// fail outright on index.lock rather than wait.
@@ -536,6 +544,17 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 		// nothing else -- an entry whose worktree directory is still present is
 		// left alone -- so it cannot disturb a live worktree. Best effort: a prune
 		// failure should not mask the add's own error.
+		//
+		// That "left alone" is also this guard's limit, and the limit is not
+		// theoretical. An add interrupted AFTER the worktree directory appeared
+		// leaves the directory AND the admin dir's index.lock; prune keeps such
+		// an entry (its worktree is present), and the next add for that branch
+		// name dies on `Unable to create '.git/worktrees/<name>/index.lock':
+		// File exists`. Observed once under an 8-worker e2e load, on a repo
+		// whose worktree had never been created successfully. Not reproduced
+		// deterministically yet, so deliberately NOT patched by hand here:
+		// deleting an index.lock that a live git process still holds trades a
+		// rare failure for a corrupt index.
 		if pruneErr := gitutil.Run(ctx, plan.RepoRoot, "worktree", "prune"); pruneErr != nil {
 			slog.Warn("worktree prune before add failed; continuing",
 				"repo_root", plan.RepoRoot, "error", pruneErr)
@@ -771,31 +790,46 @@ func (svc *Service) registerTabForWorktree(worktreeID string, tabType leapmuxv1.
 	}
 }
 
-// registerTabForWorktreeUnlessClosed links a freshly-started tab to its
-// worktree, UNLESS the tab was already closed during startup. OpenAgent /
-// OpenTerminal return (and the frontend renders the tab) before the startup
-// goroutine reaches the link step, so a quick Delete-branch / close can fire a
-// REMOVE close that finds no association yet (degrades to KEEP) and THEN this
-// link would strand a worktree_tabs row pointing at an already-closed tab —
-// its ref-count never reaches zero, leaking the worktree dir.
+// registerTabForWorktreeAfterClose links a freshly-started tab to its
+// worktree, unless a close already landed during startup and decided the
+// worktree's fate itself. OpenAgent / OpenTerminal return (and the frontend
+// renders the tab) before the startup goroutine reaches the link step, so a
+// close can arrive while the association does not exist yet.
 //
-// closedDuringStartup is computed by the caller from a post-phase-0 re-read of
-// the tab row (the read query differs per tab type: getAgentByID vs
-// GetTerminalForReady). A close can still slip into the window between that
-// re-read and AddWorktreeTab, and a transient re-read error leaves
-// closedDuringStartup false so we fall through and link; either way the orphan
-// reconciler's worktree GC reclaims the resulting strand (a worktree whose
-// links are all dead across two consecutive passes is removed), so this guard
-// is just the fast path for the common close-before-startup case. Shared by
-// runAgentStartup / runTerminalStartup so the skip-vs-link decision can't drift
-// between the two paths.
-func (svc *Service) registerTabForWorktreeUnlessClosed(worktreeID string, tabType leapmuxv1.TabType, tabID string, closedDuringStartup bool) {
-	if closedDuringStartup {
-		slog.Info("tab closed during startup; skipping worktree link",
-			"tab_type", tabType, "tab_id", tabID, "worktree_id", worktreeID)
+// What the link means depends on which close arrived, so the decision is the
+// close's (carried as a closeWorktreeDisposition), not this function's:
+//
+//   - keep / remove: skip the link. Writing it would strand a worktree_tabs
+//     row pointing at an already-closed tab, whose ref-count never reaches
+//     zero. Under KEEP the zero-link worktree is exactly what an online KEEP
+//     close leaves; under REMOVE the caller rolls the worktree back instead.
+//   - strand: write it deliberately. The workspace itself was deleted, so the
+//     row is what makes the worktree an orphan-GC candidate.
+//
+// closedDuringStartup is supplied by linkWorktreeAfterPhase0, which ORs the
+// caller's post-phase-0 re-read of the tab row against the registry's "a close
+// recorded a disposition against this startup" flag. Neither source is
+// sufficient alone: the re-read misses a close that has cancelled but not yet
+// committed closed_at, and the registry misses a close that never went through
+// cancelAndClear. A transient re-read error still leaves both false, so we fall
+// through and link; the orphan reconciler's worktree GC reclaims that strand (a
+// worktree whose links are all dead across two consecutive passes is removed).
+// Shared by runAgentStartup / runTerminalStartup so the skip-vs-link decision
+// can't drift between the two paths.
+func (svc *Service) registerTabForWorktreeAfterClose(worktreeID string, tabType leapmuxv1.TabType, tabID string, closedDuringStartup bool, disposition closeWorktreeDisposition) {
+	if !closedDuringStartup {
+		svc.registerTabForWorktree(worktreeID, tabType, tabID)
 		return
 	}
-	svc.registerTabForWorktree(worktreeID, tabType, tabID)
+	// A switch with no default so `exhaustive` fails the build if a fourth
+	// disposition is added without deciding whether it wants the link.
+	switch disposition {
+	case strandWorktreeOnClose:
+		svc.registerTabForWorktree(worktreeID, tabType, tabID)
+	case keepWorktreeOnClose, removeWorktreeOnClose:
+		slog.Info("tab closed during startup; skipping worktree link",
+			"tab_type", tabType, "tab_id", tabID, "worktree_id", worktreeID)
+	}
 }
 
 func (svc *Service) ensureTrackedWorktree(ctx context.Context, worktreePath string) (string, error) {
@@ -833,13 +867,19 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 		}
 	}
 
-	wtID := id.Generate()
-	if err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID:           wtID,
+	// CreateWorktree RETURNs the stored row rather than reporting success, so
+	// the id below is the one that actually won. The lookup above and this
+	// insert are two statements, and a concurrent caller can slip between them
+	// -- opening two agents on one worktree ("use existing worktree") starts
+	// two async startups that both miss, and both insert -- so the insert
+	// completing is NOT proof that our minted id is the stored one.
+	stored, err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
+		ID:           id.Generate(),
 		WorktreePath: canonicalPath,
 		RepoRoot:     repoRoot,
 		BranchName:   branchName,
-	}); err != nil {
+	})
+	if err != nil {
 		return "", err
 	}
 	// Adopt any already-open FILE tabs under this newly-tracked worktree
@@ -850,7 +890,7 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 	// mid-adoption can't abort the loop partway and leave some FILE tabs
 	// unlinked — the same detached-write rationale as registerTabForWorktree.
 	svc.FileTabPaths.BackfillWorktreeLinks(bgCtx(), canonicalPath)
-	return wtID, nil
+	return stored.ID, nil
 }
 
 // removeWorktreeFromDisk force-removes a worktree from disk, deletes its
@@ -1127,6 +1167,52 @@ func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBra
 		OriginalCommit:   info.HeadSHA,
 		OriginalDetached: true,
 	}, nil
+}
+
+// rollbackGitModeAfterClose is the close-during-startup counterpart of
+// rollbackGitMode. A close is NOT a failed startup: the git-mode mutation
+// succeeded, the user saw the tab, and the close carries an explicit decision
+// about the worktree. Undoing it unconditionally -- which is what this path
+// used to do -- made the outcome of closing a tab depend on whether the close
+// happened to race startup, and `git worktree remove --force` there discarded
+// uncommitted work the user had just been shown a dialog about and asked to
+// KEEP, silently (the rollback only logs when it fails).
+//
+// So only a REMOVE close rolls anything back, and it does so because the close
+// itself could not: the worktree_tabs link it looks up did not exist yet. The
+// other two dispositions leave the directory alone -- keep because the user
+// said so, strand because the orphan reconciler owns it and applies the
+// unsaved-work probe this path has never had.
+func (svc *Service) rollbackGitModeAfterClose(result gitModeResult, disposition closeWorktreeDisposition) {
+	// A switch with no default so `exhaustive` fails the build if a fourth
+	// disposition is added without deciding what it means here -- the two
+	// no-op cases are spelled out rather than defaulted for that reason.
+	switch disposition {
+	case removeWorktreeOnClose:
+		svc.rollbackGitMode(result)
+	case keepWorktreeOnClose, strandWorktreeOnClose:
+		// keep: the user asked to keep the worktree. strand: the workspace is
+		// gone and the orphan reconciler owns the worktree, applying the
+		// unsaved-work probe this path has never had.
+	}
+}
+
+// rollbackGitModeAfterStartup applies the rollback policy for a startup that is
+// ending without having handed its tab over.
+//
+// `raced` is closeDisposition's ok flag, and it is the authority for "was this
+// startup overtaken by a close" -- the disposition alone cannot say, because a
+// KEEP close and a startup nothing closed both arrive as the zero value
+// keepWorktreeOnClose. The two need opposite handling: a startup that failed on
+// its own OWNS the rollback, since no close is coming to decide the worktree's
+// fate and leaving the mutation in place would strand a worktree and a branch
+// the user never saw. One a close overtook must defer to that close instead.
+func (svc *Service) rollbackGitModeAfterStartup(result gitModeResult, disposition closeWorktreeDisposition, raced bool) {
+	if !raced {
+		svc.rollbackGitMode(result)
+		return
+	}
+	svc.rollbackGitModeAfterClose(result, disposition)
 }
 
 func (svc *Service) rollbackGitMode(result gitModeResult) {

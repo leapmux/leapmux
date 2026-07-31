@@ -130,6 +130,8 @@ func useridFromTest(s string) userid.UserID {
 // TestAccessControl_AgentHandlers_NotFound verifies that agent-ID-scoped
 // handlers return NOT_FOUND when the agent does not exist.
 func TestAccessControl_AgentHandlers_NotFound(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
 			_, d, w := setupTestService(t)
@@ -146,6 +148,8 @@ func TestAccessControl_AgentHandlers_NotFound(t *testing.T) {
 // TestAccessControl_AgentHandlers_EmptyID verifies INVALID_ARGUMENT when the
 // agent_id is not provided.
 func TestAccessControl_AgentHandlers_EmptyID(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range agentHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
 			_, d, w := setupTestService(t)
@@ -159,6 +163,8 @@ func TestAccessControl_AgentHandlers_EmptyID(t *testing.T) {
 }
 
 func TestAccessControl_TerminalHandlers_NotFound(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range terminalHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
 			_, d, w := setupTestService(t)
@@ -173,6 +179,8 @@ func TestAccessControl_TerminalHandlers_NotFound(t *testing.T) {
 }
 
 func TestAccessControl_TerminalHandlers_EmptyID(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range terminalHandlerCases {
 		t.Run(tc.method, func(t *testing.T) {
 			_, d, w := setupTestService(t)
@@ -192,6 +200,8 @@ func TestAccessControl_TerminalHandlers_EmptyID(t *testing.T) {
 // (ListAgentMessages).
 
 func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
+	t.Parallel()
+
 	t.Run("RenameAgent", func(t *testing.T) {
 		svc, d, w := setupTestService(t)
 		seedAgent(t, svc, "agent-1")
@@ -216,6 +226,8 @@ func TestAccessControl_AgentHandlers_HappyPath(t *testing.T) {
 }
 
 func TestAccessControl_TerminalHandlers_HappyPath(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	seedTerminal(t, svc, "term-1")
 
@@ -307,6 +319,8 @@ var ownerGatedProbes = func() []ownerGatedProbe {
 // existence, is what decides. A probe that passed because the row was missing
 // would prove nothing.
 func TestAccessControl_OwnerGatedMethods_DenyOtherUser(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range ownerGatedProbes {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, d, w := setupTestService(t)
@@ -341,6 +355,8 @@ func TestAccessControl_OwnerGatedMethods_DenyOtherUser(t *testing.T) {
 // Asserted per streaming method, from the registration table, so a new streaming
 // method is covered the moment it is registered.
 func TestStreamingDenialArrivesAsAStreamFrame(t *testing.T) {
+	t.Parallel()
+
 	svc, d, _ := setupTestService(t)
 	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
 
@@ -375,6 +391,8 @@ func TestStreamingDenialArrivesAsAStreamFrame(t *testing.T) {
 // dropped the workspace: the worker tracks no workspace id, so it cannot
 // enumerate the set itself.
 func TestCleanupWorkspace_ClosesTheNamedTabs(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	seedAgent(t, svc, "agent-1")
 	seedAgent(t, svc, "agent-untouched")
@@ -403,6 +421,8 @@ func TestCleanupWorkspace_ClosesTheNamedTabs(t *testing.T) {
 // An empty tab list is a legitimate request (a workspace that held nothing on
 // this worker), not an error, and must not be read as "close everything".
 func TestCleanupWorkspace_EmptyTabListClosesNothing(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	seedAgent(t, svc, "agent-1")
 
@@ -438,6 +458,8 @@ func TestCleanupWorkspace_EmptyTabListClosesNothing(t *testing.T) {
 // TestAccessControl_OwnerGatedProbesAreComplete and
 // TestEveryRegisteredMethodIsClassified.
 func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
+	t.Parallel()
+
 	svc, d, _ := setupTestService(t)
 	gates := registerAllWithGates(channel.NewDispatcher(), svc)
 
@@ -476,6 +498,8 @@ func TestMachineScopedFamiliesAreOwnerOnly(t *testing.T) {
 // identical registerOwnerOnly wrapper, so one end-to-end allow probe covers
 // the gate (its body forks discovery subprocesses, too slow for a unit test).
 func TestListAvailableShells_OwnerAllowed(t *testing.T) {
+	t.Parallel()
+
 	_, d, w := setupTestService(t)
 
 	dispatch(d, "ListAvailableShells", &leapmuxv1.ListAvailableShellsRequest{}, w)
@@ -493,6 +517,8 @@ func TestListAvailableShells_OwnerAllowed(t *testing.T) {
 // reviewed decisions. Disjointness (no method recorded twice) is enforced by
 // registrar.record's duplicate panic at registration time.
 func TestEveryRegisteredMethodIsClassified(t *testing.T) {
+	t.Parallel()
+
 	svc, d, _ := setupTestService(t)
 	gates := registerAllWithGates(channel.NewDispatcher(), svc)
 
@@ -528,6 +554,8 @@ func TestEveryRegisteredMethodIsClassified(t *testing.T) {
 // so it can only restate that choice. TestNoUnaryHandlerSendsStreamFrames below
 // checks the direction this one cannot.
 func TestEveryStreamingMethodIsRegisteredAsStreaming(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	_, shapes := registerAllClassified(channel.NewDispatcher(), svc)
 
@@ -562,6 +590,8 @@ func TestEveryStreamingMethodIsRegisteredAsStreaming(t *testing.T) {
 // concurrent gate reads at all, so a future revert to a plain field is caught the
 // moment anyone runs the detector.
 func TestRegisteredByConcurrentSetAndGate(t *testing.T) {
+	t.Parallel()
+
 	svc := &Service{}
 	svc.SetRegisteredBy(userid.MustNew("user-1"))
 
@@ -601,6 +631,8 @@ func TestRegisteredByConcurrentSetAndGate(t *testing.T) {
 // caller the Hub named with an empty user id. A gate that exists to fail closed
 // must not fail open on the one input it cannot judge.
 func TestRequireWorkerOwnerRefusesEmptyIdentities(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name         string
 		userID       string
@@ -625,6 +657,8 @@ func TestRequireWorkerOwnerRefusesEmptyIdentities(t *testing.T) {
 // ...and the owner keeps unrestricted reach, including outside the home directory.
 // This is deliberate: the worker and its agents already have it.
 func TestMachineScopedFamiliesAllowOwnerOutsideHome(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 
 	dispatch(d, "GetWorkerSystemInfo", &leapmuxv1.GetWorkerSystemInfoRequest{}, w)
@@ -658,6 +692,8 @@ func TestMachineScopedFamiliesAllowOwnerOutsideHome(t *testing.T) {
 // is enough, because a handler that streams does so directly through its
 // ResponseWriter.
 func TestNoUnaryHandlerSendsStreamFrames(t *testing.T) {
+	t.Parallel()
+
 	// Parsed file by file rather than through parser.ParseDir, which is
 	// deprecated (it ignores build tags when grouping files into packages).
 	// Grouping is irrelevant here -- every non-test .go file in this directory is

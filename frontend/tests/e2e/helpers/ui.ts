@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 
 import { expect } from '@playwright/test'
+import { EXACT_KEY_TTLS, KEY_BROWSER_PREFS } from '../../../src/lib/browserStorage'
 
 /** Check if a locator is visible, returning false on timeout or error. */
 export async function isMaybeVisible(locator: Locator, timeout?: number): Promise<boolean> {
@@ -22,13 +23,28 @@ export async function expectAnyVisible(...locators: Locator[]) {
 // Common UI interaction helpers
 // ──────────────────────────────────────────────
 
-/** Send a message via the ProseMirror editor. */
+/**
+ * Send a message via the ProseMirror editor.
+ *
+ * Types at the default (zero) inter-key delay. The 100ms-per-key delay this
+ * used to carry bought nothing -- every key event is still dispatched in
+ * order, and ProseMirror handles them synchronously -- but it cost ~5s on the
+ * shared arithmetic prompt alone, on every one of the ~60 sends in the suite.
+ * The pagination and scroll-rail specs had already been typing without it.
+ *
+ * Specs that exercise ProseMirror's own input rules (markdown shortcuts,
+ * mention/slash triggers) keep their local, deliberately paced typing.
+ */
 export async function sendMessage(page: Page, text: string) {
   const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
   await expect(editor).toBeVisible()
   await editor.click()
-  await page.keyboard.type(text, { delay: 100 })
+  await page.keyboard.type(text)
   await page.keyboard.press('Meta+Enter')
+  // The editor emptying is the app's acknowledgement that the send committed.
+  // Waiting on it here stops a caller from racing ahead of its own message --
+  // which matters more now that typing no longer takes seconds.
+  await expect(editor).toHaveText('')
 }
 
 /** Wait for the control request banner to appear and return a scoped locator. */
@@ -38,22 +54,107 @@ export async function waitForControlBanner(page: Page) {
   return banner
 }
 
-/** CSS selector for agent message bubbles. Exported for use in browser-context code (e.g. waitForFunction). */
+/**
+ * Every chat row exists in the DOM TWICE for as long as its height is unknown.
+ *
+ * ChatView mounts a faithful copy of each unmeasured row inside its hidden
+ * premeasure root (`ChatHiddenPremeasure`) purely to read a height off it: same
+ * test ids, same text, same classes, `visibility: hidden`. Separately, a real
+ * row that is waiting on its own measurement is itself hidden in place. So a
+ * bare `[data-testid="message-bubble"]` transiently resolves to two elements
+ * per message, and Playwright's strict mode fails the assertion outright --
+ * `strict mode violation: ... resolved to 2 elements`, with both matches
+ * carrying identical markup.
+ *
+ * A probe sampling the DOM every 20ms saw 6 bubbles for 2 messages, 4 of them
+ * hidden, in 1 of 596 samples on an idle machine. That is the whole story
+ * behind this suite's "only flaky at high worker counts" chat failures: load
+ * widens the measurement window, it does not create the bug.
+ *
+ * `:visible` is the fix and it belongs on the OUTERMOST chat locator only --
+ * anything scoped under an already-visible bubble cannot be in the premeasure
+ * root, so descendants need no filter.
+ *
+ * Prefer the helpers below to hand-written chat selectors.
+ */
+const VISIBLE = ':visible'
+
+/**
+ * CSS selector for agent message bubbles, WITHOUT the visibility filter.
+ *
+ * Safe only when scoped under an element already known to be visible (e.g.
+ * `firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)`), or as
+ * the `has:` argument of a filter, which resolves relative to the outer match.
+ * Rooted at the page it matches the premeasure copy too -- use
+ * {@link assistantBubbles}.
+ */
 export const ASSISTANT_BUBBLE_SELECTOR = '[data-testid="message-bubble"][data-role="agent"]'
 
-/** Return a locator for all assistant message bubbles. */
+/** CSS selector for user message bubbles. Same caveat as {@link ASSISTANT_BUBBLE_SELECTOR}. */
+export const USER_BUBBLE_SELECTOR = '[data-testid="message-bubble"][data-role="user"]'
+
+/** Return a locator for all visible assistant message bubbles. */
 export function assistantBubbles(page: Page) {
-  return page.locator(ASSISTANT_BUBBLE_SELECTOR)
+  return page.locator(ASSISTANT_BUBBLE_SELECTOR + VISIBLE)
 }
 
-/** Return a locator for the first assistant message bubble. */
+/** Return a locator for all visible user message bubbles. */
+export function userBubbles(page: Page) {
+  return page.locator(USER_BUBBLE_SELECTOR + VISIBLE)
+}
+
+/** Return a locator for all visible message bubbles, whatever their role. */
+export function messageBubbles(page: Page) {
+  return page.locator(`[data-testid="message-bubble"]${VISIBLE}`)
+}
+
+/** Return a locator for all visible message content nodes. */
+export function messageContents(page: Page) {
+  return page.locator(`[data-testid="message-content"]${VISIBLE}`)
+}
+
+/**
+ * Restrict `locator` to the elements the user can see.
+ *
+ * For page-rooted chat assertions that match by text rather than test id --
+ * `getByText` matches the hidden premeasure copy just as readily as the real
+ * row.
+ */
+export function visibleOnly(locator: Locator): Locator {
+  return locator.filter({ visible: true })
+}
+
+/** Return a locator for the first visible assistant message bubble. */
 export function firstAssistantBubble(page: Page) {
-  return page.locator(ASSISTANT_BUBBLE_SELECTOR).first()
+  return assistantBubbles(page).first()
 }
 
-/** Return a locator for the last assistant message bubble. */
+/** Return a locator for the last visible assistant message bubble. */
 export function lastAssistantBubble(page: Page) {
-  return page.locator(ASSISTANT_BUBBLE_SELECTOR).last()
+  return assistantBubbles(page).last()
+}
+
+/**
+ * The row hosting the first agent bubble that is a real assistant MESSAGE --
+ * one carrying the per-message actions (quote, copy) on its row.
+ *
+ * Not every agent-role bubble is a message: turn-end dividers and the notices
+ * an agent emits around startup render through the same bubble component with
+ * no onReply, so they have neither a quote affordance nor prose to select.
+ * firstAssistantBubble() takes whichever is first in the DOM, so a spec that
+ * then reaches for the reply button or drags across the text can bind to one of
+ * those and spend its whole timeout waiting for an element that will never
+ * appear there. Whether a notice lands ahead of the reply depends on how busy
+ * the machine is, which is why this only bites some runs.
+ *
+ * Specs about quoting or selecting an assistant message should name the message
+ * rather than take the first bubble and hope.
+ */
+export function firstAssistantMessageRow(page: Page) {
+  return assistantBubbles(page)
+    .locator('..')
+    .filter({ has: page.locator('[data-testid="message-quote"]') })
+    .first()
 }
 
 /**
@@ -72,6 +173,17 @@ export const ARITHMETIC_PROMPT = 'What is 1234 + 5678? Reply with just the numbe
 export const ARITHMETIC_ANSWER = /\b6,?912\b/
 
 /**
+ * A SECOND arithmetic probe, for specs that need a follow-up turn whose answer
+ * is distinguishable from the first. 3333 is not a substring of 6912 and vice
+ * versa, so a wait for either cannot be satisfied by the other turn's leftover
+ * bubble -- which is the whole reason these two numbers, and not any others.
+ */
+export const SECOND_ARITHMETIC_PROMPT = 'What is 1111 + 2222? Reply with just the number, nothing else.'
+
+/** Matches the {@link SECOND_ARITHMETIC_PROMPT} answer. See {@link ARITHMETIC_ANSWER}. */
+export const SECOND_ARITHMETIC_ANSWER = /\b3,?333\b/
+
+/**
  * Assert the agent answered {@link ARITHMETIC_PROMPT}: the answer appears in
  * SOME assistant bubble. Scanning every bubble (rather than only the last one)
  * is robust to a trailing "Turn ended" result divider, which is itself an
@@ -83,14 +195,43 @@ export async function expectAssistantAnswer(page: Page, opts?: { answer?: RegExp
   await expect(matches).not.toHaveCount(0, opts?.timeout != null ? { timeout: opts.timeout } : undefined)
 }
 
+/**
+ * Assert SOME visible user bubble contains `text` -- the mirror of
+ * {@link expectAssistantAnswer} for the prompt side, used by the restart specs
+ * to check that history survived.
+ */
+export async function expectUserMessage(page: Page, text: string) {
+  await expect(userBubbles(page).filter({ hasText: text })).not.toHaveCount(0)
+}
+
+/**
+ * How long to give the thinking indicator to appear after a send. Expiring is
+ * an expected outcome (see waitForAgentIdle), so this is a probe budget rather
+ * than a deadline: long enough to catch a normal turn starting, short enough
+ * that a turn which already finished does not pay for the wait.
+ */
+const APPEARANCE_PROBE_MS = 2000
+
 /** Wait for the agent to finish its current turn (thinking indicator gone). */
 export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
-  // Brief delay so the thinking indicator has time to appear before we
-  // wait for it to disappear.
-  await page.waitForTimeout(2000)
-  await expect(page.locator('[data-testid="thinking-indicator"]'))
-    .not
-    .toBeVisible({ timeout: timeoutMs })
+  const thinking = page.locator('[data-testid="thinking-indicator"]')
+  // The indicator has to be given a chance to APPEAR first: asserting it is
+  // absent the instant after a send would pass against a turn that has not
+  // started yet. Waiting for the appearance rather than sleeping a flat 2s
+  // returns as soon as it shows, usually within tens of ms.
+  //
+  // The wait EXPIRING is a normal outcome, not a failure: a turn that finished
+  // before we looked never shows an indicator at all, which is why the
+  // rejection is swallowed. That is also why the budget is explicit rather than
+  // inherited -- `locator.waitFor` takes `use.actionTimeout` (30s), and paying
+  // that on every already-finished turn would cost more than the flat sleep
+  // this replaced.
+  //
+  // What the budget does NOT do is close the slow-machine gap: an indicator
+  // that first paints after it still reads as idle, exactly as it did under the
+  // sleep. It is the same bound, spent only when it has to be.
+  await thinking.waitFor({ state: 'visible', timeout: APPEARANCE_PROBE_MS }).catch(() => {})
+  await expect(thinking).not.toBeVisible({ timeout: timeoutMs })
 }
 
 // ──────────────────────────────────────────────
@@ -161,6 +302,14 @@ export async function approveWorkerViaUI(page: Page, token: string, name: string
  * Clicks the agent button in the tab bar which directly creates an agent.
  */
 export async function openAgentViaUI(page: Page) {
+  // Wait for the active tab's context first, for the same reason
+  // openTerminalViaUI does: handleOpenAgent reads `{workerId, workingDir}`
+  // SYNCHRONOUSLY on click and, finding either missing, opens the "new agent"
+  // dialog to ask the user instead. That is a one-shot bail with no retry, so a
+  // click that lands too early creates no tab at all and the count wait below
+  // burns its whole budget against a number that will never change -- which is
+  // exactly how 036 failed.
+  await waitForActiveTabContext(page)
   // Count existing agent tabs so we can wait for the new one to appear.
   const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
   await page.locator('[data-testid^="new-agent-button"]').first().click()
@@ -270,10 +419,29 @@ export async function screenshotIfEnabled(page: Page, name: string) {
 }
 
 /**
- * Set the initial UI theme in localStorage before navigation.
- * Must be called before any page.goto() calls.
+ * The app does not store preferences as bare JSON: every `leapmux:`-family
+ * value goes through `~/lib/browserStorage`, which wraps it as `{ v, e }` with
+ * an expiration and sweeps any entry whose wrapper is missing or malformed.
+ *
+ * These two helpers therefore have to speak the wrapper, and both silently did
+ * the wrong thing when they did not. Reading `JSON.parse(raw)[field]` yields
+ * the WRAPPER's fields, so `getBrowserPref` returned null for every preference
+ * that was actually set; writing a bare object made `setInitialBrowserPref` a
+ * no-op, because `loadBrowserPrefs` rejects an unwrapped entry and falls back
+ * to `{}`. Neither failed loudly -- the specs just asserted against defaults.
+ *
+ * The key and its TTL come from the app's own registry rather than being
+ * restated here, so a change on that side cannot leave the tests writing an
+ * entry the sweep would drop.
  */
-const BROWSER_PREFS_KEY = 'leapmux:browser-prefs'
+function browserPrefsTtlMs(): number {
+  const ttlMs = EXACT_KEY_TTLS.get(KEY_BROWSER_PREFS)
+  if (ttlMs === undefined)
+    throw new Error(`${KEY_BROWSER_PREFS} is missing from EXACT_KEY_TTLS`)
+  return ttlMs
+}
+
+const BROWSER_PREFS_TTL_MS = browserPrefsTtlMs()
 
 /** Read a single field from the consolidated browser preferences in localStorage. */
 export async function getBrowserPref(page: Page, field: string): Promise<string | null> {
@@ -281,23 +449,32 @@ export async function getBrowserPref(page: Page, field: string): Promise<string 
     const raw = localStorage.getItem(key)
     if (!raw)
       return null
-    const prefs = JSON.parse(raw)
+    const wrapper = JSON.parse(raw)
+    const prefs = wrapper?.v
+    if (prefs == null || typeof prefs !== 'object')
+      return null
     return prefs[f] !== undefined ? String(prefs[f]) : null
-  }, [BROWSER_PREFS_KEY, field] as const)
+  }, [KEY_BROWSER_PREFS, field] as const)
 }
 
 /** Set a single field in the consolidated browser preferences via addInitScript. */
 export async function setInitialBrowserPref(page: Page, field: string, value: string) {
-  await page.addInitScript(([key, f, v]) => {
+  await page.addInitScript(([key, f, v, ttlMs]) => {
+    let prefs: Record<string, unknown> = {}
     const raw = localStorage.getItem(key)
-    const prefs = raw ? JSON.parse(raw) : {}
+    if (raw) {
+      try {
+        const wrapper = JSON.parse(raw)
+        if (wrapper?.v != null && typeof wrapper.v === 'object')
+          prefs = wrapper.v as Record<string, unknown>
+      }
+      catch {
+        // Malformed: start from empty, exactly as the app's reader does.
+      }
+    }
     prefs[f] = v
-    localStorage.setItem(key, JSON.stringify(prefs))
-  }, [BROWSER_PREFS_KEY, field, value] as const)
-}
-
-export async function setInitialTheme(page: Page, theme: 'light' | 'dark' | 'system') {
-  await setInitialBrowserPref(page, 'theme', theme)
+    localStorage.setItem(key, JSON.stringify({ v: prefs, e: Date.now() + ttlMs }))
+  }, [KEY_BROWSER_PREFS, field, value, BROWSER_PREFS_TTL_MS] as const)
 }
 
 /**
@@ -359,22 +536,170 @@ export function waitForLayoutSave(page: Page): Promise<void> {
   })
 }
 
-/** Open the settings menu, retrying if it was caught mid-close animation. */
+/**
+ * Open the agent settings menu and leave it open.
+ *
+ * Gates on the TRIGGER's `aria-expanded`, which is the app's own statement of
+ * whether the menu is open, rather than on the menu element's visibility. A
+ * menu caught mid-CLOSE is still visible for the length of its animation, so
+ * the visibility check used to see "already open", skip the click, and hand
+ * the caller a menu that vanished a frame later -- the caller's click on an
+ * item then failed with "element is not stable" and finally "element is not
+ * visible", which is exactly how 044's model switches died under load.
+ */
 export async function openSettingsMenu(page: Page) {
   const trigger = page.locator('[data-testid="agent-settings-trigger"]')
   const menu = page.locator('[data-testid="agent-settings-menu"]')
   await expect(trigger).toBeVisible()
   await expect(async () => {
-    if (!await menu.isVisible()) {
+    if (await trigger.getAttribute('aria-expanded') !== 'true')
       await trigger.click()
-    }
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
     await expect(menu).toBeVisible()
   }).toPass()
+}
+
+/**
+ * Pick `testId` out of the agent settings menu, opening it first.
+ *
+ * Open-then-click is retried as ONE unit: a settings round-trip landing
+ * between the two re-renders the dropdown and can close it, and an open that
+ * has already been awaited cannot be re-established by the click itself. The
+ * caller's invariant is "this option got chosen", so that is what is retried.
+ */
+export async function chooseSettingsOption(page: Page, testId: string) {
+  const option = page.locator(`[data-testid="${testId}"]`)
+  await expect(async () => {
+    await openSettingsMenu(page)
+    await option.click()
+  }).toPass()
+}
+
+/**
+ * A DirectoryTree row, located by the file or directory name it displays.
+ *
+ * Anchored on the row's own test id rather than on `getByText(name)`: the label
+ * is duplicated into the Tooltip portal for every truncated node, so a bare
+ * text locator matches twice and dies on Playwright's strict-mode check.
+ *
+ * `:visible`-scoped before `.first()` for the same reason as {@link workspaceRow}:
+ * the sidebar is mounted twice, and `.first()` alone can pick the off-screen
+ * copy's row -- hoverable in the accessibility sense, but covered, so the hover
+ * is refused until it times out.
+ */
+export function treeRow(page: Page, name: string): Locator {
+  return page.locator(`[data-testid="tree-row"]${VISIBLE}`).filter({ hasText: name }).first()
+}
+
+/**
+ * Open a sidebar row's hover-revealed menu and leave it open, with `item` on
+ * screen.
+ *
+ * Hover, trigger click, AND the item lookup are retried as ONE unit, because
+ * the menu is transient in two different ways. The tree re-renders on
+ * git-status refreshes and on every turn-end trigger, detaching the row under
+ * the pointer ("element is not stable", then "element was detached from the
+ * DOM"); and the sidebar itself re-renders on workspace / worker / todo
+ * changes. Waiting on a generic "the menu opened" signal and THEN reaching for
+ * the item left exactly that gap: 014 and 037 both failed with the menu open
+ * and the item they wanted gone.
+ *
+ * Shared by the file-tree three-dot menu and the branch-group one, which differ
+ * only in how their trigger is addressed.
+ */
+async function openRowMenu(row: Locator, trigger: Locator, item: Locator) {
+  await expect(async () => {
+    if (!await item.isVisible()) {
+      await row.hover()
+      await trigger.click()
+    }
+    await expect(item).toBeVisible()
+  }).toPass()
+}
+
+/**
+ * Open a row's menu and click one of its items, retried together.
+ *
+ * Same reasoning as {@link openRowMenu}: the menu can vanish between opening it
+ * and clicking, so the caller's invariant -- "this item got clicked" -- is what
+ * gets retried.
+ */
+async function clickRowMenuItem(row: Locator, trigger: Locator, item: Locator) {
+  await expect(async () => {
+    await openRowMenu(row, trigger, item)
+    await item.click()
+  }).toPass()
+}
+
+/** The three-dot trigger inside a file-tree row. */
+function treeMenuTrigger(row: Locator): Locator {
+  return row.locator('[data-testid="tree-context-button"]')
+}
+
+/**
+ * Open a tree row's context menu, with `requiredItem` on screen.
+ *
+ * `requiredItem` defaults to the one entry every variant of the menu carries,
+ * for callers that only need it open.
+ */
+export async function openTreeContextMenu(page: Page, row: Locator, requiredItem = 'tree-copy-path-button') {
+  await openRowMenu(row, treeMenuTrigger(row), page.locator(`[data-testid="${requiredItem}"]:visible`))
+}
+
+/** Open a tree row's context menu and click one of its items. */
+export async function clickTreeContextItem(page: Page, row: Locator, itemTestId: string) {
+  await clickRowMenuItem(row, treeMenuTrigger(row), page.locator(`[data-testid="${itemTestId}"]:visible`))
+}
+
+/**
+ * The first branch-group row in the sidebar.
+ *
+ * `:visible`-scoped for the same reason as {@link workspaceRow}: the app mounts
+ * the sidebar twice, and an unscoped `.first()` can land on the OFF-SCREEN
+ * copy's row -- which is visible enough to hover but sits under the on-screen
+ * sidebar, so the hover is refused with "subtree intercepts pointer events"
+ * until the action times out.
+ *
+ * Its menu trigger is addressed by `aria-expanded` rather than by position:
+ * DropdownMenu renders its items as `<button role="menuitem">` inside the row's
+ * own popover, so `.locator('button').last()` resolves to a hidden menu ITEM
+ * and never becomes clickable. Only the trigger carries `aria-expanded`.
+ */
+export function branchGroupRow(page: Page): Locator {
+  return page.locator(`[data-testid="tab-tree-branch-group"]${VISIBLE}`).first()
+}
+
+function branchMenuTrigger(row: Locator): Locator {
+  return row.locator('[aria-expanded]').first()
+}
+
+/** Open a branch group's three-dot menu, with `requiredItem` on screen. */
+export async function openBranchMenu(page: Page, row: Locator, requiredItem = 'Change branch...') {
+  await openRowMenu(row, branchMenuTrigger(row), page.getByRole('menuitem', { name: requiredItem }))
+}
+
+/** Open a branch group's three-dot menu and click one of its items. */
+export async function clickBranchMenuItem(page: Page, row: Locator, itemName: string) {
+  await clickRowMenuItem(row, branchMenuTrigger(row), page.getByRole('menuitem', { name: itemName }))
 }
 
 /** Wait for the settings loading spinner to disappear. */
 export async function waitForSettingsIdle(page: Page) {
   await expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
+}
+
+/**
+ * Wait until the settings trigger has a RESOLVED model, not the placeholder.
+ *
+ * The trigger renders `…` in the model slot until the agent reports an option
+ * catalog (UNRESOLVED_MODEL_PLACEHOLDER in AgentSettingsPanel), so a freshly
+ * opened tab shows something like "… · Auto" for as long as its agent takes to
+ * hand over its groups. Assertions about the trigger's CONTENT have to wait for
+ * that, and the placeholder is the app's own marker for it -- nothing invented
+ * for the tests.
+ */
+export async function waitForSettingsHydrated(page: Page) {
+  await expect(page.locator('[data-testid="agent-settings-trigger"]')).not.toContainText('…')
 }
 
 /**
@@ -405,6 +730,72 @@ export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
 }
 
 /**
+ * The sidebar row for `workspaceId`, restricted to the one on screen.
+ *
+ * The app mounts the sidebar TWICE -- the desktop element and the
+ * mobile/overlay one are separate `createLeftSidebarElement` calls -- so the
+ * same `workspace-item-<id>` can exist in two subtrees with only one of them
+ * rendered. Playwright reports the strict-mode violation on the resolved set
+ * BEFORE applying its visibility filter, so even `waitFor()` (which waits for
+ * `visible`) throws outright. 142 and 152 both died there.
+ *
+ * `.first()` on top of that, because during a layout-breakpoint transition BOTH
+ * copies can be visible at once and `:visible` alone still resolves to two. It
+ * is safe by construction: both nodes carry the same workspace id, so clicking
+ * or reading either answers the same question.
+ */
+export function workspaceRow(page: Page, workspaceId: string): Locator {
+  return page.locator(`[data-testid="workspace-item-${workspaceId}"]${VISIBLE}`).first()
+}
+
+/**
+ * The tab-tree leaves nested under `workspaceId`'s sidebar row, read from the
+ * ON-SCREEN sidebar.
+ *
+ * Built on {@link workspaceRow}, so it inherits the `:visible` scoping. The two
+ * specs that needed this each hand-rolled it with a bare
+ * `document.querySelector`, which takes the FIRST `workspace-item-<id>` in DOM
+ * order -- and the app mounts the sidebar twice, so that is sometimes the
+ * off-screen copy. Its leaves exist but never hydrate their worker-side
+ * metadata, so a title assertion sat on the fallback "Agent" until it timed
+ * out, reporting a hydration bug that was really a wrong-copy read.
+ *
+ * The children wrapper is the row's next sibling (the tree renders them as
+ * siblings, not as descendants), hence the xpath hop.
+ */
+export function sidebarLeaves(page: Page, workspaceId: string): Locator {
+  return workspaceRow(page, workspaceId)
+    .locator('xpath=following-sibling::*[1]')
+    .locator('[data-testid="tab-tree-leaf"]')
+}
+
+/**
+ * Rendered titles of `workspaceId`'s sidebar leaves, with the close icon /
+ * badges stripped so only the label text remains.
+ */
+export async function sidebarLeafLabels(page: Page, workspaceId: string): Promise<string[]> {
+  return sidebarLeaves(page, workspaceId).evaluateAll(leaves =>
+    leaves.map((leaf) => {
+      const clone = leaf.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('button, svg').forEach(n => n.remove())
+      return (clone.textContent ?? '').trim()
+    }),
+  )
+}
+
+/**
+ * Tab ids of `workspaceId`'s sidebar leaves.
+ *
+ * Ids, not rendered titles: a title is Worker-sourced metadata, so with the
+ * Worker offline every row falls back to the generic "Agent" label. That
+ * fallback is correct behaviour and says nothing about where the tab lives.
+ */
+export async function sidebarLeafIds(page: Page, workspaceId: string): Promise<string[]> {
+  return sidebarLeaves(page, workspaceId)
+    .evaluateAll(leaves => leaves.map(leaf => leaf.getAttribute('data-tab-id') ?? ''))
+}
+
+/**
  * Load the app and make `workspaceId` the active workspace, then wait for its
  * shell to be ready.
  *
@@ -426,7 +817,7 @@ export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
  */
 export async function openWorkspace(page: Page, workspaceId: string) {
   await page.goto('/')
-  const row = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+  const row = workspaceRow(page, workspaceId)
   await row.waitFor()
   if (await row.getAttribute('data-active') !== 'true')
     await row.click()
@@ -445,8 +836,7 @@ export async function openWorkspace(page: Page, workspaceId: string) {
  */
 export async function reopenWorkspace(page: Page, workspaceId: string) {
   await page.goto('/')
-  await expect(page.locator(`[data-testid="workspace-item-${workspaceId}"]`))
-    .toHaveAttribute('data-active', 'true')
+  await expect(workspaceRow(page, workspaceId)).toHaveAttribute('data-active', 'true')
   await waitForWorkspaceReady(page)
 }
 

@@ -24,18 +24,20 @@ func setupTestDB(t *testing.T) (*sql.DB, *gendb.Queries) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
-	err = db.Migrate(sqlDB)
+	err = db.Migrate(context.Background(), sqlDB)
 	require.NoError(t, err)
 
 	return sqlDB, gendb.New(sqlDB)
 }
 
 func TestCleanup_WorktreeSoftDelete(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	ctx := context.Background()
 
 	// Create a worktree.
-	err := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
+	_, err := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
 		ID:           "wt-1",
 		WorktreePath: "/tmp/wt1",
 		RepoRoot:     "/repo",
@@ -58,11 +60,13 @@ func TestCleanup_WorktreeSoftDelete(t *testing.T) {
 }
 
 func TestCleanup_HardDeleteWorktreesBefore(t *testing.T) {
+	t.Parallel()
+
 	sqlDB, queries := setupTestDB(t)
 	ctx := context.Background()
 
 	// Create and soft-delete a worktree.
-	err := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
+	_, err := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
 		ID:           "wt-old",
 		WorktreePath: "/tmp/wt-old",
 		RepoRoot:     "/repo",
@@ -93,11 +97,13 @@ func TestCleanup_HardDeleteWorktreesBefore(t *testing.T) {
 }
 
 func TestCleanup_HardDeleteWorktreesBefore_RetainsRecent(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	ctx := context.Background()
 
 	// Create and soft-delete a worktree (recently deleted).
-	err := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
+	_, err := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
 		ID:           "wt-recent",
 		WorktreePath: "/tmp/wt-recent",
 		RepoRoot:     "/repo",
@@ -125,11 +131,13 @@ func TestCleanup_HardDeleteWorktreesBefore_RetainsRecent(t *testing.T) {
 }
 
 func TestCleanup_WorktreeTabsCascadeOnHardDelete(t *testing.T) {
+	t.Parallel()
+
 	sqlDB, queries := setupTestDB(t)
 	ctx := context.Background()
 
 	// Create a worktree and add a tab reference.
-	err := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
+	_, err := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
 		ID:           "wt-cascade",
 		WorktreePath: "/tmp/wt-cascade",
 		RepoRoot:     "/repo",
@@ -187,6 +195,8 @@ func TestCleanup_WorktreeTabsCascadeOnHardDelete(t *testing.T) {
 // retention tests use multi-day gaps, which is exactly how the prior
 // driver-layout cutoff bind (which missed every same-day row) shipped green.
 func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
+	t.Parallel()
+
 	sqlDB, queries := setupTestDB(t)
 	ctx := context.Background()
 	cutoffTime := time.Now().UTC().Truncate(time.Millisecond)
@@ -233,9 +243,10 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 	assert.Equal(t, int64(1), n, "terminals sweep must delete exactly the strictly-older same-second row")
 
 	seedWorktree := func(id string, deletedAt time.Time) {
-		require.NoError(t, queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
+		_, cwErr := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
 			ID: id, WorktreePath: "/tmp/" + id, RepoRoot: "/repo", BranchName: id,
-		}))
+		})
+		require.NoError(t, cwErr)
 		_, err := sqlDB.ExecContext(ctx, "UPDATE worktrees SET deleted_at = ? WHERE id = ?", timefmt.Format(deletedAt), id)
 		require.NoError(t, err)
 	}
@@ -264,6 +275,8 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 // closes would be flaky, since the timestamps could round to the same value and
 // pass either way.
 func TestCloseAgentAndCloseTerminalAreIdempotent(t *testing.T) {
+	t.Parallel()
+
 	sqlDB, queries := setupTestDB(t)
 	ctx := context.Background()
 	old := timefmt.Format(time.Now().Add(-30 * 24 * time.Hour))
@@ -317,6 +330,8 @@ func closeErr(_ sql.Result, err error) error { return err }
 // the life of the worker process. The reconciler covered for it only by
 // re-tearing-down closed rows on every pass.
 func TestCleanupRegistry_CloseDuringStartupWindowStillRetiresTheResource(t *testing.T) {
+	t.Parallel()
+
 	var reg cleanupRegistry
 	ran := 0
 
@@ -340,6 +355,8 @@ func TestCleanupRegistry_CloseDuringStartupWindowStillRetiresTheResource(t *test
 // must NOT trigger the window behaviour: the ordinary
 // register-then-run sequence, and a spawn that aborts before registering.
 func TestCleanupRegistry_NormalOrderAndAbandonedClaim(t *testing.T) {
+	t.Parallel()
+
 	var reg cleanupRegistry
 
 	// Ordinary order: claim, register, then close.

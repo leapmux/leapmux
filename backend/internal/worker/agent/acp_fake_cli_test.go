@@ -31,6 +31,17 @@ type fakeACPCLISpec struct {
 	forwardArgs bool
 }
 
+// Tests in this package call t.Parallel(): they are dominated by subprocess
+// spawns (fake ACP CLIs, mock Claude helpers, shells) rather than CPU, and each
+// owns its own manager, temp dirs and fake binaries.
+//
+// installFakeACPCLI is the exception that shapes the rule. It prepends a
+// directory to PATH with t.Setenv, which is process-wide, and the testing
+// package panics if a test that touched the environment also calls
+// t.Parallel. Every test reaching this helper -- directly or through a
+// per-provider wrapper such as installFakeCursorCLI -- therefore stays
+// serial, and a new one must too.
+//
 // installFakeACPCLI writes a shell launcher named spec.binary onto PATH that
 // re-execs the test binary into spec.helperRun (the fake ACP server). It is the
 // shared core behind each provider's installFake*CLI helper.

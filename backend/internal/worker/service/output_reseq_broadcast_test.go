@@ -56,6 +56,8 @@ func (w *agentMessageCapturingWriter) snapshot() []*leapmuxv1.AgentChatMessage {
 // marker instead of treating the re-emission as a brand-new message. The first
 // (standalone) broadcast must carry previous_seq 0 -- it is not a move.
 func TestNotificationReseqBroadcast_CarriesPreviousSeq(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -98,6 +100,8 @@ func TestNotificationReseqBroadcast_CarriesPreviousSeq(t *testing.T) {
 // a rail dot. Threaded rows are unmarked today, so we force a mark on the parent row to
 // prove the broadcast reads it from the DB rather than dropping it to UNSPECIFIED.
 func TestNotificationReseqBroadcast_CarriesMarkType(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{

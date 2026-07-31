@@ -21,16 +21,36 @@ import {
   CloseTerminalResponseSchema,
 } from '../../../src/generated/leapmux/v1/terminal_pb'
 import { expect } from '../fixtures'
-import { authedHeaders, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
+import { API_POLL_INTERVAL_MS, authedHeaders, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
 import { expectAnyVisible, isMaybeVisible } from './ui'
 
 /**
  * Create a git repo inside the server's data directory so the worker can access it.
+ *
+ * The repo pins three settings that would otherwise be inherited from the
+ * machine's global gitconfig, because each of them puts a SECOND writer inside
+ * `.git` that the test never asked for:
+ *
+ * - `core.fsmonitor` (commonly on for macOS dev machines) makes git spawn a
+ *   filesystem-monitor daemon per repo. It outlives the command that started
+ *   it, touches the index, and leaves a unix socket behind -- so it competes
+ *   for `index.lock` with the worker's own git commands and survives into the
+ *   test's cleanup.
+ * - `gc.auto` / `maintenance.auto` are the same hazard in slower motion: a
+ *   commit can fire a background `git gc` that writes after the command
+ *   returns.
+ *
+ * `--initial-branch=main` is pinned for the same reason it is in the Go
+ * helpers: a host without `init.defaultBranch` lands on `master`, and the
+ * specs address the initial branch by name.
  */
 export function createGitRepo(dataDir: string, name: string): string {
   const repoDir = join(dataDir, name)
   mkdirSync(repoDir, { recursive: true })
-  execSync('git init', { cwd: repoDir })
+  execSync('git -c core.fsmonitor=false init --initial-branch=main', { cwd: repoDir })
+  execSync('git config core.fsmonitor false', { cwd: repoDir })
+  execSync('git config gc.auto 0', { cwd: repoDir })
+  execSync('git config maintenance.auto false', { cwd: repoDir })
   execSync('git config user.email "test@test.com"', { cwd: repoDir })
   execSync('git config user.name "Test"', { cwd: repoDir })
   writeFileSync(join(repoDir, 'README.md'), '# Test\n')
@@ -48,15 +68,55 @@ export function branchExists(repoDir: string, branchName: string): boolean {
 }
 
 /**
- * Poll until a path no longer exists on disk (worktree removal is async).
+ * How long a filesystem effect of a worker-side git operation may take.
+ *
+ * Deliberately far below the suite's 120s assertion budget, and measured rather
+ * than guessed: every SUCCESSFUL worktree create/remove in these specs lands
+ * within a second or two even with eight workers competing for git, while the
+ * failures observed under load never complete at all -- the add dies on a stale
+ * index.lock and nothing ever appears. So a long budget buys no passes and
+ * costs minutes of wall time per failing test. 30s is roughly an order of
+ * magnitude of headroom over the slowest success seen.
  */
-export async function waitForPathDeleted(path: string, timeoutMs = 10_000, intervalMs = 200): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (existsSync(path)) {
-    if (Date.now() >= deadline)
-      throw new Error(`Path still exists after ${timeoutMs}ms: ${path}`)
-    await new Promise(r => setTimeout(r, intervalMs))
-  }
+const GIT_FS_EFFECT_TIMEOUT_MS = 30_000
+
+/**
+ * Poll until a path exists on disk (worktree creation is async).
+ *
+ * The RPC that creates a worktree returns once the worker has accepted the
+ * request; the `git worktree add` runs on the startup goroutine afterwards, so
+ * a one-shot `existsSync` right after the dialog closes is a coin flip.
+ */
+export async function waitForPathExists(path: string): Promise<void> {
+  await expect(() => {
+    expect(existsSync(path), `path should exist: ${path}`).toBe(true)
+  }).toPass({ timeout: GIT_FS_EFFECT_TIMEOUT_MS })
+}
+
+/**
+ * Poll until `repoDir` has `branch` checked out.
+ *
+ * Every git-mode checkout runs on the worker's async startup goroutine, which
+ * starts only after OpenAgent has answered -- so by the time the RPC returns or
+ * the create-workspace dialog closes, HEAD has usually not moved yet. A one-shot
+ * `git rev-parse` there is a race that reads `main` and reports the feature as
+ * broken. Shared so the UI and API variants of the same assertion cannot drift:
+ * the API one already polled, the UI one did not, and only the UI one flaked.
+ */
+export async function expectRepoBranch(repoDir: string, branch: string): Promise<void> {
+  await expect
+    .poll(() => execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim())
+    .toBe(branch)
+}
+
+/**
+ * Poll until a path no longer exists on disk (worktree removal is async).
+ * Same budget rationale as {@link waitForPathExists}.
+ */
+export async function waitForPathDeleted(path: string): Promise<void> {
+  await expect(() => {
+    expect(existsSync(path), `path should be gone: ${path}`).toBe(false)
+  }).toPass({ timeout: GIT_FS_EFFECT_TIMEOUT_MS })
 }
 
 /**
@@ -130,7 +190,7 @@ export async function createWorkspaceWithWorktreeViaAPI(
         `createWorkspaceWithWorktreeViaAPI: worktree did not appear at ${expectedWorktreeDir} within 30s`,
       )
     }
-    await new Promise(r => setTimeout(r, 200))
+    await new Promise(r => setTimeout(r, 25))
   }
 
   return workspaceId
@@ -169,8 +229,8 @@ export async function waitForAgentStartupViaAPI(
   workspaceId: string,
   expectedCount = 1,
   timeoutMs = 30_000,
-  intervalMs = 200,
-): Promise<Array<{ id: string, workingDir: string, status: number, startupError: string }>> {
+  intervalMs = API_POLL_INTERVAL_MS,
+): Promise<Array<{ id: string, title: string, workingDir: string, status: number, startupError: string }>> {
   const deadline = Date.now() + timeoutMs
   while (true) {
     const agents = await listAgentsViaAPI(hubUrl, token, workerId, workspaceId)
@@ -266,8 +326,8 @@ export async function waitForAgentsViaAPI(
   workerId: string,
   workspaceId: string,
   timeoutMs = 15_000,
-  intervalMs = 200,
-): Promise<Array<{ id: string, workingDir: string, status: number, startupError: string }>> {
+  intervalMs = API_POLL_INTERVAL_MS,
+): Promise<Array<{ id: string, title: string, workingDir: string, status: number, startupError: string }>> {
   const deadline = Date.now() + timeoutMs
   while (true) {
     const agents = await listAgentsViaAPI(hubUrl, token, workerId, workspaceId)
@@ -291,7 +351,7 @@ export async function listAgentsViaAPI(
   token: string,
   workerId: string,
   workspaceId: string,
-): Promise<Array<{ id: string, workingDir: string, status: number, startupError: string }>> {
+): Promise<Array<{ id: string, title: string, workingDir: string, status: number, startupError: string }>> {
   // Get tab IDs from the hub's ListTabs endpoint.
   const tabsRes = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
     method: 'POST',
@@ -325,7 +385,7 @@ export async function listAgentsViaAPI(
     // Treat as transient; caller retries via waitForAgentsViaAPI.
     return []
   }
-  return (resp.agents ?? []).map(a => ({ id: a.id, workingDir: a.workingDir, status: a.status, startupError: a.startupError }))
+  return (resp.agents ?? []).map(a => ({ id: a.id, title: a.title, workingDir: a.workingDir, status: a.status, startupError: a.startupError }))
 }
 
 /**

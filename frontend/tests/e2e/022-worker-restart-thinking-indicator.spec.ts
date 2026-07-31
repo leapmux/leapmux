@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, assistantBubbles, expectAnyVisible, loginViaToken, openWorkspace } from './helpers/ui'
+import { ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Worker Restart Thinking Indicator', () => {
@@ -58,18 +58,11 @@ test.describe('Worker Restart Thinking Indicator', () => {
 
       // Send a message and wait for a response
       await editor.click()
-      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
+      await page.keyboard.type(ARITHMETIC_PROMPT)
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response
-      await page.waitForFunction((sel: string) => {
-        const bubbles = document.querySelectorAll(sel)
-        for (const b of bubbles) {
-          if (/6,?912/.test(b.textContent ?? ''))
-            return true
-        }
-        return false
-      }, ASSISTANT_BUBBLE_SELECTOR)
+      await expectAssistantAnswer(page)
 
       // Stop the worker
       await stopWorker()
@@ -107,18 +100,11 @@ test.describe('Worker Restart Thinking Indicator', () => {
       // ("3333") must not be a substring of the first answer ("6912"), which is
       // still on screen, or this wait would match the stale bubble.
       await editor.click()
-      await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
+      await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
       await page.keyboard.press('Meta+Enter')
 
       // Wait for the assistant's response containing "3333"
-      await page.waitForFunction((sel: string) => {
-        const bubbles = document.querySelectorAll(sel)
-        for (const b of bubbles) {
-          if (/3,?333/.test(b.textContent ?? ''))
-            return true
-        }
-        return false
-      }, ASSISTANT_BUBBLE_SELECTOR)
+      await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
       // Verify that the thinking indicator was shown at some point during
       // the turn, even if only briefly before streaming began.

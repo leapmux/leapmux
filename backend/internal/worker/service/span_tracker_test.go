@@ -33,6 +33,8 @@ func snapshotColor(t *testing.T, tracker *SpanTracker, spanID string) int {
 }
 
 func TestSpanTracker_OpenClose(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// Initially empty.
@@ -63,6 +65,8 @@ func TestSpanTracker_OpenClose(t *testing.T) {
 }
 
 func TestSpanTracker_NestedSpans(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	tracker.OpenSpan("span-1", "")
@@ -86,6 +90,8 @@ func TestSpanTracker_NestedSpans(t *testing.T) {
 }
 
 func TestSpanTracker_ColumnReuse(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	tracker.OpenSpan("span-1", "")
@@ -104,6 +110,8 @@ func TestSpanTracker_ColumnReuse(t *testing.T) {
 }
 
 func TestSpanTracker_RootSpanAppendsAfterRightmostActiveColumn(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	tracker.OpenSpan("spawn-1", "")        // col 0
@@ -127,6 +135,8 @@ func TestSpanTracker_RootSpanAppendsAfterRightmostActiveColumn(t *testing.T) {
 }
 
 func TestSpanTracker_ParallelSpans(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	tracker.OpenSpan("span-A", "")
@@ -148,6 +158,8 @@ func TestSpanTracker_ParallelSpans(t *testing.T) {
 }
 
 func TestSpanTracker_CloseNonexistent(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 	tracker.CloseSpan("nonexistent")
 	_, lines, _ := tracker.Snapshot("", "", false)
@@ -155,6 +167,8 @@ func TestSpanTracker_CloseNonexistent(t *testing.T) {
 }
 
 func TestSpanTracker_DepthForMainScope(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("span-1", "")
 	depth, _, _ := tracker.Snapshot("", "", false)
@@ -162,6 +176,8 @@ func TestSpanTracker_DepthForMainScope(t *testing.T) {
 }
 
 func TestSpanTracker_ColorAfterClose(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	tracker.OpenSpan("span-1", "")
@@ -177,6 +193,8 @@ func TestSpanTracker_ColorAfterClose(t *testing.T) {
 }
 
 func TestSpanTracker_ReserveSpanColor(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// Reserving for span-1 returns a color in palette range.
@@ -199,6 +217,8 @@ func TestSpanTracker_ReserveSpanColor(t *testing.T) {
 }
 
 func TestSpanTracker_PaletteSaturation(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// Open the full palette of root-level spans simultaneously.
@@ -221,6 +241,8 @@ func TestSpanTracker_PaletteSaturation(t *testing.T) {
 }
 
 func TestSpanTracker_RenderingHints(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	tracker.OpenSpan("span-A", "")
@@ -254,6 +276,8 @@ func TestSpanTracker_RenderingHints(t *testing.T) {
 }
 
 func TestSpanTracker_ConnectorEnd(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// Two parallel spans: A (col 0) and B (col 1).
@@ -284,17 +308,23 @@ func TestSpanTracker_ConnectorEnd(t *testing.T) {
 }
 
 func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsWhenNoSpansActive(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 	assert.True(t, tracker.ShouldBroadcastStreamChunk())
 }
 
 func TestSpanTracker_ShouldBroadcastStreamChunk_HidesWhenSpanActive(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("span-A", "")
 	assert.False(t, tracker.ShouldBroadcastStreamChunk())
 }
 
 func TestSpanTracker_ShouldBroadcastStreamChunk_HidesWhenMultipleSpansActive(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("span-A", "")
 	tracker.OpenSpan("span-B", "")
@@ -302,6 +332,8 @@ func TestSpanTracker_ShouldBroadcastStreamChunk_HidesWhenMultipleSpansActive(t *
 }
 
 func TestSpanTracker_PassthroughWithNullSlot(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// Three spans: A (col 0), B (col 1), C (col 2). Close B to create a null slot.
@@ -326,6 +358,8 @@ func TestSpanTracker_PassthroughWithNullSlot(t *testing.T) {
 }
 
 func TestSpanTracker_SpanLinesNullSlots(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	tracker.OpenSpan("span-A", "")
@@ -344,6 +378,8 @@ func TestSpanTracker_SpanLinesNullSlots(t *testing.T) {
 }
 
 func TestSpanTracker_ChildSpanColumnAfterSiblingClose(t *testing.T) {
+	t.Parallel()
+
 	// Regression: when a sibling span closes and frees a column to the LEFT
 	// of a parent span, a new child of that parent must still be placed to
 	// the RIGHT of its parent — not in the freed left-side slot.
@@ -386,6 +422,8 @@ func TestSpanTracker_ChildSpanColumnAfterSiblingClose(t *testing.T) {
 }
 
 func TestSpanTracker_ChildSpanAfterDescendantClose(t *testing.T) {
+	t.Parallel()
+
 	// Regression: when a child span (D) of parent (C) closes but D's own
 	// child (E) remains active, a new child of C (F) must be placed to the
 	// RIGHT of E — not in D's freed column.
@@ -427,6 +465,8 @@ func TestSpanTracker_ChildSpanAfterDescendantClose(t *testing.T) {
 }
 
 func TestSpanTracker_ChildSpanSkipsNonDescendantGap(t *testing.T) {
+	t.Parallel()
+
 	// Regression: when a span closes and frees a column between the parent's
 	// subtree and a non-descendant span, a new child must be placed AFTER
 	// the non-descendant span — not in the freed gap.
@@ -462,6 +502,8 @@ func TestSpanTracker_ChildSpanSkipsNonDescendantGap(t *testing.T) {
 }
 
 func TestSpanTracker_DeepNestingDepth(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// A → B → C → D (depths 1, 2, 3, 4).
@@ -481,6 +523,8 @@ func TestSpanTracker_DeepNestingDepth(t *testing.T) {
 }
 
 func TestSpanTracker_DepthAfterIntermediateClose(t *testing.T) {
+	t.Parallel()
+
 	// A → B → C. Close B. C's depth should still be 3 (not affected
 	// by the intermediate parent closing).
 	tracker := &SpanTracker{}
@@ -504,6 +548,8 @@ func TestSpanTracker_DepthAfterIntermediateClose(t *testing.T) {
 }
 
 func TestSpanTracker_MultipleChildrenDepth(t *testing.T) {
+	t.Parallel()
+
 	// Parent P with three children C1, C2, C3 — all should have same depth.
 	tracker := &SpanTracker{}
 
@@ -519,6 +565,8 @@ func TestSpanTracker_MultipleChildrenDepth(t *testing.T) {
 }
 
 func TestSpanTracker_SnapshotConnectorColor(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	tracker.OpenSpan("span-A", "")
@@ -544,6 +592,8 @@ func TestSpanTracker_SnapshotConnectorColor(t *testing.T) {
 }
 
 func TestSpanTracker_ConnectorOnNestedChild(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// A (col 0) → B (col 1). Connect to B while A is active.
@@ -569,6 +619,8 @@ func TestSpanTracker_ConnectorOnNestedChild(t *testing.T) {
 }
 
 func TestSpanTracker_ConnectorWithDepthAndPassthrough(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// A (col 0) → B (col 1) → C (col 2). Connect to A while B, C active.
@@ -599,6 +651,8 @@ func TestSpanTracker_ConnectorWithDepthAndPassthrough(t *testing.T) {
 }
 
 func TestSpanTracker_SpanType(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// GetSpanType returns "" for unknown spans.
@@ -622,6 +676,8 @@ func TestSpanTracker_SpanType(t *testing.T) {
 }
 
 func TestSpanTracker_ToolUseConnectorInSubagent(t *testing.T) {
+	t.Parallel()
+
 	// When a tool_use message is emitted inside a subagent, the tool_use's
 	// own span hasn't been opened yet (it opens after persist). The parent
 	// subagent span IS active. The span line for the subagent should render
@@ -644,6 +700,8 @@ func TestSpanTracker_ToolUseConnectorInSubagent(t *testing.T) {
 }
 
 func TestSpanTracker_ToolResultConnectorInSubagent(t *testing.T) {
+	t.Parallel()
+
 	// A tool_result (closing) message should still connect to the tool's
 	// own span, not the parent — the span is open at this point.
 	tracker := &SpanTracker{}
@@ -662,6 +720,8 @@ func TestSpanTracker_ToolResultConnectorInSubagent(t *testing.T) {
 }
 
 func TestSpanTracker_TopLevelToolUseNoConnector(t *testing.T) {
+	t.Parallel()
+
 	// A top-level tool_use (no parent span) should have no connector.
 	tracker := &SpanTracker{}
 
@@ -671,6 +731,8 @@ func TestSpanTracker_TopLevelToolUseNoConnector(t *testing.T) {
 }
 
 func TestSpanTracker_ExplicitClosingConnectorUsesOverride(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("subagent", "")
 
@@ -685,6 +747,8 @@ func TestSpanTracker_ExplicitClosingConnectorUsesOverride(t *testing.T) {
 }
 
 func TestSpanTracker_ParentMapClearedOnAllClose(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// Open nested spans A → B → C and verify depth works.
@@ -719,6 +783,8 @@ func TestSpanTracker_ParentMapClearedOnAllClose(t *testing.T) {
 }
 
 func TestSpanTracker_Reset(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	// Open nested spans and set types.
@@ -760,6 +826,8 @@ func TestSpanTracker_Reset(t *testing.T) {
 }
 
 func TestSpanTracker_ResetClearsPending(t *testing.T) {
+	t.Parallel()
+
 	tracker := &SpanTracker{}
 
 	tracker.ReserveSpanColor("a", "")
@@ -770,6 +838,8 @@ func TestSpanTracker_ResetClearsPending(t *testing.T) {
 }
 
 func TestSpanTracker_ResetClearsDeck(t *testing.T) {
+	t.Parallel()
+
 	tracker := newTrackerWithSeed(1)
 
 	// Drain the deck partway by opening and closing a few spans.
@@ -785,6 +855,8 @@ func TestSpanTracker_ResetClearsDeck(t *testing.T) {
 }
 
 func TestSpanTracker_ColorAvoidsActiveColors(t *testing.T) {
+	t.Parallel()
+
 	tracker := newTrackerWithSeed(1)
 
 	// Open spanPaletteSize-1 spans so exactly one color remains free.
@@ -812,6 +884,8 @@ func TestSpanTracker_ColorAvoidsActiveColors(t *testing.T) {
 }
 
 func TestSpanTracker_ColorAvoidsParentWhenAvailable(t *testing.T) {
+	t.Parallel()
+
 	for seed := uint64(1); seed <= 20; seed++ {
 		tracker := newTrackerWithSeed(seed)
 		tracker.OpenSpan("parent", "")
@@ -824,6 +898,8 @@ func TestSpanTracker_ColorAvoidsParentWhenAvailable(t *testing.T) {
 }
 
 func TestSpanTracker_ExhaustedPaletteAvoidsParentAndAdjacent(t *testing.T) {
+	t.Parallel()
+
 	for seed := uint64(1); seed <= 20; seed++ {
 		tracker := newTrackerWithSeed(seed)
 
@@ -847,6 +923,8 @@ func TestSpanTracker_ExhaustedPaletteAvoidsParentAndAdjacent(t *testing.T) {
 }
 
 func TestSpanTracker_ReserveMatchesOpenSpan(t *testing.T) {
+	t.Parallel()
+
 	tracker := newTrackerWithSeed(42)
 
 	cases := []struct {
@@ -867,6 +945,8 @@ func TestSpanTracker_ReserveMatchesOpenSpan(t *testing.T) {
 }
 
 func TestSpanTracker_ReserveIsIdempotentForSameSpanID(t *testing.T) {
+	t.Parallel()
+
 	tracker := newTrackerWithSeed(7)
 
 	first := tracker.ReserveSpanColor("a", "")
@@ -880,6 +960,8 @@ func TestSpanTracker_ReserveIsIdempotentForSameSpanID(t *testing.T) {
 }
 
 func TestSpanTracker_DistributionUsesAllColors(t *testing.T) {
+	t.Parallel()
+
 	tracker := newTrackerWithSeed(99)
 	seen := make(map[int]bool, spanPaletteSize)
 
@@ -894,6 +976,8 @@ func TestSpanTracker_DistributionUsesAllColors(t *testing.T) {
 }
 
 func TestSpanTracker_ShuffleVisitsAllColorsInWindowOf8(t *testing.T) {
+	t.Parallel()
+
 	// With shuffle-deck selection, any 8 sequential single-span openings
 	// (no concurrent spans constraining the deck) must use all 8 palette
 	// colors before any repeats. Repeat across many seeds and across
@@ -915,6 +999,8 @@ func TestSpanTracker_ShuffleVisitsAllColorsInWindowOf8(t *testing.T) {
 }
 
 func TestSpanTracker_PendingCountsAsInUseForNextReserve(t *testing.T) {
+	t.Parallel()
+
 	tracker := newTrackerWithSeed(3)
 
 	first := tracker.ReserveSpanColor("a", "")
@@ -926,6 +1012,8 @@ func TestSpanTracker_PendingCountsAsInUseForNextReserve(t *testing.T) {
 }
 
 func TestSpanTracker_PendingClearedOnReserveDifferentSpan(t *testing.T) {
+	t.Parallel()
+
 	tracker := newTrackerWithSeed(5)
 
 	tracker.ReserveSpanColor("a", "")
@@ -941,6 +1029,8 @@ func TestSpanTracker_PendingClearedOnReserveDifferentSpan(t *testing.T) {
 }
 
 func TestSpanTracker_CloseClearsPendingForSameSpan(t *testing.T) {
+	t.Parallel()
+
 	tracker := newTrackerWithSeed(11)
 
 	tracker.ReserveSpanColor("a", "")

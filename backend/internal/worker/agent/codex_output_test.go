@@ -35,6 +35,8 @@ func newCodexAgentWithSink(sink OutputSink) *CodexAgent {
 }
 
 func TestHandleCodexOutput_TurnStartedBroadcastsTurnID(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -51,6 +53,8 @@ func TestHandleCodexOutput_TurnStartedBroadcastsTurnID(t *testing.T) {
 }
 
 func TestHandleCodexOutput_TurnStartedFallbackIsNoop(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -68,6 +72,8 @@ func TestHandleCodexOutput_TurnStartedFallbackIsNoop(t *testing.T) {
 }
 
 func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -102,6 +108,8 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 }
 
 func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -116,6 +124,8 @@ func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
 }
 
 func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -130,6 +140,8 @@ func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
 }
 
 func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -144,6 +156,8 @@ func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
 }
 
 func TestHandleCodexOutput_PlanDelta(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -176,6 +190,8 @@ func TestHandleCodexOutput_PlanDelta(t *testing.T) {
 }
 
 func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -192,6 +208,8 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T
 }
 
 func TestHandleCodexOutput_McpStartupStatusPersistsAsAgent(t *testing.T) {
+	t.Parallel()
+
 	sink := &startupStatusGuardSink{t: t}
 	agent := newCodexAgentWithSink(sink)
 
@@ -207,6 +225,8 @@ func TestHandleCodexOutput_McpStartupStatusPersistsAsAgent(t *testing.T) {
 }
 
 func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -225,6 +245,8 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 }
 
 func TestHandleCodexOutput_MetadataNotificationsPersistRawAsAgent(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name  string
 		input string
@@ -257,6 +279,8 @@ func TestHandleCodexOutput_MetadataNotificationsPersistRawAsAgent(t *testing.T) 
 }
 
 func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -280,6 +304,8 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 // Both Codex and Claude broadcast the same tier shape so the frontend
 // can consume one format regardless of provider.
 func TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -304,6 +330,8 @@ func TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire(t *testing.T) {
 }
 
 func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -318,6 +346,8 @@ func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
 // Codex builds that emit the authoritative rateLimitReachedType schedule a resume
 // when a time-windowed rate limit is reached.
 func TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -332,6 +362,8 @@ func TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules(t *testing.T) {
 // a credit-depletion block does NOT reset on the rolling-window timer, so even at
 // 100% usage it must cancel rather than schedule a doomed-to-re-hit resume.
 func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -346,6 +378,8 @@ func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 // TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels verifies a usage cap
 // (admin-set, not time-windowed) is treated like credit depletion: no resume.
 func TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -361,6 +395,8 @@ func TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels(t *testing.T) {
 // not ticked to 100. The most-utilized window must both bind the resume time and
 // surface as "exceeded" in the popover broadcast.
 func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -384,6 +420,8 @@ func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T)
 // while a sibling window does. The resume must fall back to the sibling's reset
 // rather than cancel and strand a block that WILL lift on the rolling-window timer.
 func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -403,6 +441,8 @@ func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *test
 // summarizer's elevate + resume edges directly (no agent), covering the
 // binding-window-without-reset fallback that the handler test drives end to end.
 func TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset(t *testing.T) {
+	t.Parallel()
+
 	resetSecondary := int64(1894000000)
 	tiers := []*codexRateLimitTier{
 		{UsedPercent: 99, WindowDurationMins: 300},                              // binding, no reset
@@ -429,6 +469,8 @@ func TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset(t *testing.T) {
 // frontend replay path so the popover and the live broadcast can't disagree. The
 // already-exceeded window keeps its status; a low sibling is never lifted.
 func TestSummarizeCodexRateLimits_ExceededWindowGatesElevate(t *testing.T) {
+	t.Parallel()
+
 	tiers := []*codexRateLimitTier{
 		{UsedPercent: 100, WindowDurationMins: 300},  // exceeded by status, no reset
 		{UsedPercent: 20, WindowDurationMins: 10080}, // low sibling
@@ -444,6 +486,8 @@ func TestSummarizeCodexRateLimits_ExceededWindowGatesElevate(t *testing.T) {
 }
 
 func TestHandleCodexOutput_TurnFailedServerOverloadedSchedulesResume(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -458,6 +502,8 @@ func TestHandleCodexOutput_TurnFailedServerOverloadedSchedulesResume(t *testing.
 }
 
 func TestHandleCodexOutput_TurnFailedNonOverloadedCancelsAPIErrorResume(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -469,6 +515,8 @@ func TestHandleCodexOutput_TurnFailedNonOverloadedCancelsAPIErrorResume(t *testi
 }
 
 func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -485,6 +533,8 @@ func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *test
 }
 
 func TestIsRetryableCodexTurnFailure(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name    string
 		message string
@@ -507,6 +557,8 @@ func TestIsRetryableCodexTurnFailure(t *testing.T) {
 }
 
 func TestHandleCodexOutput_TurnCompletedFailedNonRetryableCancelsAPIError(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -520,6 +572,8 @@ func TestHandleCodexOutput_TurnCompletedFailedNonRetryableCancelsAPIError(t *tes
 }
 
 func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -533,6 +587,8 @@ func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 }
 
 func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -547,6 +603,8 @@ func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
 }
 
 func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -573,6 +631,8 @@ func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
 }
 
 func TestHandleCodexOutput_SubagentCommandPersistsVisibleParentSpan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -591,6 +651,8 @@ func TestHandleCodexOutput_SubagentCommandPersistsVisibleParentSpan(t *testing.T
 }
 
 func TestHandleCodexOutput_SpawnAgentCompletedDoesNotCloseSubagentSpan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -601,6 +663,8 @@ func TestHandleCodexOutput_SpawnAgentCompletedDoesNotCloseSubagentSpan(t *testin
 }
 
 func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -623,6 +687,8 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 }
 
 func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -633,6 +699,8 @@ func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T)
 }
 
 func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -643,6 +711,8 @@ func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses
 }
 
 func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -653,6 +723,8 @@ func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
 }
 
 func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -663,6 +735,8 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T
 }
 
 func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFinishes(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -683,6 +757,8 @@ func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFi
 }
 
 func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -699,6 +775,8 @@ func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
 }
 
 func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -714,6 +792,8 @@ func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
 }
 
 func TestHandleCodexOutput_ReasoningSummaryTextDelta(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -729,6 +809,8 @@ func TestHandleCodexOutput_ReasoningSummaryTextDelta(t *testing.T) {
 }
 
 func TestHandleCodexOutput_ReasoningSummaryPartAdded(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -744,6 +826,8 @@ func TestHandleCodexOutput_ReasoningSummaryPartAdded(t *testing.T) {
 }
 
 func TestHandleCodexOutput_ReasoningTextDelta(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -759,6 +843,8 @@ func TestHandleCodexOutput_ReasoningTextDelta(t *testing.T) {
 }
 
 func TestHandleCodexOutput_CommandExecutionTerminalInteraction(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -774,6 +860,8 @@ func TestHandleCodexOutput_CommandExecutionTerminalInteraction(t *testing.T) {
 }
 
 func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -789,6 +877,8 @@ func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
 }
 
 func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -830,6 +920,8 @@ func TestHandleCodexOutput_PlanDeltaThenCompleted(t *testing.T) {
 }
 
 func TestHandleCodexOutput_CommandExecutionCompletedBroadcastsStreamEnd(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -842,6 +934,8 @@ func TestHandleCodexOutput_CommandExecutionCompletedBroadcastsStreamEnd(t *testi
 }
 
 func TestHandleCodexOutput_FileChangeCompletedBroadcastsStreamEnd(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -854,6 +948,8 @@ func TestHandleCodexOutput_FileChangeCompletedBroadcastsStreamEnd(t *testing.T) 
 }
 
 func TestHandleCodexOutput_ReasoningCompletedBroadcastsStreamEnd(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -866,6 +962,8 @@ func TestHandleCodexOutput_ReasoningCompletedBroadcastsStreamEnd(t *testing.T) {
 }
 
 func TestHandleCodexOutput_McpToolCallCompletedDoesNotBroadcastStreamEnd(t *testing.T) {
+	t.Parallel()
+
 	// Only commandExecution and fileChange stream output deltas keyed by itemID, so only
 	// they end a live stream on completion. mcpToolCall (and dynamicToolCall) never stream,
 	// so a completion must NOT emit a stream-end -- a phantom end for a never-started stream.
@@ -880,6 +978,8 @@ func TestHandleCodexOutput_McpToolCallCompletedDoesNotBroadcastStreamEnd(t *test
 }
 
 func TestHandleCodexOutput_DynamicToolCallCompletedDoesNotBroadcastStreamEnd(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -891,6 +991,8 @@ func TestHandleCodexOutput_DynamicToolCallCompletedDoesNotBroadcastStreamEnd(t *
 }
 
 func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -904,6 +1006,8 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -929,6 +1033,8 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsage(t *testing.T)
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.model = "gpt-5.4"
@@ -945,6 +1051,8 @@ func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *tes
 }
 
 func TestHandleCodexOutput_TokenUsageUpdatedIgnoresSubagentThreads(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -957,6 +1065,8 @@ func TestHandleCodexOutput_TokenUsageUpdatedIgnoresSubagentThreads(t *testing.T)
 }
 
 func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -970,6 +1080,8 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -994,6 +1106,8 @@ func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *te
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanItem(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -1011,6 +1125,8 @@ func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanI
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -1025,6 +1141,8 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -1097,6 +1215,8 @@ func lastThinkingTokens(sink *testSink) int64 {
 }
 
 func TestHandleCodexOutput_AgentMessageDeltaAccumulatesThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -1113,6 +1233,8 @@ func TestHandleCodexOutput_AgentMessageDeltaAccumulatesThinkingTokens(t *testing
 }
 
 func TestHandleCodexOutput_ReasoningAndPlanDeltasAccumulateThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name  string
 		input string
@@ -1135,6 +1257,8 @@ func TestHandleCodexOutput_ReasoningAndPlanDeltasAccumulateThinkingTokens(t *tes
 }
 
 func TestHandleCodexOutput_ReasoningSummaryAndRawCountOncePerItem(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -1160,6 +1284,8 @@ func TestHandleCodexOutput_ReasoningSummaryAndRawCountOncePerItem(t *testing.T) 
 }
 
 func TestHandleCodexOutput_ReasoningCountsWhicheverStreamArrivesFirst(t *testing.T) {
+	t.Parallel()
+
 	// A model that streams only one reasoning kind must still move the counter, so
 	// the estimator locks onto whichever arrives first rather than preferring one.
 	for _, tc := range []struct {
@@ -1182,6 +1308,8 @@ func TestHandleCodexOutput_ReasoningCountsWhicheverStreamArrivesFirst(t *testing
 }
 
 func TestHandleCodexOutput_ReasoningItemCompletedReleasesStreamLock(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -1200,6 +1328,8 @@ func TestHandleCodexOutput_ReasoningItemCompletedReleasesStreamLock(t *testing.T
 }
 
 func TestHandleCodexOutput_ChildThreadDeltasDoNotCountThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink) // threadID = "main-thread"
 
@@ -1219,6 +1349,8 @@ func TestHandleCodexOutput_ChildThreadDeltasDoNotCountThinkingTokens(t *testing.
 }
 
 func TestHandleCodexOutput_CommandAndFileOutputDeltasDoNotCountThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -1231,6 +1363,8 @@ func TestHandleCodexOutput_CommandAndFileOutputDeltasDoNotCountThinkingTokens(t 
 }
 
 func TestHandleCodexOutput_ItemCompletedResetsThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -1247,6 +1381,8 @@ func TestHandleCodexOutput_ItemCompletedResetsThinkingTokens(t *testing.T) {
 }
 
 func TestHandleCodexOutput_ItemStartedAndApprovalResetThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name  string
 		reset string
@@ -1273,6 +1409,8 @@ func TestHandleCodexOutput_ItemStartedAndApprovalResetThinkingTokens(t *testing.
 }
 
 func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotResetThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink) // threadID = "main-thread"
 
@@ -1292,6 +1430,8 @@ func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotResetThinkingTokens(t *t
 }
 
 func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotReplaceInterruptTurn(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
@@ -1308,6 +1448,8 @@ func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotReplaceInterruptTurn(t *
 }
 
 func TestHandleCodexOutput_TurnStartedClearsReasoningStreamLocksOnMainThreadOnly(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name        string
 		turnStarted string
@@ -1343,6 +1485,8 @@ func TestHandleCodexOutput_TurnStartedClearsReasoningStreamLocksOnMainThreadOnly
 }
 
 func TestHandleCodexOutput_ReasoningItemCompletedResetsThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 	agent.threadID = "main-thread"
@@ -1363,6 +1507,8 @@ func TestHandleCodexOutput_ReasoningItemCompletedResetsThinkingTokens(t *testing
 }
 
 func TestHandleCodexOutput_TurnBoundariesResetThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name  string
 		reset string

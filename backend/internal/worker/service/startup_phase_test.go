@@ -35,6 +35,8 @@ func (rc *recordedCallbacks) hooks() startupCallbacks {
 // could see the registry's FAILED status before the persisted
 // startup_error column lands.
 func TestFailStartup_OrdersPersistBroadcastRegistry(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
@@ -55,6 +57,8 @@ func TestFailStartup_OrdersPersistBroadcastRegistry(t *testing.T) {
 // Without the rollback ordering the UI flashes STARTUP_FAILED before
 // the user sees the "rolling back…" message.
 func TestFailStartup_RollbackLabelBroadcastsBeforePersist(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
@@ -84,6 +88,8 @@ func TestFailStartup_RollbackLabelBroadcastsBeforePersist(t *testing.T) {
 // the git-mode mutation without firing a STARTING broadcast — the
 // frontend would otherwise see a spurious "" status flash.
 func TestRunStartupPhase0_NoLabel_SkipsBroadcast(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 

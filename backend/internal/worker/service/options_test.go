@@ -13,6 +13,8 @@ import (
 // TestOptionMap_Merge pins the empty-deletes wire semantics and clone-on-write: an empty
 // incoming value deletes the key, a non-empty one sets it, and the receiver is never mutated.
 func TestOptionMap_Merge(t *testing.T) {
+	t.Parallel()
+
 	base := OptionMap{agent.OptionIDModel: "opus", agent.OptionIDEffort: "high"}
 	got := base.Merge(OptionMap{agent.OptionIDEffort: "", agent.OptionIDPermissionMode: "plan"})
 
@@ -25,6 +27,8 @@ func TestOptionMap_Merge(t *testing.T) {
 
 // TestOptionMap_Clone returns an independent, never-nil copy.
 func TestOptionMap_Clone(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, OptionMap{}, OptionMap(nil).Clone(), "a nil map clones to a non-nil empty map")
 	src := OptionMap{agent.OptionIDModel: "opus"}
 	cp := src.Clone()
@@ -34,6 +38,8 @@ func TestOptionMap_Clone(t *testing.T) {
 
 // TestOptionMap_Marshal drops empty values and is stable (sorted keys).
 func TestOptionMap_Marshal(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, "{}", OptionMap(nil).Marshal())
 	assert.Equal(t, "{}", OptionMap{"a": ""}.Marshal(), "an all-empty map marshals to {}")
 	assert.Equal(t, `{"effort":"high","model":"opus"}`,
@@ -44,6 +50,8 @@ func TestOptionMap_Marshal(t *testing.T) {
 // TestResolveProviderDefaults fills the model/effort defaults without mutating the input,
 // and leaves an explicit value untouched.
 func TestResolveProviderDefaults(t *testing.T) {
+	t.Parallel()
+
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	src := OptionMap{}
 	got := resolveProviderDefaults(src, claude)
@@ -60,6 +68,8 @@ func TestResolveProviderDefaults(t *testing.T) {
 // an unchanged key is omitted -- so a concurrent server-initiated refresh's keys aren't
 // clobbered by the edit's stale snapshot.
 func TestOptionsChangeDelta(t *testing.T) {
+	t.Parallel()
+
 	from := map[string]string{"model": "opus", "effort": "high", "sandbox": "read-only"}
 	to := map[string]string{"model": "sonnet", "effort": "high", "network": "enabled"}
 
@@ -79,6 +89,8 @@ func TestOptionsChangeDelta(t *testing.T) {
 // fed CurrentOptions as the base instead, a Pi agent's pi_provider would silently drop on every
 // live settings change (applySettingsLive passes the request as the base for exactly this reason).
 func TestConfirmedOptions_PreservesPersistedOnlyOption(t *testing.T) {
+	t.Parallel()
+
 	pi := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
 	// base = the request the edit carries, including the persisted-only pi_provider.
 	base := OptionMap{agent.OptionIDModel: "gpt-5.5", agent.PiOptionProvider: "openai", agent.OptionIDEffort: "high"}
@@ -98,6 +110,8 @@ func TestConfirmedOptions_PreservesPersistedOnlyOption(t *testing.T) {
 // resolved from the LIVE catalog, not mistaken for "absent from live" and resolved from a
 // stale historical catalog. Only a value genuinely absent from live falls back to prev.
 func TestResolveOptionValueLabel_SelfNamedValuePrefersLive(t *testing.T) {
+	t.Parallel()
+
 	// Live offers "build" self-named (name == id); prev carries different names for "build"
 	// and a "plan" value the live catalog no longer offers.
 	live := []*leapmuxv1.AvailableOptionGroup{{
@@ -124,6 +138,8 @@ func TestResolveOptionValueLabel_SelfNamedValuePrefersLive(t *testing.T) {
 // different order is "unchanged" and does not churn a redundant option_groups write, while a
 // genuine value or group-set change is still detected.
 func TestOptionGroupsEqual_OrderInsensitive(t *testing.T) {
+	t.Parallel()
+
 	a := []*leapmuxv1.AvailableOptionGroup{
 		{Id: agent.OptionIDModel, Options: []*leapmuxv1.AvailableOption{{Id: "opus"}, {Id: "sonnet"}}},
 		{Id: agent.OptionIDEffort, Options: []*leapmuxv1.AvailableOption{{Id: "low"}, {Id: "high"}}},
@@ -156,6 +172,8 @@ func TestOptionGroupsEqual_OrderInsensitive(t *testing.T) {
 // falls back to the static reconstruction and self-heals on the next clean push. This mirrors
 // marshalOptionGroups, which errors rather than drop a group.
 func TestParseOptionGroups_AllOrNothing(t *testing.T) {
+	t.Parallel()
+
 	groups := []*leapmuxv1.AvailableOptionGroup{
 		{Id: agent.OptionIDModel, Options: []*leapmuxv1.AvailableOption{{Id: "opus"}, {Id: "sonnet"}}},
 		{Id: agent.OptionIDEffort, Options: []*leapmuxv1.AvailableOption{{Id: "high"}}},

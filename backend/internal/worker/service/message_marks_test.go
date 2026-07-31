@@ -46,6 +46,8 @@ func listMarks(t *testing.T, d *channel.Dispatcher, agentID string) *leapmuxv1.L
 // the marked rows (unmarked ones excluded), ascending, each with its type, and the
 // whole-history min/max seq -- including seqs of unmarked rows in the range.
 func TestListMessageMarks_ReturnsMarkedSeqsAndRange(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -87,6 +89,8 @@ func TestListMessageMarks_ReturnsMarkedSeqsAndRange(t *testing.T) {
 // once the leading rows are deleted -- the exact case the RPC's min_seq exists for
 // (seqs are never reused, so a deleted prefix is gone permanently).
 func TestListMessageMarks_MinSeqAfterLeadingDelete(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -107,6 +111,8 @@ func TestListMessageMarks_MinSeqAfterLeadingDelete(t *testing.T) {
 // TestListMessageMarks_EmptyAgent asserts an agent with no messages yields no marks
 // and a 0/0 range (the "genuinely empty" sentinel, distinct from -1 indeterminate).
 func TestListMessageMarks_EmptyAgent(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -128,6 +134,8 @@ func TestListMessageMarks_EmptyAgent(t *testing.T) {
 // drive ~5 retry RPCs per closed-tab view; a present-0 range seeds the rail loaded (and it
 // stays hidden over the empty window) and ends the retry chain.
 func TestListMessageMarks_ClosedAgent_ReturnsEmptyWithPresentRange(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -147,6 +155,8 @@ func TestListMessageMarks_ClosedAgent_ReturnsEmptyWithPresentRange(t *testing.T)
 // TestListMessageMarks_UnknownAgent_Errors asserts an inaccessible/unknown agent id
 // produces an error, not a success response, via requireAccessibleAgent.
 func TestListMessageMarks_UnknownAgent_Errors(t *testing.T) {
+	t.Parallel()
+
 	_, d, _ := setupTestService(t)
 	w := newTestWriter()
 	dispatch(d, "ListMessageMarks", &leapmuxv1.ListMessageMarksRequest{AgentId: "nope"}, w)
@@ -158,6 +168,8 @@ func TestListMessageMarks_UnknownAgent_Errors(t *testing.T) {
 // persisted with mark_type=USER_MESSAGE (so the rail dots it), and that the mark
 // surfaces through ListMessageMarks. The synthetic-prompt path stays unmarked.
 func TestSendAgentMessage_PersistsUserMessageMark(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -196,6 +208,8 @@ func TestSendAgentMessage_PersistsUserMessageMark(t *testing.T) {
 // coverage for the control-response CONTROL_RESPONSE mark, whose write site routes
 // through sink.PersistMessage -> persistAndBroadcast.
 func TestPersistAndBroadcast_ThreadsMarkType(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -229,6 +243,8 @@ func TestPersistAndBroadcast_ThreadsMarkType(t *testing.T) {
 // writer -- now used ONLY for the interrupt notice, since genuine control answers persist through
 // persistControlResponseRow -- writes an UNSPECIFIED-mark row so the interrupt draws no rail dot.
 func TestPersistSyntheticUserMessage_LeavesInterruptNoticeUnmarked(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -251,6 +267,8 @@ func TestPersistSyntheticUserMessage_LeavesInterruptNoticeUnmarked(t *testing.T)
 // be wiped) gets exactly one marked structured row too -- never a second echo; a self-displayed
 // answer NOT clearing context gets none (its ingested tool_result owns the mark).
 func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	mk := func(selfDisplayed, clear bool) controlResponsePlan {
@@ -306,6 +324,8 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 }
 
 func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{

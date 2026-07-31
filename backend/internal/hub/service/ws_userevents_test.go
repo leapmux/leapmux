@@ -37,6 +37,8 @@ import (
 // `/ws/channel`, a different endpoint, so this file's endpoint had no direct
 // coverage at all.
 func TestUserEventsHandler_RevokingTheBearerClosesTheSubscription(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	user := storetest.SeedUser(t, st, "alice")
 	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "Allowed")

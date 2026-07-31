@@ -30,6 +30,8 @@ import (
 // nothing was ever stored in it. A new DATETIME column therefore fails this
 // test until a fixture write for it is added here.
 func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
+	t.Parallel()
+
 	sqlDB, queries := setupTestDB(t)
 	ctx := context.Background()
 
@@ -90,12 +92,13 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	require.NoError(t, closeErr(queries.CloseTerminal(ctx, "term-2")))
 
 	// worktrees: deleted_at via DeleteWorktree's strftime.
-	require.NoError(t, queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
+	_, cwErr := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
 		ID:           "wt-1",
 		WorktreePath: "/tmp/wt1",
 		RepoRoot:     "/repo",
 		BranchName:   "main",
-	}))
+	})
+	require.NoError(t, cwErr)
 	require.NoError(t, queries.DeleteWorktree(ctx, "wt-1"))
 
 	// auto_continue_schedules.due_at is Go-bound on every upsert.

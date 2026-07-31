@@ -83,11 +83,36 @@ type Params struct {
 // already closed -- and neither entry point ever wanted one.
 type Wiring struct {
 	Service *service.Service
+	// client is retained solely so Shutdown can flush it. Unexported for the
+	// same reason the manager and dispatcher are absent: the entry points
+	// already hold the Client they passed in, and a second handle here would
+	// only invite a caller to reach past Shutdown.
+	client *hub.Client
+}
+
+// Shutdown drains the worker and then flushes everything that drain wrote to
+// the Hub. Both halves, in this order, are the contract -- and it lives here
+// rather than in each entry point because half of it is silent when omitted.
+//
+// Service.Shutdown broadcasts the terminal "[Worker disconnected - Press Enter
+// to restart]" notice, but Client.Send only ENQUEUES onto the outbound queue.
+// An entry point that tore the stream down straight afterwards raced the
+// drain goroutine and lost under load, and the loss is invisible:
+// sendq.Writer.Close discards the queue and logs nothing, so the browser's
+// terminal simply stops. FlushSends bounds the teardown behind the drain.
+func (w *Wiring) Shutdown() {
+	w.Service.Shutdown()
+	if w.client == nil {
+		return
+	}
+	if err := w.client.FlushSends(); err != nil {
+		slog.Warn("shutdown: outbound queue did not drain", "error", err)
+	}
 }
 
 // Wire assembles the worker and starts its background loops. The caller
-// is responsible for calling Wiring.Service.Shutdown before closing the
-// database, and for connecting the Client.
+// is responsible for calling Wiring.Shutdown before closing the database
+// and tearing down the stream, and for connecting the Client.
 //
 // Ordering here is load-bearing, and each step says why:
 //
@@ -196,7 +221,7 @@ func Wire(p Params) *Wiring {
 
 	startBackgroundLoops(p, svc)
 
-	return &Wiring{Service: svc}
+	return &Wiring{Service: svc, client: p.Client}
 }
 
 // newRemoteIPCFactory builds the per-agent local-IPC factory backing the

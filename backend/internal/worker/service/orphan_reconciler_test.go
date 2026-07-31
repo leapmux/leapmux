@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,17 +38,23 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, workerdb.Migrate(sqlDB))
+	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB))
 	q := db.New(sqlDB)
 	bus := service.NewPrivateEventsBus()
 	t.Cleanup(bus.Stop)
 	files := service.NewFileTabPathStore(q, bus)
 
+	// Guarded: Run drives listFn on its own goroutine, so a test that changes
+	// the hub's answer while the reconciler is running (to model a channel
+	// that settles after a failed pass) would otherwise race the read.
 	var (
+		fakeMu   sync.Mutex
 		fakeResp *leapmuxv1.ListOwnedTabsForWorkerResponse
 		fakeErr  error
 	)
 	listFn := func(_ context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+		fakeMu.Lock()
+		defer fakeMu.Unlock()
 		return fakeResp, fakeErr
 	}
 	if opts.Logger == nil {
@@ -59,6 +66,8 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 	}
 	rec := service.NewOrphanReconciler(q, files, listFn, opts)
 	setFake := func(ownerUserID string, tabs []*leapmuxv1.OwnedTab, err error) {
+		fakeMu.Lock()
+		defer fakeMu.Unlock()
 		fakeResp = &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: ownerUserID, Tabs: tabs}
 		fakeErr = err
 	}
@@ -72,12 +81,14 @@ type testWriter struct{ t *testing.T }
 func (w testWriter) Write(p []byte) (int, error) { w.t.Log(string(p)); return len(p), nil }
 
 func TestOrphanReconciler_FileTab_MissingOnHub_Revoked(t *testing.T) {
+	t.Parallel()
+
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
 	// Local row that the hub no longer knows about.
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "ghost", FilePath: "/r/a.go",
+		UserID: "user-1", TabID: "ghost", FilePath: absTestPath("/r/a.go"),
 	}))
 	setFake("user-1", nil, nil)
 
@@ -90,6 +101,8 @@ func TestOrphanReconciler_FileTab_MissingOnHub_Revoked(t *testing.T) {
 	assert.Empty(t, rows, "stale local file tab should have been revoked")
 }
 func TestOrphanReconciler_Agent_MissingOnHub_Closed(t *testing.T) {
+	t.Parallel()
+
 	q, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
@@ -106,6 +119,8 @@ func TestOrphanReconciler_Agent_MissingOnHub_Closed(t *testing.T) {
 }
 
 func TestOrphanReconciler_Terminal_MissingOnHub_Closed(t *testing.T) {
+	t.Parallel()
+
 	q, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
@@ -174,6 +189,8 @@ func (r *recordingTeardown) closeTab(tabType leapmuxv1.TabType, userID, tabID st
 // the live exec.Cmd. Without that hop the subprocess keeps running until the
 // worker process exits -- closed_at alone only prevents a respawn.
 func TestOrphanReconciler_Agent_MissingOnHub_StopsInMemory(t *testing.T) {
+	t.Parallel()
+
 	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
@@ -196,6 +213,8 @@ func TestOrphanReconciler_Agent_MissingOnHub_StopsInMemory(t *testing.T) {
 // uses RemoveTerminal, which also drops the manager's terminals/meta/exitDone
 // entries -- the deleted fallback leaked one set per reaped terminal.
 func TestOrphanReconciler_Terminal_MissingOnHub_StopsInMemory(t *testing.T) {
+	t.Parallel()
+
 	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
@@ -217,6 +236,8 @@ func TestOrphanReconciler_Terminal_MissingOnHub_StopsInMemory(t *testing.T) {
 // test: when the hub still references the agent, the reconciler must not hand it
 // to the teardown at all (otherwise every live agent would be killed hourly).
 func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
+	t.Parallel()
+
 	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
@@ -236,11 +257,13 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 }
 
 func TestOrphanReconciler_ListError_DoesNotPanic_DoesNotCloseRows(t *testing.T) {
+	t.Parallel()
+
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "live", FilePath: "/r/a.go",
+		UserID: "user-1", TabID: "live", FilePath: absTestPath("/r/a.go"),
 	}))
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "live-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -258,6 +281,8 @@ func TestOrphanReconciler_ListError_DoesNotPanic_DoesNotCloseRows(t *testing.T) 
 }
 
 func TestOrphanReconciler_TriggerRunsPassImmediately(t *testing.T) {
+	t.Parallel()
+
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		// A long interval keeps the tick from racing with Trigger.
 		Interval: time.Hour,
@@ -266,7 +291,7 @@ func TestOrphanReconciler_TriggerRunsPassImmediately(t *testing.T) {
 	defer cancel()
 
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "ghost", FilePath: "/r/a.go",
+		UserID: "user-1", TabID: "ghost", FilePath: absTestPath("/r/a.go"),
 	}))
 	setFake("user-1", nil, nil)
 
@@ -279,13 +304,61 @@ func TestOrphanReconciler_TriggerRunsPassImmediately(t *testing.T) {
 
 	// Add another orphan and confirm Trigger fires a fresh pass.
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "ghost2", FilePath: "/r/b.go",
+		UserID: "user-1", TabID: "ghost2", FilePath: absTestPath("/r/b.go"),
 	}))
 	rec.Trigger()
 	require.Eventually(t, func() bool {
 		rows, err := q.ListAllWorkerFileTabs(ctx)
 		return err == nil && len(rows) == 0
 	}, 2*time.Second, 10*time.Millisecond, "Trigger should run another pass")
+
+	cancel()
+	rec.Stop()
+}
+
+// TestOrphanReconciler_RetriesAfterHubListFailure pins the convergence
+// guarantee the reconnect Trigger is supposed to provide.
+//
+// Trigger() fires when the worker reconnects, which is precisely when the hub
+// RPC is most likely to be answered by a channel that has not settled yet. That
+// one shot used to be dropped on the floor -- a failed listFn logged a warning
+// and returned, and nothing ran again until the next interval tick, an hour
+// away by default. So a tab the user closed while the machine was asleep kept
+// its process alive on the worker long after it woke up.
+//
+// The interval here is an hour, so anything that converges within the Eventually
+// budget can only have come from the failure retry.
+func TestOrphanReconciler_RetriesAfterHubListFailure(t *testing.T) {
+	t.Parallel()
+
+	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
+		Interval: time.Hour,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
+		UserID: "user-1", TabID: "ghost", FilePath: absTestPath("/r/a.go"),
+	}))
+	// The startup pass and any retry before the switch below both fail.
+	setFake("user-1", nil, errors.New("channel not ready"))
+
+	go rec.Run(ctx)
+	// The failing passes must not reap anything -- a hub answer we never got
+	// says nothing about which tabs still exist.
+	require.Never(t, func() bool {
+		rows, err := q.ListAllWorkerFileTabs(ctx)
+		return err == nil && len(rows) == 0
+	}, 500*time.Millisecond, 50*time.Millisecond, "a failed hub list must not reap")
+
+	// The channel settles. No Trigger and no tick: only the backoff retry can
+	// pick this up.
+	setFake("user-1", nil, nil)
+	require.Eventually(t, func() bool {
+		rows, err := q.ListAllWorkerFileTabs(ctx)
+		return err == nil && len(rows) == 0
+	}, 10*time.Second, 20*time.Millisecond,
+		"a pass whose hub leg failed must be retried without waiting for the interval")
 
 	cancel()
 	rec.Stop()
@@ -324,15 +397,17 @@ func runOnce(ctx context.Context, rec *service.OrphanReconciler) error {
 // row is then reconciled against a stranger's hub row, so user-a's live tab is
 // judged by whether USER-B still owns that id -- and reaped when they do not.
 func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
+	t.Parallel()
+
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
 	const sharedTabID = "file-1700000000000-1"
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-a", TabID: sharedTabID, FilePath: "/r/a.go",
+		UserID: "user-a", TabID: sharedTabID, FilePath: absTestPath("/r/a.go"),
 	}))
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-b", TabID: sharedTabID, FilePath: "/r/b.go",
+		UserID: "user-b", TabID: sharedTabID, FilePath: absTestPath("/r/b.go"),
 	}))
 
 	// The hub knows both rows, each naming its own owner. Neither is absent,
@@ -348,9 +423,9 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 	byUser := fileTabsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a")
 	require.Contains(t, byUser, "user-b")
-	assert.Equal(t, "/r/a.go", byUser["user-a"].FilePath,
+	assert.Equal(t, absTestPath("/r/a.go"), byUser["user-a"].FilePath,
 		"user-a must be reconciled against user-a's hub row, not user-b's")
-	assert.Equal(t, "/r/b.go", byUser["user-b"].FilePath,
+	assert.Equal(t, absTestPath("/r/b.go"), byUser["user-b"].FilePath,
 		"user-b's row must survive on its own hub row")
 }
 
@@ -366,15 +441,17 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 // adversarial, so the reap decision cannot lean on the hub having sent only
 // in-scope rows.
 func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T) {
+	t.Parallel()
+
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
 	const sharedTabID = "file-1700000000000-1"
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-a", TabID: sharedTabID, FilePath: "/r/a.go",
+		UserID: "user-a", TabID: sharedTabID, FilePath: absTestPath("/r/a.go"),
 	}))
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-b", TabID: sharedTabID, FilePath: "/r/b.go",
+		UserID: "user-b", TabID: sharedTabID, FilePath: absTestPath("/r/b.go"),
 	}))
 
 	// Only user-a's tab survives at the hub.
@@ -386,7 +463,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 
 	byUser := fileTabsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a", "the hub-known owner's row must survive")
-	assert.Equal(t, "/r/a.go", byUser["user-a"].FilePath,
+	assert.Equal(t, absTestPath("/r/a.go"), byUser["user-a"].FilePath,
 		"and must not be confused with a stranger's row")
 	assert.NotContains(t, byUser, "user-b",
 		"the owner the hub no longer knows about must be reaped, not shielded by the collision")
@@ -403,20 +480,23 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 // tick. That is a live data-loss bug, not a latent one, which is why the
 // response declares its scope and this test holds the line.
 func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
+	t.Parallel()
+
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
 	ctx := context.Background()
 
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-a", TabID: "file-a", FilePath: "/r/a.go",
+		UserID: "user-a", TabID: "file-a", FilePath: absTestPath("/r/a.go"),
 	}))
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-b", TabID: "file-b", FilePath: "/r/b.go",
+		UserID: "user-b", TabID: "file-b", FilePath: absTestPath("/r/b.go"),
 	}))
 	// Link user-b's tab to a worktree: the reap drops that link FIRST, so an
 	// unscoped reap is observable here even before the file-tab row goes.
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: "wt-b", WorktreePath: "/r/b", RepoRoot: "/r", BranchName: "b",
-	}))
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{
+		ID: "wt-b", WorktreePath: absTestPath("/r/b"), RepoRoot: absTestPath("/r"), BranchName: "b",
+	})
+	require.NoError(t, cwErr)
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
 		WorktreeID: "wt-b", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-b", UserID: "user-b",
 	}))
@@ -444,6 +524,8 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 // list must not be read as "every local tab is an orphan". Fail closed -- a
 // missed reap is a leak, an unfounded reap is data loss.
 func TestOrphanReconciler_UndeclaredScopeReapsNothing(t *testing.T) {
+	t.Parallel()
+
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		// Warn-level: the skipped pass logs at Warn and the harness default
 		// only prints Errors, which would hide it.
@@ -452,7 +534,7 @@ func TestOrphanReconciler_UndeclaredScopeReapsNothing(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, files.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-a", TabID: "file-a", FilePath: "/r/a.go",
+		UserID: "user-a", TabID: "file-a", FilePath: absTestPath("/r/a.go"),
 	}))
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "agent-a", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,

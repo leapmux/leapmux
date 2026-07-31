@@ -133,6 +133,8 @@ func newClaudeInterruptRig(t *testing.T) *claudeInterruptRig {
 }
 
 func TestClaudeCodeAgent_Interrupt_SendsControlRequest(t *testing.T) {
+	t.Parallel()
+
 	rig := newClaudeInterruptRig(t)
 
 	require.NoError(t, rig.agent.Interrupt())
@@ -152,6 +154,8 @@ func TestClaudeCodeAgent_Interrupt_SendsControlRequest(t *testing.T) {
 }
 
 func TestClaudeCodeAgent_Interrupt_AfterStopErrors(t *testing.T) {
+	t.Parallel()
+
 	rig := newClaudeInterruptRig(t)
 	// Mark the agent stopped without driving the cmd lifecycle.
 	rig.agent.mu.Lock()
@@ -230,6 +234,8 @@ func newCodexInterruptRig(t *testing.T) *codexInterruptRig {
 }
 
 func TestCodexAgent_Interrupt_SendsTurnInterruptNotification(t *testing.T) {
+	t.Parallel()
+
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "thread-A"
 	rig.agent.turnID = "turn-42"
@@ -263,6 +269,8 @@ func TestCodexAgent_Interrupt_SendsTurnInterruptNotification(t *testing.T) {
 }
 
 func TestCodexAgent_Interrupt_UsesMainTurnAfterChildTurnStarted(t *testing.T) {
+	t.Parallel()
+
 	rig := newCodexInterruptRig(t)
 	rig.agent.sink = &testSink{}
 	rig.agent.threadID = "main-thread"
@@ -290,6 +298,8 @@ func TestCodexAgent_Interrupt_UsesMainTurnAfterChildTurnStarted(t *testing.T) {
 }
 
 func TestCodexAgent_Interrupt_NoTurnIsNoop(t *testing.T) {
+	t.Parallel()
+
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "thread-A"
 	// turnID intentionally empty: Codex hasn't started a turn yet,
@@ -305,6 +315,8 @@ func TestCodexAgent_Interrupt_NoTurnIsNoop(t *testing.T) {
 }
 
 func TestCodexAgent_Interrupt_AfterStopErrors(t *testing.T) {
+	t.Parallel()
+
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "t"
 	rig.agent.turnID = "u"
@@ -318,6 +330,8 @@ func TestCodexAgent_Interrupt_AfterStopErrors(t *testing.T) {
 }
 
 func TestCodexAgent_SendInput_DuringTurnUsesMainTurnAfterChildTurnStarted(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
 	require.NoError(t, err)
@@ -382,6 +396,8 @@ func TestCodexAgent_SendInput_DuringTurnUsesMainTurnAfterChildTurnStarted(t *tes
 // --- Pi ---
 
 func TestPiAgent_Interrupt_SendsAbortDuringActiveTurn(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	rig.agent.mu.Lock()
 	rig.agent.currentTurnActive = true
@@ -400,6 +416,8 @@ func TestPiAgent_Interrupt_SendsAbortDuringActiveTurn(t *testing.T) {
 }
 
 func TestPiAgent_Interrupt_NoActiveTurnIsNoop(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	// currentTurnActive defaults to false.
 
@@ -412,6 +430,8 @@ func TestPiAgent_Interrupt_NoActiveTurnIsNoop(t *testing.T) {
 }
 
 func TestPiAgent_Interrupt_AfterStopErrors(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	rig.agent.mu.Lock()
 	rig.agent.stopped = true
@@ -427,6 +447,8 @@ func TestPiAgent_Interrupt_AfterStopErrors(t *testing.T) {
 // because they all embed acpBase and inherit Interrupt verbatim) ---
 
 func TestACPAgent_Interrupt_SendsSessionCancelNotification(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newGooseAgentForRPCWithResponder(t,
 		func(string) json.RawMessage { return json.RawMessage(`{}`) })
 	// Helper sets sessionID="session-1" by default.
@@ -449,6 +471,8 @@ func TestACPAgent_Interrupt_SendsSessionCancelNotification(t *testing.T) {
 }
 
 func TestACPAgent_Interrupt_NoSessionIsNoop(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newGooseAgentForRPCWithResponder(t,
 		func(string) json.RawMessage { return json.RawMessage(`{}`) })
 	// Wipe the session so cancelSession would emit a stale id; the
@@ -465,6 +489,8 @@ func TestACPAgent_Interrupt_NoSessionIsNoop(t *testing.T) {
 }
 
 func TestACPAgent_Interrupt_AfterStopErrors(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newGooseAgentForRPCWithResponder(t,
 		func(string) json.RawMessage { return json.RawMessage(`{}`) })
 	agent.mu.Lock()
@@ -483,6 +509,8 @@ func TestACPAgent_Interrupt_AfterStopErrors(t *testing.T) {
 // at compile-fail time rather than first incident.
 
 func TestInterrupt_ClaudeWireFormatMatchesProviderClassifier(t *testing.T) {
+	t.Parallel()
+
 	// Reconstruct the exact frame ClaudeCodeAgent.Interrupt produces
 	// (sendControlAndWait formats it identically).
 	frame := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":%s}`,
@@ -492,6 +520,8 @@ func TestInterrupt_ClaudeWireFormatMatchesProviderClassifier(t *testing.T) {
 }
 
 func TestInterrupt_CodexWireFormatMatchesProviderClassifier(t *testing.T) {
+	t.Parallel()
+
 	b, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "turn/interrupt",
@@ -503,6 +533,8 @@ func TestInterrupt_CodexWireFormatMatchesProviderClassifier(t *testing.T) {
 }
 
 func TestInterrupt_PiWireFormatMatchesProviderClassifier(t *testing.T) {
+	t.Parallel()
+
 	// Pi's sendPiCommand wraps {type:"abort", id:...} — IsInterrupt
 	// keys on type only.
 	frame := `{"type":"abort","id":"leapmux-1"}`
@@ -511,6 +543,8 @@ func TestInterrupt_PiWireFormatMatchesProviderClassifier(t *testing.T) {
 }
 
 func TestInterrupt_ACPWireFormatMatchesProviderClassifier(t *testing.T) {
+	t.Parallel()
+
 	b, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "session/cancel",

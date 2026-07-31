@@ -9,6 +9,8 @@ import (
 )
 
 func TestThinkingTokenEstimator_AccumulatesAndDividesOnce(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	var est thinkingTokenEstimator
 
@@ -28,6 +30,8 @@ func TestThinkingTokenEstimator_AccumulatesAndDividesOnce(t *testing.T) {
 }
 
 func TestThinkingTokenEstimator_CountsRunesNotBytes(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	var est thinkingTokenEstimator
 
@@ -38,6 +42,8 @@ func TestThinkingTokenEstimator_CountsRunesNotBytes(t *testing.T) {
 }
 
 func TestThinkingTokenEstimator_SuppressesUnchangedEstimate(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	var est thinkingTokenEstimator
 
@@ -56,6 +62,8 @@ func TestThinkingTokenEstimator_SuppressesUnchangedEstimate(t *testing.T) {
 }
 
 func TestThinkingTokenEstimator_ResetRestartsAndReshipsUnchangedValue(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	var est thinkingTokenEstimator
 
@@ -73,6 +81,8 @@ func TestThinkingTokenEstimator_ResetRestartsAndReshipsUnchangedValue(t *testing
 }
 
 func TestThinkingTokenEstimator_EmptyAndNonPositiveDeltasShipNothing(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	var est thinkingTokenEstimator
 
@@ -83,6 +93,8 @@ func TestThinkingTokenEstimator_EmptyAndNonPositiveDeltasShipNothing(t *testing.
 }
 
 func TestThinkingTokenEstimator_ShipDropsValueFromEndedPhase(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	var est thinkingTokenEstimator
 
@@ -108,6 +120,8 @@ func TestThinkingTokenEstimator_ShipDropsValueFromEndedPhase(t *testing.T) {
 }
 
 func TestThinkingTokenEstimator_HasPendingTracksUnclearedChars(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	var est thinkingTokenEstimator
 	assert.False(t, est.hasPending(), "a fresh estimator has nothing pending")
@@ -132,6 +146,8 @@ func TestThinkingTokenEstimator_HasPendingTracksUnclearedChars(t *testing.T) {
 }
 
 func TestThinkingResetSink_ResetsOnFrontendClearBoundariesOnly(t *testing.T) {
+	t.Parallel()
+
 	const (
 		agent   = leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
 		user    = leapmuxv1.MessageSource_MESSAGE_SOURCE_USER

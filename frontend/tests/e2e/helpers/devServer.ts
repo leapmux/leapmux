@@ -18,6 +18,7 @@ import {
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
 } from './api'
+import { stopProcess } from './process'
 import { findFreePort, getGlobalState, waitForServer } from './server'
 
 export interface DevServerHandle {
@@ -80,12 +81,7 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
 }
 
 export async function stopDevServer(handle: DevServerHandle | UnseededDevServerHandle, extraPaths: string[] = []): Promise<void> {
-  handle.proc.kill('SIGTERM')
-  await new Promise(r => setTimeout(r, 1000))
-  try {
-    handle.proc.kill('SIGKILL')
-  }
-  catch { /* already dead */ }
+  await stopProcess(handle.proc)
   rmSync(handle.dataDir, { recursive: true, force: true })
   for (const p of extraPaths)
     rmSync(p, { recursive: true, force: true })

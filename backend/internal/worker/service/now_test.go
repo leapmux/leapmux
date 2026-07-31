@@ -8,6 +8,8 @@ import (
 )
 
 func TestNowMillisIsUTCOnMillisecondGrid(t *testing.T) {
+	t.Parallel()
+
 	got := nowMillis()
 
 	assert.Equal(t, time.UTC, got.Location())

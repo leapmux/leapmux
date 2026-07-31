@@ -16,6 +16,8 @@ import (
 )
 
 func TestPrivateEventsBus_PublishesToSubscribersOfSameOwner(t *testing.T) {
+	t.Parallel()
+
 	bus := service.NewPrivateEventsBus()
 	defer bus.Stop()
 
@@ -37,6 +39,8 @@ func TestPrivateEventsBus_PublishesToSubscribersOfSameOwner(t *testing.T) {
 }
 
 func TestPrivateEventsBus_DoesNotLeakAcrossOwners(t *testing.T) {
+	t.Parallel()
+
 	bus := service.NewPrivateEventsBus()
 	defer bus.Stop()
 
@@ -58,6 +62,8 @@ func TestPrivateEventsBus_DoesNotLeakAcrossOwners(t *testing.T) {
 }
 
 func TestPrivateEventsBus_StopClosesSubscribers(t *testing.T) {
+	t.Parallel()
+
 	bus := service.NewPrivateEventsBus()
 
 	done := make(chan struct{})
@@ -84,6 +90,8 @@ func TestPrivateEventsBus_StopClosesSubscribers(t *testing.T) {
 // (`requireWorkerOwner`); inside the bus every active subscriber for that owner
 // is treated equally.
 func TestPrivateEventsBus_MultipleSubscribersOnSameOwnerAllReceive(t *testing.T) {
+	t.Parallel()
+
 	bus := service.NewPrivateEventsBus()
 	defer bus.Stop()
 
@@ -126,6 +134,8 @@ func TestPrivateEventsBus_MultipleSubscribersOnSameOwnerAllReceive(t *testing.T)
 // optimisation turns this into a blocking send (e.g. "fairness for
 // slow tabs"), the bus would deadlock under load.
 func TestPrivateEventsBus_DropsOnSlowConsumer(t *testing.T) {
+	t.Parallel()
+
 	bus := service.NewPrivateEventsBus()
 	defer bus.Stop()
 
@@ -169,6 +179,8 @@ func TestPrivateEventsBus_DropsOnSlowConsumer(t *testing.T) {
 }
 
 func TestPrivateEventsBus_EventCarriesOriginClientId(t *testing.T) {
+	t.Parallel()
+
 	bus := service.NewPrivateEventsBus()
 	defer bus.Stop()
 
@@ -211,6 +223,8 @@ func TestPrivateEventsBus_EventCarriesOriginClientId(t *testing.T) {
 // Run under `-race`, which is where the unsynchronized flag read shows up even
 // on an interleaving that happens not to panic.
 func TestPrivateEventsBus_StopRacesSubscribeAndPublish(t *testing.T) {
+	t.Parallel()
+
 	const goroutines = 24
 	bus := service.NewPrivateEventsBus()
 	owner := userid.MustNew("user-1")

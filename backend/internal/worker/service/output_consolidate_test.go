@@ -81,6 +81,8 @@ func consolidateForProvider(provider leapmuxv1.AgentProvider, msgs []json.RawMes
 }
 
 func TestConsolidateNotificationThread_OrderPreserved(t *testing.T) {
+	t.Parallel()
+
 	t.Run("context_cleared then settings_changed", func(t *testing.T) {
 		msgs := []json.RawMessage{
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
@@ -115,6 +117,8 @@ func TestConsolidateNotificationThread_OrderPreserved(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_Dedup(t *testing.T) {
+	t.Parallel()
+
 	t.Run("context_cleared deduped to last occurrence", func(t *testing.T) {
 		msgs := []json.RawMessage{
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
@@ -158,6 +162,8 @@ func TestConsolidateNotificationThread_Dedup(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_ChangesCancelOut(t *testing.T) {
+	t.Parallel()
+
 	t.Run("settings_changed cancels out when A->B then B->A", func(t *testing.T) {
 		msgs := []json.RawMessage{
 			raw(t, settingsChanged("A", "B")),
@@ -180,6 +186,8 @@ func TestConsolidateNotificationThread_ChangesCancelOut(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_SettingsMerged(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, settingsChanged("A", "B")),
 		raw(t, settingsChanged("B", "C")),
@@ -194,6 +202,8 @@ func TestConsolidateNotificationThread_SettingsMerged(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_PlanExecution(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "plan_execution", "plan_file_path": "/p.md"}),
 		raw(t, map[string]interface{}{"type": "context_cleared"}),
@@ -203,6 +213,8 @@ func TestConsolidateNotificationThread_PlanExecution(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_PlanUpdatedFoldsToMostRecent(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "plan_updated", "plan_title": "v1", "plan_file_path": "/v1.md"}),
 		raw(t, map[string]interface{}{"type": "settings_changed", "changes": map[string]interface{}{"model": map[string]interface{}{"old": "A", "new": "B"}}}),
@@ -219,6 +231,8 @@ func TestConsolidateNotificationThread_PlanUpdatedFoldsToMostRecent(t *testing.T
 }
 
 func TestConsolidateNotificationThread_NoContextClearedOnSettingsChanged(t *testing.T) {
+	t.Parallel()
+
 	// Even if the input has contextCleared on settings_changed, output must not.
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{
@@ -234,6 +248,8 @@ func TestConsolidateNotificationThread_NoContextClearedOnSettingsChanged(t *test
 }
 
 func TestConsolidateNotificationThread_CompactionBoundariesKept(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
 		raw(t, map[string]interface{}{"type": "system", "subtype": "microcompact_boundary"}),
@@ -243,6 +259,8 @@ func TestConsolidateNotificationThread_CompactionBoundariesKept(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_Interrupted(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, settingsChanged("A", "B")),
 		raw(t, map[string]interface{}{"type": "interrupted"}),
@@ -252,6 +270,8 @@ func TestConsolidateNotificationThread_Interrupted(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_RateLimit(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{
 			"type":            "rate_limit",
@@ -270,6 +290,8 @@ func TestConsolidateNotificationThread_RateLimit(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_SystemStatus(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "system", "subtype": "status", "status": "compacting"}),
 		raw(t, map[string]interface{}{"type": "system", "subtype": "status", "status": "idle"}),
@@ -281,6 +303,8 @@ func TestConsolidateNotificationThread_SystemStatus(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *testing.T) {
+	t.Parallel()
+
 	t.Run("compact_boundary after context_cleared drops context_cleared", func(t *testing.T) {
 		msgs := []json.RawMessage{
 			raw(t, map[string]interface{}{"type": "context_cleared"}),
@@ -329,6 +353,8 @@ func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *te
 }
 
 func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T) {
+	t.Parallel()
+
 	t.Run("compacting dropped when compact_boundary follows", func(t *testing.T) {
 		msgs := []json.RawMessage{
 			raw(t, map[string]interface{}{"type": "compacting"}),
@@ -377,11 +403,15 @@ func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T)
 }
 
 func TestConsolidateNotificationThread_Empty(t *testing.T) {
+	t.Parallel()
+
 	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, nil)
 	assert.Equal(t, []json.RawMessage{}, result)
 }
 
 func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
+	t.Parallel()
+
 	t.Run("starting then ready collapses to ready", func(t *testing.T) {
 		msgs := []json.RawMessage{
 			raw(t, codexStartupStatus("codex_apps", "starting", nil)),
@@ -441,6 +471,8 @@ func TestConsolidateNotificationThread_CodexMcpStartupStatus(t *testing.T) {
 }
 
 func TestConsolidateNotificationThread_CodexMetadataNotificationsCollapse(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, codexMethod("skills/changed", map[string]interface{}{})),
 		raw(t, codexMethod("remoteControl/status/changed", map[string]interface{}{
@@ -461,6 +493,8 @@ func TestConsolidateNotificationThread_CodexMetadataNotificationsCollapse(t *tes
 }
 
 func TestConsolidateNotificationThread_DefaultProviderKeepsUnknownProviderNotifications(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, codexStartupStatus("codex_apps", "starting", nil)),
 		raw(t, codexStartupStatus("codex_apps", "ready", nil)),
@@ -476,6 +510,8 @@ func TestConsolidateNotificationThread_DefaultProviderKeepsUnknownProviderNotifi
 // collapse to the single latest entry — without the new Pi consolidator
 // the chat would accumulate one row per attempt.
 func TestConsolidateNotificationThread_PiCompactionStartCollapses(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 1}),
 		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 2}),
@@ -492,6 +528,8 @@ func TestConsolidateNotificationThread_PiCompactionStartCollapses(t *testing.T) 
 // history should retain the full sequence (mirrors Codex/Claude
 // boundary semantics).
 func TestConsolidateNotificationThread_PiCompactionEndsAllPreserved(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "compaction_end", "summary": "first"}),
 		raw(t, map[string]interface{}{"type": "compaction_end", "summary": "second"}),
@@ -505,6 +543,8 @@ func TestConsolidateNotificationThread_PiCompactionEndsAllPreserved(t *testing.T
 // auto_retry_* events behave like Claude's api_retry — only the latest
 // retry indicator survives so the UI doesn't show one row per attempt.
 func TestConsolidateNotificationThread_PiAutoRetryCollapses(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "auto_retry_start", "attempt": 1}),
 		raw(t, map[string]interface{}{"type": "auto_retry_end", "attempt": 1}),
@@ -519,6 +559,8 @@ func TestConsolidateNotificationThread_PiAutoRetryCollapses(t *testing.T) {
 // inverse of the consolidation cases above: each extension_error is
 // meaningful (a distinct plugin failure) and must NOT be collapsed.
 func TestConsolidateNotificationThread_PiExtensionErrorsAllPreserved(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "extension_error", "message": "first"}),
 		raw(t, map[string]interface{}{"type": "extension_error", "message": "second"}),
@@ -532,6 +574,8 @@ func TestConsolidateNotificationThread_PiExtensionErrorsAllPreserved(t *testing.
 // status is cleared so the UI doesn't show "compacting…" after the
 // boundary already arrived.
 func TestConsolidateNotificationThread_PiCompactionResetsStatus(t *testing.T) {
+	t.Parallel()
+
 	msgs := []json.RawMessage{
 		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 1}),
 		raw(t, map[string]interface{}{"type": "compaction_end", "summary": "done"}),

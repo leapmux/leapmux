@@ -1,21 +1,18 @@
-import type { Page } from '@playwright/test'
-import { ASSISTANT_BUBBLE_SELECTOR, expectAssistantAnswer, openAgentViaUI, openSettingsMenu, waitForSettingsIdle } from './helpers/ui'
+import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
+import { ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, openAgentViaUI, openSettingsMenu, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
-
-/** Get the trigger button's text content. */
-async function getTriggerText(page: Page): Promise<string> {
-  return (await page.locator('[data-testid="agent-settings-trigger"]').textContent()) ?? ''
-}
 
 test.describe('Agent Settings', () => {
   test('default settings on startup', async ({ authenticatedWorkspace, page }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Default: Sonnet model (overridden via LEAPMUX_CLAUDE_DEFAULT_MODEL in e2e), Default permission mode
-    const text = await getTriggerText(page)
-    expect(text).toContain('Sonnet')
-    expect(text).toContain('Default')
+    // Default: Sonnet model (overridden via LEAPMUX_CLAUDE_DEFAULT_MODEL in e2e), Default permission mode.
+    // Retrying assertions, not a one-shot textContent(): the trigger renders a
+    // bare ellipsis until the agent's option groups arrive, so reading it the
+    // instant it becomes visible sees "…" and nothing else, forever.
+    await expect(trigger).toContainText('Sonnet')
+    await expect(trigger).toContainText('Default')
   })
 
   test('switch permission modes', async ({ authenticatedWorkspace, page }) => {
@@ -23,26 +20,22 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Switch to Plan Mode (dropdown auto-closes on select)
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-plan"]').click()
+    await chooseSettingsOption(page, 'permissionMode-plan')
     await expect(trigger).toContainText('Plan Mode')
     await waitForSettingsIdle(page)
 
     // Switch to Accept Edits
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-acceptEdits"]').click()
+    await chooseSettingsOption(page, 'permissionMode-acceptEdits')
     await expect(trigger).toContainText('Accept Edits')
     await waitForSettingsIdle(page)
 
     // Switch to Bypass Permissions
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-bypassPermissions"]').click()
+    await chooseSettingsOption(page, 'permissionMode-bypassPermissions')
     await expect(trigger).toContainText('Bypass Permissions')
     await waitForSettingsIdle(page)
 
     // Switch to Don't Ask (always available — not plan/admin-gated)
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-dontAsk"]').click()
+    await chooseSettingsOption(page, 'permissionMode-dontAsk')
     await expect(trigger).toContainText('Don\'t Ask')
     await waitForSettingsIdle(page)
 
@@ -51,16 +44,16 @@ test.describe('Agent Settings', () => {
     // (see permission-modes docs); if the probe rejected it, the radio
     // is filtered out server-side and this block becomes a no-op.
     await openSettingsMenu(page)
-    const autoOption = page.locator('[data-testid="permissionMode-auto"]')
-    if (await autoOption.isVisible()) {
-      await autoOption.click()
+    const autoOffered = await page.locator('[data-testid="permissionMode-auto"]').isVisible()
+    await page.keyboard.press('Escape')
+    if (autoOffered) {
+      await chooseSettingsOption(page, 'permissionMode-auto')
       await expect(trigger).toContainText('Auto Mode')
       await waitForSettingsIdle(page)
-      await openSettingsMenu(page)
     }
 
     // Switch back to Default
-    await page.locator('[data-testid="permissionMode-default"]').click()
+    await chooseSettingsOption(page, 'permissionMode-default')
     await expect(trigger).toContainText('Default')
   })
 
@@ -69,37 +62,45 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Change model to Haiku (default is Sonnet, dropdown auto-closes on select)
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-haiku"]').click()
+    await chooseSettingsOption(page, 'model-haiku')
     await expect(trigger).toContainText('Haiku')
   })
 
-  test('switch to model with bracket characters', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-    await expect(trigger).toBeVisible()
+  // Nested so the retry budget covers ONLY this test. Its subject -- that a
+  // model whose name contains brackets gets escaped correctly when spawning
+  // Claude Code -- can only be observed by making the restarted agent answer,
+  // so the assertion is on the model's output and inherits its variance. Every
+  // other test in this file asserts app state and must keep failing on the
+  // first attempt. See MODEL_NONDETERMINISM_RETRIES.
+  test.describe('bracketed model names', () => {
+    test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
 
-    // Switch to Opus[1m] — model name contains brackets that must be
-    // properly escaped in the shell command when spawning Claude Code.
-    // We use Opus[1m] (not Sonnet[1m]) because the e2e account doesn't have
-    // extra-usage billing enabled for Sonnet's 1M context tier.
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
-    await expect(trigger).toContainText('Opus (1M context)')
-    await waitForSettingsIdle(page)
+    test('switch to model with bracket characters', async ({ authenticatedWorkspace, page }) => {
+      const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+      await expect(trigger).toBeVisible()
 
-    // Verify agent restarted successfully by sending a message
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
-    await page.keyboard.type('What is 3+4? Reply with just the number, nothing else.')
-    await page.keyboard.press('Meta+Enter')
+      // Switch to Opus[1m] — model name contains brackets that must be
+      // properly escaped in the shell command when spawning Claude Code.
+      // We use Opus[1m] (not Sonnet[1m]) because the e2e account doesn't have
+      // extra-usage billing enabled for Sonnet's 1M context tier.
+      await chooseSettingsOption(page, 'model-opus[1m]')
+      await expect(trigger).toContainText('Opus (1M context)')
+      await waitForSettingsIdle(page)
 
-    // Wait for an assistant response — if the agent failed to start, we
-    // would see an error notification instead.
-    // Scan all bubbles for the answer rather than .last(): the per-turn "Took Ns"
-    // meta bubble also carries data-role="agent" and can be last, racing the
-    // answer bubble.
-    await expectAssistantAnswer(page, { answer: /\b7\b/ })
+      // Verify agent restarted successfully by sending a message
+      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      await expect(editor).toBeVisible()
+      await editor.click()
+      await page.keyboard.type('What is 3+4? Reply with just the number, nothing else.')
+      await page.keyboard.press('Meta+Enter')
+
+      // Wait for an assistant response — if the agent failed to start, we
+      // would see an error notification instead.
+      // Scan all bubbles for the answer rather than .last(): the per-turn "Took Ns"
+      // meta bubble also carries data-role="agent" and can be last, racing the
+      // answer bubble.
+      await expectAssistantAnswer(page, { answer: /\b7\b/ })
+    })
   })
 
   test('switch effort', async ({ authenticatedWorkspace, page }) => {
@@ -107,8 +108,7 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Change effort to High (dropdown auto-closes on select)
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="effort-high"]').click()
+    await chooseSettingsOption(page, 'effort-high')
     // Dropdown closes; re-open to verify selection
     await openSettingsMenu(page)
     await expect(page.locator('[data-testid="effort-high"] input[type="radio"]')).toBeChecked()
@@ -122,7 +122,7 @@ test.describe('Agent Settings', () => {
     // Default model is Sonnet — effort section should be visible; switch to Haiku
     await openSettingsMenu(page)
     await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
-    await page.locator('[data-testid="model-haiku"]').click()
+    await chooseSettingsOption(page, 'model-haiku')
     await expect(trigger).toContainText('Haiku')
     await waitForSettingsIdle(page)
 
@@ -131,7 +131,7 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="effort-high"]')).not.toBeVisible()
 
     // Switch back to Sonnet — effort should reappear
-    await page.locator('[data-testid="model-sonnet"]').click()
+    await chooseSettingsOption(page, 'model-sonnet')
     await expect(trigger).toContainText('Sonnet')
     await waitForSettingsIdle(page)
 
@@ -140,77 +140,71 @@ test.describe('Agent Settings', () => {
     await page.keyboard.press('Escape')
   })
 
-  test('xhigh effort is opus-only', async ({ authenticatedWorkspace, page }) => {
+  test('the effort menu is the same before and after a model round trip', async ({ authenticatedWorkspace, page }) => {
+    void authenticatedWorkspace // fixture trigger
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Default (Sonnet): xhigh must not be offered, max must be offered.
-    await openSettingsMenu(page)
-    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toBeVisible()
-    await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
+    // The CLI reports the same effort levels for every effort-capable model, so
+    // the menu must not CHANGE as the user moves between them. It used to: the
+    // static fallback catalog declared Sonnet max-only, and the live catalog
+    // that replaced it on the first settings change declared xhigh -- so
+    // xhigh/ultracode appeared out of nowhere after one model switch. This walks
+    // the round trip and pins the three menus against each other, which is the
+    // regression, rather than pinning which tier belongs to which model (a claim
+    // that belongs to the CLI and changes without us).
+    const effortOptions = async (): Promise<string[]> => {
+      await waitForSettingsHydrated(page)
+      await openSettingsMenu(page)
+      await expect(page.locator('[data-testid="effort-auto"]')).toBeVisible()
+      const ids = await page.locator('[data-testid^="effort-"]:visible').evaluateAll(els =>
+        els.map(el => el.getAttribute('data-testid') ?? ''),
+      )
+      await page.keyboard.press('Escape')
+      return ids
+    }
 
-    // Switch to Opus — xhigh and max both appear.
-    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
+    const onSonnet = await effortOptions()
+    expect(onSonnet, 'Sonnet offers an effort menu').not.toHaveLength(0)
+
+    await chooseSettingsOption(page, 'model-opus[1m]')
     await expect(trigger).toContainText('Opus')
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page)
-    await expect(page.locator('[data-testid="effort-xhigh"]')).toBeVisible()
-    await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
+    expect(await effortOptions(), 'Opus offers the same tiers').toEqual(onSonnet)
 
-    // Switch back to Sonnet — xhigh disappears, max stays.
-    await page.locator('[data-testid="model-sonnet"]').click()
+    await chooseSettingsOption(page, 'model-sonnet')
     await expect(trigger).toContainText('Sonnet')
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page)
-    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toBeVisible()
-    await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
-    await page.keyboard.press('Escape')
+    expect(await effortOptions(), 'and Sonnet still does on the way back').toEqual(onSonnet)
   })
 
-  test('ultracode effort is opus-only and selectable', async ({ authenticatedWorkspace, page }) => {
+  test('ultracode effort is selectable and keeps the agent working', async ({ authenticatedWorkspace, page }) => {
+    void authenticatedWorkspace // fixture trigger
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
-    // Default (Sonnet): ultracode must not be offered (not xhigh-capable).
-    await openSettingsMenu(page)
-    await expect(page.locator('[data-testid="effort-ultracode"]')).not.toBeVisible()
-
-    // Switch to Opus — ultracode appears as the top concrete effort tier.
-    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
-    await expect(trigger).toContainText('Opus')
-    await waitForSettingsIdle(page)
     await openSettingsMenu(page)
     await expect(page.locator('[data-testid="effort-ultracode"]')).toBeVisible()
+    await page.keyboard.press('Escape')
 
     // Select ultracode. CI accounts lack the dynamic-workflows entitlement, so
     // the CLI gracefully downgrades to xhigh (apply_flag_settings no-ops and
     // get_settings reports ultracode:false). We therefore assert the agent
     // stays functional rather than that the selection persists as ultracode.
-    await page.locator('[data-testid="effort-ultracode"]').click()
+    await chooseSettingsOption(page, 'effort-ultracode')
     await waitForSettingsIdle(page)
 
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
     await editor.click()
-    // Use a distinctive sentinel word as the answer, not a number. Don't use
-    // lastAssistantBubble(): the per-turn "Took Ns" meta bubble also carries
-    // data-role="agent" and can be the last one, so .last() races it — we
-    // filter by text instead. A numeric answer would be unsafe here because the
-    // "Took Ns" bubble's duration (e.g. "Took 11s") shares data-role="agent"
-    // and would substring-match a numeric sentinel like "11", letting the test
-    // pass on the duration bubble even if the agent never answered.
+    // Use a distinctive sentinel word as the answer, not a number. A numeric
+    // answer would be unsafe here because the "Took Ns" bubble's duration
+    // (e.g. "Took 11s") shares data-role="agent" and would substring-match a
+    // numeric sentinel like "11", letting the test pass on the duration bubble
+    // even if the agent never answered.
     await page.keyboard.type('Reply with exactly the word PINEAPPLE and nothing else.')
     await page.keyboard.press('Meta+Enter')
-    await expect(page.locator(ASSISTANT_BUBBLE_SELECTOR).filter({ hasText: 'PINEAPPLE' })).toBeVisible()
-
-    // Switch back to Sonnet — ultracode disappears again.
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-sonnet"]').click()
-    await expect(trigger).toContainText('Sonnet')
-    await waitForSettingsIdle(page)
-    await openSettingsMenu(page)
-    await expect(page.locator('[data-testid="effort-ultracode"]')).not.toBeVisible()
-    await page.keyboard.press('Escape')
+    await expect(assistantBubbles(page).filter({ hasText: 'PINEAPPLE' })).toBeVisible()
   })
 
   test('Extended Thinking label reflects model', async ({ authenticatedWorkspace, page }) => {
@@ -240,7 +234,7 @@ test.describe('Agent Settings', () => {
     // Switch to Haiku — no adaptive support, so the enabled option
     // relabels to "On". AgentStatusChange carries fresh option groups, so
     // this happens without a page reload.
-    await page.locator('[data-testid="model-haiku"]').click()
+    await chooseSettingsOption(page, 'model-haiku')
     await expect(trigger).toContainText('Haiku')
     await waitForSettingsIdle(page)
     await openSettingsMenu(page)
@@ -248,7 +242,7 @@ test.describe('Agent Settings', () => {
     await expect(onOpt).not.toContainText('Adaptive')
 
     // Switch back to Opus — adaptive support returns.
-    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
+    await chooseSettingsOption(page, 'model-opus[1m]')
     await expect(trigger).toContainText('Opus')
     await waitForSettingsIdle(page)
     await openSettingsMenu(page)
@@ -256,31 +250,33 @@ test.describe('Agent Settings', () => {
     await page.keyboard.press('Escape')
   })
 
-  test('xhigh downgrades when switching from opus to sonnet', async ({ authenticatedWorkspace, page }) => {
+  test('a supported effort survives a model switch', async ({ authenticatedWorkspace, page }) => {
+    void authenticatedWorkspace // fixture trigger
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()
 
     // Switch to Opus first, then pick xhigh.
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
+    await chooseSettingsOption(page, 'model-opus[1m]')
     await expect(trigger).toContainText('Opus')
     await waitForSettingsIdle(page)
 
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="effort-xhigh"]').click()
+    await chooseSettingsOption(page, 'effort-xhigh')
     await waitForSettingsIdle(page)
     await openSettingsMenu(page)
     await expect(page.locator('[data-testid="effort-xhigh"] input[type="radio"]')).toBeChecked()
+    await page.keyboard.press('Escape')
 
-    // Switching to Sonnet must auto-downgrade xhigh to the model's default
-    // (high) since Sonnet doesn't support xhigh.
-    await page.locator('[data-testid="model-sonnet"]').click()
+    // Sonnet supports xhigh too (the CLI reports the same tiers for both), so
+    // the selection carries over rather than being clamped. This used to assert
+    // a downgrade to high, which only held while the static catalog wrongly
+    // declared Sonnet max-only.
+    await chooseSettingsOption(page, 'model-sonnet')
     await expect(trigger).toContainText('Sonnet')
     await waitForSettingsIdle(page)
 
     await openSettingsMenu(page)
-    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toBeVisible()
-    await expect(page.locator('[data-testid="effort-high"] input[type="radio"]')).toBeChecked()
+    await expect(page.locator('[data-testid="effort-xhigh"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effort-xhigh"] input[type="radio"]')).toBeChecked()
     await page.keyboard.press('Escape')
   })
 
@@ -293,8 +289,7 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Switch to Plan Mode (dropdown auto-closes on select)
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-plan"]').click()
+    await chooseSettingsOption(page, 'permissionMode-plan')
     await expect(trigger).toContainText('Plan Mode')
 
     // Wait for the control_response round-trip to complete and DB to update.
@@ -314,8 +309,7 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Change model to Haiku (default is Sonnet, dropdown auto-closes on select)
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-haiku"]').click()
+    await chooseSettingsOption(page, 'model-haiku')
     await expect(trigger).toContainText('Haiku')
 
     // Wait for restart to complete
@@ -339,8 +333,7 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Open dropdown and click a mode
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-plan"]').click()
+    await chooseSettingsOption(page, 'permissionMode-plan')
 
     // Close the dropdown by pressing Escape
     await page.keyboard.press('Escape')
@@ -360,15 +353,14 @@ test.describe('Agent Settings', () => {
 
     // Send a message to establish a session ID.
     await editor.click()
-    await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
+    await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
     await page.keyboard.press('Meta+Enter')
 
     // Wait for a response (ensures init message and session ID are stored)
-    await expectAssistantAnswer(page, { answer: /\b3,?333\b/ })
+    await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
     // Switch to Plan Mode (dropdown auto-closes on select)
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-plan"]').click()
+    await chooseSettingsOption(page, 'permissionMode-plan')
     await expect(trigger).toContainText('Plan Mode')
 
     // Wait for the control_response round-trip to complete and DB to update.
@@ -386,13 +378,13 @@ test.describe('Agent Settings', () => {
 
     // Send a message to trigger agent re-launch via ensureAgentActive
     await editor.click()
-    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
+    await page.keyboard.type(ARITHMETIC_PROMPT)
     await page.keyboard.press('Meta+Enter')
 
     // 6912 only appears in this response (the warmup answered 3333), so scanning
     // all bubbles for it is robust to the trailing "Took Ns" meta bubble that
     // .last() would otherwise race.
-    await expectAssistantAnswer(page, { answer: /\b6,?912\b/ })
+    await expectAssistantAnswer(page)
 
     // Verify Plan Mode is still selected after worker restart
     await expect(trigger).toContainText('Plan Mode')
@@ -404,15 +396,15 @@ test.describe('Agent Settings', () => {
 
     // Send a quick message to ensure the agent is fully started
     await editor.click()
-    await page.keyboard.type('What is 1111 + 2222? Reply with just the number, nothing else.')
+    await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
     await page.keyboard.press('Meta+Enter')
-    await expectAssistantAnswer(page, { answer: /\b3,?333\b/ })
+    await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
     // Verify the agent is still responsive after interrupt by sending another message
     await editor.click()
-    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
+    await page.keyboard.type(ARITHMETIC_PROMPT)
     await page.keyboard.press('Meta+Enter')
-    await expectAssistantAnswer(page, { answer: /\b6,?912\b/ })
+    await expectAssistantAnswer(page)
   })
 
   test('model/effort items not disabled when idle', async ({ authenticatedWorkspace, page }) => {
@@ -433,10 +425,11 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="effort-low"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-medium"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-high"]')).not.toHaveAttribute('data-disabled', '')
-    // Sonnet (default) supports max; xhigh is Opus-only
+    // Every effort-capable model offers the same tiers, xhigh included
     await expect(page.locator('[data-testid="effort-max"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-max"]')).not.toHaveAttribute('data-disabled', '')
-    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="effort-xhigh"]')).toBeVisible()
+    await expect(page.locator('[data-testid="effort-xhigh"]')).not.toHaveAttribute('data-disabled', '')
 
     // Verify permission mode items are enabled when idle
     await expect(page.locator('[data-testid="permissionMode-default"]')).not.toHaveAttribute('data-disabled', '')
@@ -452,18 +445,16 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Change model to Haiku (default is Sonnet) — should produce a notification
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-haiku"]').click()
+    await chooseSettingsOption(page, 'model-haiku')
     await expect(trigger).toContainText('Haiku')
 
     // Verify the notification bubble appears in chat
-    await expect(page.getByText('Model (Sonnet \u2192 Haiku)')).toBeVisible()
+    await expect(visibleOnly(page.getByText('Model (Sonnet \u2192 Haiku)'))).toBeVisible()
   })
 
   test('Extended Thinking toggle round-trip tracks the confirmed state', async ({ authenticatedWorkspace, page }) => {
     const toggle = async (state: 'on' | 'off') => {
-      await openSettingsMenu(page)
-      await page.locator(`[data-testid="alwaysThinkingEnabled-${state}"]`).click()
+      await chooseSettingsOption(page, `alwaysThinkingEnabled-${state}`)
       await waitForSettingsIdle(page)
     }
 
@@ -479,8 +470,8 @@ test.describe('Agent Settings', () => {
     // off a silent no-op -- which would leave the notification stuck on the net
     // "...-> Adaptive" instead. (The notification shows just the new value when the
     // option had no prior stored value -- see firstSet in notificationRenderers.)
-    await expect(page.getByText('Extended Thinking (Off)')).toBeVisible()
-    await expect(page.getByText('Extended Thinking (Adaptive)')).toHaveCount(0)
+    await expect(visibleOnly(page.getByText('Extended Thinking (Off)'))).toBeVisible()
+    await expect(visibleOnly(page.getByText('Extended Thinking (Adaptive)'))).toHaveCount(0)
   })
 
   test('permission mode change notification appears in chat', async ({ authenticatedWorkspace, page }) => {
@@ -488,12 +479,11 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Switch to Plan Mode
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-plan"]').click()
+    await chooseSettingsOption(page, 'permissionMode-plan')
     await expect(trigger).toContainText('Plan Mode')
 
     // Verify the notification bubble appears in chat
-    await expect(page.getByText('Mode (Default \u2192 Plan Mode)')).toBeVisible()
+    await expect(visibleOnly(page.getByText('Mode (Default \u2192 Plan Mode)'))).toBeVisible()
   })
 
   test('no thinking indicator when switching settings', async ({ authenticatedWorkspace, page }) => {
@@ -519,25 +509,21 @@ test.describe('Agent Settings', () => {
     })
 
     // Switch permission mode to Plan Mode
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-plan"]').click()
+    await chooseSettingsOption(page, 'permissionMode-plan')
     await expect(trigger).toContainText('Plan Mode')
     await waitForSettingsIdle(page)
 
     // Switch model to Haiku (effort section hidden for Haiku)
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-haiku"]').click()
+    await chooseSettingsOption(page, 'model-haiku')
     await expect(trigger).toContainText('Haiku')
     await waitForSettingsIdle(page)
 
     // Switch model back to Sonnet so effort section re-appears, then switch effort to High
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-sonnet"]').click()
+    await chooseSettingsOption(page, 'model-sonnet')
     await expect(trigger).toContainText('Sonnet')
     await waitForSettingsIdle(page)
 
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="effort-high"]').click()
+    await chooseSettingsOption(page, 'effort-high')
     await waitForSettingsIdle(page)
 
     // Wait a moment for any delayed status events
@@ -559,23 +545,24 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Verify first agent starts with Default mode
-    const firstTriggerText = await getTriggerText(page)
-    expect(firstTriggerText).toContain('Default')
+    await waitForSettingsHydrated(page)
+    await expect(trigger).toContainText('Default')
 
     // Open a second agent tab
     await openAgentViaUI(page)
 
-    // The new tab should also start with Default mode
+    // The new tab should also start with Default mode, once its agent has
+    // reported an option catalog -- until then the trigger reads "… · Auto".
+    await waitForSettingsHydrated(page)
     await expect(trigger).toContainText('Default')
 
     // Switch the new agent to Plan Mode
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="permissionMode-plan"]').click()
+    await chooseSettingsOption(page, 'permissionMode-plan')
     await expect(trigger).toContainText('Plan Mode')
     await waitForSettingsIdle(page)
 
     // Verify the notification appears in the new agent's chat (not the first agent's)
-    await expect(page.getByText('Mode (Default → Plan Mode)')).toBeVisible()
+    await expect(visibleOnly(page.getByText('Mode (Default → Plan Mode)'))).toBeVisible()
 
     // Switch back to the first agent tab
     const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
@@ -584,7 +571,7 @@ test.describe('Agent Settings', () => {
     // First agent should still be in Default mode
     await expect(trigger).toContainText('Default')
     // And should NOT have the permission mode notification
-    await expect(page.getByText('Mode (Default → Plan Mode)')).not.toBeVisible()
+    await expect(visibleOnly(page.getByText('Mode (Default → Plan Mode)'))).not.toBeVisible()
   })
 
   test('settings loading indicator on trigger', async ({ authenticatedWorkspace, page }) => {
@@ -592,8 +579,7 @@ test.describe('Agent Settings', () => {
     await expect(trigger).toBeVisible()
 
     // Change model to Haiku (default is Sonnet) — trigger should show spinner briefly
-    await openSettingsMenu(page)
-    await page.locator('[data-testid="model-haiku"]').click()
+    await chooseSettingsOption(page, 'model-haiku')
 
     // The trigger should show a loading spinner
     const loadingSpinner = page.locator('[data-testid="settings-loading-spinner"]')

@@ -173,6 +173,8 @@ func (r *piTestRig) setResponder(fn func(req piRecordedRequest) (json.RawMessage
 }
 
 func TestPi_SendPiCommand_RoundTripsResponse(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		assert.Equal(t, "ping", req.Type)
@@ -191,6 +193,8 @@ func TestPi_SendPiCommand_RoundTripsResponse(t *testing.T) {
 }
 
 func TestPi_SendPiCommand_FailureReturnsError(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		return nil, false, "model not found"
@@ -205,6 +209,8 @@ func TestPi_SendPiCommand_FailureReturnsError(t *testing.T) {
 }
 
 func TestPi_SendPiCommand_TimeoutReturnsError(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		// Hold the response forever to force a timeout.
@@ -217,6 +223,8 @@ func TestPi_SendPiCommand_TimeoutReturnsError(t *testing.T) {
 }
 
 func TestPi_SendPiCommand_AssignsUniqueStringIDs(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
 		return json.RawMessage(`{}`), true, ""
@@ -236,6 +244,8 @@ func TestPi_SendPiCommand_AssignsUniqueStringIDs(t *testing.T) {
 }
 
 func TestPi_HandlePiResponse_RoutesByStringID(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{
 		processBase: processBase{agentID: "test-agent"},
 	}
@@ -256,6 +266,8 @@ func TestPi_HandlePiResponse_RoutesByStringID(t *testing.T) {
 }
 
 func TestPi_HandlePiResponse_IgnoresUnknownIDs(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{processBase: processBase{agentID: "test-agent"}}
 	consumed := a.handlePiResponse(parseLine([]byte(
 		`{"type":"response","id":"unknown","command":"prompt","success":true}`,
@@ -264,12 +276,16 @@ func TestPi_HandlePiResponse_IgnoresUnknownIDs(t *testing.T) {
 }
 
 func TestPi_HandlePiResponse_IgnoresNonResponseLines(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{processBase: processBase{agentID: "test-agent"}}
 	consumed := a.handlePiResponse(parseLine([]byte(`{"type":"agent_start"}`)))
 	assert.False(t, consumed)
 }
 
 func TestPi_SendInput_FreshTurnOmitsSteer(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	gotPayload := make(chan map[string]interface{}, 1)
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
@@ -292,6 +308,8 @@ func TestPi_SendInput_FreshTurnOmitsSteer(t *testing.T) {
 }
 
 func TestPi_SendInput_DuringTurnSetsSteer(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	rig.agent.mu.Lock()
 	rig.agent.currentTurnActive = true
@@ -316,6 +334,8 @@ func TestPi_SendInput_DuringTurnSetsSteer(t *testing.T) {
 }
 
 func TestPi_SendInput_StoppedAgentReturnsError(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	rig.agent.mu.Lock()
 	rig.agent.stopped = true
@@ -326,6 +346,8 @@ func TestPi_SendInput_StoppedAgentReturnsError(t *testing.T) {
 }
 
 func TestPi_SendInput_WithImageAttachment_BuildsImagesArray(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, noopSink{})
 	gotPayload := make(chan map[string]interface{}, 1)
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
@@ -358,6 +380,8 @@ func TestPi_SendInput_WithImageAttachment_BuildsImagesArray(t *testing.T) {
 }
 
 func TestPi_ApplySessionStats_SkipsStaleResponses(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{
 		processBase:        processBase{agentID: "test-agent"},
 		sessionCostUsd:     1.23,
@@ -380,6 +404,8 @@ func TestPi_ApplySessionStats_SkipsStaleResponses(t *testing.T) {
 }
 
 func TestPi_RefreshSessionStats_BroadcastsCostAndContextUsage(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	rig := newPiTestRig(t, sink)
 	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
@@ -419,6 +445,8 @@ func TestPi_RefreshSessionStats_BroadcastsCostAndContextUsage(t *testing.T) {
 }
 
 func TestPi_ApplyStateResponse_PopulatesFields(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{processBase: processBase{agentID: "test-agent"}}
 	raw := json.RawMessage(`{
 		"model": {"id":"gpt-5.5","provider":"openai-codex"},
@@ -436,6 +464,8 @@ func TestPi_ApplyStateResponse_PopulatesFields(t *testing.T) {
 }
 
 func TestPi_ApplyAvailableModels_BuildsCatalog(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{processBase: processBase{agentID: "test-agent"}}
 	raw := json.RawMessage(`{
 		"models":[
@@ -472,6 +502,8 @@ func TestPi_ApplyAvailableModels_BuildsCatalog(t *testing.T) {
 // no information, so it must leave the previously-built catalog intact rather than wiping it to
 // an empty list (which would blank the model picker until the next non-empty response).
 func TestPi_ApplyAvailableModels_EmptyResponseKeepsCatalog(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{processBase: processBase{agentID: "test-agent"}}
 	a.applyAvailableModels(json.RawMessage(`{"models":[{"id":"gpt-5.5","name":"GPT 5.5","provider":"openai-codex","reasoning":true}]}`))
 	require.Equal(t, 1, len(a.availableModels), "the first non-empty response builds the catalog")
@@ -484,6 +516,8 @@ func TestPi_ApplyAvailableModels_EmptyResponseKeepsCatalog(t *testing.T) {
 }
 
 func TestPi_CurrentSettings_ReflectsLocalState(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{
 		processBase:   processBase{agentID: "test-agent"},
 		model:         "gpt-5.5",
@@ -507,11 +541,15 @@ func TestPi_CurrentSettings_ReflectsLocalState(t *testing.T) {
 }
 
 func TestPi_AvailableOptionGroups_IsNilWithoutCatalog(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{processBase: processBase{agentID: "test-agent"}}
 	assert.Nil(t, a.OptionGroups())
 }
 
 func TestPi_UpdateSettings_AppliesModelAndThinking(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, &testSink{})
 	rig.agent.thinkingLevel = "low"
 	rig.agent.model = "gpt-5.4"
@@ -547,6 +585,8 @@ func TestPi_UpdateSettings_AppliesModelAndThinking(t *testing.T) {
 }
 
 func TestPi_UpdateSettings_EffortAutoRequiresRestart(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{
 		processBase:   processBase{agentID: "test-agent"},
 		thinkingLevel: "medium",
@@ -560,6 +600,8 @@ func TestPi_UpdateSettings_EffortAutoRequiresRestart(t *testing.T) {
 // agent keeps the old one. The caller relaunches with the requested settings so the
 // change actually takes effect.
 func TestPi_UpdateSettings_FailedApplyRequestsRestart(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, &testSink{})
 	rig.agent.thinkingLevel = "low"
 	rig.agent.model = "gpt-5.5"
@@ -582,6 +624,8 @@ func TestPi_UpdateSettings_FailedApplyRequestsRestart(t *testing.T) {
 // no half-applied pair (new model + old thinking level) is observable before the caller's restart
 // relaunches with the full requested settings.
 func TestPi_UpdateSettings_PartialApplyRollsBack(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, &testSink{})
 	rig.agent.model = "gpt-5.4"
 	rig.agent.thinkingLevel = "low"
@@ -609,6 +653,8 @@ func TestPi_UpdateSettings_PartialApplyRollsBack(t *testing.T) {
 }
 
 func TestPi_Stop_SendsAbortBeforeClosingStdin(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, &testSink{})
 
 	abortSeen := make(chan struct{}, 1)
@@ -651,6 +697,8 @@ func TestPi_Stop_SendsAbortBeforeClosingStdin(t *testing.T) {
 }
 
 func TestPi_Stop_SkipsAbortWhenIdle(t *testing.T) {
+	t.Parallel()
+
 	rig := newPiTestRig(t, &testSink{})
 
 	abortSeen := make(chan struct{}, 1)
@@ -680,6 +728,8 @@ func TestPi_Stop_SkipsAbortWhenIdle(t *testing.T) {
 }
 
 func TestPi_ClearContext_RoundtripsNewSessionAndGetState(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	rig := newPiTestRig(t, sink)
 
@@ -724,6 +774,8 @@ func TestPi_ClearContext_RoundtripsNewSessionAndGetState(t *testing.T) {
 }
 
 func TestPi_UpdateSettings_BroadcastsRefreshedSettings(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	rig := newPiTestRig(t, sink)
 	rig.agent.thinkingLevel = "low"
@@ -748,6 +800,8 @@ func TestPi_UpdateSettings_BroadcastsRefreshedSettings(t *testing.T) {
 }
 
 func TestPi_HandlePiResponse_RoutesNumericIDLeftoverFromJSONRPCMix(t *testing.T) {
+	t.Parallel()
+
 	// Sanity check that the IDString helper handles numeric ids too — even
 	// though Pi mints string ids itself, defensive callers should not break
 	// when a server emits a JSON-RPC-shaped numeric id.
@@ -767,6 +821,8 @@ func TestPi_HandlePiResponse_RoutesNumericIDLeftoverFromJSONRPCMix(t *testing.T)
 }
 
 func TestPi_ProviderForModel_LooksUpCatalog(t *testing.T) {
+	t.Parallel()
+
 	a := &PiAgent{
 		processBase: processBase{agentID: "test-agent"},
 		provider:    "openai-codex",

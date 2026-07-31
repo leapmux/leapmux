@@ -13,6 +13,8 @@ import (
 // no record for this id" from a bare omission. Collapsing them is what forced
 // the client to retry every unanswered tab forever.
 func TestTabHydrationVerdicts_DistinguishesFoundFromAbsent(t *testing.T) {
+	t.Parallel()
+
 	got := tabHydrationVerdicts([]string{"served", "gone"}, map[string]bool{"served": true})
 
 	require.Len(t, got, 2, "one verdict per REQUESTED id, answered or not")
@@ -26,6 +28,8 @@ func TestTabHydrationVerdicts_DistinguishesFoundFromAbsent(t *testing.T) {
 }
 
 func TestTabHydrationVerdicts_NoRequestedIDsAnswersNothing(t *testing.T) {
+	t.Parallel()
+
 	// The list-everything form names no ids, so there is no requested set to
 	// answer for -- and inventing verdicts would tell the caller about tabs it
 	// never asked about.
@@ -33,6 +37,8 @@ func TestTabHydrationVerdicts_NoRequestedIDsAnswersNothing(t *testing.T) {
 }
 
 func TestTabHydrationVerdicts_PreservesRequestOrder(t *testing.T) {
+	t.Parallel()
+
 	got := tabHydrationVerdicts([]string{"c", "a", "b"}, map[string]bool{"a": true})
 
 	require.Len(t, got, 3)

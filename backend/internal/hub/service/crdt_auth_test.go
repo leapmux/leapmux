@@ -24,6 +24,8 @@ import (
 // leaked delegation token bind a tab to it after the channel path already
 // refuses it.
 func TestCRDTAuthChecker_CanUseWorker_RequiresActive(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	owner := storetest.SeedUser(t, st, "owner")
 	worker := storetest.SeedWorker(t, st, owner.ID)
@@ -54,6 +56,8 @@ func TestCRDTAuthChecker_CanUseWorker_RequiresActive(t *testing.T) {
 // short-circuits to allowed so clearing a tab's worker reference needs no store
 // round-trip.
 func TestCRDTAuthChecker_CanUseWorker_EmptyWorkerID(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	checker := service.NewCRDTAuthChecker(st)
 
@@ -65,6 +69,8 @@ func TestCRDTAuthChecker_CanUseWorker_EmptyWorkerID(t *testing.T) {
 // TestCRDTAuthChecker_CanUseWorker_NonOwner confirms a worker registered to a
 // different user is refused.
 func TestCRDTAuthChecker_CanUseWorker_NonOwner(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	owner := storetest.SeedUser(t, st, "owner")
 	other := storetest.SeedUser(t, st, "other")
@@ -87,6 +93,8 @@ func TestCRDTAuthChecker_CanUseWorker_NonOwner(t *testing.T) {
 // TestCRDTAuthChecker_CanUseWorker_EmptyWorkerID), so passing "" there would
 // pass for the wrong reason.
 func TestCRDTAuthChecker_EmptyPrincipalDenies(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	owner := storetest.SeedUser(t, st, "owner")
@@ -115,6 +123,8 @@ func TestCRDTAuthChecker_EmptyPrincipalDenies(t *testing.T) {
 // batch still resolves. The returned map is keyed by the raw wire id (the CRDT
 // actor format), which is why the owner's key is a plain string.
 func TestCRDTAuthChecker_CanAccessWorkspaceForUsers_DropsBlankPrincipals(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	owner := storetest.SeedUser(t, st, "owner")

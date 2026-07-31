@@ -43,12 +43,66 @@ export const EXIT_PLAN_PROMPT
 export async function enterAndExitPlanMode(page: Page, testId?: string) {
   // Step 1: Enter plan mode and write the plan file.
   const prompt = testId ? enterPlanPrompt(testId) : ENTER_PLAN_PROMPT
-  await sendMessage(page, prompt)
-  await waitForAgentIdle(page)
+  await sendPlanStep(page, prompt, async () => {
+    // The agent entering plan mode is what moves the permission mode, so the
+    // settings trigger is the app's own confirmation that step 1 landed. Without
+    // it a skipped EnterPlanMode was invisible here and surfaced two prompts
+    // later as "control-banner not found", 120s after the fact.
+    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const text = await trigger.textContent().catch(() => null)
+    return text?.includes('Plan Mode') ?? false
+  }, 'the agent did not enter plan mode')
 
   // Step 2: Exit plan mode (produces control_request banner).
-  await sendMessage(page, EXIT_PLAN_PROMPT)
+  await sendPlanStep(page, EXIT_PLAN_PROMPT, async () => {
+    return page.locator('[data-testid="control-banner"]').isVisible().catch(() => false)
+  }, 'the agent did not call ExitPlanMode')
   return waitForControlBanner(page)
+}
+
+/** How many times to re-prompt a plan step the agent did not carry out. */
+const PLAN_STEP_ATTEMPTS = 3
+
+/**
+ * How long to wait for a plan step's effect before re-prompting.
+ *
+ * A deliberately SHORT budget, not a redundant override of the global expect
+ * timeout: the point is to give up early enough to re-prompt within the test's
+ * own budget. A plan turn that is going to work finishes in seconds; one where
+ * the model skipped the tool call never finishes at all, and waiting the global
+ * 120s for it would leave no room to try again.
+ */
+const PLAN_STEP_SETTLE_MS = 15_000
+
+/**
+ * Send `prompt` and wait for `landed()`, re-prompting if the agent did not do
+ * what was asked.
+ *
+ * These prompts drive real tool calls, and the model occasionally skips one --
+ * the reason the enter and exit prompts were split in the first place. Splitting
+ * reduced it; it did not remove it, and 033/050/051 all died on the same missing
+ * banner in a single run. Retrying the PRECONDITION is legitimate here because
+ * none of these specs is about the model's obedience: they assert what the UI
+ * does once the control request exists. A step that never lands after several
+ * attempts still fails, with a message naming which one.
+ */
+async function sendPlanStep(
+  page: Page,
+  prompt: string,
+  landed: () => Promise<boolean>,
+  failure: string,
+): Promise<void> {
+  for (let attempt = 1; attempt <= PLAN_STEP_ATTEMPTS; attempt++) {
+    await sendMessage(page, prompt)
+    await waitForAgentIdle(page)
+    const deadline = Date.now() + PLAN_STEP_SETTLE_MS
+    while (Date.now() < deadline) {
+      if (await landed())
+        return
+      await page.waitForTimeout(250)
+    }
+  }
+  throw new Error(`${failure} after ${PLAN_STEP_ATTEMPTS} attempts`)
 }
 
 export { PLAN_BODY }

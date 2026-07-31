@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { loginViaToken, openWorkspace, treeRow } from './helpers/ui'
 
 // Resolve the frontend directory for the working dir used in file browser tests.
 const frontendDir = path.resolve(import.meta.dirname, '../..')
@@ -20,7 +20,7 @@ test.describe('File Browser', () => {
 
       // Wait for file entries to load (working dir is the frontend dir)
       // package.json should exist in the frontend directory
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

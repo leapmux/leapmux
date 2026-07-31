@@ -14,6 +14,8 @@ import (
 // whose permission modes are a FIXED enum (Claude/Codex), an explicitly-requested mode the provider
 // doesn't offer is rejected, while a valid mode and an unsupplied mode pass.
 func TestValidateLaunchOptions_RejectsUnknownPermissionMode(t *testing.T) {
+	t.Parallel()
+
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	pmg := optionids.GroupByID(AvailableOptionGroupsForProvider(claude), OptionIDPermissionMode)
 	require.NotNil(t, pmg)
@@ -33,6 +35,8 @@ func TestValidateLaunchOptions_RejectsUnknownPermissionMode(t *testing.T) {
 // tiers from the running CLI, seeding only a fallback, so a value valid in the live catalog but
 // absent from the seed must NOT be rejected. A model/effort not in any seed therefore passes.
 func TestValidateLaunchOptions_DoesNotValidateModelOrEffort(t *testing.T) {
+	t.Parallel()
+
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	require.NoError(t, ValidateLaunchOptions(claude, optionmap.Map{OptionIDModel: "a-future-model-not-in-the-seed"}),
 		"a model absent from the seed (but maybe in the live catalog) is not rejected")
@@ -44,6 +48,8 @@ func TestValidateLaunchOptions_DoesNotValidateModelOrEffort(t *testing.T) {
 // permission modes from the daemon (its static group is only a seed), so a mode NOT in the seed must
 // NOT be rejected at spawn -- the running session validates the real value.
 func TestValidateLaunchOptions_ACPProviderSkipsPermissionMode(t *testing.T) {
+	t.Parallel()
+
 	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
 	require.NoError(t, ValidateLaunchOptions(copilot, optionmap.Map{OptionIDPermissionMode: "a-dynamic-daemon-mode"}),
 		"an ACP provider's daemon-discovered permission mode is not rejected against the static seed")
@@ -53,6 +59,8 @@ func TestValidateLaunchOptions_ACPProviderSkipsPermissionMode(t *testing.T) {
 // catalog (Claude/Codex/Pi -- effort default stamped by resolveProviderDefaults) from
 // ACP providers whose effort, if any, is a server-driven config option.
 func TestProviderManagesEffort(t *testing.T) {
+	t.Parallel()
+
 	for _, p := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -76,6 +84,8 @@ func TestProviderManagesEffort(t *testing.T) {
 // sub_group (carried independently of which model is current), so it answers for a model
 // other than the catalog's current one.
 func TestEffortSupportedByModel(t *testing.T) {
+	t.Parallel()
+
 	models := []*ModelInfo{
 		{Id: "opus", DisplayName: "Opus", DefaultEffort: "high", SupportedEfforts: []*EffortInfo{
 			{Id: "auto"}, {Id: "high"}, {Id: "xhigh"},
@@ -153,6 +163,8 @@ func findAvailableOptionByID(g *leapmuxv1.AvailableOptionGroup, id string) *leap
 // from a stopped agent's static seed): known for a selectable model and for the hidden current model
 // with a top-level effort group, UNKNOWN for a model absent from the catalog entirely.
 func TestModelEffortKnown(t *testing.T) {
+	t.Parallel()
+
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	models := []*ModelInfo{
 		{Id: "opus", DisplayName: "Opus", DefaultEffort: "high", SupportedEfforts: []*EffortInfo{{Id: "auto"}, {Id: "high"}, {Id: "xhigh"}}},
@@ -191,6 +203,8 @@ func TestModelEffortKnown(t *testing.T) {
 // option is dropped until a payload carries a concrete, in-list current -- matching the
 // first-sighting behavior (empty current + nothing stored is likewise not surfaced).
 func TestOptionStateApply_AuthoritativeDropsStaleOutOfListValue(t *testing.T) {
+	t.Parallel()
+
 	g := &optionState{}
 	// A prior authoritative payload surfaced reasoning_effort=medium.
 	g.apply([]acpConfigOption{{
@@ -232,6 +246,8 @@ func TestOptionStateApply_AuthoritativeDropsStaleOutOfListValue(t *testing.T) {
 // mergeOptionValues would then persist). The empty-current and prefer-stored paths already guard
 // via storedIfOffered; this is the same guarantee for the server's OWN authoritative current.
 func TestOptionStateApply_AuthoritativeOutOfListCurrentIsInjected(t *testing.T) {
+	t.Parallel()
+
 	g := &optionState{}
 	// A plain (non-effort) select so no strongest-first reorder is involved: the server reports
 	// "extreme" as current but only lists low/high.
@@ -259,6 +275,8 @@ func TestOptionStateApply_AuthoritativeOutOfListCurrentIsInjected(t *testing.T) 
 // OptionOrderTrailing, so payload order is not a meaningful axis; the list compare is keyed by id
 // (order-insensitive), matching the order-insensitive value compare.
 func TestOptionStateApply_ReorderOnlyResendIsNotAListChange(t *testing.T) {
+	t.Parallel()
+
 	g := &optionState{}
 	effort := acpConfigOption{
 		ID: "reasoning_effort", Category: "thought_level", Name: "Reasoning Effort", CurrentValue: "high",
@@ -296,6 +314,8 @@ func TestOptionStateApply_ReorderOnlyResendIsNotAListChange(t *testing.T) {
 // catalog write. allow_all is a non-effort select, so unlike the effort axis its option order is
 // the server's order (not canonicalized), exercising optionGroupEqualExact's set comparison.
 func TestOptionStateApply_IntraGroupOptionReorderIsNotAListChange(t *testing.T) {
+	t.Parallel()
+
 	g := &optionState{}
 	allow := func(opts ...acpConfigOptionValue) acpConfigOption {
 		return acpConfigOption{ID: "allow_all", Name: "Allow All", CurrentValue: "off", Options: opts}
@@ -324,6 +344,8 @@ func TestOptionStateApply_IntraGroupOptionReorderIsNotAListChange(t *testing.T) 
 // fire a redundant status broadcast + catalog write). Mirrors acpConfigOptionContentLess's tie-break
 // for the claimed model/mode axes.
 func TestOptionStateApply_DuplicateIDResolvesContentSmallest(t *testing.T) {
+	t.Parallel()
+
 	dupOff := acpConfigOption{
 		ID: "allow_all", Name: "Allow All", CurrentValue: "off",
 		Options: []acpConfigOptionValue{{Value: "off"}, {Value: "on"}},
@@ -376,6 +398,8 @@ func TestOptionStateApply_DuplicateIDResolvesContentSmallest(t *testing.T) {
 // must synthesize a group from the advertised template -- so OptionGroups()/CurrentOptions()
 // (and applySettingsLive's orphan reconcile) reflect the accepted value instead of dropping it.
 func TestRecordOptimistic_SynthesizesGroupForKnownButUnsurfacedID(t *testing.T) {
+	t.Parallel()
+
 	g := &optionState{}
 	// Handshake advertises reasoning_effort with an empty current: marked known (with its
 	// template) but not surfaced as a group.
@@ -406,6 +430,8 @@ func TestRecordOptimistic_SynthesizesGroupForKnownButUnsurfacedID(t *testing.T) 
 // synthesized group's CurrentValue still has a matching option -- otherwise the panel would
 // render a current selection with no radio (buildOptionValues does not inject the current).
 func TestRecordOptimistic_OffListValueIsSelectable(t *testing.T) {
+	t.Parallel()
+
 	g := &optionState{}
 	// Advertise reasoning_effort with options low/high (no "ultracode").
 	g.apply([]acpConfigOption{{
@@ -436,6 +462,8 @@ func TestRecordOptimistic_OffListValueIsSelectable(t *testing.T) {
 // switch), while staying permissive for an option with no advertised list so a persisted
 // preference can still be re-pushed.
 func TestOptionState_OffersValue(t *testing.T) {
+	t.Parallel()
+
 	g := &optionState{}
 	g.apply([]acpConfigOption{{
 		ID: "reasoning_effort", Category: "thought_level", CurrentValue: "high",
@@ -452,6 +480,8 @@ func TestOptionState_OffersValue(t *testing.T) {
 // and the strongest-first sort fire whether or not the daemon supplies the thought_level
 // category -- mirroring the model/mode channels' well-known-id fallback.
 func TestIsEffortConfigOption(t *testing.T) {
+	t.Parallel()
+
 	assert.True(t, isEffortConfigOption(acpConfigOption{ID: "x", Category: "thought_level"}), "category match")
 	assert.True(t, isEffortConfigOption(acpConfigOption{ID: OptionIDEffort}), "OpenCode/Kilo effort id (no category)")
 	assert.True(t, isEffortConfigOption(acpConfigOption{ID: "reasoning_effort"}), "Copilot effort id (no category)")
@@ -464,6 +494,8 @@ func TestIsEffortConfigOption(t *testing.T) {
 // reordered strongest-first even when the daemon omits the thought_level category, as long as
 // its id is a well-known effort id (isEffortConfigOption). Servers report effort weakest-first.
 func TestBuildOptionGroup_EffortSortedByKnownIDWithoutCategory(t *testing.T) {
+	t.Parallel()
+
 	grp := buildOptionGroup(acpConfigOption{
 		ID: "reasoning_effort", Name: "Reasoning Effort", // no Category
 		Options: []acpConfigOptionValue{{Value: "low"}, {Value: "medium"}, {Value: "high"}},
@@ -482,6 +514,8 @@ func TestBuildOptionGroup_EffortSortedByKnownIDWithoutCategory(t *testing.T) {
 // ACP provider with an effort axis surfaces it as a server-driven config option, so excluding
 // the effort key would silently drop that option group.
 func TestIsReservedOptionKey(t *testing.T) {
+	t.Parallel()
+
 	for _, id := range []string{OptionIDModel, OptionIDPermissionMode, OptionIDPrimaryAgent} {
 		assert.True(t, isReservedOptionKey(id), "%q owns a dedicated mapped group and must be reserved", id)
 	}
@@ -494,6 +528,8 @@ func TestIsReservedOptionKey(t *testing.T) {
 // treated as a genuine catalog change, so the "idempotent re-report vs real
 // change" check can't silently miss a picker-visibility flip.
 func TestModelInfoEqual_HiddenFlagRegisters(t *testing.T) {
+	t.Parallel()
+
 	base := &ModelInfo{Id: "m", DisplayName: "M", DefaultEffort: "high"}
 	hidden := &ModelInfo{Id: "m", DisplayName: "M", DefaultEffort: "high", Hidden: true}
 
@@ -508,6 +544,8 @@ func TestModelInfoEqual_HiddenFlagRegisters(t *testing.T) {
 // caller supplies no current value (so a group whose current wasn't wired still
 // renders a valid, in-list selection rather than a blank one).
 func TestLiveGroup_DefaultsEmptyCurrentToTemplateDefault(t *testing.T) {
+	t.Parallel()
+
 	tmpl := &leapmuxv1.AvailableOptionGroup{
 		Id:           "x",
 		Label:        "X",
@@ -528,6 +566,8 @@ func TestLiveGroup_DefaultsEmptyCurrentToTemplateDefault(t *testing.T) {
 // flag through instead of forcing every projected group editable -- so a provider can
 // project an agent-controlled, read-only axis through liveGroup.
 func TestLiveGroup_HonorsTemplateMutable(t *testing.T) {
+	t.Parallel()
+
 	mutable := liveGroup(&leapmuxv1.AvailableOptionGroup{Id: "x", DefaultValue: "a", Mutable: true, Options: []*leapmuxv1.AvailableOption{{Id: "a"}}}, "a")
 	assert.True(t, mutable.GetMutable(), "a mutable template projects a mutable group")
 
@@ -541,6 +581,8 @@ func TestLiveGroup_HonorsTemplateMutable(t *testing.T) {
 // contract the shared clone helper (cloneOptionGroupTemplate) exists to keep mechanical as
 // AvailableOptionGroup grows fields.
 func TestFilterGroupOptions_PreservesTemplateFields(t *testing.T) {
+	t.Parallel()
+
 	tmpl := &leapmuxv1.AvailableOptionGroup{
 		Id:           "perm",
 		Label:        "Permission",
@@ -574,6 +616,8 @@ func TestFilterGroupOptions_PreservesTemplateFields(t *testing.T) {
 // static-fallback templates omitted Order (0), which sorts a provider group ahead
 // of the model group (order 10) in the frontend's order-based layout.
 func TestCodexStaticOptionGroups_CarryOrder(t *testing.T) {
+	t.Parallel()
+
 	groups := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	require.NotEmpty(t, groups)
 	for _, g := range groups {
@@ -590,6 +634,8 @@ func TestCodexStaticOptionGroups_CarryOrder(t *testing.T) {
 // constants of equal value, so this catches a future edit that changes one without the other
 // -- which would launch the agent on one value while the popover badges a different default.
 func TestCodexStaticOptionGroups_DefaultMatchesSeed(t *testing.T) {
+	t.Parallel()
+
 	seeds := codexOptionDefaults()
 	require.NotEmpty(t, seeds)
 	groups := AvailableOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
@@ -610,6 +656,8 @@ func TestCodexStaticOptionGroups_DefaultMatchesSeed(t *testing.T) {
 // TestStaticOptionGroupsForProvider_CodexOrdersAfterModel verifies the assembled
 // static fallback never places a non-model group ahead of the model group.
 func TestStaticOptionGroupsForProvider_CodexOrdersAfterModel(t *testing.T) {
+	t.Parallel()
+
 	groups := staticOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "")
 	require.NotEmpty(t, groups)
 	var sawModel bool
@@ -629,6 +677,8 @@ func TestStaticOptionGroupsForProvider_CodexOrdersAfterModel(t *testing.T) {
 // "Effort". The label rides on both the top-level group and each model's sub_groups so
 // a model switch stays consistently named.
 func TestModelAndEffortGroups_EffortLabel(t *testing.T) {
+	t.Parallel()
+
 	models := []*ModelInfo{{
 		Id:               "m1",
 		SupportedEfforts: []*EffortInfo{{Id: "low", Name: "Low"}, {Id: "high", Name: "High"}},
@@ -658,6 +708,8 @@ func TestModelAndEffortGroups_EffortLabel(t *testing.T) {
 // for Pi (built from the registered modelSubGroups) also labels the thinking-level
 // group "Thinking Level", so the popover stays consistent while a Pi agent restarts.
 func TestPiStaticOptionGroups_ThinkingLevelLabel(t *testing.T) {
+	t.Parallel()
+
 	groups := staticOptionGroupsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, PiDefaultModel)
 	eg := optionids.GroupByID(groups, OptionIDEffort)
 	require.NotNil(t, eg, "Pi's static fallback surfaces a thinking-level group for its default model")
@@ -669,6 +721,8 @@ func TestPiStaticOptionGroups_ThinkingLevelLabel(t *testing.T) {
 // the option value, the groups are non-mutable, and a concrete effort is surfaced while an
 // auto/empty effort is suppressed.
 func TestReadOnlyModelAndEffortGroups(t *testing.T) {
+	t.Parallel()
+
 	groups := readOnlyModelAndEffortGroups("opus[1m]", "Opus (1M context)", "high")
 	mg := optionids.GroupByID(groups, OptionIDModel)
 	require.NotNil(t, mg)

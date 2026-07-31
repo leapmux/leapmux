@@ -39,7 +39,7 @@ import {
   openAgentViaAPI,
 } from './helpers/api'
 import { cliAgentOpen, mintCLITokenForAdmin, runCLI } from './helpers/cli'
-import { loginViaToken, openWorkspace, tabById, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, tabById, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 
 /** The label a tab carries only once its agent record has arrived. */
 const HYDRATED_AGENT_LABEL = /^Agent .+/
@@ -79,7 +79,7 @@ test.describe('cli-created workspace hydrates', () => {
       const agentId = await cliAgentOpen(cli, { workspaceId: second!, workerId })
 
       // Switch workspaces by clicking the sidebar -- a client-side transition.
-      const row = page.locator(`[data-testid="workspace-item-${second}"]`)
+      const row = workspaceRow(page, second!)
       await expect(row, 'the new workspace reaches the sidebar over /ws/userevents').toBeVisible()
       await row.click()
       await expect(row).toHaveAttribute('data-active', 'true')

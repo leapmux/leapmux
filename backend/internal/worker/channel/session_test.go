@@ -195,6 +195,8 @@ func initiatorStartClassicalRekey(t *testing.T) (*leapmuxv1.InnerMessage, *rekey
 }
 
 func TestHandleOpen_NegotiatesMinOfHubAndWorker(t *testing.T) {
+	t.Parallel()
+
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	sender := newCollectSender()
@@ -224,6 +226,8 @@ func TestHandleOpen_NegotiatesMinOfHubAndWorker(t *testing.T) {
 }
 
 func TestHandleOpen_TakesHubWhenHubSmallerThanWorker(t *testing.T) {
+	t.Parallel()
+
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	sender := newCollectSender()
@@ -255,6 +259,8 @@ func TestHandleOpen_TakesHubWhenHubSmallerThanWorker(t *testing.T) {
 }
 
 func TestHandleOpen_NotifiesNegotiatedMaxMessageSize(t *testing.T) {
+	t.Parallel()
+
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	sender := newCollectSender()
@@ -288,6 +294,8 @@ func TestHandleOpen_NotifiesNegotiatedMaxMessageSize(t *testing.T) {
 }
 
 func TestHandleOpen_ReassembledOverrideClampsMaxPayloadBudget(t *testing.T) {
+	t.Parallel()
+
 	mgr, ck, _ := setupTestManagerWith(t, 100, 0)
 	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
 	require.NoError(t, err)
@@ -308,6 +316,8 @@ func TestHandleOpen_ReassembledOverrideClampsMaxPayloadBudget(t *testing.T) {
 }
 
 func TestCloseAll_UsesReleasedAllCallback(t *testing.T) {
+	t.Parallel()
+
 	mgr, ck, _ := setupTestManager(t)
 	var perID int
 	var allCalls int
@@ -334,6 +344,8 @@ func TestCloseAll_UsesReleasedAllCallback(t *testing.T) {
 }
 
 func TestCloseAll_FallsBackToPerIDRelease(t *testing.T) {
+	t.Parallel()
+
 	mgr, ck, _ := setupTestManager(t)
 	var released []string
 	mgr.SetOnReleasedMaxMessageSize(func(id string) { released = append(released, id) })
@@ -358,6 +370,8 @@ func TestCloseAll_FallsBackToPerIDRelease(t *testing.T) {
 }
 
 func TestHandleOpen_RejectsOutOfBoundsHubMax(t *testing.T) {
+	t.Parallel()
+
 	mgr, ck, _ := setupTestManager(t)
 	_, msg1, err := noiseutil.InitiatorHandshake1(ck.X25519Public, ck.MlkemPublicKeyBytes())
 	require.NoError(t, err)
@@ -432,6 +446,8 @@ func decryptInnerResponse(t *testing.T, initiatorSession *noiseutil.Session, msg
 }
 
 func TestHandleOpen_Success(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManager(t)
 
 	session := performHandshake(t, mgr, kp, "ch-1", "user-1")
@@ -445,6 +461,8 @@ func TestHandleOpen_Success(t *testing.T) {
 }
 
 func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
+	t.Parallel()
+
 	// A second ChannelOpen for an already-active channel id is rejected:
 	// the prior session stays intact (ctx live, registered in the map)
 	// and the close callback does NOT fire. The previous defensive
@@ -508,6 +526,8 @@ func TestHandleOpen_DuplicateChannelIdRejected(t *testing.T) {
 // so unlike the machine-scoped families -- which requireWorkerOwner fails closed on
 // for exactly this input -- an empty id is not self-limiting there.
 func TestHandleOpen_RefusesEmptyUserID(t *testing.T) {
+	t.Parallel()
+
 	mgr, ck, _ := setupTestManager(t)
 
 	// A VALID handshake payload, so the rejection is provably the identity check
@@ -532,6 +552,8 @@ func TestHandleOpen_RefusesEmptyUserID(t *testing.T) {
 }
 
 func TestHandleOpen_BadHandshake(t *testing.T) {
+	t.Parallel()
+
 	mgr, _, _ := setupTestManager(t)
 
 	resp := mgr.HandleOpen(&leapmuxv1.ChannelOpenRequest{
@@ -553,6 +575,8 @@ func TestHandleOpen_BadHandshake(t *testing.T) {
 }
 
 func TestHandleMessage_DispatchAndResponse(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 
 	// Set up a dispatcher with a test handler.
@@ -597,6 +621,8 @@ func TestHandleMessage_DispatchAndResponse(t *testing.T) {
 // chunk and delivered truncated -- and the drop must happen after the decrypt,
 // so the receive nonce stays in step with the peer and the session survives.
 func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
@@ -643,6 +669,8 @@ func TestHandleMessage_OutOfSpecFlagsDroppedWithoutNonceDesync(t *testing.T) {
 }
 
 func TestHandleMessage_UnknownChannel(t *testing.T) {
+	t.Parallel()
+
 	mgr, _, _ := setupTestManager(t)
 	mgr.SetDispatcher(NewDispatcher())
 
@@ -655,6 +683,8 @@ func TestHandleMessage_UnknownChannel(t *testing.T) {
 }
 
 func TestHandleMessage_NoDispatcher(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 	// Intentionally do NOT set a dispatcher.
 
@@ -690,6 +720,8 @@ func TestHandleMessage_NoDispatcher(t *testing.T) {
 // "verified" against the Hub's own value. Deleting it must not weaken the
 // identity the dispatcher sees, nor gate the first request behind a round trip.
 func TestHandleMessage_RequestNeedsNoIdentityClaim(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 
 	gotUserID := make(chan userid.UserID, 1)
@@ -731,6 +763,8 @@ func TestHandleMessage_RequestNeedsNoIdentityClaim(t *testing.T) {
 // maps key on them; the truncation would happen silently at marshal, and the response
 // would come back correlated to the WRONG request. So pin the wire, not the map.
 func TestHandleMessage_CorrelationIdSurvivesAbove32Bits(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
@@ -764,6 +798,8 @@ func TestHandleMessage_CorrelationIdSurvivesAbove32Bits(t *testing.T) {
 }
 
 func TestHandleClose(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManager(t)
 	mgr.SetDispatcher(NewDispatcher())
 
@@ -786,6 +822,8 @@ func TestHandleClose(t *testing.T) {
 }
 
 func TestCloseAll(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManager(t)
 	mgr.SetDispatcher(NewDispatcher())
 
@@ -812,6 +850,8 @@ func TestCloseAll(t *testing.T) {
 // holds — otherwise a `git push` started moments before the user closed
 // the dialog would keep running until pushBranchTimeout.
 func TestHandleClose_CancelsSessionCtx(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManager(t)
 	mgr.SetDispatcher(NewDispatcher())
 
@@ -838,6 +878,8 @@ func TestHandleClose_CancelsSessionCtx(t *testing.T) {
 // the cancel back inside the lock and re-introducing the cleanup-
 // path lock-cycle the fix was designed to prevent.
 func TestCloseAll_CancelsEverySessionCtx(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManager(t)
 	mgr.SetDispatcher(NewDispatcher())
 
@@ -864,6 +906,8 @@ func TestCloseAll_CancelsEverySessionCtx(t *testing.T) {
 // covers the session bookkeeping; this one verifies the handler-visible
 // ctx is the same ctx that gets cancelled.
 func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManager(t)
 
 	gotCtxC := make(chan context.Context, 1)
@@ -903,6 +947,8 @@ func TestHandleMessage_DispatchesUnderSessionCtx(t *testing.T) {
 // Before the fix (async sends in receive loop), a blocked sendFn would hold
 // the send mutex and block the receive loop, causing a deadlock cascade.
 func TestHandleMessage_NonBlocking(t *testing.T) {
+	t.Parallel()
+
 	// Create a sendFn that blocks until explicitly released.
 	blockCh := make(chan struct{}, 1)
 	releaseCh := make(chan struct{})
@@ -981,6 +1027,8 @@ func TestHandleMessage_NonBlocking(t *testing.T) {
 }
 
 func TestMultipleChannels(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
@@ -1037,6 +1085,8 @@ func decryptChannelMessage(t *testing.T, session *noiseutil.Session, msg *leapmu
 }
 
 func TestSendEncrypted_SingleChunk(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
@@ -1069,6 +1119,8 @@ func TestSendEncrypted_SingleChunk(t *testing.T) {
 }
 
 func TestSendEncrypted_MultiChunk(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 
 	// Create a handler that sends a large payload.
@@ -1127,6 +1179,8 @@ func TestSendEncrypted_MultiChunk(t *testing.T) {
 }
 
 func TestSendEncrypted_ExactBoundary(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 
 	dispatcher := NewDispatcher()
@@ -1198,6 +1252,8 @@ func TestSendEncrypted_ExactBoundary(t *testing.T) {
 }
 
 func TestReassembly_E2E(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 
 	var receivedPayload []byte
@@ -1265,6 +1321,8 @@ func TestReassembly_E2E(t *testing.T) {
 }
 
 func TestReassembly_MaxSizeExceeded(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManagerWith(t, 100, 0)
 
 	dispatcher := NewDispatcher()
@@ -1315,6 +1373,8 @@ func TestReassembly_MaxSizeExceeded(t *testing.T) {
 }
 
 func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManagerWith(t, 0, 2)
 
 	dispatcher := NewDispatcher()
@@ -1367,6 +1427,8 @@ func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
 }
 
 func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManagerWith(t, 100, 0) // Very small limit.
 
 	// Register a handler that tries to send a response larger than the limit.
@@ -1399,6 +1461,8 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 }
 
 func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManagerWith(t, 100, 0)
 
 	dispatcher := NewDispatcher()
@@ -1445,6 +1509,8 @@ func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
 }
 
 func TestReassembly_ErrorResponseContent(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManagerWith(t, 100, 0)
 
 	dispatcher := NewDispatcher()
@@ -1494,6 +1560,8 @@ func TestReassembly_ErrorResponseContent(t *testing.T) {
 }
 
 func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManagerWith(t, 0, 2)
 
 	dispatcher := NewDispatcher()
@@ -1541,6 +1609,8 @@ func TestReassembly_MaxIncompleteErrorResponse(t *testing.T) {
 }
 
 func TestHandleClose_MidChunk(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManager(t)
 	mgr.SetDispatcher(NewDispatcher())
 
@@ -1572,6 +1642,8 @@ func TestHandleClose_MidChunk(t *testing.T) {
 }
 
 func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
+	t.Parallel()
+
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
@@ -1645,6 +1717,8 @@ func TestHandleMessage_decryptFailureClosesChannel(t *testing.T) {
 // assert.Never below fails. It mirrors the client-side test this defect's fix already
 // has in tunnel/channel_test.go.
 func TestReassembly_OversizeMessageErrorsOnceThenDropsChunks(t *testing.T) {
+	t.Parallel()
+
 	const channelID = "ch-poison"
 	const correlationID = uint64(7)
 	mgr, kp, sender := setupTestManagerWith(t, 100, 4)
@@ -1727,6 +1801,8 @@ func TestReassembly_OversizeMessageErrorsOnceThenDropsChunks(t *testing.T) {
 // contract). A blocking enqueue would reintroduce the receive-loop wedge the
 // queue replaced the inline sends to prevent.
 func TestQueueErrorDoesNotBlockWhenFull(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// No drainer is started: the queue can only fill.
@@ -1758,6 +1834,8 @@ func TestQueueErrorDoesNotBlockWhenFull(t *testing.T) {
 // Without the sentinel the two are indistinguishable and a single
 // oversized payload silently deafens a live tab.
 func TestSendEncrypted_OversizedMessageIsRejectedNotFatal(t *testing.T) {
+	t.Parallel()
+
 	workerSession, _ := setupTestSessions(t)
 
 	collector := newCollectSender()
@@ -1780,6 +1858,8 @@ func TestSendEncrypted_OversizedMessageIsRejectedNotFatal(t *testing.T) {
 // TestSendEncrypted_WithinCapDoesNotReportRejection guards the other
 // side of the branch, so the sentinel can't be returned for every send.
 func TestSendEncrypted_WithinCapDoesNotReportRejection(t *testing.T) {
+	t.Parallel()
+
 	workerSession, _ := setupTestSessions(t)
 
 	collector := newCollectSender()
@@ -1808,6 +1888,8 @@ func TestSendEncrypted_WithinCapDoesNotReportRejection(t *testing.T) {
 // is ordered and encrypted with no resync, and the transport never
 // errors, so the client is simply missing an event and is never told.
 func TestSendEncrypted_MaxSizedPayloadIsNotRejected(t *testing.T) {
+	t.Parallel()
+
 	workerSession, _ := setupTestSessions(t)
 
 	collector := newCollectSender()
@@ -1832,6 +1914,8 @@ func TestSendEncrypted_MaxSizedPayloadIsNotRejected(t *testing.T) {
 // multi-chunk send: the chunked permit is held across the big message, but the
 // frame permit is released between chunks.
 func TestChannelSenderSmallResponseOvertakesMultiChunk(t *testing.T) {
+	t.Parallel()
+
 	workerSession, initiatorSession := setupTestSessions(t)
 
 	holdFirst := make(chan struct{})
@@ -1918,6 +2002,8 @@ func TestChannelSenderSmallResponseOvertakesMultiChunk(t *testing.T) {
 // Two concurrent multi-chunk sends must never overlap their MORE runs: the
 // Hub's chunk tracker admits at most one in-flight chunked sequence.
 func TestChannelSenderConcurrentMultiChunkNeverOverlapMORERuns(t *testing.T) {
+	t.Parallel()
+
 	workerSession, _ := setupTestSessions(t)
 
 	var (
@@ -1969,6 +2055,8 @@ func TestChannelSenderConcurrentMultiChunkNeverOverlapMORERuns(t *testing.T) {
 
 // Cancelling the session lifetime must unwedge a sender parked on the gate.
 func TestChannelSenderLifetimeUnwedgesParkedSender(t *testing.T) {
+	t.Parallel()
+
 	workerSession, _ := setupTestSessions(t)
 
 	hold := make(chan struct{})
@@ -2024,6 +2112,8 @@ func TestChannelSenderLifetimeUnwedgesParkedSender(t *testing.T) {
 // DispatchAsync's unknown-method arm must QueueError (not SendError inline) when
 // the writer offers an errorQueuer -- the receive loop must not park on the gate.
 func TestDispatchAsyncUnknownMethodIsQueued(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 	w := &queueTrackingWriter{}
 	d.DispatchAsync(context.Background(), userid.MustNew("u"),
@@ -2050,6 +2140,8 @@ func (w *queueTrackingWriter) QueueError(int32, string)                       { 
 // session down, so the CLOSE is enqueued on the connection writer's FIFO ahead
 // of teardown.
 func TestHandleMessage_DecryptFailureCLOSEBeforeHandleClose(t *testing.T) {
+	t.Parallel()
+
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 
@@ -2097,6 +2189,8 @@ func TestHandleMessage_DecryptFailureCLOSEBeforeHandleClose(t *testing.T) {
 }
 
 func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 	initiator := performHandshake(t, mgr, kp, "ch-rekey", "user-rekey")
 
@@ -2201,6 +2295,8 @@ func TestHandleMessage_RekeyAcceptAndReject(t *testing.T) {
 // derivation the peer could predict. The fresh-DH agreement is what closes the
 // #321 forward-secrecy gap, so a peer that did not run it must not advance keys.
 func TestHandleMessage_RekeyBadEphemeralCancels(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 	initiator := performHandshake(t, mgr, kp, "ch-badpub", "user-badpub")
 
@@ -2241,6 +2337,8 @@ func TestHandleMessage_RekeyBadEphemeralCancels(t *testing.T) {
 // ML-KEM-1024 ciphertext must cancel the session rather than decapsulating
 // garbage. (This test's harness uses the default POST_QUANTUM manager.)
 func TestHandleMessage_RekeyBadMlkemCtCancels(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, _ := setupTestManager(t)
 	// setupTestManager's sender isn't needed — assert via the session lifetime.
 	initiator := performHandshake(t, mgr, kp, "ch-badct", "user-badct")
@@ -2283,6 +2381,8 @@ func TestHandleMessage_RekeyBadMlkemCtCancels(t *testing.T) {
 // rekey test uses the default POST_QUANTUM manager — so it pins the
 // pqSecret==nil agreement between the Go worker and a classic initiator.
 func TestHandleMessage_RekeyClassicChannel(t *testing.T) {
+	t.Parallel()
+
 	ck, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
 	sender := newCollectSender()
@@ -2336,6 +2436,8 @@ func TestHandleMessage_RekeyClassicChannel(t *testing.T) {
 }
 
 func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 	initiator := performHandshake(t, mgr, kp, "ch-rekey-soft", "user-rekey-soft")
 
@@ -2379,6 +2481,8 @@ func TestHandleMessage_RekeySoftNonceBypassesMinInterval(t *testing.T) {
 }
 
 func TestHandleMessage_RekeySendSoftNonceViaPeek(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 	initiator := performHandshake(t, mgr, kp, "ch-rekey-send-soft", "user-rekey-send-soft")
 
@@ -2426,6 +2530,8 @@ func TestHandleMessage_RekeySendSoftNonceViaPeek(t *testing.T) {
 }
 
 func TestHandleMessage_RekeySendHoldsFrameAcrossAck(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 	initiator := performHandshake(t, mgr, kp, "ch-rekey-frame", "user-rekey-frame")
 
@@ -2502,6 +2608,8 @@ func TestHandleMessage_RekeySendHoldsFrameAcrossAck(t *testing.T) {
 }
 
 func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
+	t.Parallel()
+
 	mgr, kp, sender := setupTestManager(t)
 	initiator := performHandshake(t, mgr, kp, "ch-rekey-load", "user-rekey-load")
 

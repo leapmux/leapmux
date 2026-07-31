@@ -75,6 +75,17 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
    */
   const buildSectionGroups = (sections: Section[]): SectionGroup[] => {
     const groups: SectionGroup[] = []
+    const byId = new Map(props.workspaces().map(w => [w.id, w]))
+    // A workspace belongs in exactly ONE place in the sidebar. The item table
+    // can transiently carry two rows for the same workspace -- a CLI- or
+    // cross-worker-created workspace arrives via both the CRDT projection and
+    // the lifecycle event before they reconcile -- and rendering per item put
+    // two nodes with the SAME `workspace-item-<id>` test id on screen. That is
+    // a broken list for the user and a strict-mode violation for any spec that
+    // addresses the row by id (142 and 152 both died that way). First
+    // occurrence wins, so a workspace mid-move stays where it was instead of
+    // appearing twice.
+    const placed = new Set<string>()
 
     const getWorkspacesForSection = (sectionId: string): Workspace[] => {
       // Defense-in-depth tiebreaker on workspaceId: position is a
@@ -97,9 +108,17 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
             return cmp
           return a.workspaceId.localeCompare(b.workspaceId)
         })
-      return sectionItems
-        .map(i => props.workspaces().find(w => w.id === i.workspaceId))
-        .filter((w): w is Workspace => w != null)
+      const out: Workspace[] = []
+      for (const item of sectionItems) {
+        if (placed.has(item.workspaceId))
+          continue
+        const ws = byId.get(item.workspaceId)
+        if (!ws)
+          continue
+        placed.add(item.workspaceId)
+        out.push(ws)
+      }
+      return out
     }
 
     const assignedIds = new Set(store.state.items.map(i => i.workspaceId))
@@ -111,6 +130,10 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
         groups.push({
           section,
           workspaces: section.sectionType === SectionType.WORKSPACES_IN_PROGRESS
+            // No `!placed.has(...)` filter: `unassigned` is defined as the
+            // workspaces NOT in `assignedIds`, and `placed` only ever receives
+            // ids drawn from the same `store.state.items` that built it, so the
+            // two sets are disjoint by construction.
             ? [...sectionWorkspaces, ...unassigned]
             : sectionWorkspaces,
         })

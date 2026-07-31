@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI } from './helpers/api'
 import { getRecordedToasts } from './helpers/toast'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { loginViaToken, openWorkspace, workspaceRow } from './helpers/ui'
 
 test.describe('Workspace UX Enhancements', () => {
   test('should auto-activate first workspace on app home', async ({ page, leapmuxServer }) => {
@@ -18,7 +18,7 @@ test.describe('Workspace UX Enhancements', () => {
       // Should auto-activate a workspace rather than sit on an empty shell.
       // There is no URL to check any more -- the sidebar row is where the
       // active selection is observable.
-      await expect(page.locator(`[data-testid="workspace-item-${workspaceId}"]`))
+      await expect(workspaceRow(page, workspaceId))
         .toHaveAttribute('data-active', 'true')
     }
     finally {
@@ -162,7 +162,7 @@ test.describe('Workspace UX Enhancements', () => {
       await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Next WS' })).toBeVisible()
 
       // Delete the active workspace
-      const deleteTarget = page.locator(`[data-testid="workspace-item-${workspaceId1}"]`)
+      const deleteTarget = workspaceRow(page, workspaceId1)
       await deleteTarget.hover()
       await deleteTarget.locator('button').first().click()
       await page.getByRole('menuitem', { name: 'Delete' }).click()
@@ -177,7 +177,7 @@ test.describe('Workspace UX Enhancements', () => {
       await expect(page.locator('[data-testid^="workspace-item-"]').filter({ hasText: 'Delete Target WS' })).not.toBeVisible()
       // Should switch to the surviving workspace rather than leave the shell
       // pointed at the one that was just deleted.
-      await expect(page.locator(`[data-testid="workspace-item-${workspaceId2}"]`))
+      await expect(workspaceRow(page, workspaceId2))
         .toHaveAttribute('data-active', 'true')
       // Verify the 'Next WS' workspace is visible in the sidebar
       await expect(page.getByText('Next WS')).toBeVisible()

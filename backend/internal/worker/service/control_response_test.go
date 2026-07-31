@@ -65,6 +65,8 @@ func controlResponseRows(rows []db.Message) []db.Message {
 }
 
 func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -136,6 +138,8 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 }
 
 func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -203,6 +207,8 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 // forwarded to the agent as a real user message that draws a scroll-rail jump dot -- it stays the
 // plain {content} shape, not the structured control-response row.
 func TestSendControlResponse_CodexPlanModePromptDenyFeedbackIsMarked(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -257,6 +263,8 @@ func TestSendControlResponse_CodexPlanModePromptDenyFeedbackIsMarked(t *testing.
 // structured control-response row instead, retaining the native response verbatim (the frontend --
 // not the backend -- collapses the placeholder when rendering).
 func TestSendControlResponse_CodexPlanModePromptBareDenyPersistsStructuredRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -305,6 +313,8 @@ func TestSendControlResponse_CodexPlanModePromptBareDenyPersistsStructuredRow(t 
 }
 
 func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -363,6 +373,8 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 // request-gone path -- runs handleControlResponsePromptPlan (which persists the structured row AND
 // applies plan-mode side effects like the "Implement the plan." prompt) exactly ONCE, not per retry.
 func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -403,6 +415,8 @@ func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *te
 }
 
 func TestBuildControlResponsePlan_MalformedPlanPromptHasNoDecision(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -428,6 +442,8 @@ func TestBuildControlResponsePlan_MalformedPlanPromptHasNoDecision(t *testing.T)
 }
 
 func TestBuildControlResponsePlan_WhitespacePaddedBehaviorStillDecides(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -462,6 +478,8 @@ func TestBuildControlResponsePlan_WhitespacePaddedBehaviorStillDecides(t *testin
 // "" and is treated as no-decision on BOTH gates (previously hasDecision read it untrimmed as
 // non-empty while the mutation gate trimmed it to "" and skipped -- the inconsistency this closes).
 func TestBuildControlResponsePlan_RequestIDNormalizedConsistently(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -493,6 +511,8 @@ func TestBuildControlResponsePlan_RequestIDNormalizedConsistently(t *testing.T) 
 }
 
 func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -555,6 +575,8 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 }
 
 func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -621,6 +643,8 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 }
 
 func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -694,6 +718,8 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 // not self-displaying, so the planner's structured control-response row IS the answer and must
 // carry the CONTROL_RESPONSE mark.
 func TestSendControlResponse_PersistsClaudePermissionRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -734,6 +760,8 @@ func TestSendControlResponse_PersistsClaudePermissionRow(t *testing.T) {
 // which is now RETAINED verbatim inside the native response (the frontend collapses it to render
 // "Rejected"). The backend no longer derives or normalizes label text.
 func TestSendControlResponse_ClaudePermissionBareDenyRetainsNativeResponse(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -769,6 +797,8 @@ func TestSendControlResponse_ClaudePermissionBareDenyRetainsNativeResponse(t *te
 // TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage is the counterpart: a REAL
 // typed reason survives verbatim into the native response for the frontend to render as feedback.
 func TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -801,6 +831,8 @@ func TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage(t *tes
 }
 
 func TestSendControlResponse_UsesNestedRequestIDWhenTopLevelIDAlsoExists(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -841,6 +873,8 @@ func TestSendControlResponse_UsesNestedRequestIDWhenTopLevelIDAlsoExists(t *test
 // resolvable request id, and the frontend degrades gracefully. (A DUPLICATE answer for the same
 // request draws no second row -- see TestSendControlResponse_WithholdsDuplicateAnswerRow below.)
 func TestSendControlResponse_PersistsRowWithRequestOmittedWhenRequestUnknown(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -874,6 +908,8 @@ func TestSendControlResponse_PersistsRowWithRequestOmittedWhenRequestUnknown(t *
 // lost, it persists the structured row. Deduping a "same request answered twice" case is the
 // idempotency claim's job (see the duplicate test below), not a blanket provider-capability withhold.
 func TestSendControlResponse_PersistsRequestGoneClaudeOrphanRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -906,6 +942,8 @@ func TestSendControlResponse_PersistsRequestGoneClaudeOrphanRow(t *testing.T) {
 // answer claims the request id and does all the work; the duplicate (whose request row was deleted by
 // the first) is a deduped no-op -- it draws no second row and is NOT re-forwarded to the agent.
 func TestSendControlResponse_WithholdsDuplicateAnswerRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -939,6 +977,8 @@ func TestSendControlResponse_WithholdsDuplicateAnswerRow(t *testing.T) {
 // on the winner is also what keeps the winner's request read while-present, so a concurrent duplicate
 // can't tear the request out from under it and force a context-less / double-marked row.
 func TestSendControlResponse_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -987,6 +1027,8 @@ func TestSendControlResponse_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 // The forward is observed via a STOPPED agent: a duplicate that ATTEMPTED to forward would hit
 // SendRawInput -> "agent not running" and surface an error; winner-only forward draws none.
 func TestSendControlResponse_DuplicateDoesNotForward(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1029,6 +1071,8 @@ func TestSendControlResponse_DuplicateDoesNotForward(t *testing.T) {
 // request id: it draws no structured row (there is nothing to attribute the answer to) but is still
 // forwarded to the agent.
 func TestSendControlResponse_GarbageContentPersistsNothing(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1056,6 +1100,8 @@ func TestSendControlResponse_GarbageContentPersistsNothing(t *testing.T) {
 // persisted for a self-displaying tool (ExitPlanMode) that is NOT clearing context -- its own
 // ingested tool_result carries the mark, so a second synthetic row would double the rail dot.
 func TestSendControlResponse_SkipsStructuredRowForSelfDisplayingTool(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1085,6 +1131,8 @@ func TestSendControlResponse_SkipsStructuredRowForSelfDisplayingTool(t *testing.
 }
 
 func TestSendControlResponse_RestoresClaudeSelfDisplayedToolUseType(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1114,6 +1162,8 @@ func TestSendControlResponse_RestoresClaudeSelfDisplayedToolUseType(t *testing.T
 }
 
 func TestSendControlResponse_ClaudeExitPlanModeClearContextMarksStructuredRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1155,6 +1205,8 @@ func TestSendControlResponse_ClaudeExitPlanModeClearContextMarksStructuredRow(t 
 // the plan-mode transition: a control response whose request_id carries surrounding whitespace
 // must still switch the agent to plan mode.
 func TestSendControlResponse_EnterPlanModeAllowTrimsRequestID(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1193,6 +1245,8 @@ func TestSendControlResponse_EnterPlanModeAllowTrimsRequestID(t *testing.T) {
 // predicate the handler's forward decision keys off for winner and duplicate alike (loaded /
 // request-gone clear-context withhold, request-gone non-clearing forwards).
 func TestControlResponsePlan_WithholdsForward(t *testing.T) {
+	t.Parallel()
+
 	mk := func(behavior string, clear bool) controlResponsePlan {
 		var plan controlResponsePlan
 		plan.hasDecision = behavior == agent.ControlBehaviorAllow || behavior == agent.ControlBehaviorDeny
@@ -1228,6 +1282,8 @@ func TestControlResponsePlan_WithholdsForward(t *testing.T) {
 // approved EnterPlanMode switches the agent into plan mode, while a request-gone answer -- which
 // cannot resolve the transition -- touches nothing.
 func TestApplyControlResponsePlanModeMutations(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1283,6 +1339,8 @@ func TestApplyControlResponsePlanModeMutations(t *testing.T) {
 // TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists, where the new subprocess re-issues the
 // id with a FRESH claim_token, so a genuine post-relaunch answer persists.
 func TestSendControlResponse_DuplicateStraddlingRestartStillDeduped(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1323,6 +1381,8 @@ func TestSendControlResponse_DuplicateStraddlingRestartStillDeduped(t *testing.T
 // while a stale duplicate of the PRE-relaunch instance (old token) is still deduped, so the reuse
 // window stays closed. The distinct claim_token -- not a release step -- is what tells the two apart.
 func TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1366,6 +1426,8 @@ func TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists(t *testing.T) 
 // to exactly ONE structured row (marked CONTROL_RESPONSE) whose response is the transformed outcome
 // forwarded to the agent -- never two rows.
 func TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1417,6 +1479,8 @@ func TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow(t *testin
 // createPlan is PlanModeControlNone, so the Allow branch must be a NO-OP (no permission-mode
 // switch) while the answer still routes to the single structured "accepted" row.
 func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1474,6 +1538,8 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 // never reaches this decision a second time -- the withhold guard the old SelfDisplaysControlAnswers
 // capability provided is subsumed by that claim and intentionally gone.
 func TestNeedsStructuredRow(t *testing.T) {
+	t.Parallel()
+
 	// mk sets only the fields needsStructuredRow reads: the resolvable request id and the resolved
 	// self-display flag. requestMeta.Loaded no longer participates -- the "answered twice" duplicate
 	// is deduped one layer up by SendControlResponse's idempotency claim, not here.
@@ -1511,6 +1577,8 @@ func TestNeedsStructuredRow(t *testing.T) {
 }
 
 func TestExitPlanClearingContext(t *testing.T) {
+	t.Parallel()
+
 	// The single triple that needsStructuredRow keys the mark-carrying row off (and that gates the
 	// once-only initiatePlanExecution): an APPROVED ExitPlanMode that ALSO clears context (the
 	// transcript row is wiped, so the structured row carries the mark and the approval is not
@@ -1529,6 +1597,8 @@ func TestExitPlanClearingContext(t *testing.T) {
 }
 
 func TestResolveTargetMode(t *testing.T) {
+	t.Parallel()
+
 	// The frontend's attached permission mode wins when present.
 	assert.Equal(t, agent.PermissionModePlan, resolveTargetMode(agent.PermissionModePlan, agent.PermissionModeDefault))
 	// Empty falls back to the caller's default -- the ONE thing the plan-prompt path
@@ -1544,6 +1614,8 @@ func TestResolveTargetMode(t *testing.T) {
 // marshals as `null` and the row (with its CONTROL_RESPONSE rail mark) still persists. Without the
 // coalesce this persists ZERO rows.
 func TestPersistControlResponseRow_EmptyContentPersistsRowNotDropped(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1574,6 +1646,8 @@ func TestPersistControlResponseRow_EmptyContentPersistsRowNotDropped(t *testing.
 // guards the documented "a resolvable answer always persists a row" invariant against a future one.
 // Without the coalesce this persists ZERO rows.
 func TestPersistControlResponseRow_InvalidJSONContentPersistsRowNotDropped(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1606,6 +1680,8 @@ func TestPersistControlResponseRow_InvalidJSONContentPersistsRowNotDropped(t *te
 // row seq (1) is above the default session_start_seq (0), so HasUserMessages returning true is due to
 // the USER source, not the seq gate.
 func TestPersistControlResponseRow_IsUserSourcedCountsAsUserMessage(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1639,6 +1715,8 @@ func TestPersistControlResponseRow_IsUserSourcedCountsAsUserMessage(t *testing.T
 // excluded from resume; uniform USER includes it. The seq of the answer row is above the
 // session_start_seq recorded at UpdateAgentSessionID, so the flip is due to the source, not the seq gate.
 func TestPersistControlResponseRow_MakesSessionResumable(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -1673,6 +1751,8 @@ func TestPersistControlResponseRow_MakesSessionResumable(t *testing.T) {
 // for a deduped duplicate and a server-side plan-mode prompt. Exercising the tuple directly (no
 // channel sender) is exactly the testability seam the extraction bought.
 func TestProcessControlResponse(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	t.Run("forwards a plain permission answer, then dedups its duplicate", func(t *testing.T) {

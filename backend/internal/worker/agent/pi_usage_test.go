@@ -13,6 +13,8 @@ import (
 // pass the bytes through unchanged so downstream consumers see Pi's
 // original envelope, byte-for-byte.
 func TestAugmentPiMessageEnd_NoUsageReturnsRawUnchanged(t *testing.T) {
+	t.Parallel()
+
 	a := newPiAgentWithSink(&recordingControlSink{})
 	raw := []byte(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`)
 	out := a.augmentPiMessageEnd(raw)
@@ -24,6 +26,8 @@ func TestAugmentPiMessageEnd_NoUsageReturnsRawUnchanged(t *testing.T) {
 // those must skip the augment path so the broadcast doesn't double-bill
 // the user's own prompt.
 func TestAugmentPiMessageEnd_NonAssistantRoleReturnsRawUnchanged(t *testing.T) {
+	t.Parallel()
+
 	a := newPiAgentWithSink(&recordingControlSink{})
 	raw := []byte(`{"type":"message_end","message":{"role":"user","content":[]}}`)
 	out := a.augmentPiMessageEnd(raw)
@@ -34,6 +38,8 @@ func TestAugmentPiMessageEnd_NonAssistantRoleReturnsRawUnchanged(t *testing.T) {
 // defensive case: if Pi ever sends `message` as a string or array
 // instead of an object the helper must not panic.
 func TestAugmentPiMessageEnd_NonObjectMessageReturnsRawUnchanged(t *testing.T) {
+	t.Parallel()
+
 	a := newPiAgentWithSink(&recordingControlSink{})
 	raw := []byte(`{"type":"message_end","message":"not an object"}`)
 	out := a.augmentPiMessageEnd(raw)
@@ -45,6 +51,8 @@ func TestAugmentPiMessageEnd_NonObjectMessageReturnsRawUnchanged(t *testing.T) {
 // malformed payload still flows through to PersistMessage as-is rather
 // than being silently dropped.
 func TestAugmentPiMessageEnd_MalformedJSONReturnsRawUnchanged(t *testing.T) {
+	t.Parallel()
+
 	a := newPiAgentWithSink(&recordingControlSink{})
 	raw := []byte(`{"type":"message_end","message":`)
 	out := a.augmentPiMessageEnd(raw)
@@ -56,6 +64,8 @@ func TestAugmentPiMessageEnd_MalformedJSONReturnsRawUnchanged(t *testing.T) {
 // total_cost_usd reflects the sum, not the latest delta. This was true
 // before the single-decode refactor and must remain so.
 func TestAugmentPiMessageEnd_TotalsAreCumulative(t *testing.T) {
+	t.Parallel()
+
 	a := newPiAgentWithSink(&recordingControlSink{})
 	a.model = "m1"
 	a.availableModels = []*ModelInfo{{Id: "m1", ContextWindow: 1000}}
@@ -73,6 +83,8 @@ func TestAugmentPiMessageEnd_TotalsAreCumulative(t *testing.T) {
 // fast-path: when the snapshot has no cost and no contextUsage, the
 // helper returns raw without re-marshalling.
 func TestPiAugmentRawWithSnapshot_NoOpWhenSnapshotEmpty(t *testing.T) {
+	t.Parallel()
+
 	raw := []byte(`{"type":"agent_end","messages":[]}`)
 	out := piAugmentRawWithSnapshot(raw, piUsageSnapshot{})
 	assert.Equal(t, string(raw), string(out))
@@ -82,6 +94,8 @@ func TestPiAugmentRawWithSnapshot_NoOpWhenSnapshotEmpty(t *testing.T) {
 // for agent_end. Persisted shape uses snake_case (`total_cost_usd`,
 // `context_usage`) to match the broadcast wire format.
 func TestPiAugmentRawWithSnapshot_InjectsBothFields(t *testing.T) {
+	t.Parallel()
+
 	raw := []byte(`{"type":"agent_end","messages":[]}`)
 	snap := piUsageSnapshot{
 		HasTotalCost: true,
@@ -103,6 +117,8 @@ func TestPiAugmentRawWithSnapshot_InjectsBothFields(t *testing.T) {
 // helper does not panic and returns raw unchanged when the input is not
 // valid JSON.
 func TestPiAugmentRawWithSnapshot_MalformedJSONReturnsRawUnchanged(t *testing.T) {
+	t.Parallel()
+
 	raw := []byte(`not json`)
 	snap := piUsageSnapshot{HasTotalCost: true, TotalCostUsd: 1}
 	out := piAugmentRawWithSnapshot(raw, snap)
@@ -116,6 +132,8 @@ func TestPiAugmentRawWithSnapshot_MalformedJSONReturnsRawUnchanged(t *testing.T)
 // same agent. This is the safety boundary we explicitly kept after
 // dropping the redundant clone in sessionInfo().
 func TestSessionInfo_PreservesIndependence(t *testing.T) {
+	t.Parallel()
+
 	a := newPiAgentWithSink(&recordingControlSink{})
 	usage := piAssistantUsage{Input: 10}
 	usage.Cost.Total = 0.1
@@ -138,6 +156,8 @@ func TestSessionInfo_PreservesIndependence(t *testing.T) {
 // already cloned from a.latestContextUsage so the agent state stays
 // isolated.
 func TestSessionInfo_AliasesSnapshotMap(t *testing.T) {
+	t.Parallel()
+
 	snap := piUsageSnapshot{ContextUsage: map[string]any{"input_tokens": int64(42)}}
 	info := snap.sessionInfo()
 	got, ok := info["context_usage"].(map[string]any)
@@ -151,6 +171,8 @@ func TestSessionInfo_AliasesSnapshotMap(t *testing.T) {
 // entirely. Frontend's updateInfo skips nil values, but a missing key
 // avoids waking the reactive store at all.
 func TestSessionInfo_NilContextUsage(t *testing.T) {
+	t.Parallel()
+
 	cases := []map[string]any{nil, {}}
 	for _, ctxUsage := range cases {
 		snap := piUsageSnapshot{HasTotalCost: true, TotalCostUsd: 0.5, ContextUsage: ctxUsage}

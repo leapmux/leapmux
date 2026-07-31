@@ -3,6 +3,8 @@ package service
 import "testing"
 
 func TestAgentAutoTitlePattern(t *testing.T) {
+	t.Parallel()
+
 	matches := []string{
 		"Agent Olivia",
 		"Agent Liam",

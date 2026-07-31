@@ -5,7 +5,6 @@ import (
 	"html"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -97,7 +96,7 @@ func (h *APIAuthHandler) handleAuthorize(w http.ResponseWriter, r *http.Request)
 		UserID:        user.ID,
 		CodeChallenge: challenge,
 		DeviceName:    deviceName,
-		ExpiresAt:     time.Now().Add(CLIAuthCodeTTL),
+		ExpiresAt:     h.now().Add(CLIAuthCodeTTL),
 	}); err != nil {
 		writeInternalError(w, "authorization code creation failed", err)
 		return

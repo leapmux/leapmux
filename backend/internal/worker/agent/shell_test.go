@@ -487,16 +487,25 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			expected: []string{"--model", "opus[1m]", "--effort", "xhigh"},
 		},
 		{
-			name:     "sonnet with xhigh effort falls back to high",
+			name:     "sonnet with xhigh effort",
 			model:    "sonnet",
 			effort:   "xhigh",
-			expected: []string{"--model", "sonnet", "--effort", "high"},
+			expected: []string{"--model", "sonnet", "--effort", "xhigh"},
 		},
 		{
-			name:     "sonnet[1m] with xhigh effort falls back to high",
+			name:     "sonnet[1m] with xhigh effort",
 			model:    "sonnet[1m]",
 			effort:   "xhigh",
-			expected: []string{"--model", "sonnet[1m]", "--effort", "high"},
+			expected: []string{"--model", "sonnet[1m]", "--effort", "xhigh"},
+		},
+		{
+			// The downgrade path itself, against a model that genuinely lacks xhigh.
+			// No catalog model is in that position today -- the CLI reports xhigh for
+			// every effort-capable one -- but the resolver still has to handle it.
+			name:     "a model without xhigh falls back to its default",
+			model:    maxOnlyModelID,
+			effort:   "xhigh",
+			expected: []string{"--model", maxOnlyModelID, "--effort", "high"},
 		},
 		{
 			name:     "opus with ultracode launches with xhigh base",
@@ -511,10 +520,16 @@ func TestBuildModelEffortArgs(t *testing.T) {
 			expected: []string{"--model", "opus[1m]", "--effort", "xhigh"},
 		},
 		{
-			name:     "sonnet with ultracode falls back to high",
+			name:     "sonnet with ultracode launches with xhigh base",
 			model:    "sonnet",
 			effort:   "ultracode",
-			expected: []string{"--model", "sonnet", "--effort", "high"},
+			expected: []string{"--model", "sonnet", "--effort", "xhigh"},
+		},
+		{
+			name:     "a model without xhigh falls back from ultracode too",
+			model:    maxOnlyModelID,
+			effort:   "ultracode",
+			expected: []string{"--model", maxOnlyModelID, "--effort", "high"},
 		},
 		{
 			name:     "sonnet with high effort unchanged",
@@ -617,7 +632,7 @@ func TestBuildModelEffortArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			args := newEffortResolver(claudeCodeAvailableModels).buildModelEffortArgs(tt.model, tt.effort)
+			args := newEffortResolver(effortTestCatalog()).buildModelEffortArgs(tt.model, tt.effort)
 			assert.Equal(t, tt.expected, args)
 		})
 	}

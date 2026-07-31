@@ -40,6 +40,8 @@ func relayFrameOfSize(correlationID uint64, n int) *leapmuxv1.ChannelMessage {
 // constants the thin wrapper hands to sendq. Generic queue behaviour
 // lives in sendq_test.go; this is the wiring that must not drift.
 func TestRelayWriter_ConfigMatchesSendqContract(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, 32*1024*1024, relayMaxQueueBytes)
 	assert.Equal(t, 256, relayFrameOverhead)
 	assert.Equal(t, 10*time.Second, relayWriteTimeout)
@@ -52,17 +54,16 @@ func TestRelayWriter_ConfigMatchesSendqContract(t *testing.T) {
 // never reads makes the drain goroutine park on Write; enqueue must
 // still return promptly.
 func TestRelayWriter_EnqueueDoesNotBlockOnTheSocket(t *testing.T) {
+	t.Parallel()
+
 	received := make(chan *leapmuxv1.ChannelMessage)
 	// received is unbuffered and nobody reads it -- but the client's
 	// read loop is what matters for backpressure. Use a pair and stop
 	// the client from draining by closing received and not consuming.
-	srv, client, writer, cancel := newRelayWriterPair(t, received)
-	defer cancel()
-	defer srv.Close()
-	// Leave client open but stop its reader from freeing the receive
-	// window: close received so the reader goroutine blocks on send,
-	// which eventually fills the socket. Enqueue itself must not wait.
-	defer func() { _ = client.Close(websocket.StatusNormalClosure, "") }()
+	// Leave the client open but stop its reader from freeing the receive
+	// window: nothing consumes received, so the reader goroutine blocks on
+	// send and the socket eventually fills. Enqueue itself must not wait.
+	writer := newRelayWriterPair(t, received)
 
 	done := make(chan struct{})
 	go func() {
@@ -92,6 +93,8 @@ func parkForeverWrite(ctx context.Context, _ *leapmuxv1.ChannelMessage) error {
 // hub wrapper's OnGiveUp cancels the connection when sendq blows the
 // budget -- the hub-specific teardown path, not the generic accounting.
 func TestRelayWriter_DisconnectsAClientOverTheByteBudget(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -121,6 +124,8 @@ func TestRelayWriter_DisconnectsAClientOverTheByteBudget(t *testing.T) {
 // frames to a torn-down connection learns about it via the hub's closed
 // sentinel, so channelmgr stops routing to a dead sender.
 func TestRelayWriter_EnqueueAfterCloseReports(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -136,6 +141,8 @@ func TestRelayWriter_EnqueueAfterCloseReports(t *testing.T) {
 // hub-local sentinel, not sendq.ErrClosed -- channelmgr and BindUser
 // match on errRelayWriterClosed.
 func TestRelayWriter_MapsSendqClosedToHubSentinel(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -151,11 +158,10 @@ func TestRelayWriter_MapsSendqClosedToHubSentinel(t *testing.T) {
 // delivers an ordered stream through a live websocket -- the end-to-end
 // wiring sendq alone cannot assert.
 func TestRelayWriter_PreservesFrameOrder(t *testing.T) {
+	t.Parallel()
+
 	received := make(chan *leapmuxv1.ChannelMessage, 64)
-	srv, client, writer, cancel := newRelayWriterPair(t, received)
-	defer cancel()
-	defer srv.Close()
-	defer func() { _ = client.Close(websocket.StatusNormalClosure, "") }()
+	writer := newRelayWriterPair(t, received)
 
 	const frames = 32
 	for i := 0; i < frames; i++ {
@@ -175,9 +181,14 @@ func TestRelayWriter_PreservesFrameOrder(t *testing.T) {
 // newRelayWriterPair stands up a real websocket pair and returns a
 // relayWriter bound to the server side. Every message the server writes
 // is decoded onto received.
-func newRelayWriterPair(t *testing.T, received chan *leapmuxv1.ChannelMessage) (
-	*httptest.Server, *websocket.Conn, *relayWriter, context.CancelFunc,
-) {
+//
+// Teardown is owned here, in one t.Cleanup with an explicit order, and the
+// order matters. The server handler parks on <-ctx.Done(), so closing the
+// CLIENT first writes a close frame to a peer that will never reply, and
+// coder/websocket then blocks the full 5s closing-handshake timeout: a flat
+// 5s of dead wall time per test. Cancelling first releases the handler, so
+// the client's handshake completes immediately.
+func newRelayWriterPair(t *testing.T, received chan *leapmuxv1.ChannelMessage) *relayWriter {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -197,11 +208,18 @@ func newRelayWriterPair(t *testing.T, received chan *leapmuxv1.ChannelMessage) (
 		mu.Unlock()
 		close(accepted)
 		<-ctx.Done()
+		_ = c.Close(websocket.StatusNormalClosure, "")
 	}))
 
 	client, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], nil)
 	require.NoError(t, err)
 	client.SetReadLimit(channelwire.WSReadLimit)
+
+	t.Cleanup(func() {
+		cancel()
+		_ = client.Close(websocket.StatusNormalClosure, "")
+		srv.Close()
+	})
 
 	select {
 	case <-accepted:
@@ -229,5 +247,5 @@ func newRelayWriterPair(t *testing.T, received chan *leapmuxv1.ChannelMessage) (
 	write := func(writeCtx context.Context, msg *leapmuxv1.ChannelMessage) error {
 		return channelwire.WriteChannelMessage(writeCtx, conn, msg)
 	}
-	return srv, client, newRelayWriter(ctx, write, cancel, "user-1", "conn-1"), cancel
+	return newRelayWriter(ctx, write, cancel, "user-1", "conn-1")
 }

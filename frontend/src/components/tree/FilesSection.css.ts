@@ -82,3 +82,15 @@ export const flatListItemSelected = style({
     },
   },
 })
+
+/**
+ * The region the filter tabs control (role=tabpanel).
+ *
+ * Purely structural -- the tree and the flat list own their own sizing, so this
+ * must not introduce a layout box of its own; `display: contents` keeps the
+ * element out of the layout while still carrying the role and the id that
+ * aria-controls points at.
+ */
+export const panel = style({
+  display: 'contents',
+})

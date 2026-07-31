@@ -19,9 +19,31 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 )
 
+// testRekeyWatchdog is the budget for the two tests that need the watchdog to
+// actually FIRE. It replaces the production sessionVerifyTimeout (10s): what
+// those tests pin is what the watchdog does at its deadline, not how far away
+// the deadline is.
+//
+// Two seconds, not milliseconds. The deadline is also the window in which a
+// second caller must join the in-flight rekey (see
+// TestChannelRekeyConcurrentCallersShareTerminalFailure), and a watchdog that
+// can beat a goroutine to its first scheduling slice would flake on a loaded
+// CI box. Two seconds is orders of magnitude past any plausible stall while
+// still costing a fifth of the production window.
+const testRekeyWatchdog = 2 * time.Second
+
+// rekeyChannelOption customizes the Channel pairedRekeyChannel builds.
+type rekeyChannelOption func(*Channel)
+
+// withRekeyWatchdog shortens the in-flight-rekey watchdog so a test can watch
+// it fire (or prove it retired) without parking on the real clock.
+func withRekeyWatchdog(d time.Duration) rekeyChannelOption {
+	return func(ch *Channel) { ch.rekey.watchdogTimeout = d }
+}
+
 // pairedRekeyChannel stands up a Noise pair over a WebSocket with the client's
 // recvLoop running so Ack/Reject can complete an in-band rekey round trip.
-func pairedRekeyChannel(t *testing.T) (ch *Channel, peerSession *noiseutil.Session, peerWS *websocket.Conn) {
+func pairedRekeyChannel(t *testing.T, opts ...rekeyChannelOption) (ch *Channel, peerSession *noiseutil.Session, peerWS *websocket.Conn) {
 	t.Helper()
 
 	key, err := noiseutil.GenerateCompositeKeypair()
@@ -88,6 +110,9 @@ func pairedRekeyChannel(t *testing.T) (ch *Channel, peerSession *noiseutil.Sessi
 			// Classical handshake ⇒ rekey is X25519-only: workerMlkemPub stays
 			// nil (its zero value), which EncapsulateRekeyPQ short-circuits on.
 		},
+	}
+	for _, opt := range opts {
+		opt(ch)
 	}
 	go ch.recvLoop()
 	return ch, peerSess, peerWS
@@ -204,19 +229,19 @@ func TestChannelRekeyAcceptSurvivesLiveConn(t *testing.T) {
 }
 
 // TestChannelRekeyAcceptSurvivesWatchdog pins the F-1 regression: the rekey
-// watchdog timer (runRekeyTimer, sessionVerifyTimeout = 10s) MUST retire the
-// instant the rekey resolves on Ack — not fire 10s later and cancel a healthy
-// channel. Pre-fix the detached timer only selected on <-timer.C / <-ctx.Done(),
-// so every successful rekey closed the channel ~10s after the Ack; the
+// watchdog timer (runRekeyTimer) MUST retire the instant the rekey resolves on
+// Ack — not fire a full watchdog window later and cancel a healthy channel.
+// Pre-fix the detached timer only selected on <-timer.C / <-ctx.Done(), so
+// every successful rekey closed the channel one window after the Ack; the
 // happy-path tests above assert !Closed() immediately after the Ack and never
-// wait sessionVerifyTimeout, so they would NOT catch this regression returning.
-// This test polls past sessionVerifyTimeout and fails the moment the channel
-// closes. Slow (~12s) and skipped under -short, matching
-// TestChannelRekeyTimeoutCancelsChannel.
+// wait out the watchdog, so they would NOT catch this regression returning.
+//
+// The channel keeps the PRODUCTION watchdog. The assertion is on the timer
+// goroutine retiring (watchdogLive draining to zero), not on the channel still
+// being open once the window has elapsed, so it neither waits out 10s nor
+// races a shortened window against the Ack round trip -- a race a loaded CI
+// box would eventually lose.
 func TestChannelRekeyAcceptSurvivesWatchdog(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits past sessionVerifyTimeout to confirm the watchdog retired")
-	}
 	ch, peer, peerWS := pairedRekeyChannel(t)
 	defer func() { _ = peerWS.CloseNow() }()
 
@@ -226,22 +251,27 @@ func TestChannelRekeyAcceptSurvivesWatchdog(t *testing.T) {
 	go func() { done <- ch.ensureRekeyed(context.Background()) }()
 
 	corr, initiatorPub := awaitRekeyRequest(t, peer, peerWS)
+	// Poll rather than read once: startRekeyLocked SPAWNS runRekeyTimer and the
+	// counter is incremented inside that goroutine, so awaitRekeyRequest
+	// (which returns once the peer has read the Request frame) orders nothing
+	// against it. A single Load() passes only because the runtime usually
+	// schedules the new goroutine first.
+	require.Eventually(t, func() bool { return ch.rekey.watchdogLive.Load() > 0 },
+		2*time.Second, time.Millisecond, "the starter must have armed a watchdog")
 	sendRekeyOutcome(t, peer, peerWS, corr, initiatorPub, true)
 	require.NoError(t, <-done)
 	require.False(t, ch.Closed(), "channel open right after Ack")
 
-	// Watch the channel across the whole sessionVerifyTimeout window. A leaked
-	// watchdog fires at +10s and cancels it; a correctly-disarmed one retires
-	// on resolution and the channel stays open.
-	deadline := time.Now().Add(sessionVerifyTimeout + 2*time.Second)
-	for time.Now().Before(deadline) {
-		if ch.Closed() {
-			t.Fatalf("REGRESSION: channel cancelled within %s of a successful rekey — watchdog timer was not disarmed on Ack",
-				sessionVerifyTimeout)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	require.False(t, ch.Closed(), "channel survived past sessionVerifyTimeout after a successful rekey")
+	// The Ack resolved the rekey, so runRekeyTimer's <-done arm must be taken
+	// and the goroutine must return. Pre-fix it selected only on <-timer.C /
+	// <-ctx.Done() and stayed live until it cancelled the healthy channel at
+	// +sessionVerifyTimeout. The generous deadline is a scheduling allowance
+	// for a loaded machine, not a timing budget: the retire is immediate.
+	require.Eventually(t, func() bool { return ch.rekey.watchdogLive.Load() == 0 },
+		30*time.Second, 5*time.Millisecond,
+		"REGRESSION: the rekey watchdog goroutine did not retire on Ack — it is still armed to cancel a healthy channel at +%s",
+		sessionVerifyTimeout)
+	assert.False(t, ch.Closed(), "a resolved rekey must leave the channel open")
 }
 
 // TestChannelRekeyConcurrentCallersShareOneRequest proves the multi-waiter
@@ -392,10 +422,12 @@ func TestChannelRekeyRejectLeavesChannelOpen(t *testing.T) {
 }
 
 func TestChannelRekeyTimeoutCancelsChannel(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits sessionVerifyTimeout for missing Ack/Reject")
-	}
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	// The whole cost of this test is waiting out testRekeyWatchdog, and it
+	// shares no state with anything else -- so it waits alongside its sibling
+	// watchdog test rather than after it.
+	t.Parallel()
+
+	ch, peer, peerWS := pairedRekeyChannel(t, withRekeyWatchdog(testRekeyWatchdog))
 	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 1)
@@ -410,7 +442,7 @@ func TestChannelRekeyTimeoutCancelsChannel(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "rekey timeout")
 		assert.True(t, ch.Closed(), "Ack timeout must cancel the channel")
-	case <-time.After(sessionVerifyTimeout + 3*time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("rekey timeout did not fire")
 	}
 }
@@ -632,10 +664,12 @@ func TestChannelRekeyAckClaimsMaterial(t *testing.T) {
 // TestChannelRekeyConcurrentCallersShareOneRequest / ShareReject; this covers
 // the outcome.err != nil branch of resolveRekey's broadcast.
 func TestChannelRekeyConcurrentCallersShareTerminalFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits sessionVerifyTimeout for the terminal-failure broadcast")
-	}
-	ch, peer, peerWS := pairedRekeyChannel(t)
+	// The whole cost of this test is waiting out testRekeyWatchdog, and it
+	// shares no state with anything else -- so it waits alongside its sibling
+	// watchdog test rather than after it.
+	t.Parallel()
+
+	ch, peer, peerWS := pairedRekeyChannel(t, withRekeyWatchdog(testRekeyWatchdog))
 	ch.rekey.lastRekeyAt = time.Now().Add(-channelwire.SessionKeyMaxAge - time.Second)
 
 	done := make(chan error, 2)
@@ -644,15 +678,25 @@ func TestChannelRekeyConcurrentCallersShareTerminalFailure(t *testing.T) {
 
 	// Let the single Request reach the wire and both callers join it.
 	corr, _ := awaitRekeyRequest(t, peer, peerWS)
+	// Both waiters must be registered before the watchdog resolves the rekey,
+	// or the late one finds nothing in flight and starts a SECOND rekey --
+	// failing the one-Request assertion below for a reason that has nothing to
+	// do with the broadcast under test. Wait for the join rather than trusting
+	// the goroutines to have been scheduled by now.
+	require.Eventually(t, func() bool {
+		ch.mu.Lock()
+		defer ch.mu.Unlock()
+		return len(ch.rekey.rekeyWaiters) == 2
+	}, testRekeyWatchdog/2, time.Millisecond, "both callers must join the one in-flight rekey")
 
-	// Send no Ack/Reject — runRekeyTimer fires after sessionVerifyTimeout and
+	// Send no Ack/Reject — runRekeyTimer fires at the watchdog deadline and
 	// resolves terminally. Both callers must observe an error (not nil) and the
 	// channel must cancel.
 	for i := 0; i < 2; i++ {
 		select {
 		case err := <-done:
 			require.Error(t, err, "caller %d must surface the terminal failure", i)
-		case <-time.After(sessionVerifyTimeout + 5*time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatalf("caller %d did not surface the terminal failure", i)
 		}
 	}
@@ -862,4 +906,24 @@ func TestChannelResolveRekeyTerminalIsSafeUnderRekeyMu(t *testing.T) {
 	outcome := <-waiter
 	assert.False(t, outcome.accepted)
 	require.Error(t, outcome.err)
+}
+
+// TestRekeyWatchdogTimeout_ZeroMeansTheProductionBudget pins the default arm of
+// the watchdog seam.
+//
+// Only the two tests that need the watchdog to fire set watchdogTimeout, so
+// every other channel -- including every channel in production -- runs on the
+// zero value. If that stopped resolving to sessionVerifyTimeout, a real rekey
+// would be given whatever the fallback drifted to, and no test that sets the
+// field would notice.
+func TestRekeyWatchdogTimeout_ZeroMeansTheProductionBudget(t *testing.T) {
+	t.Parallel()
+
+	var ch Channel
+	assert.Equal(t, sessionVerifyTimeout, ch.rekeyWatchdogTimeout(),
+		"an unset watchdog must fall back to the open-time session budget")
+
+	ch.rekey.watchdogTimeout = 250 * time.Millisecond
+	assert.Equal(t, 250*time.Millisecond, ch.rekeyWatchdogTimeout(),
+		"a configured watchdog must be honoured over the fallback")
 }

@@ -19,6 +19,8 @@ import (
 // of ListAgentMessages. The response is always ordered ascending by seq and
 // has_more reports whether further messages exist in the page's direction.
 func TestListAgentMessages_AnchorPaging(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
@@ -146,6 +148,8 @@ func TestListAgentMessages_AnchorPaging(t *testing.T) {
 // omits it (the client already holds the snapshot and gets live updates via
 // AgentTodosChanged).
 func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
@@ -218,6 +222,8 @@ func TestListAgentMessages_ShipsTodosOnDefaultAnchor(t *testing.T) {
 // that latest window and tear a gap into the loaded history (the missing-chunk
 // bug).
 func TestWatchEvents_ReplaysLatestPageForFreshSubscriber(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
@@ -295,6 +301,8 @@ func TestWatchEvents_ReplaysLatestPageForFreshSubscriber(t *testing.T) {
 // catchUpToTail. This is the contract that keeps large reconnect gaps from
 // over-replaying, and that catch-up -- not WatchEvents -- fills a >50 gap.
 func TestWatchEvents_ResumeReplaysForwardPageFromCursor(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
@@ -375,6 +383,8 @@ func decodeAgentEvents(w *testResponseWriter) []*leapmuxv1.AgentEvent {
 // from). The bounded replay's gap is closed by the client's CONTINUOUS tail-reconcile, so
 // there is no per-frame replay_has_more flag.
 func TestWatchEvents_ResumeEmitsCatchUpStart(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -438,6 +448,8 @@ func TestWatchEvents_ResumeEmitsCatchUpStart(t *testing.T) {
 // replay emits CatchUpStart + CatchUpComplete both carrying the authoritative tail (and
 // the start-of-replay tail), so a fresh client reconciles against it.
 func TestWatchEvents_FreshSubscribeEmitsCatchUpFrames(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -487,6 +499,8 @@ func TestWatchEvents_FreshSubscribeEmitsCatchUpFrames(t *testing.T) {
 // client builds this (AgentWatchEntry maps seq <= 0 to LATEST), so this guards the
 // wire boundary against splicing the oldest page in front of a latest window.
 func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
@@ -548,6 +562,8 @@ func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
 // disconnected would leave the sidebar stale until a manual jump-to-latest without
 // this replay-time snapshot.
 func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 
@@ -607,6 +623,8 @@ func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 // client uses it to drop phantom rows it never saw deleted and to clamp its recorded
 // live-tail.
 func TestWatchEvents_CatchUpCompleteCarriesLatestSeq(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{

@@ -36,15 +36,15 @@ func terminalStartingLabel(shell string) string {
 // status to attach; both current callers pass nil and let the async
 // goroutine re-broadcast once git status returns (the frontend keeps
 // existing git fields when STARTING arrives without them, so a nil
-// first broadcast is non-clobbering). Returns the ctx the caller
-// passes into runTerminalStartup / runTerminalRestart.
-func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1.AgentGitStatus) context.Context {
+// first broadcast is non-clobbering). Returns the ctx AND the startup handle
+// the caller passes into runTerminalStartup / runTerminalRestart.
+func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1.AgentGitStatus) (context.Context, *startupEntry) {
 	startupCtx, cancel := context.WithCancel(context.Background())
-	svc.TerminalStartup.begin(terminalID, cancel)
+	h := svc.TerminalStartup.begin(terminalID, cancel)
 	msg := terminalStartingLabel(shell)
 	svc.TerminalStartup.setMessage(terminalID, msg)
 	svc.broadcastTerminalStarting(terminalID, msg, gs)
-	return startupCtx
+	return startupCtx, h
 }
 
 // registerTerminalHandlers registers all terminal-related RPC handlers.
@@ -52,6 +52,9 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 	// OpenTerminal starts a new PTY terminal session.
 	registerOwnerGated(d, "OpenTerminal", dispatchPlain,
 		func(ctx context.Context, userID userid.UserID, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
+			if svc.refuseIfShuttingDown(sender) {
+				return
+			}
 			cols := r.GetCols()
 			if cols == 0 {
 				cols = 80
@@ -126,7 +129,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// `Creating worktree "feature/x"…`) before mutation begins. gs
 			// is nil here because the post-mutation working dir isn't
 			// known yet; phase 1 re-broadcasts with the real value.
-			startupCtx := svc.beginTerminalStartup(terminalID, shell, nil)
+			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell, nil)
 
 			sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 				TerminalId: terminalID,
@@ -150,7 +153,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				ShellStartDir: shellStartDir,
 				Cols:          uint16(cols),
 				Rows:          uint16(rows),
-			}, spawnInfo, plan, outputFn, exitFn)
+			}, spawnInfo, plan, outputFn, exitFn, startupHandle)
 		})
 
 	// RestartTerminal respawns the shell process for a terminal whose
@@ -163,6 +166,9 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		func(_ context.Context, userID userid.UserID, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
+			if svc.refuseIfShuttingDown(sender) {
+				return
+			}
 			// Reject overlapping restarts: a previous startup hasn't broadcast
 			// READY/FAILED yet (could be the original OpenTerminal still in
 			// flight, or a back-to-back restart).
@@ -205,7 +211,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// re-broadcasts with branch/origin once it lands. Mirrors
 			// runTerminalStartup's phase-1 pattern so the RPC round-trip
 			// doesn't block on a slow `git status` against a large worktree.
-			startupCtx := svc.beginTerminalStartup(terminalID, shell, nil)
+			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell, nil)
 
 			sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
 
@@ -232,7 +238,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				ShellStartDir: dbTerm.ShellStartDir,
 				Cols:          uint16(cols),
 				Rows:          uint16(rows),
-			}, spawnInfo, fallbackOffset, outputFn, exitFn)
+			}, spawnInfo, fallbackOffset, outputFn, exitFn, startupHandle)
 		})
 
 	// CloseTerminal stops and removes a terminal session.
@@ -487,9 +493,9 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 // The mint runs inside this goroutine (rather than synchronously, before
 // sendProtoResponse) so an unusually slow RemoteIPC factory doesn't
 // stretch the RPC latency the user sees.
-func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Options, spawnInfo TerminalSpawnInfo, plan gitModePlan, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) {
-	defer svc.TerminalStartup.finish()
+func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Options, spawnInfo TerminalSpawnInfo, plan gitModePlan, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler, h *startupEntry) {
 	terminalID := opts.ID
+	defer svc.TerminalStartup.finish()
 
 	// Mint the remote-IPC token before phase 0 so the cleanup is in the
 	// map by the time any concurrent CloseTerminal calls terminalCleanups.run.
@@ -506,7 +512,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 		// degrades to "no remote control". Route it through the same tail every
 		// other startup failure uses so the frontend gets STARTUP_FAILED rather
 		// than a terminal stuck in STARTING.
-		svc.failTerminalStartup(terminalID, gitModeResult{}, ipcErr)
+		svc.failTerminalStartup(terminalID, gitModeResult{}, ipcErr, h)
 		return
 	}
 	opts.ExtraEnv = remoteEnvs
@@ -519,19 +525,20 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 
 	// Phase 0: execute git-mode mutation (worktree add, branch create,
 	// checkout). Validation already ran synchronously.
-	gm, gmErr := svc.runTerminalPhase0(ctx, terminalID, plan)
+	gm, gmErr := svc.runTerminalPhase0(ctx, terminalID, plan, h)
 	if gmErr != nil {
-		svc.failTerminalStartup(terminalID, gm, gmErr)
+		svc.failTerminalStartup(terminalID, gm, gmErr, h)
 		return
 	}
 	// Link the tab to its worktree unless a CloseTerminal already landed during
-	// startup (see registerTabForWorktreeUnlessClosed for the strand-leak
-	// rationale). Symmetric with the agent startup guard.
+	// startup and decided the worktree's fate itself (see
+	// registerTabForWorktreeAfterClose). Symmetric with the agent startup guard.
 	terminalClosedDuringStartup := false
 	if latest, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID); fetchErr == nil {
 		terminalClosedDuringStartup = latest.ClosedAt.Valid
 	}
-	svc.registerTabForWorktreeUnlessClosed(gm.WorktreeID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, terminalClosedDuringStartup)
+	svc.linkWorktreeAfterPhase0(&svc.TerminalStartup.startupCore, h, gm.WorktreeID,
+		leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, terminalClosedDuringStartup)
 	if gm.WorkingDir != "" {
 		opts.WorkingDir = gm.WorkingDir
 	}
@@ -568,14 +575,13 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
 		}
-		svc.TerminalStartup.succeed(terminalID)
-		svc.rollbackGitMode(gm)
+		svc.finishStartupAfterClose(&svc.TerminalStartup.startupCore, h, terminalID, gm)
 		return
 	}
 
 	if startErr != nil {
 		slog.Error("failed to start terminal", "terminal_id", terminalID, "error", startErr)
-		svc.failTerminalStartup(terminalID, gm, startErr)
+		svc.failTerminalStartup(terminalID, gm, startErr, h)
 		return
 	}
 
@@ -614,9 +620,10 @@ func (svc *Service) runTerminalRestart(
 	fallbackOffset int64,
 	outputFn terminal.OutputHandler,
 	exitFn terminal.ExitHandler,
+	h *startupEntry,
 ) {
-	defer svc.TerminalStartup.finish()
 	terminalID := opts.ID
+	defer svc.TerminalStartup.finish()
 
 	// Mint the fresh token BEFORE retiring the previous spawn's, parking the
 	// new cleanup in a local instead of registering it. Both are keyed by
@@ -642,7 +649,7 @@ func (svc *Service) runTerminalRestart(
 		// Retire the dead spawn's token on the way out -- the restart is not
 		// happening, so nothing will come along later to retire it.
 		svc.terminalCleanups.run(terminalID)
-		svc.failTerminalStartup(terminalID, gitModeResult{}, ipcErr)
+		svc.failTerminalStartup(terminalID, gitModeResult{}, ipcErr, h)
 		return
 	}
 	// The mint succeeded: retire the *old* token and take ownership of the
@@ -694,7 +701,7 @@ func (svc *Service) runTerminalRestart(
 		slog.Error("failed to restart terminal", "terminal_id", terminalID, "error", startErr)
 		// No git-mode mutation in the restart path — pass a zero result so
 		// failTerminalStartup skips the rollback branch.
-		svc.failTerminalStartup(terminalID, gitModeResult{}, startErr)
+		svc.failTerminalStartup(terminalID, gitModeResult{}, startErr, h)
 		return
 	}
 
@@ -714,8 +721,8 @@ func (svc *Service) succeedTerminalStartup(terminalID string) {
 
 // runTerminalPhase0 broadcasts the per-mode label and executes the
 // git-mode mutation.
-func (svc *Service) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan) (gitModeResult, error) {
-	return svc.runStartupPhase0(ctx, plan, svc.terminalStartupCallbacks(terminalID))
+func (svc *Service) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan, h *startupEntry) (gitModeResult, error) {
+	return svc.runStartupPhase0(ctx, plan, svc.terminalStartupCallbacks(terminalID, h))
 }
 
 // failTerminalStartup is the common tail for every failure after the sync
@@ -723,8 +730,8 @@ func (svc *Service) runTerminalPhase0(ctx context.Context, terminalID string, pl
 // error, broadcasts STARTUP_FAILED, and marks the registry failed. The
 // shared `failStartup` enforces the ordering (DB before broadcast
 // before registry) so observers see a durable terminal state.
-func (svc *Service) failTerminalStartup(terminalID string, gm gitModeResult, cause error) {
-	svc.failStartup(gm, cause, svc.terminalStartupCallbacks(terminalID))
+func (svc *Service) failTerminalStartup(terminalID string, gm gitModeResult, cause error, h *startupEntry) {
+	svc.failStartup(gm, cause, svc.terminalStartupCallbacks(terminalID, h))
 }
 
 // persistTerminalStartupError writes (or clears when errMsg is "") the

@@ -199,7 +199,7 @@ test.describe('Worktree Validation', () => {
 
   // ─── Git Mode Preservation & Dynamic Updates ──────────────────────
 
-  test('git mode is preserved when switching between git repos', async ({
+  test('git mode resets to the default when switching between git repos', async ({
     page,
     leapmuxServer,
   }) => {
@@ -225,22 +225,25 @@ test.describe('Worktree Validation', () => {
     await expect(dialog.getByText('Branch Name')).toBeVisible()
     await expect(dialog.getByText('Base Branch')).toBeVisible()
 
-    // Switch to a different git repo
+    // Switch to a different git repo. Every selection the mode depends on --
+    // base branch, checkout branch, worktree path, and the fetched lists
+    // behind them -- belongs to the OLD repo, so GitOptions drops the mode
+    // along with them and starts the new repo at its default (see the
+    // worker/path reset effect). Asserting the mode survives, as this spec
+    // used to, has been failing since that reset landed.
     await setWorkingDir(page, repo2)
 
-    // Mode should be preserved as "Create new branch"
-    await expect(dialog.getByText('Branch Name')).toBeVisible()
-    await expect(dialog.getByText('Base Branch')).toBeVisible()
+    await expect(dialog.getByText('Branch Name')).not.toBeVisible()
+    await expect(dialog.getByText('Base Branch')).not.toBeVisible()
+    await expect(dialog.getByText('Use current state')).toBeVisible()
 
-    // Now test with "Create new worktree"
+    // The reset is per-repo-switch, not a one-shot: picking a mode in the new
+    // repo works, and switching back resets that one too.
     await page.getByText('Create new worktree').click()
     await expect(page.getByText('Worktree path:')).toBeVisible()
 
-    // Switch back to first repo
     await setWorkingDir(page, repo1)
-
-    // Mode should still be "Create new worktree"
-    await expect(page.getByText('Worktree path:')).toBeVisible()
+    await expect(page.getByText('Worktree path:')).not.toBeVisible()
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -278,10 +281,16 @@ test.describe('Worktree Validation', () => {
     expect(repo1Options.some(o => o.includes('alpha-branch'))).toBe(true)
     expect(repo1Options.some(o => o.includes('beta-branch'))).toBe(false)
 
-    // Switch to repo2
+    // Switch to repo2. The switch resets the mode to the repo default, so
+    // re-select "Switch to branch" to bring the branch picker back -- the
+    // point of this test is that the list it then shows is REFETCHED for
+    // repo2 rather than served from repo1's cache.
     await setWorkingDir(page, repo2)
+    await expect(page.getByText('Use current state')).toBeVisible()
+    await page.getByText('Switch to branch').click()
 
     // Branch list should update — should contain beta-branch, not alpha-branch
+    await expect(branchSelect).toBeEnabled()
     await expect(async () => {
       const repo2Options = await branchSelect.locator('option').allTextContents()
       expect(repo2Options.some(o => o.includes('beta-branch'))).toBe(true)

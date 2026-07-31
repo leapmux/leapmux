@@ -1,7 +1,7 @@
 import { existsSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { branchGroupRow, clickBranchMenuItem, loginViaToken, openBranchMenu, openWorkspace } from './helpers/ui'
 import {
   branchExists,
   createGitRepo,
@@ -28,19 +28,9 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
+    const branchRow = branchGroupRow(page)
     await expect(branchRow).toBeVisible()
-    await branchRow.hover()
-
-    // Target the three-dot trigger by its aria-expanded attribute, not
-    // `.locator('button').last()`: DropdownMenu renders its items as
-    // <button role="menuitem"> inside the row's popover (display:none
-    // while closed), so `.last()` would resolve to the hidden "Delete
-    // branch..." item and never become clickable. Only the trigger
-    // carries aria-expanded (same approach as the worker context menu in
-    // 027-tunnel-ui).
-    const menuTrigger = branchRow.locator('[aria-expanded]').first()
-    await menuTrigger.click()
+    await openBranchMenu(page, branchRow)
 
     await expect(page.getByRole('menuitem', { name: 'Change branch...' })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: 'Delete branch...' })).toBeVisible()
@@ -68,10 +58,7 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
-    await branchRow.hover()
-    await branchRow.locator('[aria-expanded]').first().click()
-    await page.getByRole('menuitem', { name: 'Delete branch...' }).click()
+    await clickBranchMenuItem(page, branchGroupRow(page), 'Delete branch...')
 
     await expect(page.getByRole('heading', { name: 'Delete branch' })).toBeVisible()
 
@@ -114,10 +101,7 @@ test.describe('Branch context menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const branchRow = page.locator('[data-testid="tab-tree-branch-group"]').first()
-    await branchRow.hover()
-    await branchRow.locator('[aria-expanded]').first().click()
-    await page.getByRole('menuitem', { name: 'Change branch...' }).click()
+    await clickBranchMenuItem(page, branchGroupRow(page), 'Change branch...')
 
     await expect(page.getByRole('heading', { name: 'Change branch' })).toBeVisible()
     // The dialog (via GitOptions) does not render the current branch name

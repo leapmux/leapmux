@@ -16,7 +16,7 @@ func beginForTest(t *testing.T, r *startupCore, id string) {
 	t.Helper()
 	r.begin(id, func() {})
 	t.Cleanup(func() {
-		r.cancelAndClear(id)
+		r.cancelAndClear(id, keepWorktreeOnClose)
 		r.finish()
 	})
 }
@@ -30,6 +30,8 @@ func beginForTest(t *testing.T, r *startupCore, id string) {
 // short-circuits the timeout that callers rely on as the "no resize
 // arrived" signal.
 func TestStartupCore_ClearPendingResize_DrainsSignal(t *testing.T) {
+	t.Parallel()
+
 	r := newStartupCore()
 	id := "term-clear-drain"
 	beginForTest(t, &r, id)
@@ -61,6 +63,8 @@ func TestStartupCore_ClearPendingResize_DrainsSignal(t *testing.T) {
 // path: a setPendingResize that arrives while a waiter is parked wakes
 // it immediately via the chan signal.
 func TestStartupCore_WaitForPendingResize_WakesOnSignal(t *testing.T) {
+	t.Parallel()
+
 	r := newStartupCore()
 	id := "term-wake"
 	beginForTest(t, &r, id)
@@ -84,6 +88,8 @@ func TestStartupCore_WaitForPendingResize_WakesOnSignal(t *testing.T) {
 // path where dims were already stashed before the wait starts — returns
 // synchronously without touching the chan.
 func TestStartupCore_WaitForPendingResize_AlreadyStashed(t *testing.T) {
+	t.Parallel()
+
 	r := newStartupCore()
 	id := "term-prestashed"
 	beginForTest(t, &r, id)
@@ -93,4 +99,61 @@ func TestStartupCore_WaitForPendingResize_AlreadyStashed(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, uint16(100), cols)
 	assert.Equal(t, uint16(50), rows)
+}
+
+// TestCancelAndClear_StampsTheHandleTheGoroutineHolds pins how a close reaches
+// an in-flight startup: begin() hands the goroutine its entry, cancelAndClear
+// removes that entry from the map and stamps it, and the goroutine reads its
+// own object afterwards.
+func TestCancelAndClear_StampsTheHandleTheGoroutineHolds(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	h := core.begin("a-live", func() {})
+
+	_, raced := core.dispositionOf(h)
+	require.False(t, raced, "nothing has closed this startup yet")
+
+	core.cancelAndClear("a-live", removeWorktreeOnClose)
+
+	got, raced := core.dispositionOf(h)
+	require.True(t, raced, "a close that raced a live startup must reach its goroutine")
+	assert.Equal(t, removeWorktreeOnClose, got)
+	core.finish()
+}
+
+// TestCancelAndClear_FailedStartupNeverReachesItsGoroutine is the property the
+// parallel id-keyed map needed two hand-maintained guards to hold, and that the
+// handle gives for free.
+//
+// fail() installs a FRESH entry for the same id, which lingers for
+// failedEntryTTL. A close arriving in that window stamps THAT entry -- not the
+// one the (already-returned) goroutine holds -- so it can neither be honoured
+// by a goroutine that is gone nor stranded anywhere: it dies with the entry the
+// evict timer drops.
+func TestCancelAndClear_FailedStartupNeverReachesItsGoroutine(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	h := core.begin("a-failed", func() {})
+	core.fail("a-failed", "boom")
+	core.finish()
+
+	core.cancelAndClear("a-failed", removeWorktreeOnClose)
+
+	_, raced := core.dispositionOf(h)
+	assert.False(t, raced,
+		"a close arriving after a failed startup must not reach the returned goroutine's handle")
+}
+
+// TestDispositionOf_NilHandleIsAnUncontestedStartup covers the caller that
+// never began one (a synchronous prologue failure): it must read as "no close
+// raced", which is what leaves the failing startup owning its own rollback.
+func TestDispositionOf_NilHandleIsAnUncontestedStartup(t *testing.T) {
+	t.Parallel()
+
+	core := newStartupCore()
+	got, raced := core.dispositionOf(nil)
+	assert.False(t, raced)
+	assert.Equal(t, keepWorktreeOnClose, got)
 }

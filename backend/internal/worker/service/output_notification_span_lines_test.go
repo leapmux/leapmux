@@ -17,6 +17,8 @@ import (
 // currently-active spans, so a LeapMux notification arriving while a
 // subagent's tool_use is open renders with passthrough vertical bars.
 func TestPersistNotification_StandaloneCapturesActiveSpans(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -52,6 +54,8 @@ func TestPersistNotification_StandaloneCapturesActiveSpans(t *testing.T) {
 // latest position, so its bars must reflect the spans active *now* — not
 // whatever was active when the thread was first created.
 func TestPersistNotification_AppendRefreshesSpanLines(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -100,6 +104,8 @@ func TestPersistNotification_AppendRefreshesSpanLines(t *testing.T) {
 // thread row's span_lines must shrink accordingly, not retain the stale
 // bar.
 func TestPersistNotification_AppendDropsClosedSpan(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -130,6 +136,8 @@ func TestPersistNotification_AppendDropsClosedSpan(t *testing.T) {
 // for notifications that arrive with no active spans. They should look
 // exactly the same as before this change — no left-side bars.
 func TestPersistNotification_StandaloneEmptyTracker(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)

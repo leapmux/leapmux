@@ -40,6 +40,8 @@ func setupTestSessions(t *testing.T) (*noiseutil.Session, *noiseutil.Session) {
 }
 
 func TestDispatcher_RegisterAndDispatch(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 
 	var calledWith struct {
@@ -93,6 +95,8 @@ func TestDispatcher_RegisterAndDispatch(t *testing.T) {
 }
 
 func TestDispatcher_PanicRecovery(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 
 	d.Register("panicking", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {
@@ -138,6 +142,8 @@ func TestDispatcher_PanicRecovery(t *testing.T) {
 }
 
 func TestDispatcher_UnknownMethod(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 	d.Register("known", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, _ ResponseWriter) {})
 
@@ -184,6 +190,8 @@ func TestDispatcher_UnknownMethod(t *testing.T) {
 // the *only* defense against a wedged subprocess, and we'd revert to the
 // pre-refactor "client disposal can't reach the worker" behavior.
 func TestDispatcher_CtxPropagated(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 
 	gotCtxC := make(chan context.Context, 1)
@@ -226,6 +234,8 @@ func TestDispatcher_CtxPropagated(t *testing.T) {
 // was still running). The handler must observe Done() immediately so it
 // can short-circuit instead of spinning up a subprocess.
 func TestDispatcher_CtxAlreadyCancelled(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 
 	seenC := make(chan bool, 1)
@@ -289,6 +299,8 @@ func (*stubWriter) MaxPayloadBudget() int { return 0 }
 // between the goroutine launching and the handler reaching its
 // Cleanup.Add(1).
 func TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 	var wg sync.WaitGroup
 	d.BindCleanup(&wg)
@@ -344,6 +356,8 @@ func TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine(t *testing.T) {
 // methods don't touch the bound WaitGroup, so plain Register stays
 // fire-and-forget on Shutdown for read-only probes.
 func TestDispatcher_DispatchAsync_UntrackedNoOp(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 	var wg sync.WaitGroup
 	d.BindCleanup(&wg)
@@ -382,6 +396,8 @@ func TestDispatcher_DispatchAsync_UntrackedNoOp(t *testing.T) {
 // top of the function and Done() must fire on return — even when the
 // handler panics.
 func TestDispatcher_DispatchWith_TrackedAddsAndDones(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 	var wg sync.WaitGroup
 	d.BindCleanup(&wg)
@@ -414,6 +430,8 @@ func TestDispatcher_DispatchWith_TrackedAddsAndDones(t *testing.T) {
 // means no tracking decision can be made), and still sends the
 // Unimplemented error to the writer.
 func TestDispatcher_DispatchAsync_UnknownMethod(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 	var wg sync.WaitGroup
 	d.BindCleanup(&wg)
@@ -450,6 +468,8 @@ func TestDispatcher_DispatchAsync_UnknownMethod(t *testing.T) {
 // layer between DispatchWith and the handler. Reintroducing a wrapper
 // (e.g. the deleted Sender) would allocate per dispatch and break Same.
 func TestDispatcher_InvokePassesWriterThrough(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 
 	var got ResponseWriter
@@ -466,6 +486,8 @@ func TestDispatcher_InvokePassesWriterThrough(t *testing.T) {
 // TestDispatcher_InvokePassesWriterThrough — both entry points share
 // invoke, so a future wrap must fail both paths.
 func TestDispatcher_AsyncPassesWriterThrough(t *testing.T) {
+	t.Parallel()
+
 	d := NewDispatcher()
 
 	gotC := make(chan ResponseWriter, 1)

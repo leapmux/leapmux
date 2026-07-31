@@ -142,7 +142,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, workerdb.Migrate(sqlDB))
+	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB))
 
 	// Set up a channel manager with a completed handshake so dispatched
 	// handlers see a real session.
@@ -328,6 +328,8 @@ func dispatchAs(d *channel.Dispatcher, caller userid.UserID, method string, req 
 }
 
 func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -372,6 +374,8 @@ func TestListAgentMessages_ClosedAgent_ReturnsEmpty(t *testing.T) {
 }
 
 func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -401,6 +405,8 @@ func TestListAgents_ClosedAgent_NotReturned(t *testing.T) {
 }
 
 func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -435,6 +441,8 @@ func TestListTerminals_ClosedTerminal_NotReturned(t *testing.T) {
 }
 
 func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -472,6 +480,8 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 }
 
 func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -505,6 +515,8 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 // registered for it. (A CLOSED agent takes the same path -- ListAgentsByIDs
 // filters closed_at IS NULL, so the row simply never loads.)
 func TestWatchEvents_UnknownAgent_NotWatched(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -524,6 +536,8 @@ func TestWatchEvents_UnknownAgent_NotWatched(t *testing.T) {
 
 // TestWatchEvents_UnknownTerminal_NotWatched is the terminal mirror.
 func TestWatchEvents_UnknownTerminal_NotWatched(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -538,7 +552,119 @@ func TestWatchEvents_UnknownTerminal_NotWatched(t *testing.T) {
 		"no watcher should be registered for a terminal this worker does not hold")
 }
 
+// TestShutdown_BroadcastsDisconnectNoticeToLiveWatchers pins the half of the
+// shutdown notice that reaches the USER rather than the database.
+//
+// A worker that is going down cannot replay anything afterwards -- the process
+// is gone -- so this broadcast is the only chance a browser has to learn its
+// terminal died. TestShutdown_PersistsTerminalScreenSnapshots covers the DB
+// row, but it starts the terminal with a throwaway output handler, so nothing
+// was asserting that a subscriber gets the notice at all.
+func TestShutdown_BroadcastsDisconnectNoticeToLiveWatchers(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	// Via the RPC so the terminal carries the real broadcasting output
+	// handler (makeTerminalOutputFn) rather than a test stub.
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+
+	wWatch := newTestWriter()
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID}},
+	}, wWatch)
+
+	svc.Shutdown()
+
+	var got []string
+	for _, s := range wWatch.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+			continue
+		}
+		if data := resp.GetTerminalEvent().GetData(); data != nil {
+			got = append(got, string(data.GetData()))
+		}
+	}
+	assert.Contains(t, strings.Join(got, ""),
+		"[Worker disconnected - Press Enter to restart]",
+		"Shutdown must broadcast the disconnect notice to live watchers, not only persist it")
+}
+
+// TestShutdown_BroadcastsDisconnectNoticeBeforeDraining pins the ORDER, which
+// is the half that actually decides whether the user sees the notice.
+//
+// Shutdown's drains wait for in-flight agent/terminal startups, and a startup
+// parked in its CLI handshake can hold that for tens of seconds. Broadcasting
+// after them meant that under load the Hub's idle timeout could declare the
+// worker gone and tear down its channels first, so the notice was written to a
+// stream nobody was relaying -- the browser's terminal just stopped, with
+// nothing logged. The broadcast now happens before anything that can block.
+func TestShutdown_BroadcastsDisconnectNoticeBeforeDraining(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+
+	wWatch := newTestWriter()
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID}},
+	}, wWatch)
+
+	// An agent startup that never finishes on its own: this is what Shutdown's
+	// AgentStartup.WaitForInFlight parks on.
+	release := make(chan struct{})
+	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
+		<-release
+		return nil, nil
+	}
+	wAgent := newTestWriter()
+	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
+		WorkingDir:    t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}, wAgent)
+	require.Empty(t, wAgent.errors)
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		svc.Shutdown()
+		close(shutdownDone)
+	}()
+	// Unblock the startup no matter how this test exits, so Shutdown can return
+	// and the deferred cleanups are not left waiting on it.
+	defer func() {
+		close(release)
+		<-shutdownDone
+	}()
+
+	noticeSeen := func() bool {
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			if data := resp.GetTerminalEvent().GetData(); data != nil &&
+				bytes.Contains(data.GetData(), []byte("[Worker disconnected - Press Enter to restart]")) {
+				return true
+			}
+		}
+		return false
+	}
+
+	require.Eventually(t, noticeSeen, 5*time.Second, 10*time.Millisecond,
+		"the notice must reach watchers while the drain is still parked")
+
+	// And the drain really is still parked -- otherwise the assertion above
+	// would pass even with the broadcast left at the end of Shutdown.
+	select {
+	case <-shutdownDone:
+		t.Fatal("Shutdown returned before the parked startup was released; the ordering was not exercised")
+	default:
+	}
+}
+
 func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	workingDir := t.TempDir()
@@ -597,6 +723,8 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 // Shutdown the exit_code column would be overwritten with
 // exitCodeUnknown (-1) on every shutdown.
 func TestShutdown_PreservesNaturalExitCode(t *testing.T) {
+	t.Parallel()
+
 	if runtime.GOOS == "windows" {
 		// cmd.exe under ConPTY on the GitHub Windows runner exits with
 		// errorlevel 0 regardless of the `exit N` argument typed at the
@@ -632,6 +760,8 @@ func TestShutdown_PreservesNaturalExitCode(t *testing.T) {
 }
 
 func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -689,6 +819,8 @@ func TestOpenTerminal_ExitPersistsExitedNotice(t *testing.T) {
 // marshal, an AEAD seal and a hub send on every event for the life of
 // the channel.
 func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -734,6 +866,8 @@ func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
 // client has already torn down -- SendStream still succeeds, so nothing
 // is retired, no error surfaces, and the terminal simply goes quiet.
 func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -791,6 +925,8 @@ func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testi
 // terminal panes stay blank for the channel's whole life, since a
 // healthy-looking stream never trips the retry.
 func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -836,6 +972,8 @@ func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.
 // answers with a NotFound stream error the client would retry on
 // forever.
 func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -873,4 +1011,105 @@ func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
 			"unsubscribing is a legitimate request, not a NotFound the client should retry")
 	}
 	assert.Empty(t, unsubscribe.errors, "and not an RPC error either")
+}
+
+// TestShutdown_LiveOutputBetweenPassesDoesNotDoubleTheNotice pins the
+// idempotency of Shutdown's two-pass broadcast against the case the screen-byte
+// check cannot see.
+//
+// The second pass exists for terminals that were still starting during the
+// drains. Its guard used to be `bytes.HasSuffix(screen,
+// terminalExitedNoticeSuffix)`, which only holds while the screen STOPS at the
+// notice -- and Shutdown does not stop the PTYs, so a terminal running a build
+// or a `tail -f` appends more output between the passes. The suffix check then
+// failed and the user got the notice twice, with live output sandwiched
+// between, both in the browser and in the restored scrollback.
+func TestShutdown_LiveOutputBetweenPassesDoesNotDoubleTheNotice(t *testing.T) {
+	t.Parallel()
+
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+
+	notified := make(map[string]struct{})
+	svc.broadcastTerminalsDisconnected(notified)
+
+	// The shell keeps writing after the first pass, exactly as a build or a
+	// pager would across the drains between the two sweeps.
+	require.True(t, svc.Terminals.AppendOutput(terminalID, []byte("build still running...\r\n")))
+
+	svc.broadcastTerminalsDisconnected(notified)
+
+	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(row.Screen), "[Worker disconnected - Press Enter to restart]"),
+		"the notice must be appended exactly once per terminal per shutdown")
+}
+
+// TestPersistTerminalOnExit_PreservesClosedAt pins the column UpsertTerminal
+// would otherwise blank.
+//
+// UpsertTerminal's DO UPDATE assigns `closed_at = excluded.closed_at`, so a
+// params struct that leaves the field zero writes NULL. Shutdown's sweep
+// snapshots a terminal, a CloseTerminal handler still on the dispatcher
+// goroutine stamps closed_at, and the sweep's upsert then lands after it --
+// RESURRECTING a tab the user just closed, whose screen blob is now out of
+// reach of DeleteClosedTerminalsBefore.
+func TestPersistTerminalOnExit_PreservesClosedAt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
+
+	// The close lands while the terminal is still in the manager, which is
+	// precisely the interleave: RemoveTerminal and the DB stamp are two steps.
+	_, closeErr := svc.Queries.CloseTerminal(ctx, terminalID)
+	require.NoError(t, closeErr)
+
+	require.True(t, svc.persistTerminalOnExit(terminalID, exitCodeUnknown))
+
+	row, err := svc.Queries.GetTerminal(ctx, terminalID)
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid, "the shutdown upsert must not un-close a closed terminal")
+}
+
+// TestShutdown_RefusesNewTabs pins the precondition Shutdown's own comment
+// asserts but nothing used to enforce.
+//
+// Both worker entry points deliberately keep the Hub stream live ACROSS
+// Shutdown, so its broadcasts can actually leave, and the dispatcher has no
+// gate of its own. An OpenTerminal arriving during the drains therefore spawned
+// a PTY that installed after BOTH disconnect-notice sweeps -- an orphaned shell
+// the user was never told about -- and called wg.Add(1) on the startup
+// WaitGroup that WaitForInFlight was already blocked inside, which the
+// sync.WaitGroup docs call out as misuse rather than merely a lost message.
+func TestShutdown_RefusesNewTabs(t *testing.T) {
+	t.Parallel()
+
+	svc, d, _ := setupTestService(t)
+	svc.Shutdown()
+
+	for _, tc := range []struct {
+		method string
+		req    proto.Message
+	}{
+		{"OpenTerminal", &leapmuxv1.OpenTerminalRequest{WorkingDir: t.TempDir(), Shell: "/bin/zsh"}},
+		{"OpenAgent", &leapmuxv1.OpenAgentRequest{
+			WorkingDir:    t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		}},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			w := newTestWriter()
+			dispatch(d, tc.method, tc.req, w)
+
+			require.Len(t, w.errors, 1, "%s must be refused once shutdown has begun", tc.method)
+			assert.Equal(t, int32(codes.FailedPrecondition), w.errors[0].code)
+			assert.Contains(t, w.errors[0].message, "shutting down")
+			assert.Empty(t, w.responses, "and must not hand back a tab it is about to kill")
+		})
+	}
+
+	// Nothing was registered, so the drains have nothing new to wait on.
+	assert.False(t, svc.Terminals.HasTerminal("any"))
 }

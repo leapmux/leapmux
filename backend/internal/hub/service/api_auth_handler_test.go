@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,6 +39,26 @@ type apiAuthEnv struct {
 	closer    *recordingBearerCloser
 	server    *httptest.Server
 	userID    string
+	clock     *testClock
+}
+
+// testClock drives the handler's APIAuthHandler.Now seam: real time plus an
+// offset the test advances. It offsets rather than freezes because the rows
+// the handler reads are stamped by the store's own clock -- SQLite writes
+// last_polled_at with strftime('now') -- so a frozen handler clock would sit
+// permanently behind every row it compares against. Advancing lets a test
+// step past the device-code slow_down window (5s) instead of sleeping through
+// it, while every other instant stays anchored to real time.
+type testClock struct {
+	offset atomic.Int64
+}
+
+func (c *testClock) now() time.Time {
+	return time.Now().Add(time.Duration(c.offset.Load()))
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.offset.Add(int64(d))
 }
 
 type recordingBearerCloser struct {
@@ -55,6 +76,8 @@ func (noopBearerCloser) CloseChannelsByUserRevocation(string, int64) int { retur
 func (noopBearerCloser) RestampSessionGeneration(string, int64)          {}
 
 func TestNewAPIAuthHandlerRequiresCredentialLifecycleEffects(t *testing.T) {
+	t.Parallel()
+
 	require.Panics(t, func() {
 		service.NewAPIAuthHandler(nil, nil, nil, "")
 	})
@@ -125,7 +148,9 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	t.Cleanup(srv.Close)
 
 	closer := &recordingBearerCloser{}
+	clock := &testClock{}
 	h := service.NewAPIAuthHandler(st, tv, auth.NewCredentialLifecycleEffects(sc, closer, closer), srv.URL)
+	h.Now = clock.now
 	h.RegisterRoutes(mux)
 
 	u, err := st.Users().GetByUsername(context.Background(), "admin")
@@ -138,6 +163,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 		closer:    closer,
 		server:    srv,
 		userID:    u.ID,
+		clock:     clock,
 	}
 }
 
@@ -160,6 +186,8 @@ func pkceVerifierAndChallenge() (verifier, challenge string) {
 }
 
 func TestAPIAuth_LocalRedirect_HappyPath(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	cookie := env.adminCookie(t)
 
@@ -237,6 +265,8 @@ func TestAPIAuth_LocalRedirect_HappyPath(t *testing.T) {
 }
 
 func TestAPIAuth_LocalRedirect_RejectsNonLoopback(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	cookie := env.adminCookie(t)
 
@@ -256,6 +286,8 @@ func TestAPIAuth_LocalRedirect_RejectsNonLoopback(t *testing.T) {
 }
 
 func TestAPIAuth_LocalRedirect_NotAuthenticated_RedirectsToLogin(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	authClient := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -269,6 +301,8 @@ func TestAPIAuth_LocalRedirect_NotAuthenticated_RedirectsToLogin(t *testing.T) {
 }
 
 func TestAPIAuth_LocalRedirect_RejectsCodeReplay(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	cookie := env.adminCookie(t)
 
@@ -314,6 +348,8 @@ func TestAPIAuth_LocalRedirect_RejectsCodeReplay(t *testing.T) {
 }
 
 func TestAPIAuth_LocalRedirect_ConcurrentExchangeIssuesOneToken(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	verifier, challenge := pkceVerifierAndChallenge()
 	code := id.Generate()
@@ -353,6 +389,8 @@ func TestAPIAuth_LocalRedirect_ConcurrentExchangeIssuesOneToken(t *testing.T) {
 }
 
 func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	cookie := env.adminCookie(t)
 
@@ -420,6 +458,8 @@ func TestAPIAuth_LocalRedirect_RejectsBadVerifier(t *testing.T) {
 }
 
 func TestAPIAuth_DeviceCode_Pending_Approval_Success(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	cookie := env.adminCookie(t)
 
@@ -457,8 +497,8 @@ func TestAPIAuth_DeviceCode_Pending_Approval_Success(t *testing.T) {
 	defer func() { _ = approveResp.Body.Close() }()
 	require.Equal(t, http.StatusOK, approveResp.StatusCode)
 
-	// Wait long enough for the throttle window since the previous poll.
-	time.Sleep(service.DeviceCodePollInterval + 100*time.Millisecond)
+	// Step past the throttle window since the previous poll.
+	env.clock.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
 
 	// Successful exchange.
 	successResp, err := http.PostForm(env.server.URL+"/auth/cli/token", url.Values{
@@ -480,6 +520,8 @@ func TestAPIAuth_DeviceCode_Pending_Approval_Success(t *testing.T) {
 }
 
 func TestAPIAuth_DeviceCode_SlowDown_OnRapidPoll(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	resp, err := http.PostForm(env.server.URL+"/auth/cli/device-authorization", url.Values{})
@@ -510,6 +552,8 @@ func TestAPIAuth_DeviceCode_SlowDown_OnRapidPoll(t *testing.T) {
 }
 
 func TestAPIAuth_DeviceCode_ExpiredToken(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	// Manually seed an expired grant directly via the store so we don't
@@ -534,6 +578,8 @@ func TestAPIAuth_DeviceCode_ExpiredToken(t *testing.T) {
 }
 
 func TestAPIAuth_DeviceCode_AccessDenied(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	dc := id.Generate()
@@ -561,6 +607,8 @@ func TestAPIAuth_DeviceCode_AccessDenied(t *testing.T) {
 }
 
 func TestAPIAuth_DeviceCode_UnknownDeviceCode(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	resp, err := http.PostForm(env.server.URL+"/auth/cli/token", url.Values{
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
@@ -574,6 +622,8 @@ func TestAPIAuth_DeviceCode_UnknownDeviceCode(t *testing.T) {
 }
 
 func TestAPIAuth_DeviceCode_AlreadyConsumed(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	cookie := env.adminCookie(t)
 
@@ -590,8 +640,8 @@ func TestAPIAuth_DeviceCode_AlreadyConsumed(t *testing.T) {
 	require.NoError(t, err)
 	_ = approve.Body.Close()
 
-	// Wait past throttle, then exchange — should succeed.
-	time.Sleep(service.DeviceCodePollInterval + 100*time.Millisecond)
+	// Step past the throttle, then exchange -- should succeed.
+	env.clock.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
 	first, err := http.PostForm(env.server.URL+"/auth/cli/token", url.Values{
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 		"device_code": {deviceCode},
@@ -614,6 +664,8 @@ func TestAPIAuth_DeviceCode_AlreadyConsumed(t *testing.T) {
 }
 
 func TestAPIAuth_Activate_NormalizesUserCode(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	cookie := env.adminCookie(t)
 
@@ -634,6 +686,8 @@ func TestAPIAuth_Activate_NormalizesUserCode(t *testing.T) {
 }
 
 func TestAPIAuth_Activate_RejectsUnknownCode(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	cookie := env.adminCookie(t)
 	r, err := postForm(env.server.URL+"/auth/cli/activate", url.Values{"user_code": {"ABC-DEF"}}, cookie)
@@ -643,6 +697,8 @@ func TestAPIAuth_Activate_RejectsUnknownCode(t *testing.T) {
 }
 
 func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	// Mint an api_token directly so we don't have to traverse the full
@@ -695,6 +751,8 @@ func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
 }
 
 func TestAPIAuth_Refresh_DoesNotPoisonFlightWithCanceledLeaderContext(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	tokenID := id.Generate()
@@ -731,6 +789,8 @@ func TestAPIAuth_Refresh_DoesNotPoisonFlightWithCanceledLeaderContext(t *testing
 }
 
 func TestAPIAuth_Refresh_ReusedWithinGraceReturnsSamePair(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	// Mint and rotate once.
@@ -768,6 +828,8 @@ func TestAPIAuth_Refresh_ReusedWithinGraceReturnsSamePair(t *testing.T) {
 }
 
 func TestAPIAuth_Refresh_GraceRetryReportsStoredRemainingLifetime(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	tokenID := id.Generate()
 	previousRefresh := auth.MintAccessSecret()
@@ -806,6 +868,8 @@ func TestAPIAuth_Refresh_GraceRetryReportsStoredRemainingLifetime(t *testing.T) 
 }
 
 func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	tokenID := id.Generate()
 	previousRefresh := auth.MintAccessSecret()
@@ -849,6 +913,8 @@ func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
 }
 
 func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	tokenID := id.Generate()
@@ -888,6 +954,8 @@ func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testi
 }
 
 func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	tokenID := id.Generate()
 	currentRefresh := auth.MintAccessSecret()
@@ -927,6 +995,8 @@ func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T)
 }
 
 func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	tokenID := id.Generate()
@@ -965,6 +1035,8 @@ func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
 }
 
 func TestAPIAuth_Refresh_ReusedAfterGraceRevokesRow(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	// Seed: create an api_token whose previous_refresh_hash is set but
@@ -1013,6 +1085,8 @@ func TestAPIAuth_Refresh_ReusedAfterGraceRevokesRow(t *testing.T) {
 }
 
 func TestAPIAuth_Revoke_BustsCacheAndRowRevoked(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	tokenID := id.Generate()
@@ -1162,6 +1236,8 @@ func (s getByIDFailUsers) GetByID(context.Context, string) (*store.User, error) 
 }
 
 func TestAPIAuth_Refresh_DetachedWorkHasDeadline(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	recording := &deadlineRecordingTokens{APITokenStore: env.store.APITokens()}
 	wrapped := apiTokenOverrideStore{Store: env.store, api: recording}
@@ -1183,6 +1259,8 @@ func TestAPIAuth_Refresh_DetachedWorkHasDeadline(t *testing.T) {
 }
 
 func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	verifier, challenge := pkceVerifierAndChallenge()
 	code := id.Generate()
@@ -1224,6 +1302,8 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 }
 
 func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
@@ -1249,10 +1329,11 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 	// The failed issuance rolled back Consume, so the grant is still
 	// unconsumed and exchangeable. Its poll was recorded regardless
 	// (TouchPoll now runs outside the issuance transaction), so an
-	// immediate retry is correctly throttled with slow_down; wait past
+	// immediate retry is correctly throttled with slow_down; step past
 	// the interval, then confirm a clean retry succeeds -- proving the
-	// grant stayed retryable.
-	time.Sleep(service.DeviceCodePollInterval + 100*time.Millisecond)
+	// grant stayed retryable. The retry goes to env.server, whose handler
+	// is the one on env's clock.
+	env.clock.advance(service.DeviceCodePollInterval + 100*time.Millisecond)
 	retry, err := http.PostForm(env.server.URL+"/auth/cli/token", form)
 	require.NoError(t, err)
 	defer func() { _ = retry.Body.Close() }()
@@ -1260,6 +1341,8 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 }
 
 func TestAPIAuth_DeviceCode_TouchPollFailureIsInternal(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
@@ -1284,6 +1367,8 @@ func TestAPIAuth_DeviceCode_TouchPollFailureIsInternal(t *testing.T) {
 }
 
 func TestAPIAuth_DeviceCode_LookupFailureIsInternal(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	forcedErr := errors.New("sensitive device lookup failure")
 	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), get: func(context.Context, string) (*store.DeviceAuthorization, error) {
@@ -1304,6 +1389,8 @@ func TestAPIAuth_DeviceCode_LookupFailureIsInternal(t *testing.T) {
 }
 
 func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
@@ -1340,6 +1427,8 @@ func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 // rollback would discard the anchor and the rapid re-poll would retry issuance
 // instead of being throttled.
 func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
@@ -1388,6 +1477,8 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 }
 
 func TestAPIAuth_Revoke_AcceptsRefreshSecrets(t *testing.T) {
+	t.Parallel()
+
 	for _, previous := range []bool{false, true} {
 		name := "current"
 		if previous {
@@ -1437,6 +1528,8 @@ func (s apiLookupFailTokens) GetByID(context.Context, string) (*store.APIToken, 
 }
 
 func TestAPIAuth_Refresh_InternalFailureDoesNotLeakDetails(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	wrapped := apiTokenOverrideStore{
 		Store: env.store,
@@ -1463,6 +1556,8 @@ func TestAPIAuth_Refresh_InternalFailureDoesNotLeakDetails(t *testing.T) {
 }
 
 func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	tokenID := id.Generate()
@@ -1500,6 +1595,8 @@ func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
 }
 
 func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	tokenID := id.Generate()
@@ -1543,6 +1640,8 @@ func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
 }
 
 func TestAPIAuth_Revoke_DelegationToken_TouchesDelegationsTable(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	// Seed a worker + workspace + delegation row. The revoke endpoint
@@ -1572,6 +1671,8 @@ func TestAPIAuth_Revoke_DelegationToken_TouchesDelegationsTable(t *testing.T) {
 }
 
 func TestAPIAuth_Revoke_BadBearerReturnsBadRequest(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	// Empty token is still 400 — that's a missing-required-field error,
 	// caught before the secret-verification path.
@@ -1596,6 +1697,8 @@ func TestAPIAuth_Revoke_BadBearerReturnsBadRequest(t *testing.T) {
 // able to revoke a victim's session by submitting a bearer with a bogus
 // secret. Returns 401, leaves the row untouched, leaves the cache warm.
 func TestAPIAuth_Revoke_WrongSecretRejected(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	// Real api_token row with a known good secret.
@@ -1641,6 +1744,8 @@ func TestAPIAuth_Revoke_WrongSecretRejected(t *testing.T) {
 // registration logs, and audit telemetry), so the secret check matters
 // equally here.
 func TestAPIAuth_Revoke_WrongSecretRejected_DelegationToken(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	workerID, _ := seedDelegationFixtures(t, env)
 
@@ -1670,6 +1775,8 @@ func TestAPIAuth_Revoke_WrongSecretRejected_DelegationToken(t *testing.T) {
 // a well-formed bearer for a non-existent token_id receives the same
 // 401 as a wrong-secret attempt.
 func TestAPIAuth_Revoke_UnknownTokenIDRejected(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	bogus := auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret())
 	resp, err := http.PostForm(env.server.URL+"/auth/cli/revoke", url.Values{"token": {bogus}})
@@ -1683,6 +1790,8 @@ func TestAPIAuth_Revoke_UnknownTokenIDRejected(t *testing.T) {
 // bearer secret) still gets 200 OK — secret verification accepts
 // already-revoked rows so re-revoke is a no-op rather than a 401.
 func TestAPIAuth_Revoke_AlreadyRevokedIsIdempotent(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 
 	tokenID := id.Generate()
@@ -1713,6 +1822,8 @@ func TestAPIAuth_Revoke_AlreadyRevokedIsIdempotent(t *testing.T) {
 }
 
 func TestAPIAuth_Token_UnsupportedGrantType(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	resp, err := http.PostForm(env.server.URL+"/auth/cli/token", url.Values{"grant_type": {"password"}})
 	require.NoError(t, err)
@@ -1724,6 +1835,8 @@ func TestAPIAuth_Token_UnsupportedGrantType(t *testing.T) {
 }
 
 func TestAPIAuth_GetMethodOnlyHandlers_Reject(t *testing.T) {
+	t.Parallel()
+
 	env := setupAPIAuth(t)
 	for _, path := range []string{"/auth/cli/authorize", "/auth/cli/device-authorization", "/auth/cli/token", "/auth/cli/refresh", "/auth/cli/revoke"} {
 		resp, err := http.Get(env.server.URL + path)
@@ -1803,6 +1916,8 @@ func (s blankGrantCodes) GetActive(context.Context, string) (*store.CLIAuthoriza
 // panic inside an unauthenticated HTTP handler -- a torn connection for the
 // caller, and in a shared process it takes the request goroutine with it.
 func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 

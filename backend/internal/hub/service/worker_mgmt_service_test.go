@@ -24,6 +24,8 @@ import (
 // store.ErrInvalidCursor before any query runs, and ListWorkers classifies
 // the store call's error via errors.Is instead of re-parsing the cursor.
 func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
+	t.Parallel()
+
 	st := testutil.OpenTestStore(t)
 	svc := service.NewWorkerManagementService(st, nil, nil, nil, nil, mail.Renderer{}, &config.Config{}, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u1")})

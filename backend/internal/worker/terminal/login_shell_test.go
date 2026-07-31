@@ -7,6 +7,8 @@ import (
 )
 
 func TestLoginShellArgs(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		shellPath string
@@ -49,6 +51,8 @@ func TestLoginShellArgs(t *testing.T) {
 // a command, so passing -Login made it try to *run* a command named
 // "-Login". Only pwsh (PowerShell Core 6+) understands the switch.
 func TestLoginShellArgs_WindowsPowerShellNoLogin(t *testing.T) {
+	t.Parallel()
+
 	assert.Nil(t, LoginShellArgs(`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`))
 	assert.Nil(t, LoginShellArgs("powershell"))
 	assert.Equal(t, []string{"-Login"}, LoginShellArgs(`C:\Program Files\PowerShell\7\pwsh.exe`))
@@ -56,6 +60,8 @@ func TestLoginShellArgs_WindowsPowerShellNoLogin(t *testing.T) {
 }
 
 func TestIsPwsh(t *testing.T) {
+	t.Parallel()
+
 	assert.True(t, IsPwsh("pwsh"))
 	assert.True(t, IsPwsh("powershell"))
 	assert.True(t, IsPwsh("pwsh-preview"))

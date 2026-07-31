@@ -11,6 +11,8 @@ import (
 )
 
 func TestProviderFor_CodexClassification(t *testing.T) {
+	t.Parallel()
+
 	plugin := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 
 	rateLimit := json.RawMessage(`{"method":"account/rateLimits/updated","params":{"foo":"bar"}}`)
@@ -58,6 +60,8 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 }
 
 func TestProviderFor_ClaudeClassification(t *testing.T) {
+	t.Parallel()
+
 	plugin := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	assert.Equal(t,
@@ -84,6 +88,8 @@ func TestProviderFor_ClaudeClassification(t *testing.T) {
 }
 
 func TestIsNotificationThreadable_ClaudeRateLimitEventAsAgent(t *testing.T) {
+	t.Parallel()
+
 	// rate_limit_event arrives as AGENT. The plugin classifies it as
 	// provider-scoped, so isNotificationThreadable returns true and it
 	// threads with surrounding notifications.
@@ -91,6 +97,8 @@ func TestIsNotificationThreadable_ClaudeRateLimitEventAsAgent(t *testing.T) {
 }
 
 func TestIsNotificationThreadable_ClaudeStatusCompactingAsAgent(t *testing.T) {
+	t.Parallel()
+
 	// The worker persists the raw `system` message as AGENT (not a
 	// synthesized `{type:"compacting"}` envelope), and
 	// isNotificationThreadable still returns true because the plugin
@@ -99,6 +107,8 @@ func TestIsNotificationThreadable_ClaudeStatusCompactingAsAgent(t *testing.T) {
 }
 
 func TestProviderFor_PiClassification(t *testing.T) {
+	t.Parallel()
+
 	plugin := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
 
 	assert.Equal(t,
@@ -148,6 +158,8 @@ func TestProviderFor_PiClassification(t *testing.T) {
 }
 
 func TestProviderFor_NoopFallback(t *testing.T) {
+	t.Parallel()
+
 	// UNSPECIFIED has no registered plugin, so the registry returns the
 	// noop plugin: Classify produces empty, Merge keeps the newer entry,
 	// IsInterrupt returns false.
@@ -163,6 +175,8 @@ func TestProviderFor_NoopFallback(t *testing.T) {
 }
 
 func TestProviderFor_ACPSharesNoopClassification(t *testing.T) {
+	t.Parallel()
+
 	// ACP-based providers register acpProvider which embeds noop
 	// classify/merge — they only provide IsInterrupt. Verify a few of
 	// them route to the same behavior.
@@ -182,6 +196,8 @@ func TestProviderFor_ACPSharesNoopClassification(t *testing.T) {
 }
 
 func TestProviderFor_IsInterruptIsolatedPerProvider(t *testing.T) {
+	t.Parallel()
+
 	// Each provider's IsInterrupt must reject formats that belong to other
 	// providers — otherwise the dispatcher's provider-aware design would be
 	// silently undermined by misclassification.
@@ -211,6 +227,8 @@ func TestProviderFor_IsInterruptIsolatedPerProvider(t *testing.T) {
 }
 
 func TestPlanApprovalOptions_PerProvider(t *testing.T) {
+	t.Parallel()
+
 	// Codex owns its plan-approval option settlement behind the Provider interface: Base
 	// resets the collaboration axis, Bypass (mode-switch only) grants full network + no sandbox.
 	codex := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX).PlanApprovalOptions()
@@ -235,6 +253,8 @@ func TestPlanApprovalOptions_PerProvider(t *testing.T) {
 }
 
 func TestPermissionModeFromRawInput(t *testing.T) {
+	t.Parallel()
+
 	// Claude owns the set_permission_mode wire parse behind the Provider interface.
 	claude := ProviderFor(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
@@ -269,6 +289,8 @@ func TestPermissionModeFromRawInput(t *testing.T) {
 }
 
 func TestIsNotificationThreadable_ClaudeSystemUsesPlugin(t *testing.T) {
+	t.Parallel()
+
 	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"status","status":"idle"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
 	assert.True(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"api_retry","attempt":1}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
 	assert.False(t, isNotificationThreadable([]byte(`{"type":"system","subtype":"other"}`), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))

@@ -49,7 +49,7 @@ func runWorker(args []string) error {
 	}
 
 	// Use a manually-cancelled context (rather than signal.NotifyContext)
-	// so SIGTERM/SIGINT can run svc.Shutdown() *before* the bidi stream
+	// so SIGTERM/SIGINT can run wiring.Shutdown() *before* the bidi stream
 	// is torn down. Otherwise the disconnect-notice broadcasts emitted by
 	// Shutdown race a closed connection and never reach watchers.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -131,7 +131,7 @@ func runWorker(args []string) error {
 		}
 	}()
 
-	if err := workerdb.Migrate(sqlDB); err != nil {
+	if err := workerdb.Migrate(ctx, sqlDB); err != nil {
 		return fmt.Errorf("migrate worker db: %w", err)
 	}
 
@@ -171,18 +171,17 @@ func runWorker(args []string) error {
 		UseLoginShell:        cfg.UseLoginShell,
 		WakeLock:             wakeLockTracker,
 	})
-	svc := wiring.Service
-	// svc.Shutdown persists terminal screen snapshots and broadcasts the
-	// "[Worker disconnected - Press Enter to restart]" notice to live
-	// watchers. Wrap it in sync.Once so all exit paths (signal,
-	// OnDeregister, defer fallback) converge on a single invocation that
-	// runs *before* the bidi stream is torn down — otherwise the broadcast
-	// races a closed connection.
+	// wiring.Shutdown persists terminal screen snapshots, broadcasts the
+	// "[Worker disconnected - Press Enter to restart]" notice to live watchers,
+	// and flushes the outbound queue those broadcasts land in. Wrap it in
+	// sync.Once so all exit paths (signal, OnDeregister, defer fallback)
+	// converge on a single invocation that runs *before* the bidi stream is
+	// torn down — otherwise the broadcast races a closed connection.
 	var shutdownOnce sync.Once
 	runShutdown := func() {
 		shutdownOnce.Do(func() {
 			slog.Info("draining worker state for graceful shutdown")
-			svc.Shutdown()
+			wiring.Shutdown()
 		})
 	}
 	defer runShutdown()

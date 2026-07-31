@@ -19,6 +19,8 @@ import (
 // modelSetter (the override effectiveSetModel prefers).
 
 func TestTrySetStartupModel_PushesWhenServerReportsNoModel(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	got := ""
 	base.modelSetter = func(m string) error {
@@ -32,6 +34,8 @@ func TestTrySetStartupModel_PushesWhenServerReportsNoModel(t *testing.T) {
 }
 
 func TestTrySetStartupModel_NoopWhenMatchesCurrent(t *testing.T) {
+	t.Parallel()
+
 	base := acpBase{}
 	base.model = "anthropic/claude-sonnet-4"
 	called := false
@@ -44,6 +48,8 @@ func TestTrySetStartupModel_NoopWhenMatchesCurrent(t *testing.T) {
 }
 
 func TestTrySetStartupModel_NonFatalOnRejection(t *testing.T) {
+	t.Parallel()
+
 	base := acpBase{}
 	base.providerName = "opencode"
 	base.model = "server/current"
@@ -62,6 +68,8 @@ func TestTrySetStartupModel_NonFatalOnRejection(t *testing.T) {
 // surfaces its model list regardless of which channel the server uses.
 
 func TestACPHandshakeModelInfos_UnionsBothChannels(t *testing.T) {
+	t.Parallel()
+
 	handshake := &acpSessionResult{
 		CurrentModelID: "m1",
 		Models:         []acpModelInfo{{ModelID: "m1", Name: "Model 1"}, {ModelID: "m2", Name: "Model 2"}},
@@ -86,6 +94,8 @@ func TestACPHandshakeModelInfos_UnionsBothChannels(t *testing.T) {
 }
 
 func TestACPHandshakeModelInfos_FallsBackToConfigOptions(t *testing.T) {
+	t.Parallel()
+
 	// This is the OpenCode/Kilo shape: no `models` field, models in configOptions.
 	handshake := &acpSessionResult{
 		ConfigOptions: []acpConfigOption{
@@ -107,6 +117,8 @@ func TestACPHandshakeModelInfos_FallsBackToConfigOptions(t *testing.T) {
 }
 
 func TestACPHandshakeModelInfos_NoModels(t *testing.T) {
+	t.Parallel()
+
 	handshake := &acpSessionResult{
 		ConfigOptions: []acpConfigOption{{ID: acpConfigOptionIDMode, CurrentValue: "build"}},
 	}
@@ -120,6 +132,8 @@ func TestACPHandshakeModelInfos_NoModels(t *testing.T) {
 // buildACPModels dedups by the final (post-normalize) id, so a normalizer that
 // collapses two distinct wire ids to one does not surface a duplicate model.
 func TestBuildACPModels_DedupsByNormalizedID(t *testing.T) {
+	t.Parallel()
+
 	models := buildACPModels([]acpModelInfo{
 		{ModelID: cursorCLIModelAuto, Name: "Auto"},
 		{ModelID: cursorCLIModelAutoWire, Name: "Auto (wire form)"}, // "default[]" -> "auto"
@@ -135,6 +149,8 @@ func TestBuildACPModels_DedupsByNormalizedID(t *testing.T) {
 
 // A server that repeats a model id within a single channel yields one entry.
 func TestBuildACPModels_DedupsRepeatedID(t *testing.T) {
+	t.Parallel()
+
 	models := buildACPModels([]acpModelInfo{
 		{ModelID: "m1", Name: "Model 1"},
 		{ModelID: "m1", Name: "Model 1 (dup)"},
@@ -145,6 +161,8 @@ func TestBuildACPModels_DedupsRepeatedID(t *testing.T) {
 }
 
 func TestACPModelInfosFromConfigOption_SkipsEmptyValues(t *testing.T) {
+	t.Parallel()
+
 	option := acpConfigOption{
 		ID:           acpConfigOptionIDModel,
 		CurrentValue: "openai/gpt-5",
@@ -180,6 +198,8 @@ func handshakeWithConfigModeOverride() *acpSessionResult {
 // Copilot/Goose/Cursor) applies the override at handshake, matching the runtime and
 // ClearContext paths.
 func TestApplyHandshakeMode_ConfigOptionOverridesModesChannel(t *testing.T) {
+	t.Parallel()
+
 	base := acpBase{modeChannel: modeChannelPermissionMode}
 
 	base.applyHandshakeMode(handshakeWithConfigModeOverride(), "fallback")
@@ -195,6 +215,8 @@ func TestApplyHandshakeMode_ConfigOptionOverridesModesChannel(t *testing.T) {
 // runtime and ClearContext paths do (which also gate the override on the mode channel)
 // rather than applying it as the permission mode here but surfacing it uniformly everywhere else.
 func TestApplyHandshakeMode_UnmappedProviderKeepsModesChannelValue(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase // modeChannelUnmapped
 
 	base.applyHandshakeMode(handshakeWithConfigModeOverride(), "fallback")
@@ -205,6 +227,8 @@ func TestApplyHandshakeMode_UnmappedProviderKeepsModesChannelValue(t *testing.T)
 }
 
 func TestApplyHandshakeMode_FallsBackToDefaultWhenServerReportsNone(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	base.applyHandshakeMode(&acpSessionResult{}, "default-mode")
 	assert.Equal(t, "default-mode", base.permissionMode)
@@ -219,6 +243,8 @@ func TestApplyHandshakeMode_FallsBackToDefaultWhenServerReportsNone(t *testing.T
 // option is neither double-applied (as the permission mode AND as a option group) nor
 // silently dropped, matching how the runtime and ClearContext paths resolve it.
 func TestUnmappedProvider_HandshakeConfigMode_SurfacedGenericNotDoubleApplied(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase // modeChannelUnmapped
 	handshake := &acpSessionResult{
 		CurrentModeID: "default",
@@ -249,6 +275,8 @@ func TestUnmappedProvider_HandshakeConfigMode_SurfacedGenericNotDoubleApplied(t 
 // and the `mode` option (their primary agent) is left untouched.
 
 func TestHandleOpenCodeOutput_ConfigOptionUpdateRefreshesModelsGenerically(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.model = "anthropic/claude-sonnet-4"
@@ -277,6 +305,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateRefreshesModelsGenerically(t *te
 // agent already holds -- must trigger no broadcast at all (no settings write, no
 // status refresh).
 func TestHandleOpenCodeOutput_ConfigOptionUpdateNoBroadcastWhenUnchanged(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.model = "openai/gpt-5"
@@ -298,6 +328,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateNoBroadcastWhenUnchanged(t *test
 // list must broadcast a status refresh (so the picker updates) without a settings
 // DB write.
 func TestHandleOpenCodeOutput_ConfigOptionUpdateBroadcastsListChange(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.model = "openai/gpt-5"
@@ -320,6 +352,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateBroadcastsListChange(t *testing.
 // must survive it -- applyConfigOptionModelsLocked re-unions the remembered
 // models-field catalog so a split-catalog provider does not lose entries.
 func TestApplyConfigOptionModelsLocked_ReunionsModelsFieldCatalog(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	// Simulate a handshake that reported "field/x" only through the models field.
 	base.modelsFieldInfos = []acpModelInfo{{ModelID: "field/x", Name: "Field X"}}
@@ -347,6 +381,8 @@ func TestApplyConfigOptionModelsLocked_ReunionsModelsFieldCatalog(t *testing.T) 
 }
 
 func TestHandleKiloOutput_ConfigOptionUpdateRefreshesModelsGenerically(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newKiloAgentWithSink(sink)
 	agent.model = "anthropic/claude-sonnet-4"
@@ -368,6 +404,8 @@ func TestHandleKiloOutput_ConfigOptionUpdateRefreshesModelsGenerically(t *testin
 // ids, mirroring buildACPModels so a server repeating or leaking a pseudo-agent id
 // does not surface duplicate or internal picker options.
 func TestBuildConfigOptionSelect_DedupsAndFilters(t *testing.T) {
+	t.Parallel()
+
 	options := []acpConfigOption{{
 		ID: acpConfigOptionIDMode, CurrentValue: "build",
 		Options: []acpConfigOptionValue{
@@ -394,6 +432,8 @@ func TestBuildConfigOptionSelect_DedupsAndFilters(t *testing.T) {
 // for the model channel. Without it the new option never reaches the frontend until
 // an unrelated change forces a status refresh.
 func TestHandleOpenCodeOutput_ConfigOptionUpdatePrimaryAgentListOnlyBroadcasts(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.currentPrimaryAgent = OpenCodePrimaryAgentBuild
@@ -416,6 +456,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdatePrimaryAgentListOnlyBroadcasts(t
 // the handshake (buildPrimaryAgentOptions) does: a whitespace-only name is blanked so
 // the id is title-cased, rather than the runtime path leaking the literal whitespace.
 func TestHandleOpenCodeOutput_ConfigOptionUpdateNormalizesAgentName(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.currentPrimaryAgent = OpenCodePrimaryAgentBuild
@@ -435,6 +477,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateNormalizesAgentName(t *testing.T
 // adopt it as the current primary agent: the hidden id is filtered from the picker,
 // so adopting it would leave the picker showing a selection it can't offer.
 func TestHandleOpenCodeOutput_ConfigOptionUpdateIgnoresHiddenCurrentAgent(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.currentPrimaryAgent = OpenCodePrimaryAgentBuild
@@ -456,6 +500,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateIgnoresHiddenCurrentAgent(t *tes
 // settings refresh preserves stored extras instead of clearing them; a
 // non-empty agent yields the single-key map.
 func TestPrimaryAgentExtras(t *testing.T) {
+	t.Parallel()
+
 	assert.Nil(t, primaryAgentOptions(""),
 		"empty agent must yield nil so PersistSettingsRefresh keeps stored extras")
 	assert.Equal(t, map[string]string{OptionIDPrimaryAgent: "build"}, primaryAgentOptions("build"))
@@ -466,6 +512,8 @@ func TestPrimaryAgentExtras(t *testing.T) {
 // applying the hidden-agent filter to the rebuilt list. Mirrors how the
 // permission-mode providers sync their mode.
 func TestHandleOpenCodeOutput_ConfigOptionUpdateSyncsPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.model = "anthropic/claude-sonnet-4"
@@ -489,6 +537,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateSyncsPrimaryAgent(t *testing.T) 
 // default-or-first option rather than leave it pointing at a value absent from the list.
 // Without the re-seed the picker would show a selection it can no longer offer. [S1]
 func TestHandleOpenCodeOutput_ConfigOptionUpdateReseedsOrphanedCurrent(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.model = "anthropic/claude-sonnet-4"
@@ -524,6 +574,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateReseedsOrphanedCurrent(t *testin
 // options carry no per-option default badge). The handshake, runtime, and ClearContext
 // seams all route through it.
 func TestReconcileCurrentOptionID(t *testing.T) {
+	t.Parallel()
+
 	opts := func(ids ...string) []*leapmuxv1.AvailableOption {
 		built := make([]*leapmuxv1.AvailableOption, 0, len(ids))
 		for _, id := range ids {
@@ -567,6 +619,8 @@ func TestReconcileCurrentOptionID(t *testing.T) {
 // entries and empty ids. ACP options carry no per-option default badge, so "first"
 // is the only sensible seed.
 func TestDefaultOrFirstOption(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, "", defaultOrFirstOption(nil), "no options -> empty")
 	assert.Equal(t, "build", defaultOrFirstOption([]*leapmuxv1.AvailableOption{
 		{Id: "build"},
@@ -585,6 +639,8 @@ func TestDefaultOrFirstOption(t *testing.T) {
 // is only a back-compat fallback for the providers we ship today, which omit it.
 
 func TestACPConfigOptionByCategory_PrefersCategoryOverID(t *testing.T) {
+	t.Parallel()
+
 	options := []acpConfigOption{
 		{ID: "opaque", Category: acpConfigOptionCategoryModel, CurrentValue: "a"},
 		{ID: acpConfigOptionIDModel, CurrentValue: "b"}, // a coincidental id match
@@ -595,6 +651,8 @@ func TestACPConfigOptionByCategory_PrefersCategoryOverID(t *testing.T) {
 }
 
 func TestACPConfigOptionByCategory_FallsBackToIDWhenNoCategory(t *testing.T) {
+	t.Parallel()
+
 	// The shape every provider ships today: no `category`, well-known id.
 	options := []acpConfigOption{{ID: acpConfigOptionIDMode, CurrentValue: "plan"}}
 	option, ok := acpConfigOptionByCategory(options, acpConfigOptionCategoryMode, acpConfigOptionIDMode)
@@ -603,6 +661,8 @@ func TestACPConfigOptionByCategory_FallsBackToIDWhenNoCategory(t *testing.T) {
 }
 
 func TestACPConfigOptionByCategory_SkipsNonSelectableType(t *testing.T) {
+	t.Parallel()
+
 	options := []acpConfigOption{
 		{ID: "x", Category: acpConfigOptionCategoryModel, Type: "text"},  // right category, unknown type
 		{ID: acpConfigOptionIDModel, Type: "select", CurrentValue: "m1"}, // selectable id fallback
@@ -614,6 +674,8 @@ func TestACPConfigOptionByCategory_SkipsNonSelectableType(t *testing.T) {
 }
 
 func TestACPConfigOptionByCategory_NoneFound(t *testing.T) {
+	t.Parallel()
+
 	_, ok := acpConfigOptionByCategory([]acpConfigOption{{ID: "other"}}, acpConfigOptionCategoryModel, acpConfigOptionIDModel)
 	assert.False(t, ok)
 }
@@ -623,6 +685,8 @@ func TestACPConfigOptionByCategory_NoneFound(t *testing.T) {
 // rather than to whichever the server happened to list first -- so the claimed axis can't flip
 // between refreshes with server slice order.
 func TestACPConfigOptionByCategory_DeterministicOnDuplicateCategory(t *testing.T) {
+	t.Parallel()
+
 	// Same two options in opposite server-reported orders must pick the same (lowest-id) winner.
 	a := acpConfigOption{ID: "bbb", Category: acpConfigOptionCategoryModel, CurrentValue: "1"}
 	b := acpConfigOption{ID: "aaa", Category: acpConfigOptionCategoryModel, CurrentValue: "2"}
@@ -640,6 +704,8 @@ func TestACPConfigOptionByCategory_DeterministicOnDuplicateCategory(t *testing.T
 // content-smallest, acpConfigOptionContentLess) rather than whichever the server listed first -- so
 // the claimed axis can't flip between refreshes with server slice order, mirroring the category pass.
 func TestACPConfigOptionByCategory_DeterministicOnDuplicateFallbackID(t *testing.T) {
+	t.Parallel()
+
 	// Two options share the fallback id but differ in their current value; neither carries a category.
 	a := acpConfigOption{ID: acpConfigOptionIDModel, CurrentValue: "zzz"}
 	b := acpConfigOption{ID: acpConfigOptionIDModel, CurrentValue: "aaa"}
@@ -658,6 +724,8 @@ func TestACPConfigOptionByCategory_DeterministicOnDuplicateFallbackID(t *testing
 // The plain lowest-id comparison can't break an exact-id tie, so without the content tie-break the
 // claimed axis would still flip with server slice order in this case.
 func TestACPConfigOptionByCategory_DeterministicOnSameCategorySameID(t *testing.T) {
+	t.Parallel()
+
 	a := acpConfigOption{ID: acpConfigOptionIDModel, Category: acpConfigOptionCategoryModel, CurrentValue: "zzz"}
 	b := acpConfigOption{ID: acpConfigOptionIDModel, Category: acpConfigOptionCategoryModel, CurrentValue: "aaa"}
 
@@ -670,6 +738,8 @@ func TestACPConfigOptionByCategory_DeterministicOnSameCategorySameID(t *testing.
 }
 
 func TestIsSelectableConfigOption(t *testing.T) {
+	t.Parallel()
+
 	assert.True(t, isSelectableConfigOption(acpConfigOption{Type: ""}), "empty type is treated as select")
 	assert.True(t, isSelectableConfigOption(acpConfigOption{Type: "select"}))
 	assert.False(t, isSelectableConfigOption(acpConfigOption{Type: "text"}))
@@ -679,6 +749,8 @@ func TestIsSelectableConfigOption(t *testing.T) {
 // The model channel dispatches by `category`, so a spec-compliant agent using a
 // non-literal opaque id still surfaces its models.
 func TestACPHandshakeModelInfos_DispatchesModelByCategory(t *testing.T) {
+	t.Parallel()
+
 	handshake := &acpSessionResult{
 		ConfigOptions: []acpConfigOption{{
 			ID:           "opaque-model-id", // NOT the literal "model"
@@ -701,6 +773,8 @@ func TestACPHandshakeModelInfos_DispatchesModelByCategory(t *testing.T) {
 // An option with the literal `model` id but an unknown (non-select) type is ignored
 // defensively rather than parsed as the model channel.
 func TestACPHandshakeModelInfos_IgnoresNonSelectableModelOption(t *testing.T) {
+	t.Parallel()
+
 	handshake := &acpSessionResult{
 		ConfigOptions: []acpConfigOption{{
 			ID:      acpConfigOptionIDModel,
@@ -718,6 +792,8 @@ func TestACPHandshakeModelInfos_IgnoresNonSelectableModelOption(t *testing.T) {
 // The mode channel dispatches by `category` too (covering both the permission-mode
 // and primary-agent sync paths, which share buildConfigOptionSelect).
 func TestBuildConfigOptionSelect_DispatchesModeByCategory(t *testing.T) {
+	t.Parallel()
+
 	options := []acpConfigOption{{
 		ID:           "opaque-mode-id",
 		Category:     acpConfigOptionCategoryMode,
@@ -733,6 +809,8 @@ func TestBuildConfigOptionSelect_DispatchesModeByCategory(t *testing.T) {
 }
 
 func TestBuildConfigOptionSelect_IgnoresNonSelectableModeOption(t *testing.T) {
+	t.Parallel()
+
 	options := []acpConfigOption{{ID: acpConfigOptionIDMode, Type: "text"}}
 	_, _, ok := buildConfigOptionSelect(options, nil)
 	assert.False(t, ok, "an unknown widget type is not dispatched as the mode channel")
@@ -744,6 +822,8 @@ func TestBuildConfigOptionSelect_IgnoresNonSelectableModeOption(t *testing.T) {
 // option group keyed by id, while the claimed model and mode options are excluded
 // (no double-render).
 func TestApplyOptionGroupsLocked_SurfacesUnmappedOption(t *testing.T) {
+	t.Parallel()
+
 	// A primary-agent provider consumes the mode channel, so its mode option is claimed
 	// and excluded -- only the unmapped axis surfaces.
 	base := acpBase{modeChannel: modeChannelPrimaryAgent}
@@ -772,6 +852,8 @@ func TestApplyOptionGroupsLocked_SurfacesUnmappedOption(t *testing.T) {
 // An unmapped option declared with no name and no category (just a distinct id) still
 // surfaces, labelled by its id.
 func TestApplyOptionGroupsLocked_SurfacesIDOnlyOption(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	options := []acpConfigOption{
 		{ID: acpConfigOptionIDModel, CurrentValue: "m1", Options: []acpConfigOptionValue{{Value: "m1"}}},
@@ -791,6 +873,8 @@ func TestApplyOptionGroupsLocked_SurfacesIDOnlyOption(t *testing.T) {
 // -- is never surfaced as a option group, and a payload with no unmapped option
 // leaves the stored state untouched (keep-stored guard).
 func TestApplyOptionGroupsLocked_ExcludesClaimedModeByCategory(t *testing.T) {
+	t.Parallel()
+
 	// A permission-mode provider consumes the mode channel, so its mode option is
 	// claimed by category and excluded from the option groups.
 	base := acpBase{modeChannel: modeChannelPermissionMode}
@@ -811,6 +895,8 @@ func TestApplyOptionGroupsLocked_ExcludesClaimedModeByCategory(t *testing.T) {
 // A provider that consumes neither channel does NOT claim a mode option, so
 // rather than silently dropping it, the mode surfaces as a mutable option group.
 func TestApplyOptionGroupsLocked_SurfacesUnconsumedModeForNonSyncingProvider(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase // modeChannel stays modeChannelUnmapped
 	options := []acpConfigOption{
 		{ID: acpConfigOptionIDMode, Category: acpConfigOptionCategoryMode, CurrentValue: "plan",
@@ -832,6 +918,8 @@ func TestApplyOptionGroupsLocked_SurfacesUnconsumedModeForNonSyncingProvider(t *
 // (primaryAgent/permissionMode) is never surfaced as a option group -- the mapped
 // channel owns that key, and a second group with it would double-list the key.
 func TestApplyOptionGroupsLocked_SkipsReservedGroupKeys(t *testing.T) {
+	t.Parallel()
+
 	base := acpBase{modeChannel: modeChannelPrimaryAgent}
 	options := []acpConfigOption{
 		{ID: OptionIDPrimaryAgent, CurrentValue: "x", Options: []acpConfigOptionValue{{Value: "x"}, {Value: "y"}}},
@@ -855,6 +943,8 @@ func TestApplyOptionGroupsLocked_SkipsReservedGroupKeys(t *testing.T) {
 // for a model without effort support. The dropped option is removed from the live state
 // and (via surfacedGenericIDs) emitted as "" so the persisted value is deleted.
 func TestApplyOptionGroupsLocked_CompletePayloadDropsAbsentOption(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	seed := []acpConfigOption{{ID: "thoughtLevel", Name: "Thought Level", CurrentValue: "high",
 		Options: []acpConfigOptionValue{{Value: "low"}, {Value: "high"}}}}
@@ -887,6 +977,8 @@ func TestApplyOptionGroupsLocked_CompletePayloadDropsAbsentOption(t *testing.T) 
 // model inventory resolved), so it must leave the stored options untouched -- the only
 // preserve case once every non-empty payload is treated as a complete, authoritative set.
 func TestApplyOptionGroupsLocked_EmptyPayloadPreservesStored(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	base.mu.Lock()
 	base.applyOptionGroupsLocked([]acpConfigOption{{ID: "thoughtLevel", CurrentValue: "high",
@@ -904,6 +996,8 @@ func TestApplyOptionGroupsLocked_EmptyPayloadPreservesStored(t *testing.T) {
 // must emit the dropped id as an explicit "" in the persist extras, so the uniform refresh
 // merge DELETES its stale stored value instead of preserving it (an absent key is kept).
 func TestMergeExtras_DeletesDroppedOption(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	base.mu.Lock()
 	defer base.mu.Unlock()
@@ -935,6 +1029,8 @@ func TestMergeExtras_DeletesDroppedOption(t *testing.T) {
 // a persisted preference still awaiting re-push. This pins the knownGenericIDs (advertised)
 // vs surfacedGenericIDs (once-valued) split.
 func TestMergeExtras_AdvertisedButNeverValuedNotDeleted(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	base.mu.Lock()
 	// A first-sighting option with an empty current and nothing stored: advertised but
@@ -960,6 +1056,8 @@ func TestMergeExtras_AdvertisedButNeverValuedNotDeleted(t *testing.T) {
 // past the cap, and re-adding an existing id refreshes it (moving it off the eviction front)
 // instead of duplicating it. The read methods are nil-safe.
 func TestBoundedIDSet_LRUEviction(t *testing.T) {
+	t.Parallel()
+
 	s := newBoundedIDSet()
 	for i := range maxOptionStateIDs {
 		s.add(fmt.Sprintf("id-%d", i), nil)
@@ -982,6 +1080,8 @@ func TestBoundedIDSet_LRUEviction(t *testing.T) {
 // carrying a value can't be dropped from the known/surfaced set by a non-conforming server
 // churning distinct ids. The least-recently-used UNPROTECTED id is evicted instead.
 func TestBoundedIDSet_ProtectsPinnedIDs(t *testing.T) {
+	t.Parallel()
+
 	s := newBoundedIDSet()
 	// "pinned" is added first (oldest/LRU) and never touched again, so it would normally be the
 	// first evicted; the protect predicate keeps it.
@@ -1007,6 +1107,8 @@ func TestBoundedIDSet_ProtectsPinnedIDs(t *testing.T) {
 // value/template and their pending "" delete. The whole set is genuinely live, so the bound
 // permits the documented over-cap growth rather than shedding a valued id.
 func TestApplyOptionGroupsLocked_ProtectsFirstSightingValuedIDs(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	const extra = 50
 	options := make([]acpConfigOption, 0, maxOptionStateIDs+extra)
@@ -1044,6 +1146,8 @@ func TestApplyOptionGroupsLocked_ProtectsFirstSightingValuedIDs(t *testing.T) {
 // daemon advertises but the running provider did not claim is NOT auto-discovered here -- the guard
 // that stops a coincidental second axis from getting the override double-pushed.
 func TestThoughtLevelConfigOptionID(t *testing.T) {
+	t.Parallel()
+
 	t.Run("non-effort id matched by thought_level category", func(t *testing.T) {
 		g := &optionState{templates: map[string]acpConfigOption{
 			"thinking": {ID: "thinking", Category: acpConfigOptionCategoryThoughtLevel},
@@ -1081,6 +1185,8 @@ func TestThoughtLevelConfigOptionID(t *testing.T) {
 // would emit as a DB delete). genericOptionValues is never seeded from the DB, so this
 // first-handshake case has no stored fallback -- the value is "not yet known", not cleared.
 func TestApplyOptionGroupsLocked_SkipsEmptyCurrentOnFirstSighting(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase // empty genericOptionValues -> nothing stored to fall back on
 	options := []acpConfigOption{
 		{ID: acpConfigOptionIDModel, CurrentValue: "m1", Options: []acpConfigOptionValue{{Value: "m1"}}},
@@ -1114,6 +1220,8 @@ func TestApplyOptionGroupsLocked_SkipsEmptyCurrentOnFirstSighting(t *testing.T) 
 // A changed currentValue reports valueChanged; a same-value payload that only adds an
 // option reports listChanged.
 func TestApplyOptionGroupsLocked_ValueChangeVsListChange(t *testing.T) {
+	t.Parallel()
+
 	var base acpBase
 	seed := []acpConfigOption{{ID: "thoughtLevel", CurrentValue: "low",
 		Options: []acpConfigOptionValue{{Value: "low"}, {Value: "high"}}}}
@@ -1142,6 +1250,8 @@ func TestApplyOptionGroupsLocked_ValueChangeVsListChange(t *testing.T) {
 // uniform refresh merge deletes them), and returns nil only when nothing at all is
 // being reported (so the keep-stored contract holds).
 func TestMergeExtras(t *testing.T) {
+	t.Parallel()
+
 	t.Run("nil when empty", func(t *testing.T) {
 		var b acpBase
 		assert.Nil(t, b.options.mergeOptionValues(nil))
@@ -1181,6 +1291,8 @@ func TestMergeExtras(t *testing.T) {
 // mutable option group (after the mapped primary-agent group) and persists its
 // value into extra_settings alongside the primary agent.
 func TestHandleOpenCodeOutput_ConfigOptionUpdateSurfacesGenericGroup(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.model = "openai/gpt-5"
@@ -1209,6 +1321,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateSurfacesGenericGroup(t *testing.
 // refresh, not a settings DB write -- the option analogue of the model/mode list
 // channels.
 func TestHandleOpenCodeOutput_ConfigOptionUpdateGenericListOnlyBroadcasts(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.currentPrimaryAgent = OpenCodePrimaryAgentBuild
@@ -1239,6 +1353,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateGenericListOnlyBroadcasts(t *tes
 // when a concurrent reader fold reverts the structure back: each fold moves the counter, so a
 // before != after holds even across a net-zero surface-then-drop.
 func TestOptionStateStructureGen_TracksStructuralFoldsForLiveBroadcast(t *testing.T) {
+	t.Parallel()
+
 	agent := newOpenCodeAgentWithSink(&testSink{})
 	agent.model = "openai/gpt-5"
 	agent.availableModels = []*ModelInfo{{Id: "openai/gpt-5", DisplayName: "GPT-5", IsDefault: true}}
@@ -1273,6 +1389,8 @@ func TestOptionStateStructureGen_TracksStructuralFoldsForLiveBroadcast(t *testin
 // broadcastSettingsRefresh replaces stored extras wholesale, and the dropped option rides
 // along as "" so it is removed, not kept.
 func TestHandleOpenCodeOutput_ConfigOptionUpdateDropsNoLongerApplicableGeneric(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newOpenCodeAgentWithSink(sink)
 	agent.model = "openai/gpt-5"
@@ -1312,6 +1430,8 @@ func TestHandleOpenCodeOutput_ConfigOptionUpdateDropsNoLongerApplicableGeneric(t
 // for an unknown key and the write still succeeds. (A surfaced config option, by
 // contrast, IS writable -- see TestACPConfigOption_MutableUpdateRoundTrips.)
 func TestPrimaryAgentUpdateSettings_IgnoresUnknownExtraKey(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newOpenCodeAgentForRPC(t)
 
 	ok := agent.UpdateSettings(map[string]string{
@@ -1332,6 +1452,8 @@ func TestPrimaryAgentUpdateSettings_IgnoresUnknownExtraKey(t *testing.T) {
 // config-override presence. The permission-mode and primary-agent families are distinct, and
 // the unmapped zero value defaults to permission mode (with no config override).
 func TestSecondaryChannel_DerivesFromModeChannel(t *testing.T) {
+	t.Parallel()
+
 	pm := acpBase{modeChannel: modeChannelPermissionMode}
 	scPM := pm.secondaryChannel()
 	assert.Equal(t, OptionIDPermissionMode, scPM.optionID)
@@ -1369,6 +1491,8 @@ func TestSecondaryChannel_DerivesFromModeChannel(t *testing.T) {
 // base setModel when no provider override is set (Cursor sets modelSetter to its
 // wire-mapping setter; every other ACP provider leaves it nil).
 func TestEffectiveSetModel_FallsBackToBaseSetter(t *testing.T) {
+	t.Parallel()
+
 	var b acpBase
 	assert.NotNil(t, b.effectiveSetModel(), "a nil modelSetter falls back to the base setModel")
 

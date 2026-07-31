@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { isMaybeVisible, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
+import { isMaybeVisible, messageContents, openSettingsMenu, sendMessage, waitForAgentIdle, waitForSettingsIdle } from './helpers/ui'
 
 codexTest.describe('Codex requestUserInput', () => {
   codexTest('approval flow works with on-request policy', async ({ authenticatedCodexWorkspace, page }) => {
@@ -32,7 +32,7 @@ codexTest.describe('Codex requestUserInput', () => {
 
     // Wait for the agent to finish and verify the command ran.
     await waitForAgentIdle(page, 120_000)
-    const chatArea = page.locator('[data-testid="message-content"]')
+    const chatArea = messageContents(page)
     const allText = await chatArea.allTextContents()
     const joined = allText.join(' ')
     expect(joined).toContain('codex-approval-test-dir-nonexistent')

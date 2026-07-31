@@ -18,6 +18,8 @@ import (
 // --- Tests for refreshFromSession via ClearContext ---
 
 func TestCopilotClearContextRefreshesFromSession(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -52,6 +54,8 @@ func TestCopilotClearContextRefreshesFromSession(t *testing.T) {
 // session/set_config_option after a context clear, so the user's choice survives the
 // new session rather than reverting to the server default.
 func TestCopilotClearContextReappliesOption(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		switch method {
 		case acpMethodSessionNew:
@@ -89,6 +93,8 @@ func TestCopilotClearContextReappliesOption(t *testing.T) {
 // re-push, so folding its stale default would clobber the user's choice -- the
 // applyOptionGroupsKeepingStoredLocked path keeps the re-applied value instead.
 func TestCopilotClearContextKeepsReappliedOptionOverSessionDefault(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		switch method {
 		case acpMethodSessionNew:
@@ -125,6 +131,8 @@ func TestCopilotClearContextKeepsReappliedOptionOverSessionDefault(t *testing.T)
 // captured before the model write -- not the just-raised in-memory "high". Reading the live
 // (clobbered) value would silently lose any non-"high" effort on every /clear.
 func TestCopilotClearContextKeepsNonHighEffortOverModelRaise(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newACPAgentForRPCWithRequestResponder(t,
 		func() *CopilotCLIAgent {
 			a := &CopilotCLIAgent{}
@@ -179,6 +187,8 @@ func TestCopilotClearContextKeepsNonHighEffortOverModelRaise(t *testing.T) {
 // did not change, so it no-ops and never carries the new catalog -- without a direct
 // BroadcastStatusActive the frontend's option list goes stale until an unrelated push.
 func TestCopilotClearContextListOnlyChangeBroadcastsStatus(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		switch method {
 		case acpMethodSessionNew:
@@ -216,6 +226,8 @@ func TestCopilotClearContextListOnlyChangeBroadcastsStatus(t *testing.T) {
 }
 
 func TestCursorClearContextRefreshesWithNormalization(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newCursorAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			// Cursor returns the wire format "default[]" for auto model.
@@ -251,6 +263,8 @@ func TestCursorClearContextRefreshesWithNormalization(t *testing.T) {
 // session refresh through the shared extras merge (applySessionRefresh) instead of
 // passing nil extras -- previously a Cursor option would be dropped on a context clear.
 func TestCursorClearContextRefreshesOptions(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newCursorAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -290,6 +304,8 @@ func TestCursorClearContextRefreshesOptions(t *testing.T) {
 }
 
 func TestOpenCodeClearContextRefreshesPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -327,6 +343,8 @@ func TestOpenCodeClearContextRefreshesPrimaryAgent(t *testing.T) {
 // selection that has no visible option. The response carries no configOptions `mode`
 // to correct it, isolating the raw-write path.
 func TestOpenCodeClearContextDropsHiddenCurrentPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -359,6 +377,8 @@ func TestOpenCodeClearContextDropsHiddenCurrentPrimaryAgent(t *testing.T) {
 // S4: ClearContext refreshes the available-model list (not just the current id)
 // from the new session, including the configOptions channel OpenCode/Kilo use.
 func TestOpenCodeClearContextRefreshesAvailableModels(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -397,6 +417,8 @@ func TestOpenCodeClearContextRefreshesAvailableModels(t *testing.T) {
 // the model list refreshes. Here the new session adds "review" through the modes
 // channel and carries no configOptions. [S4]
 func TestOpenCodeClearContextRefreshesPrimaryAgentListFromNativeModes(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -436,6 +458,8 @@ func TestOpenCodeClearContextRefreshesPrimaryAgentListFromNativeModes(t *testing
 // default-or-first option rather than keep an orphan -- the ClearContext mirror of the
 // runtime re-seed, resolving the current the same way the handshake does. [S2]
 func TestOpenCodeClearContextReseedsOrphanedPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			// The new session lists [build, review] (dropping the stored "plan") and
@@ -470,6 +494,8 @@ func TestOpenCodeClearContextReseedsOrphanedPrimaryAgent(t *testing.T) {
 // availableModes from the native modes channel, so a new session whose mode list changed
 // is reflected even when no configOptions `mode` is present. [S4]
 func TestCopilotClearContextRefreshesModeListFromNativeModes(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -507,6 +533,8 @@ func TestCopilotClearContextRefreshesModeListFromNativeModes(t *testing.T) {
 // primaryAgentOptions(""), i.e. nil, so PersistSettingsRefresh keeps the stored
 // extras rather than clearing them to "{}" via a map{primaryAgent:""}.
 func TestOpenCodeClearContextEmptyPrimaryAgentPreservesExtras(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -536,6 +564,8 @@ func TestOpenCodeClearContextEmptyPrimaryAgentPreservesExtras(t *testing.T) {
 // override (matching applyHandshakeMode), not just the modes-channel value -- so
 // the mode resolves the same way the handshake does instead of diverging on clear.
 func TestCopilotClearContextAppliesConfigOptionModeOverride(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newCopilotAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			// The modes channel says "agent" but the configOptions `mode` says "plan".
@@ -572,6 +602,8 @@ func TestCopilotClearContextAppliesConfigOptionModeOverride(t *testing.T) {
 // a session reporting its current agent only through the configOptions select (empty
 // modes-channel currentModeId) would keep the stale selection.
 func TestOpenCodeClearContextAppliesConfigOptionPrimaryAgentOverride(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			// The modes channel says "build" but the configOptions `mode` says "plan",
@@ -616,6 +648,8 @@ func TestOpenCodeClearContextAppliesConfigOptionPrimaryAgentOverride(t *testing.
 // extras, next to (without clobbering) the primaryAgent key. This is the
 // ClearContext seam of option surfacing, mirroring the handshake and runtime seams.
 func TestOpenCodeClearContextRefreshesOptions(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -656,6 +690,8 @@ func TestOpenCodeClearContextRefreshesOptions(t *testing.T) {
 // prior values. Resetting modelsFieldInfos to empty while the stale list lingers
 // would drop models-field-only entries on the next config_option_update re-union.
 func TestOpenCodeClearContextEmptyModelsKeepsCatalog(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{"sessionId": "session-2", "modes": {"currentModeId": "build"}}`)
@@ -682,6 +718,8 @@ func TestOpenCodeClearContextEmptyModelsKeepsCatalog(t *testing.T) {
 }
 
 func TestGooseClearContextRefreshesFromSession(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newGooseAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{

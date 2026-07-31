@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace, tabbarAgentLabels, waitForLayoutSave, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, sidebarLeafLabels, tabbarAgentLabels, waitForLayoutSave, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 
 /**
  * Regression: dragging a tab from a non-active workspace's expanded
@@ -115,29 +115,6 @@ async function dragSidebarLeafTo(page: Page, opts: { sourceWorkspaceId: string, 
   await page.waitForTimeout(200)
 }
 
-/**
- * Strip the close icon / notification / remote badge from each tab and
- * return the rendered title text. Used to assert that a moved tab kept
- * the title the API seeded rather than degrading to its nanoid id
- * (sidebar fallback) or to a bare "Agent" (tabbar fallback).
- */
-async function sidebarLeafLabelsForWorkspace(page: Page, workspaceId: string): Promise<string[]> {
-  return page.evaluate((wsId) => {
-    const wsItem = document.querySelector(`[data-testid="workspace-item-${wsId}"]`)
-    if (!wsItem)
-      return []
-    const wrapper = wsItem.nextElementSibling
-    if (!wrapper)
-      return []
-    const leaves = Array.from(wrapper.querySelectorAll('[data-testid="tab-tree-leaf"]')) as HTMLElement[]
-    return leaves.map((leaf) => {
-      const clone = leaf.cloneNode(true) as HTMLElement
-      clone.querySelectorAll('button, svg').forEach(n => n.remove())
-      return (clone.textContent ?? '').trim()
-    })
-  }, workspaceId)
-}
-
 test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
   test('drag from non-active sidebar section to active workspace keeps title; survives reload', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
@@ -169,20 +146,25 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
       // draggable. The chevron is the first SVG inside the workspace
       // item; clicking it fires `onExpandWorkspace`, which lazy-loads
       // wsA's tabs, which the projection already carries.
-      const wsAItem = page.locator(`[data-testid="workspace-item-${wsA}"]`)
+      const wsAItem = workspaceRow(page, wsA)
       await wsAItem.locator('svg').first().click()
-      // Two leaves expected: wsA's (the source) and wsB's (the
-      // destination — already visible because wsB is active).
-      await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
+      // One leaf each under wsA (the source) and wsB (the destination --
+      // already visible because wsB is active). Counted PER WORKSPACE, not
+      // across the whole sidebar: `leapmuxServer` is worker-scoped, so an
+      // earlier spec file's workspace can still be listed and expanded, and a
+      // global `toHaveCount(2)` was really asserting that no other file ran on
+      // this worker first.
+      await expect.poll(() => sidebarLeafLabels(page, wsA)).toHaveLength(1)
+      await expect.poll(() => sidebarLeafLabels(page, wsB)).toHaveLength(1)
 
       // Verify wsA's leaf renders with its seeded title before the
       // drag — confirms the projection + hydrators delivered the metadata
       // we'll be asserting survives the move.
-      await expect.poll(() => sidebarLeafLabelsForWorkspace(page, wsA)).toEqual([wsATitle])
+      await expect.poll(() => sidebarLeafLabels(page, wsA)).toEqual([wsATitle])
 
       // Target: drop on wsB's workspace item in the sidebar (it's the
       // active workspace, so this is a non-active → active move).
-      const wsBItem = page.locator(`[data-testid="workspace-item-${wsB}"]`)
+      const wsBItem = workspaceRow(page, wsB)
       const targetBox = await wsBItem.boundingBox()
       if (!targetBox)
         throw new Error('Could not get wsB workspace-item bounding box')
@@ -210,7 +192,7 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
 
       // Mirror assertion in the sidebar — wsB's section now lists
       // both tabs and neither row shows the nanoid fallback.
-      const sidebarLabels = await sidebarLeafLabelsForWorkspace(page, wsB)
+      const sidebarLabels = await sidebarLeafLabels(page, wsB)
       expect(new Set(sidebarLabels)).toEqual(new Set([wsATitle, wsBTitle]))
 
       // --- Reload checkpoint (#3) ---
@@ -238,9 +220,9 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
       // wsAAgentId must not appear back under wsA's sidebar section
       // after refresh — the move op committed to the hub and the
       // post-reload `listTabs(wsA)` should no longer return it.
-      const wsAItemAfterReload = page.locator(`[data-testid="workspace-item-${wsA}"]`)
+      const wsAItemAfterReload = workspaceRow(page, wsA)
       await wsAItemAfterReload.locator('svg').first().click()
-      const wsALabelsAfterReload = await sidebarLeafLabelsForWorkspace(page, wsA)
+      const wsALabelsAfterReload = await sidebarLeafLabels(page, wsA)
       expect(wsALabelsAfterReload).toEqual([])
     }
     finally {

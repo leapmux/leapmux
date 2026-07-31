@@ -221,6 +221,8 @@ func addTabOps(idPrefix, tabID, tileID, workerID, position string) []*leapmuxv1.
 // callers without an authenticated user in the context — the same
 // guarantee the ConnectRPC interceptor provides in production.
 func TestCRDTService_SubmitOps_RequiresAuth(t *testing.T) {
+	t.Parallel()
+
 	env := setupCRDTService(t)
 
 	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
@@ -241,6 +243,8 @@ func TestCRDTService_SubmitOps_RequiresAuth(t *testing.T) {
 // HLC tie-breaking). The request body has no field carrying these
 // values, so a malicious client cannot spoof them.
 func TestCRDTService_SubmitOps_StampsPrincipalAndOrigin(t *testing.T) {
+	t.Parallel()
+
 	env := setupCRDTService(t)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(env.userID)})
 
@@ -268,6 +272,8 @@ func TestCRDTService_SubmitOps_StampsPrincipalAndOrigin(t *testing.T) {
 // origin_client_id="hub" in the wire-level CrdtOp must not be able to
 // impersonate the hub or another user.
 func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
+	t.Parallel()
+
 	env := setupCRDTService(t)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(env.userID)})
 
@@ -307,6 +313,8 @@ func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 // TestCRDTService_UpdatePresence_RequiresAuth ensures presence calls
 // without an authenticated user are rejected with Unauthenticated.
 func TestCRDTService_UpdatePresence_RequiresAuth(t *testing.T) {
+	t.Parallel()
+
 	env := setupCRDTService(t)
 	req := connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{WorkspaceId: "w1"})
 	_, err := env.svc.UpdatePresence(context.Background(), req)
@@ -316,6 +324,8 @@ func TestCRDTService_UpdatePresence_RequiresAuth(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, ce.Code())
 }
 func TestCRDTService_GetMaterialized_DelegationEmptyAccessDoesNotAllowAll(t *testing.T) {
+	t.Parallel()
+
 	env := setupCRDTService(t)
 	st := hubtestutil.OpenTestStore(t)
 	user := storetest.SeedUser(t, st, "alice")
@@ -335,6 +345,8 @@ func TestCRDTService_GetMaterialized_DelegationEmptyAccessDoesNotAllowAll(t *tes
 }
 
 func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *testing.T) {
+	t.Parallel()
+
 	t.Run("unknown workspace is denied", func(t *testing.T) {
 		env := setupCRDTService(t)
 		st := hubtestutil.OpenTestStore(t)
@@ -386,6 +398,8 @@ func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *test
 // different user's workspace -- is the subtest above; without this one, a
 // future re-narrowing of the token would silently pass the whole suite.
 func TestCRDTService_UpdatePresence_DelegationReachesOwnersOtherWorkspace(t *testing.T) {
+	t.Parallel()
+
 	env := setupCRDTService(t)
 	st := hubtestutil.OpenTestStore(t)
 	owner := storetest.SeedUser(t, st, "sibling-owner")
@@ -410,6 +424,8 @@ func TestCRDTService_UpdatePresence_DelegationReachesOwnersOtherWorkspace(t *tes
 // session, bearer-kind/token, and user fallback identities remain
 // distinct even when their raw IDs are equal.
 func TestCRDTService_UpdatePresence_ClientIDNamespaces(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name     string
 		info     *auth.UserInfo
@@ -502,6 +518,8 @@ func TestCRDTService_UpdatePresence_ClientIDNamespaces(t *testing.T) {
 // the caller has no access to, (b) expand an empty request to the full
 // set the caller can read, and (c) skip blank ids silently.
 func TestResolveAllowedWorkspaces_FiltersAndDedups(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	aliceID := hubtestutil.CreateTestUser(t, st, "alice", "password-alice-123")
@@ -550,6 +568,8 @@ func TestResolveAllowedWorkspaces_FiltersAndDedups(t *testing.T) {
 // regression therefore renders as a 200 with an empty tab list plus a frontend
 // reconnect loop against a condition that can never change.
 func TestResolveAllowedWorkspaces_ZeroUserIDRefusesUnderBothArms(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	aliceID := hubtestutil.CreateTestUser(t, st, "alice", "password-alice-123")

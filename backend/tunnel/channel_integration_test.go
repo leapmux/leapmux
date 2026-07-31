@@ -80,41 +80,38 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	require.NotEmpty(t, userID)
 
 	// Get worker ID by listing workers (poll until online).
+	//
+	// The 30s budget below is the ceiling for a wedged worker; the tick is
+	// what every healthy run actually pays. A locally spawned worker connects
+	// in tens of milliseconds, so a 500ms tick spent nearly all of its time
+	// asleep after the worker was already up -- twice, once here and once for
+	// the handshake params -- on every test in this file.
 	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(httpClient, hubURL)
 	var wID string
-	for i := 0; i < 60; i++ {
+	require.Eventually(t, func() bool {
 		listResp, listErr := mgmtClient.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{}))
-		if listErr == nil {
-			for _, w := range listResp.Msg.GetWorkers() {
-				if w.GetOnline() {
-					wID = w.GetId()
-					break
-				}
+		if listErr != nil {
+			return false
+		}
+		for _, w := range listResp.Msg.GetWorkers() {
+			if w.GetOnline() {
+				wID = w.GetId()
+				return true
 			}
 		}
-		if wID != "" {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	require.NotEmpty(t, wID, "worker did not come online in time")
+		return false
+	}, 30*time.Second, 10*time.Millisecond, "worker did not come online in time")
 
 	// Wait for the worker to upload its public key. The key is sent over
 	// the bidi stream shortly after connect, so there is a brief window
 	// where the worker is online but has no public key yet.
 	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL)
-	for i := 0; i < 60; i++ {
+	require.Eventually(t, func() bool {
 		resp, keyErr := channelClient.GetWorkerHandshakeParams(ctx, connect.NewRequest(
 			&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: wID},
 		))
-		if keyErr == nil && len(resp.Msg.GetPublicKey()) > 0 {
-			break
-		}
-		if i == 59 {
-			require.NoError(t, keyErr, "worker handshake params not available in time")
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+		return keyErr == nil && len(resp.Msg.GetPublicKey()) > 0
+	}, 30*time.Second, 10*time.Millisecond, "worker handshake params not available in time")
 
 	return hubURL, localListenURL, userID, wID
 }
@@ -128,7 +125,7 @@ func waitForHTTP(url string, timeout time.Duration) error {
 			_ = resp.Body.Close()
 			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 	return fmt.Errorf("server at %s not ready after %v", url, timeout)
 }

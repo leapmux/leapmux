@@ -29,6 +29,8 @@ func newCursorAgentWithSink(sink OutputSink) *CursorCLIAgent {
 }
 
 func TestHandleCursorOutput_ConfigOptionUpdateBroadcastsPermissionMode(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCursorAgentWithSink(sink)
 	agent.permissionMode = CursorCLIModeAgent
@@ -52,6 +54,8 @@ func TestHandleCursorOutput_ConfigOptionUpdateBroadcastsPermissionMode(t *testin
 }
 
 func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCursorAgentWithSink(sink)
 
@@ -83,6 +87,8 @@ func TestHandleCursorOutput_AskQuestionPersistsControlRequest(t *testing.T) {
 }
 
 func TestHandleCursorOutput_CreatePlanPersistsControlRequest(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCursorAgentWithSink(sink)
 
@@ -101,6 +107,8 @@ func TestHandleCursorOutput_CreatePlanPersistsControlRequest(t *testing.T) {
 }
 
 func TestHandleCursorOutput_UpdateTodosAcknowledgesRequest(t *testing.T) {
+	t.Parallel()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
 	if err != nil {

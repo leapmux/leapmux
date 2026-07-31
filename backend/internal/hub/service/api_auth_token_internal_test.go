@@ -23,6 +23,8 @@ import (
 // The 0/2 cases are the ordinary ones, asserted alongside so a refactor that
 // reorders the switch cannot quietly turn "denied" into "pending".
 func TestPostTouchPollOAuthError_ApprovalNamingNoUserIsNotUsable(t *testing.T) {
+	t.Parallel()
+
 	h := &APIAuthHandler{}
 
 	for name, tc := range map[string]struct {

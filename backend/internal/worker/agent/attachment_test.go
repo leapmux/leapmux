@@ -17,6 +17,8 @@ import (
 )
 
 func TestBuildClaudeContentBlocks_textOnly(t *testing.T) {
+	t.Parallel()
+
 	blocks := buildClaudeContentBlocks("hello", nil)
 	require.Len(t, blocks, 1)
 	m := blocks[0].(map[string]interface{})
@@ -25,6 +27,8 @@ func TestBuildClaudeContentBlocks_textOnly(t *testing.T) {
 }
 
 func TestBuildClaudeContentBlocks_imageAttachment(t *testing.T) {
+	t.Parallel()
+
 	data := []byte{0x89, 0x50, 0x4e, 0x47}
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "test.png", MimeType: "image/png", Data: data},
@@ -47,6 +51,8 @@ func TestBuildClaudeContentBlocks_imageAttachment(t *testing.T) {
 }
 
 func TestBuildClaudeContentBlocks_pdfAttachment(t *testing.T) {
+	t.Parallel()
+
 	data := []byte("%PDF-1.4")
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "report.pdf", MimeType: "application/pdf", Data: data},
@@ -62,6 +68,8 @@ func TestBuildClaudeContentBlocks_pdfAttachment(t *testing.T) {
 }
 
 func TestBuildClaudeContentBlocks_textAttachment(t *testing.T) {
+	t.Parallel()
+
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "styles.css", MimeType: "", Data: []byte("body {}\n")},
 	}
@@ -75,6 +83,8 @@ func TestBuildClaudeContentBlocks_textAttachment(t *testing.T) {
 }
 
 func TestBuildClaudeContentBlocks_noAttachments(t *testing.T) {
+	t.Parallel()
+
 	blocks := buildClaudeContentBlocks("plain text", nil)
 	require.Len(t, blocks, 1)
 	m := blocks[0].(map[string]interface{})
@@ -82,6 +92,8 @@ func TestBuildClaudeContentBlocks_noAttachments(t *testing.T) {
 }
 
 func TestBuildCodexInputBlocks_imageAttachment(t *testing.T) {
+	t.Parallel()
+
 	data := []byte{0xFF, 0xD8, 0xFF, 0xE0}
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "photo.jpg", MimeType: "image/jpeg", Data: data},
@@ -99,6 +111,8 @@ func TestBuildCodexInputBlocks_imageAttachment(t *testing.T) {
 }
 
 func TestBuildCodexInputBlocks_textAttachment(t *testing.T) {
+	t.Parallel()
+
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "report.csv", MimeType: "", Data: []byte("name,value\nfoo,1\n")},
 	}
@@ -110,6 +124,8 @@ func TestBuildCodexInputBlocks_textAttachment(t *testing.T) {
 }
 
 func TestBuildCodexInputBlocks_pdfSkipped(t *testing.T) {
+	t.Parallel()
+
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "doc.pdf", MimeType: "application/pdf", Data: []byte("%PDF")},
 	}
@@ -118,6 +134,8 @@ func TestBuildCodexInputBlocks_pdfSkipped(t *testing.T) {
 }
 
 func TestBuildOpenCodePromptBlocks_fileAttachment(t *testing.T) {
+	t.Parallel()
+
 	data := []byte{0x89, 0x50}
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "img.png", MimeType: "image/png", Data: data},
@@ -137,6 +155,8 @@ func TestBuildOpenCodePromptBlocks_fileAttachment(t *testing.T) {
 }
 
 func TestBuildOpenCodePromptBlocks_pdfIncluded(t *testing.T) {
+	t.Parallel()
+
 	data := []byte("%PDF-1.7")
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "doc.pdf", MimeType: "application/pdf", Data: data},
@@ -154,6 +174,8 @@ func TestBuildOpenCodePromptBlocks_pdfIncluded(t *testing.T) {
 }
 
 func TestBuildOpenCodePromptBlocks_textAttachment(t *testing.T) {
+	t.Parallel()
+
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "app.css", MimeType: "", Data: []byte("body {}\n")},
 	}
@@ -170,6 +192,8 @@ func TestBuildOpenCodePromptBlocks_textAttachment(t *testing.T) {
 }
 
 func TestNormalizeAttachmentsForProvider_RejectsUnsupportedBinary(t *testing.T) {
+	t.Parallel()
+
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "archive.bin", MimeType: "", Data: []byte{0xff, 0xfe, 0xfd}},
 	}
@@ -179,6 +203,8 @@ func TestNormalizeAttachmentsForProvider_RejectsUnsupportedBinary(t *testing.T) 
 }
 
 func TestNormalizeAttachmentsForProvider_InfersTextMime(t *testing.T) {
+	t.Parallel()
+
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "notes.txt", MimeType: "", Data: []byte("hello")},
 	}
@@ -189,6 +215,8 @@ func TestNormalizeAttachmentsForProvider_InfersTextMime(t *testing.T) {
 }
 
 func TestNormalizeAttachmentsForProvider_CopilotAcceptsACPAttachmentSet(t *testing.T) {
+	t.Parallel()
+
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
 		{Filename: "diagram.png", MimeType: "image/png", Data: []byte{0x89, 0x50}},
@@ -202,6 +230,8 @@ func TestNormalizeAttachmentsForProvider_CopilotAcceptsACPAttachmentSet(t *testi
 }
 
 func TestNormalizeAttachmentsForProvider_ReasonixAcceptsTextOnly(t *testing.T) {
+	t.Parallel()
+
 	attachments := []*leapmuxv1.Attachment{
 		{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("hello")},
 		{Filename: "config.json", MimeType: "application/json", Data: []byte("{}")},
@@ -213,6 +243,8 @@ func TestNormalizeAttachmentsForProvider_ReasonixAcceptsTextOnly(t *testing.T) {
 }
 
 func TestNormalizeAttachmentsForProvider_ReasonixRejectsNonText(t *testing.T) {
+	t.Parallel()
+
 	// Reasonix is text-only (it advertises image:false and drops non-text
 	// blocks), so image, PDF, and binary attachments are rejected up front.
 	cases := map[string]*leapmuxv1.Attachment{
@@ -230,6 +262,8 @@ func TestNormalizeAttachmentsForProvider_ReasonixRejectsNonText(t *testing.T) {
 }
 
 func TestNormalizeAttachmentsForProvider_ClaudeRejectsBinaryAcceptsRest(t *testing.T) {
+	t.Parallel()
+
 	// Claude Code has no binary content block but accepts text, image, and PDF.
 	_, err := NormalizeAttachmentsForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, []*leapmuxv1.Attachment{
 		{Filename: "archive.bin", MimeType: "application/octet-stream", Data: []byte{0xff, 0x00}},
@@ -247,6 +281,8 @@ func TestNormalizeAttachmentsForProvider_ClaudeRejectsBinaryAcceptsRest(t *testi
 }
 
 func TestNormalizeAttachmentsForProvider_CodexRejectsPDFAndBinary(t *testing.T) {
+	t.Parallel()
+
 	// Codex and Pi share rejectPDFAndBinaryAttachment; exercise BOTH branches for Codex so the
 	// shared helper's PDF and binary paths are each covered under the Codex label.
 	cases := map[string]struct {
@@ -266,6 +302,8 @@ func TestNormalizeAttachmentsForProvider_CodexRejectsPDFAndBinary(t *testing.T) 
 }
 
 func TestNormalizeAttachmentsForProvider_PiRejectsPDFAndBinary(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]struct {
 		att  *leapmuxv1.Attachment
 		want string
@@ -283,6 +321,8 @@ func TestNormalizeAttachmentsForProvider_PiRejectsPDFAndBinary(t *testing.T) {
 }
 
 func TestNormalizeAttachmentsForProvider_DefaultAcceptsEverything(t *testing.T) {
+	t.Parallel()
+
 	// Cursor, Kilo, Goose, OpenCode (all ACP with no restrictive hook) and an unknown/UNSPECIFIED
 	// provider (via the ProviderFor noop fallback) accept the full text+image+PDF+binary set -- the
 	// switch-default behavior preserved after moving policy behind the Provider interface.
@@ -308,6 +348,8 @@ func TestNormalizeAttachmentsForProvider_DefaultAcceptsEverything(t *testing.T) 
 }
 
 func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	sink := &testSink{}
 
@@ -363,6 +405,8 @@ func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {
 }
 
 func TestClaudeCodeAgent_SendInput_withoutAttachments_producesStringContent(t *testing.T) {
+	t.Parallel()
+
 	// When no attachments are provided, SendInput produces a plain string
 	// content (backward compatible), not a content block array.
 	// We verify this by directly marshaling a UserInputMessage.

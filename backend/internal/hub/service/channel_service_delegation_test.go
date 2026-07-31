@@ -207,6 +207,8 @@ func (e *bearerChannelEnv) seedCrossTenantDelegation(t *testing.T) (victimWorker
 }
 
 func TestOpenChannel_DelegationCannotReachAnotherUsersWorker(t *testing.T) {
+	t.Parallel()
+
 	env := setupBearerChannelEnv(t)
 	victimWorkerID, _, bearer := env.seedCrossTenantDelegation(t)
 
@@ -231,6 +233,8 @@ func TestOpenChannel_DelegationCannotReachAnotherUsersWorker(t *testing.T) {
 // (via the offline/unavailable split) an online oracle. The bound lives in
 // WorkerReachAuthorizer so both callers -- and the next one -- inherit it.
 func TestGetWorkerHandshakeParams_DelegationCannotReachAnotherUsersWorker(t *testing.T) {
+	t.Parallel()
+
 	env := setupBearerChannelEnv(t)
 	victimWorkerID, _, bearer := env.seedCrossTenantDelegation(t)
 
@@ -245,6 +249,8 @@ func TestGetWorkerHandshakeParams_DelegationCannotReachAnotherUsersWorker(t *tes
 // ...and the ordinary case still works: a token may read the handshake params of the
 // worker that minted it (the common `leapmux remote` path).
 func TestGetWorkerHandshakeParams_DelegationReachesItsMintingWorker(t *testing.T) {
+	t.Parallel()
+
 	env := setupBearerChannelEnv(t)
 	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
 	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
@@ -260,6 +266,8 @@ func TestGetWorkerHandshakeParams_DelegationReachesItsMintingWorker(t *testing.T
 // The same token MUST still open a channel back to the worker that minted it --
 // the ordinary `leapmux remote` case, where an agent talks to its own host.
 func TestOpenChannel_DelegationReachesItsMintingWorker(t *testing.T) {
+	t.Parallel()
+
 	env := setupBearerChannelEnv(t)
 	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
 
@@ -287,6 +295,8 @@ func TestOpenChannel_DelegationReachesItsMintingWorker(t *testing.T) {
 }
 
 func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
+	t.Parallel()
+
 	env := setupBearerChannelEnv(t)
 	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
 	_, tokenID := env.mintDelegation(t, userID, workerID, wsA)

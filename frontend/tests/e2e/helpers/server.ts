@@ -37,6 +37,14 @@ export function findFreePort(): Promise<number> {
   })
 }
 
+/**
+ * Poll `url` until it answers.
+ *
+ * The timeout is the ceiling for a server that never comes up; the interval is
+ * what every healthy run actually pays. A locally spawned instance binds in
+ * tens of milliseconds, so a half-second tick spent nearly all of its time
+ * asleep after the server was already listening.
+ */
 export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
   const start = Date.now()
   return new Promise((resolve, reject) => {
@@ -46,7 +54,7 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
           reject(new Error(`Server at ${url} did not start within ${timeoutMs}ms`))
         }
         else {
-          setTimeout(check, 500)
+          setTimeout(check, 25)
         }
       })
     }

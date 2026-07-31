@@ -15,12 +15,12 @@ import { Icon } from '~/components/common/Icon'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { localStorageGet, localStorageSet, PREFIX_FILES_SHOW_HIDDEN } from '~/lib/browserStorage'
-import { join, sep, trimLastSegment } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { fileEntryToDiffStats } from '~/stores/gitFileStatus.store'
 import { DirectoryTree } from './DirectoryTree'
 import * as styles from './FilesSection.css'
 import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
+import { computeGitVisibility, flatEntryOpenTarget, makeGitVisibilityPredicate } from './gitVisibility'
 
 export interface FilesSectionHandle {
   collapseAll: () => void
@@ -70,6 +70,36 @@ export interface FilesSectionHeaderActionsProps {
   showHiddenFiles?: () => boolean
   onToggleShowHidden?: () => void
 }
+
+/**
+ * Which tab an arrow/Home/End keypress moves to, or undefined for a key the tab
+ * bar does not own.
+ *
+ * Pure and exported so the contract role=tab requires (Tab reaches the SET, the
+ * arrows move within it, and both ends wrap) is testable without mounting a
+ * tree against a live worker.
+ */
+export function nextFilterTab(keys: GitFilterTab[], current: GitFilterTab, key: string): GitFilterTab | undefined {
+  const i = keys.indexOf(current)
+  const cur = i < 0 ? 0 : i
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return keys[(cur + 1) % keys.length]
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return keys[(cur - 1 + keys.length) % keys.length]
+    case 'Home':
+      return keys[0]
+    case 'End':
+      return keys[keys.length - 1]
+    default:
+      return undefined
+  }
+}
+
+/** Ties each role=tab to the region it swaps, via aria-controls. */
+const FILTER_PANEL_ID = 'files-filter-panel'
 
 const FILTER_TABS: { key: GitFilterTab, label: string }[] = [
   { key: 'all', label: 'All' },
@@ -132,6 +162,22 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
 
 export const FilesSection: Component<FilesSectionProps> = (props) => {
   const [activeFilter, setActiveFilter] = createSignal<GitFilterTab>('all')
+
+  // Roving tabindex: only the selected tab is in the tab order, so Tab reaches
+  // the tab SET and the arrows move within it. Focus has to follow selection
+  // for that to work, hence the element refs.
+  const filterTabEls = new Map<GitFilterTab, HTMLButtonElement>()
+  const selectFilterTab = (key: GitFilterTab) => {
+    setActiveFilter(key)
+    filterTabEls.get(key)?.focus()
+  }
+  const onTabBarKeyDown = (e: KeyboardEvent) => {
+    const next = nextFilterTab(FILTER_TABS.map(t => t.key), activeFilter(), e.key)
+    if (next === undefined)
+      return
+    e.preventDefault()
+    selectFilterTab(next)
+  }
   const [flatListMode, setFlatListMode] = createSignal(false)
   const showHiddenStorageKey = () => `${PREFIX_FILES_SHOW_HIDDEN}${props.workerId}:${props.workingDir}`
   const [showHiddenFiles, setShowHiddenFiles] = createSignal(localStorageGet<boolean>(showHiddenStorageKey()) ?? true)
@@ -166,35 +212,23 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
 
   const handleFlatFileOpen = (entry: GitFileStatusEntry) => {
     const root = props.gitStatusStore.state.repoRoot || props.workingDir
-    const absPath = join([root, entry.path], props.flavor)
+    const absPath = flatEntryOpenTarget(entry.path, root, props.flavor)
+    if (absPath === undefined)
+      return
     props.onFileOpen?.(absPath, activeFilter())
   }
 
-  const visiblePaths = createMemo<Set<string> | undefined>(() => {
+  /**
+   * The predicate a filtered tree renders through, or undefined when no filter
+   * is active. Built here rather than in DirectoryTree so git's
+   * untracked-subtree rule lives with the git-aware section -- see
+   * ./gitVisibility.
+   */
+  const isVisible = createMemo<((path: string) => boolean) | undefined>(() => {
     if (!isFiltered())
       return undefined
-
-    const files = changedFiles()
     const root = props.gitStatusStore.state.repoRoot || props.workingDir
-    const paths = new Set<string>()
-    paths.add(root)
-
-    const s = sep(props.flavor)
-    for (const f of files) {
-      let dir = join([root, f.path], props.flavor)
-      paths.add(dir)
-      while (true) {
-        dir = trimLastSegment(dir, s)
-        if (!dir || dir === root)
-          break
-        // Ancestor already seen via another file — skip the rest of the walk.
-        if (paths.has(dir))
-          break
-        paths.add(dir)
-      }
-    }
-
-    return paths
+    return makeGitVisibilityPredicate(computeGitVisibility(changedFiles(), root, props.flavor), props.flavor)
   })
 
   return (
@@ -207,12 +241,39 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
     // on screen.
     <div class={styles.wrapper} data-working-dir={props.workingDir}>
       <Show when={props.gitStatusStore.state.isGitRepo}>
-        <div class={styles.tabBar} data-testid="files-filter-tab-bar">
+        {/*
+          * A real TAB SET, not a row of toggle buttons: picking a tab swaps the
+          * content of the region below it, which is what role=tab describes and
+          * what the repo's own TabBar already uses.
+          *
+          * It was four buttons whose only state was a CSS class, so assistive
+          * tech read them as identical and stateless. aria-pressed fixed the
+          * "stateless" half and got the widget wrong: a toggle button announces
+          * "pressed", promises it can be un-pressed (clicking the active filter
+          * does nothing), and carries no group name and no "2 of 4". role=tab
+          * announces "Changed, tab, selected, 2 of 4" inside a named tab list.
+          *
+          * Roving tabindex + arrow keys come with the role -- APG requires Tab
+          * to reach the SET and the arrows to move within it, so only the
+          * selected tab is in the tab order.
+          */}
+        <div
+          class={styles.tabBar}
+          role="tablist"
+          aria-label="Filter files"
+          data-testid="files-filter-tab-bar"
+          onKeyDown={onTabBarKeyDown}
+        >
           <For each={FILTER_TABS}>
             {tab => (
               <button
                 class={styles.tabButton}
                 classList={{ [styles.tabButtonActive]: activeFilter() === tab.key }}
+                role="tab"
+                aria-selected={activeFilter() === tab.key}
+                aria-controls={FILTER_PANEL_ID}
+                tabIndex={activeFilter() === tab.key ? 0 : -1}
+                ref={el => filterTabEls.set(tab.key, el)}
                 onClick={() => setActiveFilter(tab.key)}
                 data-testid={`files-filter-${tab.key}`}
               >
@@ -223,54 +284,61 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
         </div>
       </Show>
 
-      <Show
-        when={isFiltered() && flatListMode()}
-        fallback={(
-          <div class={styles.treeContent}>
-            <DirectoryTree
-              workerId={props.workerId}
-              showFiles
-              selectedPath={props.fileTreePath}
-              onSelect={props.onFileSelect}
-              onFileOpen={path => props.onFileOpen?.(path, activeFilter())}
-              onMention={props.onMention}
-              onOpenTerminal={props.onOpenTerminal}
-              rootPath={props.workingDir || '~'}
-              homeDir={props.homeDir}
-              flavor={props.flavor}
-              gitStatusStore={props.gitStatusStore}
-              visiblePaths={visiblePaths()}
-              showHiddenFiles={showHiddenFiles()}
-              turnEndTrigger={props.turnEndTrigger}
-              enabled={props.enabled}
-              ref={(h) => { treeHandle = h }}
-            />
-          </div>
-        )}
+      <div
+        id={FILTER_PANEL_ID}
+        role={props.gitStatusStore.state.isGitRepo ? 'tabpanel' : undefined}
+        tabIndex={props.gitStatusStore.state.isGitRepo ? 0 : undefined}
+        class={styles.panel}
       >
-        <div class={styles.flatList} data-testid="files-flat-list">
-          <For each={changedFiles()}>
-            {(entry) => {
-              const gitIcon = getGitFileIconClass(entry)
-              const stats = fileEntryToDiffStats(entry)
-              return (
-                <div
-                  class={styles.flatListItem}
-                  onClick={() => handleFlatFileOpen(entry)}
-                >
-                  <Icon icon={FileIcon} size="sm" class={gitIcon.class} data-testid={gitIcon.testId} />
-                  <RowLabelWithStats label={entry.path} stats={stats} />
-                </div>
-              )
-            }}
-          </For>
-          <Show when={changedFiles().length === 0}>
-            <div style={{ 'padding': 'var(--space-4)', 'color': 'var(--faint-foreground)', 'font-size': 'var(--text-7)', 'text-align': 'center' }}>
-              No changes
+        <Show
+          when={isFiltered() && flatListMode()}
+          fallback={(
+            <div class={styles.treeContent}>
+              <DirectoryTree
+                workerId={props.workerId}
+                showFiles
+                selectedPath={props.fileTreePath}
+                onSelect={props.onFileSelect}
+                onFileOpen={path => props.onFileOpen?.(path, activeFilter())}
+                onMention={props.onMention}
+                onOpenTerminal={props.onOpenTerminal}
+                rootPath={props.workingDir || '~'}
+                homeDir={props.homeDir}
+                flavor={props.flavor}
+                gitStatusStore={props.gitStatusStore}
+                isVisible={isVisible()}
+                showHiddenFiles={showHiddenFiles()}
+                turnEndTrigger={props.turnEndTrigger}
+                enabled={props.enabled}
+                ref={(h) => { treeHandle = h }}
+              />
             </div>
-          </Show>
-        </div>
-      </Show>
+          )}
+        >
+          <div class={styles.flatList} data-testid="files-flat-list">
+            <For each={changedFiles()}>
+              {(entry) => {
+                const gitIcon = getGitFileIconClass(entry)
+                const stats = fileEntryToDiffStats(entry)
+                return (
+                  <div
+                    class={styles.flatListItem}
+                    onClick={() => handleFlatFileOpen(entry)}
+                  >
+                    <Icon icon={FileIcon} size="sm" class={gitIcon.class} data-testid={gitIcon.testId} />
+                    <RowLabelWithStats label={entry.path} stats={stats} />
+                  </div>
+                )
+              }}
+            </For>
+            <Show when={changedFiles().length === 0}>
+              <div style={{ 'padding': 'var(--space-4)', 'color': 'var(--faint-foreground)', 'font-size': 'var(--text-7)', 'text-align': 'center' }}>
+                No changes
+              </div>
+            </Show>
+          </div>
+        </Show>
+      </div>
     </div>
   )
 }

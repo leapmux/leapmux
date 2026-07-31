@@ -509,15 +509,24 @@ func (s *Suite) testSessions(t *testing.T) {
 	t.Run("list all active with cursor returns next page", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "cursor-user")
-		// Create 3 sessions with delays to ensure distinct last_active_at.
-		for i := 0; i < 3; i++ {
-			if i > 0 {
-				time.Sleep(1100 * time.Millisecond)
-			}
-			SeedSession(t, st, user.ID)
+
+		// Three sessions on explicit, strictly increasing last_active_at,
+		// stamped through the same test helper the tie case below uses.
+		//
+		// This used to sleep 1.1s between seeds so the wall clock would
+		// separate them -- 2.2s of dead time, paid once per SQL dialect the
+		// suite runs against. Naming the timestamps is both instant and
+		// stricter: the expected page contents become exact instead of
+		// "whatever order the clock happened to produce", which is why the
+		// assertions below can now name the rows.
+		base := time.Now().UTC().Truncate(time.Millisecond)
+		sessions := make([]*store.UserSession, 3)
+		for i := range sessions {
+			sessions[i] = SeedSession(t, st, user.ID)
+			require.NoError(t, st.TestHelper().SetLastActiveAt(ctx, sessions[i].ID, base.Add(time.Duration(i)*time.Second)))
 		}
 
-		// First page.
+		// First page: newest first, so the last two seeds in reverse order.
 		res1, err := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{
 			PageParams: store.PageParams{Limit: 2},
 		})
@@ -525,6 +534,8 @@ func (s *Suite) testSessions(t *testing.T) {
 		assert.True(t, res1.HasMore())
 		page1 := res1.Rows
 		require.Len(t, page1, 2)
+		assert.Equal(t, []string{sessions[2].ID, sessions[1].ID}, []string{page1[0].ID, page1[1].ID},
+			"ListAllActive orders newest-first on last_active_at")
 
 		// Second page using last item's composite (last_active_at, id) cursor.
 		cursor := store.EncodeCursor(page1[len(page1)-1].LastActiveAt, page1[len(page1)-1].ID)
@@ -534,10 +545,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		require.NoError(t, err)
 		page2 := res2.Rows
 		require.Len(t, page2, 1)
-
-		// No overlap between pages.
-		page1IDs := map[string]bool{page1[0].ID: true, page1[1].ID: true}
-		assert.False(t, page1IDs[page2[0].ID], "page2 should not overlap with page1")
+		assert.Equal(t, sessions[0].ID, page2[0].ID, "the second page picks up exactly where the first stopped")
 	})
 
 	t.Run("list all active cursor survives same-millisecond tie", func(t *testing.T) {

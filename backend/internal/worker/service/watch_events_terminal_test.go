@@ -41,6 +41,8 @@ func collectTerminalData(t *testing.T, w *testResponseWriter, terminalID string)
 // one would mean the backend is re-sending bytes the client already
 // has, which manifests as duplicated prompt output in the live UI.
 func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-resub")
@@ -100,6 +102,8 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 // the offset. Concurrent shell prompt bytes are fine — they're nameless
 // and can't collide with the markers we assert on.
 func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-delta")
@@ -145,6 +149,8 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 // assume alt screen — vim/less/htop render as garbage until the
 // program repaints.
 func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-altrecover")
@@ -205,6 +211,8 @@ func injectAltScreenAndFlushPastRing(t *testing.T, svc *Service, terminalID stri
 // rather than appending to possibly-stale state. Guards the fallen-behind
 // branch of SnapshotSince in the WatchEvents handler.
 func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-wrap")

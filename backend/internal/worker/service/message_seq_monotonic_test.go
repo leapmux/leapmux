@@ -18,6 +18,8 @@ import (
 // strictly higher seq, never the freed one. Without this, an AFTER_CURSOR reconnect
 // could not tell the deleted row from the new one that took its seq.
 func TestMessageSeq_NotReusedAfterTailDelete(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -62,6 +64,8 @@ func TestMessageSeq_NotReusedAfterTailDelete(t *testing.T) {
 // the tail gives it a strictly-higher seq than any prior message -- including one
 // above a since-deleted tail's freed seq.
 func TestMessageSeq_ReseqUsesHighWater(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{

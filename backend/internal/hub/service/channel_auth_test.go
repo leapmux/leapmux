@@ -12,6 +12,8 @@ import (
 )
 
 func TestUserCanUseChannelRequiresMatchingCredential(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name        string
 		user        *auth.UserInfo
@@ -88,6 +90,8 @@ func TestUserCanUseChannelRequiresMatchingCredential(t *testing.T) {
 // pairs with a matching-credential channel so the ONLY thing that can refuse it
 // is the identity check.
 func TestUserCanUseChannelRequiresMatchingIdentity(t *testing.T) {
+	t.Parallel()
+
 	sameCred := channelmgr.AuthInfo{Credential: auth.SessionCredential("session-1")}
 	userWith := func(id string) *auth.UserInfo {
 		u, _ := userid.New(id)
@@ -131,6 +135,8 @@ func TestUserCanUseChannelRequiresMatchingIdentity(t *testing.T) {
 // rejects an empty minter outright, so package service cannot build that state to
 // test it (see the note inline below).
 func TestVerifyDelegationWorkerScopeStoreFreeArms(t *testing.T) {
+	t.Parallel()
+
 	// No store: neither arm may reach one. A nil store makes that mechanical --
 	// if either arm starts doing a lookup, this test panics instead of passing.
 	a := &WorkerReachAuthorizer{}

@@ -590,7 +590,7 @@ func newTestDB(t *testing.T) *db.Queries {
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err, "open in-memory DB")
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, workerdb.Migrate(sqlDB), "migrate DB")
+	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB), "migrate DB")
 	return db.New(sqlDB)
 }
 

@@ -6,12 +6,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/pathutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -25,6 +27,8 @@ import (
 // detaching the OTHER user's still-open file tab and letting the worktree GC
 // reclaim a directory that is still mounted in an editor.
 func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	svc.FileTabPaths = NewFileTabPathStore(svc.Queries, nil)
 	ctx := context.Background()
@@ -89,6 +93,8 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 // delete shares: FILE links carry the owner, AGENT/TERMINAL links carry "".
 // Callers may pass the authenticated user for any type; only FILE keeps it.
 func TestWorktreeTabUserID(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, "user-a", worktreeTabUserID(leapmuxv1.TabType_TAB_TYPE_FILE, "user-a"))
 	assert.Equal(t, "", worktreeTabUserID(leapmuxv1.TabType_TAB_TYPE_FILE, ""))
 	assert.Equal(t, "", worktreeTabUserID(leapmuxv1.TabType_TAB_TYPE_AGENT, "user-a"))
@@ -101,6 +107,8 @@ func TestWorktreeTabUserID(t *testing.T) {
 // registerTabForWorktree wrote with user_id "". Without worktreeTabUserID this
 // silently deletes nothing and strands the worktree.
 func TestUnregisterTab_AgentLinkIsOwnerBlind(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	ctx := context.Background()
 
@@ -120,4 +128,92 @@ func TestUnregisterTab_AgentLinkIsOwnerBlind(t *testing.T) {
 	count, err = svc.Queries.CountWorktreeTabs(ctx, wtID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count, "an AGENT link must drop regardless of the caller's user id")
+}
+
+// TestEnsureTrackedWorktree_ConcurrentAdoptionSharesOneRow pins that two
+// callers adopting the SAME worktree at once both succeed and agree on the id.
+//
+// This is not a hypothetical: "use existing worktree" opens a second agent on a
+// worktree that already has one, and each agent adopts on its own async startup
+// goroutine. ensureTrackedWorktree looks the row up and then inserts it, so both
+// callers could miss and both insert. idx_worktrees_path is UNIQUE over live
+// rows, so before CreateWorktree became conflict-tolerant the loser surfaced a
+// raw `UNIQUE constraint failed: worktrees.worktree_path` out of agent startup.
+//
+// The second half matters as much as the first: tolerating the conflict without
+// reading the row back would let the loser return an id nothing stored, and
+// every ref-count and close keyed on that id would silently miss.
+func TestEnsureTrackedWorktree_ConcurrentAdoptionSharesOneRow(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	ctx := context.Background()
+
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "race-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "race-branch", wtDir)
+
+	const callers = 8
+	ids := make([]string, callers)
+	errs := make([]error, callers)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // release them together so they collide on the miss
+			ids[i], errs[i] = svc.ensureTrackedWorktree(ctx, wtDir)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "caller %d must not surface the insert conflict", i)
+	}
+	for i, got := range ids {
+		assert.Equal(t, ids[0], got, "caller %d returned a different worktree id", i)
+	}
+
+	// The returned id must be the one actually stored, not merely agreed on.
+	stored, err := svc.Queries.GetWorktreeByPath(ctx, pathutil.Canonicalize(wtDir))
+	require.NoError(t, err)
+	assert.Equal(t, stored.ID, ids[0], "the id every caller got must be the live row's")
+}
+
+// TestCreateWorktree_ConflictReturnsTheWinningRow pins the query's contract now
+// that it carries one: the loser of a concurrent insert gets back the row that
+// actually exists, not the id it minted.
+//
+// This used to be prose on the SQL ("Callers must read the row back rather than
+// assume their id won") enforced only by the single caller remembering a second
+// SELECT. A caller that skipped it would hand back an id no row carries, and
+// every later ref-count and close keyed on that id would silently miss.
+func TestCreateWorktree_ConflictReturnsTheWinningRow(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	q := svc.Queries
+	ctx := context.Background()
+
+	winner, err := q.CreateWorktree(ctx, db.CreateWorktreeParams{
+		ID: "wt-winner", WorktreePath: "/r/shared", RepoRoot: "/r", BranchName: "b",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "wt-winner", winner.ID)
+
+	loser, err := q.CreateWorktree(ctx, db.CreateWorktreeParams{
+		ID: "wt-loser", WorktreePath: "/r/shared", RepoRoot: "/r", BranchName: "b",
+	})
+	require.NoError(t, err, "a concurrent insert on the same path must not surface a constraint error")
+	assert.Equal(t, "wt-winner", loser.ID, "the loser must be handed the id that is actually stored")
+	assert.Equal(t, "/r/shared", loser.WorktreePath)
+
+	// The conflict target is idx_worktrees_path, so a PRIMARY KEY collision is
+	// still raised rather than swallowed by an untargeted DO NOTHING.
+	_, err = q.CreateWorktree(ctx, db.CreateWorktreeParams{
+		ID: "wt-winner", WorktreePath: "/r/other", RepoRoot: "/r", BranchName: "b",
+	})
+	assert.Error(t, err, "an id collision is a real bug and must not be swallowed")
 }

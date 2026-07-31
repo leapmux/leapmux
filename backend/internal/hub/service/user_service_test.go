@@ -144,6 +144,8 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 }
 
 func TestUserService_UpdateProfile(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	resp, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
@@ -162,6 +164,8 @@ func TestUserService_UpdateProfile(t *testing.T) {
 }
 
 func TestUserService_UpdateProfile_SameUsername(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	_, err := env.client.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
@@ -184,6 +188,8 @@ func TestUserService_UpdateProfile_SameUsername(t *testing.T) {
 }
 
 func TestUserService_UpdateProfile_DuplicateUsername(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Create a second user.
@@ -208,6 +214,8 @@ func TestUserService_UpdateProfile_DuplicateUsername(t *testing.T) {
 }
 
 func TestUserService_ChangePassword(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	_, err := env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
@@ -226,6 +234,8 @@ func TestUserService_ChangePassword(t *testing.T) {
 }
 
 func TestUserService_ChangePassword_WrongCurrent(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	_, err := env.client.ChangePassword(context.Background(), authedReq(&leapmuxv1.ChangePasswordRequest{
@@ -237,6 +247,8 @@ func TestUserService_ChangePassword_WrongCurrent(t *testing.T) {
 }
 
 func TestUserService_GetPreferences_Default(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	resp, err := env.client.GetPreferences(context.Background(), authedReq(&leapmuxv1.GetPreferencesRequest{}, env.token))
@@ -250,6 +262,8 @@ func TestUserService_GetPreferences_Default(t *testing.T) {
 }
 
 func TestUserService_UpdatePreferences(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	_, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
@@ -276,6 +290,8 @@ func TestUserService_UpdatePreferences(t *testing.T) {
 }
 
 func TestUserService_UpdatePreferences_ResponseEchoesSanitizedTheme(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// theme / terminal_theme are sanitized via SanitizeSlug (lowercase + trim),
@@ -301,6 +317,8 @@ func TestUserService_UpdatePreferences_ResponseEchoesSanitizedTheme(t *testing.T
 }
 
 func TestUserService_UpdatePreferences_InvalidFontName(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	_, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
@@ -311,6 +329,8 @@ func TestUserService_UpdatePreferences_InvalidFontName(t *testing.T) {
 }
 
 func TestUserService_UpdatePreferences_DebugLogging(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	_, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
@@ -334,6 +354,8 @@ func TestUserService_UpdatePreferences_DebugLogging(t *testing.T) {
 }
 
 func TestUserService_Unauthenticated(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	_, err := env.client.GetPreferences(context.Background(), connect.NewRequest(&leapmuxv1.GetPreferencesRequest{}))
@@ -342,6 +364,8 @@ func TestUserService_Unauthenticated(t *testing.T) {
 }
 
 func TestRequestEmailChange_Success(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Set an initial email on the user.
@@ -367,6 +391,8 @@ func TestRequestEmailChange_Success(t *testing.T) {
 }
 
 func TestRequestEmailChange_EmptyEmail_Rejected(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	_, err := env.client.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
@@ -377,6 +403,8 @@ func TestRequestEmailChange_EmptyEmail_Rejected(t *testing.T) {
 }
 
 func TestRequestEmailChange_SameEmail_Rejected(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Set an email on the user.
@@ -398,6 +426,8 @@ func TestRequestEmailChange_SameEmail_Rejected(t *testing.T) {
 // --- UpdateProfile: email field removed ---
 
 func TestUpdateProfile_EmailFieldRemoved(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Set an email on the user directly in the DB.
@@ -424,6 +454,8 @@ func TestUpdateProfile_EmailFieldRemoved(t *testing.T) {
 // --- RequestEmailChange: admin immediate change with email_verified ---
 
 func TestRequestEmailChange_Admin_ImmediateChange(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// The test user is an admin (IsAdmin=1 in setupUserTest).
@@ -447,6 +479,8 @@ func TestRequestEmailChange_Admin_ImmediateChange(t *testing.T) {
 // off, the change applies immediately but the new address must land UNVERIFIED
 // (verified == userInfo.IsAdmin == false), unlike the admin arm which trusts it.
 func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *testing.T) {
+	t.Parallel()
+
 	client, st, _ := setupVerificationUserTestServer(t, false)
 
 	userID := id.Generate()
@@ -484,6 +518,8 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 // --- RequestEmailChange: duplicate email rejected ---
 
 func TestRequestEmailChange_DuplicateEmail_Rejected(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Create a second user with an email.
@@ -554,6 +590,8 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 }
 
 func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
+	t.Parallel()
+
 	client, st, adminToken := setupVerificationUserTestServer(t, true)
 
 	// Create a non-admin user.
@@ -607,6 +645,8 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 // --- VerifyEmail (per-user, authenticated) ---
 
 func TestVerifyEmail_Success(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Seed pending_email + a 6-char verifycode-shaped token.
@@ -641,6 +681,8 @@ func TestVerifyEmail_Success(t *testing.T) {
 // user typing "abc-def" verifies against a stored "ABCDEF" via
 // constant-time compare without any per-call ToUpper on the stored side.
 func TestVerifyEmail_AcceptsLowercaseInput(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	verifyToken := verifycode.Generate()
@@ -661,6 +703,8 @@ func TestVerifyEmail_AcceptsLowercaseInput(t *testing.T) {
 }
 
 func TestVerifyEmail_InvalidShape(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Bad shape never makes it past Normalize → InvalidArgument, regardless
@@ -673,6 +717,8 @@ func TestVerifyEmail_InvalidShape(t *testing.T) {
 }
 
 func TestVerifyEmail_ExpiredOrMismatchSurfacesIdentically(t *testing.T) {
+	t.Parallel()
+
 	// The whole point of collapsing expiry and mismatch into one error is
 	// that callers can't distinguish them — that closes a timing oracle on
 	// "is there a code at all?". Assert both code AND message are equal.
@@ -715,6 +761,8 @@ func TestVerifyEmail_ExpiredOrMismatchSurfacesIdentically(t *testing.T) {
 }
 
 func TestVerifyEmail_PendingEmailEmpty(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Set a token but with empty pending_email — represents a "nothing
@@ -736,6 +784,8 @@ func TestVerifyEmail_PendingEmailEmpty(t *testing.T) {
 }
 
 func TestVerifyEmail_RateLimitForceExpires(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	live := verifycode.Generate()
@@ -811,6 +861,8 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
 }
 
 func TestResendVerificationEmail_RequiresAuth(t *testing.T) {
+	t.Parallel()
+
 	env, _ := setupResendUserTest(t)
 	_, err := env.client.ResendVerificationEmail(context.Background(), connect.NewRequest(&leapmuxv1.ResendVerificationEmailRequest{}))
 	require.Error(t, err)
@@ -818,6 +870,8 @@ func TestResendVerificationEmail_RequiresAuth(t *testing.T) {
 }
 
 func TestResendVerificationEmail_RequiresPendingEmail(t *testing.T) {
+	t.Parallel()
+
 	env, _ := setupResendUserTest(t)
 	// User has no pending email — there's nothing to resend.
 	_, err := env.client.ResendVerificationEmail(context.Background(), authedReq(&leapmuxv1.ResendVerificationEmailRequest{}, env.token))
@@ -826,6 +880,8 @@ func TestResendVerificationEmail_RequiresPendingEmail(t *testing.T) {
 }
 
 func TestResendVerificationEmail_RotatesCodeAndSends(t *testing.T) {
+	t.Parallel()
+
 	env, sender := setupResendUserTest(t)
 
 	// Seed a pending row with an "old" expires_at far enough back that
@@ -861,6 +917,8 @@ func TestResendVerificationEmail_RotatesCodeAndSends(t *testing.T) {
 }
 
 func TestResendVerificationEmail_CooldownEnforced(t *testing.T) {
+	t.Parallel()
+
 	// Seed a pending row whose implied "issued_at" is just now: the
 	// cooldown must reject a back-to-back resend so a runaway client
 	// (or hostile caller) can't flood the user's inbox.
@@ -879,6 +937,8 @@ func TestResendVerificationEmail_CooldownEnforced(t *testing.T) {
 }
 
 func TestVerifyEmail_EmailTakenSinceRequest(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	verifyToken := verifycode.Generate()
@@ -917,6 +977,8 @@ func TestVerifyEmail_EmailTakenSinceRequest(t *testing.T) {
 }
 
 func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
+	t.Parallel()
+
 	// Per-user lookup: if user B submits user A's code, B's row simply
 	// doesn't have a matching token, so they get the same generic
 	// NotFound as anyone typing a wrong code. There's nothing to leak.
@@ -964,6 +1026,8 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 }
 
 func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Create a second session for the same user (simulates another device).
@@ -1013,6 +1077,8 @@ func (s *onUserAuthTxStore) RunInUserAuthTransaction(ctx context.Context, userID
 // fatal. Against the pre-fix `n != 1` guard this request failed with a spurious
 // CodeInternal and left the password unchanged.
 func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
@@ -1074,6 +1140,8 @@ func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
 // --- ChangePassword tests for OAuth users ---
 
 func TestChangePassword_OAuthUser_CanSetWithoutCurrentPassword(t *testing.T) {
+	t.Parallel()
+
 	env := setupOAuthUserTest(t)
 
 	// Should succeed with empty current password.
@@ -1094,6 +1162,8 @@ func TestChangePassword_OAuthUser_CanSetWithoutCurrentPassword(t *testing.T) {
 }
 
 func TestChangePassword_PasswordUser_RequiresCurrentPassword(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Attempt with empty current password — should fail.
@@ -1116,6 +1186,8 @@ func TestChangePassword_PasswordUser_RequiresCurrentPassword(t *testing.T) {
 // --- UnlinkOAuthProvider tests ---
 
 func TestUnlinkOAuthProvider_Success(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// Create two OAuth providers.
@@ -1154,6 +1226,8 @@ func TestUnlinkOAuthProvider_Success(t *testing.T) {
 }
 
 func TestUnlinkOAuthProvider_LastLink_WithPassword(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	// User has password_set = 1 (default from setupUserTest).
@@ -1179,6 +1253,8 @@ func TestUnlinkOAuthProvider_LastLink_WithPassword(t *testing.T) {
 }
 
 func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
+	t.Parallel()
+
 	env := setupOAuthUserTest(t)
 
 	err := env.store.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
@@ -1206,6 +1282,8 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 }
 
 func TestUnlinkOAuthProvider_NotFound(t *testing.T) {
+	t.Parallel()
+
 	env := setupUserTest(t)
 
 	_, err := env.client.UnlinkOAuthProvider(context.Background(), authedReq(&leapmuxv1.UnlinkOAuthProviderRequest{

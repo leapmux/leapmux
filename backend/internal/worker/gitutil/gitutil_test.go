@@ -9,23 +9,17 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-// initRepo creates a temporary git repo with an initial commit and returns its path.
+// initRepo creates a temporary git repo with an initial commit and returns its
+// path. The tests here read `refs/heads/main` and `origin/main` by name, so
+// they need the initial branch pinned rather than inherited from the host's
+// init.defaultBranch -- which testutil.NewGitRepo does.
 func initRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	cmds := [][]string{
-		{"git", "-C", dir, "init"},
-		{"git", "-C", dir, "config", "user.email", "test@test.com"},
-		{"git", "-C", dir, "config", "user.name", "Test"},
-		{"git", "-C", dir, "commit", "--allow-empty", "-m", "init"},
-	}
-	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		require.NoError(t, cmd.Run(), "command failed: %v", args)
-	}
-	return dir
+	return testutil.NewGitRepo(t)
 }
 
 func TestGetOriginURL(t *testing.T) {

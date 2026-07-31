@@ -30,6 +30,8 @@ import (
 // reaps every LOCAL row the list omits, so an unannounced narrowing would tell
 // it to destroy every other owner's live file tabs.
 func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	userA := storetest.SeedUser(t, st, "reconcile-alice")
@@ -68,6 +70,8 @@ func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 // pinned: the owner scope is derived from the resolved worker, so an
 // unauthenticated call must not reach the store at all.
 func TestListOwnedTabsForWorker_RejectsUnauthenticated(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	req := connect.NewRequest(&leapmuxv1.ListOwnedTabsForWorkerRequest{})
 	req.Header().Set("Authorization", "Bearer nope")
@@ -91,6 +95,8 @@ func TestListOwnedTabsForWorker_RejectsUnauthenticated(t *testing.T) {
 // This mounts the real handler behind the real interceptor so the wiring, not
 // just the handler, is under test.
 func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	owner := storetest.SeedUser(t, st, "interceptor-owner")
@@ -126,6 +132,8 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 // be refused -- by the handler, since the interceptor no longer stands in the
 // way.
 func TestListOwnedTabsForWorker_InterceptorStillRejectsAStranger(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 
 	interceptor, _ := auth.NewInterceptor(st, nil, false, false)

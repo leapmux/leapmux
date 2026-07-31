@@ -52,6 +52,8 @@ func (f *noIdentityRemoteIPC) TerminalSpawning(info TerminalSpawnInfo) ([]string
 // launches on this path -- so a bare return wedges Shutdown's WaitForInFlight
 // forever.
 func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	ipc := &noIdentityRemoteIPC{failFrom: 1}
 	svc, d, w := setupTestService(t, withRemoteIPC(ipc))
@@ -112,6 +114,8 @@ func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) 
 // The fixture below exits the terminal first for exactly that reason -- it is
 // the only state from which a restart is reachable at all.
 func TestRestartTerminal_MissingIdentityFailsAndRetiresPreviousToken(t *testing.T) {
+	t.Parallel()
+
 	// Fail the SECOND spawn: the initial open must succeed so there is a live
 	// token for the restart to retire.
 	ipc := &noIdentityRemoteIPC{failFrom: 2}

@@ -22,6 +22,8 @@ import (
 // tunnel sustains. A test that only checked "the right one proceeds" would pass just
 // as well against a broadcast, so this counts the wake-ups instead.
 func TestWriteSeqGateAdvanceWakesOnlyTheNextSeq(t *testing.T) {
+	t.Parallel()
+
 	g := newWriteSeqGate()
 
 	const waiters = 8
@@ -63,6 +65,8 @@ func TestWriteSeqGateAdvanceWakesOnlyTheNextSeq(t *testing.T) {
 // A seq no correct client could have sent is rejected rather than parked: waiting
 // could never resolve it, and parking would hold a handler goroutine forever.
 func TestWriteSeqGateRejectsIllegitimateSeq(t *testing.T) {
+	t.Parallel()
+
 	g := newWriteSeqGate()
 
 	assert.Equal(t, writeTurnRejected, g.waitTurn(tunnelflow.MaxWriteSeqLookahead+1),
@@ -85,6 +89,8 @@ func TestWriteSeqGateRejectsIllegitimateSeq(t *testing.T) {
 // seq, and reject the honest frame that holds it as a replay (NAKed into
 // net.ErrClosed), wedging a healthy conn.
 func TestWriteSeqGateRejectsConcurrentDuplicateSeq(t *testing.T) {
+	t.Parallel()
+
 	g := newWriteSeqGate()
 
 	require.Equal(t, writeTurnProceed, g.waitTurn(0), "the current position claims its turn and proceeds")
@@ -103,6 +109,8 @@ func TestWriteSeqGateRejectsConcurrentDuplicateSeq(t *testing.T) {
 // duplicate-seq defense: with -race it fails against a check-without-claim gate, where
 // every goroutine that observes next == seq proceeds.
 func TestWriteSeqGateConcurrentDuplicatesAdmitExactlyOne(t *testing.T) {
+	t.Parallel()
+
 	g := newWriteSeqGate()
 
 	const dupes = 16
@@ -127,6 +135,8 @@ func TestWriteSeqGateConcurrentDuplicatesAdmitExactlyOne(t *testing.T) {
 
 // close must wake every parked waiter so teardown strands nothing.
 func TestWriteSeqGateCloseWakesEveryWaiter(t *testing.T) {
+	t.Parallel()
+
 	g := newWriteSeqGate()
 
 	const waiters = 4
@@ -154,6 +164,8 @@ func TestWriteSeqGateCloseWakesEveryWaiter(t *testing.T) {
 // waitReached is the graceful close's wait: it wants "every prior write applied",
 // not an exact turn, so a threshold at or behind the gate proceeds at once.
 func TestWriteSeqGateWaitReached(t *testing.T) {
+	t.Parallel()
+
 	g := newWriteSeqGate()
 	g.advance()
 	g.advance() // position = 2
@@ -185,6 +197,8 @@ func TestWriteSeqGateWaitReached(t *testing.T) {
 // ctx bounds the graceful close's wait, so a stalled target (a stuck lower-seq
 // write) cannot wedge it forever.
 func TestWriteSeqGateWaitReachedHonoursContext(t *testing.T) {
+	t.Parallel()
+
 	g := newWriteSeqGate()
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -213,6 +227,8 @@ func TestWriteSeqGateWaitReachedHonoursContext(t *testing.T) {
 // un-fencing a close that must still fence a racing open. Testing it here needs no
 // conns, dials or sockets.
 func TestCancelMarkersOrphanEntryCannotDropALiveReMark(t *testing.T) {
+	t.Parallel()
+
 	c := newCancelMarkers()
 	base := time.Now()
 
@@ -232,6 +248,8 @@ func TestCancelMarkersOrphanEntryCannotDropALiveReMark(t *testing.T) {
 
 // The ordinary case: a marker past its own deadline is swept.
 func TestCancelMarkersSweepsExpired(t *testing.T) {
+	t.Parallel()
+
 	c := newCancelMarkers()
 	base := time.Now()
 
@@ -248,6 +266,8 @@ func TestCancelMarkersSweepsExpired(t *testing.T) {
 // store/abortOpen that ends the open clears it. Sweeping it on a deadline would
 // un-fence a close whose open is still dialing.
 func TestCancelMarkersMarkDuringOpenIsNotSwept(t *testing.T) {
+	t.Parallel()
+
 	c := newCancelMarkers()
 	base := time.Now()
 
@@ -262,6 +282,8 @@ func TestCancelMarkersMarkDuringOpenIsNotSwept(t *testing.T) {
 
 // take consumes; has does not.
 func TestCancelMarkersTakeConsumes(t *testing.T) {
+	t.Parallel()
+
 	c := newCancelMarkers()
 	assert.False(t, c.take("absent"), "an unmarked conn is not taken")
 
@@ -279,6 +301,8 @@ func TestCancelMarkersTakeConsumes(t *testing.T) {
 // life -- without compaction the backing array grows to peak churn size and
 // never frees.
 func TestCancelMarkersSweepReleasesPoppedBackingArray(t *testing.T) {
+	t.Parallel()
+
 	c := newCancelMarkers()
 	base := time.Now()
 

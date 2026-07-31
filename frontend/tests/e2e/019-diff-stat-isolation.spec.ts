@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 
 /**
  * Create a git repo inside the server's data directory.
@@ -47,8 +47,8 @@ test.describe('Diff Stat Isolation', () => {
       await openWorkspace(page, wsB)
 
       // The DiffStatsBadge is rendered inside the workspace-item div.
-      const wsBItem = page.locator(`[data-testid="workspace-item-${wsB}"]`)
-      const wsAItem = page.locator(`[data-testid="workspace-item-${wsA}"]`)
+      const wsBItem = workspaceRow(page, wsB)
+      const wsAItem = workspaceRow(page, wsA)
 
       // Wait for workspace B's diff stats badge to appear on the workspace item.
       // The git status refresh is triggered when the active tab context is set.

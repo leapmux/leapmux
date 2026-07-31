@@ -1,6 +1,5 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { firstAssistantBubble } from './helpers/ui'
+import { firstAssistantBubble, sendMessage } from './helpers/ui'
 
 /**
  * Smoke test for chat scroll + pagination integration. The store-level
@@ -11,14 +10,6 @@ import { firstAssistantBubble } from './helpers/ui'
  * lifecycle, and tab-switch scroll preservation — are condensed into this
  * single smoke.
  */
-
-async function sendMessage(page: Page, message: string) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
-  await page.keyboard.type(message)
-  await page.keyboard.press('Meta+Enter')
-}
 
 test.describe('Chat Pagination & Scroll', () => {
   test('thinking indicator appears, message renders with data-seq, then indicator clears', async ({ page, authenticatedWorkspace }) => {

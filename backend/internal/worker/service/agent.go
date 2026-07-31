@@ -65,6 +65,9 @@ func (svc *Service) baseAgentOptions(agentID, workingDir string, provider leapmu
 func registerAgentHandlers(d registrar, svc *Service) {
 	registerOwnerGated(d, "OpenAgent", dispatchPlain,
 		func(ctx context.Context, userID userid.UserID, r *leapmuxv1.OpenAgentRequest, sender channel.ResponseWriter) {
+			if svc.refuseIfShuttingDown(sender) {
+				return
+			}
 			if err := validate.ValidateSessionID(r.GetAgentSessionId()); err != nil {
 				sendInvalidArgument(sender, err.Error())
 				return
@@ -166,7 +169,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 
 			startupCtx, cancel := context.WithCancel(context.Background())
-			svc.AgentStartup.begin(agentID, cancel)
+			startupHandle := svc.AgentStartup.begin(agentID, cancel)
 
 			remoteEnvs, err := svc.spawnRemoteIPC("agent", agentID, "", svc.agentCleanups.register, func() ([]string, func(), error) {
 				return svc.RemoteIPC.AgentSpawning(AgentSpawnInfo{
@@ -207,7 +210,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				// reader (support, an operator reading the worker DB) has to
 				// go on -- this branch never reaches a client that could be
 				// told anything else.
-				svc.failAgentStartup(&dbAgent, gitModeResult{}, err, nil)
+				svc.failAgentStartup(&dbAgent, gitModeResult{}, err, nil, startupHandle)
 				// Then tombstone the row. This branch is the ONE startup failure
 				// that answers with an RPC error instead of an OpenAgentResponse,
 				// so the client never learns the agent id: it cannot list the tab
@@ -240,7 +243,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			agent.TraceStartupPhase(agentID, "response_sent")
 
 			// Kick off subprocess startup in the background.
-			go svc.runAgentStartup(startupCtx, dbAgent, plan, agentOpts)
+			go svc.runAgentStartup(startupCtx, dbAgent, plan, agentOpts, startupHandle)
 		})
 
 	// CloseAgent backgrounds the entire close flow (subprocess stop, DB
@@ -1342,30 +1345,29 @@ func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.Agen
 // helpers. Phases 0–2 run serially so the user sees a phased progress
 // label ("Creating worktree…" → "Checking Git status…" → "Starting
 // {provider}…") rather than overlapping noise.
-func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan gitModePlan, agentOpts agent.Options) {
-	defer svc.AgentStartup.finish()
+func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan gitModePlan, agentOpts agent.Options, h *startupEntry) {
 	agentID := agentOpts.AgentID
+	defer svc.AgentStartup.finish()
 	sink := svc.Output.NewSink(agentID, agentOpts.AgentProvider)
 
 	// Phase 0: execute the git-mode mutation (worktree add, branch create,
 	// checkout). Validation already ran synchronously in OpenAgent; what
 	// runs here is only the potentially slow shell-outs.
-	gm, gmErr := svc.runAgentPhase0(ctx, &dbAgent, plan)
+	gm, gmErr := svc.runAgentPhase0(ctx, &dbAgent, plan, h)
 	if gmErr != nil {
-		svc.failAgentStartup(&dbAgent, gm, gmErr, nil)
+		svc.failAgentStartup(&dbAgent, gm, gmErr, nil, h)
 		return
 	}
 	// Link the tab to its worktree now that we know the worktree id, unless a
-	// CloseAgent already landed during startup (see
-	// registerTabForWorktreeUnlessClosed for the strand-leak rationale). The
-	// close-during-startup detection after startAgent rolls back a worktree
-	// this startup created; skipping the link covers the pre-existing-worktree
-	// case too.
+	// CloseAgent already landed during startup and decided the worktree's fate
+	// itself (see registerTabForWorktreeAfterClose). The close-during-startup
+	// detection after startAgent applies the same decision to the rollback.
 	agentClosedDuringStartup := false
 	if latest, fetchErr := svc.getAgentByID(bgCtx(), agentID); fetchErr == nil {
 		agentClosedDuringStartup = latest.ClosedAt.Valid
 	}
-	svc.registerTabForWorktreeUnlessClosed(gm.WorktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, agentClosedDuringStartup)
+	svc.linkWorktreeAfterPhase0(&svc.AgentStartup.startupCore, h, gm.WorktreeID,
+		leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, agentClosedDuringStartup)
 	if gm.WorkingDir != "" {
 		agentOpts.WorkingDir = gm.WorkingDir
 	}
@@ -1415,14 +1417,13 @@ func (svc *Service) runAgentStartup(ctx context.Context, dbAgent db.Agent, plan 
 		if startErr == nil {
 			svc.Agents.StopAgent(agentID)
 		}
-		svc.AgentStartup.succeed(agentID)
-		svc.rollbackGitMode(gm)
+		svc.finishStartupAfterClose(&svc.AgentStartup.startupCore, h, agentID, gm)
 		return
 	}
 
 	if startErr != nil {
 		slog.Error("failed to start agent", "agent_id", agentID, "error", startErr)
-		svc.failAgentStartup(&dbAgent, gm, startErr, gitStatus)
+		svc.failAgentStartup(&dbAgent, gm, startErr, gitStatus, h)
 		return
 	}
 
@@ -1673,8 +1674,8 @@ func (svc *Service) broadcastAgentInactive(dbAgent *db.Agent) {
 // runAgentPhase0 broadcasts the per-mode label and executes the git-mode
 // mutation. Returns the result (with rollback metadata populated iff a
 // mutation partially succeeded before failing) and any error.
-func (svc *Service) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan gitModePlan) (gitModeResult, error) {
-	return svc.runStartupPhase0(ctx, plan, svc.agentStartupCallbacks(dbAgent, nil))
+func (svc *Service) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan gitModePlan, h *startupEntry) (gitModeResult, error) {
+	return svc.runStartupPhase0(ctx, plan, svc.agentStartupCallbacks(dbAgent, nil, h))
 }
 
 // failAgentStartup is the common tail for every failure after the sync
@@ -1682,8 +1683,8 @@ func (svc *Service) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan 
 // error, broadcasts STARTUP_FAILED, and marks the registry failed. The
 // shared `failStartup` enforces the ordering (DB before broadcast
 // before registry) so observers see a durable terminal state.
-func (svc *Service) failAgentStartup(dbAgent *db.Agent, gm gitModeResult, cause error, gitStatus *leapmuxv1.AgentGitStatus) {
-	svc.failStartup(gm, cause, svc.agentStartupCallbacks(dbAgent, gitStatus))
+func (svc *Service) failAgentStartup(dbAgent *db.Agent, gm gitModeResult, cause error, gitStatus *leapmuxv1.AgentGitStatus, h *startupEntry) {
+	svc.failStartup(gm, cause, svc.agentStartupCallbacks(dbAgent, gitStatus, h))
 }
 
 // persistAgentStartupError writes (or clears when errMsg is "") the

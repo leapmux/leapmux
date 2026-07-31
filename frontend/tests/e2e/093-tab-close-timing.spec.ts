@@ -398,7 +398,7 @@ test.describe('Tab close timing', () => {
       expect(raw.dialogVisibleAt).not.toBeNull()
       expect(raw.tabRemovedAt).not.toBeNull()
       if (worktreeDir)
-        await waitForPathDeleted(worktreeDir, 10_000)
+        await waitForPathDeleted(worktreeDir)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

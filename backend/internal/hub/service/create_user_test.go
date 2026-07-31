@@ -39,6 +39,8 @@ func createSimpleUser(t *testing.T, st store.Store, username, email string) *sto
 // inserts exactly one users row and does not invent workspaces (or any other
 // owned entity) as a side effect of signup.
 func TestCreateUser_CreatesOnlyUserRow(t *testing.T) {
+	t.Parallel()
+
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
 
@@ -83,6 +85,8 @@ func TestCreateUser_CreatesOnlyUserRow(t *testing.T) {
 // The ErrorIs assertion is the control: collapsing the wrap must not cost
 // callers their ability to classify the failure.
 func TestCreateUser_DuplicateUsernameErrorIsNotDoublePrefixed(t *testing.T) {
+	t.Parallel()
+
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
 
@@ -104,6 +108,8 @@ func TestCreateUser_DuplicateUsernameErrorIsNotDoublePrefixed(t *testing.T) {
 }
 
 func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
+	t.Parallel()
+
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
 	sender := mail.NewStubSender()
@@ -126,6 +132,8 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 }
 
 func TestSetPendingEmailWithToken_StoresPendingForUnclaimedEmail(t *testing.T) {
+	t.Parallel()
+
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
 	sender := mail.NewStubSender()
@@ -145,6 +153,8 @@ func TestSetPendingEmailWithToken_StoresPendingForUnclaimedEmail(t *testing.T) {
 }
 
 func TestCreateUser_ClearsCompetingPendingEmails(t *testing.T) {
+	t.Parallel()
+
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
 
@@ -177,6 +187,8 @@ func TestCreateUser_ClearsCompetingPendingEmails(t *testing.T) {
 }
 
 func TestSetEmailAndClearCompeting(t *testing.T) {
+	t.Parallel()
+
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
 
@@ -209,6 +221,8 @@ func TestSetEmailAndClearCompeting(t *testing.T) {
 }
 
 func TestSetEmailAndClearCompeting_Unverified(t *testing.T) {
+	t.Parallel()
+
 	st := setupCreateUserTestDB(t)
 	ctx := context.Background()
 

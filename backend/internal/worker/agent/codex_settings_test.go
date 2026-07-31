@@ -84,6 +84,8 @@ func newCodexAgentForRPC(t *testing.T, respond func(method string) json.RawMessa
 }
 
 func TestCodexRefreshSettingsFromAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, sink, requests := newCodexAgentForRPC(t, func(method string) json.RawMessage {
 		if method == "config/read" {
 			return json.RawMessage(`{
@@ -123,6 +125,8 @@ func TestCodexRefreshSettingsFromAgent(t *testing.T) {
 }
 
 func TestCodexRefreshSettingsFromAgent_NullFields(t *testing.T) {
+	t.Parallel()
+
 	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
 		if method == "config/read" {
 			return json.RawMessage(`{
@@ -170,6 +174,8 @@ func TestCodexRefreshSettingsFromAgent_NullFields(t *testing.T) {
 // (optimistically-pushed) values, and a live edit to either axis is never clobbered by
 // config/read -- while a real top-level config key (sandbox_mode) IS reconciled by the same loop.
 func TestCodexRefreshSettingsFromAgent_PreservesNetworkAndCollaboration(t *testing.T) {
+	t.Parallel()
+
 	agent, sink, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
 		if method == "config/read" {
 			// A realistic Codex response: sandbox_mode is reported (a real top-level config key),
@@ -202,6 +208,8 @@ func TestCodexRefreshSettingsFromAgent_PreservesNetworkAndCollaboration(t *testi
 }
 
 func TestCodexRefreshSettingsFromAgent_GranularApprovalPolicy(t *testing.T) {
+	t.Parallel()
+
 	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
 		if method == "config/read" {
 			return json.RawMessage(`{
@@ -223,6 +231,8 @@ func TestCodexRefreshSettingsFromAgent_GranularApprovalPolicy(t *testing.T) {
 }
 
 func TestCodexUpdateSettingsCallsRefresh(t *testing.T) {
+	t.Parallel()
+
 	agent, sink, requests := newCodexAgentForRPC(t, func(method string) json.RawMessage {
 		if method == "config/read" {
 			return json.RawMessage(`{
@@ -275,6 +285,8 @@ func TestCodexUpdateSettingsCallsRefresh(t *testing.T) {
 // inference-time behavior, where the CLI uses ModelInfo.default_reasoning_level
 // when nothing is explicitly set in config.
 func TestCodexRefreshSettingsFromAgent_AutoFallsBackToModelDefault(t *testing.T) {
+	t.Parallel()
+
 	agent, sink, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
 		if method == "config/read" {
 			return json.RawMessage(`{
@@ -310,6 +322,8 @@ func TestCodexRefreshSettingsFromAgent_AutoFallsBackToModelDefault(t *testing.T)
 // queryAvailableModels failed), the refresh leaves effort at "auto" rather
 // than clobbering it with an empty string.
 func TestCodexRefreshSettingsFromAgent_AutoNoModelCatalogStaysAuto(t *testing.T) {
+	t.Parallel()
+
 	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
 		if method == "config/read" {
 			return json.RawMessage(`{"config": {"model_reasoning_effort": null}, "origins": {}}`)
@@ -331,6 +345,8 @@ func TestCodexRefreshSettingsFromAgent_AutoNoModelCatalogStaysAuto(t *testing.T)
 // not a hand-maintained side map) and the agent's current values, with model and
 // effort leading and every provider group sorting after the model group.
 func TestCodexOptionGroups_OrderAndCurrentsFromTemplates(t *testing.T) {
+	t.Parallel()
+
 	agent, _, _ := newCodexAgentForRPC(t, func(string) json.RawMessage { return json.RawMessage(`{}`) })
 	agent.availableModels = []*ModelInfo{{Id: "gpt-5.4", DefaultEffort: "high", SupportedEfforts: []*EffortInfo{{Id: "high"}, {Id: "low"}}}}
 	agent.serviceTier = CodexServiceTierFast
@@ -369,6 +385,8 @@ func TestCodexOptionGroups_OrderAndCurrentsFromTemplates(t *testing.T) {
 // config. Codex has no way to clear reasoning_effort at runtime, so a
 // fresh process is the only path back to CLI-default behavior.
 func TestCodexUpdateSettings_AutoRequiresRestart(t *testing.T) {
+	t.Parallel()
+
 	agent, _, requests := newCodexAgentForRPC(t, func(_ string) json.RawMessage {
 		return json.RawMessage(`{}`)
 	})
@@ -386,6 +404,8 @@ func TestCodexUpdateSettings_AutoRequiresRestart(t *testing.T) {
 // agent is already in "auto", a redundant "auto" update does not trigger
 // a restart.
 func TestCodexUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
+	t.Parallel()
+
 	agent, _, _ := newCodexAgentForRPC(t, func(method string) json.RawMessage {
 		if method == "config/read" {
 			return json.RawMessage(`{"config": {}, "origins": {}}`)
@@ -405,6 +425,8 @@ func TestCodexUpdateSettings_AutoNoOpWhenAlreadyAuto(t *testing.T) {
 // sandbox axes are stamped verbatim; serviceTier is included ONLY when codexServiceTierValue reports
 // a non-default tier (so the default/unset tier leaves Codex's normal tier untouched).
 func TestCodexThreadParams(t *testing.T) {
+	t.Parallel()
+
 	// A non-default service tier is included.
 	fast := codexThreadParams("gpt-5.4", "/work", CodexDefaultApprovalPolicy, CodexDefaultSandboxPolicy, CodexServiceTierFast)
 	assert.Equal(t, "gpt-5.4", fast["model"])

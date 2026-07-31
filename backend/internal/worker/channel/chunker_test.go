@@ -14,6 +14,8 @@ import (
 // HandleMessage tests in session_test.go.
 
 func TestReassemblerDeliversUnchunkedMessageWhole(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(100, 4)
 
 	out := r.accept(1, []byte("hello"), false)
@@ -25,6 +27,8 @@ func TestReassemblerDeliversUnchunkedMessageWhole(t *testing.T) {
 }
 
 func TestReassemblerBuffersThenDeliversChunkedMessage(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(100, 4)
 
 	out := r.accept(1, []byte("ab"), true)
@@ -44,6 +48,8 @@ func TestReassemblerBuffersThenDeliversChunkedMessage(t *testing.T) {
 }
 
 func TestReassemblerRefusesNewSequencePastTheLiveCap(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(100, 2)
 
 	require.Equal(t, reassemblyBuffered, r.accept(1, []byte("a"), true).action)
@@ -84,6 +90,8 @@ func TestReassemblerRefusesNewSequencePastTheLiveCap(t *testing.T) {
 // without bound. A poisoned id's zero-byte tombstone therefore does not block
 // a new live sequence; it only counts toward the tombstone budget.
 func TestReassemblerTombstoneDoesNotBlockLiveCap(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(2, 1)
 
 	require.Equal(t, reassemblyTooLarge, r.accept(1, []byte("abc"), true).action)
@@ -102,6 +110,8 @@ func TestReassemblerTombstoneDoesNotBlockLiveCap(t *testing.T) {
 // silently: adding a fresh tombstone per chunk would itself grow the map
 // without bound under a peer that withholds terminals.
 func TestReassemblerDropsSilentlyWhenBothCapsFull(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(100, 1)
 
 	// One live sequence fills the live cap.
@@ -119,6 +129,8 @@ func TestReassemblerDropsSilentlyWhenBothCapsFull(t *testing.T) {
 }
 
 func TestReassemblerPoisonsOversizeMidSequenceThenDropsAndReaps(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(4, 4)
 
 	require.Equal(t, reassemblyBuffered, r.accept(1, []byte("abc"), true).action)
@@ -158,6 +170,8 @@ func TestReassemblerPoisonsOversizeMidSequenceThenDropsAndReaps(t *testing.T) {
 // dropping the owner's own single-chunk RPCs. This pins that the map stays
 // bounded no matter how many sequences the peer breaches.
 func TestReassemblerBoundsTombstonesFromMidSequenceBreaches(t *testing.T) {
+	t.Parallel()
+
 	const maxIncomplete = 2
 	r := newReassembler(2, maxIncomplete)
 
@@ -189,6 +203,8 @@ func TestReassemblerBoundsTombstonesFromMidSequenceBreaches(t *testing.T) {
 // finished, so a tombstone would linger until HandleClose with nothing left to
 // reap it.
 func TestReassemblerReapsOversizeTerminalChunkOutright(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(4, 4)
 
 	require.Equal(t, reassemblyBuffered, r.accept(1, []byte("abc"), true).action)
@@ -210,6 +226,8 @@ func TestReassemblerReapsOversizeTerminalChunkOutright(t *testing.T) {
 // deliver outcome -- and so does the terminal chunk of a drop-capped sequence,
 // unless both budgets are full (see the both-caps-full test below).
 func TestReassemblerTerminalChunkWithoutSequenceBypassesBuffers(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(100, 1)
 
 	payload := bytes.Repeat([]byte("x"), 8)
@@ -225,6 +243,8 @@ func TestReassemblerTerminalChunkWithoutSequenceBypassesBuffers(t *testing.T) {
 // path too, rather than leaning on the Hub's per-ciphertext cap. Mirrors the
 // sibling tunnel receiver (tunnel.Channel.reassemble).
 func TestReassemblerSingleChunkBreachesSizeCeiling(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(4, 2)
 
 	out := r.accept(7, bytes.Repeat([]byte("x"), 5), false)
@@ -241,6 +261,8 @@ func TestReassemblerSingleChunkBreachesSizeCeiling(t *testing.T) {
 // interleaves enough sequences to saturate the budgets, so this drops nothing
 // legitimate.
 func TestReassemblerDropsTerminalChunkOfDropCappedSequence(t *testing.T) {
+	t.Parallel()
+
 	r := newReassembler(100, 1)
 
 	// Saturate both budgets: one live sequence + one tombstone.
@@ -279,6 +301,8 @@ func TestReassemblerDropsTerminalChunkOfDropCappedSequence(t *testing.T) {
 // streaming. This pins the determinism: with tombstones {100, 50} and a fresh
 // breach of 75, the MIN (50) is evicted, not 100.
 func TestReassemblerPoisonAndCapEvictsMinimumTombstone(t *testing.T) {
+	t.Parallel()
+
 	const maxIncomplete = 2
 	r := newReassembler(2, maxIncomplete)
 

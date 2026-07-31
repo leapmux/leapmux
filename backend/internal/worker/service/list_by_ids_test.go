@@ -18,6 +18,8 @@ import (
 // --- ListAgents by IDs ---
 
 func TestListAgents_ByIDs_ReturnsOnlyRequested(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -40,6 +42,8 @@ func TestListAgents_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 }
 
 func TestListAgents_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
 	_, d, w := setupTestService(t)
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
@@ -53,6 +57,8 @@ func TestListAgents_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
 }
 
 func TestListAgents_NonexistentIDs_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
 	_, d, w := setupTestService(t)
 
 	dispatch(d, "ListAgents", &leapmuxv1.ListAgentsRequest{
@@ -66,6 +72,8 @@ func TestListAgents_NonexistentIDs_ReturnsEmpty(t *testing.T) {
 }
 
 func TestListAgents_ClosedTabsFiltered(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -85,6 +93,8 @@ func TestListAgents_ClosedTabsFiltered(t *testing.T) {
 }
 
 func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -108,6 +118,8 @@ func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
 // --- ListTerminals by IDs ---
 
 func TestListTerminals_ByIDs_ReturnsOnlyRequested(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -131,6 +143,8 @@ func TestListTerminals_ByIDs_ReturnsOnlyRequested(t *testing.T) {
 }
 
 func TestListTerminals_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
 	_, d, w := setupTestService(t)
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
@@ -144,6 +158,8 @@ func TestListTerminals_EmptyTabIDs_ReturnsEmpty(t *testing.T) {
 }
 
 func TestListTerminals_NonexistentIDs_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
 	_, d, w := setupTestService(t)
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
@@ -168,6 +184,8 @@ func TestListTerminals_NonexistentIDs_ReturnsEmpty(t *testing.T) {
 // already fails the call on the same error; this asserts ListTerminals does
 // too.
 func TestListTerminals_DBReadFailure_ErrorsRatherThanStampingAbsent(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 
 	// Closing the pool is the deterministic way to induce the failure this
@@ -184,6 +202,8 @@ func TestListTerminals_DBReadFailure_ErrorsRatherThanStampingAbsent(t *testing.T
 }
 
 func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -209,6 +229,8 @@ func TestListTerminals_ClosedTabsFiltered(t *testing.T) {
 // after_offset from this, and the invariant means a cold subscribe
 // against a dead terminal resolves to "caught up" with no replay.
 func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -243,6 +265,8 @@ func TestListTerminals_ScreenEndOffset_DBOnly(t *testing.T) {
 // streaming asynchronously, so ti.ScreenEndOffset and a subsequent
 // ScreenSnapshotSince read at different moments diverged.
 func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-live")
@@ -278,6 +302,8 @@ func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 // mode-restore prefix when the alt-screen toggle has fallen out of the
 // retained ring.
 func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-altrefresh")
@@ -304,6 +330,8 @@ func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 		"screen_end_offset reflects total PTY bytes, not screen-payload length (which includes the synthesized prefix)")
 }
 func TestWatchEvents_ListAgentsByIDsErrorReturnsInternalStreamError(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 

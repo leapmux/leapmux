@@ -10,6 +10,25 @@ export type GitFilterTab = 'all' | 'changed' | 'staged' | 'unstaged'
 export interface DiffStats { added: number, deleted: number, untracked: number }
 const ZERO_DIFF_STATS: DiffStats = { added: 0, deleted: 0, untracked: 0 }
 
+/**
+ * Whether a git status entry names a whole untracked DIRECTORY rather than a
+ * file. Git collapses an untracked directory into one `build/` entry, and the
+ * trailing slash is the only marker -- it is git's own spelling, so it is `/`
+ * on every platform regardless of the worker's path flavor.
+ *
+ * The one place that decodes this convention. `gitFileStatus.store` needs it to
+ * build its prefix index and the tree filter needs it too;
+ * decoding it twice is how the two came to disagree about the same rows.
+ */
+export function isUntrackedDirEntry(path: string): boolean {
+  return path.endsWith('/')
+}
+
+/** Strips the trailing slash `isUntrackedDirEntry` matches on. */
+export function untrackedDirBasePath(path: string): string {
+  return isUntrackedDirEntry(path) ? path.slice(0, -1) : path
+}
+
 export function fileEntryToDiffStats(entry: GitFileStatusEntry): DiffStats {
   const isUntracked = entry.unstagedStatus === GitFileStatusCode.UNTRACKED
   return {
@@ -304,8 +323,8 @@ export function createGitFileStatusStore() {
 
     for (const f of state.files) {
       const isUntracked = f.unstagedStatus === GitFileStatusCode.UNTRACKED
-      const isDirEntry = f.path.endsWith('/')
-      const basePath = isDirEntry ? f.path.slice(0, -1) : f.path
+      const isDirEntry = isUntrackedDirEntry(f.path)
+      const basePath = untrackedDirBasePath(f.path)
       if (isDirEntry)
         untrackedDirSet.add(basePath)
       bump('', f, isUntracked)

@@ -227,6 +227,36 @@ func (c *Client) Send(msg *leapmuxv1.ConnectRequest) error {
 	return nil
 }
 
+// ShutdownFlushTimeout bounds FlushSends. Generous relative to the work (a
+// handful of small frames onto an open socket) because the cost of waiting too
+// long is a slower exit, while the cost of not waiting long enough is a user
+// staring at a terminal that silently stopped.
+const ShutdownFlushTimeout = 5 * time.Second
+
+// FlushSends blocks until everything already enqueued has been handed to the
+// Connect stream, bounded by ShutdownFlushTimeout. A nil writer (never
+// connected, or already torn down) is nothing to wait for and returns
+// immediately.
+//
+// Send only ENQUEUES, so a caller whose next act is tearing the connection down
+// -- graceful shutdown, which broadcasts the terminal "[Worker disconnected]"
+// notice as its last step -- is racing the drain goroutine. Losing that race
+// discards the frames silently: Writer.Close drops the queue, and the peer that
+// needed them is a browser that will never get another chance to hear from this
+// process.
+//
+// The bound lives here rather than in a parameter because there is one policy
+// and two entry points that would otherwise each restate it.
+func (c *Client) FlushSends() error {
+	w := c.currentWriter()
+	if w == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ShutdownFlushTimeout)
+	defer cancel()
+	return w.Flush(ctx)
+}
+
 // TrySend enqueues msg if the budget allows and reports whether it did. For
 // best-effort sends issued from the Connect RECEIVE goroutine, which serves
 // every channel on this worker and must never block. A false return does NOT

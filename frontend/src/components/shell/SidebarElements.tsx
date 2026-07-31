@@ -13,6 +13,7 @@ import type { TabItemOps } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
+import { mergeProps } from 'solid-js'
 import { LeftSidebar } from '~/components/shell/LeftSidebar'
 import { RightSidebar } from '~/components/shell/RightSidebar'
 import { relativizePath } from '~/lib/paths'
@@ -84,62 +85,66 @@ interface SidebarDisplayOpts {
 // collapse state, workspace store wiring, etc.); collecting them
 // here means a new shared prop is added in one place, and the call
 // sites JSX-spread the result.
-function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: SidebarDisplayOpts) {
-  const ctx = opts.getCurrentTabContext()
-  const archived = opts.isActiveWorkspaceArchived
-  return {
-    workspaces: opts.workspaces,
-    activeWorkspaceId: opts.activeWorkspaceId,
-    sectionStore: opts.sectionStore,
-    loadSections: opts.loadSections,
-    onSelectWorkspace: opts.onSelectWorkspace,
-    onNewWorkspace: opts.onNewWorkspace,
-    onRefreshWorkspaces: opts.onRefreshWorkspaces,
-    onDeleteWorkspace: opts.onDeleteWorkspace,
-    onConfirmDelete: opts.onConfirmDelete,
-    onConfirmArchive: opts.onConfirmArchive,
-    onPostArchiveWorkspace: opts.onPostArchiveWorkspace,
-    isCollapsed: display?.isCollapsed() ?? false,
+//
+// EVERY reactive value is a getter, for the same reason `sidebarOpts` in
+// AppShell makes them getters one hop up: reading them eagerly here undid that.
+// A plain read happens in whatever reactive scope calls this, so the sidebar
+// was re-CREATED -- not updated -- on every change to the focused tab's
+// context, the todo list, a turn ending, a worker list refresh. A remount tears
+// down live DOM, which is why an open tree/branch context menu would vanish
+// mid-click: the element the user was clicking got detached under them.
+//
+// Solid's JSX spread accesses props lazily, so the getters keep the components
+// mounted and let each one re-render only the part that actually changed.
+export function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: SidebarDisplayOpts) {
+  // Hoisted so the getters below hand back a STABLE reference. Building the
+  // closure inside the getter would mint a new function on every read, and a
+  // consumer that keys off the prop -- `<Show when={props.onOpenTerminal}>`,
+  // any memo over it -- would see a change that never happened.
+  const fileMention = (path: string) => {
+    const mru = opts.getMruAgentContext()
+    insertIntoMruAgentEditor(opts.mruEditorDeps, formatFileMention(relativizePath(path, mru.workingDir, mru.homeDir)), 'inline')
+  }
+  const openTerminal = (dirPath: string) => opts.termOps.handleOpenTerminal(dirPath)
+  // mergeProps, not a hand-written forward list.
+  //
+  // Every pass-through prop -- 34 of them -- is forwarded lazily by the
+  // mechanism rather than by 34 individually-correct `get` keywords, so a
+  // reactive field added to SidebarElementsOpts cannot reintroduce the
+  // whole-sidebar remount by being copied eagerly here, and a new pass-through
+  // needs no edit in this function at all. mergeProps copies an accessor
+  // descriptor AS an accessor for plain-object sources, which is what
+  // `sidebarOpts()` returns, so nothing below is invoked at build time.
+  //
+  // Only the DERIVED entries are written out: the display block (defaulted or
+  // renamed), the three fields read off the current tab context, and the two
+  // handlers gated on the archived state. Later sources win, so these shadow
+  // `opts` where the names would collide -- none do today.
+  //
+  // The trade: five shell-internal fields (mruEditorDeps, getCurrentTabContext,
+  // getMruAgentContext, termOps, isActiveWorkspaceArchived) ride along on the
+  // object. Sidebar code cannot reach them -- both sidebars are typed
+  // SidebarCommonProps, which does not declare them -- so this is runtime
+  // surface, not API surface.
+  return mergeProps(opts, {
+    get isCollapsed() { return display?.isCollapsed() ?? false },
     onExpand: display?.onExpand ?? (() => {}),
     initialOpenSections: display?.initialOpenSections,
     initialSectionSizes: display?.initialSectionSizes,
     onSectionStateChange: display?.onStateChange,
-    workerId: ctx.workerId,
-    workingDir: ctx.workingDir,
-    homeDir: ctx.homeDir,
-    fileTreePath: opts.fileTreePath,
-    onFileSelect: opts.onFileSelect,
-    onFileOpen: opts.onFileOpen,
-    onFileMention: archived
-      ? undefined
-      : (path: string) => {
-          const mru = opts.getMruAgentContext()
-          insertIntoMruAgentEditor(opts.mruEditorDeps, formatFileMention(relativizePath(path, mru.workingDir, mru.homeDir)), 'inline')
-        },
-    onOpenTerminal: archived
-      ? undefined
-      : (dirPath: string) => opts.termOps.handleOpenTerminal(dirPath),
-    showTodos: opts.showTodos,
-    activeTodos: opts.activeTodos,
-    gitStatusStore: opts.gitStatusStore,
-    activeFilePath: opts.activeFilePath,
-    hasActiveFileTab: opts.hasActiveFileTab,
-    turnEndTrigger: opts.turnEndTrigger,
-    activeTabReady: opts.activeTabReady,
-    workers: opts.workers,
-    workerInfoFn: opts.workerInfoFn,
-    channelStatusFn: opts.channelStatusFn,
-    onAddTunnel: opts.onAddTunnel,
-    onDeregisterWorker: opts.onDeregisterWorker,
-    onRegisterWorker: opts.onRegisterWorker,
-    view: opts.view,
-    selection: opts.selection,
-    onTabClick: opts.onTabClick,
-    tabItemOps: opts.tabItemOps,
-    getTileOrderForWorkspace: opts.getTileOrderForWorkspace,
-    onChangeBranch: opts.onChangeBranch,
-    onDeleteBranch: opts.onDeleteBranch,
-  }
+    get workerId() { return opts.getCurrentTabContext().workerId },
+    get workingDir() { return opts.getCurrentTabContext().workingDir },
+    get homeDir() { return opts.getCurrentTabContext().homeDir },
+    // Archived workspaces expose no mention/terminal affordance, and whether a
+    // workspace is archived can change while the sidebar is mounted -- so the
+    // undefined-vs-handler choice has to be re-read too, not frozen at build.
+    get onFileMention() {
+      return opts.isActiveWorkspaceArchived ? undefined : fileMention
+    },
+    get onOpenTerminal() {
+      return opts.isActiveWorkspaceArchived ? undefined : openTerminal
+    },
+  })
 }
 
 export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: SidebarDisplayOpts): JSX.Element {

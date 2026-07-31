@@ -896,8 +896,10 @@ func (r effortResolver) updateFlagSettings(targetModel, newEffort, curEffort str
 	// unrelated/model-only update (newEffort=="") would silently push {ultracode:false,
 	// effortLevel:"xhigh"} and downgrade a session the CLI is happily running at
 	// ultracode -- directly contradicting the decode side that just trusted the same
-	// model. The primary "leaving ultracode for a KNOWN unsupporting model" case
-	// (opus+ultracode -> sonnet) still fires: sonnet is known.
+	// model. What still reaches the downgrade is a switch to a known model whose
+	// level set has no ultracode: Haiku, whose definedEfforts is known-but-empty.
+	// Sonnet used to be the example here and no longer is -- the CLI reports
+	// xhigh/ultracode for it, so the catalog does too.
 	_, known := r.definedEfforts(targetModel)
 	if known && r.unsupportedUltracode(curEffort, targetModel) {
 		if fs == nil {
@@ -916,7 +918,7 @@ func (r effortResolver) updateFlagSettings(targetModel, newEffort, curEffort str
 // claudeEffortFlagSettings. The CLI reports an active ultracode session as
 // effortLevel:"xhigh" plus ultracode:true, so applied.ultracode==true maps to the
 // internal "ultracode" -- trusted as the CLI's authoritative report, EXCEPT for a
-// model the catalog KNOWS lacks ultracode (Sonnet/Haiku), which is never promoted.
+// model the catalog KNOWS lacks ultracode (Haiku), which is never promoted.
 // A model the catalog does NOT know (e.g. one the CLI reported in unavailable_models,
 // so convertClaudeModels filtered it from the dynamic catalog) is trusted too: the
 // CLI is the authority on what it actually applied, so a running ultracode session
@@ -1355,16 +1357,14 @@ var (
 	effortTierLow       = &EffortInfo{Id: "low", Name: "Low", Description: "Quick, straightforward implementation with minimal overhead"}
 )
 
-// claudeEffortXHighMax is used by models that support both xhigh and max,
-// plus the xhigh+ultracode combo (currently Opus).
+// claudeEffortXHighMax is used by models that support both xhigh and max, plus
+// the xhigh+ultracode combo -- which, per the CLI's own initialize response, is
+// every effort-capable Claude model it lists (Opus, Fable, and Sonnet alike).
+// This is the FALLBACK catalog: the running session's report always wins, and
+// the two must agree or the effort menu visibly grows a tier the moment the
+// live catalog replaces the fallback.
 var claudeEffortXHighMax = []*EffortInfo{
 	effortTierAuto, effortTierUltracode, effortTierMax, effortTierXHigh, effortTierHigh, effortTierMedium, effortTierLow,
-}
-
-// claudeEffortMax is used by models that support max but not xhigh
-// (currently Sonnet 4.6, older Opus).
-var claudeEffortMax = []*EffortInfo{
-	effortTierAuto, effortTierMax, effortTierHigh, effortTierMedium, effortTierLow,
 }
 
 // Claude context-window sizes. The CLI does not report a window, so we infer it
@@ -1412,8 +1412,13 @@ var claudeCodeAvailableModels = []*ModelInfo{
 	// selectable option.
 	{Id: "opus", DisplayName: "Opus", Description: "Most capable for complex work", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeStandardContextWindow, Hidden: true},
 	{Id: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
-	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: EffortHigh, SupportedEfforts: claudeEffortMax, ContextWindow: claudeStandardContextWindow},
-	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: EffortHigh, SupportedEfforts: claudeEffortMax, ContextWindow: claudeOneMillionContextWindow},
+	// Sonnet carries the xhigh tiers because the live CLI reports
+	// "low,medium,high,xhigh,max" for it, and claudeDefaultEffort resolves that
+	// level set to xhigh. Declaring max-only here made the fallback disagree with
+	// the session: the effort menu opened without xhigh/ultracode and grew both
+	// the moment any settings change replaced the fallback with the live catalog.
+	{Id: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeStandardContextWindow},
+	{Id: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", DefaultEffort: EffortXHigh, SupportedEfforts: claudeEffortXHighMax, ContextWindow: claudeOneMillionContextWindow},
 	{Id: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", ContextWindow: claudeStandardContextWindow},
 }
 
@@ -1644,9 +1649,11 @@ func claudeSupportedEfforts(supported map[string]bool) []*EffortInfo {
 }
 
 // claudeDefaultEffort picks a model's default effort from its level set. The CLI
-// does not report one, so we prefer xhigh (Opus/Fable), else high (Sonnet) -- the
-// product-chosen sweet spot, deliberately NOT merely the strongest level (max is
-// overkill as a default for a model that also offers xhigh). A model with no
+// does not report one, so we prefer xhigh, else high -- the product-chosen sweet
+// spot, deliberately NOT merely the strongest level (max is overkill as a default
+// for a model that also offers xhigh). Every effort-capable model in the current
+// catalog reports xhigh, so the "else high" arm is the fallback for a model whose
+// live level set turns out narrower, not a description of Sonnet. A model with no
 // effort support gets "" -- inert, since the effort selector is hidden and the
 // launch path omits --effort for it.
 func claudeDefaultEffort(supported map[string]bool) string {
