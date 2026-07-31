@@ -1,6 +1,6 @@
 import { authedHeaders, createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { getTerminalText, sendActiveTerminalInput } from './helpers/terminal'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { loginViaToken, openTerminalViaUI, openWorkspace } from './helpers/ui'
 import { ensureWorkerOnline, expect, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Terminal Disconnection', () => {
@@ -14,7 +14,7 @@ test.describe('Terminal Disconnection', () => {
       await openWorkspace(page, workspaceId)
 
       // Open a terminal tab
-      await page.locator('[data-testid="new-terminal-button"]').click()
+      await openTerminalViaUI(page)
 
       // Wait for the terminal tab to appear and be active
       const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
@@ -62,7 +62,7 @@ test.describe('Terminal Disconnection', () => {
       await loginViaToken(page, adminToken)
       await openWorkspace(page, workspaceId)
 
-      await page.locator('[data-testid="new-terminal-button"]').click()
+      await openTerminalViaUI(page)
       const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
       await expect(terminalTab).toBeVisible()
       await terminalTab.click()

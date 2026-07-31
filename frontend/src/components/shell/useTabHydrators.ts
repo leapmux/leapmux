@@ -1,4 +1,3 @@
-import type { createFileTabPathsStore } from '~/lib/fileTabPaths'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, createMemo, onCleanup, untrack } from 'solid-js'
@@ -28,7 +27,6 @@ import { protoToAgentTabFields, tabKey, terminalMetadata } from '~/stores/tab.he
 export interface UseTabHydratorsOpts {
   view: TabView
   metadata: TabMetadataStore
-  fileTabPaths: ReturnType<typeof createFileTabPathsStore>
   /**
    * Which workers the hub currently reports as online.
    *
@@ -357,24 +355,30 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
   // stream has finished its bootstrap, we issue a one-shot
   // GetFileTabPath so the title renders without a perceptible delay.
   //
-  // No `!tab.filePath` clause. That was a payload sniff standing in for a flag
-  // the local open path forgot to set, and `SharedMeta.hydrated`'s own doc
-  // rules it out: a predicate keyed on a payload field is forgeable by anything
-  // else that writes that field. `pathFor` stays because it answers a different
-  // question — the private-event stream registers the path without the tab
-  // being hydrated, and asking the worker again for what already arrived is
-  // pure waste.
+  // `hydrated` ALONE, with no `!tab.filePath` clause and no second cache. The
+  // payload sniff was a stand-in for a flag the local open path forgot to set,
+  // and `SharedMeta.hydrated`'s own doc rules it out: a predicate keyed on a
+  // payload field is forgeable by anything else that writes that field. The
+  // separate path cache that used to answer "did the stream already tell us?"
+  // is gone too -- the stream marks the tab `hydrated`, because a
+  // `FileTabPathRegistered` IS a worker answer for this exact tab carrying the
+  // same payload this fetch returns. One flag, one sweep: a cache keyed by tab
+  // id but swept on a different schedule than the row could say "already
+  // answered" for a row that no longer exists, and nothing would ever ask again.
   createTabHydration({
     kind: 'per-tab',
-    predicate: tab => tab.type === TabType.FILE && !isHydrated(tab.id) && Boolean(tab.workerId) && !opts.fileTabPaths.pathFor(tab.id),
+    predicate: tab => tab.type === TabType.FILE && !isHydrated(tab.id) && Boolean(tab.workerId),
     fetch: async (tab) => {
       // The predicate already requires a non-empty workerId; this
       // re-check narrows the optional field for TypeScript.
       if (!tab.workerId)
         return
       const resp = await getFileTabPath(tab.workerId, { tabId: tab.id })
-      opts.fileTabPaths.register(tab.id, resp.filePath)
-      opts.metadata.patch(tab.id, { filePath: resp.filePath })
+      // `workingDir` comes along because it is what puts this tab in a branch
+      // group and drives the git-status containment match -- a hydrated tab
+      // without it falls back to matching on the file's own path, which is a
+      // different repo whenever the file was opened from another checkout.
+      opts.metadata.patch(tab.id, { filePath: resp.filePath, workingDir: resp.workingDir })
     },
   })
 
@@ -399,6 +403,15 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
           continue
         // protoToAgentTabFields writes every per-agent field onto the
         // tab and primes `settingsLabelCache` with the agent's catalogs.
+        // The tab's current git status goes along so a re-hydration of an
+        // unchanged repo reuses that object instead of re-keying the tab
+        // (and remounting its pane) -- `tabMetadata.patch` drops an
+        // equal-but-freshly-decoded payload at the write point, so a
+        // re-hydration of an unchanged repo leaves the tab's objects alone
+        // without this path having to say anything about it. That also closes
+        // the race it used to have: `listAgents` is awaited, and a live status
+        // push landing meanwhile would have made the pre-await snapshot a stale
+        // basis for the comparison.
         opts.metadata.patch(tab.id, protoToAgentTabFields(workerId, agent))
         resolved.add(tab.id)
       }

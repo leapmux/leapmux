@@ -119,12 +119,17 @@ func (b *PrivateEventsBus) PublishTabRenamed(owner userid.UserID, tabID string, 
 // owner's subscribers. The path is plaintext on the wire — the bus only
 // carries E2EE-bound traffic, so callers must ensure the surrounding
 // transport is E2EE.
-func (b *PrivateEventsBus) PublishFileTabPathRegistered(owner userid.UserID, tabID, filePath string) {
+//
+// workingDir is the RESOLVED value the store persisted, not the one the client
+// sent: a peer that groups the tab by what it hears here has to see the same
+// dir the worker will answer branch-context questions with.
+func (b *PrivateEventsBus) PublishFileTabPathRegistered(owner userid.UserID, tabID, filePath, workingDir string) {
 	b.publish(owner, &leapmuxv1.WorkerPrivateEvent{
 		Event: &leapmuxv1.WorkerPrivateEvent_FileTabPathRegistered{
 			FileTabPathRegistered: &leapmuxv1.FileTabPathRegistered{
-				TabId:    tabID,
-				FilePath: filePath,
+				TabId:      tabID,
+				FilePath:   filePath,
+				WorkingDir: workingDir,
 			},
 		},
 	})

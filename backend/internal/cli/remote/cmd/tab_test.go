@@ -6,8 +6,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/cli/remote/resolve"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 )
 
@@ -522,4 +524,75 @@ func TestLastTabPromptMessage_CleanWorktree(t *testing.T) {
 	assert.Contains(t, msg, "--worktree=keep|push|discard")
 	assert.NotContains(t, msg, "added")
 	assert.NotContains(t, msg, "unpushed")
+}
+
+// recordedWorkerCall is one inner-RPC dispatchWorkerClose issued.
+type recordedWorkerCall struct {
+	method string
+	in     proto.Message
+}
+
+// recordingWorkerCaller returns a workerCaller that records instead of
+// dispatching, so the teardown routing can be asserted without a worker.
+func recordingWorkerCaller(calls *[]recordedWorkerCall) workerCaller {
+	return func(method string, in, _ proto.Message) error {
+		*calls = append(*calls, recordedWorkerCall{method: method, in: in})
+		return nil
+	}
+}
+
+// A FILE tab's teardown is an RPC, not a no-op. `worker_file_tabs` and the
+// worktree_tabs link are worker-side rows that the CRDT tombstone does not
+// touch, and RevokeFileTabPath is what drives the shared closeTabCommon flow
+// -- so a `--worktree=discard` on a file tab has to reach the worker or the
+// worktree the user asked to remove simply stays.
+func TestDispatchWorkerClose_FileTabRevokesPathWithAction(t *testing.T) {
+	var calls []recordedWorkerCall
+	err := dispatchWorkerClose(
+		recordingWorkerCaller(&calls),
+		resolve.Resolved{TabID: "file-1", WorkerID: "w1"},
+		leapmuxv1.TabType_TAB_TYPE_FILE,
+		leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
+	)
+	require.NoError(t, err)
+	require.Len(t, calls, 1, "a file tab close must dispatch worker-side teardown")
+	assert.Equal(t, "RevokeFileTabPath", calls[0].method)
+	req, ok := calls[0].in.(*leapmuxv1.RevokeFileTabPathRequest)
+	require.True(t, ok, "unexpected request type %T", calls[0].in)
+	assert.Equal(t, "file-1", req.GetTabId())
+	assert.Equal(t, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, req.GetWorktreeAction(),
+		"the user's --worktree choice must ride along, or discard silently keeps the worktree")
+}
+
+// Every type routes to its own teardown RPC, and a tab whose worker is
+// unknown dispatches nothing at all -- there is nowhere to send it, and the
+// CRDT tombstone still removed the tab.
+func TestDispatchWorkerClose_RoutesPerTabType(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tabType  leapmuxv1.TabType
+		workerID string
+		method   string
+	}{
+		{"agent", leapmuxv1.TabType_TAB_TYPE_AGENT, "w1", "CloseAgent"},
+		{"terminal", leapmuxv1.TabType_TAB_TYPE_TERMINAL, "w1", "CloseTerminal"},
+		{"file", leapmuxv1.TabType_TAB_TYPE_FILE, "w1", "RevokeFileTabPath"},
+		{"no worker", leapmuxv1.TabType_TAB_TYPE_FILE, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []recordedWorkerCall
+			require.NoError(t, dispatchWorkerClose(
+				recordingWorkerCaller(&calls),
+				resolve.Resolved{TabID: "t-1", WorkerID: tc.workerID},
+				tc.tabType,
+				leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
+			))
+			if tc.method == "" {
+				assert.Empty(t, calls)
+				return
+			}
+			require.Len(t, calls, 1)
+			assert.Equal(t, tc.method, calls[0].method)
+		})
+	}
 }

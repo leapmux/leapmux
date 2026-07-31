@@ -1,6 +1,7 @@
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createSignal } from 'solid-js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -101,6 +102,17 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+// `activateBindings` writes into a module singleton and installs a document
+// listener, so a test that activates them owes an unbind even when it FAILS.
+// Unbinding at the end of the test body only runs on the happy path, which is
+// the one case that needed it least: a thrown assertion would leave the
+// bindings live for every later test in this worker, turning one real failure
+// into a cascade that hides it. An unconditional afterEach is idempotent when
+// nothing was bound.
+afterEach(() => {
+  unbindAll()
+})
+
 describe('tabBar readOnly prop', () => {
   it('shows shortcut hints on dialog menu items', () => {
     activateBindings(WORKSPACE_KEYBINDINGS, 'workspace')
@@ -115,7 +127,6 @@ describe('tabBar readOnly prop', () => {
 
     expect(screen.getAllByRole('menuitem', { name: /New agent\.\.\.Ctrl\+Shift\+N/ }).length).toBeGreaterThan(0)
     expect(screen.getAllByRole('menuitem', { name: /New terminal\.\.\.Ctrl\+Shift\+T/ }).length).toBeGreaterThan(0)
-    unbindAll()
   })
 
   it('shows close button for all tab types when readOnly is false', () => {
@@ -374,5 +385,94 @@ describe('tabBar tileActions for grid', () => {
     ))
     expect(screen.queryByTestId('close-grid-menu-item')).toBeNull()
     expect(screen.queryByTestId('close-tile-menu-item')).toBeNull()
+  })
+})
+
+/**
+ * A `Tab` is a join result, rebuilt whenever any field it derives from
+ * `tabMetadata` changes. Keying the strip's `<For>` on those objects made every
+ * such change dispose the row and mount a fresh one, which is fatal for the two
+ * things a row can be holding: the inline rename `<input>` the user is typing
+ * into, and `createSortable`'s drag handle.
+ */
+describe('tabBar row identity', () => {
+  it('keeps the same row element when a tab field changes', () => {
+    const [tabs, setTabs] = createSignal<Tab[]>([
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+    ])
+    render(() => (
+      <PreferencesProvider>
+        <TabBar {...defaultProps} tabs={tabs()} activeTabKey={`${TabType.AGENT}:a1`} />
+      </PreferencesProvider>
+    ))
+
+    const before = screen.getAllByTestId('tab')
+    expect(before).toHaveLength(2)
+
+    // What a title rename, a git badge, an agent status flip or an MRU stamp
+    // all look like from here: the SAME tabs, as freshly built objects.
+    setTabs([
+      makeTab(TabType.AGENT, 'a1', 'Agent Renamed'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+    ])
+
+    const after = screen.getAllByTestId('tab')
+    expect(after[0], 'the row must be updated in place, not replaced').toBe(before[0])
+    expect(after[1], 'an untouched sibling must not be remounted either').toBe(before[1])
+    // ...and the change still reaches the DOM through the row's own reactivity.
+    expect(after[0].textContent).toContain('Agent Renamed')
+  })
+
+  it('remounts rows only when a tab is actually added, removed, or reordered', () => {
+    const [tabs, setTabs] = createSignal<Tab[]>([
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+    ])
+    render(() => (
+      <PreferencesProvider>
+        <TabBar {...defaultProps} tabs={tabs()} activeTabKey={`${TabType.AGENT}:a1`} />
+      </PreferencesProvider>
+    ))
+    const before = screen.getAllByTestId('tab')
+
+    setTabs([
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+      makeTab(TabType.FILE, 'f1', 'readme.md'),
+    ])
+
+    const after = screen.getAllByTestId('tab')
+    expect(after).toHaveLength(3)
+    expect(after[0], 'adding a tab must not disturb the existing rows').toBe(before[0])
+    expect(after[1]).toBe(before[1])
+  })
+
+  it('keeps a row being renamed mounted through an unrelated tab\'s change', () => {
+    const [tabs, setTabs] = createSignal<Tab[]>([
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+    ])
+    render(() => (
+      <PreferencesProvider>
+        <TabBar {...defaultProps} tabs={tabs()} activeTabKey={`${TabType.AGENT}:a1`} />
+      </PreferencesProvider>
+    ))
+
+    // Double-click opens the inline rename input on the agent row.
+    fireEvent.dblClick(screen.getAllByTestId('tab')[0])
+    const input = document.querySelector('input.tabEditInput') as HTMLInputElement
+    expect(input, 'double-click must open the rename input').toBeTruthy()
+    fireEvent.input(input, { target: { value: 'half-typed name' } })
+
+    // A sibling's status flips while the user is mid-rename.
+    setTabs([
+      makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+      makeTab(TabType.TERMINAL, 't1', 'Terminal Renamed Elsewhere'),
+    ])
+
+    const stillThere = document.querySelector('input.tabEditInput') as HTMLInputElement
+    expect(stillThere, 'the rename input must survive a sibling row updating').toBe(input)
+    expect(stillThere.value, 'and keep what the user had typed').toBe('half-typed name')
   })
 })

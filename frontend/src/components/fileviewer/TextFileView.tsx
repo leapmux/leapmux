@@ -11,7 +11,6 @@ export function TextFileView(props: {
   totalSize: number
   onQuote?: (text: string, startLine?: number, endLine?: number) => void
 }): JSX.Element {
-  let containerRef: HTMLDivElement | undefined
   const text = createMemo(() => new TextDecoder().decode(props.content))
 
   const lines = createMemo((): ParsedCatLine[] => {
@@ -26,9 +25,8 @@ export function TextFileView(props: {
   })
 
   return (
-    <div ref={containerRef} class={styles.textViewContainer}>
+    <div class={styles.textViewContainer}>
       <SelectionQuotePopover
-        containerRef={containerRef}
         onQuote={(text, startLine, endLine) => props.onQuote?.(text, startLine, endLine)}
       >
         <ReadResultView lines={lines()} filePath={props.filePath} />

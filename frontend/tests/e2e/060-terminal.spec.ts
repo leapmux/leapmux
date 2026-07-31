@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { getTerminalText, waitForTerminalText } from './helpers/terminal'
-import { waitForLayoutSave } from './helpers/ui'
+import { openTerminalViaUI, waitForLayoutSave } from './helpers/ui'
 
 /** Type a command into the active terminal and press Enter. */
 async function typeInTerminal(page: Page, command: string) {
@@ -20,11 +20,6 @@ async function typeInTerminal(page: Page, command: string) {
   })
   await page.keyboard.type(command, { delay: 30 })
   await page.keyboard.press('Enter')
-}
-
-/** Open a new terminal via the dedicated terminal button in the tab bar. */
-async function openTerminalViaUI(page: Page) {
-  await page.locator('[data-testid="new-terminal-button"]').click()
 }
 
 test.describe('Terminal', () => {

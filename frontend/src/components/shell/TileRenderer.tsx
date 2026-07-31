@@ -40,7 +40,8 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { randomUUID } from '~/lib/idGenerator'
 import { createImperativeRef } from '~/lib/imperativeRef'
-import { relativizePath } from '~/lib/paths'
+import { createStableKeys } from '~/lib/keyedRows'
+import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
@@ -165,6 +166,20 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const onAttachTab = opts.floatingWindow?.onAttachTab
 
   const chatHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void }>()
+  // One walk per tick for the whole renderer, not two per file pane.
+  // `getMruAgentContext` sorts the workspace's tabs on every call, and the file
+  // pane reads it through Solid prop GETTERS -- `rootPath` and `homeDir` are two
+  // separate reads, so an account with N open file panes paid 2N sorts, and the
+  // getters' tracked sources include the account-wide tab join, so any tab's MRU
+  // stamp or title rename re-ran all of them.
+  //
+  // The `equals` compares the two FIELDS rather than the fresh object the getter
+  // mints, so an unchanged answer also stops the read from invalidating
+  // `FileViewer`.
+  const mruAgentContext = createMemo(() => getMruAgentContext(), undefined, {
+    equals: (a, b) => a.workingDir === b.workingDir && a.homeDir === b.homeDir,
+  })
+
   const terminalHandlers = new Map<string, { pageScroll: (direction: -1 | 1) => void, write: (data: string) => void }>()
 
   const getActiveTabForTile = (tileId: string): Tab | null =>
@@ -621,8 +636,24 @@ export function createTileRenderer(opts: TileRendererOpts) {
       }
       return { agent, file, terminal }
     })
-    const tileAgentTabs = () => tabsByType().agent
-    const tileFileTabs = () => tabsByType().file
+    // The panes below key their `<For>`s on TAB IDs, not on the `Tab` objects.
+    //
+    // A `Tab` is a JOIN result (see tabView), rebuilt whenever ANY field it derives
+    // from `tabMetadata` changes -- the MRU stamp every click on a tile writes, a
+    // title rename, a git badge refresh, an agent status flip, a notification badge.
+    // `<For>` keys by item IDENTITY, so keying a pane on the object made each of
+    // those tear the whole pane down and rebuild it: the chat transcript's DOM went
+    // with it, taking the user's in-progress text selection, every lifted
+    // per-message expand/collapse choice, and the reading position. Clicking to
+    // select text was self-defeating -- the click's own MRU stamp destroyed the
+    // selection it had just made.
+    //
+    // A pane's identity is its tab id and nothing else. Ids are strings, so the
+    // `shallowEqualArrays` guard means the `<For>` sees a change only when a tab is
+    // actually added, removed, or reordered; every other field is read reactively
+    // INSIDE the row, which is where a change should land.
+    const tileAgentTabIds = createStableKeys(() => tabsByType().agent, t => t.id)
+    const tileFileTabIds = createStableKeys(() => tabsByType().file, t => t.id)
     const tileTerminals = () => tabsByType().terminal
     const agentScrollStates = new Map<string, () => SavedViewportScroll | undefined>()
     const agentScrollToBottoms = new Map<string, () => void>()
@@ -637,9 +668,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
     return (
       <>
-        <For each={tileAgentTabs()}>
-          {(at) => {
-            const agentId = at.id
+        <For each={tileAgentTabIds()}>
+          {(agentId) => {
             const agent = createMemo(() => view.getAgentTab(agentId))
             // The per-agent reactive lookups ChatView's renderers / entry cache / height
             // estimator consult. Built ONCE here (the <For> child runs once per agent),
@@ -685,7 +715,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               chatHandlers.delete(agentId)
             })
             return (
-              <div class={styles.tilePane} classList={{ [styles.tilePaneHidden]: agentTab()?.id !== at.id }}>
+              <div class={styles.tilePane} classList={{ [styles.tilePaneHidden]: agentTab()?.id !== agentId }}>
                 <Show
                   when={agent()}
                   fallback={<div class={styles.placeholder}>Agent not found.</div>}
@@ -696,7 +726,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.streamingText.get(agentId)}
                     streamingType={agentSessionStore.getInfo(agentId).streamingType}
-                    tabActive={agentTab()?.id === at.id}
+                    tabActive={agentTab()?.id === agentId}
                     messageErrors={chatStore.messageErrors()}
                     messagePendingLabels={chatStore.messagePendingLabels()}
                     onRetryMessage={messageId => agentOps.handleRetryMessage(agentId, messageId)}
@@ -730,7 +760,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       agentScrollStates.set(agentId, api.getScrollState)
                       agentScrollToBottoms.set(agentId, api.forceScrollToBottom)
                       chatHandlers.set(agentId, { pageScroll: api.pageScroll })
-                      if (agentTab()?.id === at.id) {
+                      if (agentTab()?.id === agentId) {
                         getScrollStateRef.set(api.getScrollState)
                         forceScrollToBottomRef.set(api.forceScrollToBottom)
                       }
@@ -772,17 +802,36 @@ export function createTileRenderer(opts: TileRendererOpts) {
           />
         </Show>
 
-        <For each={tileFileTabs()}>
-          {(ft) => {
+        <For each={tileFileTabIds()}>
+          {(fileTabId) => {
+            // Resolved reactively from the id (see tileFileTabIds): the row must
+            // survive a metadata change instead of remounting the viewer on one.
+            const ft = createMemo(() => view.getFileTab(fileTabId))
+            const filePath = () => ft()?.filePath ?? ''
+            // MRU-agent-relative, deliberately UNLIKE `rootPath` below. This
+            // string is typed into that agent's editor (`insertIntoMruAgentEditor`),
+            // so the agent's own dir is the base that makes it resolvable there.
             const fileRelPath = () => {
-              const ctx = getMruAgentContext()
-              return relativizePath(ft.filePath ?? '', ctx.workingDir, ctx.homeDir)
+              const ctx = mruAgentContext()
+              return relativizePath(filePath(), ctx.workingDir, ctx.homeDir)
             }
+            // The TAB's own dir, unlike `fileRelPath` above. This one reaches
+            // FileActionsMenu's "Copy relative path", which is about the file the
+            // tab is showing -- so it is relative to where that tab lives, not to
+            // whichever agent the user happened to click last. Keying it on the
+            // MRU agent also made the menu item a silent no-op in a workspace with
+            // no agent at all: `getMruAgentContext` answers `''` there, and
+            // `relativizePath` returns the absolute path unchanged for an empty
+            // base. The `parentDirectory` fallback covers the CRDT-first mount,
+            // where the dir is empty until the worker echo lands -- the same
+            // fallback `getCurrentTabContext` already writes for FILE tabs.
+            const fileRootPath = () => ft()?.workingDir || parentDirectory(filePath())
+            const fileHomeDir = () => workerInfoStore.getHomeDir(ft()?.workerId ?? '')
             // Single lookup shared by `gitFileStatus` and
             // `hasStagedAndUnstaged` so both props read from one memo
             // cell instead of walking the file-status map on every
             // reactive tick.
-            const gitEntry = createMemo(() => gitFileStatusStore?.getFileStatus(ft.filePath ?? ''))
+            const gitEntry = createMemo(() => gitFileStatusStore?.getFileStatus(filePath()))
             const hasStagedAndUnstaged = createMemo(() => {
               const entry = gitEntry()
               if (!entry)
@@ -791,14 +840,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 && entry.unstagedStatus !== GitFileStatusCode.UNSPECIFIED
             })
             return (
-              <div class={styles.tilePane} classList={{ [styles.tilePaneHidden]: fileTab()?.id !== ft.id }}>
+              <div class={styles.tilePane} classList={{ [styles.tilePaneHidden]: fileTab()?.id !== fileTabId }}>
                 <FileViewer
-                  workerId={ft.workerId ?? ''}
-                  filePath={ft.filePath ?? ''}
-                  rootPath={getMruAgentContext().workingDir}
-                  homeDir={getMruAgentContext().homeDir}
-                  displayMode={ft.displayMode}
-                  onDisplayModeChange={mode => metadata.patch(ft.id, { displayMode: mode })}
+                  workerId={ft()?.workerId ?? ''}
+                  filePath={filePath()}
+                  rootPath={fileRootPath()}
+                  homeDir={fileHomeDir()}
+                  displayMode={ft()?.displayMode}
+                  onDisplayModeChange={mode => metadata.patch(fileTabId, { displayMode: mode })}
                   onQuote={isActiveWorkspaceArchived()
                     ? undefined
                     : (text, startLine, endLine) => {
@@ -811,12 +860,12 @@ export function createTileRenderer(opts: TileRendererOpts) {
                     : () => {
                         insertIntoMruAgentEditor(mruEditorDeps, formatFileMention(fileRelPath()), 'inline')
                       }}
-                  fileViewMode={ft.fileViewMode}
-                  fileDiffBase={ft.fileDiffBase}
+                  fileViewMode={ft()?.fileViewMode}
+                  fileDiffBase={ft()?.fileDiffBase}
                   gitFileStatus={gitEntry()}
                   hasStagedAndUnstaged={hasStagedAndUnstaged()}
-                  onFileViewModeChange={mode => metadata.patch(ft.id, { fileViewMode: mode })}
-                  onFileDiffBaseChange={base => metadata.patch(ft.id, { fileDiffBase: base })}
+                  onFileViewModeChange={mode => metadata.patch(fileTabId, { fileViewMode: mode })}
+                  onFileDiffBaseChange={base => metadata.patch(fileTabId, { fileDiffBase: base })}
                 />
               </div>
             )

@@ -1,7 +1,7 @@
 import type { AgentTab, GitTabFields, Tab, TerminalTab } from './tab.types'
 import type { TerminalMeta } from './tabMetadata.store'
 import type { listTerminals } from '~/api/workerRpc'
-import type { AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentGitStatus, AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
@@ -154,6 +154,7 @@ export function setOptionValue(map: Record<string, string> | undefined, id: stri
  * settings-related notifications can render display names without carrying the full
  * catalogs on every tab read. (The pure `deriveOptionGroupTabFields` no longer does
  * this itself.)
+ *
  */
 export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Partial<AgentTab> {
   updateSettingsLabelCache(agent.agentProvider, agent.optionGroups)
@@ -165,20 +166,14 @@ export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Parti
     agentStatus: agent.status,
     agentSessionId: agent.agentSessionId || undefined,
     ...deriveOptionGroupTabFields(agent.optionGroups),
-    agentGitStatus: agent.gitStatus,
     createdAt: agent.createdAt || undefined,
     startupError: agent.startupError || undefined,
     startupMessage: agent.startupMessage || undefined,
-    // The four git fields as one group, through the shared normalizer. Three
-    // producers of this group must agree about what "no answer" is, and the
-    // only way to make that true rather than merely asserted is for the answer
-    // to live in one place.
-    ...toGitTabFields(
-      agent.gitStatus?.branch ?? '',
-      agent.gitStatus?.originUrl ?? '',
-      agent.gitStatus?.toplevel ?? '',
-      agent.gitStatus?.isWorktree ?? false,
-    ),
+    // The whole git group as one unit, through the shared producer. Both agent
+    // producers of this group must agree about what "no answer" is and about
+    // reference reuse, and the only way to make that true rather than merely
+    // asserted is for the answer to live in one place.
+    ...toAgentGitTabFields(agent.gitStatus),
   }
 }
 
@@ -336,9 +331,8 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
  * AN EMPTY ANSWER IS A REAL VALUE, so the strings stay `''` rather than
  * collapsing to `undefined`. `tabMetadata.patch` SKIPS undefined by design — a
  * partial row must not blank fields another source owns — so a collapsed field
- * cannot clear a populated one: `gitTabFieldsDiffer` reports a difference,
- * `patch` drops it, nothing changes, and the next status event repeats that
- * forever. A repo that loses its remote would keep the dead origin in the
+ * cannot clear a populated one: `patch` drops the undefined, nothing changes,
+ * and the next status event repeats that forever. A repo that loses its remote would keep the dead origin in the
  * sidebar's grouping for the life of the page. `applyGitStatusToTabs` reached
  * the same conclusion independently and already sends raw `''`; this is the
  * other half of that agreement.
@@ -354,12 +348,33 @@ export function toGitTabFields(branch: string, originUrl: string, toplevel: stri
   }
 }
 
-/** True when `next` would change any of the four git fields on `tab`. */
-export function gitTabFieldsDiffer(tab: GitTabFields, next: GitTabFields): boolean {
-  return tab.gitBranch !== next.gitBranch
-    || tab.gitOriginUrl !== next.gitOriginUrl
-    || tab.gitToplevel !== next.gitToplevel
-    || (tab.gitIsWorktree ?? false) !== (next.gitIsWorktree ?? false)
+/**
+ * THE producer of an agent tab's git group: the full `AgentGitStatus` the info
+ * card renders ahead/behind and the dirty-state flags from, plus the four flat
+ * fields every other consumer reads (see `toGitTabFields`). Both agent producers
+ * -- the live `statusChange` handler and the hydration/open reply -- go through
+ * here, so the five fields cannot be assembled two different ways.
+ *
+ * Reference reuse is deliberately NOT this function's problem, though the worker
+ * re-ships the whole status on every push and an unchanged repo therefore arrives
+ * as an equal-but-fresh proto on every turn end. This used to take the tab's
+ * current status as a `prev` argument and report `undefined` when the two matched.
+ * That worked, but it made "do not re-key the tab" a rule every producer had to
+ * opt into, and the opt-in leaked into the callers: one of them needed a
+ * `tab.type === TabType.AGENT ? tab.agentGitStatus : undefined` dance just to
+ * supply it, and another read `prev` across an `await` where a concurrent status
+ * push could stale it. `tabMetadata.patch` now compares object-valued fields at
+ * the single write point (see `sameStoredValue`), so an equal payload is dropped
+ * there for EVERY field and every producer, including ones written later that
+ * would never have known to ask.
+ */
+export function toAgentGitTabFields(status: AgentGitStatus | undefined): Partial<AgentTab> {
+  if (!status)
+    return {}
+  return {
+    agentGitStatus: status,
+    ...toGitTabFields(status.branch, status.originUrl, status.toplevel, status.isWorktree),
+  }
 }
 
 /**
@@ -374,8 +389,9 @@ function effectiveGitDir(tab: { shellStartDir?: string, workingDir?: string }): 
 }
 
 /**
- * Optimistic git branch/origin to seed on a freshly-opened agent or terminal
- * tab. A new tab starts with empty gitBranch/gitOriginUrl and only learns
+ * Optimistic git branch/origin to seed on a freshly-opened tab of ANY kind --
+ * agent, terminal, or file.
+ * A new tab starts with empty gitBranch/gitOriginUrl and only learns
  * them once the async phase-1 startup broadcasts TerminalStatusChange; in
  * that window the sidebar renders the tab under the workspace instead of
  * nested under its branch (WorkspaceTabTree.buildTree groups solely on
@@ -383,24 +399,38 @@ function effectiveGitDir(tab: { shellStartDir?: string, workingDir?: string }): 
  *
  * Only safe to seed when the active tab and the new tab resolve to the same
  * git directory — otherwise the seeded values would be wrong for the new
- * tab's repo. File tabs have no authoritative git info so they never seed.
+ * tab's repo.
  *
- * ABSENT KEYS ARE OMITTED, not set to `undefined`. Both callers spread this
- * AFTER the worker's own fields (`{ ...agentFields, ...seed }`), and object
- * spread copies `undefined`-valued OWN keys — so a key present-but-undefined
- * does not "leave the value alone", it ERASES it. An active tab in the same
- * directory whose branch has not resolved yet still passes the origin/toplevel
- * guard above, and would have wiped the authoritative `gitBranch` the
- * OpenAgent response just supplied. A seed whose job is to ADD information
- * must never subtract.
+ * ANY tab kind may be the SOURCE. A file tab now carries a `workingDir` and
+ * gets its git fields stamped by the same containment match as the other two,
+ * so "file tabs have no authoritative git info" — the reason this used to
+ * refuse them outright — stopped being true when that column landed. Nothing
+ * was protecting: the two guards below already do the whole job. A tab with
+ * neither origin nor toplevel has nothing to seed and returns early, and one in
+ * a different directory fails the dir match. A type test on top of those could
+ * only reject a tab that passes both, which is precisely a tab that would have
+ * seeded correctly — a file tab opened from an agent, whose branch group is the
+ * one the next file opened beside it belongs in.
+ *
+ * ABSENT KEYS ARE OMITTED, not set to `undefined`. Object spread copies
+ * `undefined`-valued OWN keys, so a key present-but-undefined does not "leave
+ * the value alone", it ERASES it. That matters most where the seed is spread
+ * AFTER the worker's own fields — `useAgentOperations` (`{ ...agentFields,
+ * ...seed }`) and `useTerminalOperations` (`{ ...meta, ...seed }`): an active
+ * tab in the same directory whose branch has not resolved yet still passes the
+ * origin/toplevel guard above, and would have wiped the authoritative
+ * `gitBranch` the OpenAgent response just supplied. The FILE caller
+ * (`useTabOperations.handleFileOpen`) spreads the seed FIRST instead, which is
+ * safe for a different reason — the fields it writes after it (`filePath`,
+ * `workingDir`, `title`) are disjoint from the four this returns, so neither
+ * side can erase the other. A seed whose job is to ADD information must never
+ * subtract, whichever order it lands in.
  */
 export function resolveOptimisticGitInfo(
   activeTab: Tab | null | undefined,
   newTab: { shellStartDir?: string, workingDir?: string },
 ): { gitBranch?: string, gitOriginUrl?: string, gitToplevel?: string, gitIsWorktree?: boolean } {
   if (!activeTab)
-    return {}
-  if (activeTab.type !== TabType.AGENT && activeTab.type !== TabType.TERMINAL)
     return {}
   // Needs at least an origin or a toplevel — otherwise there is no grouping
   // value to seed, and the sidebar would still fall through to ungrouped

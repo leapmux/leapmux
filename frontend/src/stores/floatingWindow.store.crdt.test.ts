@@ -1,10 +1,10 @@
 import type { TestBridgeHandle } from '~/test-support/crdtBridge'
 import { createEffect, createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { ctxFromBridge, getCRDTBridge, newBatch, setCRDTBridge, setFloatingWorkspaceId } from '~/lib/crdt'
-import { MIN_WINDOW_DIMENSION } from '~/stores/floatingWindow.store'
+import { ctxFromBridge, getCRDTBridge, newBatch, renderTreeToLocal, setCRDTBridge, setFloatingWorkspaceId, sharedTrees } from '~/lib/crdt'
+import { createFloatingWindowStore, MIN_WINDOW_DIMENSION } from '~/stores/floatingWindow.store'
 import { seedWorkspace, withTestBridge } from '~/test-support/crdtBridge'
-import { createTestFloatingWindowStore } from '~/test-support/tabStores'
+import { createTestFloatingWindowStore, projectionMemo } from '~/test-support/tabStores'
 
 /**
  * createFloatingWindowStore is projection-driven: the window list and
@@ -333,6 +333,43 @@ describe('createFloatingWindowStore (projection-driven)', () => {
   // Stability contract: when no field on a window has changed across
   // projections, the FloatingWindowState ref must be preserved.
   describe('projection ref stability', () => {
+    /**
+     * `reconcile` updates a matched node's fields IN PLACE rather than swapping
+     * the reference, so whatever this store hands it becomes writable state.
+     * `renderTreeToLocal`'s SHARED map must therefore never be what it is handed
+     * -- the store owns a `LocalTreeCache` of its own -- or a split inside one
+     * floating window rewrites the conversion every other consumer of that
+     * subtree is still holding.
+     */
+    it('does not mutate the shared renderTreeToLocal conversion when a window inner tree changes', async () => {
+      await withTestBridge(async (harness) => {
+        // ONE projection memo feeding both the store and the assertion, so the
+        // `RenderTree` the store converts is the very object keyed below. Two
+        // `projectionMemo()` calls would mint two `ProjectionCache`s and two
+        // unrelated trees, and the test would pass without proving anything.
+        const { projection } = projectionMemo()
+        const store = createFloatingWindowStore({
+          getWorkspaceId: () => harness.workspaceId,
+          projection,
+        })
+        const created = store.addWindow({ x: 0.1, y: 0.2, width: 0.4, height: 0.5 })!
+        await new Promise<void>(queueMicrotask)
+        const rendered = projection()!.workspaces.get(harness.workspaceId)!.floatingWindows[0]!
+        // The SHARED conversion -- what any other consumer of this subtree gets.
+        const shared = renderTreeToLocal(rendered.innerTree, sharedTrees)!
+        expect(shared).toEqual({ type: 'leaf', id: created.tileId })
+
+        // `emitSplitTile` flips the tile to SPLIT under the SAME node id, so
+        // `reconcile` matches on `id` and recurses into the node it retained.
+        store.splitTile(created.windowId, created.tileId, 'vertical')
+        await new Promise<void>(queueMicrotask)
+        void store.state.windows
+
+        expect(shared, 'the shared node is a value, not the store\'s scratch space')
+          .toEqual({ type: 'leaf', id: created.tileId })
+      }, { rootTileId: 'main' })
+    })
+
     it('preserves FloatingWindowState refs across CRDT ticks that don\'t change any window field', async () => {
       await withTestBridge(async (harness) => {
         const store = createTestFloatingWindowStore()
@@ -580,6 +617,61 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         expect(store.getWindowTileIdSet(b.windowId)?.size).toBe(1)
         expect(store.getWindowTileIdSet(c.windowId)?.size).toBe(1)
       }, { rootTileId: 'main' })
+    })
+
+    /**
+     * The account-wide half of the same contract: one window's drag must not
+     * disturb ANOTHER WORKSPACE's windows, now that every workspace is derived
+     * from one shared projection.
+     *
+     * Deliberately NOT sold as a `ProjectionCache` test. Every observable this
+     * store exposes is absorbed one layer down -- `reconcile({ key: 'id' })`
+     * keeps the entry ref, `tileSetsByWindow`'s `{ equals: tileSetMapsEqual }`
+     * keeps the Set, and neither notifies when the content matches -- so an
+     * identity or effect-count assertion here passes with an uncached
+     * `project(state)` too (checked by running it that way). What it pins is the
+     * end-to-end behaviour: nothing about the background workspace moves, and
+     * its geometry stays its own. The cache's own contribution -- the background
+     * `WorkspaceProjection` being the IDENTICAL object across the drag -- is
+     * asserted where it is visible, in `project.test.ts`'s "a ratio drag in one
+     * workspace leaves every other workspace untouched".
+     */
+    it('leaves a background workspace\'s windows untouched across a drag scrub', async () => {
+      await withTestBridge(async (harness) => {
+        seedWorkspace(harness, 'ws-bg', 'bg-root')
+        const store = createTestFloatingWindowStore('ws-active')
+        const bgStore = createTestFloatingWindowStore('ws-bg')
+        const active = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!
+        // `addWindow` attributes the window to the BRIDGE's workspace, so hand it
+        // to the background one the way a cross-workspace move does.
+        const background = store.addWindow({ x: 0.6, y: 0.6, width: 0.2, height: 0.2 })!
+        const bridge = getCRDTBridge()!
+        bridge.enqueue(newBatch([setFloatingWorkspaceId(ctxFromBridge(bridge), background.windowId, 'ws-bg')]))
+        await new Promise<void>(queueMicrotask)
+        const bgBefore = bgStore.state.windows[0]!
+        const bgTilesBefore = bgStore.getWindowTileIdSet(background.windowId)
+        expect(bgBefore, 'the background workspace has a window to protect').toBeDefined()
+
+        // Any rebuild that reaches `setStoreState('list', reconcile(...))` with
+        // a real diff notifies anything tracking `state.windows`.
+        let bgRuns = 0
+        createEffect(() => {
+          for (const w of bgStore.state.windows) void w.x
+          bgRuns++
+        })
+        await new Promise<void>(queueMicrotask)
+        const baseline = bgRuns
+
+        for (let i = 0; i < 10; i++)
+          store.updatePosition(active.windowId, 0.1 + i * 0.01, 0.1 + i * 0.01)
+        await new Promise<void>(queueMicrotask)
+
+        expect(bgRuns, 'ten drag frames in another workspace notify this one zero times').toBe(baseline)
+        expect(bgStore.state.windows[0]).toBe(bgBefore)
+        expect(bgStore.getWindowTileIdSet(background.windowId)).toBe(bgTilesBefore)
+        expect(bgStore.state.windows[0].x, 'and its geometry is its own').toBeCloseTo(0.6, 6)
+        expect(store.state.windows[0].x, 'while the dragged one moved').toBeCloseTo(0.19, 6)
+      }, { workspaceId: 'ws-active', rootTileId: 'main' })
     })
 
     // Granular-update contract (the whole point of switching to

@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { CrdtOpSchema } from '~/generated/leapmux/v1/user_ops_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { applyOp, newState } from './apply'
-import { project } from './project'
+import { project, ProjectionCache } from './project'
 
 /**
  * This file is one half of a cross-language contract. The other half is
@@ -125,6 +125,17 @@ function replayConformance(label: string, fixture: ConformanceFixture): void {
     for (const c of fixture.cases) {
       it(c.name, () => {
         const state = newState(fixture.userId)
+        // The reuse cache is the app's projector, so every case here is also a
+        // differential test of it: after EVERY op, `project(state, cache)` must
+        // deep-equal the reference `project(state)`.
+        //
+        // The cache decides only what gets ALLOCATED, never what is returned,
+        // and this is what holds it to that. Op by op rather than once at the
+        // end because a cache bug is a bug about a TRANSITION -- reusing a
+        // subtree whose register was rewritten, or missing an entity that left
+        // and came back -- and a single final comparison would step over every
+        // intermediate state where that shows.
+        const cache = new ProjectionCache()
         c.ops.forEach((rawOp, i) => {
           let op: CrdtOp
           try {
@@ -139,6 +150,10 @@ function replayConformance(label: string, fixture: ConformanceFixture): void {
           if (!op.canonicalHlc)
             throw new Error(`case "${c.name}" op ${i} has no canonicalHlc, so applyOp would ignore it`)
           applyOp(state, op)
+          expect(
+            project(state, cache),
+            `case "${c.name}": the cached projection diverged from project(state) after op ${i} (${op.body.case})`,
+          ).toEqual(project(state))
         })
 
         const proj = project(state)

@@ -49,7 +49,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 	fs.StringVar(&effort, "effort", "", "--type=agent: effort (low/medium/high/max)")
 	fs.StringVar(&title, "title", "", "--type=agent: tab title")
 	fs.StringVar(&permissionMode, "permission-mode", "", "--type=agent: permission mode")
-	fs.StringVar(&workingDir, "working-dir", workingDirEnv(), "--type=agent|terminal: working directory (defaults to $LEAPMUX_REMOTE_WORKING_DIR)")
+	fs.StringVar(&workingDir, "working-dir", workingDirEnv(), "working directory, defaulting to $LEAPMUX_REMOTE_WORKING_DIR (all types); for --type=file this is the tab's git context, and the file's own directory is used only when neither the flag nor the env var is set")
 	fs.StringVar(&initialMessage, "initial-message", "", "--type=agent: user message sent right after spawn")
 	// Terminal-only flags.
 	fs.StringVar(&shell, "shell", "", "--type=terminal: shell path (empty -> worker default)")
@@ -205,7 +205,12 @@ func RunTabOpen(rawCtx any, args []string) error {
 					errors.New("no worker hosts this workspace yet; pass --worker-id explicitly"))
 			}
 		}
-		if err := registerFileTabPath(cc.ctx, cc.c, workerID, tabID, filePath); err != nil {
+		// workingDir defaults to $LEAPMUX_REMOTE_WORKING_DIR, so a `tab open`
+		// run from inside an agent or terminal forwards THAT tab's dir -- the
+		// same "the file tab inherits the context it was opened from" the UI
+		// path sends. Run from outside a LeapMux tab it is empty, and the
+		// worker falls back to the file's own directory.
+		if err := registerFileTabPath(cc.ctx, cc.c, workerID, tabID, filePath, workingDir); err != nil {
 			return remote.EmitErrorWith("worker_register_failed", err)
 		}
 		ops := []*leapmuxv1.CrdtOp{
@@ -250,10 +255,11 @@ func tabOpenEnvelope(tabID, tabType, workspaceID, workerID, tileID, position str
 // inner-RPC over E2EE so the file path stays off the hub. The
 // returned response is empty on success; any worker-side error is
 // surfaced as a wrapped codedRPCError.
-func registerFileTabPath(ctx context.Context, c *remote.Client, workerID, tabID, filePath string) error {
+func registerFileTabPath(ctx context.Context, c *remote.Client, workerID, tabID, filePath, workingDir string) error {
 	req := &leapmuxv1.RegisterFileTabPathRequest{
-		TabId:    tabID,
-		FilePath: filePath,
+		TabId:      tabID,
+		FilePath:   filePath,
+		WorkingDir: workingDir,
 	}
 	var resp leapmuxv1.RegisterFileTabPathResponse
 	return callInnerRPCBest(ctx, c, workerID, "RegisterFileTabPath", req, &resp)

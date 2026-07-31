@@ -47,7 +47,19 @@ export interface ActionsProps {
   onRespond: (agentId: string, content: Uint8Array) => Promise<void>
   hasEditorContent: boolean
   onTriggerSend: () => void
-  editorContentRef?: EditorContentRef
+  /**
+   * The live editor handle, as an ACCESSOR rather than a value.
+   *
+   * The handle only exists once the editor's `contentRef` callback has run, which
+   * is AFTER the owner's JSX is created. A plain-valued prop is therefore unusable
+   * here in practice: every caller has it in a `let` that is still `undefined` at
+   * creation time, and Solid's JSX transform treats a bare identifier prop as
+   * STATIC -- it captures that `undefined` and never re-reads it. `AgentEditorPanel`
+   * did exactly that, so this arrived permanently unset and the multi-question
+   * save/restore below silently did nothing. An accessor cannot be captured stale,
+   * which makes the mistake unrepresentable instead of merely fixed once.
+   */
+  editorContentRef?: () => EditorContentRef | undefined
   agentProvider?: AgentProvider
   /** Optional info trigger element (context usage icon) to render in the left section. */
   infoTrigger?: JSX.Element

@@ -43,9 +43,10 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 	const sharedTabID = "file-1700000000000-1"
 	for _, userID := range []string{"user-a", "user-b"} {
 		require.NoError(t, svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
-			UserID:   userID,
-			TabID:    sharedTabID,
-			FilePath: openPath,
+			UserID:     userID,
+			TabID:      sharedTabID,
+			FilePath:   openPath,
+			WorkingDir: wtDir,
 		}))
 	}
 
@@ -79,9 +80,9 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 	assert.True(t, errors.Is(err, sql.ErrNoRows), "user-b's link must be gone (err=%v)", err)
 
 	// user-a's file_tab row is untouched too.
-	path, err := svc.FileTabPaths.Get(ctx, "user-a", sharedTabID)
+	loc, err := svc.FileTabPaths.Get(ctx, "user-a", sharedTabID)
 	require.NoError(t, err)
-	assert.Equal(t, openPath, path)
+	assert.Equal(t, openPath, loc.FilePath)
 }
 
 // TestWorktreeTabUserID pins the one rule every by-tab worktree_tabs read and

@@ -1,9 +1,10 @@
 import type { LayoutOwner } from './layoutOwner'
 import type { Projection } from '~/lib/crdt'
 import { createEffect, createMemo, createSignal } from 'solid-js'
-import { renderTreeToLocal, withBridge } from '~/lib/crdt'
+import { renderTreeToLocal, sharedTrees, withBridge } from '~/lib/crdt'
 import { makeIdGenerator } from '~/lib/idGenerator'
 import { sameKeys } from '~/lib/sameKeys'
+import { shallowEqualArrays } from '~/lib/shallowEqual'
 import {
   emitCloseTile,
   emitMakeGrid,
@@ -54,26 +55,23 @@ export type GridAxis = 'row' | 'col'
 
 export type LayoutNodeLocal = SplitNode | LeafNode | GridNode
 
-/** Element-wise number-array compare, for ratio lists. */
-function sameRatios(a: readonly number[], b: readonly number[]): boolean {
-  if (a.length !== b.length)
-    return false
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i])
-      return false
-  }
-  return true
-}
-
 /**
  * Structural equality for a projected tree.
  *
- * `project()` allocates a fresh graph on every call, so a memo over it never
- * dedupes by identity and re-propagates on EVERY CRDT tick -- including the
- * ~60/s stream of geometry ops a floating-window drag emits, and every remote
- * op in a workspace the user is not even looking at. That churn defeats two
- * optimisations that document themselves as bounded: `useFocusInvariant`'s
- * `on([focusedTileId, root])` and `TileRenderer`'s per-root predicate memos.
+ * The BACKSTOP, not the mechanism. Identity normally survives a tick already:
+ * `project()`'s `ProjectionCache` reuses every subtree the tick left alone --
+ * including one rebuilt byte-identical by a same-value register rewrite, which
+ * it value-compares and discards -- and `renderTreeToLocal` memoizes the
+ * conversion, so an untouched workspace arrives here as the same object and this
+ * returns on its first line. What is left for it to catch is the uncached
+ * `project(state)` the unit tests call.
+ *
+ * Without either layer a memo over the projection re-propagates on EVERY CRDT
+ * tick, including the per-frame geometry ops a floating-window drag emits and
+ * every remote op in a workspace the user is not even looking at. That churn
+ * defeats two optimisations that document themselves as bounded:
+ * `useFocusInvariant`'s `on([focusedTileId, root])` and `TileRenderer`'s
+ * per-root predicate memos.
  *
  * Compares only what consumers actually read, which is the whole node shape --
  * ids, kinds, ratios and child order. A genuine ratio drag still invalidates,
@@ -88,14 +86,14 @@ export function sameLayoutNode(a: LayoutNodeLocal, b: LayoutNodeLocal): boolean 
     return true
   if (a.type === 'split') {
     const other = b as SplitNode
-    if (a.direction !== other.direction || !sameRatios(a.ratios, other.ratios))
+    if (a.direction !== other.direction || !shallowEqualArrays(a.ratios, other.ratios))
       return false
     return sameChildLists(a.children, other.children)
   }
   const other = b as GridNode
   if (a.rows !== other.rows || a.cols !== other.cols)
     return false
-  if (!sameRatios(a.rowRatios, other.rowRatios) || !sameRatios(a.colRatios, other.colRatios))
+  if (!shallowEqualArrays(a.rowRatios, other.rowRatios) || !shallowEqualArrays(a.colRatios, other.colRatios))
     return false
   return sameChildLists(a.cells, other.cells)
 }
@@ -421,10 +419,7 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
     const wsId = workspaceId ?? opts.getWorkspaceId() ?? ''
     setFocusByWorkspace(prev => ({ ...prev, [wsId]: tileId }))
   }
-  // Drop a departed workspace's remembered focus.
-  //
-  // Derive the local tree shape from the CRDT projection.
-  //
+  /** The one empty answer `tileOrderFor` hands out for an unknown workspace. */
   const EMPTY_TILE_ORDER: readonly string[] = []
 
   /**
@@ -438,54 +433,84 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
    *
    * Identity is preserved per workspace across ticks when the tree is
    * structurally unchanged. That is what `tileOrderFor`'s "returns the SAME
-   * array" promise rests on, and it now comes from one place instead of a
-   * second caching mechanism: `project()` re-allocates every `mainTree` per
-   * call, so `sameLayoutNode` is what turns a fresh graph back into a stable
-   * reference. `getAllTileIds` results hang off a WeakMap keyed by that stable
-   * node, so they self-evict with it and need no sweep of their own.
+   * array" promise rests on, and it comes from one place instead of a second
+   * caching mechanism: `renderTreeToLocal` hands back the same node for a
+   * `RenderTree` the projection cache reused, and `sameLayoutNode` covers the
+   * rest: the uncached `project(state)` the unit tests call, and -- the case
+   * only this layer can see -- a change to a `RenderTree` field that
+   * `LayoutNodeLocal` DISCARDS, where `sameRenderTree` reports a difference and
+   * the projected shape has none (a leaf drops ratios/direction/rows/cols, and
+   * UNSPECIFIED and HORIZONTAL both map to 'horizontal'). NOT the same-value
+   * register rewrite, despite what this used to say: `rebuildTree`'s own value
+   * compare already collapses that one. `getAllTileIds` results hang off a
+   * WeakMap keyed by that stable node, so they self-evict with it and need no
+   * sweep of their own.
    */
-  const previousLocalTrees = new Map<string, LayoutNodeLocal>()
+  let previousLocalTrees = new Map<string, LayoutNodeLocal>()
   const tileIdsByNode = new WeakMap<LayoutNodeLocal, readonly string[]>()
 
   const localTrees = createMemo<Map<string, LayoutNodeLocal>>(() => {
     const proj = opts.projection()
-    const out = new Map<string, LayoutNodeLocal>()
     if (!proj) {
-      previousLocalTrees.clear()
-      return out
+      previousLocalTrees = new Map()
+      return previousLocalTrees
     }
+    const out = new Map<string, LayoutNodeLocal>()
+    let reused = true
     for (const [wsId, ws] of proj.workspaces) {
-      const fresh = renderTreeToLocal(ws.mainTree)
+      const fresh = renderTreeToLocal(ws.mainTree, sharedTrees)
       if (!fresh)
         continue
       const prev = previousLocalTrees.get(wsId)
-      out.set(wsId, prev && sameLayoutNode(prev, fresh) ? prev : fresh)
+      const node = prev && sameLayoutNode(prev, fresh) ? prev : fresh
+      reused &&= node === prev
+      out.set(wsId, node)
     }
-    // A workspace that left the projection is simply absent from `out`, so
-    // replacing the map wholesale IS the eviction.
-    previousLocalTrees.clear()
-    for (const [wsId, node] of out)
-      previousLocalTrees.set(wsId, node)
+    // Hand back the IDENTICAL map when every workspace reused its node and none
+    // came or went, so this memo's default `===` stops propagating on a tick
+    // that changed nothing here -- extending the projection cache's "an
+    // unchanged tick returns the identical object" guarantee through this
+    // layer instead of stopping it at `project()`. A drag in one workspace
+    // leaves the others' subscribers alone, and a floating-window-only frame
+    // leaves every main tree's alone.
+    if (reused && out.size === previousLocalTrees.size)
+      return previousLocalTrees
+    // Otherwise the fresh map becomes the generation: a workspace that left the
+    // projection is simply absent from it, so replacing it wholesale IS the
+    // eviction (same generation swap as `ProjectionCache.commit`).
+    previousLocalTrees = out
     return out
   })
 
   const localTreeFor = (workspaceId: string): LayoutNodeLocal | undefined =>
     localTrees().get(workspaceId)
 
+  // FROZEN, not merely typed `readonly`. This array is handed to every caller
+  // that asks about the same node -- `getAllTileIds`, `tileOrderFor`, and any
+  // workspace sharing that subtree -- so an in-place `sort()`/`reverse()` by one
+  // of them silently reorders everyone else's answer, for the lifetime of the
+  // node. `readonly` makes that a compile error for TS callers and nothing at
+  // all for a JS-boundary consumer; the freeze makes it impossible for both.
+  // Paid once per node, not per call, because the result is memoized.
   const tileIdsFor = (node: LayoutNodeLocal): readonly string[] => {
     const cached = tileIdsByNode.get(node)
     if (cached)
       return cached
-    const ids = getAllTileIds(node)
+    const ids = Object.freeze(getAllTileIds(node))
     tileIdsByNode.set(node, ids)
     return ids
   }
 
-  // `equals: sameLayoutNode` because `project()` returns a fresh graph per call:
-  // without it this memo invalidates on every CRDT tick and drags the whole
-  // downstream tree walk (`allTileIds`, `hasMultipleTiles`, TileRenderer's
-  // predicate map, the focus invariant) along with it. Same reason `tabView`'s
-  // `placedTabs` carries `equals: samePlacements`.
+  // `equals: sameLayoutNode` keeps this memo's non-propagation guarantee
+  // self-contained rather than resting on `localTrees` continuing to dedupe:
+  // without it, an invalidation here drags the whole downstream tree walk
+  // (`allTileIds`, `hasMultipleTiles`, TileRenderer's predicate map, the focus
+  // invariant) along with it. Same reason `tabView`'s `placedTabs` carries
+  // `equals: samePlacements`. See `localTrees` above for why identity alone is
+  // not enough -- the uncached `project(state)` the unit tests call, and a
+  // change to a `RenderTree` field that `LayoutNodeLocal` discards. NOT the
+  // same-value register rewrite, which `rebuildTree`'s own value compare
+  // collapses before it ever reaches this layer.
   const projectedRoot = createMemo<LayoutNodeLocal>(() => {
     const wsId = opts.getWorkspaceId()
     if (!wsId)
@@ -493,7 +518,10 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
     return localTreeFor(wsId) ?? FALLBACK_LEAF
   }, FALLBACK_LEAF, { equals: sameLayoutNode })
 
-  const allTileIdsMemo = createMemo(() => getAllTileIds(projectedRoot()))
+  // Through `tileIdsFor`, not `getAllTileIds`: the active workspace asks the
+  // same question `tileOrderFor` does, so it shares the one WeakMap entry
+  // instead of walking the tree a second time and handing out a second array.
+  const allTileIdsMemo = createMemo(() => tileIdsFor(projectedRoot()))
   const hasMultipleTilesMemo = createMemo(() => hasMultipleLeaves(projectedRoot()))
 
   // Focus invariant is NOT enforced here. `focusedTileId` may legally
@@ -600,12 +628,11 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
      * component keeping its own layout cache.
      *
      * Returns the SAME array while the order is unchanged, so an untouched
-     * workspace keeps its identity across ticks: `project()` allocates a fresh
-     * `mainTree` on every call, and handing back a new array would invalidate
-     * `WorkspaceTabTree`'s `buildTree` memo for every sidebar row every tick.
-     * Compared element-wise for the same reason — an identity-keyed cache could
-     * never hit. Entries for workspaces that leave the projection are dropped,
-     * so this cannot grow one row per workspace ever viewed.
+     * workspace keeps its identity across ticks — handing back a new array would
+     * invalidate `WorkspaceTabTree`'s `buildTree` memo for every sidebar row
+     * every tick. It rides on `localTrees`' per-workspace identity rather than
+     * caching anything itself. Entries for workspaces that leave the projection
+     * are dropped, so this cannot grow one row per workspace ever viewed.
      */
     tileOrderFor(workspaceId: string): readonly string[] {
       const local = localTreeFor(workspaceId)
@@ -705,7 +732,14 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
       return withBridge(bridge => emitUpdateRatios(bridge, splitId, ratios), false)
     },
 
-    getAllTileIds(): string[] {
+    /**
+     * Leaf tile ids of the CURRENT workspace's tree, in tree order.
+     *
+     * `readonly` because the array is the shared `tileIdsFor` entry for that
+     * node -- the same one `tileOrderFor` hands out -- so a caller that sorted
+     * it in place would reorder everyone else's answer.
+     */
+    getAllTileIds(): readonly string[] {
       return allTileIdsMemo()
     },
 

@@ -224,10 +224,11 @@ describe('cross-workspace accessors', () => {
   })
 
   /**
-   * `tileOrderFor` must hand back the SAME array while the order is unchanged:
-   * `project()` allocates a fresh `mainTree` per call, so a new array every
-   * time would invalidate `WorkspaceTabTree`'s `buildTree` memo for every
-   * sidebar row on every CRDT tick.
+   * `tileOrderFor` must hand back the SAME array while the order is unchanged,
+   * or `WorkspaceTabTree`'s `buildTree` memo invalidates for every sidebar row
+   * on every CRDT tick. It rides on `localTrees`' per-workspace identity --
+   * supplied by `ProjectionCache` plus `renderTreeToLocal`'s memo, backstopped
+   * by `sameLayoutNode` -- rather than caching anything itself.
    */
   describe('tileOrderFor', () => {
     it('preserves array identity while the order is unchanged', () => {
@@ -238,6 +239,41 @@ describe('cross-workspace accessors', () => {
           expect(first).toEqual(['root-leaf'])
           expect(store.tileOrderFor('ws-test'), 'same reference, or the sidebar memo re-runs each tick')
             .toBe(first)
+          dispose()
+        })
+      }, { workspaceId: 'ws-test', rootTileId: 'root-leaf' })
+    })
+
+    /**
+     * The regression that made #336: with every workspace live at once, a ratio
+     * drag in one of them used to re-derive every other workspace's tree and hand
+     * the sidebar a fresh array per row per frame. `ProjectionCache` +
+     * `renderTreeToLocal`'s memo are what keep the untouched workspaces still.
+     */
+    it('leaves another workspace untouched across a ratio drag', () => {
+      withTestBridge((harness) => {
+        createRoot((dispose) => {
+          seedWorkspace(harness, 'ws-other', 'other-leaf')
+          const store = createTestLayoutStore()
+          store.splitTile('root-leaf', 'horizontal')
+          const otherBefore = store.tileOrderFor('ws-other')
+          const activeBefore = store.state.root
+          const orderBefore = [...store.tileOrderFor('ws-test')]
+
+          // What a divider drag emits, once per frame.
+          for (const r of [[0.4, 0.6], [0.35, 0.65], [0.3, 0.7]])
+            store.updateRatios('root-leaf', r)
+
+          expect(store.tileOrderFor('ws-other'), 'the other workspace never moved').toBe(otherBefore)
+          const activeAfter = store.state.root
+          expect(activeAfter, 'the dragged tree did').not.toBe(activeBefore)
+          expect((activeAfter as { ratios: number[] }).ratios).toEqual([0.3, 0.7])
+          // The leaves under it are untouched objects too, so `TileRenderer`'s
+          // per-root predicate memos stay quiet.
+          expect((activeAfter as { children: unknown[] }).children[1])
+            .toBe((activeBefore as { children: unknown[] }).children[1])
+          expect(store.tileOrderFor('ws-test'), 'and the leaf order is unchanged')
+            .toEqual(orderBefore)
           dispose()
         })
       }, { workspaceId: 'ws-test', rootTileId: 'root-leaf' })

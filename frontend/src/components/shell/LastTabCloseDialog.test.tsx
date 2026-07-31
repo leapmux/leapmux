@@ -280,16 +280,16 @@ describe('lastTabCloseDialog', () => {
       workerId: 'w7',
       tabId: 't9',
       tabType: TabType.AGENT,
+      workingDir: '/repo',
     })
     renderDialog(state)
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => {
-      // The worker always re-probes pushStatus to avoid acting on a
-      // stale snapshot, so no hint rides the request.
-      expect(workerRpc.pushBranch).toHaveBeenCalledWith('w7', {
-        tabType: TabType.AGENT,
-        tabId: 't9',
-      })
+      // The worker always re-probes pushStatus to avoid acting on a stale
+      // snapshot, so no hint rides the request -- and the push names the DIR
+      // the worker itself resolved and echoed back on this very inspect
+      // response, not a tab id it would have to resolve again.
+      expect(workerRpc.pushBranch).toHaveBeenCalledWith('w7', { workingDir: '/repo' })
       expect(workerRpc.inspectLastTabClose).toHaveBeenCalledWith('w7', { tabType: TabType.AGENT, tabId: 't9' })
     })
   })

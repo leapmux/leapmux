@@ -70,9 +70,10 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				shell = terminal.ResolveDefaultShell()
 			}
 			shellStartDir := expandTilde(r.GetShellStartDir())
-			workingDir := expandTilde(r.GetWorkingDir())
-			if workingDir == "" {
-				workingDir = svc.HomeDir
+			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir)
+			if err != nil {
+				sendInvalidArgument(sender, err.Error())
+				return
 			}
 
 			// Validate git-mode options on the sync path so bad input fails

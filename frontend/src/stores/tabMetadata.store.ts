@@ -3,9 +3,10 @@ import type { AgentGitStatus, AgentProvider, AgentStatus, AvailableOptionGroup }
 import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import type { HLC, UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
 import { createEffect, createMemo } from 'solid-js'
-import { createStore, produce } from 'solid-js/store'
+import { createStore, produce, unwrap } from 'solid-js/store'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { sameKeys } from '~/lib/sameKeys'
+import { shallowEqual, shallowEqualArrays } from '~/lib/shallowEqual'
 
 /**
  * Everything about a tab that the CRDT does NOT carry.
@@ -209,10 +210,55 @@ export function liveTabIds(state: { tabs: Record<string, { tombstoneAt?: HLC } |
  * `undefined`; see `protoToTerminalTabFields`.
  */
 function mergeDefined(target: TabMetadata, fields: TabMetadata): void {
+  // `unwrap` because `target` is a store DRAFT: Solid wraps every nested plain
+  // object and array in a proxy, so reading `target.agentGitStatus` hands back a
+  // proxy that can never be `Object.is`-equal to the raw object a producer is
+  // trying to write. Comparing against the unwrapped row is what makes the
+  // check below answer about VALUES rather than about proxy identity.
+  const current = unwrap(target) as Record<string, unknown>
   for (const [k, v] of Object.entries(fields)) {
-    if (v !== undefined)
+    if (v !== undefined && !sameStoredValue(current[k], v))
       (target as Record<string, unknown>)[k] = v
   }
+}
+
+/**
+ * Would writing `next` over `prev` change anything a consumer can observe?
+ *
+ * Reference reuse for object-valued fields, enforced HERE — at the single write
+ * point — rather than by each producer remembering to thread the previous value
+ * in and report `undefined` for "unchanged".
+ *
+ * The worker re-decodes and re-ships whole payloads on every push, so an
+ * unchanged repo or catalog arrives as an equal-but-FRESH object. A `Tab` is a
+ * join result compared with `shallowEqual` (per-key `Object.is`) and `<For>`
+ * keys its rows by that identity, so writing one of those back re-keys the tab
+ * and tears down every row rendered from it. Skipping the write is
+ * observationally identical — the values are equal by content, and the tab keeps
+ * the object it already had — which is exactly what makes a no-op re-broadcast a
+ * no-op. Primitives fall through to the assignment and Solid's own store
+ * equality drops them, so this only ever decides the object cases.
+ *
+ * `ArrayBuffer.isView` FIRST, and it is not an optimisation. `screen` is a
+ * `Uint8Array`; `Array.isArray` is false for it and `shallowEqual` would fall
+ * through to `Object.keys`, allocating one index string PER BYTE of a serialized
+ * terminal scrollback to answer a question reference identity already answers.
+ * The writer replaces that buffer rather than mutating it, so reference identity
+ * IS the correct test.
+ *
+ * Arrays element-wise: `optionGroups` reaches this already
+ * reference-stabilised per group by `mergeStableOptionGroupRefs`, which knows
+ * how to compare a proto and is where that belongs. All this needs to see is
+ * whether the stabiliser handed back the same elements.
+ */
+function sameStoredValue(prev: unknown, next: unknown): boolean {
+  if (Object.is(prev, next))
+    return true
+  if (ArrayBuffer.isView(prev) || ArrayBuffer.isView(next))
+    return false
+  if (Array.isArray(prev) && Array.isArray(next))
+    return shallowEqualArrays(prev, next)
+  return shallowEqual(prev, next)
 }
 
 export function createTabMetadataStore() {
@@ -270,6 +316,13 @@ export function createTabMetadataStore() {
      * whose tile chain is momentarily unresolvable leaves the projection while
      * remaining alive, and sweeping on that signal deletes its title, git
      * badges and terminal scrollback for good.
+     *
+     * "The worker has answered for this tab" is a field on the row swept here
+     * (`hydrated`), deliberately NOT a companion cache keyed by tab id. Such a
+     * cache would be swept on a different schedule than the row it describes,
+     * so it could still say "already answered" for a row that is gone -- and
+     * the FILE hydrator, reading that, would never ask again, stranding the tab
+     * with no path for the life of the page.
      */
     retainOnly(live: Set<string>) {
       setState(produce((s) => {
@@ -280,8 +333,24 @@ export function createTabMetadataStore() {
       }))
     },
 
-    /** Stamp a tab as most-recently-used and return the counter value used. */
+    /**
+     * Stamp a tab as most-recently-used and return the counter value used.
+     *
+     * IDEMPOTENT AT THE HEAD. A tab already carrying the newest stamp is already
+     * the winner of every MRU comparison in the account, so re-stamping it changes
+     * no ordering anywhere -- it only bumps a field on the tab, and a `Tab` is a
+     * join result whose object identity every `<For>` keys its rows by (see
+     * tabView). A no-op stamp therefore tore down and rebuilt the tab strip, the
+     * sidebar tree, and the tile's whole pane for nothing.
+     *
+     * This is the common path, not an edge case: clicking anywhere inside a tile
+     * re-activates that tile's ALREADY-active tab (TileRenderer's `onFocus`), so
+     * every click paid a full rebuild -- including the click that ends a
+     * drag-select, which destroyed the selection the user had just made.
+     */
     touchMru(tabId: string): number {
+      if (state.byTabId[tabId]?.mru === mruCounter)
+        return mruCounter
       mruCounter += 1
       this.patch(tabId, { mru: mruCounter })
       return mruCounter

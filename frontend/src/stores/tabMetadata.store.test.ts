@@ -1,7 +1,9 @@
 /// <reference types="vitest/globals" />
+import { create } from '@bufbuild/protobuf'
 import { createEffect, createRoot } from 'solid-js'
+import { unwrap } from 'solid-js/store'
 import { describe, expect, it } from 'vitest'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { AgentGitStatusSchema, AgentStatus, AvailableOptionGroupSchema } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { createTabMetadataStore, liveTabIds } from './tabMetadata.store'
 
@@ -50,6 +52,140 @@ describe('tabMetadata', () => {
       m.patch('t1', { title: '', cols: 0 })
       expect(m.get('t1')?.title).toBe('')
       expect(m.get('t1')?.cols).toBe(0)
+    })
+
+    /**
+     * The worker re-decodes and re-ships whole payloads on every push, so an
+     * unchanged repo or catalog arrives as an equal-but-FRESH object. A `Tab` is
+     * a join result compared with `shallowEqual` and `<For>` keys its rows by
+     * that identity, so writing one back re-keys the tab and tears down every
+     * row rendered from it -- including the chat pane, mid-selection.
+     */
+    it('keeps the stored object when an equal one is written over it', () => {
+      const m = createTabMetadataStore()
+      const first = create(AgentGitStatusSchema, { branch: 'main', ahead: 1, toplevel: '/repo' })
+      m.patch('a1', { agentGitStatus: first })
+      const stored = unwrap(m.get('a1')!).agentGitStatus
+
+      // Byte-identical, freshly decoded -- what every no-op status push looks like.
+      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', ahead: 1, toplevel: '/repo' }) })
+
+      expect(unwrap(m.get('a1')!).agentGitStatus, 'an equal payload must not re-key the tab').toBe(stored)
+    })
+
+    it('writes an object whose content genuinely changed', () => {
+      const m = createTabMetadataStore()
+      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', ahead: 1 }) })
+      const stored = unwrap(m.get('a1')!).agentGitStatus
+
+      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', ahead: 2 }) })
+
+      expect(unwrap(m.get('a1')!).agentGitStatus).not.toBe(stored)
+      expect(m.get('a1')?.agentGitStatus?.ahead).toBe(2)
+    })
+
+    /**
+     * A dirty-flag flip carries no branch or toplevel change, so a comparison
+     * that only looked at the four flat mirrors would call it unchanged and
+     * strand the info card on stale ahead/behind and dirty-state flags. The
+     * per-key compare sees it.
+     */
+    it('writes a change only the full proto can see', () => {
+      const m = createTabMetadataStore()
+      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', toplevel: '/repo' }) })
+      const stored = unwrap(m.get('a1')!).agentGitStatus
+
+      m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main', toplevel: '/repo', conflicted: true }) })
+
+      expect(unwrap(m.get('a1')!).agentGitStatus).not.toBe(stored)
+      expect(m.get('a1')?.agentGitStatus?.conflicted).toBe(true)
+    })
+
+    it('reuses an option-group array whose groups are all the same objects', () => {
+      const m = createTabMetadataStore()
+      const groups = [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })]
+      m.patch('a1', { optionGroups: groups })
+      const stored = unwrap(m.get('a1')!).optionGroups
+
+      // What `mergeStableOptionGroupRefs` produces: a new array, same elements.
+      m.patch('a1', { optionGroups: [...groups] })
+
+      expect(unwrap(m.get('a1')!).optionGroups, 'element identity is what consumers key on').toBe(stored)
+    })
+
+    it('writes an option-group array whose groups changed', () => {
+      const m = createTabMetadataStore()
+      m.patch('a1', { optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })] })
+      const stored = unwrap(m.get('a1')!).optionGroups
+
+      m.patch('a1', { optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'sonnet' })] })
+
+      expect(unwrap(m.get('a1')!).optionGroups).not.toBe(stored)
+    })
+
+    it('reuses an equal option-values record', () => {
+      const m = createTabMetadataStore()
+      m.patch('a1', { optionValues: { model: 'opus', effort: 'high' } })
+      const stored = unwrap(m.get('a1')!).optionValues
+
+      m.patch('a1', { optionValues: { model: 'opus', effort: 'high' } })
+      expect(unwrap(m.get('a1')!).optionValues).toBe(stored)
+
+      m.patch('a1', { optionValues: { model: 'sonnet', effort: 'high' } })
+      expect(unwrap(m.get('a1')!).optionValues, 'a changed value must land').not.toBe(stored)
+    })
+
+    // A record that LOST a key is a real change even though every surviving key
+    // still matches -- `shallowEqual` compares key counts before values.
+    it('writes an option-values record that dropped a key', () => {
+      const m = createTabMetadataStore()
+      m.patch('a1', { optionValues: { model: 'opus', effort: 'high' } })
+      const stored = unwrap(m.get('a1')!).optionValues
+
+      m.patch('a1', { optionValues: { model: 'opus' } })
+      expect(unwrap(m.get('a1')!).optionValues).not.toBe(stored)
+      expect(m.get('a1')?.optionValues).toEqual({ model: 'opus' })
+    })
+
+    /**
+     * `screen` is a `Uint8Array`, and a per-key compare on one would allocate an
+     * index string PER BYTE of a serialized scrollback. The writer REPLACES the
+     * buffer rather than mutating it, so reference identity is both the correct
+     * test and the only affordable one.
+     */
+    it('compares a screen buffer by reference, never by content', () => {
+      const m = createTabMetadataStore()
+      const first = new Uint8Array([1, 2, 3])
+      m.patch('t1', { screen: first })
+
+      const equalButFresh = new Uint8Array([1, 2, 3])
+      m.patch('t1', { screen: equalButFresh })
+
+      expect(unwrap(m.get('t1')!).screen, 'a fresh buffer is a real update').toBe(equalButFresh)
+    })
+
+    it('does not notify a subscriber when an equal object is written', async () => {
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main' }) })
+
+        let runs = 0
+        createEffect(() => {
+          void m.state.byTabId.a1?.agentGitStatus
+          runs++
+        })
+        await flush()
+        const baseline = runs
+
+        m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main' }) })
+        await flush()
+        expect(runs, 'a no-op re-broadcast must stay a no-op').toBe(baseline)
+
+        m.patch('a1', { agentGitStatus: create(AgentGitStatusSchema, { branch: 'feature' }) })
+        await flush()
+        expect(runs, 'a real change must still propagate').toBeGreaterThan(baseline)
+        dispose()
+      })
     })
 
     it('returns undefined for a tab it has never seen', () => {
@@ -185,6 +321,21 @@ describe('tabMetadata', () => {
         expect(freshRuns, 'the already-correct row is not re-fired').toBe(baseline)
         dispose()
       })
+    })
+
+    // `patchMatching` shares `mergeDefined`, so the object dedupe has to hold on
+    // the fan-out path too -- this is the one that reaches EVERY workspace at
+    // once, so a spurious re-key here re-mounts every matching tab's row.
+    it('reuses an equal object on the fan-out path as well', () => {
+      const m = createTabMetadataStore()
+      m.patch('a1', { workerId: 'wkr-1', agentGitStatus: create(AgentGitStatusSchema, { branch: 'main' }) } as never)
+      const stored = unwrap(m.get('a1')!).agentGitStatus
+
+      m.patchMatching(() => true, { agentGitStatus: create(AgentGitStatusSchema, { branch: 'main' }) })
+      expect(unwrap(m.get('a1')!).agentGitStatus).toBe(stored)
+
+      m.patchMatching(() => true, { agentGitStatus: create(AgentGitStatusSchema, { branch: 'feature' }) })
+      expect(unwrap(m.get('a1')!).agentGitStatus).not.toBe(stored)
     })
   })
 
@@ -338,6 +489,27 @@ describe('tabMetadata', () => {
       a.touchMru('x')
       a.touchMru('x')
       expect(b.touchMru('y')).toBe(1)
+    })
+
+    // Re-stamping the tab that ALREADY holds the newest value changes no ordering
+    // anywhere -- it would only re-key the joined `Tab`, and `<For>` keys its rows
+    // by that object's identity, so the write tears down and rebuilds the tab
+    // strip, the sidebar tree, and the tile's pane for nothing. Every click inside
+    // a tile re-activates that tile's already-active tab, so this is the hot path.
+    it('is a no-op when the tab already holds the newest stamp', () => {
+      const m = createTabMetadataStore()
+      const first = m.touchMru('a1')
+      expect(m.touchMru('a1'), 'the value it already had').toBe(first)
+      expect(m.get('a1')?.mru).toBe(first)
+    })
+
+    it('still advances a tab that is not the newest', () => {
+      const m = createTabMetadataStore()
+      m.touchMru('a1')
+      const other = m.touchMru('a2')
+      const back = m.touchMru('a1')
+      expect(back).toBeGreaterThan(other)
+      expect(m.get('a1')!.mru!).toBeGreaterThan(m.get('a2')!.mru!)
     })
   })
 

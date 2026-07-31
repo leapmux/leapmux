@@ -34,11 +34,84 @@ func TestFileTabPath_RegisterAndGet(t *testing.T) {
 	store, _, _ := newFileTabPathTestStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: "/repo/README.md",
+		UserID: "user-1", TabID: "t1", FilePath: "/repo/pkg/README.md", WorkingDir: "/repo",
 	}))
-	path, err := store.Get(ctx, "user-1", "t1")
+	loc, err := store.Get(ctx, "user-1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, "/repo/README.md", path)
+	assert.Equal(t, "/repo/pkg/README.md", loc.FilePath)
+	assert.Equal(t, "/repo", loc.WorkingDir,
+		"the originating tab's working dir is stored as given, not re-derived from the file's own directory")
+}
+
+// A caller with no originating tab to name -- `leapmux remote tab open
+// --type=file` builds its tab entirely CLI-side -- still gets a usable working
+// dir, because every reader of the column treats it as authoritative and a
+// blank one would make the file tab unanswerable to `git -C`.
+func TestFileTabPath_RegisterWithoutWorkingDirFallsBackToFileDir(t *testing.T) {
+	store, _, _ := newFileTabPathTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
+		UserID: "user-1", TabID: "t1", FilePath: "/repo/pkg/README.md",
+	}))
+	loc, err := store.Get(ctx, "user-1", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, "/repo/pkg", loc.WorkingDir)
+}
+
+// Whitespace is not a working dir. The fallback is keyed on "the caller named
+// no tab", and a blank-but-present field is that case however it was spelled --
+// otherwise the column holds a string `git -C` rejects, and the close path
+// degrades to its tolerant no-prompt branch for a tab that has a perfectly good
+// repo one directory up.
+func TestFileTabPath_RegisterTreatsBlankWorkingDirAsAbsent(t *testing.T) {
+	store, _, _ := newFileTabPathTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
+		UserID: "user-1", TabID: "t1", FilePath: "/repo/pkg/README.md", WorkingDir: "   ",
+	}))
+	loc, err := store.Get(ctx, "user-1", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, "/repo/pkg", loc.WorkingDir)
+}
+
+// A relative working dir is refused for the same reason a relative file_path
+// is. `git -C` resolves it against the WORKER PROCESS's cwd -- never the
+// client's -- so it does not fail the way a nonexistent absolute dir does; it
+// quietly answers for whatever repository the worker happens to sit in. Stored,
+// it would let a file tab's close inspection report another repo's branch and
+// dirty state, and `--worktree=push` commit and push that repo.
+func TestFileTabPath_RegisterRefusesRelativeWorkingDir(t *testing.T) {
+	store, _, _ := newFileTabPathTestStore(t)
+	ctx := context.Background()
+	for _, dir := range []string{".", "..", "../peer-repo", "src", "./x"} {
+		err := store.Register(ctx, service.RegisterFileTabPathParams{
+			UserID: "user-1", TabID: "t1", FilePath: "/repo/pkg/README.md", WorkingDir: dir,
+		})
+		require.Error(t, err, "working_dir %q must be refused", dir)
+		assert.Contains(t, err.Error(), "must be absolute")
+		_, getErr := store.Get(ctx, "user-1", "t1")
+		assert.ErrorIs(t, getErr, service.ErrFileTabPathNotFound,
+			"a refused registration must not leave a row behind")
+	}
+}
+
+// Re-registering the same tab id (the client re-opened the file from a
+// different tab's context) must move the working dir with the path. The upsert
+// updates both columns or the tab answers branch questions from where it used
+// to live.
+func TestFileTabPath_RegisterOverwritesWorkingDir(t *testing.T) {
+	store, _, _ := newFileTabPathTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
+		UserID: "user-1", TabID: "t1", FilePath: "/repo/a.go", WorkingDir: "/repo",
+	}))
+	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
+		UserID: "user-1", TabID: "t1", FilePath: "/wt/a.go", WorkingDir: "/wt",
+	}))
+	loc, err := store.Get(ctx, "user-1", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, "/wt/a.go", loc.FilePath)
+	assert.Equal(t, "/wt", loc.WorkingDir)
 }
 
 func TestFileTabPath_GetMissingReturnsNotFound(t *testing.T) {
@@ -225,9 +298,9 @@ func TestFileTabPathStore_RefusesBlankOwner(t *testing.T) {
 		assert.NotErrorIs(t, err, service.ErrFileTabPathNotFound,
 			"a blank owner is a caller bug, not a missing row")
 
-		path, err := store.Get(ctx, "user-1", "shared-tab")
+		loc, err := store.Get(ctx, "user-1", "shared-tab")
 		require.NoError(t, err, "control: a real owner still resolves")
-		assert.Equal(t, "/real/a.go", path)
+		assert.Equal(t, "/real/a.go", loc.FilePath)
 	})
 
 	t.Run("revoke", func(t *testing.T) {

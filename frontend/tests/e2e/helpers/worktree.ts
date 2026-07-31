@@ -377,8 +377,7 @@ export async function pushBranchViaAPI(
   hubUrl: string,
   token: string,
   workerId: string,
-  tabType: number,
-  tabId: string,
+  workingDir: string,
 ): Promise<void> {
   const channel = await getTestChannel(hubUrl, token)
   await channel.callWorker(
@@ -386,7 +385,7 @@ export async function pushBranchViaAPI(
     'PushBranch',
     PushBranchRequestSchema,
     PushBranchResponseSchema,
-    { tabType, tabId },
+    { workingDir },
   )
 }
 

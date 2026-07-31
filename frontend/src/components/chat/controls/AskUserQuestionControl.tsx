@@ -285,9 +285,10 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
 
   /** Save current editor text to customTexts for the current page (if non-empty). */
   const saveEditorToCurrentPage = () => {
-    if (!props.editorContentRef)
+    const editor = props.editorContentRef?.()
+    if (!editor)
       return
-    const text = props.editorContentRef.get()
+    const text = editor.get()
     const page = props.askState.currentPage()
     props.askState.setCustomTexts(prev => ({ ...prev, [page]: text }))
     if (text && !preservesSelectionNotes(props.agentProvider)) {
@@ -299,10 +300,11 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
 
   /** Restore editor content from customTexts for a given page. */
   const restoreEditorForPage = (page: number) => {
-    if (!props.editorContentRef)
+    const editor = props.editorContentRef?.()
+    if (!editor)
       return
     const savedText = props.askState.customTexts()[page] ?? ''
-    props.editorContentRef.set(savedText)
+    editor.set(savedText)
   }
 
   const navigateToPage = (newPage: number) => {

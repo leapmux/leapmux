@@ -631,13 +631,14 @@ describe('deleteBranchDialog', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument())
   })
 
-  it('push button picks the first AGENT/TERMINAL tab when a FILE tab is in slot 0', async () => {
-    // Regression: PushBranchButton used to take props.tabs[0] without
-    // filtering tab type. A branch group whose sidebar sort placed a
-    // FILE tab first would route push at that FILE id, which the
-    // worker's getTabWorkingDir rejects as 'unsupported tab type'.
-    // The dialog must walk past FILE tabs to find one whose
-    // loadTabGitContext can actually resolve a working directory.
+  it('pushes from the group\'s dir whatever kinds of tab it holds', async () => {
+    // No anchor tab, and so no kind preference to get wrong. The push names a
+    // DIRECTORY, which every tab in a branch group shares by construction and
+    // which is client-side metadata on the joined tab -- so it needs no
+    // worker-side row. Anchoring on a tab used to mean a FILE tab could be
+    // chosen whose `worker_file_tabs` row a peer's close had hard-deleted, and
+    // the push failed with "file tab path not found" while a healthy terminal
+    // sat beside it.
     const inspectResp = makeInspectResp({ canPush: true, unpushedCommitCount: 1 })
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(inspectResp)
     renderDialog({ tabs: [makeFileTab('f1'), makeTerminalTab('t1')] })
@@ -645,21 +646,33 @@ describe('deleteBranchDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({
-      tabType: TabType.TERMINAL,
-      tabId: 't1',
-    })
+    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({ workingDir: '/repo' })
   })
 
-  it('hides the push button entirely when the only tabs in the group are FILE tabs', async () => {
-    // No AGENT/TERMINAL tab means the worker has nowhere to anchor
-    // pushBranch. Rather than render a button that always fails, the
-    // dialog must hide it. The branch is still deletable through the
-    // switch-to picker — the push affordance is just unavailable.
+  it('offers push for a group made only of FILE tabs', async () => {
+    // This group had no push affordance at all while FILE tabs could not
+    // anchor one -- the user had to open a terminal in the branch just to push
+    // it before deleting. There is nothing special about the group: its tabs
+    // name a working dir, so the worker can commit and push from it.
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ canPush: true, unpushedCommitCount: 1 }),
     )
     renderDialog({ tabs: [makeFileTab('f1'), makeFileTab('f2')] })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Push' }))
+    await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({ workingDir: '/repo' })
+  })
+
+  it('hides the push button when no tab in the group names a directory', async () => {
+    // The edge the Show gate covers: a branch row whose tabs all closed while
+    // the dialog was open has no dir to push from, and a button that sends an
+    // empty one is worse than no button.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ canPush: true, unpushedCommitCount: 1 }),
+    )
+    renderDialog({ tabs: [] })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: /Commit and Push|^Push$/ })).toBeNull()
   })
@@ -684,7 +697,7 @@ describe('deleteBranchDialog', () => {
     expect(closeWorktreeTabs.mock.calls[0][0].map((t: { id: string }) => t.id)).toEqual(['a1', 'f1', 't1'])
   })
 
-  it('push button uses a tab from the group to call pushBranch', async () => {
+  it('push button sends the group\'s working dir to pushBranch', async () => {
     const inspectResp = makeInspectResp({ canPush: true, unpushedCommitCount: 2 })
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(inspectResp)
     renderDialog({ tabs: [makeTerminalTab('t1')] })
@@ -694,10 +707,7 @@ describe('deleteBranchDialog', () => {
     await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
     // The worker always re-probes pushStatus to avoid acting on a
     // stale snapshot, so no hint rides the request.
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({
-      tabType: TabType.TERMINAL,
-      tabId: 't1',
-    })
+    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({ workingDir: '/repo' })
   })
 
   it('cancel closes without firing any worker RPC', async () => {

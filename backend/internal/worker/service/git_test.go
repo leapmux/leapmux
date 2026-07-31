@@ -20,6 +20,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
@@ -666,6 +668,220 @@ func createTerminalForPath(t *testing.T, svc *Service, terminalID, workingDir st
 	}))
 }
 
+// createFileTabForPath opens a file tab the way the UI does: a file inside
+// `workingDir`, registered with the working dir of the tab it was opened from.
+// The file is created on disk because the git probes downstream run against a
+// real directory.
+func createFileTabForPath(t *testing.T, svc *Service, userID, tabID, workingDir, fileName string) string {
+	t.Helper()
+	filePath := filepath.Join(workingDir, fileName)
+	require.NoError(t, os.WriteFile(filePath, []byte("open\n"), 0o644))
+	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
+		UserID:     userID,
+		TabID:      tabID,
+		FilePath:   filePath,
+		WorkingDir: workingDir,
+	}))
+	return filePath
+}
+
+// The reported bug: closing a file tab in an ordinary (non-worktree) checkout
+// warned "working directory is not readable as a git repository; closed without
+// checking for uncommitted changes" -- on a perfectly readable repo, with other
+// tabs still open on it. getTabWorkingDir knew AGENT and TERMINAL only, so a
+// file tab with no worktree link fell through to loadTabGitContext, failed
+// there on `unsupported tab type`, and took the degraded branch before the
+// sibling count that would have ended the inspection with no prompt at all.
+//
+// The repo is left dirty on purpose: it is what would make the branch-level
+// prompt fire if the sibling scan below ever stopped seeing the agent.
+func TestInspectLastTabClose_FileTabInRepoWithSiblingsClosesCleanly(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	createAgentForPath(t, svc, "agent-file-sibling", repoDir)
+	createFileTabForPath(t, svc, "user-1", "file-sibling", repoDir, "open.txt")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_FILE, "file-sibling", "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
+	assert.False(t, resp.GetShouldPrompt())
+	assert.Empty(t, resp.GetErrorHint(),
+		"a readable repo must not produce a degraded-close warning")
+	assert.Nil(t, resp.GetGitState(), "the sibling agent puts this on the fast path; no diff/push fork")
+}
+
+// The other direction of the same ref-count: an open file tab keeps its branch
+// alive, so closing the last AGENT on it is not a last-tab close. Before file
+// tabs carried a working dir the scan could not see them at all, and this close
+// announced "you are closing the last non-worktree tab for branch X" with the
+// user's file tab still sitting on that branch.
+func TestInspectLastTabClose_FileTabKeepsBranchAlive(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	createAgentForPath(t, svc, "agent-with-file-sibling", repoDir)
+	createFileTabForPath(t, svc, "user-1", "file-holding-branch", repoDir, "open.txt")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-with-file-sibling", "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
+	assert.False(t, resp.GetShouldPrompt(),
+		"a file tab open on the branch is a sibling; closing the agent is not a last-tab close")
+}
+
+// ...and when the file tab really IS the last tab on a branch with work on it,
+// it prompts like any other tab would. This is the assertion that keeps the fix
+// from degenerating into "file tabs never prompt": the close is answered from
+// the tab's working dir, not waved through.
+func TestInspectLastTabClose_LoneFileTabOnDirtyBranchPrompts(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "lone-file")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	createFileTabForPath(t, svc, "user-1", "file-lone", repoDir, "open.txt")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_FILE, "file-lone", "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget())
+	assert.True(t, resp.GetShouldPrompt())
+	assert.Equal(t, "lone-file", resp.GetBranchName())
+	assert.True(t, resp.GetGitState().GetHasUncommittedChanges())
+	assert.Empty(t, resp.GetErrorHint())
+}
+
+// A CLOSED agent is not a branch sibling.
+//
+// "Open" means something different per tab type, and `tab_locations` is where
+// that now lives: agents and terminals are closed SOFT by stamping closed_at,
+// while a file tab is hard-deleted, so its presence is its openness. Dropping
+// the `closed_at IS NULL` filter would make every agent that ever ran in a repo
+// keep its branch alive forever -- the last-tab prompt would never fire again,
+// and the user would never be offered the chance to push before the branch was
+// orphaned.
+func TestInspectLastTabClose_ClosedAgentIsNotASibling(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "closed-sibling")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	createAgentForPath(t, svc, "agent-closing", repoDir)
+	createAgentForPath(t, svc, "agent-already-closed", repoDir)
+
+	// While both are open, the second one keeps the branch alive.
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-closing", "user-1")
+	require.NoError(t, err)
+	require.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
+		"precondition: an open sibling suppresses the prompt")
+
+	_, err = svc.Queries.CloseAgent(context.Background(), "agent-already-closed")
+	require.NoError(t, err)
+
+	resp, err = svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-closing", "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget(),
+		"the closed agent must not keep the branch alive")
+	assert.True(t, resp.GetShouldPrompt())
+}
+
+// The self-skip matches on (tab_type, tab_id), not on tab_id alone.
+//
+// Across `tab_locations` an id is not unique by itself: agent and terminal ids
+// are minted server-side and globally unique, but a file tab id is minted
+// client-side as `file-<millis>-<counter>`, so nothing stops one from equalling
+// an agent id. A bare-id skip would then drop the file tab while closing the
+// agent, count one fewer sibling, and offer to delete a branch the user still
+// has a file open on. (The three separate per-type scans this replaced got this
+// right structurally, because each only ever skipped within its own type.)
+func TestInspectLastTabClose_SelfSkipIsTypeScoped(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "collide")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	const sharedID = "collide-1"
+	createAgentForPath(t, svc, sharedID, repoDir)
+	createFileTabForPath(t, svc, "user-1", sharedID, repoDir, "a.txt")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, sharedID, "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
+		"the file tab shares an id with the closing agent but is a different tab, and it is still open on this branch")
+	assert.False(t, resp.GetShouldPrompt())
+}
+
+// A file tab's branch siblings are its OWNER's tabs. `worker_file_tabs` is
+// keyed (user_id, tab_id), so an owner-blind scan resolves other users' rows
+// and counts them as siblings that keep the branch alive.
+//
+// The other user's tab must carry a DIFFERENT id to test that. Two clients CAN
+// mint the same id (`file-<millis>-<counter>`), but that shape proves nothing
+// here: collectTabDirs drops every row whose id equals the closing tab's, so an
+// identically-named foreign row is discarded by the self-skip whether or not
+// the owner filter ran, and both scans answer "no siblings" alike.
+//
+// Both polarities are asserted, because "owner filter matches nothing" would
+// pass the first half on its own.
+func TestInspectLastTabClose_FileTabSiblingScanIsOwnerScoped(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "checkout", "-b", "owner-scoped")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+	const closingTabID = "file-1700000000000-1"
+	createFileTabForPath(t, svc, "user-a", closingTabID, repoDir, "a.txt")
+	createFileTabForPath(t, svc, "user-b", "file-1700000000000-2", repoDir, "b.txt")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_FILE, closingTabID, "user-a")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget(),
+		"user-b's tab in the same repo is not user-a's sibling")
+	assert.True(t, resp.GetShouldPrompt())
+
+	// Same repo, same branch, same shape -- only the owner differs. This one
+	// IS a sibling, so the prompt must disappear.
+	createFileTabForPath(t, svc, "user-a", "file-1700000000000-3", repoDir, "c.txt")
+	resp, err = svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_FILE, closingTabID, "user-a")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
+		"user-a's own second tab keeps the branch alive")
+	assert.False(t, resp.GetShouldPrompt())
+}
+
+// A file tab that is the last tab on a tracked worktree still routes to the
+// worktree prompt, where the user can delete the worktree. The working-dir
+// lookup does not shortcut this: the worktree link answers first.
+func TestInspectLastTabClose_LoneFileTabOnWorktreePrompts(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "file-lone-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "file-lone-wt-branch", wtDir)
+	_, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	createFileTabForPath(t, svc, "user-1", "file-lone-wt", wtDir, "open.txt")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_FILE, "file-lone-wt", "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE, resp.GetTarget())
+	assert.True(t, resp.GetShouldPrompt())
+	expectedWtPath, err := filepath.EvalSymlinks(wtDir)
+	require.NoError(t, err)
+	assert.True(t, pathutil.SamePath(expectedWtPath, resp.GetWorktreePath()),
+		"expected same path; got expected=%q actual=%q", expectedWtPath, resp.GetWorktreePath())
+	assert.Empty(t, resp.GetErrorHint())
+}
+
+// A file tab whose registration never landed (the client's fire-and-forget
+// RegisterFileTabPath failed) has no working dir to inspect. The close still
+// wins -- with the degraded hint that says the git check was skipped, which is
+// the honest answer here and exactly what the reported bug was reporting for
+// tabs that DID have one.
+func TestInspectLastTabClose_UnregisteredFileTabDegradesWithHint(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_FILE, "file-never-registered", "user-1")
+	require.NoError(t, err, "an unknown file tab must still close")
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
+	assert.False(t, resp.GetShouldPrompt())
+	assert.NotEmpty(t, resp.GetErrorHint())
+}
+
 func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	repoDir := initRepo(t)
@@ -794,9 +1010,10 @@ func TestInspectLastTabClose_WorktreeFileTabHoldsWorktree(t *testing.T) {
 	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-with-file")
 
 	require.NoError(t, svc.FileTabPaths.Register(context.Background(), RegisterFileTabPathParams{
-		UserID:   "user-1",
-		TabID:    "file-tab-1",
-		FilePath: openPath,
+		UserID:     "user-1",
+		TabID:      "file-tab-1",
+		FilePath:   openPath,
+		WorkingDir: wtDir,
 	}))
 
 	// Sanity: Register linked the file tab into worktree_tabs.
@@ -1167,6 +1384,136 @@ func TestFileTabPathStore_RegisterOutsideWorktreeSkipsLink(t *testing.T) {
 		"file tab outside any worktree must not create a worktree_tabs row (got wt=%+v, err=%v)", wt, err)
 }
 
+// The worktree a file tab holds open is the one the FILE physically sits in,
+// not the one its inherited working dir names.
+//
+// A file tab carries two different git facts and they are allowed to disagree.
+// working_dir is the tab's IDENTITY -- which branch group it renders in, which
+// branch a push targets -- inherited from the tab it was opened from. This link
+// is a REF-COUNT on a directory that can be DELETED: it is what stops
+// `git worktree remove` from rm-rf'ing a tree with an editor still mounted in
+// it. Only physical containment can answer that second question, and keying it
+// on working_dir loses exactly the case that matters -- a file opened from an
+// agent in the main checkout INTO a linked worktree, which is then unlinked and
+// reclaimable while it is on screen.
+func TestFileTabPathStore_LinksWorktreeContainingTheFile(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	ctx := context.Background()
+
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "link-by-dir-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "link-by-dir", wtDir)
+	wtID, err := svc.ensureTrackedWorktree(ctx, wtDir)
+	require.NoError(t, err)
+
+	// The file lives in the WORKTREE; the tab it was opened from lives in the
+	// main checkout. That is the hazardous direction: nothing else ref-counts
+	// the worktree on this tab's behalf.
+	wtPath := filepath.Join(wtDir, "inside.txt")
+	require.NoError(t, os.WriteFile(wtPath, []byte("inside\n"), 0o644))
+	require.NoError(t, svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
+		UserID:     "user-1",
+		TabID:      "file-cross",
+		FilePath:   wtPath,
+		WorkingDir: repoDir,
+	}))
+
+	wt, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
+		TabType: leapmuxv1.TabType_TAB_TYPE_FILE,
+		TabID:   "file-cross",
+		UserID:  "user-1",
+	})
+	require.NoError(t, err, "the tab must ref-count the worktree its file is inside")
+	assert.Equal(t, wtID, wt.ID)
+
+	// ...and the identity half is untouched: the tab still answers branch
+	// questions from the dir it was opened in, so the two facts stay separable.
+	loc, err := svc.FileTabPaths.Get(ctx, "user-1", "file-cross")
+	require.NoError(t, err)
+	assert.Equal(t, repoDir, loc.WorkingDir, "working_dir stays the originating tab's")
+}
+
+// The mirror of the above for the backfill path, which links file tabs that
+// were already open when a worktree became tracked. It pre-filters lexically
+// before probing git, and that filter has to read the same thing the link does
+// -- filtering on working_dir would skip exactly the tabs the probe would link.
+func TestFileTabPathStore_BackfillLinksWorktreeContainingTheFile(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	ctx := context.Background()
+
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "backfill-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "backfill-branch", wtDir)
+
+	// Registered BEFORE the worktree is tracked, so Register's own link
+	// attempt finds no row and leaves the tab unbound.
+	wtPath := filepath.Join(wtDir, "inside.txt")
+	require.NoError(t, os.WriteFile(wtPath, []byte("inside\n"), 0o644))
+	require.NoError(t, svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
+		UserID:     "user-1",
+		TabID:      "file-backfill",
+		FilePath:   wtPath,
+		WorkingDir: repoDir,
+	}))
+	_, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
+		TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-backfill", UserID: "user-1",
+	})
+	require.True(t, errors.Is(err, sql.ErrNoRows), "control: untracked worktree leaves the tab unlinked")
+
+	wtID, err := svc.ensureTrackedWorktree(ctx, wtDir)
+	require.NoError(t, err)
+	svc.FileTabPaths.BackfillWorktreeLinks(ctx, wtDir)
+
+	wt, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
+		TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-backfill", UserID: "user-1",
+	})
+	require.NoError(t, err, "backfill must link the tab whose file is under the new worktree")
+	assert.Equal(t, wtID, wt.ID)
+}
+
+// A relative file_path is refused rather than normalized: the worker's CWD is
+// the only base available here and it is never the client's, so `filepath.Dir`
+// would store "." and every git question about the tab -- the worktree link,
+// getTabWorkingDir, the branch-sibling scan -- would be answered by `git -C .`
+// in whatever repo the worker process happens to sit in.
+func TestFileTabPathStore_RefusesRelativeFilePath(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	ctx := context.Background()
+
+	err := svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
+		UserID:   "user-1",
+		TabID:    "file-rel",
+		FilePath: "notes.txt",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be absolute")
+
+	_, getErr := svc.FileTabPaths.Get(ctx, "user-1", "file-rel")
+	require.ErrorIs(t, getErr, ErrFileTabPathNotFound, "a refused register must persist nothing")
+}
+
+// A `~/...` working dir is expanded at the write point, the same normalizer
+// agents.working_dir and terminals.working_dir go through. Stored literally it
+// is a dir `git -C` cannot resolve, which puts the tab back in the degraded
+// "not readable as a git repository" close this column exists to eliminate.
+func TestFileTabPathStore_ExpandsTildeWorkingDir(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	ctx := context.Background()
+
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	require.NoError(t, svc.FileTabPaths.Register(ctx, RegisterFileTabPathParams{
+		UserID:     "user-1",
+		TabID:      "file-tilde",
+		FilePath:   filepath.Join(home, "proj", "a.go"),
+		WorkingDir: "~/proj",
+	}))
+
+	loc, err := svc.FileTabPaths.Get(ctx, "user-1", "file-tilde")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "proj"), loc.WorkingDir)
+}
+
 // Fast path: a non-worktree tab with other non-worktree tabs on the
 // same branch must not prompt, and must not pay for diff/push.
 func TestInspectLastTabClose_BranchMultiTabFastPath(t *testing.T) {
@@ -1177,7 +1524,11 @@ func TestInspectLastTabClose_BranchMultiTabFastPath(t *testing.T) {
 	createAgentForPath(t, svc, "agent-branch-mt-1", repoDir)
 	createAgentForPath(t, svc, "agent-branch-mt-2", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-mt-1", "")
+	// A real owner, unlike the worktree-fast-path tests above: this one reaches
+	// the branch-sibling scan, whose FILE leg is owner-scoped and refuses to run
+	// blind rather than silently reporting "no siblings" (see
+	// hasOtherNonWorktreeTabOnBranch). Production always has one here.
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-mt-1", "user-1")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
 	assert.False(t, resp.GetShouldPrompt())
@@ -1195,7 +1546,11 @@ func TestInspectLastTabClose_BranchTerminalKeepsBranchAlive(t *testing.T) {
 	createAgentForPath(t, svc, "agent-branch-cross-1", repoDir)
 	createTerminalForPath(t, svc, "term-branch-cross-1", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-cross-1", "")
+	// A real owner, not "": the sibling scan refuses a blank one outright, and
+	// inspectLastTabClose swallows that error and falls through to the
+	// snapshot -- which on this clean fixture yields the very NONE/no-prompt
+	// the assertions below check, so a blank owner would make them vacuous.
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-cross-1", "user-1")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
 		"sibling terminal on the same branch must keep the close routing on the fast path")
@@ -1216,7 +1571,9 @@ func TestInspectLastTabClose_ManyTabsParallelScans(t *testing.T) {
 	createTerminalForPath(t, svc, "term-mix-1", repoDir)
 	createTerminalForPath(t, svc, "term-mix-2", repoDir)
 
-	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mix-1", "")
+	// A real owner, for the reason spelled out in the sibling-terminal test
+	// above: a blank one short-circuits the scan this test exists to exercise.
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-mix-1", "user-1")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget())
 	assert.False(t, resp.GetShouldPrompt(),
@@ -1279,7 +1636,7 @@ func TestPushBranch_CreatesWIPCommitAndPushes(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("content\n"), 0o644))
 	createAgentForPath(t, svc, "agent-push-dirty", repoDir)
 
-	err := svc.pushBranch(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-push-dirty")
+	err := svc.pushBranch(context.Background(), repoDir)
 	require.NoError(t, err)
 
 	msg, err := gitutil.Output(context.Background(), repoDir, "log", "-1", "--pretty=%s")
@@ -1318,7 +1675,7 @@ func TestPushBranch_ReProbesDirtyTreeIgnoringHint(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
 	createAgentForPath(t, svc, "agent-push-reprobe", repoDir)
 
-	err := svc.pushBranch(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-push-reprobe")
+	err := svc.pushBranch(context.Background(), repoDir)
 	require.NoError(t, err)
 
 	// Latest commit is the WIP that the re-probe correctly swept up.
@@ -1354,7 +1711,7 @@ func TestPushBranch_StaleDirtyHintOnCleanTreeDoesNotCreateEmptyCommit(t *testing
 	// add/commit step because dirtyTreeForPush sees a clean tree —
 	// regardless of any stale "dirty" snapshot the dialog might have
 	// captured before the user committed externally.
-	err := svc.pushBranch(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-stale-dirty")
+	err := svc.pushBranch(context.Background(), repoDir)
 	require.NoError(t, err)
 
 	// HEAD must still be `feature init` — no WIP commit was synthesized.
@@ -1386,7 +1743,7 @@ func TestPushBranch_NoUpstreamSetsUpstreamArg(t *testing.T) {
 	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "feature init")
 	createAgentForPath(t, svc, "agent-push-noup", repoDir)
 
-	err := svc.pushBranch(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-push-noup")
+	err := svc.pushBranch(context.Background(), repoDir)
 	require.NoError(t, err)
 
 	// The branch must now exist on the bare remote, which only happens
@@ -1397,6 +1754,77 @@ func TestPushBranch_NoUpstreamSetsUpstreamArg(t *testing.T) {
 	localHead, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
 	require.NoError(t, err)
 	assert.Equal(t, strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
+}
+
+// The last-tab dialog offers Push from whichever tab is being closed, so a
+// file tab that is the last one on a dirty worktree gets a Push button --
+// which failed with `unsupported tab type` for as long as pushBranch could not
+// resolve a working dir for FILE. Same root cause as the bogus close warning,
+// different RPC.
+func TestPushBranch_FromFileTab(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	bareDir := filepath.Join(t.TempDir(), "push-file-tab.git")
+	require.NoError(t, os.MkdirAll(bareDir, 0o755))
+	run(t, bareDir, "git", "init", "--bare")
+
+	repoDir := initRepo(t)
+	run(t, repoDir, "git", "remote", "add", "origin", bareDir)
+	run(t, repoDir, "git", "push", "-u", "origin", "HEAD")
+	run(t, repoDir, "git", "checkout", "-b", "push-from-file")
+	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "feature init")
+	createFileTabForPath(t, svc, "user-1", "file-push", repoDir, "open.txt")
+
+	require.NoError(t, svc.pushBranch(context.Background(), repoDir))
+
+	// The untracked file the tab has open rolled into the WIP commit, and the
+	// branch reached the remote -- so the push resolved this repo, not some
+	// directory derived elsewhere.
+	msg, err := gitutil.Output(context.Background(), repoDir, "log", "-1", "--pretty=%s")
+	require.NoError(t, err)
+	assert.Equal(t, wipCommitMessage, strings.TrimSpace(msg))
+	remoteHead, err := gitutil.Output(context.Background(), bareDir, "rev-parse", "refs/heads/push-from-file")
+	require.NoError(t, err)
+	localHead, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
+}
+
+// A push aimed at a file tab nobody registered has no working dir to push
+// PushBranch names a DIRECTORY, so the authorization it used to get implicitly
+// from "you can only name a tab id you have" is now an explicit check: the dir
+// must be the working dir of an OPEN tab this caller owns. Without it a
+// client-supplied path would host `git add -A` + commit + push in any
+// repository on the worker.
+func TestUserOwnsLiveTabInDir(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	other := initRepo(t)
+	owner, ok := userid.New("user-a")
+	require.True(t, ok)
+
+	// No tab anywhere yet.
+	owns, err := svc.userOwnsLiveTabInDir(context.Background(), owner, repoDir)
+	require.NoError(t, err)
+	assert.False(t, owns, "a dir with no open tab is not pushable")
+
+	createFileTabForPath(t, svc, "user-a", "file-owned", repoDir, "open.txt")
+	owns, err = svc.userOwnsLiveTabInDir(context.Background(), owner, repoDir)
+	require.NoError(t, err)
+	assert.True(t, owns)
+
+	// A dir the caller has no tab in stays refused even though it is a
+	// perfectly good repo -- that is the whole point.
+	owns, err = svc.userOwnsLiveTabInDir(context.Background(), owner, other)
+	require.NoError(t, err)
+	assert.False(t, owns, "another repo on the same worker is not pushable")
+
+	// Another user's file tab is not this caller's: worker_file_tabs is keyed
+	// (user_id, tab_id), and a file tab id is unique only within a client.
+	stranger, ok := userid.New("user-b")
+	require.True(t, ok)
+	owns, err = svc.userOwnsLiveTabInDir(context.Background(), stranger, repoDir)
+	require.NoError(t, err)
+	assert.False(t, owns, "a dir only another user has a tab in is not pushable")
 }
 
 // TestPushBranch_NoOriginRejectsBeforeAttempting verifies that a repo
@@ -1412,7 +1840,7 @@ func TestPushBranch_NoOriginRejectsBeforeAttempting(t *testing.T) {
 	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "feature init")
 	createAgentForPath(t, svc, "agent-no-origin", repoDir)
 
-	err := svc.pushBranch(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-no-origin")
+	err := svc.pushBranch(context.Background(), repoDir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "remote origin does not exist")
 }
@@ -2982,7 +3410,7 @@ func TestPushBranch_CleanTreeSkipsWIPCommit(t *testing.T) {
 	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "real feature commit")
 	createAgentForPath(t, svc, "agent-push-clean", repoDir)
 
-	err := svc.pushBranch(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-push-clean")
+	err := svc.pushBranch(context.Background(), repoDir)
 	require.NoError(t, err)
 
 	// HEAD subject must be the real commit, not a WIP that the push
@@ -3721,7 +4149,7 @@ func TestPushBranch_RecreatesUpstream(t *testing.T) {
 	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "branch commit")
 	createAgentForPath(t, svc, "agent-recreate-upstream", repoDir)
 
-	err := svc.pushBranch(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-recreate-upstream")
+	err := svc.pushBranch(context.Background(), repoDir)
 	require.NoError(t, err)
 
 	upstream, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "--abbrev-ref", "recreate-upstream@{upstream}")
@@ -3915,13 +4343,66 @@ func TestGetGitFileStatusEntries_OnlyUntrackedSkipsNumstat(t *testing.T) {
 
 // ----- branchInfoProbe unit tests -----
 
+// TestBranchInfoProbe_BoundsConcurrentForks pins branchProbeConcurrency as a
+// PER-CALL fork budget. It used to be a SetLimit on each per-type scan's own
+// errgroup inside hasOtherNonWorktreeTabOnBranch, and those scans run
+// concurrently -- so the constant that documents itself as "6 forks" actually
+// permitted 6 per LEG: 12 with agents+terminals, 18 once the file-tab leg
+// landed. Holding the budget on the probe, which is allocated once per call and
+// shared by every leg, makes the number the constant names the number the
+// worker forks.
+func TestBranchInfoProbe_BoundsConcurrentForks(t *testing.T) {
+	const limit = 3
+	const n = 4 * limit
+
+	probe := newBranchInfoProbe(limit)
+	entered := make(chan string, n)
+	release := make(chan struct{})
+	// Distinct dirs on purpose: singleflight coalesces by key, so same-key
+	// lookups would prove nothing about the budget.
+	probe.query = func(_ context.Context, dirPath string) (*gitPathInfo, error) {
+		entered <- dirPath
+		<-release
+		return &gitPathInfo{RepoRoot: dirPath}, nil
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			_, err := probe.lookup(context.Background(), fmt.Sprintf("/repo-%d", i))
+			assert.NoError(t, err)
+		}(i)
+	}
+
+	// The budget must admit `limit` probes at once...
+	for i := range limit {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d probes admitted; the budget must not serialize them", i, limit)
+		}
+	}
+	// ...and not one more while those are still running.
+	select {
+	case dir := <-entered:
+		t.Fatalf("probe for %q ran past the %d-fork budget", dir, limit)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(release)
+	wg.Wait()
+	require.Len(t, entered, n-limit, "every queued lookup must run once the budget frees up")
+}
+
 // TestBranchInfoProbe_CachesAcrossLookups pins the post-completion
 // cache contract: once a lookup succeeds for a workingDir, subsequent
 // lookups for that same dir return the cached value without forking
 // queryGitPathInfo again. The probe is allocated per
 // hasOtherNonWorktreeTabOnBranch call, so we exercise it directly here.
 func TestBranchInfoProbe_CachesAcrossLookups(t *testing.T) {
-	probe := newBranchInfoProbe()
+	probe := newBranchInfoProbe(branchProbeConcurrency)
 	dir := initRepo(t)
 	ctx := context.Background()
 
@@ -3946,7 +4427,7 @@ func TestBranchInfoProbe_CachesAcrossLookups(t *testing.T) {
 // observed the cache after the first finished — both are acceptable;
 // the bare-map version could not guarantee this).
 func TestBranchInfoProbe_CoalescesConcurrentMisses(t *testing.T) {
-	probe := newBranchInfoProbe()
+	probe := newBranchInfoProbe(branchProbeConcurrency)
 	dir := initRepo(t)
 	ctx := context.Background()
 	const n = 16
@@ -3980,7 +4461,7 @@ func TestBranchInfoProbe_CoalescesConcurrentMisses(t *testing.T) {
 // must each fork their own queryGitPathInfo and produce distinct
 // *gitPathInfo values.
 func TestBranchInfoProbe_DifferentKeysIndependent(t *testing.T) {
-	probe := newBranchInfoProbe()
+	probe := newBranchInfoProbe(branchProbeConcurrency)
 	repoA := initRepo(t)
 	repoB := initRepo(t)
 	ctx := context.Background()
@@ -4004,7 +4485,7 @@ func TestBranchInfoProbe_DifferentKeysIndependent(t *testing.T) {
 // retry path detects "my ctx is alive but I got a ctx error" and
 // re-runs the lookup with my own ctx as the new leader.
 func TestBranchInfoProbe_WaiterSurvivesLeaderCancellation(t *testing.T) {
-	probe := newBranchInfoProbe()
+	probe := newBranchInfoProbe(branchProbeConcurrency)
 	dir := initRepo(t)
 
 	const n = 8
@@ -4067,7 +4548,7 @@ func TestBranchInfoProbe_WaiterSurvivesLeaderCancellation(t *testing.T) {
 // dead caller-ctx falls through to `return nil, err` on the first
 // pass.
 func TestBranchInfoProbe_AllCallersCancelledPropagates(t *testing.T) {
-	probe := newBranchInfoProbe()
+	probe := newBranchInfoProbe(branchProbeConcurrency)
 	dir := initRepo(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel BEFORE the call
@@ -4092,7 +4573,7 @@ func TestBranchInfoProbe_AllCallersCancelledPropagates(t *testing.T) {
 // every mismatch returns false. The mismatch matrix here is what makes
 // hasOtherNonWorktreeTabOnBranch safe across multi-worktree repos.
 func TestBranchInfoProbe_Matches(t *testing.T) {
-	probe := newBranchInfoProbe()
+	probe := newBranchInfoProbe(branchProbeConcurrency)
 	dir := initRepo(t)
 	ctx := context.Background()
 	info, err := queryGitPathInfo(ctx, dir)

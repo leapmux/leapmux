@@ -8,7 +8,6 @@ import * as styles from './SelectionQuotePopover.css'
 
 interface SelectionQuotePopoverProps {
   class?: string
-  containerRef: HTMLElement | undefined
   onQuote: (selectedText: string, startLine?: number, endLine?: number) => void
   /**
    * Reports whether the document selection is currently inside this wrapper.
@@ -41,14 +40,6 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     }
   }
 
-  const currentContainer = (): HTMLElement | undefined => {
-    // When containerRef is passed as a static prop (e.g. from ChatView), it can
-    // become a stale, disconnected DOM element after a SolidJS <Show> toggles.
-    // Fall back to wrapperRef when the containerRef is no longer in the document.
-    const propsRef = props.containerRef
-    return (propsRef && propsRef.isConnected ? propsRef : null) ?? wrapperRef
-  }
-
   const setSelectionActive = (active: boolean) => {
     if (selectionActive === active)
       return
@@ -62,10 +53,24 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
     return !!anchorNode && !!focusNode && container.contains(anchorNode) && container.contains(focusNode)
   }
 
+  /**
+   * `wrapperRef` -- the element this component itself renders -- IS the container.
+   *
+   * There used to be a `containerRef` prop meant to narrow this to the caller's own
+   * content element, with `wrapperRef` as a fallback. It never once took effect: all
+   * three call sites passed a bare `let` binding, which Solid's JSX transform treats
+   * as a STATIC prop and captures at creation time -- before the `ref` callback that
+   * assigns it has run. So the prop was permanently `undefined` and the fallback was
+   * the only path. Naming `wrapperRef` directly is what the code has always done, and
+   * it is also the honest answer: it wraps `props.children` and it is what the
+   * mousedown/mouseup listeners below are attached to, so "the selection is inside
+   * this popover's subtree" and "the selection is inside the container" are the same
+   * question. Its only extra content is the popover's own two buttons, which hold no
+   * selectable prose.
+   */
   const updateSelectionActive = (): Selection | null => {
     const selection = window.getSelection()
-    const container = currentContainer()
-    if (!selection || selection.isCollapsed || !selection.toString().trim() || !container || !selectionInsideContainer(selection, container)) {
+    if (!selection || selection.isCollapsed || !selection.toString().trim() || !wrapperRef || !selectionInsideContainer(selection, wrapperRef)) {
       setSelectionActive(false)
       return null
     }

@@ -2,10 +2,11 @@ import type { ITheme } from '@xterm/xterm'
 import type { Component } from 'solid-js'
 import type { TerminalInstance } from '~/lib/terminal'
 import type { TerminalTab } from '~/stores/tab.types'
-import { createEffect, createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from 'solid-js'
 import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPanel'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { createKeyedRows } from '~/lib/keyedRows'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { isMac } from '~/lib/shortcuts/platform'
 import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, DEFAULT_FONT_SIZE, refreshTerminalFont, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer } from '~/lib/terminal'
@@ -536,51 +537,79 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
     prefersDark(),
   )
 
+  // The row list is keyed on TERMINAL IDS, not on the `TerminalTab` objects.
+  //
+  // A `TerminalTab` is a join result (see tabView), rebuilt whenever ANY field it
+  // derives from `tabMetadata` changes -- an OSC title the shell emits on every
+  // prompt, a status transition, a cols/rows write, the MRU stamp a click leaves.
+  // `<For>` keys by item IDENTITY, so keying rows on the object made each of those
+  // dispose the row and mount a fresh one: `TerminalContainer` unmounts, which
+  // tears down the xterm instance, releases its pooled WebGL context, and
+  // re-creates all of it from the serialized buffer. That round-trip is why it
+  // LOOKED fine -- `disposeTerminalInstance` captures the scrollback on the way
+  // out and the new instance repaints it -- but a shell that sets its title per
+  // prompt rebuilt its terminal on every command.
+  //
+  // Ids are strings, so `shallowEqualArrays` means the `<For>` reconciles only
+  // when a terminal is actually added, removed, or reordered. Every other field is
+  // read reactively INSIDE the row, where a change belongs: Solid updates the
+  // existing `TerminalContainer`'s props in place instead of replacing it.
+  const { keys: terminalIds, byKey: terminalById } = createKeyedRows(() => props.terminals, t => t.id)
+
   return (
     <div class={styles.container} data-theme={terminalThemeMode()}>
       <div class={styles.terminalInner}>
-        <For each={props.terminals}>
-          {terminal => (
-            <Switch
-              fallback={(
-                <TerminalContainer
-                  terminalId={terminal.id}
-                  active={terminal.id === props.activeTerminalId}
-                  visible={props.visible}
-                  tileFocused={props.tileFocused}
-                  screen={terminal.screen}
-                  lastOffset={props.getLastOffset?.(terminal.id)}
-                  cols={terminal.cols}
-                  rows={terminal.rows}
-                  fontFamily={preferences.monoFontFamily()}
-                  fontSize={DEFAULT_FONT_SIZE}
-                  theme={terminalTheme()}
-                  contentReady={(terminal.contentReady ?? false)
-                    || terminal.status === TerminalStatus.EXITED
-                    || terminal.status === TerminalStatus.DISCONNECTED}
-                  startupMessage={terminal.startupMessage}
-                  onInput={props.onInput}
-                  onResize={props.onResize}
-                  onTitleChange={props.onTitleChange}
-                  onBell={props.onBell}
-                  onContentReady={props.onContentReady}
-                />
-              )}
-            >
-              <Match when={terminal.status === TerminalStatus.STARTUP_FAILED}>
-                <div
-                  class={styles.startupErrorPane}
-                  classList={{ [styles.terminalWrapperHidden]: terminal.id !== props.activeTerminalId }}
-                  data-testid="terminal-startup-error"
-                >
-                  <StartupErrorBody
-                    title="Terminal failed to start"
-                    error={terminal.startupError ?? ''}
+        <For each={terminalIds()}>
+          {(id) => {
+            // A memo, not a bare thunk: `terminalById` is rebuilt whenever ANY
+            // tab's metadata changes anywhere in the account, so a thunk would
+            // re-evaluate all six derived props on every row for a write that
+            // touched none of them. `TerminalTab` is identity-stable across
+            // recomputes (tabView compares with `shallowEqual`), so the memo
+            // settles on `===` and the propagation stops here.
+            const terminal = createMemo(() => terminalById().get(id))
+            return (
+              <Switch
+                fallback={(
+                  <TerminalContainer
+                    terminalId={id}
+                    active={id === props.activeTerminalId}
+                    visible={props.visible}
+                    tileFocused={props.tileFocused}
+                    screen={terminal()?.screen}
+                    lastOffset={props.getLastOffset?.(id)}
+                    cols={terminal()?.cols}
+                    rows={terminal()?.rows}
+                    fontFamily={preferences.monoFontFamily()}
+                    fontSize={DEFAULT_FONT_SIZE}
+                    theme={terminalTheme()}
+                    contentReady={(terminal()?.contentReady ?? false)
+                      || terminal()?.status === TerminalStatus.EXITED
+                      || terminal()?.status === TerminalStatus.DISCONNECTED}
+                    startupMessage={terminal()?.startupMessage}
+                    onInput={props.onInput}
+                    onResize={props.onResize}
+                    onTitleChange={props.onTitleChange}
+                    onBell={props.onBell}
+                    onContentReady={props.onContentReady}
                   />
-                </div>
-              </Match>
-            </Switch>
-          )}
+                )}
+              >
+                <Match when={terminal()?.status === TerminalStatus.STARTUP_FAILED}>
+                  <div
+                    class={styles.startupErrorPane}
+                    classList={{ [styles.terminalWrapperHidden]: id !== props.activeTerminalId }}
+                    data-testid="terminal-startup-error"
+                  >
+                    <StartupErrorBody
+                      title="Terminal failed to start"
+                      error={terminal()?.startupError ?? ''}
+                    />
+                  </div>
+                </Match>
+              </Switch>
+            )
+          }}
         </For>
       </div>
     </div>

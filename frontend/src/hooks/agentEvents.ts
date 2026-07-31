@@ -27,10 +27,9 @@ import { createLogger } from '~/lib/logger'
 import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { shallowEqual } from '~/lib/shallowEqual'
 import { compactionContextUsage } from '~/stores/agentSession.store'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { deriveOptionGroupTabFields, tabKey, toGitTabFields } from '~/stores/tab.helpers'
+import { deriveOptionGroupTabFields, tabKey, toAgentGitTabFields } from '~/stores/tab.helpers'
 
 const log = createLogger('agentEvents')
 
@@ -503,9 +502,14 @@ export function applyPendingAxisSuppression(
  *    "unchanged", so an empty push returns {} and leaves the existing fields intact);
  *  - reuse each unchanged group's previous reference (mergeStableOptionGroupRefs) so a
  *    re-broadcast of the full catalog doesn't churn the settings popover's rows;
- *  - keep the optimistic value for each pending axis (applyPendingAxisSuppression);
- *  - reuse the prior optionValues reference when the merged result is unchanged, so a
- *    re-broadcast that changed no current value doesn't trip every reactive reader.
+ *  - keep the optimistic value for each pending axis (applyPendingAxisSuppression).
+ *
+ * Suppressing an equal-but-fresh optionValues is deliberately NOT done here:
+ * `tabMetadata.patch` compares every object-valued field against what is stored
+ * (see `sameStoredValue`) and drops the write, which covers this producer, the
+ * other ones, and any written later. mergeStableOptionGroupRefs stays because it
+ * is not that rule -- it stabilizes each ELEMENT inside a changed array, which a
+ * whole-value compare at the write point cannot do.
  *
  * Pure: the label-cache priming side effect (updateSettingsLabelCache) stays at the
  * call site -- it is the data-ingestion boundary, not part of deriving the tab fields.
@@ -527,10 +531,6 @@ export function resolveSettingsTabFields(
   // current values keep the user's in-flight optimistic edits (see the helper).
   if (fields.optionValues)
     fields.optionValues = applyPendingAxisSuppression(fields.optionValues, prev?.optionValues, pendingAxes)
-  // Reuse the prior optionValues reference when the (possibly per-axis-merged) content
-  // is unchanged so a no-op re-broadcast doesn't wake every reader of optionValues.
-  if (fields.optionValues && prev?.optionValues && shallowEqual(fields.optionValues, prev.optionValues))
-    fields.optionValues = prev.optionValues
   return fields
 }
 
@@ -541,6 +541,11 @@ export function resolveSettingsTabFields(
  * startupMessage transitions, the already-reconciled per-axis settings fields, and the
  * git fields. Pure; the caller applies the whole set in ONE `metadata.patch` so a status
  * push is a single write (vs. the historical split that walked the tab list twice).
+ *
+ * Takes no pre-update tab, and none of the groups below compares against one. The
+ * worker re-ships its whole payload on every push, so an unchanged field does arrive
+ * as an equal-but-fresh object -- but suppressing that write is `tabMetadata.patch`'s
+ * job now, at the single write point (see `sameStoredValue`), not each producer's.
  */
 export function buildAgentStatusTabUpdate(
   sc: AgentStatusChange,
@@ -562,12 +567,8 @@ export function buildAgentStatusTabUpdate(
       : hasStatus ? { startupMessage: '' } : {}),
     // The reconciled catalog (never optimistic) + per-axis-suppressed current values.
     ...settingsFields,
-    ...(sc.gitStatus
-      ? {
-          agentGitStatus: sc.gitStatus,
-          ...toGitTabFields(sc.gitStatus.branch, sc.gitStatus.originUrl, sc.gitStatus.toplevel, sc.gitStatus.isWorktree),
-        }
-      : {}),
+    // The whole git group as one unit, verbatim from the push.
+    ...toAgentGitTabFields(sc.gitStatus),
   }
 }
 
@@ -733,7 +734,6 @@ export function handleAgentStatusChange(
   setWorkerOnline: (online: boolean) => void,
   onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
 ): void {
-  const { chatStore, view, metadata } = stores
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
   // `workerOnline` is only authoritative on full status snapshots. Status-less partial
   // updates may carry proto3's default `false` from older backends or sparse producers.
@@ -748,23 +748,10 @@ export function handleAgentStatusChange(
   if (!hasPayload)
     return
 
-  // Read the prior status before the patch overwrites it so a STARTING ->
-  // ACTIVE / STARTUP_FAILED transition can drain the per-agent pending-message queue.
-  const prev = view.getAgentTab(sc.agentId)
-  drainPendingOutboundOnStart(sc, prev, chatStore)
-
   // Whether THIS agent has any settings change in flight -- gates only the aggregate
   // spinner stop below; the optimistic-value suppression is per-AXIS (pendingAxes).
   const pendingSettings = settingsLoading.isPending(sc.agentId)
-  // Prime the global settings-label cache from the reported groups at this data-ingestion
-  // boundary so notification renderers can resolve human names when an inline label is
-  // missing (resolveSettingsTabFields itself is pure).
-  if (sc.optionGroups.length > 0)
-    updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
-  const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
-
-  // Consolidate every per-status field into one patch so the row is written once.
-  metadata.patch(sc.agentId, buildAgentStatusTabUpdate(sc, hasStatus, settingsFields))
+  applyAgentStatusTabUpdate(sc, stores, settingsLoading)
   if (!pendingSettings)
     settingsLoading.stop()
   if (sc.status === AgentStatus.INACTIVE)
@@ -800,14 +787,50 @@ export function applyBackgroundAgentStatusChange(
   stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'>,
   settingsLoading: ReturnType<typeof createLoadingSignal>,
 ): void {
-  const { chatStore, view, metadata } = stores
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
   if (!hasStatus && sc.gitStatus === undefined && sc.optionGroups.length === 0)
     return
+  applyAgentStatusTabUpdate(sc, stores, settingsLoading)
+}
+
+/**
+ * Everything a status push writes onto an agent's tab row, for BOTH the
+ * on-screen and background paths.
+ *
+ * The shared `buildAgentStatusTabUpdate` already guarantees the two write the
+ * same FIELDS. What this adds is that its arguments are DERIVED the same way --
+ * which is the half that kept drifting, and the half this call site's own doc
+ * says is how `agentSessionId` / `startupError` / `startupMessage` quietly fell
+ * out of the background row before. Every one of the steps below feeds that
+ * builder, and each is a place the two copies could disagree:
+ *
+ *   - `prev` is read BEFORE the patch overwrites it, and is needed twice over:
+ *     the drain fires on the STARTING -> ACTIVE/STARTUP_FAILED edge, and
+ *     `resolveSettingsTabFields` reads it to keep in-flight optimistic axis
+ *     values and to stabilize each unchanged option-group element. Suppressing
+ *     an equal-but-fresh whole field is NOT among them -- `tabMetadata.patch`
+ *     does that for every producer at the write point.
+ *   - the label cache is primed at this data-ingestion boundary so notification
+ *     renderers can resolve human names when an inline label is missing
+ *     (`resolveSettingsTabFields` itself is pure).
+ *
+ * What stays OUT is what genuinely differs: the aggregate settings spinner
+ * (`settingsLoading` is keyless, so a background push must not stop a spinner
+ * the user has in flight on the agent they are looking at), `setWorkerOnline`,
+ * and `handleAgentInactive` -- all on-screen concerns, and all order-independent
+ * of this write.
+ */
+function applyAgentStatusTabUpdate(
+  sc: AgentStatusChange,
+  stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'>,
+  settingsLoading: ReturnType<typeof createLoadingSignal>,
+): void {
+  const { chatStore, view, metadata } = stores
   const prev = view.getAgentTab(sc.agentId)
   drainPendingOutboundOnStart(sc, prev, chatStore)
   if (sc.optionGroups.length > 0)
     updateSettingsLabelCache(sc.agentProvider, sc.optionGroups)
   const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
-  metadata.patch(sc.agentId, buildAgentStatusTabUpdate(sc, hasStatus, settingsFields))
+  // Consolidate every per-status field into one patch so the row is written once.
+  metadata.patch(sc.agentId, buildAgentStatusTabUpdate(sc, sc.status !== AgentStatus.UNSPECIFIED, settingsFields))
 }

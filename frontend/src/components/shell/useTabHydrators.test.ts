@@ -6,7 +6,6 @@ import { TabHydrationStatus } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
-import { createFileTabPathsStore } from '~/lib/fileTabPaths'
 import { isFileTab } from '~/stores/tab.types'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
@@ -29,7 +28,7 @@ beforeEach(() => {
   mockListTerminals.mockReset()
   mockListTerminals.mockResolvedValue({ terminals: [], verdicts: [] })
   mockGetFileTabPath.mockReset()
-  mockGetFileTabPath.mockResolvedValue({ filePath: '/repo/x.ts' })
+  mockGetFileTabPath.mockResolvedValue({ filePath: '/repo/nested/x.ts', workingDir: '/repo' })
 })
 
 afterEach(() => setCRDTBridge(null))
@@ -94,14 +93,12 @@ function terminalInfo(id: string, over: Record<string, unknown> = {}) {
 function setup(workspaceId = 'ws-test') {
   const harness = installTestBridge({ workspaceId })
   const stores = createTestTabStores(workspaceId)
-  const fileTabPaths = createFileTabPathsStore()
   let seq = 0
   return {
     ...stores,
     harness,
-    fileTabPaths,
     mount: (onlineWorkerIds?: () => ReadonlySet<string>) =>
-      useTabHydrators({ view: stores.view, metadata: stores.metadata, fileTabPaths, onlineWorkerIds }),
+      useTabHydrators({ view: stores.view, metadata: stores.metadata, onlineWorkerIds }),
     add(type: TabType, id: string, workerId = 'w1', tileId = harness.rootTileId) {
       seq += 1
       emitAddTab({ type, id, tileId, position: `p${seq}`, workerId })
@@ -276,7 +273,7 @@ describe('useTabHydrators', () => {
   })
 
   describe('file', () => {
-    it('fetches the path for a file tab that has none', async () => {
+    it('fetches the path and working dir for a file tab that has none', async () => {
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.FILE, 'f1')
@@ -288,7 +285,40 @@ describe('useTabHydrators', () => {
 
       expect(mockGetFileTabPath).toHaveBeenCalledTimes(1)
       const f1 = s.view.getById(TabType.FILE, 'f1')
-      expect(f1 && isFileTab(f1) && f1.filePath).toBe('/repo/x.ts')
+      expect(f1 && isFileTab(f1) && f1.filePath).toBe('/repo/nested/x.ts')
+      // The working dir comes back with the path because it is what puts the
+      // tab in a branch group: a hydrated tab without one matches git status
+      // by the file's own path instead, which is a different repo whenever the
+      // file was opened from another checkout.
+      expect(f1?.workingDir).toBe('/repo')
+      d()
+    })
+
+    /**
+     * A tab the private-event stream already answered for is not fetched at
+     * all. `FileTabPathRegistered` carries the same `(file_path, working_dir)`
+     * this RPC returns, so the stream marks the tab `hydrated` and the
+     * predicate goes false.
+     *
+     * That flag is deliberately the ONLY record of "the worker has answered".
+     * A companion path cache used to hold it, and being keyed by tab id but
+     * swept on a different schedule than the metadata row, it could outlive the
+     * row -- leaving the hydrator permanently convinced it had already asked
+     * about a tab whose path had been discarded.
+     */
+    it('skips a tab the private-event stream already answered for', async () => {
+      const s = setup()
+      const d = createRoot((dispose) => {
+        s.add(TabType.FILE, 'f1')
+        // What `onFileTabPathRegistered` writes.
+        s.metadata.patch('f1', { filePath: '/repo/nested/x.ts', workingDir: '/repo', hydrated: true })
+        s.mount()
+        return dispose
+      })
+      await flush()
+      await flush()
+
+      expect(mockGetFileTabPath).not.toHaveBeenCalled()
       d()
     })
 

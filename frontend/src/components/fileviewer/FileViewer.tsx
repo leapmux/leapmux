@@ -487,9 +487,18 @@ export const FileViewer: Component<{
   let contentRef: HTMLDivElement | undefined
 
   // Include the view mode in the scroll key so each mode has independent scroll.
-  // eslint-disable-next-line solid/reactivity -- Read once; workerId and filePath are stable for the component's lifetime
-  const scrollStoragePrefix = `${PREFIX_FILE_SCROLL}${props.workerId}:${props.filePath}`
-  const scrollStorageKey = () => `${scrollStoragePrefix}:${props.fileViewMode ?? 'working'}`
+  //
+  // Derived per read, NOT captured at setup. `filePath` is emphatically not
+  // stable for this component's lifetime: the pane is keyed on the TAB ID (see
+  // TileRenderer's `tileFileTabIds`), so a file tab that arrives from the CRDT
+  // before its path does -- a reload, a peer's open, `leapmux remote tab open
+  // --type=file` -- mounts this component with `filePath=''` and is patched
+  // afterwards by the hydrator. Freezing the prefix there gave every such tab on
+  // one worker the SAME key, so their scroll offsets overwrote each other.
+  // (Keying rows on the `Tab` object used to remount the pane on that patch,
+  // which is what made a setup-time read accidentally correct.)
+  const scrollStoragePrefix = () => `${PREFIX_FILE_SCROLL}${props.workerId}:${props.filePath}`
+  const scrollStorageKey = () => `${scrollStoragePrefix()}:${props.fileViewMode ?? 'working'}`
 
   // Save scroll position when the view mode changes or on unmount.
   // Values are TTL-wrapped via `sessionStorageSet` so stale entries get

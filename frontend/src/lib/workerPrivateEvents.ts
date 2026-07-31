@@ -29,9 +29,14 @@ interface OpenStreamOpts {
   /**
    * Optional callback for `FileTabPathRegistered` events — fires both
    * during the bootstrap replay and on live updates. Idempotent on the
-   * receiver side (the `fileTabPaths` store dedupes by (tab_id, path)).
+   * receiver side: it patches `tabMetadata`, which drops a write equal to
+   * what is stored.
+   *
+   * `workingDir` is the tab's git context as the WORKER resolved it (see
+   * the RPC's proto doc), so a client that learns of the tab here groups it
+   * exactly where the client that opened it did.
    */
-  onFileTabPathRegistered?: (evt: { tabId: string, filePath: string }) => void
+  onFileTabPathRegistered?: (evt: { tabId: string, filePath: string, workingDir: string }) => void
   /**
    * Optional callback for `FileTabPathRevoked` events. Receiver drops
    * the (tab_id → path) entry from the local cache.
@@ -109,7 +114,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
                 }
                 case 'fileTabPathRegistered': {
                   const r = evt.event.value
-                  opts.onFileTabPathRegistered?.({ tabId: r.tabId, filePath: r.filePath })
+                  opts.onFileTabPathRegistered?.({ tabId: r.tabId, filePath: r.filePath, workingDir: r.workingDir })
                   break
                 }
                 case 'fileTabPathRevoked': {

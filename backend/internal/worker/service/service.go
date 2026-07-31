@@ -1168,6 +1168,32 @@ func sanitizeOptionalTitle(title string) (string, error) {
 
 // expandTilde expands a leading "~" or "~/" in a path to the user's home
 // directory. Other forms (e.g. "~user/", "~~") are left unchanged.
+// normalizeWorkingDir resolves the value stored in a tab's working_dir column,
+// for all three tab types. `raw` is whatever the client sent; `fallback` is the
+// dir to use when it sent nothing (the home dir for agents and terminals, the
+// file's own directory for file tabs).
+//
+// The absolute-path requirement is the point of sharing this. A working dir is
+// the one field every branch-context operation hands to `git -C` --
+// getTabWorkingDir, linkFileTabToWorktree, the branch-sibling scan, PushBranch
+// -- and `git -C` resolves a relative path against the WORKER PROCESS's cwd,
+// which is never the client's. A stored `.` or `../peer-repo` therefore does not
+// fail loudly; it silently answers for whatever repository the worker happens to
+// sit in, so a close inspection reports the wrong branch's dirty state and
+// `--worktree=push` can commit and push a repository the user never named.
+// Refusing at the write point is the same call FileTabPathStore.Register already
+// makes for file_path, applied to the other half of the same lookup.
+func normalizeWorkingDir(raw, fallback string) (string, error) {
+	dir := expandTilde(strings.TrimSpace(raw))
+	if dir == "" {
+		dir = fallback
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("working_dir must be absolute, got %q", dir)
+	}
+	return dir, nil
+}
+
 func expandTilde(path string) string {
 	if path == "~" {
 		if home, err := os.UserHomeDir(); err == nil {

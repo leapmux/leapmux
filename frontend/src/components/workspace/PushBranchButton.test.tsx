@@ -3,7 +3,6 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { PushBranchButton } from './PushBranchButton'
 
 vi.mock('~/api/workerRpc', () => ({
@@ -40,7 +39,7 @@ describe('pushBranchButton', () => {
     render(() => (
       <PushBranchButton
         workerId="w1"
-        tab={{ type: TabType.AGENT, id: 'a1' }}
+        workingDir="/repo"
         gitState={gitState({ hasUncommittedChanges: false })}
         onPushed={vi.fn()}
       />
@@ -53,7 +52,7 @@ describe('pushBranchButton', () => {
     render(() => (
       <PushBranchButton
         workerId="w1"
-        tab={{ type: TabType.AGENT, id: 'a1' }}
+        workingDir="/repo"
         gitState={gitState({ hasUncommittedChanges: true })}
         onPushed={vi.fn()}
       />
@@ -65,7 +64,7 @@ describe('pushBranchButton', () => {
     render(() => (
       <PushBranchButton
         workerId="w1"
-        tab={{ type: TabType.AGENT, id: 'a1' }}
+        workingDir="/repo"
         gitState={undefined}
         onPushed={vi.fn()}
       />
@@ -73,14 +72,14 @@ describe('pushBranchButton', () => {
     expect(screen.getByRole('button', { name: 'Push' })).toBeInTheDocument()
   })
 
-  it('sends only tabType + tabId on click (gitState is not forwarded to the worker)', async () => {
+  it('sends only the working dir on click (gitState is not forwarded to the worker)', async () => {
     vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
     const onPushed = vi.fn()
     const snapshot = gitState({ hasUncommittedChanges: true, upstreamExists: false })
     render(() => (
       <PushBranchButton
         workerId="w7"
-        tab={{ type: TabType.TERMINAL, id: 't9' }}
+        workingDir="/repo"
         gitState={snapshot}
         onPushed={onPushed}
       />
@@ -92,30 +91,24 @@ describe('pushBranchButton', () => {
     // dialog disagree with what the server actually pushes.
     expect(vi.mocked(workerRpc.pushBranch).mock.calls[0]).toEqual([
       'w7',
-      {
-        tabType: TabType.TERMINAL,
-        tabId: 't9',
-      },
+      { workingDir: '/repo' },
     ])
     await waitFor(() => expect(onPushed).toHaveBeenCalledTimes(1))
   })
 
-  it('still sends only tabType + tabId when gitState is undefined', async () => {
+  it('still sends only the working dir when gitState is undefined', async () => {
     vi.mocked(workerRpc.pushBranch).mockResolvedValueOnce({} as never)
     render(() => (
       <PushBranchButton
         workerId="w1"
-        tab={{ type: TabType.AGENT, id: 'a1' }}
+        workingDir="/repo"
         gitState={undefined}
         onPushed={vi.fn()}
       />
     ))
     fireEvent.click(screen.getByRole('button', { name: 'Push' }))
     await waitFor(() => expect(workerRpc.pushBranch).toHaveBeenCalledTimes(1))
-    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({
-      tabType: TabType.AGENT,
-      tabId: 'a1',
-    })
+    expect(vi.mocked(workerRpc.pushBranch).mock.calls[0][1]).toEqual({ workingDir: '/repo' })
   })
 
   it('shows the success toast when push resolves', async () => {
@@ -123,7 +116,7 @@ describe('pushBranchButton', () => {
     render(() => (
       <PushBranchButton
         workerId="w1"
-        tab={{ type: TabType.AGENT, id: 'a1' }}
+        workingDir="/repo"
         gitState={gitState()}
         onPushed={vi.fn()}
       />
@@ -140,7 +133,7 @@ describe('pushBranchButton', () => {
     render(() => (
       <PushBranchButton
         workerId="w1"
-        tab={{ type: TabType.AGENT, id: 'a1' }}
+        workingDir="/repo"
         gitState={gitState()}
         onPushed={onPushed}
       />
@@ -155,7 +148,7 @@ describe('pushBranchButton', () => {
     render(() => (
       <PushBranchButton
         workerId="w1"
-        tab={{ type: TabType.AGENT, id: 'a1' }}
+        workingDir="/repo"
         gitState={gitState()}
         onPushed={vi.fn()}
         disabled
@@ -178,7 +171,7 @@ describe('pushBranchButton', () => {
     render(() => (
       <PushBranchButton
         workerId="w1"
-        tab={{ type: TabType.AGENT, id: 'a1' }}
+        workingDir="/repo"
         gitState={gitState()}
         onPushed={vi.fn()}
       />
@@ -201,7 +194,7 @@ describe('pushBranchButton', () => {
     render(() => (
       <PushBranchButton
         workerId="w1"
-        tab={{ type: TabType.AGENT, id: 'a1' }}
+        workingDir="/repo"
         gitState={gitState()}
         onPushed={vi.fn()}
       />

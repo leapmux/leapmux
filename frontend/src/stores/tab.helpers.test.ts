@@ -1,12 +1,12 @@
 import type { Tab } from './tab.types'
-import type { AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentGitStatus, AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
+import { AgentGitStatusSchema, AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalInfoSchema, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, gitTabFieldsDiffer, isSameRepo, isTabReadyForGitStatus, openedTerminalMetadata, resolveOptimisticGitInfo, setOptionValue, tabDisplayLabel, terminalMetadata, toGitTabFields } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, isSameRepo, isTabReadyForGitStatus, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue, tabDisplayLabel, terminalMetadata, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -160,7 +160,7 @@ describe('isSameRepo', () => {
   })
 })
 
-// `toGitTabFields` / `gitTabFieldsDiffer` carry the four-field git tuple
+// `toGitTabFields` carries the four-field git tuple
 // (branch + originUrl + toplevel + isWorktree) onto every tab. The
 // disposition was added when wires were already in place for the other
 // three; pin its inclusion so a future "factor out branch+origin" refactor
@@ -177,9 +177,8 @@ describe('toGitTabFields', () => {
 
   // Regression: these three used to collapse to `undefined` while
   // `gitIsWorktree` did not. `tabMetadata.patch` SKIPS undefined, so a
-  // collapsed field cannot CLEAR a populated one -- `gitTabFieldsDiffer` sees
-  // a difference, `patch` drops it, and the next status event repeats that
-  // forever. A repo that loses its remote kept the dead origin for the life of
+  // collapsed field cannot CLEAR a populated one -- the write is dropped, the
+  // value never changes, and the next status event repeats that forever. A repo that loses its remote kept the dead origin for the life of
   // the page, and the sidebar kept grouping the tab under it.
   it('emits an empty string, not undefined, for a field the repo has lost', () => {
     expect(toGitTabFields('main', '', '/repo', false)).toEqual({
@@ -203,9 +202,8 @@ describe('toGitTabFields', () => {
    * `false` must survive as `false`. `tabMetadata.patch` SKIPS undefined
    * values, so collapsing the negative case means a tab that stops being a
    * worktree can never be told: the patch drops the field, the value never
-   * changes, and `gitTabFieldsDiffer` keeps reporting a difference on every
-   * subsequent event — a write loop that never converges, with the sidebar
-   * stuck showing the worktree badge.
+   * changes, and every subsequent event re-sends it — a write loop that never
+   * converges, with the sidebar stuck showing the worktree badge.
    */
   it('keeps isWorktree=false as a real false, so a tab can stop being a worktree', () => {
     expect(toGitTabFields('main', '', '/repo', false)!.gitIsWorktree).toBe(false)
@@ -217,51 +215,141 @@ describe('toGitTabFields', () => {
     expect(metadata.get('t1')?.gitIsWorktree).toBe(true)
 
     const next = toGitTabFields('main', '', '/repo', false)!
-    expect(gitTabFieldsDiffer(metadata.get('t1')!, next), 'the diff fires once').toBe(true)
     metadata.patch('t1', next)
-
     expect(metadata.get('t1')?.gitIsWorktree, 'the write actually landed').toBe(false)
-    expect(
-      gitTabFieldsDiffer(metadata.get('t1')!, next),
-      'and does not fire again - the loop converges',
-    ).toBe(false)
+
+    const settled = metadata.get('t1')!
+    metadata.patch('t1', next)
+    expect(metadata.get('t1'), 'and re-sending it is a no-op - the loop converges').toBe(settled)
   })
 })
 
-describe('gitTabFieldsDiffer', () => {
+/**
+ * The producer of an agent tab's whole git group. Its reference-reuse rule is
+ * load-bearing rather than an optimization: the worker recomputes and re-ships
+ * the full status on every push, so an unchanged repo arrives as an
+ * equal-but-FRESH proto. `Tab` is compared with `shallowEqual` (per-key
+ * `Object.is`) and consumers iterate with `<For>`, which keys rows by item
+ * identity -- so writing that fresh object back re-keys the tab and tears down
+ * every row rendered from it.
+ */
+describe('toAgentGitTabFields', () => {
+  // Only the fields these cases vary; `Partial<AgentGitStatus>` would drag in
+  // `$typeName`, which `create`'s init shape rejects.
+  const status = (over: { ahead?: number, conflicted?: boolean } = {}) =>
+    create(AgentGitStatusSchema, { branch: 'main', toplevel: '/repo', originUrl: 'o', ahead: 2, modified: true, ...over })
+
+  it('reports nothing at all when the push carried no status', () => {
+    expect(toAgentGitTabFields(undefined)).toEqual({})
+  })
+
+  it('carries the proto plus the four flat mirrors as one group', () => {
+    const gs = status()
+    expect(toAgentGitTabFields(gs)).toEqual({
+      agentGitStatus: gs,
+      gitBranch: 'main',
+      gitOriginUrl: 'o',
+      gitToplevel: '/repo',
+      gitIsWorktree: false,
+    })
+  })
+
+  // Reference reuse is NOT this function's job -- it reports the status it was
+  // given, every time, and `tabMetadata.patch` drops the write when the stored
+  // value is already equal (see `sameStoredValue`, and the store's own tests for
+  // the dedupe). Keeping the producer unconditional is what lets every other
+  // producer of an object-valued field get the same treatment for free.
+  it('reports the status unconditionally, leaving the dedupe to the write point', () => {
+    const gs = status()
+    expect(toAgentGitTabFields(gs).agentGitStatus).toBe(gs)
+  })
+})
+
+describe('protoToAgentTabFields git status', () => {
+  const agent = (gs: AgentGitStatus | undefined) =>
+    create(AgentInfoSchema, { id: 'a1', workingDir: '/repo', agentProvider: AgentProvider.CLAUDE_CODE, gitStatus: gs })
+  const status = () => create(AgentGitStatusSchema, { branch: 'main', toplevel: '/repo' })
+
+  it('routes the git group through the shared producer', () => {
+    const gs = status()
+    const fields = protoToAgentTabFields('wkr-1', agent(gs))
+    expect(fields.agentGitStatus).toBe(gs)
+    expect(fields.gitBranch).toBe('main')
+    expect(fields.gitToplevel).toBe('/repo')
+  })
+
+  it('reports no git group at all for an agent with no status', () => {
+    expect(protoToAgentTabFields('wkr-1', agent(undefined)).agentGitStatus).toBeUndefined()
+  })
+
+  it('leaves the rest of the payload alone', () => {
+    const fields = protoToAgentTabFields('wkr-1', agent(status()))
+    expect(fields.workerId).toBe('wkr-1')
+    expect(fields.workingDir).toBe('/repo')
+  })
+})
+
+/**
+ * The four git fields must LAND through `metadata.patch`, and must stop
+ * re-writing once they have.
+ *
+ * These used to drive `gitTabFieldsDiffer`, a per-producer comparator the
+ * terminal path consulted before patching. That rule now lives at the single
+ * write point (`sameStoredValue`), so the behaviour is asserted where it is
+ * actually enforced -- a producer-side test would have kept passing while the
+ * producer stopped being consulted.
+ */
+describe('git tab fields through patch', () => {
   const base = { gitBranch: 'main', gitOriginUrl: 'o', gitToplevel: '/r', gitIsWorktree: false }
 
-  it('returns false for an identical tuple', () => {
-    expect(gitTabFieldsDiffer(base, { ...base })).toBe(false)
+  function stamped(fields: Partial<typeof base>) {
+    const metadata = createTabMetadataStore()
+    metadata.patch('t1', base)
+    const before = metadata.get('t1')!
+    metadata.patch('t1', { ...base, ...fields })
+    return { metadata, before, after: metadata.get('t1')! }
+  }
+
+  it('does not re-write the row for an identical tuple', () => {
+    const { before, after } = stamped({})
+    // Same ROW OBJECT: a fresh one would re-key the tab and remount every
+    // `<For>` row rendered from it.
+    expect(after).toBe(before)
   })
 
-  it('detects a branch change', () => {
-    expect(gitTabFieldsDiffer(base, { ...base, gitBranch: 'feature' })).toBe(true)
+  it('lands a branch change', () => {
+    expect(stamped({ gitBranch: 'feature' }).after.gitBranch).toBe('feature')
   })
 
-  it('detects an originUrl change', () => {
-    expect(gitTabFieldsDiffer(base, { ...base, gitOriginUrl: 'other' })).toBe(true)
+  it('lands an originUrl change', () => {
+    expect(stamped({ gitOriginUrl: 'other' }).after.gitOriginUrl).toBe('other')
   })
 
-  it('detects a toplevel change', () => {
-    expect(gitTabFieldsDiffer(base, { ...base, gitToplevel: '/other' })).toBe(true)
+  it('lands a toplevel change', () => {
+    expect(stamped({ gitToplevel: '/other' }).after.gitToplevel).toBe('/other')
   })
 
-  it('detects an isWorktree change (false → true)', () => {
-    // Regression guard for the isWorktree plumbing: if a worker re-
-    // probes and reports the path as a linked worktree where it
-    // previously wasn't (or vice versa), the tab MUST update — the
-    // sidebar's BranchGroup.isWorktree disposition is derived from
-    // it and ChangeBranchDialog reads that to seed its path-info shape.
-    expect(gitTabFieldsDiffer(base, { ...base, gitIsWorktree: true })).toBe(true)
+  it('lands an isWorktree change (false -> true)', () => {
+    // Regression guard for the isWorktree plumbing: if a worker re-probes and
+    // reports the path as a linked worktree where it previously wasn't (or vice
+    // versa), the tab MUST update -- the sidebar's BranchGroup.isWorktree
+    // disposition is derived from it and ChangeBranchDialog reads that to seed
+    // its path-info shape.
+    expect(stamped({ gitIsWorktree: true }).after.gitIsWorktree).toBe(true)
   })
 
-  it('treats undefined and false isWorktree as equal (no churn against a never-stamped row)', () => {
-    // The producers all write a REAL `false` now, but a row that has never been
-    // stamped still holds `undefined`. Those two mean the same thing — "not a
-    // worktree" — so the comparator must not report a difference, or the first
-    // refresh after a tab appears would patch every such tab for nothing.
-    expect(gitTabFieldsDiffer({ ...base, gitIsWorktree: undefined }, { ...base, gitIsWorktree: false })).toBe(false)
+  it('converges: a true -> false transition lands once and then stops', () => {
+    const metadata = createTabMetadataStore()
+    metadata.patch('t1', toGitTabFields('main', '', '/repo', true)!)
+    expect(metadata.get('t1')?.gitIsWorktree).toBe(true)
+
+    const next = toGitTabFields('main', '', '/repo', false)!
+    metadata.patch('t1', next)
+    expect(metadata.get('t1')?.gitIsWorktree, 'the write actually landed').toBe(false)
+
+    const settled = metadata.get('t1')!
+    metadata.patch('t1', next)
+    expect(metadata.get('t1'), 'and re-sending it changes nothing').toBe(settled)
   })
 })
 

@@ -393,6 +393,52 @@ describe('pendingOpsManager', () => {
       expect(mgr.state.speculativeState).toBe(mgr.state.confirmedState)
     })
 
+    it('a second pending batch does not write through into confirmedState', () => {
+      // The detach is per-BATCH, not per-manager. speculativeState's record
+      // maps are SHALLOW copies of confirmedState's, so a record no earlier
+      // batch touched is still the confirmed one -- and `apply.ts` writes
+      // registers IN PLACE. Batch 2 touching a record batch 1 left alone is
+      // therefore the case a "detached, so we're safe" reading misses.
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
+      // Seed a tab into confirmedState so batch 2 mutates a PRE-EXISTING
+      // record (a new one lands in the shallow-copied map and is harmless).
+      const seed = setTabTileId({ originClientId: 'remote', clock: new HLCClock('remote') }, TabType.AGENT, 'tA', 'tile-CONFIRMED')
+      seed.canonicalHlc = create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'remote' })
+      mgr.consumeRemote(newBatch([seed]))
+      expect(mgr.state.confirmedState.tabs.tA?.tileId?.value).toBe('tile-CONFIRMED')
+
+      // Batch 1 touches a DIFFERENT record, so tabs.tA is never cloned.
+      mgr.submit(newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)]))
+      // Batch 2 lands while batch 1 is still pending.
+      const b2 = newBatch([setTabTileId(ctx, TabType.AGENT, 'tA', 'tile-SPECULATIVE')])
+      mgr.submit(b2)
+
+      expect(mgr.state.speculativeState.tabs.tA?.tileId?.value).toBe('tile-SPECULATIVE')
+      expect(mgr.state.confirmedState.tabs.tA?.tileId?.value).toBe('tile-CONFIRMED')
+    })
+
+    it('a rejected second batch leaves confirmedState unchanged', () => {
+      // The data-loss half: recomputeSpeculative re-derives FROM
+      // confirmedState, so a write that reached confirmedState survives the
+      // rejection that was supposed to undo it -- permanently, and under the
+      // local HLC, which then suppresses lower-HLC remote writes.
+      const ctx = { originClientId: 'clientA', clock: mgr.clock }
+      const seed = setTabTileId({ originClientId: 'remote', clock: new HLCClock('remote') }, TabType.AGENT, 'tA', 'tile-CONFIRMED')
+      seed.canonicalHlc = create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'remote' })
+      mgr.consumeRemote(newBatch([seed]))
+
+      mgr.submit(newBatch([setNodeKind(ctx, 'n1', NodeKind.LEAF)]))
+      const b2 = newBatch([setTabTileId(ctx, TabType.AGENT, 'tA', 'tile-SPECULATIVE')])
+      mgr.submit(b2)
+      mgr.consumeBatchRejected(b2.batchId, create(BatchRejectionSchema, {
+        reason: BatchRejectionReason.BATCH_REJECTION_STALE_EPOCH,
+        offendingOpId: b2.ops[0].opId,
+      }))
+
+      expect(mgr.state.confirmedState.tabs.tA?.tileId?.value).toBe('tile-CONFIRMED')
+      expect(mgr.state.speculativeState.tabs.tA?.tileId?.value).toBe('tile-CONFIRMED')
+    })
+
     it('bootstrap leaves the alias intact when no batches are pending', () => {
       // Bootstrap rebuilds confirmedState; with empty pending, the
       // recomputeSpeculative fast-path must re-alias.

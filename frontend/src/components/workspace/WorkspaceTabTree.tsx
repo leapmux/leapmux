@@ -6,13 +6,14 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import X from 'lucide-solid/icons/x'
-import { createContext, createMemo, createSignal, For, on, Show, useContext } from 'solid-js'
+import { createContext, createMemo, createSignal, on, Show, useContext } from 'solid-js'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { PREFIX_TAB_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { createKeyedRows, createStableKeys, KeyedFor } from '~/lib/keyedRows'
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
@@ -288,6 +289,32 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
   )
 }
 
+/**
+ * A list of tab leaves keyed by TAB KEY, not by the `Tab` object.
+ *
+ * A `Tab` is a join result (see tabView) rebuilt whenever any field it derives
+ * from `tabMetadata` changes -- a title rename, a git badge refresh, an agent
+ * status flip, a notification dot, the MRU stamp another tab's activation
+ * writes. `<For>` keys by item IDENTITY, so iterating the objects meant every
+ * one of those disposed and re-created every row in the list. This list is
+ * where that hurts most: a row can hold the inline rename `<input>`, and
+ * remounting it mid-rename destroys the element the user is typing into,
+ * dropping focus and the text with it.
+ *
+ * Keys are strings, so `shallowEqualArrays` means the `<For>` reconciles only
+ * when a tab is actually added, removed, or reordered; every other field is read
+ * reactively INSIDE the row, where Solid updates props in place. This mirrors
+ * what `TileRenderer` and `TerminalView` do for the panes.
+ */
+const TabLeafList: Component<{ tabs: readonly Tab[], depth: number }> = (props) => {
+  const { keys, byKey } = createKeyedRows(() => props.tabs, tabKey)
+  return (
+    <KeyedFor each={keys()} lookup={key => byKey().get(key)}>
+      {tab => <TabLeafSlot tab={tab()} depth={props.depth} />}
+    </KeyedFor>
+  )
+}
+
 // Renders one branch row inside a repo group: the header (chevron +
 // label + diff badge + Change/Delete menu) and the collapsible list of
 // tab leaves. `branch` is an Accessor so the parent's outer `<For>` can
@@ -354,9 +381,7 @@ const BranchGroupRow: Component<{
 
       <div class={`${shared.childrenWrapper} ${!sel.isCollapsed(collapseKey()) ? shared.childrenWrapperExpanded : ''}`}>
         <div class={shared.childrenInner}>
-          <For each={props.branch().tabs}>
-            {tab => <TabLeafSlot tab={tab} depth={3} />}
-          </For>
+          <TabLeafList tabs={props.branch().tabs} depth={3} />
         </div>
       </div>
     </>
@@ -373,11 +398,7 @@ const RepoGroupRow: Component<{
 }> = (props) => {
   const sel = useRowSelection()
   const groupStats = createMemo(() => diffStatsFromTabFields(props.group()))
-  const branchKeys = createMemo(
-    () => props.group().branches.map(branchGroupKey),
-    [],
-    { equals: shallowEqualArrays },
-  )
+  const branchKeys = createStableKeys(() => props.group().branches, branchGroupKey)
   return (
     <>
       <div
@@ -400,27 +421,15 @@ const RepoGroupRow: Component<{
 
       <div class={`${shared.childrenWrapper} ${!sel.isCollapsed(props.repoKey) ? shared.childrenWrapperExpanded : ''}`}>
         <div class={shared.childrenInner}>
-          <For each={branchKeys()}>
-            {(bKey) => {
-              // Use Show to drop the row when the parent rebuilds the
-              // group without this bKey before the For has had a chance
-              // to reconcile the key list. Without it, a non-null
-              // assertion would mask the undefined and the next
-              // `props.branch()` read in BranchGroupRow would crash.
-              const branch = createMemo(() => props.group().branchByKey.get(bKey))
-              return (
-                <Show when={branch()}>
-                  {b => (
-                    <BranchGroupRow
-                      branch={b}
-                      repoKey={props.repoKey}
-                      branchKey={bKey}
-                    />
-                  )}
-                </Show>
-              )
-            }}
-          </For>
+          <KeyedFor each={branchKeys()} lookup={bKey => props.group().branchByKey.get(bKey)}>
+            {(b, bKey) => (
+              <BranchGroupRow
+                branch={b}
+                repoKey={props.repoKey}
+                branchKey={bKey}
+              />
+            )}
+          </KeyedFor>
         </div>
       </div>
     </>
@@ -561,16 +570,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   // rebuilds the tree but leaves the key set unchanged (the common case
   // for diff-stat / branch-name updates). Without it, the `<For>` below
   // would reconcile every row on every push.
-  const groupKeys = createMemo(
-    () => tree().groups.map(g => g.repoKey),
-    [],
-    { equals: shallowEqualArrays },
-  )
-  const groupByKey = createMemo(() => {
-    const m = new Map<string, RepoGroup>()
-    for (const g of tree().groups) m.set(g.repoKey, g)
-    return m
-  })
+  const { keys: groupKeys, byKey: groupByKey } = createKeyedRows(() => tree().groups, g => g.repoKey)
   const storageKey = () => `${PREFIX_TAB_TREE}${props.workspaceId}`
 
   // --- Tab rename editing state ---
@@ -657,29 +657,14 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
       <RowEditingContext.Provider value={editing}>
         <BranchActionsContext.Provider value={actions}>
           <div class={css.treeWrapper} data-testid="workspace-tab-tree">
-            <For each={groupKeys()}>
-              {(repoKey) => {
-                // Look up the live group from the memo'd map. A
-                // WatchEvents push that updates a tab's git fields reruns
-                // buildTree and re-emits this map, but the `For` row
-                // stays mounted because repoKey is a stable string value.
-                // Show drops the row when the parent rebuilds the map
-                // without this repoKey before the For has reconciled —
-                // a non-null assertion would let RepoGroupRow read
-                // through `undefined` until the next reconciliation tick.
-                const group = createMemo(() => groupByKey().get(repoKey))
-                return (
-                  <Show when={group()}>
-                    {g => <RepoGroupRow group={g} repoKey={repoKey} />}
-                  </Show>
-                )
-              }}
-            </For>
+            {/* Rows stay mounted across a WatchEvents push that reruns
+                buildTree and re-emits the map: repoKey is a stable string. */}
+            <KeyedFor each={groupKeys()} lookup={repoKey => groupByKey().get(repoKey)}>
+              {(g, repoKey) => <RepoGroupRow group={g} repoKey={repoKey} />}
+            </KeyedFor>
 
             {/* Ungrouped tabs (no git info) */}
-            <For each={tree().ungrouped}>
-              {tab => <TabLeafSlot tab={tab} depth={1} />}
-            </For>
+            <TabLeafList tabs={tree().ungrouped} depth={1} />
           </div>
         </BranchActionsContext.Provider>
       </RowEditingContext.Provider>

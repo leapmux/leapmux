@@ -1,9 +1,10 @@
+import type { Projection } from '~/lib/crdt'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createMemo } from 'solid-js'
 import { useFocusInvariant } from '~/components/shell/useFocusInvariant'
-import { getCRDTBridge, project } from '~/lib/crdt'
+import { createProjectionMemo, getCRDTBridge } from '~/lib/crdt'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createLayoutStore } from '~/stores/layout.store'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
@@ -27,24 +28,28 @@ export interface TestTabStores {
   selection: TabSelectionStore
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: ReturnType<typeof createFloatingWindowStore>
-  projection: () => ReturnType<typeof project> | null
+  projection: () => Projection | null
 }
 
 /**
  * The state + projection memo pair, in ONE place.
  *
- * Every factory below needs it, and the `equals: false` above is exactly the
- * kind of detail that survives in one copy and quietly not the other. Exported
- * because specs that build a single store directly need the same wiring.
+ * Every factory below needs it, and the state accessor's `equals: false` is
+ * exactly the kind of detail that survives in one copy and quietly not the
+ * other. Exported because specs that build a single store directly need the
+ * same wiring.
+ *
+ * The projection half goes through `createProjectionMemo`, the same factory the
+ * shell uses, so the `ProjectionCache` and its lifecycle cannot differ here.
+ * That is not an optimisation the harness may skip: the cache is what makes an
+ * unchanged workspace / tab / subtree keep its object identity across ticks,
+ * which several stores' `equals` guards and `<For>` keying depend on. A double
+ * without it would exercise a reactive graph the app never runs.
  */
 export function projectionMemo() {
   const bridge = getCRDTBridge()
   const state = createMemo(() => bridge?.speculativeState() ?? null, undefined, { equals: false })
-  const projection = createMemo(() => {
-    const s = state()
-    return s ? project(s) : null
-  })
-  return { state, projection }
+  return { state, projection: createProjectionMemo(state) }
 }
 
 export function createTestTabStores(workspaceId: string): TestTabStores {

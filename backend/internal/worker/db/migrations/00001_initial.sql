@@ -243,6 +243,23 @@ CREATE TABLE worker_file_tabs (
     user_id      TEXT NOT NULL CHECK (user_id <> ''),
     tab_id       TEXT NOT NULL,
     file_path    TEXT NOT NULL,
+    -- The tab's git working directory, and the reason a FILE tab is a
+    -- first-class git citizen rather than a type shared code routes around.
+    -- agents.working_dir / terminals.working_dir are what every branch-context
+    -- operation resolves a tab through -- last-tab close inspection, the
+    -- sibling-on-this-branch scan, push -- and this column is the FILE tab's
+    -- entry in that same lookup (see getTabWorkingDir).
+    --
+    -- It is the ORIGINATING tab's working dir, forwarded by the client that
+    -- opened the file, not something derived from file_path. A file is opened
+    -- from an agent or terminal tab, and the branch group the file tab renders
+    -- in is that tab's; deriving a dir from the path instead would answer for
+    -- whatever repo the file happens to sit in, which is a different question
+    -- and a different answer whenever the two diverge. Writers that have no
+    -- originating tab (`leapmux remote tab open --type=file`) fall back to the
+    -- file's own directory, normalized once at write time in
+    -- FileTabPathStore.Register so every reader can just read the column.
+    working_dir  TEXT NOT NULL DEFAULT '',
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (user_id, tab_id)
 );
@@ -272,7 +289,41 @@ CREATE TABLE agent_todos (
     UNIQUE (agent_id, seq)
 );
 
+-- Every OPEN tab and the directory its git questions are answered from, as one
+-- relation.
+--
+-- "Where does a tab live" is asked by the branch-sibling scan, and it used to be
+-- asked as three hand-written SELECTs fanned out across three goroutines --
+-- three places to remember the liveness rule, three to remember the owner rule,
+-- and a fourth tab type would have needed a fourth of each. Same reasoning as
+-- worktree_tab_liveness above: one definition of the per-type predicate, not N
+-- that must agree.
+--
+-- user_id is '' for agents and terminals and REAL for file tabs, and that
+-- asymmetry is deliberate rather than a placeholder. It mirrors
+-- worktree_tabs.user_id exactly (see worktree_tab_liveness): agent and terminal
+-- ids are minted server-side and globally unique, so they need no owner to
+-- disambiguate them, while a file tab id is minted client-side as
+-- `file-<millis>-<counter>` and is unique only within the client that made it.
+-- A reader scopes with `(user_id = '' OR user_id = ?)`, and worker_file_tabs'
+-- own `CHECK (user_id <> '')` is what makes the '' arm provably unable to match
+-- a file-tab row.
+--
+-- Openness differs by type and is encoded here so no reader restates it: agents
+-- and terminals are closed by stamping closed_at, while a file tab is HARD
+-- DELETED on close, so its presence IS its openness.
+CREATE VIEW tab_locations AS
+SELECT 1 AS tab_type, id AS tab_id, '' AS user_id, working_dir AS working_dir
+FROM agents WHERE closed_at IS NULL
+UNION ALL
+SELECT 2, id, '', working_dir
+FROM terminals WHERE closed_at IS NULL
+UNION ALL
+SELECT 3, tab_id, user_id, working_dir
+FROM worker_file_tabs;
+
 -- +goose Down
+DROP VIEW IF EXISTS tab_locations;
 DROP TABLE IF EXISTS agent_todos;
 DROP TABLE IF EXISTS worker_file_tabs;
 DROP TABLE IF EXISTS terminals;

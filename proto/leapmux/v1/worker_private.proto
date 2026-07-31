@@ -25,14 +25,15 @@ service WorkerPrivateService {
   rpc WatchWorkerPrivateEvents(WatchWorkerPrivateEventsRequest)
       returns (stream WorkerPrivateEvent);
 
-  // RegisterFileTabPath persists (tab_id, path) on the worker (user is
-  // implied by the authenticated principal). Path is plaintext on the
-  // wire -- this RPC must travel via E2EE. Emits FileTabPathRegistered.
+  // RegisterFileTabPath persists (tab_id, path, working dir) on the
+  // worker (user is implied by the authenticated principal). Path is
+  // plaintext on the wire -- this RPC must travel via E2EE. Emits
+  // FileTabPathRegistered.
   rpc RegisterFileTabPath(RegisterFileTabPathRequest) returns (RegisterFileTabPathResponse);
 
-  // GetFileTabPath returns the worker-stored path for a tab. Used by
-  // late-joining clients that received a TabRecord via the CRDT
-  // before the corresponding FileTabPathRegistered event.
+  // GetFileTabPath returns the worker-stored path and working dir for a
+  // tab. Used by late-joining clients that received a TabRecord via the
+  // CRDT before the corresponding FileTabPathRegistered event.
   rpc GetFileTabPath(GetFileTabPathRequest) returns (GetFileTabPathResponse);
 
   // RevokeFileTabPath deletes the worker-stored path. Emits
@@ -68,6 +69,12 @@ message TabRenamed {
 message FileTabPathRegistered {
   string tab_id    = 1;
   string file_path = 2;
+  // Working dir the worker resolved for this tab (see
+  // RegisterFileTabPathRequest.working_dir). Carried so a client that
+  // learns about the tab from this event -- a peer, or a late joiner
+  // replaying the bootstrap -- puts it in the same branch group as the
+  // client that opened it, instead of inferring one from the path.
+  string working_dir = 3;
 }
 
 message FileTabPathRevoked {
@@ -79,6 +86,19 @@ message FileTabPathRevoked {
 message RegisterFileTabPathRequest {
   string tab_id    = 1;
   string file_path = 2;
+  // Working dir of the tab the file was opened FROM -- the agent or
+  // terminal whose context the new file tab inherits (title bar, file
+  // tree root, branch group). It becomes the file tab's authoritative
+  // git working directory on the worker, which is what makes a FILE tab
+  // answerable to the same branch-context operations as the other two
+  // tab types: last-tab close inspection, the sibling-on-this-branch
+  // scan, and PushBranch.
+  //
+  // Optional. A caller with no originating tab to name -- `leapmux
+  // remote tab open --type=file` run from a plain shell rather than
+  // from inside a LeapMux tab -- leaves it empty, and the worker falls
+  // back to the file's own directory.
+  string working_dir = 3;
 }
 
 message RegisterFileTabPathResponse {}
@@ -89,6 +109,10 @@ message GetFileTabPathRequest {
 
 message GetFileTabPathResponse {
   string file_path = 1;
+  // See FileTabPathRegistered.working_dir -- this is the same value on
+  // the one-shot read path a client takes when a TabRecord arrives
+  // before the private-event stream has replayed its bootstrap.
+  string working_dir = 2;
 }
 
 message RevokeFileTabPathRequest {

@@ -1,7 +1,7 @@
 import type { AgentControlRequest, AgentStatusChange, AgentStreamChunk, AgentStreamEnd, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import type { TerminalStatusChange } from '~/generated/leapmux/v1/terminal_pb'
 import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
-import { createRoot } from 'solid-js'
+import { createRoot, mapArray } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
 import { providerFor } from '~/components/chat/providers/registry'
@@ -17,6 +17,7 @@ import { extractCompactionContextTokens, extractResultMetadata, parseMessageCont
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
+import { createTabMetadataStore } from '~/stores/tabMetadata.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
@@ -970,13 +971,27 @@ describe('resolveSettingsTabFields', () => {
     expect(resolveSettingsTabFields(undefined, [], new Set())).toEqual({})
   })
 
-  it('reuses the prior optionValues reference when a re-broadcast changes no current value', () => {
-    // prev has no optionGroups, so the stable-group-ref step is skipped; only the
-    // optionValues shallow-equal ref-reuse runs.
+  /**
+   * A re-broadcast that changed no current value must not wake readers of
+   * `optionValues` -- but this producer is deliberately NOT where that is
+   * enforced. It emits the freshly-derived record and `tabMetadata.patch` drops
+   * the write when the content matches (`sameStoredValue`), which covers this
+   * producer, the others, and any written later. Asserted through the store for
+   * that reason: a producer-side assertion would keep passing while the rule
+   * moved out from under it.
+   */
+  it('lets the write point drop a re-broadcast that changes no current value', () => {
+    const metadata = createTabMetadataStore()
+    metadata.patch('a1', { optionValues: { model: 'opus' } })
+    const stored = metadata.get('a1')!.optionValues
+
     const prev: AgentTab = { type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1', optionValues: { model: 'opus' } }
     const fields = resolveSettingsTabFields(prev, [group('model', 'opus')], new Set())
-    // Same content -> same reference, so reactive readers of optionValues don't wake.
-    expect(fields.optionValues).toBe(prev.optionValues)
+    metadata.patch('a1', fields)
+
+    // Same content -> the stored reference survives, so `<For>` rows keyed on
+    // the assembled tab are not torn down and rebuilt.
+    expect(metadata.get('a1')!.optionValues).toBe(stored)
   })
 
   it('keeps the optimistic value for a pending axis while applying the server value elsewhere', () => {
@@ -1037,6 +1052,78 @@ describe('buildAgentStatusTabUpdate', () => {
     expect(update.gitToplevel).toBe('/repo')
     expect(update.gitIsWorktree).toBe(true)
     expect(update.agentGitStatus).toBe(sc.gitStatus) // full proto carried for the diff view
+  })
+
+  // The worker recomputes and re-ships the WHOLE git status on every push
+  // (buildStatusChange / BroadcastGitStatus in its output sink), so the frontend
+  // decodes an equal-but-fresh proto each time. `Tab` is compared with shallowEqual --
+  // per-key Object.is -- and `<For>` keys its rows by item IDENTITY, so writing that
+  // fresh object back re-keys the tab and tears down every row rendered from it: the
+  // whole ChatView subtree included, taking the user's in-progress text selection and
+  // the lifted per-message expand/collapse state down with it.
+  // The builder reports the git group UNCONDITIONALLY now; suppressing an
+  // equal-but-fresh payload moved to `tabMetadata.patch`, which does it for every
+  // object-valued field rather than only the ones whose producer remembered to
+  // ask. The end-to-end case below is what proves the tab still survives a no-op
+  // push -- which is the property that actually matters.
+  it('carries the git group whenever the push has one', () => {
+    const gs = { branch: 'main', originUrl: 'git@x:y.git', toplevel: '/repo', ahead: 2, modified: true }
+    const sc = { status: AgentStatus.UNSPECIFIED, gitStatus: gs } as unknown as AgentStatusChange
+
+    const update = buildAgentStatusTabUpdate(sc, false, {})
+    expect(update.agentGitStatus).toBe(gs)
+    expect(update.gitBranch).toBe('main')
+  })
+
+  it('applies a git status that genuinely changed', () => {
+    const gs = { branch: 'main', originUrl: 'git@x:y.git', toplevel: '/repo', ahead: 2 }
+    const sc = { status: AgentStatus.UNSPECIFIED, gitStatus: { ...gs, ahead: 3 } } as unknown as AgentStatusChange
+
+    const update = buildAgentStatusTabUpdate(sc, false, {})
+    expect(update.agentGitStatus).toBe(sc.gitStatus)
+  })
+
+  it('leaves a known git status alone when a status-only push carries none', () => {
+    const sc = { status: AgentStatus.INACTIVE, agentSessionId: 's1' } as unknown as AgentStatusChange
+
+    const update = buildAgentStatusTabUpdate(sc, true, {})
+    expect('agentGitStatus' in update).toBe(false)
+    expect('gitBranch' in update).toBe(false)
+    expect(update.agentStatus).toBe(AgentStatus.INACTIVE)
+  })
+
+  // The consequence, end to end: the identity guard above is only worth anything if it
+  // actually keeps the tab object -- and with it the `<For>` row -- alive across a push.
+  it('keeps the agent tab object (and its <For> row) across a no-op git-status push', () => {
+    createRoot((dispose) => {
+      const s = makeTabStores()
+      s.addAgent('a1', { workerId: 'wkr-1' })
+      const push = () => {
+        const sc = {
+          status: AgentStatus.UNSPECIFIED,
+          gitStatus: { branch: 'main', originUrl: 'git@x:y.git', toplevel: '/repo', ahead: 2 },
+        } as unknown as AgentStatusChange
+        s.metadata.patch('a1', buildAgentStatusTabUpdate(sc, false, {}))
+      }
+      push()
+      const before = s.view.getAgentTab('a1')!
+
+      // `<For>` IS `mapArray`: a row body runs once per item IDENTITY, so a body that
+      // re-runs is a real remount of TileRenderer's agent pane.
+      let mounts = 0
+      const rows = mapArray(() => s.view.forTile(s.rootTileId), (tab) => {
+        mounts += 1
+        return tab
+      })
+      rows()
+      expect(mounts).toBe(1)
+
+      push()
+      rows()
+      expect(s.view.getAgentTab('a1'), 'the tab keeps its object').toBe(before)
+      expect(mounts, 'and its row is never remounted').toBe(1)
+      dispose()
+    })
   })
 })
 
@@ -1390,6 +1477,43 @@ describe('applyTerminalStatusChange', () => {
       )
 
       expect(tabs.view.getTerminalTab('term-1')?.status).toBe(TerminalStatus.DISCONNECTED)
+      dispose()
+    })
+  })
+
+  /**
+   * The git group lands even when the tab is not joined yet.
+   *
+   * `tabMetadata` is keyed by tab id independently of the projection, so a tab
+   * that is momentarily absent from it -- between a Batch frame and the
+   * EntityMaterialized frame that creates its new tile -- still has a row to
+   * write to, and the join picks the values up when it returns. Gating this
+   * write on the joined tab existing dropped it silently instead, and nothing
+   * re-sends: `applyGitStatusToTabs` repairs branch/origin/toplevel but
+   * deliberately never touches `gitIsWorktree`, so a terminal that became a
+   * worktree during that window kept the wrong badge until a reconnect.
+   */
+  it('writes the git group for a terminal that has no joined tab yet', () => {
+    createRoot((dispose) => {
+      const tabs = makeTabStores()
+      expect(tabs.view.getTerminalTab('term-unjoined'), 'precondition: not joined').toBeUndefined()
+
+      applyTerminalStatusChange(
+        tabs.metadata,
+        undefined,
+        'term-unjoined',
+        statusChange({
+          status: TerminalStatus.STARTING,
+          gitBranch: 'feature',
+          gitToplevel: '/repo',
+          gitIsWorktree: true,
+        }),
+      )
+
+      const row = tabs.metadata.get('term-unjoined')
+      expect(row?.gitBranch).toBe('feature')
+      expect(row?.gitToplevel).toBe('/repo')
+      expect(row?.gitIsWorktree).toBe(true)
       dispose()
     })
   })

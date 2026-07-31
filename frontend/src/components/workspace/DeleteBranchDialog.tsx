@@ -17,7 +17,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useDeleteBranchInspect } from '~/hooks/useDeleteBranchInspect'
 import { useDialogSubmit } from '~/hooks/useDialogSubmit'
 import { formatErrorMessage } from '~/lib/errors'
-import { isAgentTab, isPushableTab, isTerminalTab } from '~/stores/tab.types'
+import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 import { errorText } from '~/styles/shared.css'
 
 function countTabs(tabs: readonly Tab[]): { agents: number, terminals: number, files: number } {
@@ -183,13 +183,16 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
   // DeleteBranchDialogProps contract, so a one-shot read is correct.
   // eslint-disable-next-line solid/reactivity
   const tabCounts = countTabs(props.tabs)
-  // PushBranch + the FILE-tab-orphan guard both need the first
-  // worker-pushable tab (AGENT or TERMINAL). FILE tabs carry no
-  // server-side working dir, so feeding one into pushBranch's
-  // loadTabGitContext path lands on `unsupported tab type`. Pin once
-  // — same one-shot rationale as tabCounts.
+  // The dir the group shares, taken from any tab in it. `workingDir` is
+  // client-side metadata on the joined tab, so this needs no worker row -- which
+  // is what retires the old anchor-tab dance: an anchor's worker-side row could
+  // be absent (a FILE tab's lives in `worker_file_tabs`, which a peer's close
+  // hard-deletes) and the push failed with "file tab path not found" even though
+  // a healthy sibling sat next to it. Every tab in a branch group shares the
+  // dir by construction, so there is nothing to prefer between them.
+  // Pin once — same one-shot rationale as tabCounts.
   // eslint-disable-next-line solid/reactivity
-  const pushableTab = props.tabs.find(isPushableTab)
+  const pushWorkingDir = props.tabs.find(t => t.workingDir)?.workingDir ?? ''
 
   const isOnlyBranch = () => {
     const i = info()
@@ -297,22 +300,16 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
           <button type="button" class="outline" onClick={() => props.onClose()}>
             Cancel
           </button>
-          <Show when={hasPushableWork(info()?.gitState) && pushableTab}>
-            {/* Push needs a tab whose worker-side getTabWorkingDir can
-                resolve a working directory — i.e. AGENT or TERMINAL.
-                FILE tabs slip past a naive `props.tabs[0]` and surface
-                as `unsupported tab type` from the worker. The Show
-                gate also covers the all-FILE / empty array edge by
-                falling out when `pushableTab` is undefined. */}
-            {pt => (
-              <PushBranchButton
-                workerId={props.workerId}
-                tab={{ type: pt().type, id: pt().id }}
-                gitState={info()?.gitState}
-                onPushed={inspect.refresh}
-                disabled={submitting.loading()}
-              />
-            )}
+          {/* The `pushWorkingDir` gate covers the edge where no tab in the
+              group has a dir yet — a branch row with nothing to push from. */}
+          <Show when={hasPushableWork(info()?.gitState) && pushWorkingDir}>
+            <PushBranchButton
+              workerId={props.workerId}
+              workingDir={pushWorkingDir}
+              gitState={info()?.gitState}
+              onPushed={inspect.refresh}
+              disabled={submitting.loading()}
+            />
           </Show>
           <ConfirmButton data-variant="danger" disabled={!canSubmit()} onClick={handleDelete}>
             Delete branch

@@ -849,9 +849,7 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 	// bgCtx() (not the request ctx) so a dialog dismissed / RPC cancelled
 	// mid-adoption can't abort the loop partway and leave some FILE tabs
 	// unlinked — the same detached-write rationale as registerTabForWorktree.
-	if svc.FileTabPaths != nil {
-		svc.FileTabPaths.BackfillWorktreeLinks(bgCtx(), canonicalPath)
-	}
+	svc.FileTabPaths.BackfillWorktreeLinks(bgCtx(), canonicalPath)
 	return wtID, nil
 }
 
