@@ -1,5 +1,20 @@
--- name: CreateWorktree :exec
-INSERT INTO worktrees (id, worktree_path, repo_root, branch_name) VALUES (?, ?, ?, ?);
+-- name: CreateWorktree :one
+-- Upsert, because two callers can reach here for the same path at once:
+-- idx_worktrees_path is UNIQUE over the live rows, and opening two agents on
+-- one worktree (the "use existing worktree" flow) runs two async startups that
+-- both miss GetWorktreeByPath before either inserts. Without conflict handling
+-- the loser surfaced a raw "UNIQUE constraint failed" to the user.
+--
+-- The conflict target names idx_worktrees_path exactly, so a collision on the
+-- PRIMARY KEY is still raised rather than swallowed by an untargeted clause,
+-- and the no-op DO UPDATE exists only so RETURNING yields the WINNER's row.
+-- Winning the insert is not the same as owning the id, and returning the row
+-- makes that mechanical: a loser that assumed its own id would hand back an id
+-- no row carries, and every later ref-count and close keyed on it would miss.
+INSERT INTO worktrees (id, worktree_path, repo_root, branch_name) VALUES (?, ?, ?, ?)
+ON CONFLICT(worktree_path) WHERE deleted_at IS NULL
+DO UPDATE SET worktree_path = excluded.worktree_path
+RETURNING *;
 
 -- name: GetWorktreeByPath :one
 SELECT * FROM worktrees WHERE worktree_path = ? AND deleted_at IS NULL;

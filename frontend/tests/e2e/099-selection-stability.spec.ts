@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { firstAssistantBubble, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, firstAssistantMessageRow, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 /**
  * A text selection in the chat transcript must survive the mouse release, and
@@ -15,7 +15,7 @@ import { firstAssistantBubble, sendMessage, waitForAgentIdle } from './helpers/u
  */
 test.describe('chat text selection stability', () => {
   async function dragSelectFirstLine(page: import('@playwright/test').Page) {
-    const assistantBubble = firstAssistantBubble(page)
+    const assistantBubble = firstAssistantMessageRow(page).locator(ASSISTANT_BUBBLE_SELECTOR)
     await expect(assistantBubble).toBeVisible()
     const messageContent = assistantBubble.locator('[data-testid="message-content"]')
     await expect(messageContent).toBeVisible()
@@ -37,8 +37,15 @@ test.describe('chat text selection stability', () => {
     await sendMessage(page, 'Say exactly: The quick brown fox jumps over the lazy dog')
     await waitForAgentIdle(page)
 
-    const whileDown = await dragSelectFirstLine(page)
-    expect(whileDown, 'the drag selects text').toBeGreaterThan(0)
+    // Retry the whole measure-and-drag as one unit. The box is read, then the
+    // pointer walks it -- and between those the transcript can grow (the
+    // turn-end divider lands after the thinking indicator clears, see
+    // waitForAgentIdle), moving the bubble out from under the coordinates and
+    // selecting nothing at all. That is how this failed: `whileDown` was 0, so
+    // the drag never happened, not the release.
+    await expect(async () => {
+      expect(await dragSelectFirstLine(page), 'the drag selects text').toBeGreaterThan(0)
+    }).toPass()
 
     // The release is the moment that used to lose it; give the click handler,
     // the popover's rAF, and any re-render a chance to land.

@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex Approvals', () => {
   // Note: The default test fixtures use approvalPolicy: "never" (bypassPermissions),
@@ -12,7 +12,7 @@ codexTest.describe('Codex Approvals', () => {
     await waitForAgentIdle(page, 120_000)
 
     // The command should have executed without any approval prompt.
-    const chatArea = page.locator('[data-testid="message-content"]')
+    const chatArea = messageContents(page)
     const allText = await chatArea.allTextContents()
     const joined = allText.join(' ')
     expect(joined).toContain('approval-test-bypass')

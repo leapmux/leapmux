@@ -25,6 +25,8 @@ import (
 // responsibility the store now owns -- see store.TestFilterTabIndexKeys and the
 // storetest blank-owner case for the refusal itself.
 func TestTabIndexKeys(t *testing.T) {
+	t.Parallel()
+
 	uid := userid.MustNew("u-real")
 
 	t.Run("maps every field", func(t *testing.T) {
@@ -63,6 +65,8 @@ func TestTabIndexKeys(t *testing.T) {
 // the diff is unspellable rather than merely ignored. This pins the other half
 // of that shape -- every non-owner column still comes straight off the row.
 func TestTxTabIndexWriterSuppliesTheCommittingTenant(t *testing.T) {
+	t.Parallel()
+
 	owner := userid.MustNew("u-committing")
 	w := txTabIndexWriter{tx: nil, owner: owner}
 
@@ -97,6 +101,8 @@ func TestTxTabIndexWriterSuppliesTheCommittingTenant(t *testing.T) {
 // The nil store is load-bearing: each method must refuse BEFORE touching it, so
 // a method that lost its guard panics here instead of passing.
 func TestCRDTJournalRefusesABlankTenant(t *testing.T) {
+	t.Parallel()
+
 	j := &crdtJournal{store: nil}
 	ctx := context.Background()
 

@@ -18,6 +18,8 @@ import (
 // for each one so any still-connected tabs drop the prompt without waiting
 // for a reconnect-and-replay round trip.
 func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 
@@ -56,6 +58,8 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 // that fire on every CloseAgent / restart regardless of whether a prompt
 // was open.
 func TestClearAgentRuntimeState_NoPendingIsNoOp(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 

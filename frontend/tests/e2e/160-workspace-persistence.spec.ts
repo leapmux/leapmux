@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace, reopenWorkspace, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, reopenWorkspace, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 
 /**
  * Which workspace the app opens on used to be carried by the URL
@@ -27,18 +27,26 @@ test.describe('Workspace persistence across reloads', () => {
       // silently pick the very workspace the no-saved-id fallback lands on --
       // and then a build that ignored the saved id entirely would still pass.
       await page.goto('/')
-      const rows = page.locator('[data-testid^="workspace-item-"]')
-      await expect(rows).toHaveCount(2)
-      const activeTestId = await page
-        .locator('[data-testid^="workspace-item-"][data-active="true"]')
-        .first()
-        .getAttribute('data-testid')
+      // Wait for THIS test's two rows, not for a global count. `leapmuxServer`
+      // is worker-scoped: one dev instance serves every spec file the Playwright
+      // worker runs, and a best-effort teardown elsewhere can leave workspaces
+      // behind, so `toHaveCount(2)` was really asserting "no other spec file ran
+      // on this worker first" -- which is true or false depending on the shard
+      // and the worker count.
+      await expect(workspaceRow(page, ws1)).toBeVisible()
+      await expect(workspaceRow(page, ws2)).toBeVisible()
+      const activeRow = page.locator('[data-testid^="workspace-item-"][data-active="true"]').first()
+      await expect(activeRow).toBeVisible()
+      const activeTestId = await activeRow.getAttribute('data-testid')
+      // Whichever workspace a cold start lands on -- one of ours or a leftover
+      // from an earlier file -- the target is a DIFFERENT one, so the reload
+      // below still has to honour the saved id rather than the default.
       const fallback = activeTestId!.replace('workspace-item-', '')
       const target = fallback === ws1 ? ws2 : ws1
 
       await openWorkspace(page, target)
       await reopenWorkspace(page, target)
-      await expect(page.locator(`[data-testid="workspace-item-${fallback}"]`))
+      await expect(workspaceRow(page, fallback))
         .toHaveAttribute('data-active', 'false')
     }
     finally {
@@ -64,9 +72,9 @@ test.describe('Workspace persistence across reloads', () => {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, doomed)
 
       await page.goto('/')
-      await expect(page.locator(`[data-testid="workspace-item-${survivor}"]`))
+      await expect(workspaceRow(page, survivor))
         .toHaveAttribute('data-active', 'true')
-      await expect(page.locator(`[data-testid="workspace-item-${doomed}"]`)).toHaveCount(0)
+      await expect(workspaceRow(page, doomed)).toHaveCount(0)
       // The fall-back has to be a real activation, not just a highlighted row.
       await waitForWorkspaceReady(page)
     }
@@ -87,8 +95,8 @@ test.describe('Workspace persistence across reloads', () => {
       await openWorkspace(page, ws1)
       await expect(page).toHaveURL(/\/$/)
 
-      await page.locator(`[data-testid="workspace-item-${ws2}"]`).click()
-      await expect(page.locator(`[data-testid="workspace-item-${ws2}"]`))
+      await workspaceRow(page, ws2).click()
+      await expect(workspaceRow(page, ws2))
         .toHaveAttribute('data-active', 'true')
       // The point of the change: a switch is not a navigation.
       await expect(page).toHaveURL(/\/$/)

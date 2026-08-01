@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer } from './helpers/ui'
+import { ARITHMETIC_PROMPT, expectAssistantAnswer, visibleOnly } from './helpers/ui'
 
 /**
  * Verifies the per-agent startup queue: when the user types and sends a
@@ -32,7 +32,7 @@ test.describe('Claude Code agent startup queue', () => {
     if (overlayWasVisible) {
       // While still queued, the optimistic bubble must show the
       // pending sublabel — proof the message was held back, not sent.
-      const pending = page.locator('[data-testid="message-pending"]')
+      const pending = visibleOnly(page.getByTestId('message-pending'))
       await expect(pending).toBeVisible()
       await expect(pending).toContainText('Queued')
 

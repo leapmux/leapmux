@@ -20,6 +20,8 @@ import (
 // CLI prints, so a map-iteration-order implementation would make both
 // nondeterministic.
 func TestGroupTabsByWorker_GroupsInStableOrderAndDropsUnhostedTabs(t *testing.T) {
+	t.Parallel()
+
 	// Deliberately INTERLEAVED: w1's rows are not contiguous. The query does say
 	// ORDER BY worker_id, but the grouping must not DEPEND on it -- that ordering
 	// lives in three separate dialect files, and a single-pass implementation that
@@ -52,6 +54,8 @@ func TestGroupTabsByWorker_GroupsInStableOrderAndDropsUnhostedTabs(t *testing.T)
 // Binding it would emit a group keyed on the empty string and send one caller's
 // cleanup to nobody.
 func TestGroupTabsByWorker_DropsTabsWithNoWorker(t *testing.T) {
+	t.Parallel()
+
 	grouped := groupTabsByWorker([]store.OwnedTabRef{
 		{WorkerID: "", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-orphan"},
 		{WorkerID: "w1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-1"},
@@ -65,6 +69,8 @@ func TestGroupTabsByWorker_DropsTabsWithNoWorker(t *testing.T) {
 }
 
 func TestGroupTabsByWorker_EmptyInputYieldsNoGroups(t *testing.T) {
+	t.Parallel()
+
 	assert.Empty(t, groupTabsByWorker(nil))
 	assert.Empty(t, groupTabsByWorker([]store.OwnedTabRef{}))
 }

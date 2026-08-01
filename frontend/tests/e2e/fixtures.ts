@@ -1,7 +1,7 @@
 /* eslint-disable no-console */
 import type { ChildProcess } from 'node:child_process'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -18,6 +18,7 @@ import {
   TEST_ADMIN_USERNAME,
 } from './helpers/api'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
+import { stopProcess } from './helpers/process'
 import { findFreePort, getGlobalState, waitForServer } from './helpers/server'
 import { getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
@@ -29,6 +30,71 @@ export interface ServerInfo {
   newuserToken: string
   serverProc: ChildProcess
   dataDir: string
+  /** Captured stdout+stderr from the dev instance. See {@link captureOutput}. */
+  output: ServerOutput
+}
+
+/**
+ * A window onto the dev instance's output.
+ *
+ * Sliced per test, not just tailed: `leapmuxServer` is worker-scoped, so one
+ * instance serves every test the Playwright worker runs and a plain tail is
+ * whatever the LAST test happened to print. Marking at the start of a test and
+ * slicing from there is the difference between a readable cause and someone
+ * else's chatter.
+ */
+interface ServerOutput {
+  /** Index of the next line to be emitted. */
+  mark: () => number
+  /** Everything emitted since `from`, as far back as the buffer still reaches. */
+  since: (from: number) => string
+}
+
+/**
+ * How many lines of dev-instance output to keep for a failing test.
+ *
+ * Enough to cover an agent's whole startup (spawn, initialize handshake,
+ * settings refresh, first turn) without holding a whole run's chatter.
+ */
+const SERVER_LOG_LINES = 4000
+
+/**
+ * Keep a bounded tail of the dev instance's output instead of discarding it.
+ *
+ * This used to be `proc.stdout?.resume()` on both streams -- drained purely to
+ * stop backpressure, which meant every worker-side failure (a `git worktree
+ * add` that lost an index.lock race, an agent that failed to spawn) reached the
+ * report as nothing but a Playwright timeout on some unrelated assertion. The
+ * ring buffer costs a few hundred KB and turns those into readable causes; the
+ * attachment below only fires for tests that actually failed.
+ */
+function captureOutput(proc: ChildProcess): ServerOutput {
+  const lines: string[] = []
+  // How many lines the ring has evicted, so `mark` stays a stable absolute
+  // index even as old output falls off the front.
+  let evicted = 0
+  let partial = ''
+  const consume = (chunk: { toString: () => string }) => {
+    partial += chunk.toString()
+    const parts = partial.split('\n')
+    partial = parts.pop() ?? ''
+    for (const line of parts) {
+      lines.push(line)
+      if (lines.length > SERVER_LOG_LINES) {
+        lines.shift()
+        evicted++
+      }
+    }
+  }
+  proc.stdout?.on('data', consume)
+  proc.stderr?.on('data', consume)
+  return {
+    mark: () => evicted + lines.length,
+    since: (from: number) => {
+      const slice = lines.slice(Math.max(0, from - evicted))
+      return (partial ? [...slice, partial] : slice).join('\n')
+    },
+  }
 }
 
 interface WorkspaceFixture {
@@ -66,9 +132,9 @@ export const test = base.extend<
       env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_CODEX_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_COPILOT_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_WORKER_NAME: 'Local', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
     })
 
-    // Drain server output to prevent backpressure.
-    proc.stdout?.resume()
-    proc.stderr?.resume()
+    // Consume server output (also prevents backpressure), keeping a tail for
+    // failing tests to attach.
+    const output = captureOutput(proc)
 
     await waitForServer(hubUrl)
     console.log(`[e2e] Dev instance ready on port ${port}`)
@@ -82,7 +148,7 @@ export const test = base.extend<
     // Create newuser for sharing tests
     const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
 
-    await use({ hubUrl, adminToken, workerId, newuserToken, serverProc: proc, dataDir })
+    await use({ hubUrl, adminToken, workerId, newuserToken, serverProc: proc, dataDir, output })
 
     // Close any UserEvents subscriptions this worker opened. Per-worker
     // cleanup matters because the singleton cache is keyed by
@@ -91,13 +157,8 @@ export const test = base.extend<
     // leak file descriptors across the test session.
     await closeAllUserEventsSubscriptions()
 
-    // Teardown: kill process, clean up data dir
-    proc.kill('SIGTERM')
-    await new Promise(r => setTimeout(r, 1000))
-    try {
-      proc.kill('SIGKILL')
-    }
-    catch { /* already dead */ }
+    // Teardown: stop the process, clean up the data dir.
+    await stopProcess(proc)
     rmSync(dataDir, { recursive: true, force: true })
     console.log(`[e2e] Dev instance on port ${port} stopped`)
   }, { scope: 'worker' }],
@@ -113,8 +174,9 @@ export const test = base.extend<
   },
 
   // Toast recorder: auto-use so it runs for every test
-  toastRecorder: [async ({ page }, use, testInfo) => {
+  toastRecorder: [async ({ page, leapmuxServer }, use, testInfo) => {
     await installToastRecorder(page)
+    const serverMark = leapmuxServer.output.mark()
     await use()
 
     // After test: collect toasts and attach to test report
@@ -127,6 +189,20 @@ export const test = base.extend<
         body: toastLog,
         contentType: 'text/plain',
       })
+    }
+
+    // A failing test gets the dev instance's recent output. The hub and worker
+    // run out of process, so their errors are otherwise invisible and a
+    // worker-side failure surfaces only as a timeout on an unrelated locator.
+    //
+    // Attached as a FILE, not a body: the list reporter truncates an inline
+    // attachment to its first line, which is the startup banner and nothing
+    // else. A path lands the whole tail under test-results/ where it can
+    // actually be read.
+    if (testInfo.status !== testInfo.expectedStatus) {
+      const logPath = testInfo.outputPath('server-log.txt')
+      writeFileSync(logPath, leapmuxServer.output.since(serverMark))
+      await testInfo.attach('server-log', { path: logPath, contentType: 'text/plain' })
     }
   }, { auto: true }],
 

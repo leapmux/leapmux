@@ -11,6 +11,8 @@ import (
 // contract and any divergence between this list and Pi's emitter would
 // silently route events to the unknown-event default arm.
 func TestPiProtocolEventConstants(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]string{
 		"agent_start":           PiEventAgentStart,
 		"agent_end":             PiEventAgentEnd,
@@ -38,6 +40,8 @@ func TestPiProtocolEventConstants(t *testing.T) {
 // TestPiProtocolDialogMethodConstants pins the dialog-method constants
 // used on extension_ui_request envelopes.
 func TestPiProtocolDialogMethodConstants(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, "select", PiDialogMethodSelect)
 	assert.Equal(t, "confirm", PiDialogMethodConfirm)
 	assert.Equal(t, "input", PiDialogMethodInput)
@@ -47,6 +51,8 @@ func TestPiProtocolDialogMethodConstants(t *testing.T) {
 // TestPiProtocolToolNameConstants pins the tool identifiers Pi uses on
 // tool_execution_* envelopes. Renderer dispatch keys off these.
 func TestPiProtocolToolNameConstants(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, "bash", PiToolBash)
 	assert.Equal(t, "read", PiToolRead)
 	assert.Equal(t, "edit", PiToolEdit)

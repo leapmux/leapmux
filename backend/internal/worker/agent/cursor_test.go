@@ -127,6 +127,8 @@ func TestStartCursorCLI_LoadSessionUsesResumeID(t *testing.T) {
 }
 
 func TestCursorUpdateSettingsSendsLiveACPRequests(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newCursorAgentForRPC(t)
 	agent.availableModes = []*leapmuxv1.AvailableOption{
 		{Id: CursorCLIModeAgent, Name: "Agent"},
@@ -155,6 +157,8 @@ func TestCursorUpdateSettingsSendsLiveACPRequests(t *testing.T) {
 // requested model/mode already match the current selection (e.g. only another axis moved),
 // no session/set_config_option (model) or session/set_mode RPC is issued.
 func TestCursorUpdateSettingsSkipsUnchangedModelAndMode(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newCursorAgentForRPC(t)
 	agent.availableModes = []*leapmuxv1.AvailableOption{
 		{Id: CursorCLIModeAgent, Name: "Agent"},
@@ -176,6 +180,8 @@ func TestCursorUpdateSettingsSkipsUnchangedModelAndMode(t *testing.T) {
 }
 
 func TestCursorClearContextReappliesModelAndMode(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newCursorAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{"sessionId":"session-2"}`)
@@ -210,6 +216,8 @@ func TestCursorClearContextReappliesModelAndMode(t *testing.T) {
 }
 
 func TestBuildCursorCLIModelsNormalizesAuto(t *testing.T) {
+	t.Parallel()
+
 	models := []acpModelInfo{
 		{ModelID: cursorCLIModelAutoWire, Name: "Auto"},
 		{ModelID: "gpt-5.4[reasoning=medium]", Name: "GPT-5.4"},
@@ -221,6 +229,8 @@ func TestBuildCursorCLIModelsNormalizesAuto(t *testing.T) {
 }
 
 func TestCursorDefaultModelIsAuto(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, "auto", DefaultModel(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR))
 }
 
@@ -228,6 +238,8 @@ func TestCursorDefaultModelIsAuto(t *testing.T) {
 // model id's brackets (which the bare server-reported name omits) as the model's
 // ContextWindow and Description, humanizes the bare-id display name, and keeps the wire id.
 func TestDecorateCursorModel_ParsesBracketMetadata(t *testing.T) {
+	t.Parallel()
+
 	m := &ModelInfo{Id: "claude-fable-5[thinking=true,context=300k,effort=high]", DisplayName: "claude-fable-5"}
 	decorateCursorModel(m)
 
@@ -239,6 +251,8 @@ func TestDecorateCursorModel_ParsesBracketMetadata(t *testing.T) {
 }
 
 func TestDecorateCursorModel_ReasoningAndFastFlags(t *testing.T) {
+	t.Parallel()
+
 	m := &ModelInfo{Id: "gpt-5.5[context=272k,reasoning=medium,fast=false]"}
 	decorateCursorModel(m)
 
@@ -258,6 +272,8 @@ func TestDecorateCursorModel_ReasoningAndFastFlags(t *testing.T) {
 // get distinct display names instead of colliding -- and that a real server-provided name
 // is left untouched rather than double-suffixed.
 func TestDecorateCursorModel_DisambiguatesThinkingFastVariants(t *testing.T) {
+	t.Parallel()
+
 	thinking := &ModelInfo{Id: "claude-opus-4-8[thinking=true]"}
 	decorateCursorModel(thinking)
 	assert.Equal(t, "Claude Opus 4.8 Thinking", thinking.DisplayName)
@@ -276,6 +292,8 @@ func TestDecorateCursorModel_DisambiguatesThinkingFastVariants(t *testing.T) {
 // TestDecorateCursorModel_EffortLevelInName covers the effort-level suffix across the
 // levels Cursor surfaces: xhigh cases as "XHigh", others just capitalize.
 func TestDecorateCursorModel_EffortLevelInName(t *testing.T) {
+	t.Parallel()
+
 	xhigh := &ModelInfo{Id: "claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]"}
 	decorateCursorModel(xhigh)
 	assert.Equal(t, "Claude Opus 4.7 XHigh", xhigh.DisplayName)
@@ -291,6 +309,8 @@ func TestDecorateCursorModel_EffortLevelInName(t *testing.T) {
 // single level the name suffix uses, rather than disagreeing ("High effort · Medium reasoning"
 // in the tooltip vs just "High" in the name).
 func TestDecorateCursorModel_EffortAndReasoningCollapseToOne(t *testing.T) {
+	t.Parallel()
+
 	m := &ModelInfo{Id: "weird-model[effort=high,reasoning=medium]"}
 	decorateCursorModel(m)
 	assert.Contains(t, m.Description, "High effort")
@@ -301,6 +321,8 @@ func TestDecorateCursorModel_EffortAndReasoningCollapseToOne(t *testing.T) {
 }
 
 func TestDecorateCursorModel_NoBracketOrEmptyAddsNoMetadata(t *testing.T) {
+	t.Parallel()
+
 	// A bracketless / empty-bracket id carries no metadata, so ContextWindow and
 	// Description are left alone -- but the bare-id display name is still humanized.
 	plain := &ModelInfo{Id: "auto", DisplayName: "Auto", Description: "Automatically selects"}
@@ -318,6 +340,8 @@ func TestDecorateCursorModel_NoBracketOrEmptyAddsNoMetadata(t *testing.T) {
 // TestDecorateCursorModel_PreservesRealServerName verifies a genuinely friendly server
 // name (not equal to the bare id) is kept rather than re-humanized.
 func TestDecorateCursorModel_PreservesRealServerName(t *testing.T) {
+	t.Parallel()
+
 	m := &ModelInfo{Id: "composer-2.5[fast=true]", DisplayName: "Composer 2.5 (Fast)"}
 	decorateCursorModel(m)
 	assert.Equal(t, "Composer 2.5 (Fast)", m.DisplayName, "a real server name is left untouched")
@@ -326,6 +350,8 @@ func TestDecorateCursorModel_PreservesRealServerName(t *testing.T) {
 // TestHumanizeModelID covers the Cursor model ids surfaced by the live ACP server (whose
 // `name` is the bare bracket-less id), confirming friendly display names.
 func TestHumanizeModelID(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]string{
 		"composer-2.5[fast=true]":                                 "Composer 2.5",
 		"claude-opus-4-8[thinking=true,context=300k,effort=high]": "Claude Opus 4.8",
@@ -348,6 +374,8 @@ func TestHumanizeModelID(t *testing.T) {
 }
 
 func TestParseCursorContextWindow(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, int64(300000), parseCursorContextWindow("300k"))
 	assert.Equal(t, int64(272000), parseCursorContextWindow("272K"))
 	assert.Equal(t, int64(1_000_000), parseCursorContextWindow("1m"))

@@ -1,3 +1,4 @@
+import type { CatchUpPhase } from './agentEvents'
 import type { AgentEvent, TerminalEvent, WatchAgentEntry } from '~/generated/leapmux/v1/workspace_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
@@ -6,8 +7,8 @@ import type { createControlStore } from '~/stores/control.store'
 import type { AgentTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
-import type { TabView } from '~/stores/tabView'
 
+import type { TabView } from '~/stores/tabView'
 import { batch, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
@@ -170,7 +171,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   // Handle an agent event from the unified stream.
   const handleAgentEvent = (
     agentEvent: AgentEvent,
-    catchUpPhases: Map<string, 'catchingUp' | 'live'>,
+    catchUpPhases: Map<string, CatchUpPhase>,
     // The resume cursor (the client's loaded/recorded tail) this subscribe sent per
     // agent, captured at subscribe time. Used as the CatchUpStart reap ceiling so a
     // live message that raced in AFTER subscribe (seq above it) isn't reaped as a
@@ -474,7 +475,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       return
 
     // Per-agent catch-up phase tracking.
-    const catchUpPhases = new Map<string, 'catchingUp' | 'live'>()
+    const catchUpPhases = new Map<string, CatchUpPhase>()
     for (const entry of agentEntries) {
       catchUpPhases.set(entry.agentId, 'catchingUp')
     }

@@ -13,6 +13,8 @@ import (
 // equals the buffer's total-written counter gets an empty response with
 // no snapshot flag — there's nothing for the client to apply.
 func TestScreenBuffer_SnapshotSince_CaughtUp(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	end := sb.Write([]byte("hello"))
 
@@ -30,6 +32,8 @@ func TestScreenBuffer_SnapshotSince_CaughtUp(t *testing.T) {
 // legitimately is resuming in-window. The distinction only matters once
 // the ring has wrapped (see BehindRing test).
 func TestScreenBuffer_SnapshotSince_ColdSubscribeWithinWindow(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("hello"))
 	sb.Write([]byte(" world"))
@@ -45,6 +49,8 @@ func TestScreenBuffer_SnapshotSince_ColdSubscribeWithinWindow(t *testing.T) {
 // retained window must return only the bytes since afterOffset, not the
 // whole buffer, and must NOT set the snapshot flag.
 func TestScreenBuffer_SnapshotSince_IncrementalDelta(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("hello"))
 	midOffset := int64(5)
@@ -63,6 +69,8 @@ func TestScreenBuffer_SnapshotSince_IncrementalDelta(t *testing.T) {
 // same as a cold subscribe — return the whole buffer as a snapshot so the
 // client drops its stale state.
 func TestScreenBuffer_SnapshotSince_StaleOffset(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("fresh"))
 
@@ -76,6 +84,8 @@ func TestScreenBuffer_SnapshotSince_StaleOffset(t *testing.T) {
 // out of the 100KB retained window returns the full retained buffer with
 // the snapshot flag set — the client cannot be resumed incrementally.
 func TestScreenBuffer_SnapshotSince_BehindRing(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	// Fill well past the ring capacity so the early offsets drop out.
 	chunk := make([]byte, 8*1024)
@@ -100,6 +110,8 @@ func TestScreenBuffer_SnapshotSince_BehindRing(t *testing.T) {
 // returns nothing regardless of the requested offset — no snapshot flag
 // because there's nothing to replace either.
 func TestScreenBuffer_SnapshotSince_EmptyBuffer(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 
 	data, offset, isSnap := sb.SnapshotSince(0)
@@ -112,6 +124,8 @@ func TestScreenBuffer_SnapshotSince_EmptyBuffer(t *testing.T) {
 // cumulative total-bytes *after* the write so callers can forward it to
 // watchers as the resume cursor without a separate TotalBytes call.
 func TestScreenBuffer_Write_ReturnsEndOffset(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	assert.Equal(t, int64(5), sb.Write([]byte("hello")))
 	assert.Equal(t, int64(11), sb.Write([]byte(" world")))
@@ -123,6 +137,8 @@ func TestScreenBuffer_Write_ReturnsEndOffset(t *testing.T) {
 // Off-by-one here would either duplicate the first retained byte or
 // misclassify a valid offset as fallen-behind.
 func TestScreenBuffer_SnapshotSince_BoundaryAtWindowStart(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	// Fill past capacity so the ring has wrapped exactly once and the
 	// retained window is [screenBufferSize, 2*screenBufferSize).
@@ -153,6 +169,8 @@ func TestScreenBuffer_SnapshotSince_BoundaryAtWindowStart(t *testing.T) {
 // last byte must return exactly one byte, not nothing and not the whole
 // tail. Keeps the delta math honest when consumers are nearly caught up.
 func TestScreenBuffer_SnapshotSince_BoundaryAtTotalMinusOne(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("hello"))
 
@@ -167,6 +185,8 @@ func TestScreenBuffer_SnapshotSince_BoundaryAtTotalMinusOne(t *testing.T) {
 // subscribe and receive a full snapshot — never a partial delta computed
 // from a negative windowStart comparison.
 func TestScreenBuffer_SnapshotSince_NegativeOffset(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("hello"))
 
@@ -182,6 +202,8 @@ func TestScreenBuffer_SnapshotSince_NegativeOffset(t *testing.T) {
 // SnapshotSince(0) must still return all bytes as an in-window resume —
 // not a snapshot, because byte 0 is still the retention window's start.
 func TestScreenBuffer_SnapshotSince_WrapsAtExactBoundary(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	chunk := make([]byte, screenBufferSize)
 	for i := range chunk {
@@ -202,6 +224,8 @@ func TestScreenBuffer_SnapshotSince_WrapsAtExactBoundary(t *testing.T) {
 // offsets from early wraps return snapshots; offsets inside the current
 // window return incremental deltas.
 func TestScreenBuffer_SnapshotSince_MultiWrap(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	chunk := make([]byte, screenBufferSize/2)
 	for i := range chunk {
@@ -230,6 +254,8 @@ func TestScreenBuffer_SnapshotSince_MultiWrap(t *testing.T) {
 // ring must still advance the total counter by len(data). The returned
 // bytes are the *last* len(buf) bytes of the write.
 func TestScreenBuffer_Write_LargerThanRing(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	big := make([]byte, 2*screenBufferSize)
 	for i := range big {
@@ -250,6 +276,8 @@ func TestScreenBuffer_Write_LargerThanRing(t *testing.T) {
 // match, and post-wrap match where the suffix straddles the ring
 // boundary. Empty-needle is true by convention (mirrors bytes.HasSuffix).
 func TestScreenBuffer_HasSuffix(t *testing.T) {
+	t.Parallel()
+
 	// Empty needle on an empty buffer.
 	sb := NewScreenBuffer()
 	assert.True(t, sb.HasSuffix(nil))
@@ -283,6 +311,8 @@ func TestScreenBuffer_HasSuffix(t *testing.T) {
 // that entered alt screen via bytes that have since been overwritten
 // in the ring still gets a working post-reset render.
 func TestScreenBuffer_SnapshotSince_FallenBehindIncludesModePrefix(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("\x1b[?1049h")) // enter alt screen.
 	sb.Write(ringOverflowFiller())
@@ -300,6 +330,8 @@ func TestScreenBuffer_SnapshotSince_FallenBehindIncludesModePrefix(t *testing.T)
 // prefix. Doing so would cause xterm to re-toggle modes and confuse the
 // running program.
 func TestScreenBuffer_SnapshotSince_InWindowHasNoPrefix(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("\x1b[?1049h"))
 	mid := sb.TotalBytes()
@@ -317,6 +349,8 @@ func TestScreenBuffer_SnapshotSince_InWindowHasNoPrefix(t *testing.T) {
 // cursor past bytes the client never saw and break delta math on the
 // next subscribe.
 func TestScreenBuffer_SnapshotSince_PrefixDoesNotInflateOffset(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("\x1b[?1049h"))
 	sb.Write(ringOverflowFiller())
@@ -333,6 +367,8 @@ func TestScreenBuffer_SnapshotSince_PrefixDoesNotInflateOffset(t *testing.T) {
 // reset) must produce a snapshot with no prefix at all. Otherwise we
 // emit unnecessary bytes on every resubscribe.
 func TestScreenBuffer_SnapshotSince_DefaultStateNoPrefix(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write(ringOverflowFiller())
 
@@ -349,6 +385,8 @@ func TestScreenBuffer_SnapshotSince_DefaultStateNoPrefix(t *testing.T) {
 // — so they MUST carry the mode prefix or alt-screen state is lost
 // across restarts.
 func TestScreenBuffer_Snapshot_PrefixesPersistedScreenPath(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("\x1b[?1049h"))
 	sb.Write(ringOverflowFiller())
@@ -364,6 +402,8 @@ func TestScreenBuffer_Snapshot_PrefixesPersistedScreenPath(t *testing.T) {
 // path must also short-circuit when the tracker is at default state,
 // matching SnapshotSince's behavior.
 func TestScreenBuffer_Snapshot_DefaultStateNoPrefix(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	sb.Write([]byte("plain shell output\r\n$ "))
 
@@ -390,6 +430,8 @@ func ringOverflowFiller() []byte {
 // just to exercise the locks. The race detector surfaces violations as
 // test failures.
 func TestScreenBuffer_ConcurrentWriteAndSnapshot(t *testing.T) {
+	t.Parallel()
+
 	sb := NewScreenBuffer()
 	chunk := []byte("chunk of output")
 

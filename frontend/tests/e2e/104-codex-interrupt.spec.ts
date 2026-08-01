@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { sendMessage } from './helpers/ui'
+import { messageBubbles, sendMessage } from './helpers/ui'
 
 codexTest.describe('Codex Interrupt', () => {
   codexTest('send a prompt and interrupt mid-response', async ({ authenticatedCodexWorkspace, page }) => {
@@ -17,7 +17,7 @@ codexTest.describe('Codex Interrupt', () => {
     // After interrupt, the thinking indicator must clear, and at least
     // one user + partial-response bubble must be present.
     await expect(page.locator('[data-testid="thinking-indicator"]')).not.toBeVisible()
-    const bubbles = page.locator('[data-testid="message-bubble"]')
+    const bubbles = messageBubbles(page)
     expect(await bubbles.count()).toBeGreaterThan(1)
   })
 

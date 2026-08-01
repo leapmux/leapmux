@@ -113,6 +113,8 @@ func testTerminalEvent(terminalID string, data []byte) *leapmuxv1.TerminalEvent 
 }
 
 func TestBroadcastTerminalEvent_DeduplicatesWithinPerTerminal(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -127,6 +129,8 @@ func TestBroadcastTerminalEvent_DeduplicatesWithinPerTerminal(t *testing.T) {
 }
 
 func TestBroadcastAgentEvent_DeduplicatesWithinWatchers(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -140,6 +144,8 @@ func TestBroadcastAgentEvent_DeduplicatesWithinWatchers(t *testing.T) {
 }
 
 func TestBroadcastTerminalEvent_DistinctWatchersAllReceive(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock1 := newTestWatcher("ch-1")
 	mock2 := newTestWatcher("ch-2")
@@ -158,6 +164,8 @@ func TestBroadcastTerminalEvent_DistinctWatchersAllReceive(t *testing.T) {
 // actually preserve is DELIVERY: one event still reaches the channel
 // once, through a sender that is still live.
 func TestWatchTerminal_IdempotentRegistration(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -174,6 +182,8 @@ func TestWatchTerminal_IdempotentRegistration(t *testing.T) {
 }
 
 func TestWatchAgent_IdempotentRegistration(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -193,6 +203,8 @@ func TestWatchAgent_IdempotentRegistration(t *testing.T) {
 // channel routes later events through the NEW sender, which is what lets
 // a reconnect on the same channel ID pick up the fresh stream.
 func TestWatchAgent_ReRegisterReplacesTheSender(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	first := newTestWatcher("ch-1")
 	second := newTestWatcher("ch-1")
@@ -207,6 +219,8 @@ func TestWatchAgent_ReRegisterReplacesTheSender(t *testing.T) {
 }
 
 func TestAgentEvent_DoesNotReachTerminalWatchers(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -219,6 +233,8 @@ func TestAgentEvent_DoesNotReachTerminalWatchers(t *testing.T) {
 }
 
 func TestTerminalEvent_DoesNotReachAgentWatchers(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -231,6 +247,8 @@ func TestTerminalEvent_DoesNotReachAgentWatchers(t *testing.T) {
 }
 
 func TestUnwatchAll_RemovesFromAllLists(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -252,6 +270,8 @@ func TestUnwatchAll_RemovesFromAllLists(t *testing.T) {
 }
 
 func TestBroadcast_DropsWatcherOnSendError(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-dead")
 	mock.failSends(errors.New("transport gone"))
@@ -270,6 +290,8 @@ func TestBroadcast_DropsWatcherOnSendError(t *testing.T) {
 }
 
 func TestBroadcast_TerminalDropsWatcherOnSendError(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-dead")
 	mock.failSends(errors.New("transport gone"))
@@ -286,6 +308,8 @@ func TestBroadcast_TerminalDropsWatcherOnSendError(t *testing.T) {
 }
 
 func TestBroadcast_DropsOnlyDeadWatcher(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mockDead := newTestWatcher("ch-dead")
 	mockDead.failSends(errors.New("transport gone"))
@@ -313,6 +337,8 @@ func TestBroadcast_DropsOnlyDeadWatcher(t *testing.T) {
 // client silently receiving nothing for that entity until it happened to
 // re-issue WatchEvents.
 func TestBroadcast_KeepsWatcherWhenChannelRejectsOneMessage(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 	mock.failSends(fmt.Errorf("message too large: 99 > 10: %w", channel.ErrMessageRejected))
@@ -333,6 +359,8 @@ func TestBroadcast_KeepsWatcherWhenChannelRejectsOneMessage(t *testing.T) {
 // TestBroadcast_TerminalKeepsWatcherWhenChannelRejectsOneMessage is the
 // terminal twin: a single oversized frame must not deafen the tab.
 func TestBroadcast_TerminalKeepsWatcherWhenChannelRejectsOneMessage(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 	mock.failSends(fmt.Errorf("message too large: 99 > 10: %w", channel.ErrMessageRejected))
@@ -350,6 +378,8 @@ func TestBroadcast_TerminalKeepsWatcherWhenChannelRejectsOneMessage(t *testing.T
 // slot would stay stuck closed and reconnect would silently keep
 // missing events.
 func TestWatcher_ReSubscribeAfterInvalidate(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 
 	// First registration: send fails, watcher gets dropped.
@@ -379,6 +409,8 @@ func TestWatcher_ReSubscribeAfterInvalidate(t *testing.T) {
 // (see channel.ErrMessageRejected), so unsubscribing everything would
 // punish a healthy client for one bad entity.
 func TestWatcher_InvalidateScopedToEntity(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-multi")
 	mock.failSends(errors.New("transport gone"))
@@ -414,6 +446,8 @@ func TestWatcher_InvalidateScopedToEntity(t *testing.T) {
 // belonged to a superseded registration, and left a genuinely dead one
 // in place to fail again on every later event.
 func TestWatcher_AnotherChannelRegisteringDoesNotDisarmTheSweep(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 	mock.failSends(errors.New("transport gone"))
@@ -438,6 +472,8 @@ func TestWatcher_AnotherChannelRegisteringDoesNotDisarmTheSweep(t *testing.T) {
 // broadcast can land between the two. The terminal call must not perturb
 // the agent registration's generation.
 func TestWatcher_TerminalRegistrationDoesNotDisarmTheAgentSweep(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 	mock.failSends(errors.New("transport gone"))
@@ -456,6 +492,8 @@ func TestWatcher_TerminalRegistrationDoesNotDisarmTheAgentSweep(t *testing.T) {
 }
 
 func TestUnwatchAll_PreservesOtherChannels(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock1 := newTestWatcher("ch-1")
 	mock2 := newTestWatcher("ch-2")
@@ -490,6 +528,8 @@ func TestUnwatchAll_PreservesOtherChannels(t *testing.T) {
 // access; without -race this exercises the re-subscribe path and asserts
 // every broadcast still lands somewhere.
 func TestWatcher_ResubscribeDuringBroadcastDoesNotRaceSender(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	firstMock := newTestWatcher("ch-race")
 	m.SetAgentWatches("ch-race", []string{"agent-race"}, firstMock)
@@ -535,6 +575,8 @@ func TestWatcher_ResubscribeDuringBroadcastDoesNotRaceSender(t *testing.T) {
 // The re-subscribe is driven from inside SendStream so the
 // interleaving is deterministic rather than timing-dependent.
 func TestWatcher_FailedSendDoesNotDropAFresherResubscribe(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	staleMock := newTestWatcher("ch-1")
 	staleMock.failSends(errors.New("transport gone"))
@@ -569,6 +611,8 @@ func TestWatcher_FailedSendDoesNotDropAFresherResubscribe(t *testing.T) {
 // restarted per subscriber would collide with the stale snapshot;
 // minting generations from the registry cannot.
 func TestWatcher_StaleFailureDoesNotDropAReusedChannelID(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	staleMock := newTestWatcher("ch-1")
 	staleMock.failSends(errors.New("transport gone"))
@@ -600,6 +644,8 @@ func TestWatcher_StaleFailureDoesNotDropAReusedChannelID(t *testing.T) {
 // entry, which is where a per-channel lookup could drop too few or too
 // many.
 func TestBroadcast_DropsEverySimultaneouslyFailingWatcher(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mockDeadA := newTestWatcher("ch-dead-a")
 	mockDeadB := newTestWatcher("ch-dead-b")
@@ -627,6 +673,8 @@ func TestBroadcast_DropsEverySimultaneouslyFailingWatcher(t *testing.T) {
 // leaving an empty inner map behind, so a long-lived worker doesn't
 // accumulate one entry per entity it ever broadcast to.
 func TestRetire_RemovesTheEntityEntryWhenItEmpties(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 	mock.failSends(errors.New("transport gone"))
@@ -641,6 +689,8 @@ func TestRetire_RemovesTheEntityEntryWhenItEmpties(t *testing.T) {
 // TestUnwatchAll_RemovesTheEntityEntryWhenItEmpties is the UnwatchAll
 // twin of the test above.
 func TestUnwatchAll_RemovesTheEntityEntryWhenItEmpties(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 	m.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
@@ -661,6 +711,8 @@ func TestUnwatchAll_RemovesTheEntityEntryWhenItEmpties(t *testing.T) {
 // additive registry kept shipping events for a tab nobody was listening
 // to until the channel itself closed.
 func TestSetAgentWatches_DropsEntitiesTheNewRequestOmits(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -681,6 +733,8 @@ func TestSetAgentWatches_DropsEntitiesTheNewRequestOmits(t *testing.T) {
 // TestSetTerminalWatches_DropsEntitiesTheNewRequestOmits is the terminal
 // twin of the test above.
 func TestSetTerminalWatches_DropsEntitiesTheNewRequestOmits(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -695,6 +749,8 @@ func TestSetTerminalWatches_DropsEntitiesTheNewRequestOmits(t *testing.T) {
 // scoped to the calling channel: one client narrowing its tab set must
 // not unsubscribe a different client watching the same agent.
 func TestSetAgentWatches_LeavesOtherChannelsAlone(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mine := newTestWatcher("ch-1")
 	theirs := newTestWatcher("ch-2")
@@ -716,6 +772,8 @@ func TestSetAgentWatches_LeavesOtherChannelsAlone(t *testing.T) {
 // TestSetAgentWatches_EmptySetUnsubscribesEverything covers the boundary
 // the prune loop makes reachable: a request naming no agents at all.
 func TestSetAgentWatches_EmptySetUnsubscribesEverything(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -730,6 +788,8 @@ func TestSetAgentWatches_EmptySetUnsubscribesEverything(t *testing.T) {
 // the same agent twice yields one registration, not a duplicate that a
 // later sweep would have to reconcile.
 func TestSetAgentWatches_RepeatedIDRegistersOnce(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -750,6 +810,8 @@ func TestSetAgentWatches_RepeatedIDRegistersOnce(t *testing.T) {
 // SendStream still succeeds, so nothing is retired, no error surfaces,
 // and no reconnect is ever tripped. The client just goes quiet.
 func TestRebindWatches_KeepsTheSetAndRepointsTheSender(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	first := newTestWatcher("ch-1")
 	second := newTestWatcher("ch-1")
@@ -774,6 +836,8 @@ func TestRebindWatches_KeepsTheSetAndRepointsTheSender(t *testing.T) {
 // scoped to one subscriber, so a reconnect on one tab cannot hijack
 // another tab's events.
 func TestRebindWatches_LeavesOtherChannelsAlone(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	one := newTestWatcher("ch-1")
 	two := newTestWatcher("ch-2")
@@ -791,6 +855,8 @@ func TestRebindWatches_LeavesOtherChannelsAlone(t *testing.T) {
 // TestRebindWatches_OnAnUnknownChannelIsANoOp pins that rebinding never
 // invents a subscription: it re-points what exists and nothing more.
 func TestRebindWatches_OnAnUnknownChannelIsANoOp(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
@@ -806,6 +872,8 @@ func TestRebindWatches_OnAnUnknownChannelIsANoOp(t *testing.T) {
 // rebind lands captured the OLD registration; its failure must not take
 // the freshly bound one down with it.
 func TestRebindWatches_AdvancesTheGenerationSoStaleFailuresCannotRetire(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	stale := newTestWatcher("ch-1")
 	fresh := newTestWatcher("ch-1")
@@ -832,6 +900,8 @@ func TestRebindWatches_AdvancesTheGenerationSoStaleFailuresCannotRetire(t *testi
 // with no error to either side. That is why a pooled cross-worker channel
 // must not be shared by two subscriptions.
 func TestSetAgentWatches_SecondStreamOnSameChannelReplacesTheFirst(t *testing.T) {
+	t.Parallel()
+
 	m := NewWatcherManager()
 	firstStream := newTestWatcher("ch-1")
 	secondStream := newTestWatcher("ch-1")
@@ -869,6 +939,8 @@ func newDeadTransportWriter(channelID string) *deadTransportWriter {
 // that dropped at the start of the burst still had the worker marshal,
 // encrypt and hand the whole thing to a transport that was already gone.
 func TestReplaySink_StopsSendingOnceTheTransportDies(t *testing.T) {
+	t.Parallel()
+
 	w := newDeadTransportWriter("ch-1")
 	sink := newReplaySink(w)
 
@@ -888,6 +960,8 @@ func TestReplaySink_StopsSendingOnceTheTransportDies(t *testing.T) {
 // stream; abandoning the rest of a page refresh over it would lose every
 // later message for no reason.
 func TestReplaySink_KeepsGoingWhenOneMessageIsRejected(t *testing.T) {
+	t.Parallel()
+
 	w := newTestWatcher("ch-1")
 	w.failSends(fmt.Errorf("message too large: %w", channel.ErrMessageRejected))
 	sink := newReplaySink(w)
@@ -909,6 +983,8 @@ func TestReplaySink_KeepsGoingWhenOneMessageIsRejected(t *testing.T) {
 // whether to abandon a catch-up burst. Getting either wrong is silent:
 // too eager deafens a live client, too lax keeps shipping into the void.
 func TestTransportDead_ClassifiesEachFailureKind(t *testing.T) {
+	t.Parallel()
+
 	assert.False(t, transportDead(nil), "a successful send is not a dead transport")
 	assert.False(t, transportDead(fmt.Errorf("too large: %w", channel.ErrMessageRejected)),
 		"a refused message leaves the channel healthy")
@@ -927,6 +1003,8 @@ func TestTransportDead_ClassifiesEachFailureKind(t *testing.T) {
 // must hold valid UTF-8, so an agent id carrying a lone continuation
 // byte fails proto.Marshal before anything reaches the transport.
 func TestReplaySink_KeepsGoingWhenOneEventCannotBeMarshalled(t *testing.T) {
+	t.Parallel()
+
 	w := newTestWatcher("ch-1")
 	sink := newReplaySink(w)
 
@@ -967,6 +1045,8 @@ func TestReplaySink_KeepsGoingWhenOneEventCannotBeMarshalled(t *testing.T) {
 // else, so the next path that stops pruning cannot silently recruit this
 // one to cover for it.
 func TestRetire_DoesNotCleanUpAfterAnyoneElse(t *testing.T) {
+	t.Parallel()
+
 	r := newWatcherRegistry()
 	r.mu.Lock()
 	r.byEntity["e-1"] = map[string]registration{}
@@ -982,6 +1062,8 @@ func TestRetire_DoesNotCleanUpAfterAnyoneElse(t *testing.T) {
 // TestRetire_DropsTheEntityOnceItsLastWatcherGoes is the other half: a
 // retire that DID drop something cleans up after itself.
 func TestRetire_DropsTheEntityOnceItsLastWatcherGoes(t *testing.T) {
+	t.Parallel()
+
 	r := newWatcherRegistry()
 	w := newTestWatcher("ch-1")
 	r.setWatches("ch-1", []string{"e-1"}, w)

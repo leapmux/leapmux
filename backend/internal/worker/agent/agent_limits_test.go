@@ -11,6 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Tests in this file do NOT call t.Parallel(), unlike the rest of the package.
+// The stdout scanner's ceiling is package-global state (stdoutConfiguredMax,
+// stdoutNegotiatedMax, the stdoutOpenChannels refcount), and these tests drive
+// it directly; run alongside each other they would read a sibling's ceiling.
+// resetStdoutLimitsForTest restores the globals afterwards, which keeps them
+// isolated from the parallel tests around them but not from one another.
+
 func resetStdoutLimitsForTest(t *testing.T) {
 	t.Helper()
 	stdoutMu.Lock()

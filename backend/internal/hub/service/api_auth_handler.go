@@ -38,6 +38,16 @@ type APIAuthHandler struct {
 	lifecycle     *auth.CredentialLifecycleEffects
 	hubURL        string
 	refreshFlight singleflight.Group
+
+	// Now is a seam so tests can advance the handler's clock -- grant
+	// expiry, the device-code slow_down throttle, token lifetimes --
+	// without sleeping on the real one. Nil means time.Now.
+	//
+	// Every instant the handler mints or compares comes from now() so the
+	// handler has a single notion of the current time: a fake that moved
+	// the throttle window forward must move issued expiries with it, or
+	// the two disagree and tests start pinning the disagreement.
+	Now func() time.Time
 }
 
 // NewAPIAuthHandler wires the handler. hubURL is used to build the
@@ -47,6 +57,14 @@ func NewAPIAuthHandler(st store.Store, v *auth.TokenValidator, lifecycle *auth.C
 		panic("API auth handler requires credential lifecycle effects")
 	}
 	return &APIAuthHandler{store: st, validator: v, lifecycle: lifecycle, hubURL: hubURL}
+}
+
+// now returns the handler's notion of the current instant.
+func (h *APIAuthHandler) now() time.Time {
+	if h.Now != nil {
+		return h.Now()
+	}
+	return time.Now()
 }
 
 // RegisterRoutes mounts the handler's routes on the mux.

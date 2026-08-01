@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, loginViaToken, openWorkspace } from './helpers/ui'
+import { ARITHMETIC_PROMPT, expectAssistantAnswer, expectUserMessage, loginViaToken, messageBubbles, openSettingsMenu, openWorkspace, visibleOnly } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Settings and /clear after Worker restart', () => {
@@ -19,19 +19,12 @@ test.describe('Settings and /clear after Worker restart', () => {
 
       // Step 1: Send a message and wait for a response (agent starts)
       await editor.click()
-      await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
+      await page.keyboard.type(ARITHMETIC_PROMPT)
       await page.keyboard.press('Meta+Enter')
       await expect(editor).toHaveText('')
 
       // Wait for the assistant's response containing "6912"
-      await page.waitForFunction((sel: string) => {
-        const bubbles = document.querySelectorAll(sel)
-        for (const b of bubbles) {
-          if (/6,?912/.test(b.textContent ?? ''))
-            return true
-        }
-        return false
-      }, ASSISTANT_BUBBLE_SELECTOR)
+      await expectAssistantAnswer(page)
 
       // Step 2: Restart the Worker (stop + start). All persistent data
       // (workspaces, agents, messages) is stored on the Worker's SQLite DB,
@@ -42,44 +35,21 @@ test.describe('Settings and /clear after Worker restart', () => {
 
       // Wait for the E2EE channels to reconnect and messages to reload.
       // The original conversation should be visible (loaded from Worker DB).
-      await page.waitForFunction((sel: string) => {
-        const userBubbles = document.querySelectorAll('[data-testid="message-bubble"][data-role="user"]')
-        const assistantBubbles = document.querySelectorAll(sel)
-        let hasUserMsg = false
-        let hasAssistantResp = false
-        for (const b of userBubbles) {
-          if (b.textContent?.includes('1234 + 5678'))
-            hasUserMsg = true
-        }
-        for (const b of assistantBubbles) {
-          if (/6,?912/.test(b.textContent ?? ''))
-            hasAssistantResp = true
-        }
-        return hasUserMsg && hasAssistantResp
-      }, ASSISTANT_BUBBLE_SELECTOR)
+      await expectUserMessage(page, '1234 + 5678')
+      await expectAssistantAnswer(page)
 
       // Helper: wait for a notification bubble to contain the expected text.
       const waitForNotification = (text: string) =>
-        expect(page.getByText(text)).toBeVisible()
+        expect(visibleOnly(page.getByText(text))).toBeVisible()
+
+      const trigger = page.locator('[data-testid="agent-settings-trigger"]')
 
       // Helper: wait for the settings loading spinner to disappear.
       const waitForSettingsIdle = () =>
         expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
 
-      // Helper: open the settings menu, retrying if caught mid-close animation.
-      const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-      const menu = page.locator('[data-testid="agent-settings-menu"]')
-      const openSettingsMenu = async () => {
-        await expect(async () => {
-          if (!await menu.isVisible()) {
-            await trigger.click()
-          }
-          await expect(menu).toBeVisible()
-        }).toPass()
-      }
-
       // Step 3: Change permission mode (Default → Plan Mode)
-      await openSettingsMenu()
+      await openSettingsMenu(page)
       await page.locator('[data-testid="permissionMode-plan"]').click()
 
       await expect(trigger).toContainText('Plan')
@@ -88,14 +58,14 @@ test.describe('Settings and /clear after Worker restart', () => {
 
       // Step 4: Change effort (Low → Medium, default overridden via LEAPMUX_CLAUDE_DEFAULT_EFFORT in e2e)
       // Must happen before switching to Haiku, which hides the effort section.
-      await openSettingsMenu()
+      await openSettingsMenu(page)
       await page.locator('[data-testid="effort-medium"]').click()
 
       await waitForNotification('Effort (Low \u2192 Medium)')
       await waitForSettingsIdle()
 
       // Step 5: Change model (Sonnet → Haiku)
-      await openSettingsMenu()
+      await openSettingsMenu(page)
       await page.locator('[data-testid="model-haiku"]').click()
 
       await waitForNotification('Model (Sonnet \u2192 Haiku)')
@@ -108,7 +78,7 @@ test.describe('Settings and /clear after Worker restart', () => {
       await waitForNotification('Context cleared')
 
       // Verify no "Failed to deliver" messages appeared
-      const failedMessages = page.locator('[data-testid="message-bubble"]:has-text("Failed to deliver")')
+      const failedMessages = messageBubbles(page).filter({ hasText: 'Failed to deliver' })
       await expect(failedMessages).toHaveCount(0)
     }
     finally {

@@ -26,6 +26,8 @@ import (
 // against a real owner's row. That stays non-vacuous: if the predicate stopped
 // comparing, the zero caller would load realWS and the assertion would fail.
 func TestZeroCallerCannotLoadBlankOwnedWorkspace(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 

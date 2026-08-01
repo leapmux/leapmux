@@ -14,6 +14,8 @@ import (
 )
 
 func TestWorkerCloseDispatcher_DoesNotDropLargeBatch(t *testing.T) {
+	t.Parallel()
+
 	workerMgr := workermgr.New(workermgr.DenyAllReach())
 	var mu sync.Mutex
 	received := make(map[string]struct{})
@@ -51,6 +53,8 @@ func TestWorkerCloseDispatcher_DoesNotDropLargeBatch(t *testing.T) {
 // detached dispatcher goroutine where an unrecovered panic would crash the
 // whole Hub process rather than drop one close notification.
 func TestSendChannelCloseNotification_RecoversFromPanic(t *testing.T) {
+	t.Parallel()
+
 	conn := &workermgr.Conn{
 		WorkerID: "worker",
 		SendFn: func(*leapmuxv1.ConnectResponse) error {

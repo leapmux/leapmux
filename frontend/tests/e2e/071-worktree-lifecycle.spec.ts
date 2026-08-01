@@ -23,6 +23,7 @@ import {
   waitForAgentsViaAPI,
   waitForAppPageReady,
   waitForPathDeleted,
+  waitForPathExists,
   waitForWorker,
 } from './helpers/worktree'
 
@@ -65,11 +66,13 @@ test.describe('Worktree Lifecycle', () => {
     await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
     await waitForWorkspaceReady(page)
 
-    // Verify the worktree directory was created on disk.
+    // Verify the worktree directory was created on disk. Polled, not read
+    // once: the dialog closing means the RPC returned, and `git worktree add`
+    // lands shortly after that.
     // Use realpathSync to resolve macOS symlinks (e.g. /var -> /private/var).
     const realDataDir = realpathSync(dataDir)
     const worktreeDir = join(realDataDir, 'test-repo-create-worktrees', 'e2e-test-branch')
-    expect(existsSync(worktreeDir)).toBe(true)
+    await waitForPathExists(worktreeDir)
   })
 
   test('clean worktree last tab prompts and can be scheduled for deletion', async ({
@@ -327,11 +330,14 @@ test.describe('Worktree Lifecycle', () => {
     await pushBranchViaAPI(hubUrl, adminToken, workerId, agents[0].workingDir)
     await closeAgentViaAPI(hubUrl, adminToken, workerId, agents[0].id)
 
-    const lastMessage = execSync('git log -1 --pretty=%s', { cwd: worktreeDir }).toString().trim()
-    expect(lastMessage).toBe('WIP')
-    const localHead = execSync('git rev-parse HEAD', { cwd: worktreeDir }).toString().trim()
-    const remoteHead = execSync('git rev-parse refs/remotes/origin/unpushed-branch', { cwd: worktreeDir }).toString().trim()
-    expect(localHead).toBe(remoteHead)
+    // Read the result from the BARE REMOTE, not from the worktree. Closing the
+    // last tab of a worktree workspace removes the worktree directory, so these
+    // reads raced the removal -- the first `git log` succeeded and the next
+    // command died with "fatal: Unable to read current working directory".
+    // The remote is also the stronger assertion: it proves the WIP commit was
+    // both made AND pushed, which is what this test is named for.
+    const remoteMessage = execSync('git log -1 --pretty=%s unpushed-branch', { cwd: bareDir }).toString().trim()
+    expect(remoteMessage).toBe('WIP')
   })
 
   test('dirty worktree confirmation dialog: cancel keeps tab open', async ({

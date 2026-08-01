@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../src/generated/leapmux/v1/agent_pb'
 import { cleanupWorkspaceViaAPI, createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
-import { boxOf, loginViaToken, openWorkspace, tabbarAgentLabels, waitForWorkspaceReady } from './helpers/ui'
+import { boxOf, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 /**
@@ -108,27 +108,6 @@ async function recordedToastTexts(page: Page): Promise<string[]> {
   return page.evaluate(() => (window as unknown as { __toastTexts?: string[] }).__toastTexts ?? [])
 }
 
-/**
- * Tab ids of the sidebar rows nested under `workspaceId`.
- *
- * Ids, not rendered titles: a title is Worker-sourced metadata, so after a
- * reload with the Worker still offline every row falls back to the generic
- * "Agent" label. That fallback is correct behaviour and says nothing about
- * where the tab lives -- which is the only thing this spec is asserting.
- */
-async function sidebarLeafIdsForWorkspace(page: Page, workspaceId: string): Promise<string[]> {
-  return page.evaluate((wsId) => {
-    const wsItem = document.querySelector(`[data-testid="workspace-item-${wsId}"]`)
-    if (!wsItem)
-      return []
-    const wrapper = wsItem.nextElementSibling
-    if (!wrapper)
-      return []
-    const leaves = Array.from(wrapper.querySelectorAll('[data-testid="tab-tree-leaf"]')) as HTMLElement[]
-    return leaves.map(leaf => leaf.getAttribute('data-tab-id') ?? '')
-  }, workspaceId)
-}
-
 test.describe('Offline close and cross-workspace move', () => {
   test('close and move commit with the worker offline; the worker reaps on reconnect', async ({ separateHubWorker, page }) => {
     await ensureWorkerOnline(separateHubWorker)
@@ -182,7 +161,7 @@ test.describe('Offline close and cross-workspace move', () => {
       // ─── 2. Move the surviving tab to another workspace, still offline ──
       const movingTab = page.locator(`[data-testid="tab"][data-tab-type="agent"][data-tab-id="${movedAgentId}"]`)
       const sourceBox = await boxOf(movingTab)
-      const targetBox = await boxOf(page.locator(`[data-testid="workspace-item-${wsB}"]`))
+      const targetBox = await boxOf(workspaceRow(page, wsB))
       await dragTo(
         page,
         { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height / 2 },
@@ -191,7 +170,7 @@ test.describe('Offline close and cross-workspace move', () => {
 
       // wsA is left empty and wsB gained the tab, without a Worker round-trip.
       await waitForAgentTabs(page, 0)
-      await page.locator(`[data-testid="workspace-item-${wsB}"]`).click()
+      await workspaceRow(page, wsB).click()
       await waitForWorkspaceReady(page)
       await waitForAgentTabs(page, 1)
 
@@ -203,10 +182,10 @@ test.describe('Offline close and cross-workspace move', () => {
       await page.reload()
       await waitForWorkspaceReady(page)
       await waitForAgentTabs(page, 1)
-      await expect.poll(() => sidebarLeafIdsForWorkspace(page, wsB)).toEqual([movedAgentId])
+      await expect.poll(() => sidebarLeafIds(page, wsB)).toEqual([movedAgentId])
       // Expand wsA so its (now empty) section mounts.
-      await page.locator(`[data-testid="workspace-item-${wsA}"]`).locator('svg').first().click()
-      await expect.poll(() => sidebarLeafIdsForWorkspace(page, wsA)).toEqual([])
+      await workspaceRow(page, wsA).locator('svg').first().click()
+      await expect.poll(() => sidebarLeafIds(page, wsA)).toEqual([])
 
       // ─── 4. The Worker converges on reconnect ───────────────────────────
       //

@@ -1,5 +1,14 @@
 import { expect, test } from './fixtures'
-import { getBrowserPref, loginViaToken, openAgentViaUI, openPreferencesDialog, setInitialBrowserPref, waitForWorkspaceReady } from './helpers/ui'
+import { armTurnEndSound, expectDoorbellCount, expectDoorbellQuiet } from './helpers/turnEndSound'
+import { getBrowserPref, loginViaToken, openAgentViaUI, openPreferencesDialog, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
+
+/**
+ * A prompt the agent cannot answer from the prompt alone, so the turn reports
+ * `numToolUses > 0`. That matters: `useTurnEnd` deliberately suppresses the
+ * ding for trivial single-exchange turns, so a plain arithmetic question would
+ * make every assertion below pass for the wrong reason.
+ */
+const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'
 
 test.describe('Turn End Sound Preferences', () => {
   test('should show Turn End Sound section in This Browser tab', async ({ page, leapmuxServer }) => {
@@ -19,20 +28,17 @@ test.describe('Turn End Sound Preferences', () => {
 
     // Click "Ding Dong"
     await page.getByRole('button', { name: 'Ding Dong' }).first().click()
-    let value = await getBrowserPref(page, 'turnEndSound')
-    expect(value).toBe('ding-dong')
+    await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBe('ding-dong')
 
     // Click "None"
     await page.getByRole('button', { name: 'None' }).first().click()
-    value = await getBrowserPref(page, 'turnEndSound')
-    expect(value).toBe('none')
+    await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBe('none')
 
     // Click "Use account default" within the Turn End Sound section.
     // In the browser tab, "Use account default" buttons appear for: Theme, Terminal Theme,
     // Diff View, Turn End Sound. The Turn End Sound one is the 4th (0-indexed: 3).
     await page.getByRole('button', { name: 'Use account default' }).nth(3).click()
-    value = await getBrowserPref(page, 'turnEndSound')
-    expect(value).toBeNull()
+    await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBeNull()
   })
 
   test('should show Turn End Sound section in Account Defaults tab', async ({ page, leapmuxServer }) => {
@@ -52,292 +58,124 @@ test.describe('Turn End Sound Preferences', () => {
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
 
-    // Click "Ding Dong"
-    await page.getByRole('button', { name: 'Ding Dong' }).first().click()
-    await page.waitForTimeout(500)
+    // Select "Ding Dong" and wait for the choice to be reflected before reloading:
+    // the write is an API round trip, and reloading mid-flight would race it.
+    // role=radio, not button: these pill groups are one-of-N, so they carry
+    // radiogroup/radio semantics and aria-checked rather than aria-pressed.
+    const dingDong = page.getByRole('radio', { name: 'Ding Dong' }).first()
+    await dingDong.click()
+    await expect(dingDong).toBeChecked()
 
-    // Reload and verify persistence
+    // Reload and verify the account-level choice survived the round trip.
     await page.reload()
     await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
-    await page.waitForTimeout(500)
+    await expect(page.getByRole('radio', { name: 'Ding Dong' }).first()).toBeChecked()
 
-    // Restore to "None"
-    await page.getByRole('button', { name: 'None' }).first().click()
-    await page.waitForTimeout(500)
+    // Restore to "None" so the account default cannot leak into a later test
+    // on this worker's shared hub instance.
+    const none = page.getByRole('radio', { name: 'None' }).first()
+    await none.click()
+    await expect(none).toBeChecked()
   })
 
   test('should play ding-dong sound when turn ends', async ({ page, authenticatedWorkspace }) => {
-    // Set up audio spy and preference — these addInitScript calls persist across navigations
-    await page.addInitScript(() => {
-      (window as any).__audioPlayCalls = [] as string[]
-      HTMLAudioElement.prototype.play = function () {
-        (window as any).__audioPlayCalls.push(this.src)
-        return Promise.resolve()
-      }
-    })
-    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
-
-    // Reload so the init scripts take effect
-    await page.reload()
+    void authenticatedWorkspace // fixture trigger
+    await armTurnEndSound(page, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    // Wait for editor to be ready
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+    await sendMessage(page, TOOL_USING_PROMPT)
 
-    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
-    // Simple Q&A like "What is 1234 + 5678?" completes in 1 turn, which is suppressed by the
-    // numTurns <= 1 guard in handleTurnEnd.
-    await editor.click()
-    await page.keyboard.type('Run the command `pwd` and tell me the result.')
-    await page.keyboard.press('Meta+Enter')
-
-    // Wait for the interrupt button to appear (turn starts)
-    await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
-
-    // Wait for the turn to end (interrupt button disappears)
-    await page.waitForFunction(() => {
-      return !document.querySelector('[data-testid="interrupt-button"]')
-    })
-
-    // Give a short moment for the effect to fire
-    await page.waitForTimeout(500)
-
-    // Verify the doorbell sound was played
-    const calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    expect(calls.some((src: string) => src.includes('benkirb-electronic-doorbell'))).toBe(true)
+    await expectDoorbellCount(page, 1)
   })
 
   test('should NOT play sound when turn end sound is none', async ({ page, authenticatedWorkspace }) => {
-    // Set up audio spy
-    await page.addInitScript(() => {
-      (window as any).__audioPlayCalls = [] as string[]
-      HTMLAudioElement.prototype.play = function () {
-        (window as any).__audioPlayCalls.push(this.src)
-        return Promise.resolve()
-      }
-    })
-    await setInitialBrowserPref(page, 'turnEndSound', 'none')
-
-    // Reload so the init scripts take effect
-    await page.reload()
+    void authenticatedWorkspace // fixture trigger
+    await armTurnEndSound(page, 'none')
     await waitForWorkspaceReady(page)
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+    // The SAME tool-using prompt the positive test uses. An arithmetic
+    // question would be suppressed by the numToolUses === 0 guard whatever the
+    // preference said, so this would pass with the preference plumbing removed
+    // entirely -- which is exactly what it did while `setInitialBrowserPref`
+    // was silently writing an entry the app discarded.
+    await sendMessage(page, TOOL_USING_PROMPT)
+    await waitForAgentIdle(page)
 
-    // Send a message
-    await editor.click()
-    await page.keyboard.type('What is 1234 + 5678? Reply with just the number, nothing else.')
-    await page.keyboard.press('Meta+Enter')
-
-    // Wait for the interrupt button to appear
-    await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
-
-    // Wait for the turn to end
-    await page.waitForFunction(() => {
-      return !document.querySelector('[data-testid="interrupt-button"]')
-    })
-
-    await page.waitForTimeout(200)
-
-    // Verify no doorbell sound was played
-    const calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    expect(calls.some((src: string) => src.includes('benkirb-electronic-doorbell'))).toBe(false)
+    await expectDoorbellQuiet(page, 0)
   })
 
   test('should NOT play sound when opening and closing Preferences dialog', async ({ page, authenticatedWorkspace }) => {
-    // Set up audio spy
-    await page.addInitScript(() => {
-      (window as any).__audioPlayCalls = [] as string[]
-      HTMLAudioElement.prototype.play = function () {
-        (window as any).__audioPlayCalls.push(this.src)
-        return Promise.resolve()
-      }
-    })
-    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
-
-    // Reload so the init scripts take effect
-    await page.reload()
+    void authenticatedWorkspace // fixture trigger
+    await armTurnEndSound(page, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
-    await editor.click()
-    await page.keyboard.type('Run the command `pwd` and tell me the result.')
-    await page.keyboard.press('Meta+Enter')
-    await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
-    await page.waitForFunction(() => {
-      return !document.querySelector('[data-testid="interrupt-button"]')
-    })
-    await page.waitForTimeout(200)
-
-    // Verify the sound played exactly once for the real turn end
-    const calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    const soundCountBeforeDialog = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
-    expect(soundCountBeforeDialog).toBe(1)
+    await sendMessage(page, TOOL_USING_PROMPT)
+    await expectDoorbellCount(page, 1)
 
     // Open and close the Preferences dialog (no full navigation)
     await openPreferencesDialog(page)
     await page.getByRole('dialog', { name: 'Preferences' }).getByLabel('Close').click()
     await expect(page.getByRole('dialog', { name: 'Preferences' })).not.toBeVisible()
 
-    // Wait a moment for any spurious effects
-    await page.waitForTimeout(1000)
-
-    // Verify no additional sound was played from opening/closing the dialog
-    const callsAfterDialog = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    const soundCountAfterDialog = callsAfterDialog.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
-    expect(soundCountAfterDialog).toBe(soundCountBeforeDialog)
+    await expectDoorbellQuiet(page, 1)
   })
 
   test('should NOT play sound when closing an agent tab', async ({ page, authenticatedWorkspace }) => {
-    // Set up audio spy
-    await page.addInitScript(() => {
-      (window as any).__audioPlayCalls = [] as string[]
-      HTMLAudioElement.prototype.play = function () {
-        (window as any).__audioPlayCalls.push(this.src)
-        return Promise.resolve()
-      }
-    })
-    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
-
-    // Reload so the init scripts take effect
-    await page.reload()
+    void authenticatedWorkspace // fixture trigger
+    await armTurnEndSound(page, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
-    await editor.click()
-    await page.keyboard.type('Run the command `pwd` and tell me the result.')
-    await page.keyboard.press('Meta+Enter')
-    await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
-    await page.waitForFunction(() => {
-      return !document.querySelector('[data-testid="interrupt-button"]')
-    })
-    await page.waitForTimeout(200)
-
-    // Verify the sound played exactly once for the real turn end
-    let calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    const soundCountAfterTurn = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
-    expect(soundCountAfterTurn).toBe(1)
+    await sendMessage(page, TOOL_USING_PROMPT)
+    await expectDoorbellCount(page, 1)
 
     // Open a second agent tab so we have somewhere to land after closing
     await openAgentViaUI(page)
-    await page.waitForTimeout(500)
 
-    // Switch back to the first agent tab
-    await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().click()
-    await page.waitForTimeout(500)
+    // Switch back to the first agent tab (the one with a completed turn)
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    await agentTabs.first().click()
+    await expect(agentTabs.first()).toHaveAttribute('aria-selected', 'true')
 
-    // Close the first agent tab (which has a completed turn)
-    const firstTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
-    await firstTab.locator('[data-testid="tab-close"]').click()
-    await page.waitForTimeout(1000)
+    // Close it. Closing a tab whose turn already ended must not re-ring.
+    await agentTabs.first().locator('[data-testid="tab-close"]').click()
+    await expect(agentTabs).toHaveCount(1)
 
-    // Verify no additional sound was played from closing the tab
-    calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    const soundCountAfterClose = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
-    expect(soundCountAfterClose).toBe(soundCountAfterTurn)
+    await expectDoorbellQuiet(page, 1)
   })
 
   test('should NOT play sound when opening a new tab', async ({ page, authenticatedWorkspace }) => {
-    // Set up audio spy
-    await page.addInitScript(() => {
-      (window as any).__audioPlayCalls = [] as string[]
-      HTMLAudioElement.prototype.play = function () {
-        (window as any).__audioPlayCalls.push(this.src)
-        return Promise.resolve()
-      }
-    })
-    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
-
-    // Reload so the init scripts take effect
-    await page.reload()
+    void authenticatedWorkspace // fixture trigger
+    await armTurnEndSound(page, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+    await sendMessage(page, TOOL_USING_PROMPT)
+    await expectDoorbellCount(page, 1)
 
-    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
-    await editor.click()
-    await page.keyboard.type('Run the command `pwd` and tell me the result.')
-    await page.keyboard.press('Meta+Enter')
-    await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
-    await page.waitForFunction(() => {
-      return !document.querySelector('[data-testid="interrupt-button"]')
-    })
-    await page.waitForTimeout(200)
-
-    // Verify the sound played exactly once for the real turn end
-    let calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    const soundCountAfterTurn = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
-    expect(soundCountAfterTurn).toBe(1)
-
-    // Open a new agent tab (this restarts the WatchEvents stream)
+    // Opening a new agent tab restarts the WatchEvents stream, which replays
+    // the completed turn. The replay must not be mistaken for a live turn end.
     await openAgentViaUI(page)
-    await page.waitForTimeout(5000)
 
-    // Verify no additional sound was played from the stream restart replay
-    calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    const soundCountAfterNewTab = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
-    expect(soundCountAfterNewTab).toBe(soundCountAfterTurn)
+    await expectDoorbellQuiet(page, 1)
   })
 
   test('should NOT play sound when switching between agent tabs', async ({ page, authenticatedWorkspace }) => {
-    // Set up audio spy
-    await page.addInitScript(() => {
-      (window as any).__audioPlayCalls = [] as string[]
-      HTMLAudioElement.prototype.play = function () {
-        (window as any).__audioPlayCalls.push(this.src)
-        return Promise.resolve()
-      }
-    })
-    await setInitialBrowserPref(page, 'turnEndSound', 'ding-dong')
-
-    // Reload so the init scripts take effect
-    await page.reload()
+    void authenticatedWorkspace // fixture trigger
+    await armTurnEndSound(page, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+    await sendMessage(page, TOOL_USING_PROMPT)
+    await expectDoorbellCount(page, 1)
 
-    // Send a message that triggers tool use (numTurns > 1) so the turn-end sound fires.
-    await editor.click()
-    await page.keyboard.type('Run the command `pwd` and tell me the result.')
-    await page.keyboard.press('Meta+Enter')
-    await expect(page.locator('[data-testid="interrupt-button"]')).toBeVisible()
-    await page.waitForFunction(() => {
-      return !document.querySelector('[data-testid="interrupt-button"]')
-    })
-    await page.waitForTimeout(200)
-
-    // Record the sound count after the first turn
-    let calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    const soundCountAfterTurn = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
-    expect(soundCountAfterTurn).toBe(1)
-
-    // Open a second agent tab
+    // Open a second agent tab, then switch back and forth
     await openAgentViaUI(page)
-    await page.waitForTimeout(500)
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    await agentTabs.first().click()
+    await expect(agentTabs.first()).toHaveAttribute('aria-selected', 'true')
+    await agentTabs.nth(1).click()
+    await expect(agentTabs.nth(1)).toHaveAttribute('aria-selected', 'true')
 
-    // Switch back to the first agent tab (which has a completed turn)
-    await page.locator('[data-testid="tab"][data-tab-type="agent"]').first().click()
-    await page.waitForTimeout(500)
-
-    // Switch to the second agent tab again
-    await page.locator('[data-testid="tab"][data-tab-type="agent"]').nth(1).click()
-    await page.waitForTimeout(500)
-
-    // Verify no additional sound was played from tab switching
-    calls = await page.evaluate(() => (window as any).__audioPlayCalls as string[])
-    const soundCountAfterSwitch = calls.filter((src: string) => src.includes('benkirb-electronic-doorbell')).length
-    expect(soundCountAfterSwitch).toBe(soundCountAfterTurn)
+    await expectDoorbellQuiet(page, 1)
   })
 })

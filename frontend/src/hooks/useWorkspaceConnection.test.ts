@@ -645,11 +645,49 @@ describe('applyNotificationMetadata usage folding', () => {
 
   // Distinct agent ids per case: the session store persists through localStorage, so a shared id
   // would leak one case's usage into the next.
+
+  it('applies a plan auto-title from a LIVE plan_updated', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      s.metadata.patch('u-plan-live', { title: 'Agent' })
+      const msg = msgOf({ type: 'plan_updated', plan_title: 'Dummy plan', update_agent_title: true }, AgentProvider.CLAUDE_CODE)
+      applyNotificationMetadata('u-plan-live', msg, parseMessageContent(msg), s, 'live')
+      expect(s.metadata.get('u-plan-live')?.title).toBe('Dummy plan')
+      dispose()
+    })
+  })
+
+  it('does NOT re-apply a plan auto-title while catching up', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      // The user renamed the tab after the plan was written. Reloading replays
+      // the historical plan_updated, and re-applying it here silently undid
+      // that rename -- the tab came back named after the plan every time.
+      // Every other side effect in applyNotificationMetadata is derived state
+      // that catch-up SHOULD restore; the title is the one the user owns.
+      s.metadata.patch('u-plan-catchup', { title: 'My Custom Name' })
+      const msg = msgOf({ type: 'plan_updated', plan_title: 'Dummy plan', update_agent_title: true }, AgentProvider.CLAUDE_CODE)
+      applyNotificationMetadata('u-plan-catchup', msg, parseMessageContent(msg), s, 'catchingUp')
+      expect(s.metadata.get('u-plan-catchup')?.title).toBe('My Custom Name')
+      dispose()
+    })
+  })
+
+  it('still restores planFilePath while catching up', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      const msg = msgOf({ type: 'plan_updated', plan_file_path: '/repo/PLAN.md', plan_title: 'Dummy plan', update_agent_title: true }, AgentProvider.CLAUDE_CODE)
+      applyNotificationMetadata('u-plan-path', msg, parseMessageContent(msg), s, 'catchingUp')
+      expect(s.agentSessionStore.getInfo('u-plan-path').planFilePath).toBe('/repo/PLAN.md')
+      dispose()
+    })
+  })
+
   it('folds a Claude assistant message.usage + cost into session info', () => {
     createRoot((dispose) => {
       const s = stores()
       const msg = msgOf({ type: 'assistant', total_cost_usd: 0.05, message: { usage: { input_tokens: 1000, cache_read_input_tokens: 200 } } }, AgentProvider.CLAUDE_CODE)
-      applyNotificationMetadata('u-claude', msg, parseMessageContent(msg), s)
+      applyNotificationMetadata('u-claude', msg, parseMessageContent(msg), s, 'live')
       expect(s.agentSessionStore.getInfo('u-claude').contextUsage).toEqual({ inputTokens: 1000, cacheCreationInputTokens: 0, cacheReadInputTokens: 200 })
       expect(s.agentSessionStore.getInfo('u-claude').totalCostUsd).toBe(0.05)
       dispose()
@@ -660,7 +698,7 @@ describe('applyNotificationMetadata usage folding', () => {
     createRoot((dispose) => {
       const s = stores()
       const msg = msgOf({ method: 'thread/tokenUsage/updated', params: { tokenUsage: { last: { inputTokens: 10, cachedInputTokens: 5 }, modelContextWindow: 4096 } } }, AgentProvider.CODEX)
-      applyNotificationMetadata('u-codex', msg, parseMessageContent(msg), s)
+      applyNotificationMetadata('u-codex', msg, parseMessageContent(msg), s, 'live')
       expect(s.agentSessionStore.getInfo('u-codex').contextUsage).toEqual({ inputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 5, contextWindow: 4096 })
       dispose()
     })
@@ -670,7 +708,7 @@ describe('applyNotificationMetadata usage folding', () => {
     createRoot((dispose) => {
       const s = stores()
       const msg = msgOf({ type: 'message_end', message: { usage: { input: 100, output: 10, cacheRead: 20, cacheWrite: 5, totalTokens: 130 } } }, AgentProvider.PI)
-      applyNotificationMetadata('u-pi', msg, parseMessageContent(msg), s)
+      applyNotificationMetadata('u-pi', msg, parseMessageContent(msg), s, 'live')
       expect(s.agentSessionStore.getInfo('u-pi').contextUsage).toEqual({ inputTokens: 100, cacheCreationInputTokens: 5, cacheReadInputTokens: 20, outputTokens: 10, contextTokens: 130 })
       dispose()
     })
@@ -680,7 +718,7 @@ describe('applyNotificationMetadata usage folding', () => {
     createRoot((dispose) => {
       const s = stores()
       const msg = msgOf({ type: 'assistant', parent_tool_use_id: 'toolu_x', total_cost_usd: 0.03, message: { usage: { input_tokens: 500 } } }, AgentProvider.CLAUDE_CODE)
-      applyNotificationMetadata('u-subagent', msg, parseMessageContent(msg), s)
+      applyNotificationMetadata('u-subagent', msg, parseMessageContent(msg), s, 'live')
       expect(s.agentSessionStore.getInfo('u-subagent').contextUsage).toBeUndefined()
       expect(s.agentSessionStore.getInfo('u-subagent').totalCostUsd).toBeUndefined()
       dispose()
@@ -693,7 +731,7 @@ describe('applyNotificationMetadata usage folding', () => {
       // Carries BOTH a normalized context_usage and a raw message.usage; the normalized value wins
       // and the provider hook is never consulted (guard owned by the shared wrapper).
       const msg = msgOf({ type: 'message_end', context_usage: { input_tokens: 100, cache_read_input_tokens: 20 }, message: { usage: { input: 999 } } }, AgentProvider.PI)
-      applyNotificationMetadata('u-normalized', msg, parseMessageContent(msg), s)
+      applyNotificationMetadata('u-normalized', msg, parseMessageContent(msg), s, 'live')
       expect(s.agentSessionStore.getInfo('u-normalized').contextUsage).toEqual({ inputTokens: 100, cacheCreationInputTokens: 0, cacheReadInputTokens: 20 })
       dispose()
     })
@@ -706,7 +744,7 @@ describe('applyNotificationMetadata usage folding', () => {
     createRoot((dispose) => {
       const s = stores()
       const msg = { ...msgOf({ type: 'assistant', total_cost_usd: 0.05, context_usage: { input_tokens: 100 }, message: { usage: { input_tokens: 1000 } } }, AgentProvider.CLAUDE_CODE), source: MessageSource.LEAPMUX }
-      applyNotificationMetadata('u-leapmux', msg, parseMessageContent(msg), s)
+      applyNotificationMetadata('u-leapmux', msg, parseMessageContent(msg), s, 'live')
       expect(s.agentSessionStore.getInfo('u-leapmux').contextUsage).toBeUndefined()
       expect(s.agentSessionStore.getInfo('u-leapmux').totalCostUsd).toBeUndefined()
       dispose()

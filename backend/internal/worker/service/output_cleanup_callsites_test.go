@@ -59,6 +59,8 @@ func assertControlRequestsCleared(t *testing.T, ctx context.Context, svc *Servic
 // call from agent.go's CloseAgent handler would leave stale rows that
 // the next WatchEvents replay would re-emit as unanswerable prompts.
 func TestCloseAgent_ClearsPendingControlRequests(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -78,6 +80,8 @@ func TestCloseAgent_ClearsPendingControlRequests(t *testing.T) {
 // the new subprocess starts. The new process has its own request_id
 // namespace, so any stale row would be unanswerable by it.
 func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -101,6 +105,8 @@ func TestInitiatePlanExecutionRestart_ClearsPendingControlRequests(t *testing.T)
 // command drives ClearAgentRuntimeState before restarting the agent
 // with a fresh context.
 func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -126,6 +132,8 @@ func TestHandleClearContext_ClearsPendingControlRequests(t *testing.T) {
 // the in-memory notification thread must survive it (see
 // TestRelaunchOnExitPreservesNotificationThread).
 func TestSubprocessCrash_DropsPendingControlRequests(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	defer drainAllInFlight(svc)

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { loginViaToken, openWorkspace, treeRow } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -14,7 +14,14 @@ const frontendDir = path.resolve(import.meta.dirname, '../..')
  */
 function createTempGitRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'leapmux-e2e-git-'))
-  execSync('git init', { cwd: dir })
+  // Pin off every background writer, the same way helpers/worktree.ts's
+  // createGitRepo and the Go testutil.NewGitRepo do. A developer with a global
+  // `core.fsmonitor=true` otherwise gets a daemon per test repo, which keeps
+  // touching .git while the test reads it and races the temp-dir cleanup.
+  execSync('git -c core.fsmonitor=false init --initial-branch=main', { cwd: dir })
+  execSync('git config core.fsmonitor false', { cwd: dir })
+  execSync('git config gc.auto 0', { cwd: dir })
+  execSync('git config maintenance.auto false', { cwd: dir })
   execSync('git config user.email "test@test.com"', { cwd: dir })
   execSync('git config user.name "Test"', { cwd: dir })
 
@@ -114,19 +121,32 @@ test.describe('Git File Status', () => {
       await expect(treeRow('file_a.txt')).toBeVisible()
       await expect(treeRow('file_b.txt')).toBeVisible()
 
+      // Select a filter tab and confirm it actually became the active one before
+      // asserting on the tree. Every "should still be visible" assertion below
+      // also holds on the UNFILTERED tree, so without this the whole test passed
+      // whenever the click was swallowed -- and only the one "should be hidden"
+      // line noticed, which is exactly how this read as flake.
+      const selectFilter = async (key: string) => {
+        const tab = page.locator(`[data-testid="files-filter-${key}"]`)
+        await tab.click()
+        // role=tab + aria-selected, not aria-pressed: picking a filter swaps the
+        // region below it, which is a tab set rather than a row of toggles.
+        await expect(tab).toHaveAttribute('aria-selected', 'true')
+      }
+
       // Switch to "Changed" tab — should show only changed files.
-      await page.locator('[data-testid="files-filter-changed"]').click()
+      await selectFilter('changed')
       await expect(treeRow('file_a.txt')).toBeVisible()
       await expect(treeRow('file_b.txt')).toBeVisible()
       await expect(treeRow('clean.txt')).not.toBeVisible()
 
       // Switch to "Staged" tab — should show only file_a.
-      await page.locator('[data-testid="files-filter-staged"]').click()
+      await selectFilter('staged')
       await expect(treeRow('file_a.txt')).toBeVisible()
       await expect(treeRow('file_b.txt')).not.toBeVisible()
 
       // Switch to "Unstaged" tab — should show only file_b.
-      await page.locator('[data-testid="files-filter-unstaged"]').click()
+      await selectFilter('unstaged')
       await expect(treeRow('file_b.txt')).toBeVisible()
       await expect(treeRow('file_a.txt')).not.toBeVisible()
     }
@@ -243,7 +263,7 @@ test.describe('Git File Status', () => {
       await expect(rootNode).toBeVisible()
 
       // Verify children are visible (root is expanded by default).
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
 
       // Expand a subdirectory.
       await page.getByText('src').click()
@@ -253,7 +273,7 @@ test.describe('Git File Status', () => {
 
       // Wait for collapse to take effect. Only root should be expanded.
       // Subdirectory contents should not be visible.
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

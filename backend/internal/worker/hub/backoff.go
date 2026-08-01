@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v6"
+	"github.com/leapmux/leapmux/internal/util/backoffutil"
 )
 
 const (
@@ -13,12 +14,9 @@ const (
 )
 
 // newDefaultBackoff creates an exponential backoff: 1s → 180s, multiplier 2x, ±20% jitter.
+//
+// Jitter matters here specifically: every worker reconnecting to one hub after
+// an outage would otherwise retry in lockstep.
 func newDefaultBackoff() *backoff.ExponentialBackOff {
-	b := backoff.NewExponentialBackOff()
-	b.InitialInterval = 1 * time.Second
-	b.MaxInterval = 180 * time.Second
-	b.Multiplier = 2.0
-	b.RandomizationFactor = 0.2
-	b.Reset()
-	return b
+	return backoffutil.NewCapped(1*time.Second, 180*time.Second, 0.2)
 }

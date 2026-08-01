@@ -1,10 +1,13 @@
 package pathutil
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSamePath_Identical(t *testing.T) {
@@ -80,4 +83,28 @@ func TestNormalizeNative_PosixUntouched(t *testing.T) {
 
 func TestNormalizeNative_Empty(t *testing.T) {
 	assert.Equal(t, "", NormalizeNative(""))
+}
+
+// TestCanonicalize_UnresolvableFallbackIsCleaned pins the fallback, which is
+// what makes Canonicalize safe to use as a map key.
+//
+// EvalSymlinks cleans on its success path, so returning the raw string on
+// failure made the same directory produce two different keys depending on
+// whether it happened to resolve. gitIndexLock keys its mutex map on exactly
+// this value: two keys there means two mutexes for one repository, and two
+// concurrent `git worktree add`s -- the failure the lock exists to prevent.
+func TestCanonicalize_UnresolvableFallbackIsCleaned(t *testing.T) {
+	t.Parallel()
+
+	// A path that cannot resolve, spelled two ways that Clean unifies.
+	base := filepath.Join(os.TempDir(), "leapmux-does-not-exist-"+t.Name())
+	messy := filepath.Join(base, "sub", "..", ".", "repo")
+	tidy := filepath.Join(base, "repo")
+
+	_, err := filepath.EvalSymlinks(messy)
+	require.Error(t, err, "the test needs a path EvalSymlinks cannot resolve")
+
+	assert.Equal(t, Canonicalize(tidy), Canonicalize(messy),
+		"two spellings of one unresolvable path must canonicalize to one key")
+	assert.Equal(t, filepath.Clean(messy), Canonicalize(messy))
 }

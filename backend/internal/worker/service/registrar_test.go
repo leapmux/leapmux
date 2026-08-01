@@ -16,6 +16,8 @@ import (
 )
 
 func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	seedAgent(t, svc, "agent-1")
 	d := channel.NewDispatcher()
@@ -42,6 +44,8 @@ func TestRegisterAgentGated_PassesLoadedRow(t *testing.T) {
 }
 
 func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	seedAgent(t, svc, "agent-1")
 	d := channel.NewDispatcher()
@@ -66,6 +70,8 @@ func TestRegisterAgentGatedByID_PassesDecodedRequest(t *testing.T) {
 }
 
 func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	seedTerminal(t, svc, "term-1")
 	d := channel.NewDispatcher()
@@ -92,6 +98,8 @@ func TestRegisterTerminalGated_PassesLoadedRow(t *testing.T) {
 }
 
 func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	seedTerminal(t, svc, "term-1")
 	d := channel.NewDispatcher()
@@ -121,6 +129,8 @@ func TestRegisterTerminalForRestartGated_PassesRow(t *testing.T) {
 // handler returns. A helper that silently registered untracked would let
 // Shutdown tear down the DB pool under a running close flow.
 func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name     string
 		seed     func(t *testing.T, svc *Service)
@@ -203,6 +213,8 @@ func TestGatedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 }
 
 func TestRegistrarPanicsOnDuplicateMethod(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
@@ -226,6 +238,8 @@ func TestRegistrarPanicsOnDuplicateMethod(t *testing.T) {
 // CleanupWorkspace have no empty-field guard of their own and would answer a
 // SUCCESSFUL empty response, so the caller sees "no agents" rather than an error.
 func TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)
@@ -256,6 +270,8 @@ func TestRegisterOwnerGated_InvalidPayloadAnswersInvalidArgument(t *testing.T) {
 // folds both shapes together and would pass either way -- the fold is exactly
 // what let this distinction go unchecked.
 func TestRegisterOwnerGatedStream_InvalidPayloadAnswersStreamError(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	d := channel.NewDispatcher()
 	r := newRegistrar(d, svc)

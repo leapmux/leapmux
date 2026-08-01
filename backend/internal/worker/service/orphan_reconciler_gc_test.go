@@ -24,6 +24,8 @@ import (
 // milliseconds apart, so "seen in two consecutive passes" stopped implying "the
 // startup window has elapsed".
 func TestReconcileWorktrees_ReapsStrandOnlyAfterTheGraceWindow(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	q := svc.Queries
 	ctx := context.Background()
@@ -43,19 +45,22 @@ func TestReconcileWorktrees_ReapsStrandOnlyAfterTheGraceWindow(t *testing.T) {
 
 	// Strand: the worktree's only link points at a CLOSED agent (no live
 	// reference) — the exact residue the startup guards can leave behind.
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-strand", WorktreePath: "/r/strand", RepoRoot: "/r", BranchName: "b"}))
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-strand", WorktreePath: "/r/strand", RepoRoot: "/r", BranchName: "b"})
+	require.NoError(t, cwErr)
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-closed", WorkingDir: "/r/strand", HomeDir: "/r/strand"}))
 	require.NoError(t, closeErr(q.CloseAgent(ctx, "a-closed")))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-strand", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-closed"}))
 
 	// Live: linked to an OPEN agent — never a candidate.
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-live", WorktreePath: "/r/live", RepoRoot: "/r", BranchName: "b"}))
+	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-live", WorktreePath: "/r/live", RepoRoot: "/r", BranchName: "b"})
+	require.NoError(t, cwErr)
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a-open", WorkingDir: "/r/live", HomeDir: "/r/live"}))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-live", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-open"}))
 
 	// Zero-link: freshly created, its tab hasn't linked yet (mid-creation)
 	// — must never be reaped.
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-fresh", WorktreePath: "/r/fresh", RepoRoot: "/r", BranchName: "b"}))
+	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-fresh", WorktreePath: "/r/fresh", RepoRoot: "/r", BranchName: "b"})
+	require.NoError(t, cwErr)
 
 	rec.reconcileOnce(ctx)
 	assert.Empty(t, reaped, "first sighting starts the clock but must not reap")
@@ -82,6 +87,8 @@ func TestReconcileWorktrees_ReapsStrandOnlyAfterTheGraceWindow(t *testing.T) {
 }
 
 func TestReconcileWorktrees_SparesWorktreeReLinkedDuringTheGraceWindow(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	q := svc.Queries
 	ctx := context.Background()
@@ -95,7 +102,8 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedDuringTheGraceWindow(t *testin
 		CloseTab:     svc.CloseTabForReconcile,
 	})
 
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-reuse", WorktreePath: "/r/reuse", RepoRoot: "/r", BranchName: "b"}))
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-reuse", WorktreePath: "/r/reuse", RepoRoot: "/r", BranchName: "b"})
+	require.NoError(t, cwErr)
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{ID: "a1-closed", WorkingDir: "/r/reuse", HomeDir: "/r/reuse"}))
 	require.NoError(t, closeErr(q.CloseAgent(ctx, "a1-closed")))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-reuse", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a1-closed"}))
@@ -119,6 +127,8 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedDuringTheGraceWindow(t *testin
 }
 
 func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
+	t.Parallel()
+
 	// The worktree_tab_liveness view is the single definition of "is this
 	// link live?" backing both CountLiveWorktreeRefs and
 	// ListOrphanCandidateWorktrees. Pin its predicate across all three tab
@@ -138,7 +148,8 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 		require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: wtID, TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: tabID, UserID: "user-1"}))
 	}
 	mkWorktree := func(id string) {
-		require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: id, WorktreePath: "/r/" + id, RepoRoot: "/r", BranchName: "b"}))
+		_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: id, WorktreePath: "/r/" + id, RepoRoot: "/r", BranchName: "b"})
+		require.NoError(t, cwErr)
 	}
 
 	// --- live references: each counts 1, never an orphan candidate ---
@@ -224,13 +235,16 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 // be gone, the link must be gone, and the directory must NOT be an orphan
 // candidate.
 func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	q := svc.Queries
 	ctx := context.Background()
 
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{
 		ID: "wt-fileonly", WorktreePath: "/r/fileonly", RepoRoot: "/r", BranchName: "b",
-	}))
+	})
+	require.NoError(t, cwErr)
 	// The worktree's ONLY link is this FILE tab.
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
 		WorktreeID: "wt-fileonly", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-1", UserID: "user-1",
@@ -273,6 +287,8 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 }
 
 func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
+	t.Parallel()
+
 	// A file tab id is unique only within a user (worker_file_tabs is keyed by
 	// (user_id, tab_id)), so the worktree_tab_liveness FILE leg must scope its
 	// join by user. Two users share the tab id "file-dup": user A's link is a
@@ -286,7 +302,8 @@ func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
 
 	// User A: worktree whose only link is a FILE strand -- no backing
 	// worker_file_tabs row.
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userA", WorktreePath: "/r/userA", RepoRoot: "/r", BranchName: "b"}))
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userA", WorktreePath: "/r/userA", RepoRoot: "/r", BranchName: "b"})
+	require.NoError(t, cwErr)
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-userA", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", UserID: "user-A"}))
 
 	// User B: a LIVE file tab with the SAME tab id but a different user.
@@ -308,7 +325,8 @@ func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
 
 	// Sanity: a worktree linked to its OWN user's live file tab still counts,
 	// so the user-scoped leg is matching, not just failing closed.
-	require.NoError(t, q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userB", WorktreePath: "/r/userB", RepoRoot: "/r", BranchName: "b"}))
+	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userB", WorktreePath: "/r/userB", RepoRoot: "/r", BranchName: "b"})
+	require.NoError(t, cwErr)
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-userB", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", UserID: "user-B"}))
 	gotB, err := q.CountLiveWorktreeRefs(ctx, "wt-userB")
 	require.NoError(t, err)
@@ -320,4 +338,42 @@ func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
 		gotIDs = append(gotIDs, c.ID)
 	}
 	assert.NotContains(t, gotIDs, "wt-userB", "a worktree with a live same-user file tab is not an orphan")
+}
+
+// TestReconcileOnce_LocalProbeFailureIsNotConvergence pins what reconcileOnce's
+// bool actually promises.
+//
+// It used to mean "did the hub leg run", so a pass whose LOCAL SQLite probes all
+// errored reported true -- indistinguishable, at the row level, from an idle
+// worker with nothing to reconcile. The caller cleared its backoff and armed no
+// retry, and the drift sat until the next interval tick an hour later. Busy is
+// exactly the state the concurrency that motivated the retry produces, so the
+// one pass most in need of a retry was the one that never got one.
+func TestReconcileOnce_LocalProbeFailureIsNotConvergence(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	q := svc.Queries
+	ctx := context.Background()
+
+	listCalls := 0
+	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+		listCalls++
+		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
+	}
+	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+		CloseTab: svc.CloseTabForReconcile,
+	})
+
+	// A healthy, genuinely idle worker converges and skips the hub RPC.
+	require.True(t, rec.reconcileOnce(ctx), "an idle worker has converged")
+	require.Zero(t, listCalls, "and short-circuits before the hub RPC")
+
+	// Break every local read the same way a transient DB error would. Closing
+	// is the bluntest form of the failure, and the only one reachable without a
+	// query-level seam; what the assertion turns on is the error, not the cause.
+	require.NoError(t, svc.DB.Close())
+
+	assert.False(t, rec.reconcileOnce(ctx),
+		"a pass whose local probes all errored has NOT converged and must be retried")
 }

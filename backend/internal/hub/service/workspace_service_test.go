@@ -22,6 +22,8 @@ import (
 )
 
 func TestWorkspaceServiceDeleteWorkspaceFansOutToOwnersWorkersOnly(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	owner := storetest.SeedUser(t, st, "fanout-owner")
@@ -58,6 +60,8 @@ func TestWorkspaceServiceDeleteWorkspaceFansOutToOwnersWorkersOnly(t *testing.T)
 // that used to narrow this to one id is gone; what still bounds the bearer is
 // which WORKER it may reach, which this RPC does not touch.
 func TestWorkspaceService_ListWorkspaces_DelegationSeesTheOwnersWorkspaces(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	user := storetest.SeedUser(t, st, "alice")
 	wsA := storetest.SeedWorkspace(t, st, user.ID, "A")
@@ -83,6 +87,8 @@ func TestWorkspaceService_ListWorkspaces_DelegationSeesTheOwnersWorkspaces(t *te
 }
 
 func TestWorkspaceService_GetWorkspace_NonOwnerIsDenied(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	owner := storetest.SeedUser(t, st, "owner")
 	other := storetest.SeedUser(t, st, "other")
@@ -108,6 +114,8 @@ func TestWorkspaceService_GetWorkspace_NonOwnerIsDenied(t *testing.T) {
 }
 
 func TestWorkspaceService_LocateTile_FindsByWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	user := storetest.SeedUser(t, st, "alice")
 	ws := storetest.SeedWorkspace(t, st, user.ID, "WS")
@@ -132,6 +140,8 @@ func TestWorkspaceService_LocateTile_FindsByWorkspaceRoot(t *testing.T) {
 // would silently return NotFound for every non-root tile, which
 // includes every tile in a tiled workspace.
 func TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	user := storetest.SeedUser(t, st, "alice")
 	ws := storetest.SeedWorkspace(t, st, user.ID, "WS")
@@ -152,6 +162,8 @@ func TestWorkspaceService_LocateTile_WalksUpToOwningWorkspace(t *testing.T) {
 }
 
 func TestWorkspaceService_LocateTile_RejectsEmptyTileID(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	user := storetest.SeedUser(t, st, "alice")
 	env := setupLocateTileEnv(t, user.ID)
@@ -168,6 +180,8 @@ func TestWorkspaceService_LocateTile_RejectsEmptyTileID(t *testing.T) {
 // missing parent node and returns "", which the handler surfaces
 // as NotFound.
 func TestWorkspaceService_LocateTile_NotFoundForUnknownTile(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	user := storetest.SeedUser(t, st, "alice")
 	env := setupLocateTileEnv(t, user.ID)
@@ -188,6 +202,8 @@ func TestWorkspaceService_LocateTile_NotFoundForUnknownTile(t *testing.T) {
 // succeeds, so without this test folding the Get failure into the same
 // `return notFound` as an unresolved tile stays green.
 func TestWorkspaceService_LocateTile_TransientManagerErrorIsRetryable(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	user := storetest.SeedUser(t, st, "alice")
 

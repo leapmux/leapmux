@@ -46,6 +46,8 @@ func marshalJSON(t *testing.T, v any) []byte {
 }
 
 func TestOutputTodos_TodoWriteSnapshotPersists(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	body := marshalJSON(t, map[string]any{
 		"type": "assistant",
@@ -76,6 +78,8 @@ func TestOutputTodos_TodoWriteSnapshotPersists(t *testing.T) {
 }
 
 func TestOutputTodos_TaskCreateInsertsRowAfterResult(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	// 1. Persist the tool_use side first (so the result-side lookup
 	//    finds it via GetAgentMessageBySpanIDAndSource).
@@ -125,6 +129,8 @@ func TestOutputTodos_TaskCreateInsertsRowAfterResult(t *testing.T) {
 // `cache.rows`, which is seeded from this query and appended-at-tail
 // for incremental inserts.
 func TestOutputTodos_ListAgentTodosOrdersBySeqNumeric(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	const total = 12
 	for i := 1; i <= total; i++ {
@@ -180,6 +186,8 @@ func TestOutputTodos_ListAgentTodosOrdersBySeqNumeric(t *testing.T) {
 }
 
 func TestOutputTodos_TaskUpdateStatusOnlyPreservesActiveForm(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	// Seed via TaskCreate (tool_use + tool_result).
 	use := marshalJSON(t, map[string]any{
@@ -239,6 +247,8 @@ func TestOutputTodos_TaskUpdateStatusOnlyPreservesActiveForm(t *testing.T) {
 }
 
 func TestOutputTodos_TaskUpdateDeletedSoftDeletesRow(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	// Seed.
 	use := marshalJSON(t, map[string]any{
@@ -284,6 +294,8 @@ func TestOutputTodos_TaskUpdateDeletedSoftDeletesRow(t *testing.T) {
 }
 
 func TestOutputTodos_TodoWriteReplacesPriorTaskList(t *testing.T) {
+	t.Parallel()
+
 	// Most-recent-wins: a snapshot must wipe rows accumulated by Task*.
 	sink, _, listRows := setupTodoTest(t)
 	use := marshalJSON(t, map[string]any{
@@ -336,6 +348,8 @@ func TestOutputTodos_TodoWriteReplacesPriorTaskList(t *testing.T) {
 }
 
 func TestOutputTodos_CodexPlanSnapshotPopulates(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	body := marshalJSON(t, map[string]any{
 		"method": "turn/plan/updated",
@@ -355,6 +369,8 @@ func TestOutputTodos_CodexPlanSnapshotPopulates(t *testing.T) {
 }
 
 func TestOutputTodos_AcpPlanSnapshotPopulates(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	body := marshalJSON(t, map[string]any{
 		"sessionUpdate": "plan",
@@ -383,6 +399,8 @@ func TestOutputTodos_AcpPlanSnapshotPopulates(t *testing.T) {
 // completed row should be evicted and the new task inserted at the
 // tail.
 func TestOutputTodos_TaskCreateAtCapEvictsOldestCompleted(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	// Seed MaxTodos rows via TaskList snapshot. Mark the first five
 	// completed, rest in_progress, so eviction has a target.
@@ -456,6 +474,8 @@ func TestOutputTodos_TaskCreateAtCapEvictsOldestCompleted(t *testing.T) {
 // existing seq (N+1), not `len(rows)+1` (which would collide with
 // seq=N and violate `UNIQUE(agent_id, seq)`).
 func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -603,6 +623,8 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 // the new task is dropped silently (with a warn log) and the list
 // stays unchanged.
 func TestOutputTodos_TaskCreateAtCapNoTerminalDrops(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	// Seed MaxTodos in_progress rows — nothing for eviction to take.
 	tasks := make([]any, todoevents.MaxTodos)
@@ -657,6 +679,8 @@ func TestOutputTodos_TaskCreateAtCapNoTerminalDrops(t *testing.T) {
 // reissuing the delete sentinel on an already-deleted task is a
 // no-op: no second broadcast, no DB churn, status stays "deleted".
 func TestOutputTodos_TaskUpdateDeletedIsIdempotent(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	// Seed one task.
 	use := marshalJSON(t, map[string]any{
@@ -717,6 +741,8 @@ func TestOutputTodos_TaskUpdateDeletedIsIdempotent(t *testing.T) {
 // first pool. Whichever terminal row has the lower seq is the one
 // that gets evicted.
 func TestOutputTodos_TaskCreateAtCapMixedTerminalEvictsOldest(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	// Seed MaxTodos rows. Layout:
 	//   index 0  → completed (oldest terminal — should be evicted)
@@ -792,6 +818,8 @@ func TestOutputTodos_TaskCreateAtCapMixedTerminalEvictsOldest(t *testing.T) {
 // the oldest terminal row is a deleted one, it's the row that's
 // evicted to make room for the new task.
 func TestOutputTodos_TaskCreateAtCapEvictsOldestDeleted(t *testing.T) {
+	t.Parallel()
+
 	sink, _, listRows := setupTodoTest(t)
 	// Seed MaxTodos in_progress rows except the first, which is
 	// "deleted" (the oldest tombstone). The eviction predicate must

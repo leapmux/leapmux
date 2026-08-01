@@ -21,6 +21,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -144,6 +145,20 @@ type Service struct {
 	// access safe by construction rather than by convention. nil in tests that
 	// never call RegisterAll; Shutdown's nil guard covers those.
 	tunnels atomic.Pointer[tunnelManager]
+
+	// shuttingDown is set as Shutdown's FIRST act and never cleared -- the
+	// process is on its way out.
+	//
+	// Shutdown documents a precondition ("callers must have already stopped
+	// dispatching new Open/Close requests") that nothing enforced: both entry
+	// points deliberately keep the Hub stream live ACROSS Shutdown so its
+	// broadcasts can leave, and the dispatcher has no gate. So an OpenTerminal
+	// arriving during the drains spawned a PTY that installed after both
+	// disconnect-notice sweeps -- an orphaned shell with no notice -- and did
+	// `wg.Add(1)` on the startup WaitGroup that WaitForInFlight was already
+	// inside, which is a documented sync.WaitGroup misuse rather than merely a
+	// missed message. The tab-opening handlers refuse once it is set.
+	shuttingDown atomic.Bool
 
 	// stopBackgroundLoops stops the service's background convergence loops (today
 	// the orphan reconciler) and blocks until an in-flight pass returns. Assigned
@@ -527,6 +542,29 @@ func (svc *Service) RestoreState() {
 // stopped dispatching new OpenAgent/OpenTerminal/CloseAgent/CloseTerminal
 // requests; otherwise the Wait calls below can race with a fresh Add.
 func (svc *Service) Shutdown() {
+	// Close the door before anything else, so the drains below are draining a
+	// set that can no longer grow. See the field's comment for what got in
+	// otherwise.
+	svc.shuttingDown.Store(true)
+
+	// The user-visible goodbye goes FIRST, before anything that can block.
+	//
+	// This broadcast is the only chance a browser has to learn its terminal
+	// died -- the process is about to exit, so there is no replay afterwards.
+	// Everything below is about leaving the DB and filesystem consistent, and
+	// the drains in particular can park for tens of seconds on an agent startup
+	// that is still handshaking with its CLI. Long enough, under load, for the
+	// Hub's idle timeout to declare this worker gone and tear down its channels
+	// -- after which the notice is written to a stream nobody is relaying and
+	// the terminal in the browser simply stops, with no error anywhere. Sending
+	// first costs the drains nothing and is what makes the notice reliable.
+	//
+	// `notified` carries the ids the first pass stamped over to the second, so
+	// "exactly once per terminal" is a property of the sweep rather than of
+	// what the screen bytes happen to end with. See broadcastTerminalsDisconnected.
+	notified := make(map[string]struct{})
+	svc.broadcastTerminalsDisconnected(notified)
+
 	// Stop the background convergence loops FIRST, and before the drains below.
 	//
 	// The orphan reconciler runs teardowns of its own (Close*TabForReconcile ->
@@ -567,14 +605,41 @@ func (svc *Service) Shutdown() {
 		svc.PrivateEvents.Stop()
 	}
 
+	// Re-run after the drains: a terminal whose startup was still in flight
+	// above is only in the manager now, so the first pass could not have seen
+	// it. Terminals the first pass already stamped are skipped by id.
+	svc.broadcastTerminalsDisconnected(notified)
+}
+
+// broadcastTerminalsDisconnected appends the "[Worker disconnected]" notice to
+// every live terminal's screen, which both persists it and pushes it to
+// subscribers.
+//
+// `notified` is the set of terminal ids an earlier pass in the same shutdown
+// already stamped; ids in it are skipped and ids stamped here are added. It
+// exists because Shutdown sweeps twice and persistTerminalOnExit's own
+// idempotency check is `bytes.HasSuffix(screen, terminalExitedNoticeSuffix)`,
+// which only holds while the screen STOPS at the notice. Shutdown does not stop
+// the PTYs, so a terminal running a build or a `tail -f` appends more output
+// between the two passes -- across stopBackgroundLoops, two WaitForInFlight
+// drains that can park for tens of seconds, Cleanup.Wait and the tunnel/private-
+// event stops. The suffix check then fails and the user gets the notice twice
+// with live output sandwiched between. Tracking ids makes the guard independent
+// of what the terminal did in between.
+func (svc *Service) broadcastTerminalsDisconnected(notified map[string]struct{}) {
 	for _, tid := range svc.Terminals.ListTerminalIDs() {
+		if _, done := notified[tid]; done {
+			continue
+		}
 		// Already-exited terminals were persisted with their real exit
 		// code by makeTerminalExitFn; don't clobber it with the shutdown
 		// sentinel.
 		if svc.Terminals.IsExited(tid) {
 			continue
 		}
-		svc.persistTerminalOnExit(tid, exitCodeUnknown)
+		if svc.persistTerminalOnExit(tid, exitCodeUnknown) {
+			notified[tid] = struct{}{}
+		}
 	}
 }
 
@@ -648,6 +713,22 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 		// so append can extend it directly without aliasing the manager's buffer.
 		screen = append(screen, notice...)
 	}
+	// Re-bind the row's own closed_at, the way the title-update path does.
+	// UpsertTerminal's DO UPDATE assigns `closed_at = excluded.closed_at`, so
+	// leaving the field at its zero value writes NULL and RESURRECTS a tab the
+	// user just closed: the shutdown sweep snapshots a terminal, a CloseTerminal
+	// handler still on the dispatcher goroutine runs RemoveTerminal +
+	// Queries.CloseTerminal, and this upsert then lands after it. The terminal
+	// comes back as live on the next worker start and its screen blob falls out
+	// of reach of DeleteClosedTerminalsBefore. A read error leaves the field
+	// zero, which is the pre-close state and the same answer as before.
+	var closedAt sqltime.SQLiteNullTime
+	if row, err := svc.Queries.GetTerminalForReady(bgCtx(), tid); err == nil {
+		closedAt = row.ClosedAt
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		slog.Warn("failed to read terminal closed_at before persisting exit",
+			"terminal_id", tid, "error", err)
+	}
 	// Shell column is INSERT-only (see UpsertTerminal SQL): UPDATE
 	// preserves whatever was written at OpenTerminal time, so passing
 	// the zero value here is a no-op on the existing row.
@@ -661,6 +742,7 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 		Rows:          int64(src.Rows),
 		Screen:        screen,
 		ExitCode:      int64(exitCode),
+		ClosedAt:      closedAt,
 	}
 	if err := svc.Queries.UpsertTerminal(bgCtx(), params); err != nil {
 		slog.Error("failed to save terminal on exit", "terminal_id", tid, "error", err)
@@ -1121,6 +1203,19 @@ func sendStreamError(sender channel.ResponseWriter, code codes.Code, msg string)
 		ErrorCode:    int32(code),
 		ErrorMessage: msg,
 	})
+}
+
+// refuseIfShuttingDown rejects a tab-opening request once Shutdown has begun,
+// and reports whether it did. The three handlers that call `begin` on a startup
+// registry use it: an explicit error is a better answer than a tab whose
+// process is about to be killed unannounced, and it is what makes Shutdown's
+// documented "no new requests" precondition true rather than merely asserted.
+func (svc *Service) refuseIfShuttingDown(sender channel.ResponseWriter) bool {
+	if !svc.shuttingDown.Load() {
+		return false
+	}
+	sendFailedPrecondition(sender, "worker is shutting down")
+	return true
 }
 
 // sendFailedPrecondition sends a FailedPrecondition error response.

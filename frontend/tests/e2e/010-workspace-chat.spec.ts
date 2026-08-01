@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { expectAssistantAnswer } from './helpers/ui'
+import { expectAssistantAnswer, workspaceRow } from './helpers/ui'
 
 /**
  * Ensure at least one agent tab exists after workspace creation
@@ -48,7 +48,7 @@ test.describe('Workspace Chat', () => {
 
   test('should show workspace in sidebar after creation', async ({ page, authenticatedWorkspace }) => {
     // Workspace should be visible in the sidebar (fixture auto-creates workspace)
-    await expect(page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)).toBeVisible()
+    await expect(workspaceRow(page, authenticatedWorkspace.workspaceId)).toBeVisible()
   })
 
   test('should rename a tab via double-click', async ({ page, authenticatedWorkspace }) => {

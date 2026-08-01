@@ -61,6 +61,21 @@ type startupEntry struct {
 	// most-recent signal — takePendingResize under the lock is the
 	// authoritative read.
 	resizeSignal chan struct{}
+	// closeDisposition / closeRaced record what a close that landed on this
+	// IN-FLIGHT startup decided about the worktree, and that such a close
+	// happened at all.
+	//
+	// They live on the entry rather than in a map keyed by id, because
+	// cancelAndClear REMOVES the entry and the startup goroutine reads them
+	// afterwards -- holding the entry is what keeps them reachable, and it is
+	// what makes them impossible to strand. A parallel map needed two guards to
+	// stay correct (skip a FAILED entry, and drop the id from fail()'s evict
+	// timer), because fail() installs a FRESH entry for the same id while the
+	// goroutine still holds the old one. With the state on the entry that falls
+	// out for free: a close after fail() writes to the new entry, which no
+	// goroutine is reading.
+	closeDisposition closeWorktreeDisposition
+	closeRaced       bool
 }
 
 // startupCore is the shared state-machine for tracking a set of in-flight
@@ -83,21 +98,30 @@ func newStartupCore() startupCore {
 	return startupCore{entries: make(map[string]*startupEntry)}
 }
 
-// begin records an entry in STARTING state and adds one to the in-flight
-// counter. The cancel function should be the one tied to the startup
-// goroutine's context. Must be paired with a deferred finish() inside
-// the startup goroutine.
-func (r *startupCore) begin(id string, cancel context.CancelFunc) {
+// begin records an entry in STARTING state, adds one to the in-flight counter,
+// and returns the entry as the startup goroutine's HANDLE. The cancel function
+// should be the one tied to that goroutine's context. Must be paired with a
+// deferred finish() inside the goroutine.
+//
+// The handle is what lets a close reach the goroutine after cancelAndClear has
+// removed the entry from the map: the goroutine reads its own object, not an
+// id-keyed lookup that a later fail() may have replaced.
+func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.entries[id] = &startupEntry{cancel: cancel, resizeSignal: make(chan struct{}, 1)}
+	entry := &startupEntry{cancel: cancel, resizeSignal: make(chan struct{}, 1)}
+	r.entries[id] = entry
 	r.wg.Add(1)
+	return entry
 }
 
-// finish marks one startup goroutine as returned. Always called via
-// `defer` at the top of runAgentStartup / runTerminalStartup so it fires
-// regardless of which branch the goroutine exits through (succeed, fail,
-// close-detected, panic recovery elsewhere, …).
+// finish marks one startup goroutine as returned. Always called via `defer` at
+// the top of runAgentStartup / runTerminalStartup so it fires regardless of
+// which branch the goroutine exits through (succeed, fail, close-detected,
+// panic recovery elsewhere, …).
+//
+// It has no cleanup to do beyond the counter: the close disposition lives on
+// the handle the goroutine is about to drop, so it is collected with it.
 func (r *startupCore) finish() {
 	r.wg.Done()
 }
@@ -161,10 +185,22 @@ func (r *startupCore) fail(id, startupError string) {
 // cancelAndClear triggers the cancel func if one is registered and removes
 // the entry. Called from Close handlers so an in-flight startup is torn
 // down along with the agent/terminal.
-func (r *startupCore) cancelAndClear(id string) {
+//
+// disposition is stamped on the entry that was in the map, which is the handle
+// the startup goroutine holds -- so it reaches that goroutine and lets it
+// honour this close's worktree decision instead of treating its own
+// cancellation as a failed startup. When nothing was in flight there is no
+// entry and nothing to record; when the startup already FAILED, fail() has
+// installed a different entry and this stamps that one, which no goroutine is
+// reading. Both fall out of the handle rather than needing a guard.
+func (r *startupCore) cancelAndClear(id string, disposition closeWorktreeDisposition) {
 	r.mu.Lock()
 	entry := r.entries[id]
 	delete(r.entries, id)
+	if entry != nil {
+		entry.closeDisposition = disposition
+		entry.closeRaced = true
+	}
 	r.mu.Unlock()
 	if entry == nil {
 		return
@@ -270,6 +306,22 @@ func (r *startupCore) clearPendingResize(id string) {
 		default:
 		}
 	}
+}
+
+// dispositionOf reports what a close that landed during THIS startup decided
+// about the worktree, and whether such a close happened at all.
+//
+// ok=false means no close raced this startup, so the caller is on a genuine
+// startup-failure path and owns the rollback itself. That distinction is
+// load-bearing: without it a KEEP close and an uncontested failure both read as
+// the zero value, and one of the two is always handled wrongly.
+func (r *startupCore) dispositionOf(h *startupEntry) (closeWorktreeDisposition, bool) {
+	if h == nil {
+		return keepWorktreeOnClose, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return h.closeDisposition, h.closeRaced
 }
 
 // snapshot returns (failed, startupError, startupMessage, ok) for the given id.

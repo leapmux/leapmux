@@ -21,8 +21,14 @@ test.describe('Terminal Disconnection', () => {
       await expect(terminalTab).toBeVisible()
       await terminalTab.click()
 
-      // Wait for the terminal to be ready (xterm.js renders)
-      await page.waitForTimeout(2000)
+      // Wait for the terminal to be genuinely ready -- a shell prompt in the
+      // xterm buffer -- not a flat 2s. Stopping the worker while the terminal
+      // session is still being set up tears it down before it has a buffer to
+      // write the disconnect notice into, and 2s is not enough on a box running
+      // eight of these at once.
+      await expect(async () => {
+        expect(await getTerminalText(page)).toMatch(/[$%#>]\s*$/)
+      }).toPass()
 
       // Stop the worker
       await stopWorker()

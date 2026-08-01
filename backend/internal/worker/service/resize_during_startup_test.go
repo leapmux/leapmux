@@ -31,6 +31,8 @@ import (
 // Manager, so the frontend's size is visible to the first process that
 // queries TIOCGWINSZ (e.g. vim on its first draw).
 func TestResizeTerminal_DuringStartup_LandsOnPTY(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 
 	// Gate the real StartTerminal behind a channel so the test can

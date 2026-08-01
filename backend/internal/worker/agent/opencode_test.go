@@ -50,6 +50,8 @@ func newOpenCodeAgentForRPCWithRequestResponder(t *testing.T, respond func(req r
 }
 
 func TestBuildSessionRequest_NewSession(t *testing.T) {
+	t.Parallel()
+
 	method, params := buildACPSessionRequest("", "/workspace", acpMethodSessionNew, openCodeMethodSessionResume)
 	assert.Equal(t, acpMethodSessionNew, method)
 
@@ -60,6 +62,8 @@ func TestBuildSessionRequest_NewSession(t *testing.T) {
 }
 
 func TestBuildSessionRequest_ResumeSession(t *testing.T) {
+	t.Parallel()
+
 	method, params := buildACPSessionRequest("session-123", "/workspace", acpMethodSessionNew, openCodeMethodSessionResume)
 	assert.Equal(t, openCodeMethodSessionResume, method)
 
@@ -70,6 +74,8 @@ func TestBuildSessionRequest_ResumeSession(t *testing.T) {
 }
 
 func TestOpenCodeConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
+	t.Parallel()
+
 	agent := &OpenCodeAgent{}
 	agent.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 	err := agent.configurePrimaryAgents([]acpModeInfo{
@@ -84,6 +90,8 @@ func TestOpenCodeConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 }
 
 func TestOpenCodeConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newOpenCodeAgentForRPC(t)
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild},
@@ -99,6 +107,8 @@ func TestOpenCodeConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 }
 
 func TestOpenCodeConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newOpenCodeAgentForRPC(t)
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild},
@@ -111,6 +121,8 @@ func TestOpenCodeConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testin
 }
 
 func TestOpenCodeUpdateSettingsSendsSessionSetMode(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newOpenCodeAgentForRPC(t)
 	agent.availablePrimaryAgents = []*leapmuxv1.AvailableOption{
 		{Id: OpenCodePrimaryAgentBuild, Name: OpenCodePrimaryAgentBuild},
@@ -127,6 +139,8 @@ func TestOpenCodeUpdateSettingsSendsSessionSetMode(t *testing.T) {
 }
 
 func TestOpenCodeClearContextReappliesModelAndPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newOpenCodeAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{"sessionId":"session-2"}`)
@@ -158,6 +172,8 @@ func TestOpenCodeClearContextReappliesModelAndPrimaryAgent(t *testing.T) {
 }
 
 func TestOpenCodeCurrentSettingsExposesPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent := &OpenCodeAgent{acpBase: acpBase{modeChannel: modeChannelPrimaryAgent, model: "openai/gpt-5", availableModels: []*ModelInfo{{Id: "openai/gpt-5", DisplayName: "GPT-5"}}, currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
 	groups := agent.OptionGroups()
 	require.Equal(t, "openai/gpt-5", optionids.CurrentValue(groups, OptionIDModel))
@@ -165,6 +181,8 @@ func TestOpenCodeCurrentSettingsExposesPrimaryAgent(t *testing.T) {
 }
 
 func TestOpenCodeAvailablePrimaryAgentGroupFallsBack(t *testing.T) {
+	t.Parallel()
+
 	// configure sets the channel and acpStart seeds the static fallback list from the provider's
 	// registration; OptionGroups serves that fallback before the session reports a primary-agent
 	// catalog. This test wires the acpBase directly, so it sets secondaryFallback itself.
@@ -203,6 +221,8 @@ func openCodeEffortWrites(requests []recordedRequest) []recordedRequest {
 // displayed value -- so the running session and the surfaced group agree. "high" is offered, so
 // chooseDefaultEffort picks it.
 func TestOpenCodeModelSwitchRaisesNoneEffortToHigh(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
 		if req.Method != acpMethodSessionSetConfigOption {
 			return json.RawMessage(`{}`)
@@ -242,6 +262,8 @@ func TestOpenCodeModelSwitchRaisesNoneEffortToHigh(t *testing.T) {
 // matched on category alone, so a category-less effort axis slipped past the override and the
 // model stayed reasoning-disabled the instant it was selected.
 func TestOpenCodeModelSwitchRaisesNoneEffortByIDWithoutCategory(t *testing.T) {
+	t.Parallel()
+
 	// Identical to effortAxisResponse but with NO `category` field -- the axis is recognizable
 	// only by its well-known id "effort".
 	effortNoCategory := func(current string) json.RawMessage {
@@ -279,6 +301,8 @@ func TestOpenCodeModelSwitchRaisesNoneEffortByIDWithoutCategory(t *testing.T) {
 // default: when the daemon reports a real level on a model switch, that is the daemon's choice
 // and must be left untouched (no override write).
 func TestOpenCodeModelSwitchKeepsReportedEffort(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
 		if req.Method == acpMethodSessionSetConfigOption && req.Params["configId"] == acpConfigOptionIDModel {
 			return effortAxisResponse("low")
@@ -299,6 +323,8 @@ func TestOpenCodeModelSwitchKeepsReportedEffort(t *testing.T) {
 // value untouched when the axis offers no ranked level above none/off: chooseDefaultEffort has
 // nothing to install, so we must not invent one (and must not push an empty write).
 func TestOpenCodeModelSwitchLeavesNoneWhenNoRealLevel(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
 		if req.Method == acpMethodSessionSetConfigOption && req.Params["configId"] == acpConfigOptionIDModel {
 			// The surfaced effort axis offers only none/off -- no real level to raise to.
@@ -320,6 +346,8 @@ func TestOpenCodeModelSwitchLeavesNoneWhenNoRealLevel(t *testing.T) {
 // model-write path. A user who DELIBERATELY selects "none" (an explicit effort edit, which
 // routes through setConfigOption) must be honored, not bounced back up.
 func TestOpenCodeExplicitNoneEffortNotRaised(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newOpenCodeAgentForRPCWithRequestResponder(t, func(req recordedRequest) json.RawMessage {
 		if req.Method == acpMethodSessionSetConfigOption && req.Params["configId"] == OptionIDEffort {
 			value, _ := req.Params["value"].(string)

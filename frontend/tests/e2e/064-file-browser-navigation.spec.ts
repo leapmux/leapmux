@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { loginViaToken, openWorkspace, treeRow } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -19,7 +19,7 @@ test.describe('File Browser Navigation', () => {
 
       // Wait for file entries to load (working dir is the frontend dir)
       // package.json should exist in the frontend directory
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -70,7 +70,7 @@ test.describe('File Browser Navigation', () => {
       await expect(page.getByText('app.tsx')).not.toBeVisible()
 
       // The root-level entries should still be visible
-      await expect(page.getByText('package.json')).toBeVisible()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

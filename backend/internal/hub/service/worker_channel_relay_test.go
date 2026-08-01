@@ -13,6 +13,8 @@ import (
 )
 
 func TestProcessWorkerMessage_RoutingFailureClosesChannelAndChunkState(t *testing.T) {
+	t.Parallel()
+
 	channels := channelmgr.New(0)
 	channels.RegisterWithAuthInfo("channel", "worker", "user", channelmgr.AuthInfo{}, nil)
 	var sent []*leapmuxv1.ConnectResponse
@@ -42,6 +44,8 @@ func TestProcessWorkerMessage_RoutingFailureClosesChannelAndChunkState(t *testin
 }
 
 func TestProcessWorkerMessage_RejectsChannelOwnedByAnotherWorker(t *testing.T) {
+	t.Parallel()
+
 	channels := channelmgr.New(0)
 	channels.RegisterWithAuthInfo("channel", "owner", "user", channelmgr.AuthInfo{}, nil)
 	conn := &workermgr.Conn{WorkerID: "attacker", SendFn: func(*leapmuxv1.ConnectResponse) error {

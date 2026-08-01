@@ -82,6 +82,8 @@ func newUnixSocketAuthClient(t *testing.T, st store.Store, interceptor connect.I
 }
 
 func TestLocalSocket_MultiUser_RejectsUnauthenticated(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 
@@ -95,6 +97,8 @@ func TestLocalSocket_MultiUser_RejectsUnauthenticated(t *testing.T) {
 }
 
 func TestLocalSocket_SoloMode_AutoAuths(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
 	soloUser, err := auth.LoadSoloUser(context.Background(), st)
@@ -110,6 +114,8 @@ func TestLocalSocket_SoloMode_AutoAuths(t *testing.T) {
 }
 
 func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
+	t.Parallel()
+
 	// The plan's design: multi-user hub on a unix socket accepts a
 	// freshly-issued lmx_* bearer the same way it would over TCP. This
 	// is what makes "headless service accounts on a multi-user hub"
@@ -145,6 +151,8 @@ func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
 }
 
 func TestLocalSocket_MultiUser_RejectsRevokedBearer(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 

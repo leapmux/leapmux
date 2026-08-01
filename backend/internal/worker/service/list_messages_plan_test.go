@@ -12,6 +12,8 @@ import (
 // cursor/limit clamps without a DB, complementing the DB-integration coverage in
 // TestListAgentMessages_AnchorPaging.
 func TestResolveMessagePage(t *testing.T) {
+	t.Parallel()
+
 	const (
 		latest = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST
 		oldest = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_OLDEST
@@ -107,6 +109,8 @@ func TestResolveMessagePage(t *testing.T) {
 // (which must NOT become AFTER, or resolveMessagePage would return the OLDEST page and
 // splice a gap in front of the latest window).
 func TestReplayPageAnchor(t *testing.T) {
+	t.Parallel()
+
 	const (
 		latest  = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST
 		after   = leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_AFTER

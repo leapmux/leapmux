@@ -11,6 +11,7 @@ import {
   closeAgentViaAPI,
   createGitRepo,
   createWorkspaceWithWorktreeViaAPI,
+  expectRepoBranch,
   inspectLastTabCloseViaAPI,
   openNewWorkspaceDialog,
   setWorkingDir,
@@ -18,6 +19,7 @@ import {
   waitForAgentsViaAPI,
   waitForAppPageReady,
   waitForPathDeleted,
+  waitForPathExists,
   waitForWorker,
 } from './helpers/worktree'
 
@@ -183,9 +185,9 @@ test.describe('Worktree Git Modes', () => {
     // Creating a workspace activates it in place; there is no URL to check.
     await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
 
-    // Verify the repo is now on the feature-switch branch
-    const currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim()
-    expect(currentBranch).toBe('feature-switch')
+    // Verify the repo is now on the feature-switch branch. Polled: the dialog
+    // closing means the RPC returned, and the checkout runs after that.
+    await expectRepoBranch(repoDir, 'feature-switch')
   })
 
   test('switch-to-branch mode via API: verifies checkout on disk', async ({
@@ -207,11 +209,7 @@ test.describe('Worktree Git Modes', () => {
       checkoutBranch: 'api-switch-target',
     })
 
-    // The checkout runs on the worker's async startup goroutine, so OpenAgent has
-    // already answered by the time we get here. Poll rather than read once.
-    await expect.poll(() =>
-      execSync('git rev-parse --abbrev-ref HEAD', { cwd: repoDir }).toString().trim(),
-    ).toBe('api-switch-target')
+    await expectRepoBranch(repoDir, 'api-switch-target')
   })
 
   test('switch-to-branch with dirty workdir shows warning in UI', async ({
@@ -532,8 +530,11 @@ test.describe('Worktree Git Modes', () => {
     const options = await baseBranchSelect.locator('option').allTextContents()
     expect(options.some(o => o.includes('feature-ui-base'))).toBe(true)
 
-    // Select feature-ui-base as base branch
+    // Select feature-ui-base as base branch, and confirm it stuck before
+    // submitting: a Create that races the selection silently branches from the
+    // default base, which surfaces only as a missing file much later.
     await baseBranchSelect.selectOption('feature-ui-base')
+    await expect(baseBranchSelect).toHaveValue('feature-ui-base')
 
     // Set a branch name and submit
     const branchInput = dialog.locator('input[type="text"][placeholder="feature-branch"]')
@@ -545,9 +546,11 @@ test.describe('Worktree Git Modes', () => {
     // Creating a workspace activates it in place; there is no URL to check.
     await expect(page.locator('[data-testid^="workspace-item-"][data-active="true"]')).toHaveCount(1)
 
-    // Verify the worktree was created from the feature branch
+    // Verify the worktree was created from the feature branch. Polled: the
+    // dialog closing means the RPC returned, and the checkout populates the
+    // tree just after that.
     const worktreeDir = join(realDataDir, 'test-repo-base-branch-ui-worktrees', 'from-feature-base')
-    expect(existsSync(worktreeDir)).toBe(true)
-    expect(existsSync(join(worktreeDir, 'feature.txt'))).toBe(true)
+    await waitForPathExists(worktreeDir)
+    await waitForPathExists(join(worktreeDir, 'feature.txt'))
   })
 })

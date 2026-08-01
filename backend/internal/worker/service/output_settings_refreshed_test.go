@@ -74,6 +74,8 @@ func newRefreshTestFixture(t *testing.T, seed settingsSeed) refreshTestFixture {
 // the no-op path avoids redundant DB churn and avoids waking every
 // connected frontend to re-render identical settings.
 func TestPersistSettingsRefresh_SkipsWhenUnchanged(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{
 		Model:          "opus",
 		Effort:         "high",
@@ -103,6 +105,8 @@ func TestPersistSettingsRefresh_SkipsWhenUnchanged(t *testing.T) {
 // positive path: when at least one field changes, the row is rewritten and
 // a StatusChange event reaches watchers.
 func TestPersistSettingsRefresh_WritesAndBroadcastsOnChange(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{
 		Model:          "opus",
 		Effort:         "auto",
@@ -129,6 +133,8 @@ func TestPersistSettingsRefresh_WritesAndBroadcastsOnChange(t *testing.T) {
 // first CAS misses (the row moved on), and the retry re-merges onto the current row, so
 // both changes survive instead of the last full-map write winning.
 func TestPersistSettingsRefresh_CASPreservesConcurrentWrite(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "high"})
 	ctx := context.Background()
 
@@ -167,6 +173,8 @@ func TestPersistSettingsRefresh_CASPreservesConcurrentWrite(t *testing.T) {
 // but it must re-assert only SET (non-empty) keys -- never re-apply the stale clear, which would
 // DELETE a value a concurrent writer set after the snapshot.
 func TestPersistSettingsRefresh_CASStaleClearDoesNotClobberConcurrentSet(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "high"})
 	ctx := context.Background()
 
@@ -206,6 +214,8 @@ func TestPersistSettingsRefresh_CASStaleClearDoesNotClobberConcurrentSet(t *test
 // re-ASSERT case the path exists for. A non-empty refresh value the agent confirmed must still be
 // written back over a key a concurrent writer cleared.
 func TestPersistSettingsRefresh_CASReassertStillAppliesOverConcurrentClear(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "high"})
 	ctx := context.Background()
 
@@ -239,6 +249,8 @@ func TestPersistSettingsRefresh_CASReassertStillAppliesOverConcurrentClear(t *te
 // on the cleared key. Before the fix, the stale-clear narrowing fired only in the no-op branch,
 // so this mixed delta clobbered the concurrent set.
 func TestPersistSettingsRefresh_CASMixedSetAndStaleClearDoesNotClobber(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "high"})
 	ctx := context.Background()
 
@@ -284,6 +296,8 @@ func TestPersistSettingsRefresh_CASMixedSetAndStaleClearDoesNotClobber(t *testin
 // a key the snapshot DOES hold is genuine and must still delete that key even when paired with a
 // set, so the stale-clear narrowing doesn't over-suppress real clears.
 func TestPersistSettingsRefresh_CASGenuineClearAlongsideSetStillApplies(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "high", PermissionMode: "plan"})
 	ctx := context.Background()
 
@@ -318,6 +332,8 @@ func TestPersistSettingsRefresh_CASGenuineClearAlongsideSetStillApplies(t *testi
 // runAgentStartup's final handoff persists the confirmed settings with the
 // user's change preserved (and relaunches to apply it).
 func TestPersistSettingsRefresh_SkipsWriteDuringStartup(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{
 		Model:          "opus[1m]", // the model the user switched to mid-startup
 		Effort:         "auto",
@@ -340,6 +356,8 @@ func TestPersistSettingsRefresh_SkipsWriteDuringStartup(t *testing.T) {
 }
 
 func TestPersistSettingsRefresh_PreservesPermissionModeWhenUnreported(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{
 		Model:          "opus",
 		Effort:         "auto",
@@ -365,6 +383,8 @@ func TestPersistSettingsRefresh_PreservesPermissionModeWhenUnreported(t *testing
 // permission-mode providers pass nil here; without this they would clear the row's
 // extra_settings to "{}".
 func TestPersistSettingsRefresh_PreservesExtrasWhenUnreported(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{
 		Model:          "opus",
 		PermissionMode: "default",
@@ -390,6 +410,8 @@ func TestPersistSettingsRefresh_PreservesExtrasWhenUnreported(t *testing.T) {
 // model switch would clobber a stored effort (e.g. "auto", set by a prior
 // UpdateAgentSettings model change) down to "".
 func TestPersistSettingsRefresh_PreservesEffortWhenUnreported(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{
 		Model:          "openai/gpt-4o",
 		Effort:         "auto",
@@ -417,6 +439,8 @@ func TestPersistSettingsRefresh_PreservesEffortWhenUnreported(t *testing.T) {
 // an empty model here; without the keep-stored rule that would clobber the stored
 // model to "".
 func TestPersistSettingsRefresh_PreservesModelWhenUnreported(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{
 		Model:          "openai/gpt-5",
 		PermissionMode: "default",
@@ -442,6 +466,8 @@ func TestPersistSettingsRefresh_PreservesModelWhenUnreported(t *testing.T) {
 // gated on "" only, so providers that do report effort (Codex/Pi/Claude) are
 // unaffected.
 func TestPersistSettingsRefresh_ConcreteEffortOverwrites(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{
 		Model:          "gpt-5-codex",
 		Effort:         "auto",
@@ -465,6 +491,8 @@ func TestPersistSettingsRefresh_ConcreteEffortOverwrites(t *testing.T) {
 // emits a cleared surfaced option as ""), so a provider that manages an extra can
 // still remove it.
 func TestPersistSettingsRefresh_ClearsExtraWithEmptyValue(t *testing.T) {
+	t.Parallel()
+
 	f := newRefreshTestFixture(t, settingsSeed{
 		Model:          "opus",
 		PermissionMode: "default",
@@ -492,6 +520,8 @@ func TestPersistSettingsRefresh_ClearsExtraWithEmptyValue(t *testing.T) {
 // row, so the post-exit offline read surfaces it -- but a transiently EMPTY live catalog
 // must never wipe the persisted one.
 func TestPersistCatalogIfChanged(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -554,6 +584,8 @@ func TestPersistCatalogIfChanged(t *testing.T) {
 // persists the catalog via BroadcastStatusActive never runs. Without persisting here the grown
 // catalog is lost from the column and the post-exit offline picker serves the stale, narrower one.
 func TestPersistSettingsRefresh_PersistsGrownCatalog(t *testing.T) {
+	t.Parallel()
+
 	const claude = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "auto", PermissionMode: "default"})
 	ctx := context.Background()
@@ -601,6 +633,8 @@ func TestPersistSettingsRefresh_PersistsGrownCatalog(t *testing.T) {
 // handshake, a refresh must NOT write the grown catalog. runAgentStartup's final handoff persists
 // the confirmed catalog atomically, and a mid-startup write here could clobber a user change.
 func TestPersistSettingsRefresh_SkipsCatalogPersistDuringStartup(t *testing.T) {
+	t.Parallel()
+
 	const claude = leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "auto", PermissionMode: "default"})
 	ctx := context.Background()

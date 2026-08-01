@@ -13,9 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cenkalti/backoff/v6"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/remote"
 	"github.com/leapmux/leapmux/internal/cli/remote/streamevents"
+	"github.com/leapmux/leapmux/internal/util/backoffutil"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 )
 
@@ -298,11 +300,19 @@ func decodeJSON(data []byte) (any, bool) {
 // where the old duration-only rule kept reconnect latency pinned high through a
 // run of sub-maxBackoff flaps.
 type reconnectBackoff struct {
-	cur, initial, max time.Duration
+	inner *backoff.ExponentialBackOff
+	// pending is the wait the NEXT afterSession returns. It exists because this
+	// loop's contract is "wait the current value, then grow", whereas
+	// NextBackOff grows as it returns -- so the first value has to be taken
+	// eagerly and each later call returns what the previous one produced.
+	pending time.Duration
 }
 
-func newReconnectBackoff(initial, max time.Duration) reconnectBackoff {
-	return reconnectBackoff{cur: initial, initial: initial, max: max}
+func newReconnectBackoff(initial, maxInterval time.Duration) reconnectBackoff {
+	// Deterministic (no jitter): the follower is one process reconnecting to
+	// its own worker, not a fleet, and the sequence is asserted directly.
+	b := backoffutil.NewCapped(initial, maxInterval, 0)
+	return reconnectBackoff{inner: b, pending: b.NextBackOff()}
 }
 
 // afterSession returns how long to wait before the next reconnect and advances
@@ -310,20 +320,17 @@ func newReconnectBackoff(initial, max time.Duration) reconnectBackoff {
 // event, otherwise wait the current value and double it (capped at max). The
 // wait uses the post-reset value, then grows -- matching the prior loop's
 // "reset, wait, double" order.
+//
+// The cap is the shared helper's now, which is the point: the clamp this used
+// to do by hand existed because `cur` overshoots `max` whenever `max` is not a
+// power-of-two multiple of the floor (cur=4s, max=5s -> 8s).
 func (b *reconnectBackoff) afterSession(deliveredEvent bool) time.Duration {
 	if deliveredEvent {
-		b.cur = b.initial
+		b.inner.Reset()
+		b.pending = b.inner.NextBackOff()
 	}
-	wait := b.cur
-	if b.cur < b.max {
-		// Clamp after doubling: `cur` can overshoot `max` when `max` is not a
-		// power-of-two multiple of `initial` (e.g. cur=4s, max=5s -> 8s), and the
-		// next afterSession would then return a wait ABOVE the documented cap.
-		b.cur *= 2
-		if b.cur > b.max {
-			b.cur = b.max
-		}
-	}
+	wait := b.pending
+	b.pending = b.inner.NextBackOff()
 	return wait
 }
 

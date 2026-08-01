@@ -17,6 +17,8 @@ import (
 // lower its recorded live-tail seq when the deleted row was at/beyond that tail.
 // A second delete of the same id is an idempotent no-op: no error, no broadcast.
 func TestDeleteAgentMessage_BroadcastsDeletedSeq(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -79,6 +81,8 @@ func TestDeleteAgentMessage_BroadcastsDeletedSeq(t *testing.T) {
 // row drops it to the prior row's seq; deleting a non-tail row leaves it at the
 // unchanged tail.
 func TestDeleteAgentMessage_ReportsNewLatestSeq(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -135,6 +139,8 @@ func TestDeleteAgentMessage_ReportsNewLatestSeq(t *testing.T) {
 // Deleting an arbitrary delivered/agent row would corrupt the windowing/span
 // invariants the windowed client relies on.
 func TestDeleteAgentMessage_RejectsNonFailedUserMessage(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 

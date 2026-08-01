@@ -60,6 +60,8 @@ type zipEntry struct {
 }
 
 func TestPlanArchive_HappyPath(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")
@@ -88,6 +90,8 @@ func TestPlanArchive_HappyPath(t *testing.T) {
 }
 
 func TestPlanArchive_ZipStructureAndExactRootEntry(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")
@@ -116,6 +120,8 @@ func TestPlanArchive_ZipStructureAndExactRootEntry(t *testing.T) {
 }
 
 func TestPlanArchive_NoOpWhenPlansDirMissing(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 
@@ -131,6 +137,8 @@ func TestPlanArchive_NoOpWhenPlansDirMissing(t *testing.T) {
 }
 
 func TestPlanArchive_NoOpWhenNoOldYears(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")
@@ -147,6 +155,8 @@ func TestPlanArchive_NoOpWhenNoOldYears(t *testing.T) {
 }
 
 func TestPlanArchive_NonYearSubdirsIgnored(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")
@@ -183,6 +193,8 @@ func makeAgentWithPlanPath(t *testing.T, queries *db.Queries, agentID, planPath 
 }
 
 func TestPlanArchive_DBSafeguardSkipsYearWithActiveAgent(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")
@@ -206,6 +218,8 @@ func TestPlanArchive_DBSafeguardSkipsYearWithActiveAgent(t *testing.T) {
 // safeguard uses literal-byte prefix matching (instr) and not GLOB/LIKE — a
 // data dir whose name contains `*` or `[` must not produce false negatives.
 func TestPlanArchive_DBSafeguardWithGlobMetacharsInDataDir(t *testing.T) {
+	t.Parallel()
+
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows reserves * and [ in filenames")
 	}
@@ -234,6 +248,8 @@ func TestPlanArchive_DBSafeguardWithGlobMetacharsInDataDir(t *testing.T) {
 }
 
 func TestPlanArchive_OrphanTmpRemoved(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")
@@ -252,6 +268,8 @@ func TestPlanArchive_OrphanTmpRemoved(t *testing.T) {
 }
 
 func TestPlanArchive_RecoverySkipWhenZipAndDirBothPresent(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")
@@ -274,6 +292,8 @@ func TestPlanArchive_RecoverySkipWhenZipAndDirBothPresent(t *testing.T) {
 }
 
 func TestPlanArchive_SymlinksSkipped(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")
@@ -298,6 +318,8 @@ func TestPlanArchive_SymlinksSkipped(t *testing.T) {
 }
 
 func TestPlanArchive_IdempotentRerun(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")
@@ -322,6 +344,8 @@ func TestPlanArchive_IdempotentRerun(t *testing.T) {
 }
 
 func TestPlanArchive_PreCanceledCtxIsCompleteNoOp(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	dataDir := t.TempDir()
 	plansDir := filepath.Join(dataDir, "plans")

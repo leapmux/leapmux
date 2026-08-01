@@ -145,6 +145,8 @@ func revokeRequest(t *testing.T, env *delegationEnv, workerAuthToken string, bod
 const testMintPropagationTimeout = 50 * time.Millisecond
 
 func TestWorkerDelegation_Mint_HappyPath(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
@@ -177,6 +179,8 @@ func TestWorkerDelegation_Mint_HappyPath(t *testing.T) {
 }
 
 func TestWorkerDelegation_Mint_RejectsMissingBearer(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	resp := mintRequest(t, env, "", map[string]any{
 		"user_id":           env.userID,
@@ -187,6 +191,8 @@ func TestWorkerDelegation_Mint_RejectsMissingBearer(t *testing.T) {
 }
 
 func TestWorkerDelegation_Mint_RejectsUnknownWorkerToken(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	resp := mintRequest(t, env, "not-a-real-worker-token", map[string]any{
 		"user_id":           env.userID,
@@ -197,6 +203,8 @@ func TestWorkerDelegation_Mint_RejectsUnknownWorkerToken(t *testing.T) {
 }
 
 func TestWorkerDelegation_Mint_RejectsMissingFields(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		// user_id missing
@@ -207,6 +215,8 @@ func TestWorkerDelegation_Mint_RejectsMissingFields(t *testing.T) {
 }
 
 func TestWorkerDelegation_Mint_RejectsTabOwnedByDifferentWorker(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 
 	// Seed a second worker (also owned by the same user) that is NOT
@@ -233,6 +243,8 @@ func TestWorkerDelegation_Mint_RejectsTabOwnedByDifferentWorker(t *testing.T) {
 }
 
 func TestWorkerDelegation_Mint_RejectsBeforeTabPropagation(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	// Mint for a tab_id that has no row yet — emulates the AddTab race
 	// resolving negatively (tab will never appear). With test-tuned
@@ -252,6 +264,8 @@ func TestWorkerDelegation_Mint_RejectsBeforeTabPropagation(t *testing.T) {
 // not fail with a hard 403. This is the "lazy-mint resolves the
 // chicken-and-egg" guarantee the plan requires.
 func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	// Give the polling loop room to observe at least a few retries
 	// before the tab is inserted.
@@ -286,6 +300,8 @@ func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
 }
 
 func TestWorkerDelegation_Mint_RejectsCrossUserMint(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 
 	// Seed a second user and try to mint for env.workerID.
@@ -306,6 +322,8 @@ func TestWorkerDelegation_Mint_RejectsCrossUserMint(t *testing.T) {
 // that state arise: the tab-ownership check passes (the worker hosts the tab),
 // so only the explicit registrant guard catches it.
 func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	ctx := context.Background()
 
@@ -352,6 +370,8 @@ func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testin
 // The message distinguishes the two paths -- "user is not the worker's
 // registrant" can only come from the check that now runs first.
 func TestWorkerDelegation_Mint_RefusesAForeignUserWithoutPolling(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	otherUserID := hubtestutil.CreateTestUser(t, env.store, "other-user-no-poll", "p")
 
@@ -376,6 +396,8 @@ func TestWorkerDelegation_Mint_RefusesAForeignUserWithoutPolling(t *testing.T) {
 }
 
 func TestWorkerDelegation_Mint_BoundsTTL(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	// Request a TTL longer than DelegationTokenTTL (1h). Handler must
 	// clamp to the max.
@@ -394,6 +416,8 @@ func TestWorkerDelegation_Mint_BoundsTTL(t *testing.T) {
 }
 
 func TestWorkerDelegation_Revoke_HappyPath(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 
 	// Mint then revoke.
@@ -428,6 +452,8 @@ func TestWorkerDelegation_Revoke_HappyPath(t *testing.T) {
 }
 
 func TestWorkerDelegation_Revoke_RejectsUnauthenticatedCall(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	resp := revokeRequest(t, env, "", map[string]any{"token_id": "t-1"})
 	defer func() { _ = resp.Body.Close() }()
@@ -435,6 +461,8 @@ func TestWorkerDelegation_Revoke_RejectsUnauthenticatedCall(t *testing.T) {
 }
 
 func TestWorkerDelegation_Revoke_RejectsCrossWorkerRevocation(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 
 	// Mint via env's worker.
@@ -471,6 +499,8 @@ func TestWorkerDelegation_Revoke_RejectsCrossWorkerRevocation(t *testing.T) {
 }
 
 func TestWorkerDelegation_Revoke_UnknownTokenIs404(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	resp := revokeRequest(t, env, env.workerAuthToken, map[string]any{"token_id": "never-existed"})
 	defer func() { _ = resp.Body.Close() }()
@@ -478,6 +508,8 @@ func TestWorkerDelegation_Revoke_UnknownTokenIs404(t *testing.T) {
 }
 
 func TestWorkerDelegation_Mint_GetMethodRejected(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	req, _ := http.NewRequest(http.MethodGet, env.server.URL+"/worker/delegation-tokens/mint", nil)
 	req.Header.Set("Authorization", "Bearer "+env.workerAuthToken)
@@ -488,6 +520,8 @@ func TestWorkerDelegation_Mint_GetMethodRejected(t *testing.T) {
 }
 
 func TestWorkerDelegation_Mint_RejectsMalformedJSON(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	req, _ := http.NewRequest(http.MethodPost, env.server.URL+"/worker/delegation-tokens/mint",
 		strings.NewReader("{not json"))
@@ -508,6 +542,8 @@ func TestWorkerDelegation_Mint_RejectsMalformedJSON(t *testing.T) {
 // pins the boundary -- the layer the comparison's fail-closed behaviour is
 // defence in depth behind.
 func TestWorkerDelegation_Mint_RejectsBlankUserID(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           "",
@@ -530,6 +566,8 @@ func TestWorkerDelegation_Mint_RejectsBlankUserID(t *testing.T) {
 // predicate is ever loosened. This test pins the outcome, not which of the two
 // produced it.
 func TestWorkerDelegation_Mint_RejectsForeignOwnerTabRow(t *testing.T) {
+	t.Parallel()
+
 	env := setupDelegation(t)
 	ctx := context.Background()
 

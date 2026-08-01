@@ -42,6 +42,8 @@ func newKiloAgentForRPCWithResponder(t *testing.T, respond func(method string) j
 // os.Pipe-based Kilo RPC helpers, rather than in the unix-tagged ACP refresh suite:
 // nothing in it spawns a shell, so it runs on every platform.
 func TestKiloClearContextRefreshesPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, _ := newKiloAgentForRPCWithResponder(t, func(method string) json.RawMessage {
 		if method == acpMethodSessionNew {
 			return json.RawMessage(`{
@@ -72,6 +74,8 @@ func TestKiloClearContextRefreshesPrimaryAgent(t *testing.T) {
 }
 
 func TestKiloBuildSessionRequest_NewSession(t *testing.T) {
+	t.Parallel()
+
 	method, params := buildACPSessionRequest("", "/workspace", acpMethodSessionNew, openCodeMethodSessionResume)
 	assert.Equal(t, acpMethodSessionNew, method)
 
@@ -82,6 +86,8 @@ func TestKiloBuildSessionRequest_NewSession(t *testing.T) {
 }
 
 func TestKiloBuildSessionRequest_ResumeSession(t *testing.T) {
+	t.Parallel()
+
 	method, params := buildACPSessionRequest("session-123", "/workspace", acpMethodSessionNew, openCodeMethodSessionResume)
 	assert.Equal(t, openCodeMethodSessionResume, method)
 
@@ -92,6 +98,8 @@ func TestKiloBuildSessionRequest_ResumeSession(t *testing.T) {
 }
 
 func TestKiloConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
+	t.Parallel()
+
 	agent := &KiloAgent{}
 	agent.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 	err := agent.configurePrimaryAgents([]acpModeInfo{
@@ -110,6 +118,8 @@ func TestKiloConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 // configurePrimaryAgents drops the hidden current and falls back to the first visible
 // agent, mirroring the runtime syncConfigOptionSelectLocked guard.
 func TestKiloConfigurePrimaryAgentsDropsHiddenCurrentMode(t *testing.T) {
+	t.Parallel()
+
 	agent := &KiloAgent{}
 	agent.primaryAgentHiddenFilter = isHiddenPrimaryAgent
 	err := agent.configurePrimaryAgents([]acpModeInfo{
@@ -125,6 +135,8 @@ func TestKiloConfigurePrimaryAgentsDropsHiddenCurrentMode(t *testing.T) {
 }
 
 func TestKiloConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newKiloAgentForRPC(t)
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
@@ -140,6 +152,8 @@ func TestKiloConfigurePrimaryAgentsRestoresSavedPrimaryAgent(t *testing.T) {
 }
 
 func TestKiloConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newKiloAgentForRPC(t)
 	err := agent.configurePrimaryAgents([]acpModeInfo{
 		{ID: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
@@ -155,6 +169,8 @@ func TestKiloConfigurePrimaryAgentsIgnoresUnknownSavedPrimaryAgent(t *testing.T)
 // provider-specific fallback list and default -- proving the shared base method
 // honors the fallback/defaultAgent arguments (Kilo's, not OpenCode's).
 func TestKiloConfigurePrimaryAgentsFallsBackWhenServerReportsNoModes(t *testing.T) {
+	t.Parallel()
+
 	agent := &KiloAgent{}
 	err := agent.configurePrimaryAgents(nil, "", "", fallbackKiloPrimaryAgents(), KiloPrimaryAgentCode)
 	require.NoError(t, err)
@@ -165,6 +181,8 @@ func TestKiloConfigurePrimaryAgentsFallsBackWhenServerReportsNoModes(t *testing.
 }
 
 func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
+	t.Parallel()
+
 	agent, requests := newKiloAgentForRPC(t)
 	agent.availablePrimaryAgents = []*leapmuxv1.AvailableOption{
 		{Id: KiloPrimaryAgentCode, Name: KiloPrimaryAgentCode},
@@ -181,6 +199,8 @@ func TestKiloUpdateSettingsSendsSessionSetMode(t *testing.T) {
 }
 
 func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	agent := &KiloAgent{acpBase: acpBase{modeChannel: modeChannelPrimaryAgent, model: "openai/gpt-5", availableModels: []*ModelInfo{{Id: "openai/gpt-5", DisplayName: "GPT-5"}}, currentPrimaryAgent: OpenCodePrimaryAgentPlan}}
 	groups := agent.OptionGroups()
 	require.Equal(t, "openai/gpt-5", optionids.CurrentValue(groups, OptionIDModel))
@@ -188,6 +208,8 @@ func TestKiloCurrentSettingsExposesPrimaryAgent(t *testing.T) {
 }
 
 func TestKiloAvailablePrimaryAgentGroupFallsBack(t *testing.T) {
+	t.Parallel()
+
 	// configure sets both the channel and the static fallback list; OptionGroups serves
 	// that fallback before the session reports a primary-agent catalog.
 	agent := &KiloAgent{acpBase: acpBase{

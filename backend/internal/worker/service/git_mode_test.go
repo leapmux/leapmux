@@ -26,6 +26,8 @@ import (
 // ---------- validateGitMode: happy paths ----------
 
 func TestValidateGitMode_CreateWorktreeHappyPath(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
@@ -48,6 +50,8 @@ func TestValidateGitMode_CreateWorktreeHappyPath(t *testing.T) {
 }
 
 func TestValidateGitMode_CreateBranchHappyPath(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
@@ -61,6 +65,8 @@ func TestValidateGitMode_CreateBranchHappyPath(t *testing.T) {
 }
 
 func TestValidateGitMode_CheckoutExistingLocalBranch(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/local")
 	run(t, repoDir, "git", "checkout", "-")
@@ -75,6 +81,8 @@ func TestValidateGitMode_CheckoutExistingLocalBranch(t *testing.T) {
 }
 
 func TestValidateGitMode_CheckoutRemoteRef(t *testing.T) {
+	t.Parallel()
+
 	local := initRepo(t)
 	remote := initRepo(t)
 	run(t, remote, "git", "checkout", "-b", "feature/remote")
@@ -91,6 +99,8 @@ func TestValidateGitMode_CheckoutRemoteRef(t *testing.T) {
 }
 
 func TestValidateGitMode_UseCurrentDefault(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
@@ -102,6 +112,8 @@ func TestValidateGitMode_UseCurrentDefault(t *testing.T) {
 }
 
 func TestValidateGitMode_CreateWorktreeWithRemoteBaseBranch(t *testing.T) {
+	t.Parallel()
+
 	local := initRepo(t)
 	remote := initRepo(t)
 	run(t, remote, "git", "checkout", "-b", "feature/base")
@@ -122,6 +134,8 @@ func TestValidateGitMode_CreateWorktreeWithRemoteBaseBranch(t *testing.T) {
 // ---------- executeGitMode: happy paths ----------
 
 func TestExecuteGitMode_CreateWorktreeSucceeds(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
@@ -140,6 +154,8 @@ func TestExecuteGitMode_CreateWorktreeSucceeds(t *testing.T) {
 }
 
 func TestExecuteGitMode_CreateBranchSucceeds(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
@@ -165,6 +181,8 @@ func TestExecuteGitMode_CreateBranchSucceeds(t *testing.T) {
 // Warn log. With the fix, BranchNameError aborts cleanly with no
 // rollback metadata.
 func TestExecuteCreateBranch_BranchNameErrorSkipsRollback(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
@@ -193,6 +211,8 @@ func TestExecuteCreateBranch_BranchNameErrorSkipsRollback(t *testing.T) {
 // CreatedBranch is still on disk. The fix attempts the branch delete
 // regardless of the restore outcome.
 func TestRollbackCreatedBranch_DeletesBranchEvenIfCheckoutRestoreFails(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
@@ -217,6 +237,8 @@ func TestRollbackCreatedBranch_DeletesBranchEvenIfCheckoutRestoreFails(t *testin
 // ---------- labels ----------
 
 func TestGitModePlan_PhaseLabelPerMode(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		plan gitModePlan
 		want string
@@ -235,6 +257,8 @@ func TestGitModePlan_PhaseLabelPerMode(t *testing.T) {
 }
 
 func TestRollbackLabelFromRollback_OnlyForMutatingModes(t *testing.T) {
+	t.Parallel()
+
 	// Only createWorktree / createBranch mutate state that the user cares
 	// about rolling back; the other modes produce an empty label so the
 	// startup goroutine skips the pre-failure broadcast.
@@ -248,6 +272,8 @@ func TestRollbackLabelFromRollback_OnlyForMutatingModes(t *testing.T) {
 // ---------- validation edge cases ----------
 
 func TestValidateGitMode_WorktreePathNormalization(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	// Create an existing worktree with a branch containing deep slashes
 	// and validate that useWorktreePath resolves symlinks correctly.
@@ -292,6 +318,8 @@ func osSymlink(target, link string) error { return os.Symlink(target, link) }
 //   - No stray connect errors surface.
 
 func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
@@ -314,7 +342,7 @@ func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 
 	// Phase 0 eventually creates the worktree and registers it.
 	require.Eventually(t, func() bool {
-		return directoryExists(expectedWorktreePath(repoDir, branch))
+		return directoryExists(expectedWorktreePath(t, repoDir, branch))
 	}, 5*time.Second, 20*time.Millisecond, "expected worktree to be created")
 	assert.True(t, localBranchExists(t, repoDir, branch))
 
@@ -328,6 +356,8 @@ func TestOpenAgent_CreateWorktree_EndToEnd(t *testing.T) {
 }
 
 func TestOpenAgent_CreateBranch_EndToEnd(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
@@ -356,6 +386,8 @@ func TestOpenAgent_CreateBranch_EndToEnd(t *testing.T) {
 // versa.
 
 func TestValidateGitMode_CreateWorktreeBranchExistsTakesPrecedenceOverMissingBase(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
@@ -375,6 +407,8 @@ func TestValidateGitMode_CreateWorktreeBranchExistsTakesPrecedenceOverMissingBas
 }
 
 func TestValidateGitMode_CreateBranchExistsTakesPrecedenceOverMissingBase(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature/taken")
 	run(t, repoDir, "git", "checkout", "-")
@@ -394,6 +428,8 @@ func TestValidateGitMode_CreateBranchExistsTakesPrecedenceOverMissingBase(t *tes
 // gate must still fire before any branch-existence gate when the path is
 // not a repo, so the user sees the most informative error.
 func TestValidateGitMode_CreateBranchNonGitDirSurfacesRepoError(t *testing.T) {
+	t.Parallel()
+
 	notRepo := t.TempDir()
 	svc, _, _ := setupTestService(t)
 
@@ -407,6 +443,8 @@ func TestValidateGitMode_CreateBranchNonGitDirSurfacesRepoError(t *testing.T) {
 }
 
 func TestValidateGitMode_CheckoutBranchNonGitDirSurfacesRepoError(t *testing.T) {
+	t.Parallel()
+
 	notRepo := t.TempDir()
 	svc, _, _ := setupTestService(t)
 
@@ -419,6 +457,8 @@ func TestValidateGitMode_CheckoutBranchNonGitDirSurfacesRepoError(t *testing.T) 
 }
 
 func TestValidateGitMode_CheckoutBranchMissingBranchInRepo(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
@@ -437,6 +477,8 @@ func TestValidateGitMode_CheckoutBranchMissingBranchInRepo(t *testing.T) {
 // click look like a misleading repo error in the UI. The validator now
 // surfaces ctx.Err() ahead of the probe-derived signals.
 func TestValidateGitMode_CreateBranchCancelledCtxSurfacesCancellation(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 
@@ -456,6 +498,8 @@ func TestValidateGitMode_CreateBranchCancelledCtxSurfacesCancellation(t *testing
 // TestValidateGitMode_CheckoutBranchCancelledCtxSurfacesCancellation
 // mirrors the above for the checkout-branch validator.
 func TestValidateGitMode_CheckoutBranchCancelledCtxSurfacesCancellation(t *testing.T) {
+	t.Parallel()
+
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
 

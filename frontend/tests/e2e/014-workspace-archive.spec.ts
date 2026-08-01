@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace } from './helpers/ui'
+import { loginViaToken, openTreeContextMenu, openWorkspace, treeRow, workspaceRow } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 
@@ -13,7 +13,7 @@ async function openContextMenu(item: ReturnType<import('@playwright/test').Page[
 
 test.describe('Workspace Archive', () => {
   test('should archive workspace via context menu with confirmation dialog', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
     // Open context menu and click Archive (top-level menu item)
     await openContextMenu(workspaceItem)
@@ -37,7 +37,7 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should cancel archive via confirmation dialog', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
     // Open context menu and click Archive (top-level menu item)
     await openContextMenu(workspaceItem)
@@ -56,7 +56,7 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should unarchive workspace and restore normal behavior', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
     // Archive the workspace first: open context menu using the workspace item directly
     await openContextMenu(workspaceItem)
@@ -76,7 +76,7 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should not show Move-to when workspace is in the only target section', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
     // Open context menu — with only one workspace section (In Progress),
     // "Move to" should not appear since there are no other target sections
@@ -91,7 +91,7 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should only show valid workspace sections in Move-to menu', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
     // Open context menu
     await openContextMenu(workspaceItem)
@@ -105,7 +105,7 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should auto-expand archived section after archiving', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
     // Archive the workspace
     await openContextMenu(workspaceItem)
@@ -127,7 +127,7 @@ test.describe('Workspace Archive', () => {
     const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
     await expect(agentTab).toBeVisible()
 
-    const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
     // Archive the workspace
     await openContextMenu(workspaceItem)
@@ -156,13 +156,13 @@ test.describe('Workspace Archive', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for the file tree and open a file tab
-      await expect(page.getByText('package.json')).toBeVisible()
-      await page.getByText('package.json').click()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
+      await treeRow(page, 'package.json').click()
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
       await expect(fileTab).toBeVisible()
 
       // Archive the workspace
-      const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+      const wsItem = workspaceRow(page, workspaceId)
       await openContextMenu(wsItem)
       await page.getByRole('menuitem', { name: 'Archive' }).click()
       await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
@@ -199,25 +199,21 @@ test.describe('Workspace Archive', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for the file tree to load
-      const packageJsonNode = page.getByText('package.json')
-      await expect(packageJsonNode).toBeVisible()
+      const row = treeRow(page, 'package.json')
+      await expect(row).toBeVisible()
 
       // Verify mention button IS visible before archive (via context menu)
-      await packageJsonNode.hover()
-      const treeRow = page.locator('[data-testid="tree-row"]').filter({ hasText: 'package.json' })
-      const contextButton = treeRow.locator('[data-testid="tree-context-button"]')
-      await expect(contextButton).toBeVisible()
-      await contextButton.click()
       const mentionButton = page.locator('[data-testid="tree-mention-button"]:visible')
-      await expect(mentionButton).toBeVisible()
+      await openTreeContextMenu(page, row, 'tree-mention-button')
       // Close menu by pressing Escape
       await page.keyboard.press('Escape')
+      await expect(mentionButton).toHaveCount(0)
 
       // Move mouse away
       await page.mouse.move(0, 0)
 
       // Archive the workspace
-      const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+      const wsItem = workspaceRow(page, workspaceId)
       await openContextMenu(wsItem)
       await page.getByRole('menuitem', { name: 'Archive' }).click()
       await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
@@ -225,10 +221,12 @@ test.describe('Workspace Archive', () => {
       // Wait for archived section
       await expect(page.locator('[data-testid="section-header-workspaces_archived"]')).toBeVisible()
 
-      // Hover over tree node — open context menu, mention button should NOT be there
-      await packageJsonNode.hover()
-      await contextButton.click()
-      await expect(mentionButton).not.toBeVisible()
+      // Open the context menu again — the mention entry must be gone, but the
+      // menu itself must still open, so assert on an item that SURVIVES
+      // archiving. Without that anchor a menu that failed to open at all would
+      // satisfy "mention button not visible" for the wrong reason.
+      await openTreeContextMenu(page, row)
+      await expect(mentionButton).toHaveCount(0)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -244,8 +242,8 @@ test.describe('Workspace Archive', () => {
       await openWorkspace(page, workspaceId)
 
       // Wait for the file tree and open a file tab
-      await expect(page.getByText('package.json')).toBeVisible()
-      await page.getByText('package.json').click()
+      await expect(treeRow(page, 'package.json')).toBeVisible()
+      await treeRow(page, 'package.json').click()
       const fileTab = page.locator('[data-testid="tab"][data-tab-type="file"]')
       await expect(fileTab).toBeVisible()
 
@@ -259,7 +257,7 @@ test.describe('Workspace Archive', () => {
       await page.keyboard.press('Escape')
 
       // Archive the workspace
-      const wsItem = page.locator(`[data-testid="workspace-item-${workspaceId}"]`)
+      const wsItem = workspaceRow(page, workspaceId)
       await openContextMenu(wsItem)
       await page.getByRole('menuitem', { name: 'Archive' }).click()
       await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
@@ -281,7 +279,7 @@ test.describe('Workspace Archive', () => {
   })
 
   test('should delete workspace using ConfirmDialog instead of native confirm', async ({ page, authenticatedWorkspace }) => {
-    const workspaceItem = page.locator(`[data-testid="workspace-item-${authenticatedWorkspace.workspaceId}"]`)
+    const workspaceItem = workspaceRow(page, authenticatedWorkspace.workspaceId)
 
     // Navigate away so we can see delete result
     await page.goto('/')

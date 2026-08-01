@@ -65,7 +65,7 @@ func Run(ctx context.Context, cfg RunConfig) error {
 		}
 	}()
 
-	if err := workerdb.Migrate(sqlDB); err != nil {
+	if err := workerdb.Migrate(ctx, sqlDB); err != nil {
 		return fmt.Errorf("migrate worker db: %w", err)
 	}
 
@@ -121,7 +121,11 @@ func Run(ctx context.Context, cfg RunConfig) error {
 			WakeLock:             wakeLockTracker,
 		})
 
-		runShutdown = func() { shutdownOnce.Do(wiring.Service.Shutdown) }
+		runShutdown = func() {
+			shutdownOnce.Do(func() {
+				wiring.Shutdown()
+			})
+		}
 		defer runShutdown()
 	} else {
 		// No composite key means no E2EE channel and therefore no service

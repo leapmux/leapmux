@@ -54,6 +54,13 @@ async function openWorkerContextMenu(
 }
 
 test.describe('Worker Deregistration', () => {
+  // These tests are ORDER-DEPENDENT: they hand state to each other through the
+  // module-level tempWorkerId -- "should deregister worker after confirmation"
+  // clears it, and "should still show main worker after deregistration" reads
+  // the world that left behind. They rely on playwright.config.ts keeping
+  // fullyParallel off; if that ever flips, this describe needs
+  // `test.describe.configure({ mode: 'serial' })`.
+
   test.beforeAll(async ({ separateHubWorker }) => {
     const { hubUrl, adminToken, dataDir, binaryPath } = separateHubWorker
     const workerDataDir = join(dataDir, 'worker-deregister-data')

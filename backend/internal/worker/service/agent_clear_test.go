@@ -85,6 +85,8 @@ func decodeAgentChatMessageContent(t *testing.T, msg *leapmuxv1.AgentChatMessage
 }
 
 func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -146,6 +148,8 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 // never actually shows. The STARTING broadcast also gives the startup
 // panel a phase label to display.
 func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -220,6 +224,8 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 }
 
 func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -275,6 +281,8 @@ func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing
 }
 
 func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -301,6 +309,8 @@ func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testin
 }
 
 func TestIsInterruptRequestRecognizesProviderFormats(t *testing.T) {
+	t.Parallel()
+
 	pi := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
@@ -321,6 +331,8 @@ func TestIsInterruptRequestRecognizesProviderFormats(t *testing.T) {
 }
 
 func TestSendAgentRawMessage_ClaudeInterruptDoesNotPersistSyntheticUserMarker(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 

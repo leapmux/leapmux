@@ -386,6 +386,72 @@ describe('gitOptions activeMode ownership', () => {
     // includes.
     expect(screen.getByLabelText('Use current state')).toBeInTheDocument()
   })
+
+  it('resets the mode to the default when the selected path changes', async () => {
+    // Switching repos invalidates every selection the mode depends on --
+    // checkout branch, base branch, worktree path, and the fetched lists
+    // behind them -- so the mode goes back to the default with them rather
+    // than pointing at a repo that no longer supplies its inputs.
+    //
+    // Untested until now, which is how e2e 073 kept asserting the OPPOSITE
+    // ("git mode is preserved when switching between git repos") and failing
+    // on every run for as long as this reset has existed.
+    const [mode] = createSignal<GitMode>(GitMode.Current)
+    const [path, setPath] = createSignal('/repo')
+    const onGitModeChange = vi.fn()
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath={path()}
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={onGitModeChange}
+      />
+    ))
+
+    fireEvent.click(screen.getByLabelText('Create new branch'))
+    await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
+    onGitModeChange.mockClear()
+
+    setPath('/other-repo')
+
+    await waitFor(() => expect(screen.getByLabelText('Use current state')).toBeChecked())
+    expect(screen.getByLabelText('Create new branch')).not.toBeChecked()
+    // The parent is told, not left believing the old mode still applies.
+    await waitFor(() => {
+      const intents = onGitModeChange.mock.calls.map(c => (c[0] as { mode: GitMode }).mode)
+      expect(intents).toContain(GitMode.Current)
+    })
+  })
+
+  it('keeps the mode when the selected path is set to the same value', async () => {
+    // The reset is keyed on the path CHANGING. A re-render that hands back
+    // an identical path (a parent re-computing the same string) must not
+    // throw away a mode the user just picked.
+    const [mode] = createSignal<GitMode>(GitMode.Current)
+    const [path, setPath] = createSignal('/repo')
+    const onGitModeChange = vi.fn()
+
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath={path()}
+        gitInfo={makeGitInfo()}
+        gitMode={mode}
+        onGitModeChange={onGitModeChange}
+      />
+    ))
+
+    fireEvent.click(screen.getByLabelText('Create new branch'))
+    await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
+
+    setPath('/repo')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(screen.getByLabelText('Create new branch')).toBeChecked()
+  })
 })
 
 describe('gitOptions branch name field', () => {

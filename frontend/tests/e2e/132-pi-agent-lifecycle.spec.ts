@@ -1,4 +1,4 @@
-import { isMaybeVisible, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { isMaybeVisible, messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, PI_E2E_SKIP_REASON, piTest } from './pi-fixtures'
 
 piTest.skip(!!PI_E2E_SKIP_REASON, PI_E2E_SKIP_REASON || '')
@@ -39,7 +39,7 @@ piTest.describe('Pi Agent Lifecycle', () => {
     // Pi's clear-context handler routes through new_session + get_state.
     // Either a "context cleared" notification appears or the chat is reset
     // to a small number of messages.
-    const chatArea = page.locator('[data-testid="message-content"]')
+    const chatArea = messageContents(page)
     const allText = await chatArea.allTextContents()
     const joined = allText.join(' ').toLowerCase()
     expect(joined.includes('clear') || await chatArea.count() <= 2).toBeTruthy()

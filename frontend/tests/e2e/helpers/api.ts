@@ -5,6 +5,20 @@
 import type { ChannelManager } from '../../../src/lib/channel'
 import { createTestChannelManager } from './e2e-channel'
 
+/**
+ * Poll interval for the API-backed waits below.
+ *
+ * Each tick is a real HTTP round trip to the hub (plus, for the agent-list
+ * helpers, an E2EE callWorker on top), landing on the same instance whose
+ * latency the wait is measuring. What these wait on -- `git worktree add`, a
+ * CLI spawn, a second worker process handshaking -- settles on a second scale,
+ * so a 25ms tick was ~40x oversampling: a single 30s wait could fire ~2400
+ * requests into the process it was waiting for. 150ms keeps the latency win
+ * (the flat sleeps this replaced cost 200-500ms each) at a fraction of the
+ * request volume.
+ */
+export const API_POLL_INTERVAL_MS = 150
+
 // ---- E2EE channel cache ----
 // Keeps a ChannelManager per hubUrl+cookie pair to avoid re-handshaking
 // on every test API call.
@@ -172,7 +186,7 @@ export async function getWorkerId(hubUrl: string, cookie: string): Promise<strin
     if (Date.now() >= deadline) {
       throw new Error('Worker never came online within 30s')
     }
-    await new Promise(r => setTimeout(r, 500))
+    await new Promise(r => setTimeout(r, API_POLL_INTERVAL_MS))
   }
 }
 
@@ -244,7 +258,7 @@ export async function waitForNewOnlineWorkerViaAPI(
     }
     if (Date.now() >= deadline)
       throw new Error(`waitForNewOnlineWorkerViaAPI: no new worker came online within ${timeoutMs}ms`)
-    await new Promise(r => setTimeout(r, 500))
+    await new Promise(r => setTimeout(r, API_POLL_INTERVAL_MS))
   }
 }
 

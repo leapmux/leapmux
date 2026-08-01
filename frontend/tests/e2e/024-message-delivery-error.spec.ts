@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ASSISTANT_BUBBLE_SELECTOR, firstAssistantBubble, loginViaToken, loginViaUI, openWorkspace } from './helpers/ui'
+import { assistantBubbles, firstAssistantBubble, loginViaToken, loginViaUI, openWorkspace, userBubbles, visibleOnly } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Message Delivery Error', () => {
@@ -35,29 +35,29 @@ test.describe('Message Delivery Error', () => {
       await page.keyboard.press('Meta+Enter')
 
       // Assert delivery error is visible
-      const errorIndicator = page.locator('[data-testid="message-error"]')
+      const errorIndicator = visibleOnly(page.getByTestId('message-error'))
       await expect(errorIndicator).toBeVisible()
       await expect(errorIndicator).toContainText('Failed to deliver')
 
       // Assert Retry and Delete buttons are visible
-      await expect(page.locator('[data-testid="message-retry-button"]')).toBeVisible()
-      await expect(page.locator('[data-testid="message-delete-button"]')).toBeVisible()
+      const retry = visibleOnly(page.getByTestId('message-retry-button'))
+      await expect(retry).toBeVisible()
+      await expect(visibleOnly(page.getByTestId('message-delete-button'))).toBeVisible()
 
-      // Restart worker
+      // Restart the worker and wait for the hub to see it again, rather than
+      // sleeping a flat 3s and hoping: the retry below is only meaningful once
+      // delivery can actually succeed.
       await restartWorker(separateHubWorker)
-      await page.waitForTimeout(3000)
+      await ensureWorkerOnline(separateHubWorker)
 
       // Click Retry
-      await page.locator('[data-testid="message-retry-button"]').click()
+      await retry.click()
 
       // Assert error disappears
       await expect(errorIndicator).not.toBeVisible()
 
       // Wait for agent response (confirming message was delivered)
-      await page.waitForFunction((sel: string) => {
-        const bubbles = document.querySelectorAll(sel)
-        return bubbles.length >= 2
-      }, ASSISTANT_BUBBLE_SELECTOR)
+      await expect.poll(() => assistantBubbles(page).count()).toBeGreaterThanOrEqual(2)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -94,7 +94,7 @@ test.describe('Message Delivery Error', () => {
       await page.keyboard.press('Meta+Enter')
 
       // Assert error is visible
-      const errorIndicator = page.locator('[data-testid="message-error"]')
+      const errorIndicator = visibleOnly(page.getByTestId('message-error'))
       await expect(errorIndicator).toBeVisible()
 
       // Restart the worker so the workspace is accessible after reload.
@@ -112,7 +112,7 @@ test.describe('Message Delivery Error', () => {
       await page.getByText('Persist Error Test').click()
 
       // Wait for messages to load and assert error is still visible
-      await expect(page.locator('[data-testid="message-error"]')).toBeVisible()
+      await expect(visibleOnly(page.getByTestId('message-error'))).toBeVisible()
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
@@ -145,7 +145,7 @@ test.describe('Message Delivery Error', () => {
       await waitForWorkerOffline(hubUrl, adminToken)
 
       // Count user messages before sending the failing one
-      const userMsgCountBefore = await page.locator('[data-testid="message-bubble"][data-role="user"]').count()
+      const userMsgCountBefore = await userBubbles(page).count()
 
       // Send a message while offline
       await editor.click()
@@ -153,15 +153,15 @@ test.describe('Message Delivery Error', () => {
       await page.keyboard.press('Meta+Enter')
 
       // Assert error is visible
-      const errorIndicator = page.locator('[data-testid="message-error"]')
+      const errorIndicator = visibleOnly(page.getByTestId('message-error'))
       await expect(errorIndicator).toBeVisible()
 
       // Click Delete
-      await page.locator('[data-testid="message-delete-button"]').click()
+      await visibleOnly(page.getByTestId('message-delete-button')).click()
 
       // Assert the failed message is removed
       await expect(errorIndicator).not.toBeVisible()
-      await expect(page.locator('[data-testid="message-bubble"][data-role="user"]')).toHaveCount(userMsgCountBefore)
+      await expect(userBubbles(page)).toHaveCount(userMsgCountBefore)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

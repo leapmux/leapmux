@@ -53,6 +53,8 @@ func snap(t *modeTracker) modeTrackerSnapshot {
 // must converge back to default state — otherwise reconnecting after
 // vim quits would prefix the snapshot with stale alt-screen bytes.
 func TestCorpus_VimOpenEditQuit(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 
 	// Enter: vim sets alt screen + hides cursor + app cursor keys.
@@ -75,6 +77,8 @@ func TestCorpus_VimOpenEditQuit(t *testing.T) {
 // enters alt screen, paints lines, then exits. less also disables
 // autowrap during paint so output doesn't soft-wrap into the next row.
 func TestCorpus_LessScroll(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 
 	feedString(tr, "\x1b[?1049h\x1b[?7l\x1b[H")
@@ -94,6 +98,8 @@ func TestCorpus_LessScroll(t *testing.T) {
 // and stays in alt screen until the user quits — i.e. a snapshot
 // captured mid-run must restore alt screen + mouse modes.
 func TestCorpus_HtopTick(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 
 	// Setup.
@@ -125,6 +131,8 @@ func TestCorpus_HtopTick(t *testing.T) {
 // hang on the BEL terminator. The tracker must end with the most recent
 // title only.
 func TestCorpus_BashPromptCommand(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 
 	dirs := []string{"/", "/home", "/home/me", "/home/me/work", "/home/me/work/leapmux"}
@@ -145,6 +153,8 @@ func TestCorpus_BashPromptCommand(t *testing.T) {
 // 1049 — to a single altScreen bit and emit the canonical 1049 on
 // snapshot regardless of which alias the program used.
 func TestCorpus_TmuxNested(t *testing.T) {
+	t.Parallel()
+
 	tr := &modeTracker{}
 
 	feedString(tr, "\x1b[?1047h") // outer enters alt screen via 1047.

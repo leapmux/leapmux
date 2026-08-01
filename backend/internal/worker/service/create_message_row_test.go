@@ -19,6 +19,8 @@ import (
 // attribute to a provider is never written (the frontend would otherwise render
 // it as `unsupported_provider`).
 func TestCreateMessageRow_RejectsUnspecifiedProvider(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -62,6 +64,8 @@ func TestCreateMessageRow_RejectsUnspecifiedProvider(t *testing.T) {
 }
 
 func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -96,6 +100,8 @@ func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
 // production SendAgentMessage path defaults an UNSPECIFIED request to a real
 // provider before reaching here, so this guard is a backstop.
 func TestCreateAgentRecord_RejectsUnspecifiedProvider(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 

@@ -81,11 +81,15 @@ func persistNotif(t *testing.T, sink agent.OutputSink, source leapmuxv1.MessageS
 }
 
 func TestSnapshotPassthroughSpanLines_EmptyTracker(t *testing.T) {
+	t.Parallel()
+
 	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
 	assert.Equal(t, "[]", h.snapshotPassthroughSpanLines("agent-1"))
 }
 
 func TestSnapshotPassthroughSpanLines_SingleOpenSpan(t *testing.T) {
+	t.Parallel()
+
 	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
 	h.spanTracker("agent-1").OpenSpan("span-A", "")
 
@@ -98,6 +102,8 @@ func TestSnapshotPassthroughSpanLines_SingleOpenSpan(t *testing.T) {
 }
 
 func TestSnapshotPassthroughSpanLines_NestedSpans(t *testing.T) {
+	t.Parallel()
+
 	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
 	h.spanTracker("agent-1").OpenSpan("span-A", "")
 	h.spanTracker("agent-1").OpenSpan("span-B", "span-A")
@@ -113,6 +119,8 @@ func TestSnapshotPassthroughSpanLines_NestedSpans(t *testing.T) {
 }
 
 func TestSnapshotPassthroughSpanLines_PerAgentIsolation(t *testing.T) {
+	t.Parallel()
+
 	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
 	h.spanTracker("agent-1").OpenSpan("span-A", "")
 
@@ -125,6 +133,8 @@ func TestSnapshotPassthroughSpanLines_PerAgentIsolation(t *testing.T) {
 // frontend renders unbroken vertical bars across the user row instead of
 // breaking the span column.
 func TestSendAgentMessage_PersistsSpanLinesWhileSpanIsOpen(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -164,6 +174,8 @@ func TestSendAgentMessage_PersistsSpanLinesWhileSpanIsOpen(t *testing.T) {
 // idle tracker. A user message at the root with no active spans should
 // render exactly as before this change — no left-side bars.
 func TestSendAgentMessage_SpanLinesEmptyWhenNoSpansActive(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
@@ -190,6 +202,8 @@ func TestSendAgentMessage_SpanLinesEmptyWhenNoSpansActive(t *testing.T) {
 // captures active spans. This site is a separate direct-SQL path from
 // the SendAgentMessage RPC, so it gets its own coverage.
 func TestSendSyntheticUserMessage_PersistsSpanLinesWhileSpanIsOpen(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)

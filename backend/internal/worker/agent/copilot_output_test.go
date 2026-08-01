@@ -24,6 +24,8 @@ func newCopilotAgentWithSink(sink OutputSink) *CopilotCLIAgent {
 }
 
 func TestHandleCopilotOutput_AgentMessageChunk(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCopilotAgentWithSink(sink)
 
@@ -37,6 +39,8 @@ func TestHandleCopilotOutput_AgentMessageChunk(t *testing.T) {
 }
 
 func TestHandleCopilotOutput_RequestPermission(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	agent := newCopilotAgentWithSink(sink)
 
@@ -48,6 +52,8 @@ func TestHandleCopilotOutput_RequestPermission(t *testing.T) {
 }
 
 func TestHandleCopilotOutput_ConfigOptionUpdateBroadcastsPermissionMode(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCopilotAgentWithSink(sink)
 	agent.permissionMode = CopilotCLIModeAgent
@@ -74,6 +80,8 @@ func TestHandleCopilotOutput_ConfigOptionUpdateBroadcastsPermissionMode(t *testi
 // through UpdatePermissionMode -- one StatusChange carrying the live model list plus
 // the chat notification -- and triggers no settings refresh.
 func TestHandleCopilotOutput_ConfigOptionUpdateModeOnly(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCopilotAgentWithSink(sink)
 	agent.permissionMode = CopilotCLIModeAgent
@@ -91,6 +99,8 @@ func TestHandleCopilotOutput_ConfigOptionUpdateModeOnly(t *testing.T) {
 // but unchanged) broadcasts the settings once and fires NO permission-mode chat
 // notification -- the mode-change notification must not piggyback on a model switch.
 func TestHandleCopilotOutput_ConfigOptionUpdateModelOnly(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCopilotAgentWithSink(sink)
 	agent.permissionMode = CopilotCLIModeAgent
@@ -113,6 +123,8 @@ func TestHandleCopilotOutput_ConfigOptionUpdateModelOnly(t *testing.T) {
 // analogue of the model channel's list-change broadcast. Without it the new mode
 // option would never reach the frontend until an unrelated change fired one.
 func TestHandleCopilotOutput_ConfigOptionUpdateModeListOnlyBroadcasts(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCopilotAgentWithSink(sink)
 	agent.permissionMode = CopilotCLIModeAgent
@@ -139,6 +151,8 @@ func TestHandleCopilotOutput_ConfigOptionUpdateModeListOnlyBroadcasts(t *testing
 // own field (not extras, and never the empty primaryAgent base). This is the
 // permission-mode-provider runtime analogue of the OpenCode option-surfacing test.
 func TestHandleCopilotOutput_ConfigOptionUpdateSurfacesGenericGroup(t *testing.T) {
+	t.Parallel()
+
 	sink := &testSink{}
 	agent := newCopilotAgentWithSink(sink)
 	agent.permissionMode = CopilotCLIModeAgent

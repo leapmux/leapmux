@@ -20,6 +20,8 @@ func newPiAgentWithSink(sink OutputSink) *PiAgent {
 }
 
 func TestHandlePiOutput_AgentStart_SetsTurnFlag(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -37,6 +39,8 @@ func TestHandlePiOutput_AgentStart_SetsTurnFlag(t *testing.T) {
 }
 
 func TestHandlePiOutput_AgentEnd_PersistsResultDividerAndResets(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 	a.currentTurnActive = true
@@ -62,6 +66,8 @@ func TestHandlePiOutput_AgentEnd_PersistsResultDividerAndResets(t *testing.T) {
 }
 
 func TestHandlePiOutput_MessageUpdate_TextDelta_StreamsChunk(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -78,6 +84,8 @@ func TestHandlePiOutput_MessageUpdate_TextDelta_StreamsChunk(t *testing.T) {
 }
 
 func TestHandlePiOutput_MessageUpdate_ThinkingDelta_StreamsChunk(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -92,6 +100,8 @@ func TestHandlePiOutput_MessageUpdate_ThinkingDelta_StreamsChunk(t *testing.T) {
 }
 
 func TestHandlePiOutput_MessageUpdate_OtherDeltaTypesIgnored(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -110,6 +120,8 @@ func TestHandlePiOutput_MessageUpdate_OtherDeltaTypesIgnored(t *testing.T) {
 }
 
 func TestHandlePiOutput_MessageEnd_PersistsAssistantMessage(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -123,6 +135,8 @@ func TestHandlePiOutput_MessageEnd_PersistsAssistantMessage(t *testing.T) {
 }
 
 func TestHandlePiOutput_MessageEnd_AugmentsUsageAndBroadcastsSessionInfo(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 	a.model = "gpt-5.5"
@@ -159,6 +173,8 @@ func TestHandlePiOutput_MessageEnd_AugmentsUsageAndBroadcastsSessionInfo(t *test
 }
 
 func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 	a.model = "gpt-5.5"
@@ -186,6 +202,8 @@ func TestHandlePiOutput_AgentEnd_AugmentsWithLatestUsageSnapshot(t *testing.T) {
 }
 
 func TestHandlePiOutput_AgentEnd_WebSocketErrorSchedulesAutoContinue(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 	raw := []byte(`{"type":"agent_end","messages":[{"role":"user"},{"role":"assistant","stopReason":"error","errorMessage":"WebSocket error"}]}`)
@@ -201,6 +219,8 @@ func TestHandlePiOutput_AgentEnd_WebSocketErrorSchedulesAutoContinue(t *testing.
 }
 
 func TestHandlePiOutput_AgentEnd_NonRetryableResultCancelsAutoContinue(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 	raw := []byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}`)
@@ -213,6 +233,8 @@ func TestHandlePiOutput_AgentEnd_NonRetryableResultCancelsAutoContinue(t *testin
 }
 
 func TestHandlePiOutput_AgentEnd_NonWebSocketErrorMessageCancelsAutoContinue(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 	raw := []byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"rate limited"}]}`)
@@ -225,6 +247,8 @@ func TestHandlePiOutput_AgentEnd_NonWebSocketErrorMessageCancelsAutoContinue(t *
 }
 
 func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeCancelsAutoContinue(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 	// messages is a string instead of an array — the inner unmarshal in
@@ -239,6 +263,8 @@ func TestHandlePiOutput_AgentEnd_UnexpectedMessagesShapeCancelsAutoContinue(t *t
 }
 
 func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -287,6 +313,8 @@ func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 // per-span tracking is reset when the tool ends so a fresh tool with the same
 // id starts from empty.
 func TestHandlePiOutput_ToolExecutionUpdate_BroadcastsDeltaOnly(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -316,6 +344,8 @@ func TestHandlePiOutput_ToolExecutionUpdate_BroadcastsDeltaOnly(t *testing.T) {
 }
 
 func TestHandlePiOutput_ToolExecutionStart_DropsLineWithoutToolCallID(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -326,6 +356,8 @@ func TestHandlePiOutput_ToolExecutionStart_DropsLineWithoutToolCallID(t *testing
 }
 
 func TestHandlePiOutput_QueueUpdate_BroadcastsDepth(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -341,6 +373,8 @@ func TestHandlePiOutput_QueueUpdate_BroadcastsDepth(t *testing.T) {
 }
 
 func TestHandlePiOutput_CompactionEvents_PersistAsAgentNotification(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -359,6 +393,8 @@ func TestHandlePiOutput_CompactionEvents_PersistAsAgentNotification(t *testing.T
 }
 
 func TestHandlePiOutput_AutoRetryEvents_PersistAsAgentNotification(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -376,6 +412,8 @@ func TestHandlePiOutput_AutoRetryEvents_PersistAsAgentNotification(t *testing.T)
 }
 
 func TestHandlePiOutput_ExtensionError_PersistAsAgentNotification(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -388,6 +426,8 @@ func TestHandlePiOutput_ExtensionError_PersistAsAgentNotification(t *testing.T) 
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_DialogPersistsControlRequest(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		method string
 		id     string
@@ -436,6 +476,8 @@ func TestHandlePiOutput_ExtensionUIRequest_DialogPersistsControlRequest(t *testi
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_DialogWithoutIDIsDropped(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -448,6 +490,8 @@ func TestHandlePiOutput_ExtensionUIRequest_DialogWithoutIDIsDropped(t *testing.T
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_NotifyPersistsRawAsAgent(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -471,6 +515,8 @@ func TestHandlePiOutput_ExtensionUIRequest_NotifyPersistsRawAsAgent(t *testing.T
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_NotifyMissingNotifyTypePreservesRaw(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -487,6 +533,8 @@ func TestHandlePiOutput_ExtensionUIRequest_NotifyMissingNotifyTypePreservesRaw(t
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_SetStatus_BroadcastsSessionInfo(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -510,6 +558,8 @@ func TestHandlePiOutput_ExtensionUIRequest_SetStatus_BroadcastsSessionInfo(t *te
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_SetStatus_NilClearsKey(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -527,6 +577,8 @@ func TestHandlePiOutput_ExtensionUIRequest_SetStatus_NilClearsKey(t *testing.T) 
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_SetWidget_BroadcastsSessionInfo(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -544,6 +596,8 @@ func TestHandlePiOutput_ExtensionUIRequest_SetWidget_BroadcastsSessionInfo(t *te
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_SetTitle_BroadcastsSessionInfo(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -556,6 +610,8 @@ func TestHandlePiOutput_ExtensionUIRequest_SetTitle_BroadcastsSessionInfo(t *tes
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_SetEditorText_BroadcastsSessionInfo(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -568,6 +624,8 @@ func TestHandlePiOutput_ExtensionUIRequest_SetEditorText_BroadcastsSessionInfo(t
 }
 
 func TestHandlePiOutput_ExtensionUIRequest_UnknownMethod_PersistAsNotification(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -580,6 +638,8 @@ func TestHandlePiOutput_ExtensionUIRequest_UnknownMethod_PersistAsNotification(t
 }
 
 func TestHandlePiOutput_ResponseLineWithoutPendingID_LoggedNotPersisted(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -594,6 +654,8 @@ func TestHandlePiOutput_ResponseLineWithoutPendingID_LoggedNotPersisted(t *testi
 }
 
 func TestHandlePiOutput_UnknownEventType_PersistedAsAgent(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -604,6 +666,8 @@ func TestHandlePiOutput_UnknownEventType_PersistedAsAgent(t *testing.T) {
 }
 
 func TestHandlePiOutput_TextAndThinkingDeltasAccumulateThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	for _, deltaType := range []string{"text_delta", "thinking_delta"} {
 		t.Run(deltaType, func(t *testing.T) {
 			sink := &recordingControlSink{}
@@ -623,6 +687,8 @@ func TestHandlePiOutput_TextAndThinkingDeltasAccumulateThinkingTokens(t *testing
 }
 
 func TestHandlePiOutput_ThinkingThenTextInOneMessageSharePhase(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -641,6 +707,8 @@ func TestHandlePiOutput_ThinkingThenTextInOneMessageSharePhase(t *testing.T) {
 }
 
 func TestHandlePiOutput_EmptyDeltaDoesNotBroadcastThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -651,6 +719,8 @@ func TestHandlePiOutput_EmptyDeltaDoesNotBroadcastThinkingTokens(t *testing.T) {
 }
 
 func TestHandlePiOutput_ToolExecutionUpdateDoesNotCountThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -662,6 +732,8 @@ func TestHandlePiOutput_ToolExecutionUpdateDoesNotCountThinkingTokens(t *testing
 }
 
 func TestHandlePiOutput_MessageEndResetsThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -678,6 +750,8 @@ func TestHandlePiOutput_MessageEndResetsThinkingTokens(t *testing.T) {
 }
 
 func TestHandlePiOutput_DialogRequestResetsThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	sink := &recordingControlSink{}
 	a := newPiAgentWithSink(sink)
 
@@ -696,6 +770,8 @@ func TestHandlePiOutput_DialogRequestResetsThinkingTokens(t *testing.T) {
 }
 
 func TestHandlePiOutput_TurnAndToolBoundariesResetThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range []struct {
 		name  string
 		reset string

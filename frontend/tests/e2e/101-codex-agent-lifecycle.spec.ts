@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { isMaybeVisible, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { isMaybeVisible, messageContents, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex Agent Lifecycle', () => {
   codexTest('Codex agent tab is visible after creation', async ({ authenticatedCodexWorkspace, page }) => {
@@ -56,7 +56,7 @@ codexTest.describe('Codex Agent Lifecycle', () => {
     await page.waitForTimeout(5000)
 
     // The context_cleared notification should appear in the chat.
-    const chatArea = page.locator('[data-testid="message-content"]')
+    const chatArea = messageContents(page)
     const allText = await chatArea.allTextContents()
     const joined = allText.join(' ').toLowerCase()
     // Either a "context cleared" notification or the chat should be reset.

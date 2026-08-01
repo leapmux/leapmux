@@ -160,6 +160,8 @@ func (e *teardownEnv) captureWorker() chan *leapmuxv1.ConnectResponse {
 // owning worker must receive a ChannelClose notification — same
 // payload it would see for a user-initiated CloseChannel.
 func TestWorkerDelegationRevoke_TearsDownOpenChannels(t *testing.T) {
+	t.Parallel()
+
 	env := setupTeardownEnv(t)
 	tokenID := env.seedDelegationRow(t)
 
@@ -205,6 +207,8 @@ func TestWorkerDelegationRevoke_TearsDownOpenChannels(t *testing.T) {
 // teardown is bearer-precise: a second channel held by an unrelated
 // bearer (or a cookie session) must NOT be dropped.
 func TestWorkerDelegationRevoke_LeavesOtherChannelsUntouched(t *testing.T) {
+	t.Parallel()
+
 	env := setupTeardownEnv(t)
 	revokedToken := env.seedDelegationRow(t)
 	otherToken := env.seedDelegationRow(t)
@@ -239,6 +243,8 @@ func TestWorkerDelegationRevoke_LeavesOtherChannelsUntouched(t *testing.T) {
 // TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers verifies
 // generation-aware credential rotation closes old channels and notifies workers.
 func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.T) {
+	t.Parallel()
+
 	env := setupTeardownEnv(t)
 	tokenID := env.seedDelegationRow(t)
 
@@ -311,6 +317,8 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 // safety check at the hub layer: a buggy revoke path that passes ""
 // must NOT match every cookie channel.
 func TestChannelService_CloseChannelsByBearer_EmptyTokenIDIsNoop(t *testing.T) {
+	t.Parallel()
+
 	env := setupTeardownEnv(t)
 	chCookie := id.Generate()
 	env.channelMgr.RegisterWithAuthInfo(chCookie, env.workerID, env.userID, channelmgr.AuthInfo{}, nil)

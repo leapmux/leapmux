@@ -1,16 +1,6 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { openAgentViaUI } from './helpers/ui'
-
-/** Send a message via the ProseMirror editor. */
-async function sendMessage(page: Page, text: string) {
-  const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
-  await page.keyboard.type(text, { delay: 100 })
-  await page.keyboard.press('Meta+Enter')
-  await expect(editor).toHaveText('')
-}
+import { openAgentViaUI, sendMessage } from './helpers/ui'
 
 /** Wait for the control request banner to appear and return a scoped locator. */
 async function waitForControlBanner(page: Page) {

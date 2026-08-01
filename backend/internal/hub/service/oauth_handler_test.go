@@ -88,6 +88,8 @@ func createTestProviderWithTrustEmail(t *testing.T, st store.Store, ks *keystore
 }
 
 func TestOAuthLogin_RedirectsToProvider(t *testing.T) {
+	t.Parallel()
+
 	server, st, ks := setupOAuthTestServer(t)
 	providerID := createTestProvider(t, st, ks)
 
@@ -112,6 +114,8 @@ func TestOAuthLogin_RedirectsToProvider(t *testing.T) {
 }
 
 func TestOAuthLogin_UnknownProvider_Returns404(t *testing.T) {
+	t.Parallel()
+
 	server, _, _ := setupOAuthTestServer(t)
 
 	resp, err := http.Get(server.URL + "/auth/oauth/nonexistent/login")
@@ -122,6 +126,8 @@ func TestOAuthLogin_UnknownProvider_Returns404(t *testing.T) {
 }
 
 func TestOAuthLogin_DisabledProvider_Returns403(t *testing.T) {
+	t.Parallel()
+
 	server, st, ks := setupOAuthTestServer(t)
 	providerID := createTestProvider(t, st, ks)
 
@@ -140,6 +146,8 @@ func TestOAuthLogin_DisabledProvider_Returns403(t *testing.T) {
 }
 
 func TestOAuthLogin_StoresRedirectURI(t *testing.T) {
+	t.Parallel()
+
 	server, st, ks := setupOAuthTestServer(t)
 	providerID := createTestProvider(t, st, ks)
 
@@ -155,6 +163,8 @@ func TestOAuthLogin_StoresRedirectURI(t *testing.T) {
 }
 
 func TestOAuthCallback_InvalidState_Returns400(t *testing.T) {
+	t.Parallel()
+
 	server, _, _ := setupOAuthTestServer(t)
 
 	resp, err := http.Get(server.URL + "/auth/oauth/some-provider/callback?code=test&state=invalid-state")
@@ -165,6 +175,8 @@ func TestOAuthCallback_InvalidState_Returns400(t *testing.T) {
 }
 
 func TestOAuthCallback_MissingCodeOrState_Returns400(t *testing.T) {
+	t.Parallel()
+
 	server, _, _ := setupOAuthTestServer(t)
 
 	// Missing both.
@@ -187,6 +199,8 @@ func TestOAuthCallback_MissingCodeOrState_Returns400(t *testing.T) {
 }
 
 func TestOAuthCallback_ExpiredState_Returns400(t *testing.T) {
+	t.Parallel()
+
 	server, st, ks := setupOAuthTestServer(t)
 	providerID := createTestProvider(t, st, ks)
 
@@ -207,6 +221,8 @@ func TestOAuthCallback_ExpiredState_Returns400(t *testing.T) {
 }
 
 func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
+	t.Parallel()
+
 	_, st, ks := setupOAuthTestServer(t)
 
 	// Create two providers, one enabled and one disabled.
@@ -233,6 +249,8 @@ func TestGetOAuthProviders_ReturnsEnabledOnly(t *testing.T) {
 }
 
 func TestOAuthTokenStorage_EncryptedInDB(t *testing.T) {
+	t.Parallel()
+
 	_, _, ks := setupOAuthTestServer(t)
 
 	plainAccess := "access-token-plaintext"
@@ -267,6 +285,8 @@ func TestOAuthTokenStorage_EncryptedInDB(t *testing.T) {
 }
 
 func TestOAuthTokenStorage_KeyVersionMatches(t *testing.T) {
+	t.Parallel()
+
 	_, _, ks := setupOAuthTestServer(t)
 
 	ct, err := ks.Encrypt([]byte("test"), nil)
@@ -355,6 +375,8 @@ func insertPendingSignup(t *testing.T, st store.Store, ks *keystore.Keystore, pr
 // --- GetPendingOAuthSignup RPC tests ---
 
 func TestGetPendingOAuthSignup_Success(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
@@ -371,6 +393,8 @@ func TestGetPendingOAuthSignup_Success(t *testing.T) {
 }
 
 func TestGetPendingOAuthSignup_InvalidToken(t *testing.T) {
+	t.Parallel()
+
 	_, client, _, _, _ := setupOAuthTestServerWithAuthService(t)
 
 	_, err := client.GetPendingOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.GetPendingOAuthSignupRequest{
@@ -381,6 +405,8 @@ func TestGetPendingOAuthSignup_InvalidToken(t *testing.T) {
 }
 
 func TestGetPendingOAuthSignup_ExpiredToken(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
@@ -398,6 +424,8 @@ func TestGetPendingOAuthSignup_ExpiredToken(t *testing.T) {
 // --- CompleteOAuthSignup RPC tests ---
 
 func TestCompleteOAuthSignup_Success(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
@@ -431,6 +459,8 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, st, ks) // trust_email=1 by default
 	signupToken := id.Generate()
@@ -453,6 +483,8 @@ func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T)
 }
 
 func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
@@ -486,6 +518,8 @@ func TestCompleteOAuthSignup_DuplicateUsername(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProviderWithTrustEmail(t, st, ks, false) // untrusted provider
 	signupToken := id.Generate()
@@ -518,6 +552,8 @@ func TestCompleteOAuthSignup_DuplicateEmail(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_InvalidToken(t *testing.T) {
+	t.Parallel()
+
 	_, client, _, _, _ := setupOAuthTestServerWithAuthService(t)
 
 	_, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
@@ -529,6 +565,8 @@ func TestCompleteOAuthSignup_InvalidToken(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_InvalidUsername(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
@@ -544,6 +582,8 @@ func TestCompleteOAuthSignup_InvalidUsername(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_RejectsSoloAlways(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
@@ -560,6 +600,8 @@ func TestCompleteOAuthSignup_RejectsSoloAlways(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_RejectsAdminInPublicSignup(t *testing.T) {
+	t.Parallel()
+
 	// setupOAuthTestServerWithAuthService seeds the admin fixture, so this is
 	// a non-setup-mode OAuth signup and the public reservation applies.
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
@@ -578,6 +620,8 @@ func TestCompleteOAuthSignup_RejectsAdminInPublicSignup(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_TokenConsumedOnSuccess(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
@@ -601,6 +645,8 @@ func TestCompleteOAuthSignup_TokenConsumedOnSuccess(t *testing.T) {
 }
 
 func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) {
+	t.Parallel()
+
 	_, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
@@ -642,6 +688,8 @@ func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) 
 // --- Callback behavior tests (signup disabled) ---
 
 func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
+	t.Parallel()
+
 	// Use a custom setup with SignupEnabled=false.
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
@@ -707,6 +755,8 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 // Since handleCallback requires a real OAuth token exchange, this test
 // exercises the DB-level operations that the auto-link path performs.
 func TestAutoLinkByVerifiedEmail(t *testing.T) {
+	t.Parallel()
+
 	_, st, ks := setupOAuthTestServer(t)
 
 	// Create a user with a verified email.
@@ -802,6 +852,8 @@ func TestAutoLinkByVerifiedEmail(t *testing.T) {
 // TestAutoLinkByEmail_SkippedWhenUnverified validates that auto-link does NOT
 // happen when the existing user's email is unverified.
 func TestAutoLinkByEmail_SkippedWhenUnverified(t *testing.T) {
+	t.Parallel()
+
 	_, st, _ := setupOAuthTestServer(t)
 
 	// Create a user with an unverified email.
@@ -828,6 +880,8 @@ func TestAutoLinkByEmail_SkippedWhenUnverified(t *testing.T) {
 }
 
 func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
+	t.Parallel()
+
 	_, st, ks := setupOAuthTestServer(t)
 
 	// Create two OAuth providers.

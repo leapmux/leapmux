@@ -6,6 +6,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/backoffutil"
 	"github.com/leapmux/leapmux/internal/util/nilcheck"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -152,25 +153,67 @@ func (r *OrphanReconciler) Trigger() {
 	}
 }
 
+// reconcileRetryBase is the first delay after a pass that did not converge.
+const reconcileRetryBase = time.Second
+
 // Run blocks until ctx is cancelled or Stop is called. Run a single
 // pass on start, then run on each interval tick or Trigger().
+//
+// A pass whose hub leg failed is retried on a short backoff rather than left
+// until the next tick. Trigger() is fired on reconnect, which is exactly when
+// the hub RPC is most likely to be answered by a channel that has not settled
+// yet -- and dropping that one shot meant the reconnect converged nothing and
+// the worker kept a closed tab's process alive for up to the full interval.
 func (r *OrphanReconciler) Run(ctx context.Context) {
 	defer close(r.done)
 	t := time.NewTicker(r.interval)
 	defer t.Stop()
 
-	r.reconcileOnce(ctx)
+	// Deterministic (no jitter): a single worker retrying its own hub is not a
+	// thundering herd, and the retry test asserts convergence inside a fixed
+	// budget. Capped at the ordinary interval, so a worker that is genuinely
+	// offline decays into the hourly cadence instead of hammering a hub that
+	// cannot answer.
+	retryBackoff := backoffutil.NewCapped(reconcileRetryBase, r.interval, 0)
+	var (
+		retryTimer *time.Timer
+		retryC     <-chan time.Time
+	)
+	// Re-arm (or disarm) the retry from a pass's outcome. Always stops the
+	// previous timer first so a tick or Trigger that lands mid-backoff cannot
+	// leave two pending retries behind.
+	rearm := func(converged bool) {
+		if retryTimer != nil {
+			retryTimer.Stop()
+			retryTimer, retryC = nil, nil
+		}
+		if converged {
+			retryBackoff.Reset()
+			return
+		}
+		retryTimer = time.NewTimer(retryBackoff.NextBackOff())
+		retryC = retryTimer.C
+	}
+	defer func() {
+		if retryTimer != nil {
+			retryTimer.Stop()
+		}
+	}()
+
+	rearm(r.reconcileOnce(ctx))
 	for {
+		// Every wake-up source runs the same pass, so the arms only select;
+		// the call sits below them and a fourth source costs one line.
 		select {
 		case <-ctx.Done():
 			return
 		case <-r.stop:
 			return
 		case <-t.C:
-			r.reconcileOnce(ctx)
 		case <-r.trigger:
-			r.reconcileOnce(ctx)
+		case <-retryC:
 		}
+		rearm(r.reconcileOnce(ctx))
 	}
 }
 
@@ -207,31 +250,44 @@ func newOwnedTabKey(tabType leapmuxv1.TabType, tabID, userID string) ownedTabKey
 	return ownedTabKey{tabType: tabType, tabID: tabID, userID: worktreeTabUserID(tabType, userID)}
 }
 
-func (r *OrphanReconciler) reconcileOnce(ctx context.Context) {
+// reconcileOnce runs one pass and reports whether EVERY leg it attempted
+// actually completed. False means the pass learned less than it set out to --
+// the hub RPC failed, its response declared no owner scope, or a local SQLite
+// read errored -- so the caller retries on a backoff instead of leaving the
+// drift until the next interval tick. Having nothing to reconcile is not a
+// failure: an absent listFn and an idle worker both report true.
+//
+// The local legs count, not just the hub one. A read that errors is
+// indistinguishable at the row level from a table that is empty, so reporting
+// convergence on it would tell the caller "idle, all good" for a worker whose
+// DB was merely busy -- and busy is exactly the state the concurrency that
+// motivated this retry produces. The drift then sits for a full hour.
+func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// Worktree GC is local-only (no hub dependency) and must run even when
 	// the hub list is unavailable or there are no live tab rows: a strand
 	// can outlive its tab row once the cleanup loop hard-deletes the closed
 	// agent/terminal, so it would be invisible to the hasAnyLocalRows
 	// short-circuit below.
-	r.reconcileWorktrees(ctx)
+	converged := r.reconcileWorktrees(ctx)
 
 	if r.listFn == nil {
-		return
+		return converged
 	}
 	// Probe the local tables first — they're cheap (in-process SQLite)
 	// — so an idle worker can skip the hub RPC entirely when there's
-	// nothing to reconcile. Errors fall through with empty results;
-	// the hub call below still surfaces drift the local probe missed.
-	hasLocal := r.hasAnyLocalRows(ctx)
-
+	// nothing to reconcile.
+	hasLocal, localOK := r.hasAnyLocalRows(ctx)
+	if !localOK {
+		converged = false
+	}
 	if !hasLocal {
-		return
+		return converged
 	}
 
 	resp, err := r.listFn(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list owned tabs", "err", err)
-		return
+		return false
 	}
 	owner, ownerOK := userid.New(resp.GetOwnerUserId())
 	if !ownerOK {
@@ -240,7 +296,7 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) {
 		// response with no owner is not one we can attribute any row to.
 		r.logger.Warn("orphan reconciler: hub response declares no owner scope; skipping this pass",
 			"hub_tabs", len(resp.GetTabs()))
-		return
+		return false
 	}
 	hubTabs := resp.GetTabs()
 	hubByKey := make(map[ownedTabKey]*leapmuxv1.OwnedTab, len(hubTabs))
@@ -256,27 +312,40 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) {
 	r.reconcileFileTabs(ctx, hubByKey, owner)
 	r.reconcileAgents(ctx, hubByKey)
 	r.reconcileTerminals(ctx, hubByKey)
+	return converged
 }
 
-// hasAnyLocalRows returns true when at least one of the three reconciled
-// local tables (worker_file_tabs, agents, terminals) has any row. Used
-// by reconcileOnce to short-circuit before the hub RPC on idle workers.
-// Each list error is logged but not surfaced — the caller falls through
-// to the hub call, which will fail loudly if the worker is truly broken.
-func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) bool {
+// hasAnyLocalRows reports whether at least one of the three reconciled local
+// tables (worker_file_tabs, agents, terminals) has any row, and whether every
+// probe actually answered. Used by reconcileOnce to short-circuit before the
+// hub RPC on idle workers.
+//
+// ok=false means at least one read errored, so `has` is a floor rather than an
+// answer: the caller must not treat a false `has` as "this worker is idle".
+// All three run even after one fails -- they are in-process SQLite reads on an
+// hourly loop, and a partial probe that stopped early would report a narrower
+// floor for no saving worth having.
+func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) (has, ok bool) {
 	if r.queries == nil {
-		return true
+		return true, true
 	}
-	if rows, err := r.queries.ListAllWorkerFileTabs(ctx); err == nil && len(rows) > 0 {
-		return true
+	ok = true
+	fileTabs, err := r.queries.ListAllWorkerFileTabs(ctx)
+	if err != nil {
+		r.logger.Warn("orphan reconciler: probe worker_file_tabs", "err", err)
+		ok = false
 	}
-	if rows, err := r.queries.ListAllAgentIDs(ctx); err == nil && len(rows) > 0 {
-		return true
+	agentIDs, err := r.queries.ListAllAgentIDs(ctx)
+	if err != nil {
+		r.logger.Warn("orphan reconciler: probe agents", "err", err)
+		ok = false
 	}
-	if rows, err := r.queries.ListAllTerminalIDs(ctx); err == nil && len(rows) > 0 {
-		return true
+	terminalIDs, err := r.queries.ListAllTerminalIDs(ctx)
+	if err != nil {
+		r.logger.Warn("orphan reconciler: probe terminals", "err", err)
+		ok = false
 	}
-	return false
+	return len(fileTabs) > 0 || len(agentIDs) > 0 || len(terminalIDs) > 0, ok
 }
 
 // reconcileWorktrees reclaims worktrees whose tab links are all
@@ -304,14 +373,17 @@ func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) bool {
 // worktree_tabs row whose tab is gone and leak the worktree dir forever
 // (reconcileAgents/reconcileTerminals close the tab row but never drop
 // worktree_tabs links).
-func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) {
+// Returns false when the candidate list could not be read, so the caller can
+// retry: leaving it until the next hourly tick is how a worktree survives a
+// transient DB error for an hour after its last tab is gone.
+func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 	if r.reapWorktree == nil {
-		return
+		return true
 	}
 	candidates, err := r.queries.ListOrphanCandidateWorktrees(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list orphan-candidate worktrees", "err", err)
-		return
+		return false
 	}
 	now := r.now()
 	nextOrphans := make(map[string]time.Time, len(candidates))
@@ -334,6 +406,7 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) {
 		r.reapWorktree(ctx, wt)
 	}
 	r.prevOrphanWorktrees = nextOrphans
+	return true
 }
 
 // reconcileFileTabs reaps local file-tab rows the hub no longer lists.

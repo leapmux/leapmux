@@ -14,6 +14,7 @@ import (
 	pty "github.com/aymanbagabas/go-pty"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
@@ -298,8 +299,15 @@ func startWithScreenBuffer(ctx context.Context, opts Options, screenBuf *ScreenB
 
 	cmd := ptmx.CommandContext(ctx, shell, args...)
 	cmd.Dir = opts.WorkingDir
+	// GitOptionalLocksOff for the same reason the worker's own git commands
+	// carry it: the user's shell is the third contender for .git/index.lock in
+	// a repo LeapMux is driving, and an interactive `git status` taking the
+	// lock purely to write back a refreshed index can kill a concurrent worker
+	// checkout. The cost is local to this shell -- status still reports
+	// correctly, it just leaves the stat cache unrefreshed.
 	cmd.Env = envutil.ScrubAppImageEnvSlice(append(os.Environ(),
 		"TERM=xterm-256color",
+		gitutil.GitOptionalLocksOff,
 	))
 	if len(opts.ExtraEnv) > 0 {
 		// Strip any pre-existing LEAPMUX_REMOTE_* (defensive — leapmux

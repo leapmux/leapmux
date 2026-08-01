@@ -25,6 +25,8 @@ import (
 // blocks for seconds, the OpenAgent RPC response lands in the test writer
 // within ~200 ms — the whole point of the OpenAgent split.
 func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
@@ -62,6 +64,8 @@ func TestOpenAgent_SyncPrologueReturnsFast(t *testing.T) {
 // TestOpenAgent_DelayedStartupBroadcastsActive asserts the goroutine
 // emits ACTIVE once startAgent eventually returns.
 func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
@@ -109,6 +113,8 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 }
 
 func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -202,6 +208,8 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 }
 
 func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -265,6 +273,8 @@ func TestRelaunchForStartupSettingsChangeUsesInjectedStarter(t *testing.T) {
 }
 
 func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -354,6 +364,8 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 }
 
 func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -417,6 +429,8 @@ func TestPersistConfirmedAgentSettingsPreservesLatePermissionModeChange(t *testi
 }
 
 func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -484,6 +498,8 @@ func TestPersistConfirmedAgentSettingsPreservesPreStartPermissionModeChange(t *t
 // against the launch options would discard the entire confirmed blob here, leaving
 // the row stuck on the unresolved "default" sentinel.
 func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChange(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -570,6 +586,8 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 // ELSE and the entire confirmed blob (including the sentinel->concrete model resolution) would be
 // discarded. Guarding on the column's canonical form makes the model resolution land.
 func TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefaultAxis(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -621,6 +639,8 @@ func TestPersistConfirmedAgentSettings_AppliesConfirmedModelWhenColumnLacksDefau
 // option_groups write against the snapshot it read, so when the column has since moved on the
 // catalog write is skipped and the discovered catalog survives.
 func TestPersistConfirmedAgentSettings_DoesNotClobberConcurrentCatalog(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -667,6 +687,8 @@ func TestPersistConfirmedAgentSettings_DoesNotClobberConcurrentCatalog(t *testin
 }
 
 func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -708,6 +730,8 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 // off the sync path and emitted via a subsequent STARTING broadcast so
 // the RPC returns without forking `git status`.
 func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
@@ -744,6 +768,8 @@ func TestOpenAgent_ResponseHasNilGitStatus(t *testing.T) {
 // TerminalStartup registry so deriveTerminalStatus → the WatchEvents
 // catch-up replay can surface it to the just-arriving subscriber.
 func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	// Block the PTY spawn indefinitely so the terminal stays in STARTING
@@ -801,6 +827,8 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 // generic "Starting terminal…". Regression test for the bug where the
 // label was computed from r.GetShell() before resolution.
 func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	blocked := make(chan struct{})
@@ -833,6 +861,8 @@ func TestOpenTerminal_ResolvesDefaultShellForStartupMessage(t *testing.T) {
 // this, a client refreshing mid-startup (e.g. hard reload during PTY
 // spawn) falls back to the option "Starting terminal…" label.
 func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	blocked := make(chan struct{})
@@ -867,6 +897,8 @@ func TestListTerminals_SurfacesRegistryStartupMessage(t *testing.T) {
 }
 
 func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -937,6 +969,8 @@ func TestOpenTerminal_TitlePersistedBeforePTYRegistrationHydratesManagerMeta(t *
 // attaches after the initial STARTING broadcast should see the current
 // phase label via catch-up replay, not an empty string.
 func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	// Block startAgent so the goroutine settles after setting phase 2
@@ -1002,6 +1036,8 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 // TestBuildAgentStatusChange verifies the phase/error/gitStatus field
 // mapping directly, race-free.
 func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 
@@ -1047,6 +1083,8 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 // constructors. Race-free companion to TestOpenAgent_ActiveBroadcastCarriesGitStatus:
 // locks in the field mapping without routing through the broadcast fan-out.
 func TestBuildAgentStatusChange(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	dbAgent := &db.Agent{
 		ID:            "agent-bac",
@@ -1101,6 +1139,8 @@ func TestBuildAgentStatusChange(t *testing.T) {
 // TestBuildTerminalStatusChange covers the per-status TerminalStatusChange
 // constructors, mirroring TestBuildAgentStatusChange.
 func TestBuildTerminalStatusChange(t *testing.T) {
+	t.Parallel()
+
 	t.Run("STARTING carries startupMessage, empty error", func(t *testing.T) {
 		sc := buildTerminalStartingStatus("term-1", "Starting zsh…", nil)
 		assert.Equal(t, leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING, sc.GetStatus())
@@ -1128,6 +1168,8 @@ func TestBuildTerminalStatusChange(t *testing.T) {
 // gitStatus computed during the pre-startAgent phase, so the frontend
 // can render branch info alongside the error.
 func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(_ context.Context, _ agent.Options, _ agent.OutputSink) (map[string]string, error) {
@@ -1173,6 +1215,8 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 // a startAgentFn error produces a STARTUP_FAILED status with the error
 // string visible to a subscribed watcher, and that the agent is closed.
 func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
@@ -1221,6 +1265,8 @@ func TestOpenAgent_StartupFailureBroadcastsFailureAndRollsBack(t *testing.T) {
 // input in a real RPC, but this bypass proves the execute-side error path
 // is clean — the caller gets err, no rollback metadata, and no DB row.
 func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	bogusRoot := t.TempDir() // not a git repo
 	plan := gitModePlan{
@@ -1243,6 +1289,8 @@ func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
 // (subprocess startup) fails: the tab sees "Creating worktree …" then
 // "Rolling back worktree …" then STARTUP_FAILED with the injected error.
 func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
 	svc.startAgentFn = func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error) {
@@ -1330,7 +1378,7 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 
 	// After rollback completes, the worktree dir and branch should be gone.
 	waitForStartupFailure(t, svc, agentID)
-	assert.NoDirExists(t, expectedWorktreePath(repoDir, branchName))
+	assert.NoDirExists(t, expectedWorktreePath(t, repoDir, branchName))
 	assert.False(t, localBranchExists(t, repoDir, branchName))
 }
 
@@ -1339,6 +1387,8 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 // unit-level guarantee that CloseAgent / CloseTerminal mid-phase-0 does
 // not run expensive git commands against a doomed tab.
 func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled before call
@@ -1356,6 +1406,8 @@ func TestExecuteGitMode_HonorsCtxCancellation(t *testing.T) {
 // re-pointing the proto fields) would be caught without depending on
 // goroutine timing.
 func TestBuildTerminalStatusChange_CarriesGitInfo(t *testing.T) {
+	t.Parallel()
+
 	sc := buildTerminalStartingStatus("term-1", "Starting zsh…", &leapmuxv1.AgentGitStatus{
 		Branch:    "feature/x",
 		OriginUrl: "git@example.com:org/repo.git",

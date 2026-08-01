@@ -23,6 +23,8 @@ func createAutoContinueTestAgent(t *testing.T, queries *db.Queries, agentID stri
 }
 
 func TestAutoContinueSchedule_SurvivesRestart(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
 
@@ -56,6 +58,8 @@ func TestAutoContinueSchedule_SurvivesRestart(t *testing.T) {
 }
 
 func TestAutoContinueSchedule_RescheduleUpdatesSingleRow(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
 
@@ -82,6 +86,8 @@ func TestAutoContinueSchedule_RescheduleUpdatesSingleRow(t *testing.T) {
 }
 
 func TestAutoContinueSchedule_ReasonsCanCoexist(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
 
@@ -102,6 +108,8 @@ func TestAutoContinueSchedule_ReasonsCanCoexist(t *testing.T) {
 }
 
 func TestAutoContinueSchedule_CancelOneReasonLeavesOtherIntact(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
 
@@ -142,6 +150,8 @@ func TestAutoContinueSchedule_CancelOneReasonLeavesOtherIntact(t *testing.T) {
 // above can't catch this: they arm from a DB readback, which is already on the
 // millisecond grid.
 func TestAutoContinueSchedule_ArmedDueAtSurvivesDBRoundtrip(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
 	h := NewOutputHandler(nil, queries, nil, nil, nil)
@@ -176,6 +186,8 @@ func TestAutoContinueSchedule_ArmedDueAtSurvivesDBRoundtrip(t *testing.T) {
 }
 
 func TestAutoContinueSchedule_FiresOnceAndDoesNotRefireAfterRestart(t *testing.T) {
+	t.Parallel()
+
 	_, queries := setupTestDB(t)
 	createAutoContinueTestAgent(t, queries, "agent-1")
 

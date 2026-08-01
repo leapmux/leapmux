@@ -66,6 +66,8 @@ func renderedTabCollision(t *testing.T, st store.Store) (ownerID, strangerID, ws
 // Proving the caller owns the workspace is not the same as proving the ROW
 // does, which is exactly why the caller's own id has to reach the query.
 func TestWorkspaceService_GetTab_BindsTheCallerAsOwner(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	ownerID, _, wsID, ownerTile, strangerTile := renderedTabCollision(t, st)
 
@@ -89,6 +91,8 @@ func TestWorkspaceService_GetTab_BindsTheCallerAsOwner(t *testing.T) {
 // owner binding is the ONLY thing separating the two colliding rows here -- and
 // this is the path `leapmux remote` uses to expand an env-injected tab id.
 func TestWorkspaceService_LocateTab_BindsTheCallerAsOwner(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	st := hubtestutil.OpenTestStore(t)
 

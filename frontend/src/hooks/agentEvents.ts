@@ -181,7 +181,19 @@ export function handleAgentSessionInfo(
  * compaction scan self-filters by shape (isCompactBoundary), and usage folding
  * additionally requires an AGENT-source row.
  */
-export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage, parsed: ParsedMessageContent, stores: AgentMessageStores): void {
+/**
+ * Whether an agent event is being delivered LIVE or replayed during catch-up.
+ *
+ * Every imperative side effect in this module is gated on it: replaying a
+ * historical `plan_updated` used to re-apply the plan-derived title on each
+ * page load, silently overwriting a tab the user had renamed by hand. It is a
+ * REQUIRED parameter everywhere rather than one defaulting to 'live', so a
+ * caller that forgets to thread it fails to compile instead of reintroducing
+ * exactly that bug.
+ */
+export type CatchUpPhase = 'catchingUp' | 'live'
+
+export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage, parsed: ParsedMessageContent, stores: AgentMessageStores, catchUpPhase: CatchUpPhase): void {
   if (parsed.topLevel === null)
     return
   const { agentSessionStore, chatStore, metadata } = stores
@@ -259,7 +271,13 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
     if (planUpdate) {
       if (planUpdate.planFilePath)
         agentSessionStore.updateInfo(agentId, { planFilePath: planUpdate.planFilePath })
-      if (planUpdate.updateAgentTitle && planUpdate.planTitle)
+      // Live only. The tab title is USER-EDITABLE, and this is the one branch
+      // here that writes over a user's own choice: replaying history on reload
+      // re-applied the plan's title and silently undid a manual rename. Every
+      // other side effect in this function is derived state that catch-up
+      // should restore, which is why only this one is gated. (planFilePath
+      // above is derived, so it still restores.)
+      if (catchUpPhase === 'live' && planUpdate.updateAgentTitle && planUpdate.planTitle)
         metadata.patch(agentId, { title: planUpdate.planTitle })
     }
   }
@@ -278,7 +296,7 @@ export function handleResultDivider(
   parsed: ParsedMessageContent,
   stores: AgentMessageStores,
   onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
-  catchUpPhase: 'catchingUp' | 'live',
+  catchUpPhase: CatchUpPhase,
 ): void {
   const { agentSessionStore, chatStore, view } = stores
   // Clear the per-turn thinking-token estimate on the turn-end divider itself, not just
@@ -391,7 +409,7 @@ export function handleAgentMessage(
   msg: AgentChatMessage,
   stores: AgentMessageStores,
   onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
-  catchUpPhase: 'catchingUp' | 'live',
+  catchUpPhase: CatchUpPhase,
 ): void {
   const { agentSessionStore, chatStore, view, selection } = stores
 
@@ -407,7 +425,7 @@ export function handleAgentMessage(
 
   // Notification metadata (context_cleared / rate_limit / token-usage / compaction
   // / settings_changed / plan), independent of the persisted-message handling.
-  applyNotificationMetadata(agentId, msg, parsed, stores)
+  applyNotificationMetadata(agentId, msg, parsed, stores, catchUpPhase)
 
   const messageInWindow = chatStore.addMessage(agentId, msg)
   // Main-agent output means the current thinking phase produced something,
@@ -613,7 +631,7 @@ export function drainPendingOutboundOnStart(
 export function handleAgentInactive(
   agentId: string,
   sc: AgentStatusChange,
-  catchUpPhase: 'catchingUp' | 'live',
+  catchUpPhase: CatchUpPhase,
   // The shared message-stores bag plus the controlStore only this handler needs --
   // reuse AgentMessageStores rather than re-spelling its three members inline.
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
@@ -676,7 +694,7 @@ export function handleStreamEnd(agentId: string, value: AgentStreamEnd, stores: 
 export function handleControlRequest(
   agentId: string,
   cr: AgentControlRequest,
-  catchUpPhase: 'catchingUp' | 'live',
+  catchUpPhase: CatchUpPhase,
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
   onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
 ): void {
@@ -728,7 +746,7 @@ export function handleControlRequest(
 export function handleAgentStatusChange(
   agentId: string,
   sc: AgentStatusChange,
-  catchUpPhase: 'catchingUp' | 'live',
+  catchUpPhase: CatchUpPhase,
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
   settingsLoading: ReturnType<typeof createLoadingSignal>,
   setWorkerOnline: (online: boolean) => void,

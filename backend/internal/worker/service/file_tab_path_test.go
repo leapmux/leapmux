@@ -2,6 +2,9 @@ package service_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -16,6 +19,43 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/service"
 )
 
+// absTestPath renders a POSIX-style path literal as a NATIVE absolute path, for
+// the fixtures in this file and in orphan_reconciler_test.go.
+//
+// The absoluteness guards these tests drive -- FileTabPathStore.Register's
+// filepath.IsAbs on file_path, and normalizeWorkingDir's on working_dir -- are
+// platform-specific, and a rooted-but-driveless "/repo/a.go" is NOT absolute on
+// Windows. Hardcoded POSIX literals therefore made every Register below fail
+// there with `file_path must be absolute`, for a reason no test here meant to
+// assert -- and made TestFileTabPath_RegisterRefusesRelativeWorkingDir pass for
+// the wrong one, since it never reached the working_dir guard it exists to pin.
+//
+// The paths stay fictional and never reach the filesystem: nothing here opens a
+// file, and Register's only disk touch is linkFileTabToWorktree's best-effort
+// `git rev-parse` probe, which fails the same way on a nonexistent directory on
+// every platform. They only have to be absolute, and to survive the round trip
+// through the database unchanged (Register stores file_path verbatim and
+// normalizeWorkingDir does not canonicalize, so they do).
+func absTestPath(p string) string {
+	return filepath.FromSlash(testPathVolume + p)
+}
+
+// testPathVolume is the volume component of the test binary's working directory:
+// "" on POSIX (where the literals are already absolute), "C:"/"D:"/... on
+// Windows. Derived rather than hardcoded so absTestPath names a volume that
+// exists on whatever host is running.
+var testPathVolume = func() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		// Only reachable if the cwd was unlinked mid-run. Returning "" keeps
+		// absTestPath total; on Windows the result is then not absolute, so
+		// Register refuses it and the test fails loudly rather than quietly
+		// exercising some other path.
+		return ""
+	}
+	return filepath.VolumeName(wd)
+}()
+
 // newFileTabPathTestStore creates a worker DB and FileTabPathStore for
 // tests. Returns the store along with the bus so tests can subscribe.
 func newFileTabPathTestStore(t *testing.T) (*service.FileTabPathStore, *service.PrivateEventsBus, *db.Queries) {
@@ -23,23 +63,40 @@ func newFileTabPathTestStore(t *testing.T) (*service.FileTabPathStore, *service.
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, workerdb.Migrate(sqlDB))
+	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB))
 	q := db.New(sqlDB)
 	bus := service.NewPrivateEventsBus()
 	t.Cleanup(bus.Stop)
 	return service.NewFileTabPathStore(q, bus), bus, q
 }
 
+// TestAbsTestPath_IsAbsoluteOnEveryHost pins the one property every fixture in
+// this package leans on, against the SAME filepath.IsAbs the code under test
+// applies. Without it the platform assumption is only implied by the fixtures,
+// and a host where it does not hold reports fifteen unrelated "must be absolute"
+// failures in tests about ownership and reaping -- which is exactly how the
+// POSIX-literal version surfaced on Windows.
+func TestAbsTestPath_IsAbsoluteOnEveryHost(t *testing.T) {
+	t.Parallel()
+
+	for _, p := range []string{"/r", "/mine-a", "/r/a.go", "/repo/pkg/README.md"} {
+		got := absTestPath(p)
+		assert.True(t, filepath.IsAbs(got), "absTestPath(%q) = %q must be absolute on %s", p, got, runtime.GOOS)
+	}
+}
+
 func TestFileTabPath_RegisterAndGet(t *testing.T) {
+	t.Parallel()
+
 	store, _, _ := newFileTabPathTestStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: "/repo/pkg/README.md", WorkingDir: "/repo",
+		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/pkg/README.md"), WorkingDir: absTestPath("/repo"),
 	}))
 	loc, err := store.Get(ctx, "user-1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, "/repo/pkg/README.md", loc.FilePath)
-	assert.Equal(t, "/repo", loc.WorkingDir,
+	assert.Equal(t, absTestPath("/repo/pkg/README.md"), loc.FilePath)
+	assert.Equal(t, absTestPath("/repo"), loc.WorkingDir,
 		"the originating tab's working dir is stored as given, not re-derived from the file's own directory")
 }
 
@@ -48,14 +105,16 @@ func TestFileTabPath_RegisterAndGet(t *testing.T) {
 // dir, because every reader of the column treats it as authoritative and a
 // blank one would make the file tab unanswerable to `git -C`.
 func TestFileTabPath_RegisterWithoutWorkingDirFallsBackToFileDir(t *testing.T) {
+	t.Parallel()
+
 	store, _, _ := newFileTabPathTestStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: "/repo/pkg/README.md",
+		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/pkg/README.md"),
 	}))
 	loc, err := store.Get(ctx, "user-1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, "/repo/pkg", loc.WorkingDir)
+	assert.Equal(t, absTestPath("/repo/pkg"), loc.WorkingDir)
 }
 
 // Whitespace is not a working dir. The fallback is keyed on "the caller named
@@ -64,14 +123,16 @@ func TestFileTabPath_RegisterWithoutWorkingDirFallsBackToFileDir(t *testing.T) {
 // degrades to its tolerant no-prompt branch for a tab that has a perfectly good
 // repo one directory up.
 func TestFileTabPath_RegisterTreatsBlankWorkingDirAsAbsent(t *testing.T) {
+	t.Parallel()
+
 	store, _, _ := newFileTabPathTestStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: "/repo/pkg/README.md", WorkingDir: "   ",
+		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/pkg/README.md"), WorkingDir: "   ",
 	}))
 	loc, err := store.Get(ctx, "user-1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, "/repo/pkg", loc.WorkingDir)
+	assert.Equal(t, absTestPath("/repo/pkg"), loc.WorkingDir)
 }
 
 // A relative working dir is refused for the same reason a relative file_path
@@ -81,14 +142,20 @@ func TestFileTabPath_RegisterTreatsBlankWorkingDirAsAbsent(t *testing.T) {
 // it would let a file tab's close inspection report another repo's branch and
 // dirty state, and `--worktree=push` commit and push that repo.
 func TestFileTabPath_RegisterRefusesRelativeWorkingDir(t *testing.T) {
+	t.Parallel()
+
 	store, _, _ := newFileTabPathTestStore(t)
 	ctx := context.Background()
 	for _, dir := range []string{".", "..", "../peer-repo", "src", "./x"} {
 		err := store.Register(ctx, service.RegisterFileTabPathParams{
-			UserID: "user-1", TabID: "t1", FilePath: "/repo/pkg/README.md", WorkingDir: dir,
+			UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/pkg/README.md"), WorkingDir: dir,
 		})
 		require.Error(t, err, "working_dir %q must be refused", dir)
-		assert.Contains(t, err.Error(), "must be absolute")
+		// The WORKING_DIR guard, named: file_path's guard rejects with the same
+		// "must be absolute" tail, so a bare substring match would go on passing
+		// if the file_path above ever stopped being absolute -- which is exactly
+		// what happened on Windows while these fixtures were POSIX literals.
+		assert.Contains(t, err.Error(), "working_dir must be absolute")
 		_, getErr := store.Get(ctx, "user-1", "t1")
 		assert.ErrorIs(t, getErr, service.ErrFileTabPathNotFound,
 			"a refused registration must not leave a row behind")
@@ -100,31 +167,37 @@ func TestFileTabPath_RegisterRefusesRelativeWorkingDir(t *testing.T) {
 // updates both columns or the tab answers branch questions from where it used
 // to live.
 func TestFileTabPath_RegisterOverwritesWorkingDir(t *testing.T) {
+	t.Parallel()
+
 	store, _, _ := newFileTabPathTestStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: "/repo/a.go", WorkingDir: "/repo",
+		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/a.go"), WorkingDir: absTestPath("/repo"),
 	}))
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: "/wt/a.go", WorkingDir: "/wt",
+		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/wt/a.go"), WorkingDir: absTestPath("/wt"),
 	}))
 	loc, err := store.Get(ctx, "user-1", "t1")
 	require.NoError(t, err)
-	assert.Equal(t, "/wt/a.go", loc.FilePath)
-	assert.Equal(t, "/wt", loc.WorkingDir)
+	assert.Equal(t, absTestPath("/wt/a.go"), loc.FilePath)
+	assert.Equal(t, absTestPath("/wt"), loc.WorkingDir)
 }
 
 func TestFileTabPath_GetMissingReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
 	store, _, _ := newFileTabPathTestStore(t)
 	_, err := store.Get(context.Background(), "user-1", "ghost")
 	assert.ErrorIs(t, err, service.ErrFileTabPathNotFound)
 }
 
 func TestFileTabPath_RevokeRemovesAndEmits(t *testing.T) {
+	t.Parallel()
+
 	store, bus, _ := newFileTabPathTestStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: "/repo/a.go",
+		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/repo/a.go"),
 	}))
 
 	// Subscribe as the owner; expect a Revoked event after revoke.
@@ -163,14 +236,16 @@ func TestFileTabPath_RevokeRemovesAndEmits(t *testing.T) {
 // binds user_id, so a future edit that drops the predicate (returning to the
 // whole-table walk this replaced) fails here rather than leaking silently.
 func TestFileTabPath_SnapshotForOwnerBindsTheOwner(t *testing.T) {
+	t.Parallel()
+
 	store, _, _ := newFileTabPathTestStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t1", FilePath: "/mine-a"}))
+		UserID: "user-1", TabID: "t1", FilePath: absTestPath("/mine-a")}))
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "t2", FilePath: "/mine-b"}))
+		UserID: "user-1", TabID: "t2", FilePath: absTestPath("/mine-b")}))
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-2", TabID: "t3", FilePath: "/theirs"}))
+		UserID: "user-2", TabID: "t3", FilePath: absTestPath("/theirs")}))
 
 	mine, err := store.SnapshotForOwner(ctx, userid.MustNew("user-1"))
 	require.NoError(t, err)
@@ -179,12 +254,12 @@ func TestFileTabPath_SnapshotForOwnerBindsTheOwner(t *testing.T) {
 		mine[0].GetFileTabPathRegistered().GetFilePath(),
 		mine[1].GetFileTabPathRegistered().GetFilePath(),
 	}
-	assert.ElementsMatch(t, []string{"/mine-a", "/mine-b"}, paths)
+	assert.ElementsMatch(t, []string{absTestPath("/mine-a"), absTestPath("/mine-b")}, paths)
 
 	theirs, err := store.SnapshotForOwner(ctx, userid.MustNew("user-2"))
 	require.NoError(t, err)
 	require.Len(t, theirs, 1)
-	assert.Equal(t, "/theirs", theirs[0].GetFileTabPathRegistered().GetFilePath())
+	assert.Equal(t, absTestPath("/theirs"), theirs[0].GetFileTabPathRegistered().GetFilePath())
 
 	// An unminted owner reaches no row, rather than falling back to every row.
 	none, err := store.SnapshotForOwner(ctx, userid.UserID{})
@@ -193,10 +268,12 @@ func TestFileTabPath_SnapshotForOwnerBindsTheOwner(t *testing.T) {
 }
 
 func TestFileTabPath_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
+	t.Parallel()
+
 	store, bus, _ := newFileTabPathTestStore(t)
 	ctx := context.Background()
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "tBootstrap", FilePath: "/repo/seed",
+		UserID: "user-1", TabID: "tBootstrap", FilePath: absTestPath("/repo/seed"),
 	}))
 
 	// SnapshotAndSubscribe must replay the existing row before any
@@ -225,7 +302,7 @@ func TestFileTabPath_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
 	// A live Register after subscribe should arrive after the bootstrap
 	// snapshot.
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "tLive", FilePath: "/repo/live",
+		UserID: "user-1", TabID: "tLive", FilePath: absTestPath("/repo/live"),
 	}))
 
 	collected := []*leapmuxv1.WorkerPrivateEvent{}
@@ -244,10 +321,12 @@ func TestFileTabPath_SnapshotAndSubscribe_RaceFreeBootstrap(t *testing.T) {
 }
 
 func TestFileTabPath_RegisterRequiresAllFields(t *testing.T) {
+	t.Parallel()
+
 	store, _, _ := newFileTabPathTestStore(t)
 	cases := []service.RegisterFileTabPathParams{
-		{UserID: "", TabID: "t1", FilePath: "/p"},
-		{UserID: "user-1", TabID: "", FilePath: "/p"},
+		{UserID: "", TabID: "t1", FilePath: absTestPath("/p")},
+		{UserID: "user-1", TabID: "", FilePath: absTestPath("/p")},
 		{UserID: "user-1", TabID: "t1", FilePath: ""},
 	}
 	for _, c := range cases {
@@ -271,6 +350,8 @@ func TestFileTabPath_RegisterRequiresAllFields(t *testing.T) {
 // owner's row, since they defend the caller-side mistake (a lost tenant) that
 // no constraint can catch.
 func TestFileTabPathStore_RefusesBlankOwner(t *testing.T) {
+	t.Parallel()
+
 	store, _, q := newFileTabPathTestStore(t)
 	ctx := context.Background()
 
@@ -281,12 +362,12 @@ func TestFileTabPathStore_RefusesBlankOwner(t *testing.T) {
 	require.Error(t, q.UpsertWorkerFileTab(ctx, db.UpsertWorkerFileTabParams{
 		UserID:   "",
 		TabID:    "shared-tab",
-		FilePath: "/blank/a.go",
+		FilePath: absTestPath("/blank/a.go"),
 	}), "the schema must refuse a blank owner even when sqlc is driven directly")
 
 	// A real owner's row, which every control below resolves against.
 	require.NoError(t, store.Register(ctx, service.RegisterFileTabPathParams{
-		UserID: "user-1", TabID: "shared-tab", FilePath: "/real/a.go",
+		UserID: "user-1", TabID: "shared-tab", FilePath: absTestPath("/real/a.go"),
 	}))
 
 	// The Go guards. Each pairs a blank-owner refusal with a real-owner
@@ -300,7 +381,7 @@ func TestFileTabPathStore_RefusesBlankOwner(t *testing.T) {
 
 		loc, err := store.Get(ctx, "user-1", "shared-tab")
 		require.NoError(t, err, "control: a real owner still resolves")
-		assert.Equal(t, "/real/a.go", loc.FilePath)
+		assert.Equal(t, absTestPath("/real/a.go"), loc.FilePath)
 	})
 
 	t.Run("revoke", func(t *testing.T) {

@@ -11,6 +11,8 @@ import (
 )
 
 func TestResolveControlResponse_NoopKeepsRawResponse(t *testing.T) {
+	t.Parallel()
+
 	content := []byte(`{"id":1,"result":{"ok":true}}`)
 	res := noopProvider{}.ResolveControlResponse(ControlResponseContext{ResponseContent: content})
 
@@ -21,6 +23,8 @@ func TestResolveControlResponse_NoopKeepsRawResponse(t *testing.T) {
 }
 
 func TestResolveControlResponse_CodexApprovalRequestContext(t *testing.T) {
+	t.Parallel()
+
 	// A Codex command-approval decision: the native response is forwarded verbatim, and the pruned
 	// request context is just the method -- the frontend maps result.decision to a label itself.
 	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
@@ -35,6 +39,8 @@ func TestResolveControlResponse_CodexApprovalRequestContext(t *testing.T) {
 }
 
 func TestResolveControlResponse_CodexUserInputRequestContext(t *testing.T) {
+	t.Parallel()
+
 	// requestUserInput keeps the question id + header the frontend labels its answer values with.
 	res := codexProvider{}.ResolveControlResponse(ControlResponseContext{
 		RequestPayload: []byte(`{
@@ -58,6 +64,8 @@ func TestResolveControlResponse_CodexUserInputRequestContext(t *testing.T) {
 }
 
 func TestResolveControlResponse_CodexPlanModePrompt(t *testing.T) {
+	t.Parallel()
+
 	// The synthesized plan-mode prompt frame carries no top-level method; its request.tool_name is
 	// the pruned context, and the neutral allow/deny envelope is forwarded verbatim.
 	content := []byte(`{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`)
@@ -73,6 +81,8 @@ func TestResolveControlResponse_CodexPlanModePrompt(t *testing.T) {
 }
 
 func TestResolveControlResponse_ClaudeSelfDisplayAndPlanMode(t *testing.T) {
+	t.Parallel()
+
 	res := claudeProvider{}.ResolveControlResponse(ControlResponseContext{
 		ResponseContent: []byte(`{"type":"control_response","response":{"request_id":"req-1","response":{"behavior":"allow"}}}`),
 		ToolName:        ToolNameExitPlanMode,
@@ -85,6 +95,8 @@ func TestResolveControlResponse_ClaudeSelfDisplayAndPlanMode(t *testing.T) {
 }
 
 func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T) {
+	t.Parallel()
+
 	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR}.ResolveControlResponse(ControlResponseContext{
 		RequestPayload: []byte(`{
 			"jsonrpc":"2.0",
@@ -119,6 +131,8 @@ func TestResolveControlResponse_CursorCreatePlanTransformsResponse(t *testing.T)
 }
 
 func TestResolveControlResponse_CursorCreatePlanAcceptsResponse(t *testing.T) {
+	t.Parallel()
+
 	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR}.ResolveControlResponse(ControlResponseContext{
 		RequestPayload: []byte(`{
 			"jsonrpc":"2.0",
@@ -151,6 +165,8 @@ func TestResolveControlResponse_CursorCreatePlanAcceptsResponse(t *testing.T) {
 }
 
 func TestResolveControlResponse_CursorCreatePlanRejectsDefaultMessageAsReject(t *testing.T) {
+	t.Parallel()
+
 	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR}.ResolveControlResponse(ControlResponseContext{
 		RequestPayload: []byte(`{
 			"jsonrpc":"2.0",
@@ -181,6 +197,8 @@ func TestResolveControlResponse_CursorCreatePlanRejectsDefaultMessageAsReject(t 
 }
 
 func TestResolveControlResponse_CursorCreatePlanIgnoresMalformedEnvelope(t *testing.T) {
+	t.Parallel()
+
 	// The response isn't the neutral envelope, so the transform bails and the create-plan request
 	// falls through to the ACP permission context -- which has no options, so it degrades to
 	// method-only. The raw response is forwarded unchanged.
@@ -200,6 +218,8 @@ func TestResolveControlResponse_CursorCreatePlanIgnoresMalformedEnvelope(t *test
 }
 
 func TestResolveControlResponse_CursorQuestionRequestContext(t *testing.T) {
+	t.Parallel()
+
 	// Cursor AskQuestion keeps the question prompts and the option id->label map the frontend needs
 	// to render selected option ids as their labels.
 	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR}.ResolveControlResponse(ControlResponseContext{
@@ -229,6 +249,8 @@ func TestResolveControlResponse_CursorQuestionRequestContext(t *testing.T) {
 }
 
 func TestResolveControlResponse_OpenCodeQuestionRequestContext(t *testing.T) {
+	t.Parallel()
+
 	// The OpenCode/Kilo question context keeps the question headers the frontend labels its answer
 	// values with. Resolve through ProviderFor (not an inline literal) so the test exercises the
 	// real registration: the question hook is set only for OpenCode/Kilo in init().
@@ -254,6 +276,8 @@ func TestResolveControlResponse_OpenCodeQuestionRequestContext(t *testing.T) {
 }
 
 func TestResolveControlResponse_OpenCodeQuestionDispatchIsRegistrationDriven(t *testing.T) {
+	t.Parallel()
+
 	// The OpenCode-protocol `question.asked` request context must dispatch through the
 	// registration-time questionRequestContext hook (set only for OpenCode and Kilo in init()), NOT a
 	// provider-enum allowlist in ResolveControlResponse. This is the backend mirror of the frontend's
@@ -308,6 +332,8 @@ func TestResolveControlResponse_OpenCodeQuestionDispatchIsRegistrationDriven(t *
 }
 
 func TestResolveControlResponse_ACPPermissionRequestContext(t *testing.T) {
+	t.Parallel()
+
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
@@ -345,6 +371,8 @@ func TestResolveControlResponse_ACPPermissionRequestContext(t *testing.T) {
 }
 
 func TestResolveControlResponse_ACPPermissionRequestContextWithoutOptions(t *testing.T) {
+	t.Parallel()
+
 	// A permission request that carries no options (e.g. a Cursor create-plan request that fell
 	// through the transform) degrades to method-only context rather than an empty options list.
 	res := acpProvider{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE}.ResolveControlResponse(ControlResponseContext{
@@ -356,6 +384,8 @@ func TestResolveControlResponse_ACPPermissionRequestContextWithoutOptions(t *tes
 }
 
 func TestResolveControlResponse_PiRequestContext(t *testing.T) {
+	t.Parallel()
+
 	confirmed := true
 	response, err := json.Marshal(map[string]interface{}{"confirmed": confirmed})
 	require.NoError(t, err)
@@ -370,6 +400,8 @@ func TestResolveControlResponse_PiRequestContext(t *testing.T) {
 }
 
 func TestResolveControlResponse_EmptyRequestPayloadYieldsNilContext(t *testing.T) {
+	t.Parallel()
+
 	// Every resolver returns nil RequestContext when it has no stored request to prune (the request
 	// row was already deleted, or never captured) -- the row then persists with `request` omitted.
 	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
@@ -389,6 +421,8 @@ func TestResolveControlResponse_EmptyRequestPayloadYieldsNilContext(t *testing.T
 }
 
 func TestResolveControlResponse_MalformedRequestPayloadYieldsNilContext(t *testing.T) {
+	t.Parallel()
+
 	// A stored request that doesn't parse as JSON leaves RequestContext nil (warnUnmarshal fails)
 	// without dropping the forwarded response.
 	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
@@ -409,6 +443,8 @@ func TestResolveControlResponse_MalformedRequestPayloadYieldsNilContext(t *testi
 }
 
 func TestControlResponseRequestID(t *testing.T) {
+	t.Parallel()
+
 	// Both wire shapes are cross-provider, so every provider must extract the same id from the same
 	// bytes -- run each case over the provider map to pin "identical across providers" as a property,
 	// not an accident of one provider's resolver.
@@ -448,6 +484,8 @@ func TestControlResponseRequestID(t *testing.T) {
 }
 
 func TestWarnUnmarshal(t *testing.T) {
+	t.Parallel()
+
 	var ok struct {
 		Method string `json:"method"`
 	}
@@ -459,6 +497,8 @@ func TestWarnUnmarshal(t *testing.T) {
 }
 
 func TestDecodeControlBehavior(t *testing.T) {
+	t.Parallel()
+
 	// A real deny with a typed reason: request id + behavior + message all surface, trimmed.
 	id, behavior, message, ok := DecodeControlBehavior([]byte(
 		`{"response":{"request_id":" req-1 ","response":{"behavior":" deny ","message":" not this way "}}}`))
@@ -489,6 +529,8 @@ func TestDecodeControlBehavior(t *testing.T) {
 }
 
 func TestNormalizeRejectionMessage(t *testing.T) {
+	t.Parallel()
+
 	// A typed reason surfaces trimmed.
 	assert.Equal(t, "not this way", NormalizeRejectionMessage("  not this way  "))
 	// The auto-filled placeholder collapses to "" (no real feedback), including when padded.

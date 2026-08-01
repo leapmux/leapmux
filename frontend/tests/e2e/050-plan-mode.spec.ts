@@ -1,8 +1,17 @@
 import { expect, test } from './fixtures'
+import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
 import { enterAndExitPlanMode, enterPlanPrompt, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
 import { sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 test.describe('Plan Mode', () => {
+  // Both tests here depend on the model actually CALLING ExitPlanMode when
+  // asked to leave plan mode. `sendPlanStep` already re-prompts a few times
+  // within a test, but a model that narrates its plan instead of calling the
+  // tool three times running leaves nothing for the UI assertions to see.
+  // That is the model's output varying, not the app misbehaving --
+  // see MODEL_NONDETERMINISM_RETRIES.
+  test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
+
   test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace }) => {
     const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await expect(trigger).toBeVisible()

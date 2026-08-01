@@ -144,6 +144,8 @@ func (e *regKeyEnv) registerWithKey(t *testing.T, key string) (*connect.Response
 }
 
 func TestCreateRegistrationKey_RequiresAuth(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 
 	_, err := env.mgmtClient.CreateRegistrationKey(context.Background(), connect.NewRequest(&leapmuxv1.CreateRegistrationKeyRequest{}))
@@ -152,6 +154,8 @@ func TestCreateRegistrationKey_RequiresAuth(t *testing.T) {
 }
 
 func TestCreateRegistrationKey_ReturnsKeyAndExpiry(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -168,6 +172,8 @@ func TestCreateRegistrationKey_ReturnsKeyAndExpiry(t *testing.T) {
 }
 
 func TestRegister_RejectsMissingBearer(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 
 	_, err := env.registerWithKey(t, "")
@@ -176,6 +182,8 @@ func TestRegister_RejectsMissingBearer(t *testing.T) {
 }
 
 func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -203,6 +211,8 @@ func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
 }
 
 func TestRegister_AtomicConsume_RaceProducesOneWinner(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -243,6 +253,8 @@ func TestRegister_AtomicConsume_RaceProducesOneWinner(t *testing.T) {
 }
 
 func TestExtendRegistrationKey_RejectsExpired(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -266,6 +278,8 @@ func TestExtendRegistrationKey_RejectsExpired(t *testing.T) {
 }
 
 func TestExtendRegistrationKey_RejectsTooEarly(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -283,6 +297,8 @@ func TestExtendRegistrationKey_RejectsTooEarly(t *testing.T) {
 }
 
 func TestExtendRegistrationKey_AcceptsInsideBuffer(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -309,6 +325,8 @@ func TestExtendRegistrationKey_AcceptsInsideBuffer(t *testing.T) {
 }
 
 func TestExtendRegistrationKey_RejectsOtherUsersKey(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	adminToken := env.login(t, "admin", "admin123")
 
@@ -340,6 +358,8 @@ func TestExtendRegistrationKey_RejectsOtherUsersKey(t *testing.T) {
 // to revive the dead row. The atomic guard lives in the SQL WHERE
 // clause (`expires_at > now`).
 func TestExtendRegistrationKey_DoesNotResurrectConsumedKey(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -380,6 +400,8 @@ func TestExtendRegistrationKey_DoesNotResurrectConsumedKey(t *testing.T) {
 }
 
 func TestDeleteRegistrationKey_SoftDeletes(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -399,6 +421,8 @@ func TestDeleteRegistrationKey_SoftDeletes(t *testing.T) {
 }
 
 func TestEmailRegistrationInstructions_RequiresVerifiedEmail(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -421,6 +445,8 @@ func TestEmailRegistrationInstructions_RequiresVerifiedEmail(t *testing.T) {
 // frontend gate (which hides the button when email_enabled=false), the
 // RPC refuses to call the disabled mail backend.
 func TestEmailRegistrationInstructions_RejectsWhenSMTPUnconfigured(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnvWithCfg(t, testConfig()) // no SmtpHost set
 	token := env.login(t, "admin", "admin123")
 
@@ -447,6 +473,8 @@ func TestEmailRegistrationInstructions_RejectsWhenSMTPUnconfigured(t *testing.T)
 }
 
 func TestEmailRegistrationInstructions_SendsToVerifiedAddress(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -474,6 +502,8 @@ func TestEmailRegistrationInstructions_SendsToVerifiedAddress(t *testing.T) {
 }
 
 func TestDeregisterWorker_AllowsManuallyRegisteredWorker(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -502,6 +532,8 @@ func TestDeregisterWorker_AllowsManuallyRegisteredWorker(t *testing.T) {
 // handler must refuse rather than producing a transient outage and a
 // reappearing row.
 func TestDeregisterWorker_RefusesAutoRegisteredWorker(t *testing.T) {
+	t.Parallel()
+
 	env := setupRegKeyEnv(t)
 	token := env.login(t, "admin", "admin123")
 
@@ -537,6 +569,8 @@ func TestDeregisterWorker_RefusesAutoRegisteredWorker(t *testing.T) {
 // hub's unix socket gets the same auth treatment as one over TCP:
 // missing or invalid bearer → Unauthenticated.
 func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
+	t.Parallel()
+
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows; named-pipe coverage lives in integration tests")
 	}
@@ -626,6 +660,8 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 // frontend-driven ChannelOpen on the same stream; asserting it is the first frame the
 // worker receives is how that ordering stays true.
 func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
+	t.Parallel()
+
 	if runtime.GOOS == "windows" {
 		t.Skip("unix sockets are not available on Windows")
 	}

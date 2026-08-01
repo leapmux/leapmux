@@ -19,6 +19,8 @@ import (
 )
 
 func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -45,6 +47,12 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 		AgentID:    "agent-1",
 		Options:    map[string]string{agent.OptionIDModel: "opus"},
 		WorkingDir: workDir,
+		// The live path runs before the restart: applySettingsLive pushes
+		// apply_flag_settings to this mock, which is a bare `cat` and so
+		// answers no control request, ever. That wait is bounded by the API
+		// timeout, whose 10s default was the entire runtime of this test.
+		// Nothing can answer, so a longer wait buys only a longer wait.
+		APITimeout: 50 * time.Millisecond,
 	}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE))
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
@@ -72,6 +80,8 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 }
 
 func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -100,6 +110,8 @@ func TestResolveResumeSessionID_ResumedAgentPreservesSession(t *testing.T) {
 }
 
 func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -167,6 +179,8 @@ func TestResolveResumeSessionID_IgnoresPreClearMessages(t *testing.T) {
 }
 
 func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -213,6 +227,8 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 }
 
 func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -253,6 +269,8 @@ func TestUpdateAgentSettings_DoesNotResumeSessionOnRestart(t *testing.T) {
 }
 
 func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -335,6 +353,8 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 // effort change. Only catalog-effort providers (Claude/Codex/Pi) reset effort on a
 // model switch.
 func TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -377,13 +397,23 @@ func TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange(t *testing.T) {
 // reset to auto, while an effort the new model DOES offer is kept. A CLI `agent set --model
 // sonnet --effort xhigh` (xhigh exists on opus, not sonnet) would otherwise persist xhigh
 // against sonnet and surface it until a relaunch clamps it.
+// retiredEffort stands for an effort tier the catalog does not offer -- the
+// shape these tests need is "a stored/sent tier the settled model's catalog
+// does not list", which is exactly what happens when the CLI narrows a model's
+// reported levels mid-session. Sonnet used to play that role against "xhigh",
+// but the CLI reports xhigh for every effort-capable model now, so naming a
+// tier the catalog never lists keeps the case honest and model-agnostic.
+const retiredEffort = "veryhigh"
+
 func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name       string
 		sentEffort string
 		wantEffort string
 	}{
-		{"unsupported effort resets to auto", "xhigh", agent.EffortAuto},
+		{"unsupported effort resets to auto", retiredEffort, agent.EffortAuto},
 		{"supported effort survives", "high", "high"},
 	}
 	for _, tc := range cases {
@@ -396,8 +426,7 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 				WorkingDir:    t.TempDir(),
 				HomeDir:       t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-				// opus[1m] offers xhigh; sonnet does not.
-				Options: marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
+				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
 			}))
 			svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
@@ -427,6 +456,8 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 // model/effort against the seed. (A model the seed DOES list still resets an unsupported tier; see
 // TestUpdateAgentSettings_ModelSwitchEffortBySupport.)
 func TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -463,12 +494,14 @@ func TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort(t *testing.T) {
 // surface a misleading effort until a relaunch clamps it. A supported effort sent without a
 // model switch must survive untouched. Previously effort was only validated on a model switch.
 func TestUpdateAgentSettings_UnsupportedEffortWithoutModelSwitch(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name       string
 		sentEffort string
 		wantEffort string
 	}{
-		{"unsupported effort resets to auto", "xhigh", agent.EffortAuto},
+		{"unsupported effort resets to auto", retiredEffort, agent.EffortAuto},
 		{"supported effort survives", "high", "high"},
 	}
 	for _, tc := range cases {
@@ -481,8 +514,7 @@ func TestUpdateAgentSettings_UnsupportedEffortWithoutModelSwitch(t *testing.T) {
 				WorkingDir:    t.TempDir(),
 				HomeDir:       t.TempDir(),
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-				// sonnet offers low/medium/high but NOT xhigh.
-				Options: marshalOptions(map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: "medium"}),
+				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: "medium"}),
 			}))
 			svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
 
@@ -509,6 +541,8 @@ func TestUpdateAgentSettings_UnsupportedEffortWithoutModelSwitch(t *testing.T) {
 // Without this a stale unsupported tier would survive on the row and surface a misleading effort
 // until a relaunch clamped it.
 func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -517,11 +551,11 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 		WorkingDir:    t.TempDir(),
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		// sonnet offers low/medium/high but NOT xhigh -- a stale tier (e.g. the live catalog
-		// narrowed after this was stored) the unchanged model no longer supports.
+		// A stale tier the unchanged model's catalog no longer offers -- the live
+		// catalog narrowed after this was stored.
 		Options: marshalOptions(map[string]string{
 			agent.OptionIDModel:          "sonnet",
-			agent.OptionIDEffort:         "xhigh",
+			agent.OptionIDEffort:         retiredEffort,
 			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
 		}),
 	}))
@@ -550,6 +584,8 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 // sandbox_policy=`) must be a NO-OP, not a delete -- the wire merge treats an empty value as a
 // key deletion, so without the sanitize-time skip the persisted option would be silently wiped.
 func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -584,6 +620,8 @@ func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 // re-merge onto the LATEST row, preserving the concurrent writer's key instead of clobbering
 // it with a stale full-map blob.
 func TestCASPersistAgentOptions_PreservesConcurrentKeyOnRetry(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -616,6 +654,8 @@ func TestCASPersistAgentOptions_PreservesConcurrentKeyOnRetry(t *testing.T) {
 // agent's confirmed value is re-asserted onto the row rather than silently skipped (which would
 // leave the row diverged from the running agent until the next refresh).
 func TestCASPersistAgentOptions_ReassertsOverConcurrentClear(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -646,6 +686,8 @@ func TestCASPersistAgentOptions_ReassertsOverConcurrentClear(t *testing.T) {
 // the refresh genuinely changes nothing against the LIVE row, the CAS short-circuits without a
 // write and returns the live row as the settled value.
 func TestCASPersistAgentOptions_TrueNoOpAgainstLiveRow(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -670,6 +712,8 @@ func TestCASPersistAgentOptions_TrueNoOpAgainstLiveRow(t *testing.T) {
 // !=, so "OPUS[1M]" against the stored "opus[1m]" wrongly reset xhigh -> auto on an edit that
 // didn't change the model at all; the normalized comparison fixes it.
 func TestUpdateAgentSettings_RespelledModelKeepsEffort(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -707,6 +751,8 @@ func TestUpdateAgentSettings_RespelledModelKeepsEffort(t *testing.T) {
 // effort to auto. Unlike RespelledModelKeepsEffort above, this sends an explicit effort, so it
 // exercises the second clause (EffortSupportedByModel) rather than the model-switch clause.
 func TestUpdateAgentSettings_AliasedModelKeepsExplicitEffort(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -743,6 +789,8 @@ func TestUpdateAgentSettings_AliasedModelKeepsExplicitEffort(t *testing.T) {
 // the default model (Claude's "default", which has no effort tiers), so the effort label would
 // leak the raw id; passing the new model rebuilds the effort group and resolves the name.
 func TestUpdateAgentSettings_OfflineEffortLabelUsesNewModelCatalog(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -778,6 +826,8 @@ func TestUpdateAgentSettings_OfflineEffortLabelUsesNewModelCatalog(t *testing.T)
 // axis) must not land a permissionMode key in the row or the RPC reply, nor emit a
 // settings_changed notification for a change the agent never applies.
 func TestUpdateAgentSettings_DropsForeignSecondaryAxis(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -820,6 +870,8 @@ func TestUpdateAgentSettings_DropsForeignSecondaryAxis(t *testing.T) {
 // (a Copilot-only config option) must both be stripped rather than persisting a phantom and
 // emitting a misleading settings_changed notification.
 func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name     string
 		provider leapmuxv1.AgentProvider
@@ -860,6 +912,8 @@ func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 // provider-private axis the provider genuinely exposes: a Codex sandbox-policy change
 // (a declared extra in KnownOptionIDs, not a static well-known axis) is persisted.
 func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -892,6 +946,8 @@ func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 // on Claude) must survive the generalized validation and persist. This guards against an
 // over-aggressive KnownOptionIDs silently dropping a legitimate setting.
 func TestUpdateAgentSettings_KeepsKnownWellKnownAxis(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -921,6 +977,8 @@ func TestUpdateAgentSettings_KeepsKnownWellKnownAxis(t *testing.T) {
 // switched model -- so the reconcile doesn't depend on a separately-broadcast catalog.
 // For Cursor (no effort axis) the reply carries no effort key.
 func TestUpdateAgentSettings_ResponseCarriesConfirmedOptions(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -952,6 +1010,8 @@ func TestUpdateAgentSettings_ResponseCarriesConfirmedOptions(t *testing.T) {
 // RPC response carries only confirmed option values, so the freshly registered provider's
 // option-group catalog must be broadcast separately after the restart handoff persists it.
 func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 	const agentID = "agent-1"
@@ -1061,6 +1121,8 @@ func lastSettingsChangedChanges(t *testing.T, w *testResponseWriter) map[string]
 }
 
 func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -1101,6 +1163,8 @@ func TestPersistConfirmedAgentSettings_MergesDiscoveredPrimaryAgent(t *testing.T
 // primary agent is stored in the DB so that subsequent settings_changed
 // notifications include a non-empty old value.
 func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -1156,6 +1220,8 @@ func TestPersistConfirmedAgentSettings_PersistsDiscoveredPrimaryAgentFromEmpty(t
 // the restart snapshot was taken (the relaunched reader goroutine holds no lifecycle lock) is
 // preserved rather than clobbered.
 func TestPersistConfirmedAgentSettings_PreservesConcurrentlyMergedKey(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -1197,6 +1263,8 @@ func TestPersistConfirmedAgentSettings_PreservesConcurrentlyMergedKey(t *testing
 }
 
 func TestPersistConfirmedAgentSettings_PersistsAvailableOptionGroups(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -1262,6 +1330,8 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableOptionGroups(t *testing.
 // hypothetical session that dropped the sandbox axis), confirmedOptions re-stamps the default while
 // settleConfirmedOptions drops it. The always-live model axis survives either way.
 func TestSettleConfirmedOptions_DropsReconciledAwayProviderDefault(t *testing.T) {
+	t.Parallel()
+
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	requested := OptionMap{agent.OptionIDModel: "gpt-5"} // no sandbox axis requested
 	confirmed := OptionMap{agent.OptionIDModel: "gpt-5"} // the session surfaces only the model
@@ -1285,6 +1355,8 @@ func TestSettleConfirmedOptions_DropsReconciledAwayProviderDefault(t *testing.T)
 // must omit such an axis -- there is no new value to name, and emitting it renders a dangling arrow
 // with a blank target -- while still announcing the genuine model change that caused the drop.
 func TestBuildSettingsChanges_OrphanedAxisNotAnnounced(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	dbAgent := &db.Agent{ID: "agent-1", AgentProvider: claude, OptionGroups: "[]"}
@@ -1311,6 +1383,8 @@ func TestBuildSettingsChanges_OrphanedAxisNotAnnounced(t *testing.T) {
 // the synchronous mirror of UpdateAgentConfirmedSettingsPreservingStartedSettings's
 // expected_option_groups guard, which persistConfirmedAgentSettings now uses.
 func TestSetAgentOptionGroupsIfUnchanged_KeepsConcurrentCatalog(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 
@@ -1372,6 +1446,8 @@ func seedConfirmedSettingsAgent(t *testing.T, svc *Service, id string, options m
 // moved (preserving its unrelated key) AND writes the catalog in the SAME statement, so the two
 // columns move together rather than via two separately-observable writes.
 func TestCasPersistConfirmedSettings_AtomicWritePreservesConcurrentKeyAndWritesCatalog(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	priorCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
@@ -1401,6 +1477,8 @@ func TestCasPersistConfirmedSettings_AtomicWritePreservesConcurrentKeyAndWritesC
 // running provider discovered a richer catalog after the handoff snapshot, the atomic write applies
 // the options but the gated catalog CAS no-ops, keeping the richer catalog rather than clobbering it.
 func TestCasPersistConfirmedSettings_KeepsConcurrentlyDiscoveredRicherCatalog(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	priorCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
@@ -1429,6 +1507,8 @@ func TestCasPersistConfirmedSettings_KeepsConcurrentlyDiscoveredRicherCatalog(t 
 // marshal-failure path: persistConfirmedAgentSettings passes "" / "" so the options still persist
 // while the stored catalog is left intact rather than overwritten with a truncated one.
 func TestCasPersistConfirmedSettings_EmptyCatalogParamsLeaveCatalogUntouched(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	priorCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
@@ -1452,6 +1532,8 @@ func TestCasPersistConfirmedSettings_EmptyCatalogParamsLeaveCatalogUntouched(t *
 // row with the staler narrower one -- which an exiting agent (no follow-up BroadcastStatusActive)
 // never converges. The handoff's richer catalog must still land.
 func TestCasPersistConfirmedSettings_AssertsCatalogWhenIdenticalBlobLandedConcurrently(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	narrowerCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
@@ -1484,6 +1566,8 @@ func TestCasPersistConfirmedSettings_AssertsCatalogWhenIdenticalBlobLandedConcur
 // no-op (its expected_option_groups no longer matches) and keep the richer concurrently-discovered
 // catalog rather than clobbering it with this handoff's own catalog.
 func TestCasPersistConfirmedSettings_KeepsRicherCatalogWhenIdenticalBlobAndCatalogGrewConcurrently(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	priorCatalog := mustMarshalOptionGroups(t, []*leapmuxv1.AvailableOptionGroup{
@@ -1518,6 +1602,8 @@ func TestCasPersistConfirmedSettings_KeepsRicherCatalogWhenIdenticalBlobAndCatal
 // (an invalid-UTF-8 label) makes the whole call error instead of silently dropping the group and
 // persisting a truncated catalog that would churn the column on every push.
 func TestMarshalOptionGroups_ErrorsRatherThanTruncating(t *testing.T) {
+	t.Parallel()
+
 	good := &leapmuxv1.AvailableOptionGroup{Id: agent.OptionIDModel, Label: "Model"}
 	bad := &leapmuxv1.AvailableOptionGroup{Id: agent.OptionIDEffort, Label: "\xff\xfe"} // invalid UTF-8
 
@@ -1530,6 +1616,8 @@ func TestMarshalOptionGroups_ErrorsRatherThanTruncating(t *testing.T) {
 }
 
 func TestUpdateAgentSettings_BroadcastsGoosePermissionModeLabels(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -1593,6 +1681,8 @@ func TestUpdateAgentSettings_BroadcastsGoosePermissionModeLabels(t *testing.T) {
 // resolves display labels at the emit site -- so it doesn't depend on the frontend
 // settings-label cache being primed and never renders a raw mode id.
 func TestNotifyPermissionModeChanged_ResolvesLabels(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, _, w := setupTestService(t)
 
@@ -1623,6 +1713,8 @@ func TestNotifyPermissionModeChanged_ResolvesLabels(t *testing.T) {
 }
 
 func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -1666,6 +1758,8 @@ func TestSendAgentRawMessage_SetPermissionModePersistsToDBWhileRunning(t *testin
 // set_permission_mode, so a Claude-shaped frame sent to a non-Claude (Codex) agent extracts no mode
 // and does NOT eagerly write the DB -- it falls through to the generic raw-forward path.
 func TestSendAgentRawMessage_SetPermissionModeIgnoredForNonClaudeProvider(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -1706,6 +1800,8 @@ func TestSendAgentRawMessage_SetPermissionModeIgnoredForNonClaudeProvider(t *tes
 // -- while empty/absent confirmed values keep the request. A nil confirmed map (offline
 // edit / failed restart) yields the base unchanged.
 func TestConfirmedOptions(t *testing.T) {
+	t.Parallel()
+
 	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR
 
 	// nil confirmed -> base unchanged (offline edit / failed restart).
@@ -1736,6 +1832,8 @@ func TestConfirmedOptions(t *testing.T) {
 // the confirmed map -- omits it (it scans only groups), so it must be preserved from
 // the BASE rather than dropped. See CurrentOptions' doc note.
 func TestConfirmedOptions_PreservesProviderPrivateExtra(t *testing.T) {
+	t.Parallel()
+
 	const pi = leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
 	got := confirmedOptions(pi,
 		// base (the persisted row) carries pi_provider.
@@ -1753,6 +1851,8 @@ func TestConfirmedOptions_PreservesProviderPrivateExtra(t *testing.T) {
 // "default" finally resolving is a real, user-visible transition, and there is no
 // signal distinguishing it from a new tab's first resolution.
 func TestReportModelChange(t *testing.T) {
+	t.Parallel()
+
 	sentinel := agent.DefaultModelSentinel
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 	// S7: the sentinel resolving to a concrete model is reported -- the panel shows
@@ -1805,6 +1905,8 @@ func modelOptionGroups(idName ...[2]string) []*leapmuxv1.AvailableOptionGroup {
 // The label must instead resolve against the catalog persisted on the agent row,
 // captured while Opus was still the active model.
 func TestBuildSettingsChanges_OldModelDroppedFromLiveCatalog(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	claude := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
 
@@ -1858,6 +1960,8 @@ func TestBuildSettingsChanges_OldModelDroppedFromLiveCatalog(t *testing.T) {
 // spurious "Permission Mode (default)" the user never chose. A first set to a NON-default value IS
 // a real choice and is still announced.
 func TestBuildSettingsChanges_SkipsDefaultMaterializationFirstSet(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT // ACP: no model-dependent groups, cache served as-is
 
@@ -1905,6 +2009,8 @@ func TestBuildSettingsChanges_SkipsDefaultMaterializationFirstSet(t *testing.T) 
 // rejected/dropped option), while keeping the model axis and the provider's persisted-only
 // extras (Pi's pi_provider, which is never surfaced as a group).
 func TestReconcileOrphanedOptions(t *testing.T) {
+	t.Parallel()
+
 	copilot := leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT
 	pi := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
 
@@ -1938,6 +2044,8 @@ func TestReconcileOrphanedOptions(t *testing.T) {
 // TestResolveOptionValueLabel covers the live-first / persisted-fallback / raw-id
 // ladder the settings_changed notification uses to name option values.
 func TestResolveOptionValueLabel(t *testing.T) {
+	t.Parallel()
+
 	live := modelOptionGroups(
 		[2]string{"fable[1m]", "Fable"},
 		[2]string{"sonnet", "Sonnet"},

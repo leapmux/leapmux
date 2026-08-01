@@ -841,6 +841,18 @@ func TestTunnelClearHalfClosedIsNoOpForNeverMarkedConn(t *testing.T) {
 // tc) or a stale tracker pointer (so writeData keeps bumping a dead entry).
 func TestTunnelSweepDetachesTrackerAndMapTogether(t *testing.T) {
 	manager := newTunnelManager()
+	// Pin the stamp side of the reap decision to a FIXED instant, and take the
+	// sweep's deadline from that same instant below, so whether the conn is reaped
+	// never depends on the host clock advancing between markHalfClosed and the
+	// sweep. It does not advance on Windows: the wall clock there ticks at the
+	// system timer granularity (~0.5-16ms) despite its 100ns unit, so two
+	// time.Now() calls microseconds apart return the SAME UnixNano -- the sweep's
+	// `lastActivity < now` was then false, nothing was reaped, and all four
+	// assertions below failed for a reason this test is not about. The clock is
+	// never reassigned, so the background sweeper reading it concurrently is safe
+	// (and a no-op: with the entry stamped at base, base-idle is never past it).
+	base := time.Now()
+	manager.now = func() time.Time { return base }
 	withShortHalfCloseReaper(t, manager)
 	const connID = "sweep-detach"
 	workerConn, _, tc, cancel := halfCloseTarget(t, manager, connID, connID)
@@ -848,9 +860,10 @@ func TestTunnelSweepDetachesTrackerAndMapTogether(t *testing.T) {
 	t.Cleanup(func() { _ = workerConn.Close() })
 	require.NotNil(t, tc.halfCloseTrack.Load(), "precondition: half-close tracker armed")
 
-	// Drive one sweep with a zero idle window so the conn is reaped immediately,
-	// then assert the detach was total (map slot gone, pointer nil, conn closed).
-	manager.sweepHalfClosed(time.Now(), 0)
+	// Drive one sweep from a clock a second past the entry's stamp, with a zero
+	// idle window, so the conn is reaped; then assert the detach was total (map
+	// slot gone, pointer nil, conn closed, evicted).
+	manager.sweepHalfClosed(base.Add(time.Second), 0)
 
 	manager.mu.Lock()
 	_, present := manager.halfClosed[connID]

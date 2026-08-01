@@ -29,7 +29,30 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
+// Tests in this package call t.Parallel().
+//
+// Almost everything here is I/O bound rather than CPU bound -- git subprocess
+// spawns, PTY startup, SQLite migrations -- so run serially the package idled
+// most of its wall time and was the critical path of the whole backend suite.
+// Each test owns its state (its own in-memory DB via setupTestService, its own
+// git repo via initRepo, its own t.TempDir), so there is nothing to serialize
+// them for.
+//
+// Three files deliberately opt out, and a new test in one of them must NOT add
+// t.Parallel():
+//
+//   - tunnel_test.go assigns the package-level halfClose*/staleCancelMarkerTTL
+//     knobs and swaps slog's default handler.
+//   - options_view_test.go and open_default_effort_test.go call t.Setenv, which
+//     panics in a parallel test because the environment is process-wide.
+//
+// The rule is "parallel unless the test reaches outside itself" -- if a new
+// test needs process-global state, move it into one of those files (or give it
+// its own opted-out file) rather than dropping t.Parallel from its neighbours.
+
 func TestExpandTilde(t *testing.T) {
+	t.Parallel()
+
 	home, err := os.UserHomeDir()
 	require.NoError(t, err, "failed to get home dir")
 
@@ -82,6 +105,8 @@ func dispatchOwnerOnlyProbe(svc *Service, userID string) bool {
 // owner is the only safe direction: the Hub cannot legitimately un-own a live
 // worker (that is what deregistration is for).
 func TestUpdateRegisteredByIgnoresEmptyOwner(t *testing.T) {
+	t.Parallel()
+
 	svc := &Service{}
 	svc.SetRegisteredBy(userid.MustNew("user-1"))
 
@@ -96,6 +121,8 @@ func TestUpdateRegisteredByIgnoresEmptyOwner(t *testing.T) {
 // genuine re-registration under a different user is the Hub's call, and the worker
 // converges on it.
 func TestUpdateRegisteredByAppliesOwnerChange(t *testing.T) {
+	t.Parallel()
+
 	svc := &Service{}
 	svc.SetRegisteredBy(userid.MustNew("user-1"))
 
@@ -119,6 +146,8 @@ func TestUpdateRegisteredByAppliesOwnerChange(t *testing.T) {
 // ReadFile, git, tunnel) answers PERMISSION_DENIED to the legitimate user,
 // indistinguishably from a real cross-tenant refusal. Nothing pinned that.
 func TestSetRegisteredByIgnoresZeroOwner(t *testing.T) {
+	t.Parallel()
+
 	svc := &Service{}
 	svc.SetRegisteredBy(userid.MustNew("user-1"))
 
@@ -131,6 +160,8 @@ func TestSetRegisteredByIgnoresZeroOwner(t *testing.T) {
 
 // The first delivery on a worker with no seed populates the owner.
 func TestUpdateRegisteredByAppliesFirstOwner(t *testing.T) {
+	t.Parallel()
+
 	svc := &Service{}
 	require.True(t, svc.RegisteredBy().IsZero(), "no owner before the Hub delivers one")
 
@@ -143,6 +174,8 @@ func TestUpdateRegisteredByAppliesFirstOwner(t *testing.T) {
 // TestLazyProtoJSON_RendersTheSameTextAsProtojson guards the wrapper
 // against silently changing the log format it replaced.
 func TestLazyProtoJSON_RendersTheSameTextAsProtojson(t *testing.T) {
+	t.Parallel()
+
 	msg := &leapmuxv1.AgentEvent{AgentId: "agent-1"}
 	assert.Equal(t, protojson.Format(msg), lazyProtoJSON(msg).LogValue().String())
 }
@@ -151,6 +184,8 @@ func TestLazyProtoJSON_RendersTheSameTextAsProtojson(t *testing.T) {
 // the render costs nothing in fidelity: an enabled record still carries
 // the formatted payload.
 func TestLazyProtoJSON_PayloadReachesAnEnabledHandler(t *testing.T) {
+	t.Parallel()
+
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -180,6 +215,8 @@ func TestLazyProtoJSON_PayloadReachesAnEnabledHandler(t *testing.T) {
 // package-local scan would let the pattern reappear one directory over
 // while still reading as if it were enforced everywhere.
 func TestNoEagerProtojsonFormatInLogCalls(t *testing.T) {
+	t.Parallel()
+
 	// This test lives in internal/worker/service; walk from the worker
 	// tree root so every sibling package is covered.
 	root := filepath.Join("..", "..", "worker")
@@ -237,6 +274,8 @@ func TestNoEagerProtojsonFormatInLogCalls(t *testing.T) {
 // adding a field to Config forces someone to decide what it means here
 // instead of it arriving untested.
 func TestNew_CarriesEveryConfigField(t *testing.T) {
+	t.Parallel()
+
 	sqlDB := newServiceTestDB(t)
 
 	cfg := Config{
@@ -301,6 +340,8 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 // means "the Hub is the authority", not "the owner is the empty string"
 // -- requireWorkerOwner refuses "" outright, so this must fail closed.
 func TestNew_EmptyRegisteredByLeavesOwnerUnset(t *testing.T) {
+	t.Parallel()
+
 	sqlDB := newServiceTestDB(t)
 
 	svc := newMinimalService(t, sqlDB)
@@ -313,6 +354,8 @@ func TestNew_EmptyRegisteredByLeavesOwnerUnset(t *testing.T) {
 // fail at the line that built it, not on the first request. Validating in
 // New rather than a follow-up Init leaves no second call to forget.
 func TestNew_PanicsOnMissingRequiredConfig(t *testing.T) {
+	t.Parallel()
+
 	sqlDB := newServiceTestDB(t)
 
 	t.Run("missing Channels", func(t *testing.T) {
@@ -336,7 +379,7 @@ func newServiceTestDB(t *testing.T) *sql.DB {
 	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, workerdb.Migrate(sqlDB))
+	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB))
 	return sqlDB
 }
 
@@ -350,6 +393,8 @@ func newServiceTestDB(t *testing.T) *sql.DB {
 // Asserted positively, through a real tracked dispatch, rather than by
 // checking a flag: what matters is that Wait actually blocks.
 func TestRegisterAll_BindsTheCleanupDrain(t *testing.T) {
+	t.Parallel()
+
 	sqlDB := newServiceTestDB(t)
 	svc := newMinimalService(t, sqlDB)
 
@@ -411,6 +456,8 @@ func newMinimalService(t *testing.T, sqlDB *sql.DB) *Service {
 // error anywhere, which is exactly why folding them into the constructor
 // needs a guard.
 func TestNew_WiresTheOutputHandlerSeams(t *testing.T) {
+	t.Parallel()
+
 	svc := newMinimalService(t, newServiceTestDB(t))
 
 	assert.NotNil(t, svc.Output.sendMessageFunc,
@@ -430,6 +477,8 @@ func TestNew_WiresTheOutputHandlerSeams(t *testing.T) {
 // RegisteredBy() already existed. Today that rename is enforced only by a
 // comment, which the next field to collide will not read.
 func TestConfigFieldsDoNotShadowServiceMethods(t *testing.T) {
+	t.Parallel()
+
 	methods := make(map[string]struct{})
 	svcType := reflect.TypeOf(&Service{})
 	for i := range svcType.NumMethod() {
@@ -471,6 +520,8 @@ func (w *rejectingWriter) SendResponse(r *leapmuxv1.InnerRpcResponse) error {
 // waiting out its request timeout, and every oversize response looked
 // exactly like a hung worker.
 func TestSendProtoResponse_AnswersWhenTheChannelRefusesTheReply(t *testing.T) {
+	t.Parallel()
+
 	t.Run("a rejected reply becomes RESOURCE_EXHAUSTED", func(t *testing.T) {
 		w := &rejectingWriter{testResponseWriter: testResponseWriter{channelID: testChannelID}, reject: true}
 
@@ -501,26 +552,47 @@ func TestSendProtoResponse_AnswersWhenTheChannelRefusesTheReply(t *testing.T) {
 // remote-IPC teardown when the caller closed the DB. Stop() blocks until the
 // in-flight pass returns, so it has to run first, ahead of the drains.
 func TestShutdown_StopsBackgroundLoopsBeforeDraining(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 
-	var order []string
-	svc.SetStopBackgroundLoops(func() { order = append(order, "stop-loops") })
+	// The one tracked cleanup item is released by the stop hook itself, which
+	// turns the ordering into something Shutdown either satisfies or hangs on:
+	// drain-before-stop waits forever on an item only the stop hook can
+	// release. Completing at all IS the guarantee.
+	//
+	// The earlier shape appended two labels -- one from the hook, one from a
+	// bare goroutine -- and compared order[0]. Nothing sequenced those
+	// appends, so it was a data race that happened to land the right way often
+	// enough to look green, and a real regression could equally have landed
+	// green. This version cannot.
+	stopped := make(chan struct{})
 	svc.Cleanup.Add(1)
-	go func() {
-		order = append(order, "cleanup-done")
+	svc.SetStopBackgroundLoops(func() {
+		close(stopped)
 		svc.Cleanup.Done()
-	}()
+	})
 
-	svc.Shutdown()
+	done := make(chan struct{})
+	go func() { defer close(done); svc.Shutdown() }()
 
-	require.NotEmpty(t, order, "the registered stop hook must be called by Shutdown")
-	assert.Equal(t, "stop-loops", order[0],
-		"the background loops must be stopped BEFORE Shutdown drains, or a pass can outlive the drain and write into a closing DB")
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Shutdown blocked: it drained before stopping the background loops, so a convergence pass can outlive the drain and write into a closing DB")
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("the registered stop hook was never called by Shutdown")
+	}
 }
 
 // TestShutdown_WithoutABackgroundLoopHookIsANoop covers the shape every test that
 // never starts the loops takes: an unset hook must be skipped, not panic.
 func TestShutdown_WithoutABackgroundLoopHookIsANoop(t *testing.T) {
+	t.Parallel()
+
 	svc, _, _ := setupTestService(t)
 	assert.NotPanics(t, svc.Shutdown, "an unwired stop hook must be skipped")
 }

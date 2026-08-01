@@ -93,11 +93,22 @@ type Writer[T any] struct {
 	queuedBytes int
 	closed      bool
 	gaveUp      bool
+	// writing is true from the moment the drain goroutine pops a frame until
+	// its Write returns. Flush needs it because pop() removes the frame before
+	// the write happens, so an empty queue alone does not mean the last frame
+	// reached the transport.
+	writing bool
 	// wake carries at most one pending signal; the drain loop always
 	// empties the whole queue, so more would be redundant.
 	wake chan struct{}
 	// budgetFreed wakes EnqueueWait when a pop frees budget.
 	budgetFreed chan struct{}
+	// drained wakes Flush each time a write completes. Unlike wake and
+	// budgetFreed this is a BROADCAST -- the current generation is closed and
+	// replaced (swapDrainedLocked) rather than sent to -- because Flush is
+	// exported and any number of goroutines may be parked in it. Flush
+	// re-checks the real condition under the mutex after every wake-up.
+	drained chan struct{}
 }
 
 // New starts the drain goroutine, bound to ctx.
@@ -130,6 +141,7 @@ func newWriter[T any](ctx context.Context, cfg Config[T]) *Writer[T] {
 		now:         now,
 		wake:        make(chan struct{}, 1),
 		budgetFreed: make(chan struct{}, 1),
+		drained:     make(chan struct{}),
 	}
 	if cfg.WriteTimeout > 0 {
 		// Created armed-then-stopped so writeItem only ever has to Reset it.
@@ -285,8 +297,10 @@ func (w *Writer[T]) Close() {
 	}
 	if !alreadyClosed {
 		w.signalWake()
-		// Also nudge EnqueueWait parkers.
+		// Also nudge EnqueueWait parkers, and any Flush waiting on frames that
+		// this close just discarded.
 		w.signalBudgetFreed()
+		w.signalDrained()
 	}
 }
 
@@ -297,17 +311,80 @@ func (w *Writer[T]) discardQueueLocked() (bytes, frames int) {
 	return bytes, frames
 }
 
-func (w *Writer[T]) signalWake() {
+// signalNonBlocking delivers an edge on a depth-1 signal channel, coalescing
+// with any edge the receiver has not consumed yet. Correct only where exactly
+// one goroutine waits on ch -- a second waiter would find the value already
+// taken. wake (the drain goroutine) and budgetFreed (whose parkers re-check
+// the budget under the lock and re-park) both satisfy that; drained does not,
+// which is why it is a broadcast instead. See swapDrainedLocked.
+func signalNonBlocking(ch chan struct{}) {
 	select {
-	case w.wake <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
 }
 
-func (w *Writer[T]) signalBudgetFreed() {
-	select {
-	case w.budgetFreed <- struct{}{}:
-	default:
+func (w *Writer[T]) signalWake() { signalNonBlocking(w.wake) }
+
+func (w *Writer[T]) signalBudgetFreed() { signalNonBlocking(w.budgetFreed) }
+
+// swapDrainedLocked installs a fresh drained channel and returns the old one
+// for the caller to close once it has released the lock.
+//
+// drained is a BROADCAST, not a depth-1 signal: Flush is exported and nothing
+// stops two goroutines from flushing the same writer. With a coalescing send,
+// whichever Flush woke first would consume the only value and the other would
+// park with no producer left, then fail its own context with
+// DeadlineExceeded -- reporting a failed flush for a queue that drained fine.
+// Closing a generation channel wakes every waiter at once, and each re-checks
+// the real condition under the lock.
+func (w *Writer[T]) swapDrainedLocked() chan struct{} {
+	ch := w.drained
+	w.drained = make(chan struct{})
+	return ch
+}
+
+func (w *Writer[T]) signalDrained() {
+	w.mu.Lock()
+	ch := w.swapDrainedLocked()
+	w.mu.Unlock()
+	close(ch)
+}
+
+// Flush blocks until the queue is empty AND the in-flight write has returned,
+// so every frame enqueued before the call has been handed to the transport.
+//
+// Returns nil on a full drain, and also once the writer is closed or has given
+// up: the queue was discarded, so there is nothing left to wait for and no
+// later call could do better. Returns an error only when the WAIT was cut
+// short -- ctx expired, or the writer's own connection context ended -- because
+// only then might frames still have been drainable.
+//
+// This is what makes a graceful shutdown's last words actually leave the
+// machine. Enqueue and EnqueueWait return once a frame is QUEUED, so a caller
+// that broadcasts and then tears the connection down is racing the drain
+// goroutine: on an idle box the drain wins and nobody notices, under load it
+// loses and the frames are discarded by Close with no error anywhere.
+func (w *Writer[T]) Flush(ctx context.Context) error {
+	for {
+		// Capture the current generation channel under the same lock that read
+		// the state, so a drain landing between the unlock and the select still
+		// closes the channel this iteration parks on.
+		w.mu.Lock()
+		idle := len(w.queue) == 0 && !w.writing
+		done := w.closed || w.gaveUp
+		drained := w.drained
+		w.mu.Unlock()
+		if idle || done {
+			return nil
+		}
+		select {
+		case <-drained:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-w.ctx.Done():
+			return w.ctx.Err()
+		}
 	}
 }
 
@@ -323,7 +400,22 @@ func (w *Writer[T]) pop() (queued[T], bool) {
 	w.queue[0] = zero
 	w.queue = w.queue[1:]
 	w.queuedBytes -= f.size
+	// The frame has left the queue but not yet the process; Flush must keep
+	// waiting until finishWrite clears this.
+	w.writing = true
 	return f, true
+}
+
+// finishWrite marks the popped frame as no longer in flight and wakes Flush.
+// Paired with the w.writing set in pop() on every path out of writeItem,
+// including the error paths -- a Flush parked behind a failed write must not
+// hang waiting for a drain that will never come.
+func (w *Writer[T]) finishWrite() {
+	w.mu.Lock()
+	w.writing = false
+	ch := w.swapDrainedLocked()
+	w.mu.Unlock()
+	close(ch)
 }
 
 func (w *Writer[T]) isClosed() bool {
@@ -349,6 +441,7 @@ func (w *Writer[T]) giveUp(err error) {
 	w.mu.Unlock()
 	w.signalWake()
 	w.signalBudgetFreed()
+	w.signalDrained()
 	if onDiscard != nil && frames > 0 {
 		onDiscard(frames, bytes)
 	}
@@ -383,7 +476,9 @@ func (w *Writer[T]) run() {
 			// budget is already free; delaying the signal couples backpressure
 			// relief to write latency for no functional reason.
 			w.signalBudgetFreed()
-			if err := w.writeItem(frame.item); err != nil {
+			err := w.writeItem(frame.item)
+			w.finishWrite()
+			if err != nil {
 				if w.isClosed() {
 					return
 				}
@@ -455,10 +550,16 @@ func (w *Writer[T]) IsClosed() bool {
 
 // PopForTest removes and returns the head item without writing it. For tests
 // that drive the budget accounting without a live drain.
+//
+// finishWrite is what pairs with pop()'s `writing = true`, and it is required
+// here too even though nothing is written: the frame is out of the queue and
+// out of the process, so leaving the flag set would park every later Flush on
+// this writer until its context expired.
 func (w *Writer[T]) PopForTest() (T, bool) {
 	f, ok := w.pop()
 	if ok {
 		w.signalBudgetFreed()
+		w.finishWrite()
 	}
 	return f.item, ok
 }

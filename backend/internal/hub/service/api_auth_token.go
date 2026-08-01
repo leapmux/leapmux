@@ -158,7 +158,7 @@ func (h *APIAuthHandler) handleTokenDeviceCode(w http.ResponseWriter, r *http.Re
 	// failure rolls the transaction back. The grant stays retryable
 	// because only Consume, which remains inside the transaction, is
 	// single-use.
-	if code, desc, ok := h.preTouchPollOAuthError(row, time.Now()); ok {
+	if code, desc, ok := h.preTouchPollOAuthError(row, h.now()); ok {
 		writeOAuthError(w, http.StatusBadRequest, code, desc)
 		return
 	}
@@ -241,11 +241,13 @@ func (h *APIAuthHandler) shouldThrottle(row *store.DeviceAuthorization, now time
 	if row.LastPolledAt == nil {
 		return false
 	}
-	min := time.Duration(row.IntervalSeconds) * time.Second
-	if min <= 0 {
-		min = DeviceCodePollInterval
+	// Named minInterval, not min: a local `min` shadows the builtin for the
+	// rest of the function.
+	minInterval := time.Duration(row.IntervalSeconds) * time.Second
+	if minInterval <= 0 {
+		minInterval = DeviceCodePollInterval
 	}
-	return now.Sub(*row.LastPolledAt) < (min - 250*time.Millisecond)
+	return now.Sub(*row.LastPolledAt) < (minInterval - 250*time.Millisecond)
 }
 
 type parsedRefreshBearer struct {
@@ -324,7 +326,7 @@ func (h *APIAuthHandler) refreshRetryResponse(row *store.APIToken, pair auth.Min
 		row.ID,
 		pair.AccessBearer,
 		pair.RefreshBearer,
-		remainingExpiresIn(*row.ExpiresAt, time.Now()),
+		remainingExpiresIn(*row.ExpiresAt, h.now()),
 	)
 }
 
@@ -377,7 +379,7 @@ func (h *APIAuthHandler) refresh(ctx context.Context, parsed parsedRefreshBearer
 		return h.refreshValidationError(parsed.tokenID, err)
 	}
 
-	now := time.Now()
+	now := h.now()
 	pair := h.validator.DeriveRefreshBearerPair(
 		auth.BearerKindAPI,
 		row.ID,
@@ -424,7 +426,7 @@ func (h *APIAuthHandler) refresh(ctx context.Context, parsed parsedRefreshBearer
 		row.ID,
 		pair.AccessBearer,
 		pair.RefreshBearer,
-		remainingExpiresIn(pair.AccessExpiresAt, time.Now()),
+		remainingExpiresIn(pair.AccessExpiresAt, h.now()),
 	)
 }
 
@@ -441,7 +443,7 @@ func (h *APIAuthHandler) recoverRefreshCASMiss(ctx context.Context, parsed parse
 		auth.BearerKindAPI,
 		row.ID,
 		parsed.secretHash,
-		time.Now(),
+		h.now(),
 		auth.AccessTokenTTL,
 		auth.RefreshTokenTTL,
 	)
@@ -521,7 +523,7 @@ func (h *APIAuthHandler) issueAPIToken(
 	consumeGrant func(tx store.Store) error,
 ) (*apiTokenResponse, error) {
 	tokenID := id.Generate()
-	pair := h.validator.MintBearerPair(auth.BearerKindAPI, tokenID, time.Now(), auth.AccessTokenTTL, auth.RefreshTokenTTL)
+	pair := h.validator.MintBearerPair(auth.BearerKindAPI, tokenID, h.now(), auth.AccessTokenTTL, auth.RefreshTokenTTL)
 	var user *store.User
 	err := h.store.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
 		if err := consumeGrant(tx); err != nil {
@@ -553,7 +555,7 @@ func (h *APIAuthHandler) issueAPIToken(
 	return &apiTokenResponse{
 		AccessToken:  pair.AccessBearer,
 		RefreshToken: pair.RefreshBearer,
-		ExpiresIn:    remainingExpiresIn(pair.AccessExpiresAt, time.Now()),
+		ExpiresIn:    remainingExpiresIn(pair.AccessExpiresAt, h.now()),
 		TokenID:      tokenID,
 		UserID:       userID.String(),
 		Username:     user.Username,

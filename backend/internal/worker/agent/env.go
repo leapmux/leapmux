@@ -1,6 +1,9 @@
 package agent
 
-import "github.com/leapmux/leapmux/internal/util/envutil"
+import (
+	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
+)
 
 // agentIdentityEnvScrubKeys are environment variables that coding-agent harnesses
 // (Claude Code, Codex, OpenCode/Kilo/Goose ACP agents, Pi) inject into the processes they
@@ -54,6 +57,14 @@ var agentIdentityEnvScrubKeys = []string{
 // marker (downstream CLI/agent code keys off it to detect "running
 // inside a LeapMux worker"), and appends `opts.ExtraEnv`.
 //
+// It also declines git's OPTIONAL index lock for everything the agent runs --
+// see gitutil.GitOptionalLocksOff for why. The worker set that on its own git
+// commands, which removed only ONE of the contenders: a coding agent polls
+// `git status` continuously, and that probe takes .git/index.lock purely to
+// write back a refreshed index, killing a concurrent worker checkout with
+// "Another git process seems to be running". The agent's own mutations are
+// unaffected -- their index lock is required, not optional.
+//
 // Provider-specific env additions (CLAUDE_CODE_ENTRYPOINT, CODEX_CI,
 // etc.) go BEFORE this call so they survive both the identity scrub and
 // the LEAPMUX_REMOTE_* strip and stack with the marker.
@@ -62,7 +73,7 @@ func FinalizeAgentEnv(env []string, opts Options) []string {
 	// fresh LEAPMUX_REMOTE_* values aren't stripped.
 	env = envutil.FilterEnv(env, agentIdentityEnvScrubKeys...)
 	env = envutil.StripByPrefix(env, "LEAPMUX_REMOTE_")
-	env = append(env, "LEAPMUX_WORKER=1")
+	env = append(env, "LEAPMUX_WORKER=1", gitutil.GitOptionalLocksOff)
 	if len(opts.ExtraEnv) == 0 {
 		return env
 	}

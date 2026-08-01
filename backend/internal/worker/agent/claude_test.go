@@ -1267,25 +1267,50 @@ func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
 	assert.True(t, foundClaudeCode, "CLAUDECODE=1 should be in shell-wrapped env")
 }
 
+// maxOnlyModelID names a synthetic catalog entry that supports max but NOT
+// xhigh. The real catalog no longer has such a model -- the CLI reports xhigh
+// for every effort-capable Claude model, so the static fallback lists it too --
+// but the downgrade path those cases exercise is still live code, and the CLI
+// can report a narrower level set again at any time. Testing it against a
+// synthetic entry keeps the coverage without pinning a claim about Sonnet that
+// the CLI contradicts.
+const maxOnlyModelID = "maxonly"
+
+// maxOnlyEfforts is the menu a model that supports max but NOT xhigh gets. No
+// model in the current catalog is in that position -- the CLI reports xhigh for
+// every effort-capable model -- so it lives here rather than in production: it
+// is the shape the live conversion builds from a level set without xhigh, and
+// TestConvertClaudeModels_DedupAndEffortOrdering pins that it still does
+// ("auto", "max", "high", "medium", "low") straight from the CLI's report.
+var maxOnlyEfforts = []*EffortInfo{
+	effortTierAuto, effortTierMax, effortTierHigh, effortTierMedium, effortTierLow,
+}
+
+// effortTestCatalog is the real catalog plus {@link maxOnlyModelID}.
+func effortTestCatalog() []*ModelInfo {
+	out := make([]*ModelInfo, 0, len(claudeCodeAvailableModels)+1)
+	out = append(out, claudeCodeAvailableModels...)
+	return append(out, &ModelInfo{
+		Id: maxOnlyModelID, DisplayName: "Max Only",
+		DefaultEffort: EffortHigh, SupportedEfforts: maxOnlyEfforts,
+	})
+}
+
 func TestClaudeCodeAvailableModels_EffortsMatchDocs(t *testing.T) {
 	byID := claudeModelsByID(claudeCodeAvailableModels)
 
-	opusEfforts := []string{"auto", "ultracode", "max", "xhigh", "high", "medium", "low"}
-	sonnetEfforts := []string{"auto", "max", "high", "medium", "low"}
+	xhighEfforts := []string{"auto", "ultracode", "max", "xhigh", "high", "medium", "low"}
 
-	// Fable and Opus share the full xhigh+ultracode effort menu.
-	for _, id := range []string{"fable[1m]", "opus", "opus[1m]"} {
+	// Every effort-capable model shares the full xhigh+ultracode menu, because
+	// that is what the CLI's initialize response reports for each of them
+	// ("low,medium,high,xhigh,max"). This catalog is only the FALLBACK the live
+	// report replaces, so any model listed here with a narrower set would make
+	// the effort menu grow options the first time the live catalog arrived.
+	for _, id := range []string{"fable[1m]", "opus", "opus[1m]", "sonnet", "sonnet[1m]"} {
 		m := byID[id]
 		require.NotNil(t, m, "model %q missing", id)
-		assert.Equal(t, opusEfforts, claudeEffortIDs(m), "xhigh effort list for %q", id)
+		assert.Equal(t, xhighEfforts, claudeEffortIDs(m), "xhigh effort list for %q", id)
 		assert.Equal(t, "xhigh", m.DefaultEffort, "xhigh default effort for %q", id)
-	}
-
-	for _, id := range []string{"sonnet", "sonnet[1m]"} {
-		m := byID[id]
-		require.NotNil(t, m, "model %q missing", id)
-		assert.Equal(t, sonnetEfforts, claudeEffortIDs(m), "sonnet effort list for %q", id)
-		assert.Equal(t, "high", m.DefaultEffort, "sonnet default effort for %q", id)
 	}
 
 	haiku := byID["haiku"]
@@ -1303,7 +1328,7 @@ func TestClaudeEffortCatalog_UltracodeFollowsXHigh(t *testing.T) {
 	// Use the production effortListContains so this guard exercises the same
 	// lookup supportsUltracode relies on, rather than a parallel copy.
 	assert.True(t, effortListContains(claudeEffortXHighMax, EffortUltracode), "xhigh catalog must offer ultracode")
-	assert.False(t, effortListContains(claudeEffortMax, EffortUltracode), "max-only catalog must not offer ultracode")
+	assert.False(t, effortListContains(maxOnlyEfforts, EffortUltracode), "max-only catalog must not offer ultracode")
 }
 
 // TestClaudeDefaultEffort_FallsBackToStrongest verifies that a model which
@@ -1772,14 +1797,14 @@ func TestClaudeEffortUpdateFlagSettings(t *testing.T) {
 		expected    map[string]interface{}
 	}{
 		{
-			// Model-only change off opus+ultracode onto sonnet: no effort delta,
-			// but the stale ultracode boolean must be cleared AND the stale
-			// effortLevel pinned to a sonnet-supported level. Clearing only the
-			// boolean would leave the CLI at the ultracode base "xhigh" (which the
+			// Model-only change off opus+ultracode onto a model without xhigh: no
+			// effort delta, but the stale ultracode boolean must be cleared AND the
+			// stale effortLevel pinned to a level that model supports. Clearing only
+			// the boolean would leave the CLI at the ultracode base "xhigh" (which the
 			// CLI does not re-resolve on a model-only change), so we also pin
-			// effortLevel to xhigh resolved for sonnet -> "high" (its default).
+			// effortLevel to xhigh resolved for that model -> "high" (its default).
 			name:        "model-only switch leaving ultracode for an unsupported model clears the flag and pins a safe effort",
-			targetModel: "sonnet",
+			targetModel: maxOnlyModelID,
 			newEffort:   "",
 			curEffort:   "ultracode",
 			expected:    map[string]interface{}{"effortLevel": "high", "ultracode": false},
@@ -1807,7 +1832,7 @@ func TestClaudeEffortUpdateFlagSettings(t *testing.T) {
 			// level to high and never sets the ultracode boolean true (sent here
 			// because high differs from the current "medium").
 			name:        "ultracode requested on unsupported model downgrades without setting the flag",
-			targetModel: "sonnet",
+			targetModel: maxOnlyModelID,
 			newEffort:   "ultracode",
 			curEffort:   "medium",
 			expected:    map[string]interface{}{"effortLevel": "high"},
@@ -1853,7 +1878,7 @@ func TestClaudeEffortUpdateFlagSettings(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, newEffortResolver(claudeCodeAvailableModels).updateFlagSettings(tt.targetModel, tt.newEffort, tt.curEffort))
+			assert.Equal(t, tt.expected, newEffortResolver(effortTestCatalog()).updateFlagSettings(tt.targetModel, tt.newEffort, tt.curEffort))
 		})
 	}
 }
@@ -1884,19 +1909,20 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 			want:      "ultracode",
 		},
 		{
-			name:      "sonnet ultracode:true is ignored - model cannot run it",
+			name:      "ultracode:true is ignored on a model that cannot run it",
 			applied:   ptrconv.Ptr("xhigh"),
 			ultracode: ptrconv.Ptr(true),
 			curEffort: "high",
-			model:     "sonnet",
-			want:      "xhigh", // keep the reported level; never mislabel Sonnet as ultracode
+			model:     maxOnlyModelID,
+			want:      "xhigh", // keep the reported level; never mislabel it as ultracode
 		},
 		{
 			// S1: a model the catalog does NOT know (e.g. the CLI reported it in
 			// unavailable_models, so convertClaudeModels filtered it) is trusted when
 			// the CLI confirms ultracode:true -- we don't relabel a running ultracode
 			// session to xhigh just because its model dropped out of the catalog. This
-			// differs from Sonnet above, which the catalog KNOWS lacks ultracode.
+			// differs from the max-only model above, which the catalog KNOWS lacks
+			// ultracode.
 			name:      "unknown model ultracode:true is trusted - CLI is the authority",
 			applied:   ptrconv.Ptr("xhigh"),
 			ultracode: ptrconv.Ptr(true),
@@ -1961,12 +1987,12 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 			// CLI omits both fields (e.g. a model switch that didn't touch
 			// effort) while curEffort is still "ultracode" on a model that
 			// can't run it: the guard must clear the stale value to xhigh
-			// rather than mislabel a Sonnet session as ultracode.
+			// rather than mislabel that session as ultracode.
 			name:      "stale ultracode on a model that lost support is cleared",
 			applied:   nil,
 			ultracode: nil,
 			curEffort: "ultracode",
-			model:     "sonnet",
+			model:     maxOnlyModelID,
 			want:      "xhigh",
 		},
 		{
@@ -2021,7 +2047,7 @@ func TestClaudeEffortFromApplied(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, newEffortResolver(claudeCodeAvailableModels).effortFromApplied(tt.applied, tt.ultracode, tt.curEffort, tt.model))
+			assert.Equal(t, tt.want, newEffortResolver(effortTestCatalog()).effortFromApplied(tt.applied, tt.ultracode, tt.curEffort, tt.model))
 		})
 	}
 }
@@ -2036,7 +2062,7 @@ func TestBuildStartupFlagSettings_Ultracode(t *testing.T) {
 		{"fable[1m] ultracode enables the combo", "fable[1m]", EffortUltracode, true},
 		{"opus ultracode enables the combo", "opus", EffortUltracode, true},
 		{"opus[1m] ultracode enables the combo", "opus[1m]", EffortUltracode, true},
-		{"sonnet ultracode is not enabled (unsupported)", "sonnet", EffortUltracode, false},
+		{"max-only model ultracode is not enabled (unsupported)", maxOnlyModelID, EffortUltracode, false},
 		{"haiku ultracode is not enabled (unsupported)", "haiku", EffortUltracode, false},
 		{"unknown model ultracode is not enabled", "claude-future-preview", EffortUltracode, false},
 		{"opus non-ultracode adds no effort keys", "opus", "xhigh", false},
@@ -2059,14 +2085,16 @@ func TestBuildStartupFlagSettings_Ultracode(t *testing.T) {
 }
 
 func TestModelSupportsUltracode(t *testing.T) {
-	// Against the static catalog: the xhigh-capable models (Fable, Opus) list
-	// ultracode; Sonnet/Haiku do not. Unlike supports, unknown models are NOT trusted.
-	static := newEffortResolver(claudeCodeAvailableModels)
+	// Against the static catalog: every xhigh-capable model lists ultracode; a
+	// model with no xhigh (the synthetic max-only entry) and one with no effort
+	// axis at all (Haiku) do not. Unlike supports, unknown models are NOT trusted.
+	static := newEffortResolver(effortTestCatalog())
 	assert.True(t, static.supportsUltracode("fable[1m]"))
 	assert.True(t, static.supportsUltracode("opus"))
 	assert.True(t, static.supportsUltracode("opus[1m]"))
-	assert.False(t, static.supportsUltracode("sonnet"))
-	assert.False(t, static.supportsUltracode("sonnet[1m]"))
+	assert.True(t, static.supportsUltracode("sonnet"))
+	assert.True(t, static.supportsUltracode("sonnet[1m]"))
+	assert.False(t, static.supportsUltracode(maxOnlyModelID))
 	assert.False(t, static.supportsUltracode("haiku"))
 	assert.False(t, static.supportsUltracode("claude-future-preview"), "unknown models are not trusted for ultracode")
 	assert.False(t, static.supportsUltracode(""))
@@ -2094,10 +2122,10 @@ func TestResolveClaudeEffortForModel(t *testing.T) {
 		{"fable[1m] keeps ultracode", "fable[1m]", "ultracode", "ultracode"},
 		{"opus keeps ultracode", "opus", "ultracode", "ultracode"},
 		{"opus[1m] keeps ultracode", "opus[1m]", "ultracode", "ultracode"},
-		{"sonnet downgrades ultracode to high", "sonnet", "ultracode", "high"},
+		{"max-only model downgrades ultracode to high", maxOnlyModelID, "ultracode", "high"},
 		{"haiku downgrades ultracode to high", "haiku", "ultracode", "high"},
 		{"unknown downgrades ultracode to high", "claude-future-preview", "ultracode", "high"},
-		{"sonnet downgrades xhigh to high", "sonnet", "xhigh", "high"},
+		{"max-only model downgrades xhigh to high", maxOnlyModelID, "xhigh", "high"},
 		{"opus keeps xhigh", "opus", "xhigh", "xhigh"},
 		{"unknown trusts xhigh", "claude-future-preview", "xhigh", "xhigh"},
 		{"supported effort passes through", "sonnet", "high", "high"},
@@ -2106,7 +2134,7 @@ func TestResolveClaudeEffortForModel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, newEffortResolver(claudeCodeAvailableModels).resolveEffort(tt.model, tt.effort))
+			assert.Equal(t, tt.want, newEffortResolver(effortTestCatalog()).resolveEffort(tt.model, tt.effort))
 		})
 	}
 }
@@ -2362,7 +2390,6 @@ func TestConvertClaudeModels_SentinelOwnsReservedDefaultID(t *testing.T) {
 // conversion ever drift, this fails.
 func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
 	xhighLevels := []string{"low", "medium", "high", "xhigh", "max"}
-	maxLevels := []string{"low", "medium", "high", "max"}
 	payload := []claudeCodeModelInfo{
 		// The live CLI reports Fable fully-qualified; it canonicalizes to the static
 		// catalog's "fable[1m]" id.
@@ -2372,8 +2399,13 @@ func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
 		// hidden legacy "opus" entry has no convert equivalent -- convert always emits
 		// "opus[1m]" -- so it is skipped in the comparison below.)
 		{Value: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: maxLevels},
-		{Value: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: maxLevels},
+		// xhighLevels, not maxLevels: this payload is meant to mirror what the live
+		// CLI reports, and it reports the same "low,medium,high,xhigh,max" for
+		// Sonnet as for Opus. Declaring maxLevels here is what let the static
+		// catalog drift away from the CLI unnoticed -- this guard compared the
+		// stale catalog against an equally stale payload and passed.
+		{Value: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		{Value: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
 		{Value: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", SupportsEffort: false},
 	}
 

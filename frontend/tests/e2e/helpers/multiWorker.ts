@@ -34,13 +34,8 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
-import {
-  authedHeaders,
-  signUpViaAPI,
-  TEST_ADMIN_DISPLAY_NAME,
-  TEST_ADMIN_PASSWORD,
-  TEST_ADMIN_USERNAME,
-} from './api'
+import { API_POLL_INTERVAL_MS, authedHeaders, signUpViaAPI, TEST_ADMIN_DISPLAY_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './api'
+import { stopProcesses } from './process'
 import { findFreePort, getGlobalState, waitForServer } from './server'
 
 /** A single worker spawned by the harness. */
@@ -162,36 +157,12 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
     if (stopped)
       return
     stopped = true
-    for (const w of workers) {
-      try {
-        w.proc.kill('SIGTERM')
-      }
-      catch {
-        // already dead
-      }
-    }
-    try {
-      hubProc.kill('SIGTERM')
-    }
-    catch {
-      // already dead
-    }
-    await new Promise(r => setTimeout(r, 1000))
-    for (const w of workers) {
-      try {
-        w.proc.kill('SIGKILL')
-      }
-      catch {
-        // already dead
-      }
+    // Signal every process at once and wait for all of them, rather than
+    // stopping them in sequence: the workers are independent, so their
+    // shutdowns overlap.
+    await stopProcesses([...workers.map(w => w.proc), hubProc])
+    for (const w of workers)
       rmSync(w.dataDir, { recursive: true, force: true })
-    }
-    try {
-      hubProc.kill('SIGKILL')
-    }
-    catch {
-      // already dead
-    }
     rmSync(hubDataDir, { recursive: true, force: true })
   }
 
@@ -262,6 +233,6 @@ async function waitForNewOnlineWorker(hubUrl: string, cookie: string, before: Se
       return fresh
     if (Date.now() >= deadline)
       throw new Error(`waitForNewOnlineWorker: no new worker came online within ${timeoutMs}ms (saw: ${ids.join(', ')})`)
-    await new Promise(r => setTimeout(r, 500))
+    await new Promise(r => setTimeout(r, API_POLL_INTERVAL_MS))
   }
 }

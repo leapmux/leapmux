@@ -14,6 +14,8 @@ import (
 )
 
 func TestSendAgentMessage_OneCharMinimum(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -33,6 +35,8 @@ func TestSendAgentMessage_OneCharMinimum(t *testing.T) {
 }
 
 func TestSendAgentMessage_EmptyTextRejectedWithoutAttachments(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -53,6 +57,8 @@ func TestSendAgentMessage_EmptyTextRejectedWithoutAttachments(t *testing.T) {
 }
 
 func TestSendAgentMessage_EmptyTextAllowedWithAttachments(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -75,6 +81,8 @@ func TestSendAgentMessage_EmptyTextAllowedWithAttachments(t *testing.T) {
 }
 
 func TestSendAgentMessage_AttachmentSizeLimitEnforced(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -99,6 +107,8 @@ func TestSendAgentMessage_AttachmentSizeLimitEnforced(t *testing.T) {
 }
 
 func TestSendAgentMessage_AttachmentMetadataPersistedInJSON(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 
@@ -153,6 +163,8 @@ func TestSendAgentMessage_AttachmentMetadataPersistedInJSON(t *testing.T) {
 }
 
 func TestSendAgentMessage_TextOnlyNoAttachmentsFieldInJSON(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 

@@ -32,6 +32,8 @@ func getAgentMessage(t *testing.T, d *channel.Dispatcher, agentID string, seq in
 // per-agent seq matches, carrying the fields the rail preview needs (content stays
 // compressed for the frontend to decode; mark_type rides along).
 func TestGetAgentMessage_ReturnsMessageBySeq(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -67,6 +69,8 @@ func TestGetAgentMessage_ReturnsMessageBySeq(t *testing.T) {
 // TestGetAgentMessage_MissingSeq_ReturnsUnset asserts a seq with no row yields an
 // unset message (not an error): a mark can outlive its message after a delete/reseq.
 func TestGetAgentMessage_MissingSeq_ReturnsUnset(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -82,6 +86,8 @@ func TestGetAgentMessage_MissingSeq_ReturnsUnset(t *testing.T) {
 // TestGetAgentMessage_ClosedAgent_ReturnsUnset mirrors ListAgentMessages: a closed
 // agent yields an unset message rather than an error.
 func TestGetAgentMessage_ClosedAgent_ReturnsUnset(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
@@ -99,6 +105,8 @@ func TestGetAgentMessage_ClosedAgent_ReturnsUnset(t *testing.T) {
 // TestGetAgentMessage_UnknownAgent_Errors asserts an unknown agent id produces an
 // error (not a success response), via requireAgent.
 func TestGetAgentMessage_UnknownAgent_Errors(t *testing.T) {
+	t.Parallel()
+
 	_, d, _ := setupTestService(t)
 	resp, w := getAgentMessage(t, d, "nope", 1)
 	assert.Nil(t, resp, "an unknown agent must not produce a success response")

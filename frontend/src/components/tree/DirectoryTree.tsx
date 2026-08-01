@@ -6,8 +6,8 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import File from 'lucide-solid/icons/file'
 import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
-import { createContext, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
-import { createStore, produce } from 'solid-js/store'
+import { batch, createContext, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
+import { createStore, produce, reconcile } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
 import { Icon } from '~/components/common/Icon'
@@ -15,7 +15,7 @@ import { StartupSpinner } from '~/components/common/StartupPanel'
 import { Tooltip } from '~/components/common/Tooltip'
 import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { formatErrorMessage } from '~/lib/errors'
-import { basename, detectFlavor, isAbsolute, lastSepIndex, relativeUnder, tildify, untildify } from '~/lib/paths'
+import { basename, detectFlavor, isAbsolute, relativeUnder, tildify, untildify } from '~/lib/paths'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { emptyState } from '~/styles/shared.css'
@@ -44,8 +44,13 @@ export interface DirectoryTreeProps {
    */
   flavor?: PathFlavor
   gitStatusStore?: ReturnType<typeof createGitFileStatusStore>
-  /** When set, only show nodes whose paths are in this set. */
-  visiblePaths?: Set<string>
+  /**
+   * When set, the tree is FILTERED: only nodes this predicate accepts render.
+   * Built by the git-aware caller (see makeGitVisibilityPredicate), so the
+   * untracked-subtree semantics stay out of the generic tree. Its presence is
+   * also what "is this tree filtered?" means.
+   */
+  isVisible?: (path: string) => boolean
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
   /** When false, entries with hidden=true are filtered out. Defaults to true. */
@@ -98,7 +103,7 @@ interface TreeContextValue {
   scrollContainer?: HTMLDivElement
   gitStatusStore: () => ReturnType<typeof createGitFileStatusStore> | undefined
   showHiddenFiles: boolean
-  visiblePaths: () => Set<string> | undefined
+  isVisible: () => ((path: string) => boolean) | undefined
   refreshVersion: () => number
   onSelect: (path: string) => void
   onFileOpen?: (path: string) => void
@@ -161,20 +166,6 @@ function deserializeState(raw: string): { expandedPaths: Record<string, boolean>
 function isDescendantPath(child: string, parent: string, flavor: PathFlavor): boolean {
   const rel = relativeUnder(child, parent, flavor)
   return rel !== null && rel !== ''
-}
-
-// Git emits untracked dirs as "build/"; merged tree nodes like "build/bin"
-// match by walking ancestors.
-function isPathVisible(path: string, visible: Set<string>, flavor: PathFlavor): boolean {
-  let dir = path
-  while (true) {
-    if (visible.has(dir))
-      return true
-    const i = lastSepIndex(dir, flavor)
-    if (i <= 0)
-      return false
-    dir = dir.substring(0, i)
-  }
 }
 
 // -------------------------------------------------------------------------
@@ -249,13 +240,12 @@ const TreeNode: Component<{
   const children = () => {
     const all = allChildren()
     const showHidden = tree.showHiddenFiles
-    const visible = tree.visiblePaths()
-    if (showHidden && !visible)
+    const isVisible = tree.isVisible()
+    if (showHidden && !isVisible)
       return all
-    const flavor = tree.flavor()
     return all.filter(c =>
       (showHidden || !c.hidden)
-      && (!visible || isPathVisible(c.path, visible, flavor)),
+      && (!isVisible || isVisible(c.path)),
     )
   }
   const loaded = () => tree.getChildren(props.node.path) !== undefined
@@ -482,7 +472,7 @@ const TreeNode: Component<{
                 Empty
               </div>
             </Show>
-            <Show when={tree.isTruncated(props.node.path) && !tree.visiblePaths()}>
+            <Show when={tree.isTruncated(props.node.path) && !tree.isVisible()}>
               <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
                 {`${children().length}+ entries, listing truncated`}
               </div>
@@ -610,15 +600,23 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     const truncationUnchanged = !!state.truncatedDirs[path] === truncated
     if (truncationUnchanged && existing && sameTreeEntries(existing, data))
       return
-    setState(produce((s) => {
-      s.childrenCache[path] = data
-      if (truncated) {
-        s.truncatedDirs[path] = true
-      }
-      else {
-        delete s.truncatedDirs[path]
-      }
-    }))
+    batch(() => {
+      // Keyed reconcile, NOT a wholesale array replace. `<For>` maps by object
+      // REFERENCE, so handing it a fresh array of fresh objects disposes and
+      // re-creates EVERY row in the directory when a single entry changed --
+      // and the three-dot menu lives INSIDE the row, so an open menu (and the
+      // trigger being clicked) is torn out of the DOM under the pointer. One
+      // file written by an agent during a turn was enough to do that to every
+      // sibling at turn end. Reconciling by `path` mutates the survivors in
+      // place, so only genuinely added/removed entries move.
+      setState('childrenCache', path, reconcile(data, { key: 'path' }))
+      setState('truncatedDirs', produce((t: Record<string, boolean>) => {
+        if (truncated)
+          t[path] = true
+        else
+          delete t[path]
+      }))
+    })
   }
 
   const workerFlavor = createMemo<PathFlavor>(() =>
@@ -637,13 +635,12 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     if (!all)
       return undefined
     const sh = showHidden()
-    const visible = props.visiblePaths
-    if (sh && !visible)
+    const isVisible = props.isVisible
+    if (sh && !isVisible)
       return all
-    const flavor = workerFlavor()
     return all.filter(c =>
       (sh || !c.hidden)
-      && (!visible || isPathVisible(c.path, visible, flavor)),
+      && (!isVisible || isVisible(c.path)),
     )
   }
 
@@ -767,7 +764,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     get scrollContainer() { return treeRef },
     get showHiddenFiles() { return showHidden() },
     gitStatusStore: () => props.gitStatusStore,
-    visiblePaths: () => props.visiblePaths,
+    isVisible: () => props.isVisible,
     refreshVersion,
     onSelect: path => props.onSelect(path),
     get onFileOpen() { return props.onFileOpen },
@@ -830,7 +827,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                   <div class={styles.childrenInner}>
                     <Show
                       when={rootChildren()!.length > 0}
-                      fallback={<div class={emptyState}>{props.visiblePaths ? 'No changes' : 'Empty directory'}</div>}
+                      fallback={<div class={emptyState}>{props.isVisible ? 'No changes' : 'Empty directory'}</div>}
                     >
                       <For each={rootChildren()}>
                         {node => (
@@ -841,7 +838,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                           />
                         )}
                       </For>
-                      <Show when={isTruncated(rootPath()) && !props.visiblePaths}>
+                      <Show when={isTruncated(rootPath()) && !props.isVisible}>
                         <div class={styles.emptyInline} style={{ 'padding-left': '24px' }}>
                           {`${rootChildren()!.length}+ entries, listing truncated`}
                         </div>

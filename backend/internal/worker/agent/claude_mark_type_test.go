@@ -16,6 +16,8 @@ import (
 // SendAgentMessage handler already dotted. spanType is the resolved tool name for a
 // tool_result row (empty otherwise).
 func TestClaudeUserEnvelopeMarkType(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name     string
 		spanType string
@@ -62,6 +64,8 @@ func TestClaudeUserEnvelopeMarkType(t *testing.T) {
 // ordinary tool is not a control tool at all. Every other provider echoes no control
 // answer, so it defers to the synthesized display row -> false.
 func TestIsSelfDisplayingControlTool(t *testing.T) {
+	t.Parallel()
+
 	assert.True(t, claudeProvider{}.IsSelfDisplayingControlTool(ToolNameAskUserQuestion))
 	assert.True(t, claudeProvider{}.IsSelfDisplayingControlTool(ToolNameExitPlanMode))
 	assert.False(t, claudeProvider{}.IsSelfDisplayingControlTool(ToolNameEnterPlanMode))
@@ -81,6 +85,8 @@ func TestIsSelfDisplayingControlTool(t *testing.T) {
 // only it returns the synthetic "[Request interrupted by user]" row text; every other provider's
 // interrupt surfaces in its own transcript and returns "" (ACP via the noopProvider embedding).
 func TestSyntheticInterruptNotice(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, "[Request interrupted by user]", codexProvider{}.SyntheticInterruptNotice())
 
 	assert.Empty(t, claudeProvider{}.SyntheticInterruptNotice())
@@ -93,6 +99,8 @@ func TestSyntheticInterruptNotice(t *testing.T) {
 // consumes only these provider-neutral classifications, so provider wire names do not leak
 // back into service-level plan-mode policy.
 func TestPlanModeControl(t *testing.T) {
+	t.Parallel()
+
 	assert.Equal(t, PlanModeControlPrompt, codexProvider{}.PlanModeControl(ToolNameCodexPlanModePrompt))
 	assert.Equal(t, PlanModeControlNone, codexProvider{}.PlanModeControl(ToolNameEnterPlanMode))
 

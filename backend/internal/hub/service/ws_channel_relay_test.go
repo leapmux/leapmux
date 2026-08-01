@@ -35,6 +35,8 @@ func newTestAuthContexts(t *testing.T) *auth.AuthContextRegistry {
 }
 
 func TestWebSocketHandlersRequireAuthContextRegistry(t *testing.T) {
+	t.Parallel()
+
 	assert.Panics(t, func() { NewChannelRelayHandler(nil, newTestRegistry(), nil, nil, nil, false) })
 	assert.Panics(t, func() { NewUserEventsHandler(nil, nil, nil, nil, false) })
 }
@@ -46,6 +48,8 @@ func TestWebSocketHandlersRequireAuthContextRegistry(t *testing.T) {
 // first channel teardown panics on a nil receiver, on the caller's goroutine,
 // long after startup. Several tests in this file used to pass nil here.
 func TestChannelRelayHandlerRequiresWorkerRegistry(t *testing.T) {
+	t.Parallel()
+
 	assert.Panics(t, func() { NewChannelRelayHandler(nil, nil, nil, newTestAuthContexts(t), nil, false) })
 }
 
@@ -60,6 +64,8 @@ func newTestRegistry() *workermgr.Manager {
 // (maxChunkCiphertext + framing overhead), which would fail with the library's
 // default 32KB limit.
 func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
+	t.Parallel()
+
 	// Build a ChannelMessage whose wire format (4-byte length prefix +
 	// protobuf) exceeds the default 32KB WebSocket read limit.
 	// Use 64KB of ciphertext — the maximum single Noise transport message.
@@ -125,6 +131,8 @@ func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
 }
 
 func TestChannelRelay_NoCookie_Returns401(t *testing.T) {
+	t.Parallel()
+
 	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
@@ -148,6 +156,8 @@ func (httpAuthFailureSessions) ValidateWithUser(context.Context, string) (*store
 }
 
 func TestWebSocketHandlers_InternalAuthFailureReturnsGeneric500(t *testing.T) {
+	t.Parallel()
+
 	handlers := map[string]http.Handler{
 		"channel relay": NewChannelRelayHandler(httpAuthFailureStore{}, newTestRegistry(), nil, newTestAuthContexts(t), nil, false),
 		"user events":   NewUserEventsHandler(httpAuthFailureStore{}, nil, newTestAuthContexts(t), nil, false),
@@ -166,6 +176,8 @@ func TestWebSocketHandlers_InternalAuthFailureReturnsGeneric500(t *testing.T) {
 }
 
 func TestChannelRelay_SubprotocolToken_NotAccepted(t *testing.T) {
+	t.Parallel()
+
 	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
@@ -181,6 +193,8 @@ func TestChannelRelay_SubprotocolToken_NotAccepted(t *testing.T) {
 // the default 32KB limit causes a read failure for large messages. This
 // confirms the fix is actually necessary.
 func TestWSReadLimit_DefaultRejectsLargeChunk(t *testing.T) {
+	t.Parallel()
+
 	ciphertext := []byte(strings.Repeat("X", 65535))
 	msg := &leapmuxv1.ChannelMessage{
 		ChannelId:     "test-channel",
@@ -267,6 +281,8 @@ func mintAdminAPIToken(t *testing.T, st store.Store, tv *auth.TokenValidator) st
 // hitting the handler with an httptest.NewRecorder, which lets us
 // observe the auth error before the upgrade attempt.
 func TestChannelRelay_Bearer_RejectsUnknownToken(t *testing.T) {
+	t.Parallel()
+
 	h, _, _ := newBearerRelay(t)
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	req.Header.Set("Authorization", "Bearer lmx_unknown_id_unknown_secret")
@@ -276,6 +292,8 @@ func TestChannelRelay_Bearer_RejectsUnknownToken(t *testing.T) {
 }
 
 func TestChannelRelay_Bearer_RejectsRevokedToken(t *testing.T) {
+	t.Parallel()
+
 	h, st, tv := newBearerRelay(t)
 	bearer := mintAdminAPIToken(t, st, tv)
 	// Pull the token id out of "lmx_<kind><id>_<secret>" — strip
@@ -295,6 +313,8 @@ func TestChannelRelay_Bearer_RejectsRevokedToken(t *testing.T) {
 }
 
 func TestChannelRelay_Bearer_RejectsExpiredToken(t *testing.T) {
+	t.Parallel()
+
 	h, st, tv := newBearerRelay(t)
 	u, err := st.Users().GetByUsername(context.Background(), "admin")
 	require.NoError(t, err)
@@ -314,6 +334,8 @@ func TestChannelRelay_Bearer_RejectsExpiredToken(t *testing.T) {
 }
 
 func TestChannelRelay_Bearer_RejectsMalformedBearer(t *testing.T) {
+	t.Parallel()
+
 	h, _, _ := newBearerRelay(t)
 	for _, header := range []string{
 		"Bearer lmx_no_underscore_in_secret",
@@ -330,6 +352,8 @@ func TestChannelRelay_Bearer_RejectsMalformedBearer(t *testing.T) {
 }
 
 func TestChannelRelay_Bearer_RejectsWhenValidatorNotWired(t *testing.T) {
+	t.Parallel()
+
 	// Without WithTokenValidator, the relay must reject lmx_* bearers
 	// rather than fall through to the cookie path or panic. This
 	// matches the deployed shape where bearer support is a deliberate
@@ -346,6 +370,8 @@ func TestChannelRelay_Bearer_RejectsWhenValidatorNotWired(t *testing.T) {
 }
 
 func TestChannelRelay_Bearer_AcceptsValidToken(t *testing.T) {
+	t.Parallel()
+
 	// Spin up a real httptest.Server with the relay so the WebSocket
 	// upgrade can complete and BindUser actually runs. Wire real
 	// (empty) channelmgr/workermgr instances so we never trip a nil
@@ -376,6 +402,8 @@ func TestChannelRelay_Bearer_AcceptsValidToken(t *testing.T) {
 }
 
 func TestChannelRelay_BearerRevocationClosesLiveConnection(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
@@ -411,6 +439,8 @@ func TestChannelRelay_BearerRevocationClosesLiveConnection(t *testing.T) {
 }
 
 func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
+	t.Parallel()
+
 	st := hubtestutil.OpenTestStore(t)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
@@ -508,6 +538,8 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 // broken worker stream is terminal (the read loop then closes the channel); a
 // live worker receives the ciphertext wrapped verbatim.
 func TestRelayFrontendMessageToWorker(t *testing.T) {
+	t.Parallel()
+
 	msg := func(channelID string) *leapmuxv1.ChannelMessage {
 		return &leapmuxv1.ChannelMessage{ChannelId: channelID, CorrelationId: 1, Ciphertext: []byte("ct")}
 	}

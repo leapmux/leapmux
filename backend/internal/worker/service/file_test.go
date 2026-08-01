@@ -16,6 +16,8 @@ import (
 )
 
 func TestListDirectory_Truncation(t *testing.T) {
+	t.Parallel()
+
 	t.Run("below limit is not truncated", func(t *testing.T) {
 		dir := t.TempDir()
 		for i := 0; i < 10; i++ {
@@ -61,6 +63,8 @@ func TestListDirectory_Truncation(t *testing.T) {
 }
 
 func TestListDirectory_SortOrder(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 
 	// Create files and directories with names that test sort order.
@@ -101,6 +105,8 @@ func TestListDirectory_SortOrder(t *testing.T) {
 }
 
 func TestListDirectory_TruncationKeepsDirsFirst(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 
 	// Create enough directories and files to exceed the limit.
@@ -144,6 +150,8 @@ func TestListDirectory_TruncationKeepsDirsFirst(t *testing.T) {
 }
 
 func TestFileInfoToProto_Hidden(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 
 	// Create a hidden file and a regular file.
@@ -169,6 +177,8 @@ func TestFileInfoToProto_Hidden(t *testing.T) {
 }
 
 func TestListDirectory_HiddenField(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 
 	// Create a mix of hidden and regular entries.
@@ -192,6 +202,8 @@ func TestListDirectory_HiddenField(t *testing.T) {
 }
 
 func TestListDirectory_MergeHiddenDirs(t *testing.T) {
+	t.Parallel()
+
 	t.Run("hidden top-level dir is merged with hidden flag", func(t *testing.T) {
 		dir := t.TempDir()
 		// .github/workflows — hidden dir should be merged, with hidden flag propagated.
@@ -237,6 +249,8 @@ func TestListDirectory_MergeHiddenDirs(t *testing.T) {
 }
 
 func TestListDirectory_DirsOnly(t *testing.T) {
+	t.Parallel()
+
 	t.Run("filters out files", func(t *testing.T) {
 		dir := t.TempDir()
 		numDirs := 5
@@ -350,6 +364,8 @@ func TestListDirectory_DirsOnly(t *testing.T) {
 // with an empty content payload — letting clients detect oversize files in a
 // single round trip without the matching byte payload.
 func TestReadFile_MetaOnlyIfTruncated(t *testing.T) {
+	t.Parallel()
+
 	t.Run("oversize: empty content with total_size", func(t *testing.T) {
 		svc, d, w := setupTestService(t)
 
@@ -467,6 +483,8 @@ func repeatedByte(n int, b byte) []byte {
 // cheap observation: the clamp is what makes a file this size count as
 // truncated, so an unclamped limit returns content here instead.
 func TestReadFile_ClampsAnOversizeLimit(t *testing.T) {
+	t.Parallel()
+
 	svc, d, w := setupTestService(t)
 
 	path := filepath.Join(svc.HomeDir, "sparse.bin")
@@ -497,6 +515,8 @@ func TestReadFile_ClampsAnOversizeLimit(t *testing.T) {
 }
 
 func TestMaxReadLimit_UsesConfiguredMaxMessageSize(t *testing.T) {
+	t.Parallel()
+
 	svc := &Service{Config: Config{MaxMessageSize: 2 << 20}}
 	assert.Equal(t, int64(2<<20), svc.maxReadLimit(nil))
 
@@ -506,6 +526,8 @@ func TestMaxReadLimit_UsesConfiguredMaxMessageSize(t *testing.T) {
 }
 
 func TestMaxReadLimit_UsesNegotiatedChannelBudgetWhenTighter(t *testing.T) {
+	t.Parallel()
+
 	svc := &Service{Config: Config{MaxMessageSize: 4 << 20}}
 	sender := &budgetWriter{budget: 1 << 20}
 	assert.Equal(t, int64(1<<20), svc.maxReadLimit(sender),

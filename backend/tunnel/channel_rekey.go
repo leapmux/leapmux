@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
@@ -65,6 +66,20 @@ type rekeyController struct {
 	// i.e. a silently broken channel rather than a clean failure. Guarded by
 	// ch.mu.
 	rekeyReqID uint64
+	// watchdogTimeout bounds an in-flight rekey before runRekeyTimer declares
+	// terminal failure. Zero -- the production value -- means
+	// sessionVerifyTimeout. It is a seam so the two tests that need the
+	// watchdog to actually FIRE can spend a couple of seconds on the real
+	// clock instead of the full 10s; what they pin is the watchdog's behaviour
+	// at its deadline, which is the same at any deadline. Immutable after
+	// construction, so it needs neither lock.
+	watchdogTimeout time.Duration
+	// watchdogLive counts runRekeyTimer goroutines that have started and not
+	// yet returned. It lets a test prove the watchdog RETIRED on resolution
+	// directly, instead of inferring it from the channel still being open a
+	// whole timeout later -- an inference that costs one full watchdog window
+	// of wall clock per run and can only ever observe a leak after the fact.
+	watchdogLive atomic.Int64
 	// workerMlkemPub is the worker's static ML-KEM-1024 encapsulation key,
 	// retained from GetWorkerHandshakeParams so an in-band rekey can encapsulate
 	// a fresh PQ ciphertext without a second round trip. nil on classical-mode
@@ -289,9 +304,20 @@ func (ch *Channel) startRekeyLocked(ctx context.Context) (wait chan rekeyOutcome
 	return wait, reqID, send, nil
 }
 
+// rekeyWatchdogTimeout is how long runRekeyTimer waits for an in-flight rekey
+// to resolve before failing it terminally. See rekeyController.watchdogTimeout
+// for why it is overridable.
+func (ch *Channel) rekeyWatchdogTimeout() time.Duration {
+	if ch.rekey.watchdogTimeout > 0 {
+		return ch.rekey.watchdogTimeout
+	}
+	return sessionVerifyTimeout
+}
+
 // runRekeyTimer is the starter's watchdog: if the rekey does not resolve
-// (Ack/Reject/send-failure) within sessionVerifyTimeout, it fails the rekey
-// terminally and cancels the channel. It retires the instant rekeyDone closes
+// (Ack/Reject/send-failure) within rekeyWatchdogTimeout (sessionVerifyTimeout
+// in production), it fails the rekey terminally and cancels the channel. It
+// retires the instant rekeyDone closes
 // (i.e. the moment the rekey resolves), so a successful Ack does NOT leave a
 // timer armed to fire later and cancel a healthy channel.
 //
@@ -301,7 +327,10 @@ func (ch *Channel) startRekeyLocked(ctx context.Context) (wait chan rekeyOutcome
 // expired would RST every multiplexed Conn riding this channel. The caller's
 // ctx is checked only in startRekeyLocked before the Request is sent.
 func (ch *Channel) runRekeyTimer(done <-chan struct{}) {
-	timer := time.NewTimer(sessionVerifyTimeout)
+	ch.rekey.watchdogLive.Add(1)
+	defer ch.rekey.watchdogLive.Add(-1)
+
+	timer := time.NewTimer(ch.rekeyWatchdogTimeout())
 	defer timer.Stop()
 	select {
 	case <-done:

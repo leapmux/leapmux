@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace, waitForWorkspaceReady } from './helpers/ui'
+import { loginViaToken, openWorkspace, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
@@ -24,7 +24,7 @@ test.describe('Multi-Workspace Events', () => {
       // No preload needed: every workspace is projected at all times.
 
       // Expand ws2 in the sidebar
-      const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
+      const ws2Item = workspaceRow(page, ws2)
       await ws2Item.locator('svg').first().click()
 
       // ws1 active has 1 leaf (auto-expanded) + ws2 expanded has 1 leaf = 2
@@ -52,7 +52,7 @@ test.describe('Multi-Workspace Events', () => {
       // Visit ws2 to populate its registry, then switch back
 
       // Expand ws2 in the sidebar
-      const ws2Item = page.locator(`[data-testid="workspace-item-${ws2}"]`)
+      const ws2Item = workspaceRow(page, ws2)
       await ws2Item.locator('svg').first().click()
 
       // ws1 active (1 leaf) + ws2 expanded (2 leaves) = 3
@@ -65,7 +65,7 @@ test.describe('Multi-Workspace Events', () => {
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(2)
 
       // Switch back to ws1 — should have 1 agent tab
-      await page.locator(`[data-testid="workspace-item-${ws1}"]`).click()
+      await workspaceRow(page, ws1).click()
       await waitForWorkspaceReady(page)
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(1)
     }
@@ -90,9 +90,9 @@ test.describe('Multi-Workspace Events', () => {
       await waitForInitialAgent(page)
 
       // All three workspaces should appear in the sidebar
-      await expect(page.locator(`[data-testid="workspace-item-${ws1}"]`)).toBeVisible()
-      await expect(page.locator(`[data-testid="workspace-item-${ws2}"]`)).toBeVisible()
-      await expect(page.locator(`[data-testid="workspace-item-${ws3}"]`)).toBeVisible()
+      await expect(workspaceRow(page, ws1)).toBeVisible()
+      await expect(workspaceRow(page, ws2)).toBeVisible()
+      await expect(workspaceRow(page, ws3)).toBeVisible()
 
       // No preload needed: every workspace is projected at all times.
       // Preloading auto-expands each workspace (since it becomes active),

@@ -97,6 +97,8 @@ func newTestAgent(sink OutputSink) *ClaudeCodeAgent {
 }
 
 func TestHandleOutput_AssistantToolUse(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -134,6 +136,8 @@ func TestHandleOutput_AssistantToolUse(t *testing.T) {
 }
 
 func TestHandleOutput_AssistantToolUse_FallbackParentSpanID(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -159,6 +163,8 @@ func TestHandleOutput_AssistantToolUse_FallbackParentSpanID(t *testing.T) {
 }
 
 func TestHandleOutput_UserToolResult(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -194,6 +200,8 @@ func TestHandleOutput_UserToolResult(t *testing.T) {
 }
 
 func TestHandleOutput_AssistantNoToolUse(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -230,6 +238,8 @@ func testHomeDir() string {
 }
 
 func TestHandleOutput_PlanFileDetected_UsesPlatformPathSeparators(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -260,6 +270,8 @@ func TestHandleOutput_PlanFileDetected_UsesPlatformPathSeparators(t *testing.T) 
 }
 
 func TestHandleOutput_PlanFileIgnored_WhenPathIsOutsidePlansDir(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -288,6 +300,8 @@ func TestHandleOutput_PlanFileIgnored_WhenPathIsOutsidePlansDir(t *testing.T) {
 }
 
 func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -315,6 +329,8 @@ func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
 // broadcast `rate_limits` map exposes a snake_case tier shape so all
 // providers (Claude / Codex) deliver the same field names to the frontend.
 func TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -335,6 +351,8 @@ func TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire(t *testing.T) {
 }
 
 func TestClaudeRateLimitEvent_AllowedCancelsResume(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -358,6 +376,8 @@ func TestClaudeRateLimitEvent_AllowedCancelsResume(t *testing.T) {
 // status is an actual block; a warning must cancel any pending resume, exactly
 // like "allowed".
 func TestClaudeRateLimitEvent_AllowedWarningCancelsResume(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -381,6 +401,8 @@ func TestClaudeRateLimitEvent_AllowedWarningCancelsResume(t *testing.T) {
 // allowance (overageStatus still served), so there is no block to wait out and
 // any pending resume is cancelled.
 func TestClaudeRateLimitEvent_OverageAbsorbsRejected(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -404,6 +426,8 @@ func TestClaudeRateLimitEvent_OverageAbsorbsRejected(t *testing.T) {
 // hard block while on overage (the overage itself is "rejected") schedules a
 // resume at overageResetsAt -- not the base resetsAt.
 func TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -428,6 +452,8 @@ func TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset(t *testing.
 // schedules (no time to wait until) nor cancels (must not drop a legitimate
 // pending resume from a prior well-formed event).
 func TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -441,6 +467,8 @@ func TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact(t *testin
 }
 
 func TestClaudeResult_APIErrorUsesAPIErrorReason(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -464,6 +492,8 @@ func TestClaudeResult_APIErrorUsesAPIErrorReason(t *testing.T) {
 }
 
 func TestClaudeResult_IdleTimeoutPrefixSchedulesAPIErrorAutoContinue(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -492,6 +522,8 @@ func TestClaudeResult_IdleTimeoutPrefixSchedulesAPIErrorAutoContinue(t *testing.
 }
 
 func TestClaudeResult_BareOverloadedSchedulesAPIErrorAutoContinue(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -522,6 +554,8 @@ func TestClaudeResult_BareOverloadedSchedulesAPIErrorAutoContinue(t *testing.T) 
 }
 
 func TestHandleOutput_MalformedJSON(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -535,6 +569,8 @@ func TestHandleOutput_MalformedJSON(t *testing.T) {
 }
 
 func TestHandleOutput_EmptyContentBlocks(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -555,6 +591,8 @@ func TestHandleOutput_EmptyContentBlocks(t *testing.T) {
 }
 
 func TestHandleOutput_PlanModeEnterExit(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -587,6 +625,8 @@ func TestHandleOutput_PlanModeEnterExit(t *testing.T) {
 }
 
 func TestHandleOutput_PlanModeEnter_StringToolUseResult(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -619,6 +659,8 @@ func TestHandleOutput_PlanModeEnter_StringToolUseResult(t *testing.T) {
 }
 
 func TestHandleOutput_MultipleToolUses(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -652,6 +694,8 @@ func TestHandleOutput_MultipleToolUses(t *testing.T) {
 }
 
 func TestHandleOutput_TopLevelAssistantBroadcastsContextUsage(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -684,6 +728,8 @@ func TestHandleOutput_TopLevelAssistantBroadcastsContextUsage(t *testing.T) {
 }
 
 func TestHandleOutput_ThinkingTokensBroadcastNotPersisted(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -709,6 +755,8 @@ func TestHandleOutput_ThinkingTokensBroadcastNotPersisted(t *testing.T) {
 }
 
 func TestHandleOutput_ThinkingTokensZeroEstimateStillSwallowed(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -729,6 +777,8 @@ func TestHandleOutput_ThinkingTokensZeroEstimateStillSwallowed(t *testing.T) {
 }
 
 func TestHandleOutput_ThinkingTokensFractionalEstimateStillSwallowed(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -752,6 +802,8 @@ func TestHandleOutput_ThinkingTokensFractionalEstimateStillSwallowed(t *testing.
 }
 
 func TestHandleOutput_ThinkingTokensMalformedEstimateStillSwallowed(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -776,6 +828,8 @@ func TestHandleOutput_ThinkingTokensMalformedEstimateStillSwallowed(t *testing.T
 }
 
 func TestHandleOutput_ThinkingTokensOverflowEstimateStillSwallowed(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -796,6 +850,8 @@ func TestHandleOutput_ThinkingTokensOverflowEstimateStillSwallowed(t *testing.T)
 }
 
 func TestHandleOutput_ThinkingTokensNegativeEstimateClampedToZero(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -816,6 +872,8 @@ func TestHandleOutput_ThinkingTokensNegativeEstimateClampedToZero(t *testing.T) 
 }
 
 func TestHandleOutput_ThinkingTokensFiniteHugeEstimateClampedToZero(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -837,6 +895,8 @@ func TestHandleOutput_ThinkingTokensFiniteHugeEstimateClampedToZero(t *testing.T
 }
 
 func TestParseThinkingTokens(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name         string
 		content      string
@@ -867,6 +927,8 @@ func TestParseThinkingTokens(t *testing.T) {
 }
 
 func TestHandleOutput_NonThinkingSystemMessageStillPersists(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -885,6 +947,8 @@ func TestHandleOutput_NonThinkingSystemMessageStillPersists(t *testing.T) {
 }
 
 func TestIsRetryableClaudeResultError(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name  string
 		input string
@@ -932,6 +996,8 @@ func TestIsRetryableClaudeResultError(t *testing.T) {
 }
 
 func TestHandleOutput_SubagentAssistantDoesNotOverwriteContextUsage(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
@@ -972,6 +1038,8 @@ func TestHandleOutput_SubagentAssistantDoesNotOverwriteContextUsage(t *testing.T
 }
 
 func TestHandleOutput_ResultModelUsagePicksPrimaryContextWindow(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 	agent.model = "opus[1m]"
@@ -1005,6 +1073,8 @@ func TestHandleOutput_ResultModelUsagePicksPrimaryContextWindow(t *testing.T) {
 }
 
 func TestHandleOutput_ResultModelUsageLegacyOpusResolvesTo1M(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 	// A legacy bare "opus" now collapses to "opus[1m]" (Opus is 1M-only), so it must
@@ -1041,6 +1111,8 @@ func TestHandleOutput_ResultModelUsageLegacyOpusResolvesTo1M(t *testing.T) {
 }
 
 func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 	agent.model = "opus[1m]"
@@ -1107,6 +1179,8 @@ func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) 
 }
 
 func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 	agent.model = "opus[1m]"
@@ -1180,6 +1254,8 @@ func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow
 // a static-only seed would report no window until the first result message; the
 // dynamic seed reports the [1m]-inferred window immediately.
 func TestGetOrCreateUsageSnapshot_SeedsFromDynamicCatalog(t *testing.T) {
+	t.Parallel()
+
 	// Precondition: the model is unknown to the static catalog, so a static seed
 	// would be 0.
 	require.Equal(t, int64(0), modelContextWindow(claudeCodeAvailableModels, "mythos"),
@@ -1220,6 +1296,8 @@ func TestGetOrCreateUsageSnapshot_SeedsFromDynamicCatalog(t *testing.T) {
 // whole-list swap with no per-entry fallback), so such a model reported "unknown" until
 // a result message supplied a window -- diverging from how its effort still resolved.
 func TestExtractAndBroadcastUsage_WindowFallsBackToStaticCatalog(t *testing.T) {
+	t.Parallel()
+
 	// Precondition: opus[1m] is a static-catalog model with a 1M window.
 	require.Equal(t, int64(1_000_000), modelContextWindow(claudeCodeAvailableModels, "opus[1m]"),
 		"precondition: opus[1m] carries a 1M window in the static catalog")
@@ -1253,6 +1331,8 @@ func TestExtractAndBroadcastUsage_WindowFallsBackToStaticCatalog(t *testing.T) {
 // "unknown" (matching the frontend) until the sentinel resolves to a concrete model or
 // a result message supplies the real window.
 func TestGetOrCreateUsageSnapshot_SentinelWindowIsUnknown(t *testing.T) {
+	t.Parallel()
+
 	// Precondition: the sentinel entry carries no context window.
 	require.Equal(t, int64(0), modelContextWindow(claudeCodeAvailableModels, DefaultModelSentinel),
 		"precondition: the sentinel has no concrete window")
@@ -1285,6 +1365,8 @@ func TestGetOrCreateUsageSnapshot_SentinelWindowIsUnknown(t *testing.T) {
 // 1M-context model the window is re-seeded from the catalog -- not left unknown until a
 // result message with matching modelUsage happens to refresh it.
 func TestExtractAndBroadcastUsage_ReseedsWindowOnModelChange(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 	agent.model = DefaultModelSentinel // unresolved at the first turn -> window unknown
@@ -1317,6 +1399,8 @@ func TestExtractAndBroadcastUsage_ReseedsWindowOnModelChange(t *testing.T) {
 // over-reporting 1M (showing far more headroom than real) until a result message with
 // matching modelUsage happened to correct it.
 func TestExtractAndBroadcastUsage_ReseedsDownwardOnModelDowngrade(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 	agent.model = "opus[1m]" // known 1M model via the static catalog fallback
@@ -1349,6 +1433,8 @@ func TestExtractAndBroadcastUsage_ReseedsDownwardOnModelDowngrade(t *testing.T) 
 // the broadcast omits context_window. A result message's modelUsage supplies the real
 // window once one arrives.
 func TestExtractAndBroadcastUsage_ClearsWindowOnSwitchToUnknownModel(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 	agent.model = "opus[1m]" // known 1M model via the static catalog fallback
@@ -1384,6 +1470,8 @@ func TestExtractAndBroadcastUsage_ClearsWindowOnSwitchToUnknownModel(t *testing.
 // the only thing protecting a CLI-reported window from being overwritten by the coarser
 // catalog estimate.
 func TestExtractAndBroadcastUsage_ResultWindowSurvivesReseed(t *testing.T) {
+	t.Parallel()
+
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 	agent.model = "opus[1m]" // catalog estimate for this id is 1M
@@ -1412,6 +1500,8 @@ func TestExtractAndBroadcastUsage_ResultWindowSurvivesReseed(t *testing.T) {
 }
 
 func TestFindPrimaryContextWindow(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		model    string
@@ -1518,6 +1608,8 @@ func TestFindPrimaryContextWindow(t *testing.T) {
 // LastBroadcast stamping were previously only reachable through a real clock; passing
 // `now` in makes them deterministic.
 func TestContextUsageSnapshot_BuildBroadcast(t *testing.T) {
+	t.Parallel()
+
 	base := time.Unix(1_700_000_000, 0).UTC()
 
 	t.Run("no usage yields no broadcast", func(t *testing.T) {
