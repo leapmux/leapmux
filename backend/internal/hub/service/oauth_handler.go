@@ -170,8 +170,24 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	// Exchange code for tokens.
-	tokenSet, claims, err := provider.Exchange(ctx, code, oauthState.PkceVerifier)
+	// Exchange code for tokens, under a deadline of our own.
+	//
+	// This is a mux route, so it never passes through the RPC interceptor chain
+	// that bounds every Connect handler -- and the leg it makes is an outbound
+	// call to a third party. golang.org/x/oauth2 runs it on http.DefaultClient
+	// unless the context carries an oauth2.HTTPClient, and http.DefaultClient
+	// has NO timeout, so an identity provider that accepts the connection and
+	// never answers parks this handler forever. That parks a request net/http
+	// counts as ACTIVE, so a shutdown then waits out its entire drain budget
+	// and reports the deadline as a failed shutdown -- the same operator-facing
+	// failure the worker Connect streams used to cause.
+	//
+	// This bounds one leg. Bounding EVERY handler generally -- a shutdown-scoped
+	// http.Server.BaseContext, so no in-flight handler outlives the grace -- is
+	// tracked in https://github.com/leapmux/leapmux/issues/343
+	exchangeCtx, cancelExchange := context.WithTimeout(ctx, h.cfg.APITimeout())
+	defer cancelExchange()
+	tokenSet, claims, err := provider.Exchange(exchangeCtx, code, oauthState.PkceVerifier)
 	if err != nil {
 		slog.Error("oauth: exchange", "error", err)
 		http.Error(w, "OAuth exchange failed", http.StatusBadRequest)

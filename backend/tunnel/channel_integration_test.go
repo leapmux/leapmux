@@ -30,6 +30,21 @@ func uniqueTestListenURL(t *testing.T) string {
 	return locallistentest.UniqueListenURL(t, "leapmux-test")
 }
 
+// soloStopBudget is the ceiling on solo teardown.
+//
+// A healthy stop measures ~1.1s, and almost none of that is our work: it is
+// net/http's fixed 1s HTTP/2 GOAWAY grace (http2goAwayTimeout), which
+// Server.Shutdown waits out on the worker's h2c connection. Only ~50ms is
+// listener and store close, and that did not move under 4x CPU
+// oversubscription. So the discriminating band is [1.1s, 10s] -- the hub's own
+// HTTP drain timeout -- and 8s sits far enough above the floor to survive a
+// loaded runner while still failing a stop that is waiting out the drain.
+//
+// This is the only solo bootstrap whose worker is fully CONNECTED by the time
+// Stop runs; backend/solo's own tests tear down before the worker's h2c
+// connection exists, so the same budget there would assert nothing.
+const soloStopBudget = 8 * time.Second
+
 // startTestSolo starts a solo Hub+Worker instance for integration testing.
 // Returns the hub URL, local-listen URL, admin user ID, and worker ID.
 func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID string) {
@@ -59,7 +74,19 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 		SkipBanner: true,
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, inst.Stop()) })
+	t.Cleanup(func() {
+		stopStarted := time.Now()
+		require.NoError(t, inst.Stop())
+		// Stopping is teardown, but how LONG it takes is a real assertion: the
+		// Hub's HTTP drain gives itself 10s and waits on the connection each
+		// worker's Connect stream is riding, so a shutdown path that leaves
+		// that stream to the worker to close spends the whole budget and then
+		// reports the deadline as an error. That failed here as a flake --
+		// only when the Hub reached its drain before the worker reacted -- so
+		// bound the time, not just the error.
+		assert.Less(t, time.Since(stopStarted), soloStopBudget,
+			"solo shutdown must not wait out the hub's drain budget")
+	})
 
 	hubURL = "http://" + addr
 	localListenURL = inst.LocalListenURL()

@@ -340,6 +340,23 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		Protocols:         protocols,
 		HTTP2: &http.HTTP2Config{
 			MaxConcurrentStreams: 1000,
+			// Without this a peer that stops draining its socket parks the
+			// writer forever, and workermgr.Conn.Send holds the conn's mutex
+			// across that write -- so ONE wedged worker blocks every other
+			// sender to it (notifier, channel relay, shutdown notice) for the
+			// process's life, and its Connect handler can never return. The
+			// timeout is extended whenever any byte is written, so it bounds
+			// zero PROGRESS on a write, not the write's total duration: a slow
+			// but moving consumer never trips it, however large the frame. 30s
+			// is therefore about how long a stalled-but-recoverable socket may
+			// take to accept a single byte -- generous for a paused VM or a
+			// saturated link, and far short of leaving a wedged peer to hold
+			// the conn mutex for the process's life.
+			//
+			// It does NOT bound a peer that stalls its HTTP/2 flow-control
+			// window instead, because then no socket write is attempted; see
+			// workermgr.FenceAll for that residual.
+			WriteByteTimeout: 30 * time.Second,
 		},
 	}
 
@@ -509,9 +526,18 @@ func (s *Server) Serve(ctx context.Context) error {
 		close(s.shutdownCh)
 		s.authContexts.Stop()
 
-		// 2. Notify connected workers to delay reconnection.
+		// 2. Notify connected workers to delay reconnection, then end their
+		// Connect streams. Both halves matter to the drain below: a notified
+		// worker still holds its stream until it decides to reconnect, and the
+		// drain waits on the handler that stream is parked in.
+		//
+		// This releases the drain for handlers the worker registry knows about.
+		// A handler outside it (a mux route doing outbound I/O) is bounded only
+		// by whatever deadline it sets itself; making that structural, via a
+		// shutdown-scoped BaseContext every handler derives from, is tracked in
+		// https://github.com/leapmux/leapmux/issues/343
 		notifyCtx, cancelNotify := context.WithTimeout(context.Background(), 2*time.Second)
-		s.workerMgr.NotifyShutdown(notifyCtx, 10)
+		s.workerMgr.NotifyShutdownAndFence(notifyCtx, 10)
 		cancelNotify()
 
 		// 3. Drain in-flight HTTP requests, then force-close any connections
@@ -521,12 +547,21 @@ func (s *Server) Serve(ctx context.Context) error {
 		// fails with ERROR_ACCESS_DENIED.
 		//
 		// http.Server.Close() only iterates net/http's own activeConn map.
-		// h2c-upgraded connections (worker bidi gRPC streams, channel-relay
-		// websockets) are hijacked and handed off to http2.Server, which
-		// removes them from activeConn — so http.Server.Close() can't reach
-		// them. locallisten.CloseAccepted closes the underlying pipe handles
-		// directly via the listener's own accepted-connection tracking,
-		// which is the only level that sees every accepted conn.
+		// A channel-relay websocket is hijacked, which removes it from that
+		// map — so Close() cannot reach it. (An unencrypted-HTTP/2 connection
+		// carrying a worker's bidi stream stays in the map, but marked ACTIVE
+		// for its whole life, which is why the drain above needs the fenced
+		// handlers to have returned.) locallisten.CloseAccepted closes the
+		// underlying pipe handles directly via the listener's own
+		// accepted-connection tracking — the only level that sees every conn
+		// THAT listener accepted.
+		//
+		// It is a backstop, not the primary teardown: authContexts.Stop above
+		// cancels each relay's auth lease, which ends its handler and closes
+		// the socket. This catches one hijacked before its lease existed. The
+		// TCP listener needs no equivalent — a lingering accepted TCP conn does
+		// not block rebinding the port, whereas a surviving named-pipe instance
+		// does block the next ListenPipe(FIRST_PIPE_INSTANCE).
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		httpShutdownErr := s.server.Shutdown(shutdownCtx)

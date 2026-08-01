@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
@@ -143,17 +144,31 @@ const GitOptionalLocksOff = "GIT_OPTIONAL_LOCKS=0"
 // it, so nothing that must be serialized stops being.
 //
 // This env var alone reaches only the worker's OWN commands, which is one of
-// three contenders in a repo LeapMux is driving. The agent subprocess and the
-// user's shell inherit the worker's environment, which never carries it, so
-// both are given it explicitly at spawn -- see agent.FinalizeAgentEnv and the
-// terminal spawn env.
+// three contenders in a repo LeapMux is driving. NewGitCmd sets it per-command
+// and never on the worker's own process environment, so the agent subprocess
+// and the user's shell cannot rely on inheriting it -- a worker that happens to
+// have been launched from a LeapMux terminal or agent does pass it down, but
+// nothing guarantees the parent is LeapMux. Both are therefore given it
+// explicitly at spawn -- see agent.FinalizeAgentEnv and the terminal spawn env.
+//
+// envutil.PinEnv, not a bare append: a worker launched FROM a LeapMux terminal
+// or agent inherits the very values gitEnvPins sets, and layering a second
+// entry over the inherited one makes the environment we hand out disagree with
+// the environment we can assert on. See PinEnv for why the filter list is
+// derived from the assignments rather than spelled out beside them.
 func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", GitOptionalLocksOff)
+	cmd.Env = envutil.PinEnv(os.Environ(), gitEnvPins...)
 	cmd.Stdin = nil
 	procutil.HideConsoleWindow(cmd)
 	return cmd
 }
+
+// gitEnvPins is every environment assignment NewGitCmd forces onto a git
+// command, each replacing whatever the worker inherited. One list so the
+// tests assert against the same set production pins instead of re-spelling it
+// -- a second spelling is how a pin and its filter drift apart.
+var gitEnvPins = []string{"GIT_TERMINAL_PROMPT=0", "LC_ALL=C", GitOptionalLocksOff}
 
 // GetGitStatus returns the git status for the given directory.
 // Best-effort: returns nil if git is not available or the path is not a git repo.

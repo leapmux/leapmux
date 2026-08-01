@@ -113,17 +113,58 @@ func FilterEnv(environ []string, keys ...string) []string {
 	return filtered
 }
 
+// PinEnv returns environ with each assignment's key removed and the
+// assignments appended, so a pinned var REPLACES an inherited value instead of
+// layering over it. Assignments are "KEY=value"; one without '=' names no key
+// to displace and is appended as-is. Keys match case-insensitively, like
+// FilterEnv.
+//
+// The filter list is DERIVED from the assignments rather than passed
+// separately, which is the point: spelling a key twice -- once to filter, once
+// to assign -- is how a pin ends up layered, because only one half gets
+// updated.
+//
+// It fits a site that unconditionally replaces every key it names. A site whose
+// filter list is deliberately WIDER than its assignments -- the Claude and
+// Codex spawns strip CLAUDECODE / CODEX_CI unconditionally but re-add them only
+// for a login shell -- cannot express that here, and composes FilterEnv with
+// PinEnv instead of routing wholly through it.
+//
+// `exec.Cmd` resolves duplicates last-wins, so a layered pin reaches the child
+// with the right value anyway. What it breaks is the env we hand out
+// disagreeing with the env we can assert on -- a duplicate is invisible to the
+// child and plainly visible to a test.
+func PinEnv(environ []string, assignments ...string) []string {
+	keys := make([]string, 0, len(assignments))
+	for _, a := range assignments {
+		if name, _, ok := strings.Cut(a, "="); ok {
+			keys = append(keys, name)
+		}
+	}
+	// FilterEnv allocates a fresh slice, so this append never aliases environ.
+	return append(FilterEnv(environ, keys...), assignments...)
+}
+
 // HasKey reports whether environ contains an entry whose name (the part
 // before the first '=') matches key case-insensitively, mirroring FilterEnv's
 // matching semantics. Useful in tests asserting that a key survived or was
 // scrubbed.
 func HasKey(environ []string, key string) bool {
+	return len(ValuesFor(environ, key)) > 0
+}
+
+// ValuesFor returns every value environ carries for key, in order, matching
+// the name case-insensitively like FilterEnv. Useful in tests asserting a
+// pinned var appears EXACTLY once rather than layered over an inherited one --
+// which HasKey, answering only yes/no, cannot distinguish.
+func ValuesFor(environ []string, key string) []string {
+	var values []string
 	for _, e := range environ {
-		if name, _, _ := strings.Cut(e, "="); strings.EqualFold(name, key) {
-			return true
+		if name, value, _ := strings.Cut(e, "="); strings.EqualFold(name, key) {
+			values = append(values, value)
 		}
 	}
-	return false
+	return values
 }
 
 // StripByPrefix returns a copy of environ with entries whose name

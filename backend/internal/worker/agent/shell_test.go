@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -279,19 +280,11 @@ func TestBuildShellWrappedCommand_AppImage_ScrubsEnv(t *testing.T) {
 
 	// AppImage-injected vars must be absent from cmd.Env so the user's
 	// shell — and any tools it sources, including mise — never sees them.
-	hasKey := func(env []string, key string) bool {
-		for _, e := range env {
-			if name, _, _ := strings.Cut(e, "="); strings.EqualFold(name, key) {
-				return true
-			}
-		}
-		return false
-	}
 	for _, key := range []string{"ARGV0", "APPIMAGE", "APPDIR", "OWD"} {
-		assert.False(t, hasKey(cmd.Env, key), "env var %q should be scrubbed when running inside an AppImage", key)
+		assert.False(t, envutil.HasKey(cmd.Env, key), "env var %q should be scrubbed when running inside an AppImage", key)
 	}
 	// Unrelated env vars must survive the scrub.
-	assert.True(t, hasKey(cmd.Env, "PATH_SHOULD_SURVIVE"), "non-AppImage env vars must not be touched")
+	assert.True(t, envutil.HasKey(cmd.Env, "PATH_SHOULD_SURVIVE"), "non-AppImage env vars must not be touched")
 }
 
 // When APPIMAGE is unset, env is left untouched (cmd.Env stays nil so the

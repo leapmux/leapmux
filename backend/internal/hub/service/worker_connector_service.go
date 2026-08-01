@@ -198,6 +198,16 @@ func (s *WorkerConnectorService) Connect(
 	}
 	replaced, err := s.workerMgr.Register(conn)
 	if err != nil {
+		if errors.Is(err, workermgr.ErrRegistryFenced) {
+			// This connection passed the shutdown interceptor a moment before
+			// the Hub began fencing. Unavailable, not Internal: nothing is
+			// wrong with the worker or the request, and a server that is going
+			// away is what the code means. Today's worker retries either way
+			// (ConnectWithReconnect gives up only on Unauthenticated), so this
+			// is for the operator reading logs and for any proxy or future
+			// client that does distinguish the two.
+			return connect.NewError(connect.CodeUnavailable, err)
+		}
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("greet worker: %w", err))
 	}
 	if replaced {

@@ -716,3 +716,70 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 		"the Hub must name the worker's recorded owner")
 	require.NoError(t, stream.CloseRequest())
 }
+
+// A Connect handler can clear the shutdown interceptor -- a one-shot check --
+// microseconds before the Hub starts fencing, then spend a store round trip and
+// the greeting write getting to Register. The registry refuses it, and what the
+// worker sees has to be Unavailable rather than Internal: the manager-level
+// tests pin the refusal, but only this one pins the status code a real worker
+// observes, which is the part a later edit folding the branch back into the
+// generic CodeInternal return would silently change.
+func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+	env := setupRegKeyEnv(t)
+
+	token := env.login(t, "admin", "admin123")
+	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
+		authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	regResp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+	require.NoError(t, err)
+
+	worker, err := env.store.Workers().GetByID(context.Background(), regResp.Msg.GetWorkerId())
+	require.NoError(t, err)
+
+	// Connect needs gRPC-over-h2c (a bidi stream), which httptest's HTTP/1
+	// server cannot serve -- mirror the unix-socket harness above.
+	socketURL := locallistentest.UniqueListenURL(t, "hub-fenced")
+	ln, err := locallisten.Listen(socketURL)
+	require.NoError(t, err)
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	srv := &http.Server{Handler: env.mux, ReadHeaderTimeout: 5 * time.Second, Protocols: protocols}
+	t.Cleanup(func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(ln) }()
+	require.NoError(t, locallisten.WaitReady(context.Background(), socketURL))
+
+	dial, err := locallisten.Dialer(socketURL)
+	require.NoError(t, err)
+	httpClient := &http.Client{Transport: locallisten.NewLocalH2CTransport(dial)}
+	t.Cleanup(httpClient.CloseIdleConnections)
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(
+		httpClient, "http://localhost", connect.WithGRPC())
+
+	// The Hub has begun shutting down. The interceptor is NOT installed on this
+	// fixture, which is exactly the window under test: the request is already
+	// past it.
+	env.wMgr.FenceAll()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream := connectorClient.Connect(ctx)
+	stream.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+	}))
+
+	_, err = stream.Receive()
+	require.Error(t, err, "a fenced registry must refuse the connection, not hold the stream open")
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err),
+		"a Hub that is going away is Unavailable; Internal would read as a worker-side fault")
+	assert.Nil(t, env.wMgr.ConnForTrustedPath(worker.ID),
+		"the refused connection must never be published")
+	require.NoError(t, stream.CloseRequest())
+}

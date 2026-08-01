@@ -53,9 +53,16 @@ var agentIdentityEnvScrubKeys = []string{
 // another agent's session doesn't spawn a nested one, strips any
 // inherited `LEAPMUX_REMOTE_*` values so a worker spawned inside another
 // worker's session never inherits the parent's remote context (any
-// fresh values arrive via opts.ExtraEnv), appends the `LEAPMUX_WORKER=1`
+// fresh values arrive via opts.ExtraEnv), PINS the `LEAPMUX_WORKER=1`
 // marker (downstream CLI/agent code keys off it to detect "running
-// inside a LeapMux worker"), and appends `opts.ExtraEnv`.
+// inside a LeapMux worker") and git's optional-lock setting, and appends
+// `opts.ExtraEnv`.
+//
+// Pins, not appends: a worker launched from inside a LeapMux terminal or
+// agent already carries both values, so appending would hand the child
+// two entries for each -- see envutil.PinEnv. opts.ExtraEnv still lands
+// last, after the pins, because that is where the caller's authoritative
+// values belong.
 //
 // It also declines git's OPTIONAL index lock for everything the agent runs --
 // see gitutil.GitOptionalLocksOff for why. The worker set that on its own git
@@ -73,7 +80,11 @@ func FinalizeAgentEnv(env []string, opts Options) []string {
 	// fresh LEAPMUX_REMOTE_* values aren't stripped.
 	env = envutil.FilterEnv(env, agentIdentityEnvScrubKeys...)
 	env = envutil.StripByPrefix(env, "LEAPMUX_REMOTE_")
-	env = append(env, "LEAPMUX_WORKER=1", gitutil.GitOptionalLocksOff)
+	// PinEnv, not append: every caller hands us an inherited environment, and a
+	// worker launched from a LeapMux terminal or agent already carries both of
+	// these -- so appending would layer a second entry rather than replace the
+	// inherited one. See envutil.PinEnv.
+	env = envutil.PinEnv(env, "LEAPMUX_WORKER=1", gitutil.GitOptionalLocksOff)
 	if len(opts.ExtraEnv) == 0 {
 		return env
 	}

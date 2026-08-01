@@ -119,10 +119,17 @@ func Listen(url string) (net.Listener, error) {
 // CloseAccepted force-closes every connection currently accepted by ln, if
 // the listener implementation supports it. On Windows this releases the
 // per-connection named-pipe instance handles that http.Server.Close() can't
-// reach (h2c-hijacked connections are removed from http.Server.activeConn);
-// otherwise the next ListenPipe(FIRST_PIPE_INSTANCE) on the same name fails
-// with ERROR_ACCESS_DENIED. On Unix it's a no-op — accepted unix-domain
+// reach; otherwise the next ListenPipe(FIRST_PIPE_INSTANCE) on the same name
+// fails with ERROR_ACCESS_DENIED. On Unix it's a no-op — accepted unix-domain
 // sockets release independently of the listener.
+//
+// What Close() cannot reach is a HIJACKED connection: a WebSocket upgrade
+// hijacks its conn, which drops it from http.Server.activeConn, the only map
+// Close() iterates. The desktop's /ws/channel and /ws/userevents relays ride
+// HTTP/1.1 over this pipe for exactly that reason (a WebSocket cannot ride
+// h2c — coder/websocket needs http.Hijacker, which the HTTP/2 ResponseWriter
+// does not implement). An unencrypted-HTTP/2 conn is NOT hijacked: net/http
+// serves it inline and leaves it in activeConn, so Close() does reach it.
 func CloseAccepted(ln net.Listener) {
 	if l, ok := ln.(interface{ CloseAccepted() }); ok {
 		l.CloseAccepted()

@@ -45,8 +45,19 @@ type Conn struct {
 // ErrConnectionClosed is returned when a sender races worker disconnect.
 var ErrConnectionClosed = errors.New("worker connection closed")
 
+// ErrRegistryFenced is returned by Register once the Hub has fenced every
+// connection. The worker is not rejected because anything is wrong with it --
+// the Hub is going away -- so callers should map it to a retryable status.
+var ErrRegistryFenced = errors.New("worker registry fenced: hub is shutting down")
+
 // Send sends a message to the worker via the bidi stream.
 // The mutex serializes writes to prevent concurrent HTTP/2 frame corruption.
+//
+// It is held across the wire write, so a worker that stalls its HTTP/2
+// flow-control window blocks every other sender to it until the process exits,
+// and Send honours no caller deadline because it takes no context. Replacing
+// this with a handler-owned send queue is tracked in
+// https://github.com/leapmux/leapmux/issues/344
 func (c *Conn) Send(msg *leapmuxv1.ConnectResponse) error {
 	if c.closed.Load() {
 		return ErrConnectionClosed
@@ -69,6 +80,13 @@ func (c *Conn) Send(msg *leapmuxv1.ConnectResponse) error {
 // Close prevents new sends and waits for any in-flight send to finish. Worker
 // handlers call this before returning so background senders cannot retain and
 // write through a completed Connect stream.
+//
+// Fence stops sends that have not started. The LOCK is what waits for one
+// already inside Stream.Send, which holds c.mu for the whole write -- so this
+// critical section is the barrier, not the flag it sets. Storing closed again
+// under the lock is idempotent (nothing ever clears it) and kept only because
+// an empty critical section reads like a mistake; deleting the lock would
+// silently delete the wait.
 func (c *Conn) Close() {
 	c.Fence()
 	c.mu.Lock()
@@ -91,6 +109,11 @@ type Manager struct {
 	mu            sync.RWMutex
 	conns         map[string]*Conn // workerID -> Conn
 	deregistering map[string]bool  // workerID -> true if deregistering
+	// fenced latches true the first time every connection is fenced, and never
+	// clears: a Manager whose Hub is shutting down must not accept a worker
+	// again. Guarded by mu so Register's check and FenceAll's snapshot cannot
+	// interleave -- see Register.
+	fenced bool
 
 	regMu      sync.Mutex
 	regWaiters map[string]chan struct{} // regToken -> notify channel
@@ -215,12 +238,33 @@ func New(a ReachAuthorizer) *Manager {
 // its greeting cannot carry a channel either, and publishing it would advertise a
 // worker as reachable on a connection already known to be broken.
 func (m *Manager) Register(c *Conn) (bool, error) {
+	// Cheap pre-check so a Hub that is already fencing does not write a
+	// greeting onto a stream it is about to refuse -- the worker would
+	// otherwise read its identity and only then see the stream end. NOT the
+	// authoritative check: the one that closes the race is under the lock
+	// below, and this one can go stale the instant it returns.
+	if m.isFenced() {
+		c.Fence()
+		return false, ErrRegistryFenced
+	}
 	if c.Greeting != nil {
 		if err := c.Send(c.Greeting); err != nil {
 			return false, err
 		}
 	}
 	m.mu.Lock()
+	// The fenced check and the map write share this critical section, which is
+	// what makes the fence TOTAL rather than point-in-time: either Register
+	// sees the flag, or FenceAll's snapshot sees this conn. There is no third
+	// outcome. Without it a handler that passed the shutdown interceptor before
+	// shutdownCh closed -- it is a one-shot check, and a store round trip plus
+	// the greeting write sit between it and here -- would publish a connection
+	// nothing ever fences, and hold the Hub's drain until workerIdleTimeout.
+	if m.fenced {
+		m.mu.Unlock()
+		c.Fence()
+		return false, ErrRegistryFenced
+	}
 	replaced := m.conns[c.WorkerID]
 	m.conns[c.WorkerID] = c
 	if replaced == nil {
@@ -228,6 +272,9 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 	}
 	m.mu.Unlock()
 	if replaced != nil && replaced != c {
+		// Fence, not Close: this runs on the SUCCESSOR's goroutine, and a wedged
+		// predecessor must not delay publication of the connection replacing it.
+		// The predecessor's own handler does the waiting -- see Unregister.
 		replaced.Fence()
 	}
 	return replaced != nil, nil
@@ -237,6 +284,15 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 // registered connection for that workerID. This prevents a stale connection's
 // deferred cleanup from accidentally removing a newer replacement connection.
 // Returns true if the connection was actually removed.
+//
+// Close runs on BOTH paths, replaced or not. The caller is the connection's own
+// handler, about to return, and Close is what waits for a send already inside
+// Stream.Send. Returning while one is in flight hands net/http a write against
+// a finished handler, which panics ("Write called after Handler finished") on
+// the sender's goroutine -- and, worse, the response-writer state has by then
+// been recycled into a pool. A conn that lost its slot to a replacement is
+// exactly the one likely to have a wedged send outstanding, so it is the last
+// one that may skip the wait.
 func (m *Manager) Unregister(workerID string, conn *Conn) bool {
 	m.mu.Lock()
 	removed := false
@@ -246,11 +302,7 @@ func (m *Manager) Unregister(workerID string, conn *Conn) bool {
 		removed = true
 	}
 	m.mu.Unlock()
-	if removed {
-		conn.Close()
-	} else {
-		conn.Fence()
-	}
+	conn.Close()
 	return removed
 }
 
@@ -327,20 +379,21 @@ func (m *Manager) WaitForRegistrationChange(ctx context.Context, regToken string
 	}
 }
 
-// NotifyShutdown sends a HubShuttingDownNotification to all connected workers.
-// Best-effort: errors are logged but do not abort the shutdown sequence.
-func (m *Manager) NotifyShutdown(ctx context.Context, retryDelaySeconds int32) {
-	m.mu.RLock()
-	connections := make(map[string]*Conn, len(m.conns))
-	for workerID, conn := range m.conns {
-		connections[workerID] = conn
-	}
-	m.mu.RUnlock()
+// NotifyShutdownAndFence tells every connected worker the Hub is going down,
+// then fences them all on the way out -- deadline path included.
+//
+// The name carries both effects because both are load-bearing and the order
+// between them is the whole point: the notification has to be on the wire
+// first, or a worker reconnects on its ordinary backoff instead of the delay
+// the Hub asked for. Delivery is best-effort; errors are logged but do not
+// abort the sequence. Fencing is not optional -- see FenceAll.
+func (m *Manager) NotifyShutdownAndFence(ctx context.Context, retryDelaySeconds int32) {
+	connections := m.snapshotConns()
 
 	// done carries per-worker delivery success so the completion tally reflects
 	// notifications that were actually sent, not merely attempted.
 	done := make(chan bool, len(connections))
-	for workerID, conn := range connections {
+	for _, conn := range connections {
 		go func() {
 			err := conn.Send(&leapmuxv1.ConnectResponse{
 				Payload: &leapmuxv1.ConnectResponse_HubShuttingDown{
@@ -350,11 +403,16 @@ func (m *Manager) NotifyShutdown(ctx context.Context, retryDelaySeconds int32) {
 				},
 			})
 			if err != nil {
-				slog.Warn("failed to send shutdown notification to worker", "worker_id", workerID, "error", err)
+				slog.Warn("failed to send shutdown notification to worker", "worker_id", conn.WorkerID, "error", err)
 			}
 			done <- err == nil
 		}()
 	}
+
+	// Deferred so it runs on EVERY exit, deadline included: a worker that could
+	// not be notified inside the budget is exactly the one that would otherwise
+	// hold the drain open for the full idle timeout.
+	defer m.FenceAll()
 
 	completed, sent := 0, 0
 	for completed < len(connections) {
@@ -370,6 +428,66 @@ func (m *Manager) NotifyShutdown(ctx context.Context, retryDelaySeconds int32) {
 		}
 	}
 	slog.Info("sent shutdown notifications to workers", "count", sent, "total", len(connections))
+}
+
+// isFenced reports whether FenceAll has latched the registry closed.
+func (m *Manager) isFenced() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.fenced
+}
+
+// snapshotConns copies the live connections so the caller can do blocking work
+// on them without holding the registry lock. Both broadcasts need that: Send
+// parks on the wire, and Cancel wakes a handler whose defer takes the WRITE
+// lock -- so fencing under the read lock would make the Hub's own shutdown the
+// thing that wedges it.
+func (m *Manager) snapshotConns() []*Conn {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.connsLocked()
+}
+
+// connsLocked copies the connection map into a slice. Callers hold m.mu.
+// Conn.WorkerID carries the key, so the slice loses nothing the map had.
+func (m *Manager) connsLocked() []*Conn {
+	conns := make([]*Conn, 0, len(m.conns))
+	for _, conn := range m.conns {
+		conns = append(conns, conn)
+	}
+	return conns
+}
+
+// FenceAll cancels every registered worker connection, ending its Connect
+// handler, and latches the registry closed so a later Register is refused
+// rather than published behind the fence. NotifyShutdownAndFence defers it, so
+// every worker the notification pass saw learns to delay its reconnect first.
+//
+// The Hub cannot leave these streams to the workers to close. A worker keeps
+// its stream open until it decides to reconnect, and the Hub only learns it is
+// gone from a frame or from workerIdleTimeout; meanwhile an
+// unencrypted-HTTP/2 connection counts as ACTIVE for its whole life (net/http
+// marks it so in maybeServeUnencryptedHTTP2), so http.Server.Shutdown's drain
+// waits on the handler holding it. A remote worker that is wedged, or merely
+// polite, would therefore spend the Hub's entire shutdown budget -- and past it
+// the drain reports a deadline the operator sees as a failed shutdown.
+//
+// One dependency on the worker survives, deliberately: Conn.Send holds the
+// conn's mutex across the wire write, and the handler's Unregister waits for
+// that send before returning. A peer that has stopped draining its socket is
+// bounded by the server's HTTP/2 write timeout (see hub.Server); a peer that
+// merely stalls its HTTP/2 flow-control window is not, because no socket write
+// is attempted. Making that impossible needs the handler to own every Send --
+// tracked in https://github.com/leapmux/leapmux/issues/344
+func (m *Manager) FenceAll() {
+	m.mu.Lock()
+	m.fenced = true
+	conns := m.connsLocked()
+	m.mu.Unlock()
+
+	for _, conn := range conns {
+		conn.Fence()
+	}
 }
 
 // NotifyRegistrationChange wakes up any waiter blocked on the given regToken.

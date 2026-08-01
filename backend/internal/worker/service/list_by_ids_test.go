@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -307,7 +309,7 @@ func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-altrefresh")
-	fillerLen := injectAltScreenAndFlushPastRing(t, svc, "t-altrefresh")
+	wantEndOffset := freezeAndInjectAltScreenPastRing(t, svc, "t-altrefresh")
 
 	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
 		TabIds: []string{"t-altrefresh"},
@@ -318,16 +320,60 @@ func TestListTerminals_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	require.Len(t, resp.GetTerminals(), 1)
 	ti := resp.GetTerminals()[0]
-	require.GreaterOrEqual(t, len(ti.GetScreen()), len("\x1b[?1049h"))
-	assert.Equal(t, []byte("\x1b[?1049h"), ti.GetScreen()[:len("\x1b[?1049h")],
+	require.GreaterOrEqual(t, len(ti.GetScreen()), len(altScreenEnter))
+	assert.Equal(t, []byte(altScreenEnter), ti.GetScreen()[:len(altScreenEnter)],
 		"ListTerminals must return the alt-screen restore prefix; without it, page-refresh leaves vim/less rendering as garbage")
 
 	// screen_end_offset must NOT include the synthesized prefix bytes.
 	// The frontend uses this offset to seed its WatchEvents resume
 	// cursor; counting prefix bytes would skip real PTY output the next
 	// time the backend computes a delta.
-	assert.Equal(t, int64(len("\x1b[?1049h")+fillerLen), ti.GetScreenEndOffset(),
+	assert.Equal(t, wantEndOffset, ti.GetScreenEndOffset(),
 		"screen_end_offset reflects total PTY bytes, not screen-payload length (which includes the synthesized prefix)")
+	assert.True(t, ti.GetExited(),
+		"the helper freezes the PTY to make the offset exact; pin that rather than leaving it incidental")
+}
+
+// The exact-offset tests above freeze the PTY, so on their own they would let
+// an "exited terminals can't repaint, skip the prefix" fast path ship green --
+// while the bug this feature exists to fix is a user with vim open in a LIVE
+// tab hitting refresh. This case keeps the terminal running and therefore
+// asserts only the prefix, never an offset: the login shell's own prompt bytes
+// race any byte count, which is exactly why its siblings freeze.
+func TestListTerminals_AltScreenRecoveryOnLiveTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The whole point of this case is a LIVE shell, and cmd.exe keeps
+		// emitting prompt-setup bytes -- including alt-screen toggles -- for
+		// hundreds of ms after start. One `\x1b[?1049l` landing between the
+		// injection and the dispatch clears modeTracker's altScreen bit and
+		// the prefix legitimately disappears. That is a race with the shell,
+		// not a bug in the code under test, and it is the exact flake class
+		// this file's frozen tests exist to avoid; they cover Windows.
+		t.Skip("a live cmd.exe writes its own alt-screen toggles; see the frozen siblings")
+	}
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	startTestTerminal(t, svc, ctx, "t-altlive")
+
+	require.True(t, svc.Terminals.AppendOutput("t-altlive", []byte(altScreenEnter)))
+	// 110 KB > screenBufferSize (100 KB), so the toggle is out of the ring.
+	require.True(t, svc.Terminals.AppendOutput("t-altlive", bytes.Repeat([]byte{'a'}, 110*1024)))
+
+	dispatch(d, "ListTerminals", &leapmuxv1.ListTerminalsRequest{
+		TabIds: []string{"t-altlive"},
+	}, w)
+
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListTerminalsResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	require.Len(t, resp.GetTerminals(), 1)
+	ti := resp.GetTerminals()[0]
+	assert.False(t, ti.GetExited(), "this case is worthless unless the terminal is still running")
+	require.GreaterOrEqual(t, len(ti.GetScreen()), len(altScreenEnter))
+	assert.Equal(t, []byte(altScreenEnter), ti.GetScreen()[:len(altScreenEnter)],
+		"a LIVE terminal must get the alt-screen restore prefix too; that is the vim-open-then-refresh case")
 }
 func TestWatchEvents_ListAgentsByIDsErrorReturnsInternalStreamError(t *testing.T) {
 	t.Parallel()
