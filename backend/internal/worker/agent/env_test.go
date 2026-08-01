@@ -1,9 +1,9 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,19 +18,28 @@ import (
 // kill a concurrent worker checkout with "Another git process seems to be
 // running", which surfaced as an agent that failed to start mid-checkout and
 // whose rollback then restored the user's original branch.
+// The fixture carries inherited values for BOTH pinned keys on purpose. Every
+// caller passes cmd.Environ(), and a worker launched from a LeapMux terminal or
+// agent already carries these -- so a fixture without them cannot tell "pinned
+// exactly once" from "appended blindly onto an env that happened to be clean",
+// which is how this assertion sat green while production emitted duplicates.
 func TestFinalizeAgentEnv_DeclinesOptionalLocks(t *testing.T) {
 	t.Parallel()
 
-	env := FinalizeAgentEnv([]string{"PATH=/usr/bin"}, Options{})
+	env := FinalizeAgentEnv([]string{
+		"PATH=/usr/bin",
+		"GIT_OPTIONAL_LOCKS=1",
+		"LEAPMUX_WORKER=0",
+	}, Options{})
 
-	var values []string
-	for _, kv := range env {
-		if v, ok := strings.CutPrefix(kv, "GIT_OPTIONAL_LOCKS="); ok {
-			values = append(values, v)
-		}
+	for key, want := range map[string]string{
+		"GIT_OPTIONAL_LOCKS": "0",
+		"LEAPMUX_WORKER":     "1",
+	} {
+		values := envutil.ValuesFor(env, key)
+		require.Len(t, values, 1, "%s must be pinned exactly once, not layered over the inherited value", key)
+		assert.Equal(t, want, values[0], "%s must be the value FinalizeAgentEnv pins", key)
 	}
-	require.Len(t, values, 1, "the agent's git must decline optional locks exactly once")
-	assert.Equal(t, "0", values[0])
 	assert.Equal(t, "GIT_OPTIONAL_LOCKS=0", gitutil.GitOptionalLocksOff,
 		"the exported constant is what every spawn path shares")
 }

@@ -39,9 +39,10 @@ func listenNpipe(name string) (net.Listener, error) {
 // npipeListener wraps winio.Listener so callers can uniformly check for
 // "listener closed" via errors.Is(err, net.ErrClosed) regardless of the
 // underlying transport. It also tracks accepted connections so they can be
-// force-closed via CloseAccepted on shutdown — net/http hands h2c-upgraded
-// connections to http2.Server via Hijack, which removes them from
-// http.Server.activeConn and puts them out of reach of http.Server.Close().
+// force-closed via CloseAccepted on shutdown — a WebSocket upgrade hijacks its
+// connection, and net/http drops a hijacked conn from http.Server.activeConn,
+// putting it out of reach of http.Server.Close(). (An h2c connection is not
+// hijacked and stays in that map, so Close() does reach it.)
 // On Windows that matters because each surviving accepted pipe handle is a
 // "pipe instance" that blocks the next ListenPipe(FIRST_PIPE_INSTANCE).
 type npipeListener struct {

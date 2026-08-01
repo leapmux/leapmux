@@ -266,9 +266,10 @@ func TestCloseAccepted_FreesPipeNameForRelisten(t *testing.T) {
 		t.Fatalf("Listen: %v", err)
 	}
 
-	// Accept loop holds the accepted server-side handle open. This is what
-	// http2.Server does for h2c-hijacked connections: the http.Server lets
-	// go of them, and the underlying pipe handle outlives http.Server.Close.
+	// Accept loop holds the accepted server-side handle open. This is the state
+	// a hijacked WebSocket leaves behind: net/http drops a hijacked conn from
+	// activeConn, so the http.Server lets go of it and the underlying pipe
+	// handle outlives http.Server.Close.
 	accepted := make(chan net.Conn, 1)
 	go func() {
 		c, aerr := ln.Accept()

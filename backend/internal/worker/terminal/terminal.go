@@ -267,6 +267,38 @@ type Options struct {
 	ExtraEnv []string
 }
 
+// spawnEnv builds the environment a terminal's login shell is started with,
+// from the worker's own environ plus the caller's extras.
+//
+// GitOptionalLocksOff for the same reason the worker's own git commands carry
+// it: the user's shell is the third contender for .git/index.lock in a repo
+// LeapMux is driving, and an interactive `git status` taking the lock purely to
+// write back a refreshed index can kill a concurrent worker checkout. The cost
+// is local to this shell -- status still reports correctly, it just leaves the
+// stat cache unrefreshed.
+//
+// PinEnv, not append: TERM is exported by essentially every shell this worker
+// could have been started from, and GIT_OPTIONAL_LOCKS is inherited whenever
+// that shell was itself a LeapMux terminal -- appending would hand the child
+// two entries for each.
+//
+// A named function rather than inline construction because it is the only part
+// of the spawn a test can assert on: `exec.Cmd` resolves duplicates last-wins,
+// so a layered pin is invisible to the child process and visible only here.
+func spawnEnv(environ, extraEnv []string) []string {
+	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(environ,
+		"TERM=xterm-256color",
+		gitutil.GitOptionalLocksOff,
+	))
+	if len(extraEnv) == 0 {
+		return env
+	}
+	// Strip any pre-existing LEAPMUX_REMOTE_* (defensive — leapmux worker
+	// doesn't normally set them, but a recursive launch would inherit) before
+	// injecting the canonical values.
+	return append(envutil.StripByPrefix(env, "LEAPMUX_REMOTE_"), extraEnv...)
+}
+
 // Start creates a new PTY terminal session. The supplied context
 // governs the spawn itself: if it is already cancelled Start returns
 // ctx.Err() without forking, and a later cancellation sends the child
@@ -299,22 +331,7 @@ func startWithScreenBuffer(ctx context.Context, opts Options, screenBuf *ScreenB
 
 	cmd := ptmx.CommandContext(ctx, shell, args...)
 	cmd.Dir = opts.WorkingDir
-	// GitOptionalLocksOff for the same reason the worker's own git commands
-	// carry it: the user's shell is the third contender for .git/index.lock in
-	// a repo LeapMux is driving, and an interactive `git status` taking the
-	// lock purely to write back a refreshed index can kill a concurrent worker
-	// checkout. The cost is local to this shell -- status still reports
-	// correctly, it just leaves the stat cache unrefreshed.
-	cmd.Env = envutil.ScrubAppImageEnvSlice(append(os.Environ(),
-		"TERM=xterm-256color",
-		gitutil.GitOptionalLocksOff,
-	))
-	if len(opts.ExtraEnv) > 0 {
-		// Strip any pre-existing LEAPMUX_REMOTE_* (defensive — leapmux
-		// worker doesn't normally set them, but a recursive launch
-		// would inherit) before injecting the canonical values.
-		cmd.Env = append(envutil.StripByPrefix(cmd.Env, "LEAPMUX_REMOTE_"), opts.ExtraEnv...)
-	}
+	cmd.Env = spawnEnv(os.Environ(), opts.ExtraEnv)
 	// No procutil.HideConsoleWindow here: on Windows, CREATE_NO_WINDOW is
 	// incompatible with ConPTY — the pseudo console already serves as the
 	// child's console, and the flag would leave it with none.

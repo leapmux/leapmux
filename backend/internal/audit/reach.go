@@ -111,13 +111,14 @@ const (
 // registryConnScoped that takes no *Conn, a registryBroadcast that takes a
 // worker id. So the kind is a claim about the code, not a comment with a type.
 var registryMethodKinds = map[string]registryMethodKind{
-	"ConnForTrustedPath":   registryUngatedByID,
-	"OnlineForTrustedPath": registryUngatedByID,
-	"IsDeregistering":      registryUngatedByID,
-	"MarkDeregistering":    registryUngatedByID,
-	"ClearDeregistering":   registryUngatedByID,
-	"ConnForUser":          registryGated,
-	"Register":             registryConnScoped,
-	"Unregister":           registryConnScoped,
-	"NotifyShutdown":       registryBroadcast,
+	"ConnForTrustedPath":     registryUngatedByID,
+	"OnlineForTrustedPath":   registryUngatedByID,
+	"IsDeregistering":        registryUngatedByID,
+	"MarkDeregistering":      registryUngatedByID,
+	"ClearDeregistering":     registryUngatedByID,
+	"ConnForUser":            registryGated,
+	"Register":               registryConnScoped,
+	"Unregister":             registryConnScoped,
+	"NotifyShutdownAndFence": registryBroadcast,
+	"FenceAll":               registryBroadcast,
 }

@@ -323,3 +323,44 @@ func TestOIDC_Exchange_InvalidIDTokenSignature(t *testing.T) {
 	_, err = p.verifier.Verify(context.Background(), wrongToken)
 	assert.Error(t, err, "token signed with wrong key should fail verification")
 }
+
+// The Hub bounds the token exchange with a context deadline (see
+// service.OAuthHandler's callback), because golang.org/x/oauth2 otherwise runs
+// it on http.DefaultClient, which has no timeout. That bound is only worth
+// anything if Exchange actually honours the context: an identity provider that
+// accepts the connection and never answers must fail here rather than park the
+// callback handler, which net/http counts as an ACTIVE request and which would
+// therefore hold a graceful shutdown open for its entire drain budget.
+func TestOIDC_Exchange_HonoursContextDeadline(t *testing.T) {
+	srv, _ := mockOIDCServer(t)
+
+	// Discovery has to succeed, so build the provider against the healthy
+	// server first and wedge only the token endpoint it will call next.
+	p, err := NewOIDCProvider(context.Background(), srv.URL, "test-client", "test-secret", srv.URL+"/callback",
+		[]string{"openid", "profile", "email"})
+	require.NoError(t, err)
+
+	// Never answers, but always unwinds: the client giving up on a keep-alive
+	// connection does not necessarily cancel the server's request context, and
+	// httptest's Close blocks until every handler has returned -- so a handler
+	// parked forever would hang the cleanup rather than the assertion. The
+	// ceiling is far above the 200ms deadline under test.
+	wedged := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	t.Cleanup(wedged.Close)
+	p.oauth2Config.Endpoint.TokenURL = wedged.URL + "/token"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, _, err = p.Exchange(ctx, "any-code", "any-verifier")
+
+	require.Error(t, err, "a token endpoint that never answers must surface as an error, not a hang")
+	assert.Less(t, time.Since(start), 5*time.Second,
+		"Exchange must give up on the caller's deadline; without that the callback handler holds the shutdown drain open")
+}

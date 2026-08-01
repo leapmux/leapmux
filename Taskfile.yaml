@@ -782,6 +782,15 @@ tasks:
       - backend/**/*.go
     cmds:
       - cd backend && go tool golangci-lint run ./...
+      # golangci-lint only sees the HOST build configuration, so a file behind
+      # `//go:build unix` (38 files under backend/, 20 of them _test.go) is
+      # invisible to it on every other platform -- and an untagged file that
+      # references a symbol defined only in one typechecks fine here and fails
+      # the Windows CI job minutes later. `go vet` is the check that catches
+      # it; `go build` does NOT, because it skips _test.go files.
+      - cd backend && GOOS=windows go vet -tags integration ./...
+      - cd backend && GOOS=linux go vet -tags integration ./...
+      - cd backend && GOOS=darwin go vet -tags integration ./...
 
   lint-desktop:
     desc: Lint desktop sidecar and Tauri shell code
@@ -800,6 +809,11 @@ tasks:
       - task: prepare-desktop
       - task: build-desktop-sidecar
       - cd desktop/go && go tool golangci-lint run ./...
+      # Same blind spot as lint-backend: desktop/go carries 10 OS-tagged files,
+      # including _test.go ones. See the comment there.
+      - cd desktop/go && GOOS=windows go vet -tags integration ./...
+      - cd desktop/go && GOOS=linux go vet -tags integration ./...
+      - cd desktop/go && GOOS=darwin go vet -tags integration ./...
       - cd desktop/rust && cargo clippy --all-targets -- -D warnings
 
   lint-fix:

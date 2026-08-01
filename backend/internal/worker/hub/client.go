@@ -404,6 +404,8 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		}
 	}()
 
+	go c.closeStreamOnCancel(connCtx, stream)
+
 	slog.Info("connected to hub", "url", c.hubURL)
 
 	// Reset identity tracking for this connection and arm the watchdog that
@@ -534,6 +536,35 @@ const heartbeatIdleTimeout = 5 * time.Second
 // backoff, which re-runs the greeting on a fresh stream. A var so tests can
 // shorten it.
 var workerIdentityTimeout = 10 * time.Second
+
+// closeStreamOnCancel ends the bidi stream when ctx fires, because cancelling
+// it is NOT enough on its own. connect-go checks the context before each read,
+// so a Receive already parked inside the HTTP/2 response body stays parked
+// until a frame arrives -- and a Hub that is shutting down sends none. The
+// Hub's Connect handler then sees nothing until its own 10s idle timeout, and
+// because an unencrypted-HTTP/2 connection counts as ACTIVE for its whole life
+// (net/http marks it so in maybeServeUnencryptedHTTP2), that handler holds
+// http.Server.Shutdown's drain open for the same 10s.
+//
+// Closing turns every cancellation -- reconnect, identity watchdog, worker
+// shutdown -- into an immediate stream end the Hub observes at once: END_STREAM
+// when the writer is idle, a reset or a truncated final frame when a send was
+// in flight. Both surface to the Hub as a receive error, which is what releases
+// its handler. Truncation is unavoidable here rather than sloppy: flushing the
+// writer first would re-park on the very stall being escaped.
+//
+// Connect's `defer connCancel()` guarantees this goroutine exits with the
+// connection. Both Close errors are structurally nil (a pipe close and a
+// response-body close), which is why connect-go's own client discards them the
+// same way.
+func (c *Client) closeStreamOnCancel(
+	ctx context.Context,
+	stream *connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse],
+) {
+	<-ctx.Done()
+	_ = stream.CloseRequest()
+	_ = stream.CloseResponse()
+}
 
 // watchForIdentity force-closes the connection if the Hub does not deliver
 // WorkerIdentity within workerIdentityTimeout. See Client.identityReceived.

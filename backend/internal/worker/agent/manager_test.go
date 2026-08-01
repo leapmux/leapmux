@@ -731,20 +731,6 @@ func TestManager_AvailableModelsFallsBackToCursorDefaults(t *testing.T) {
 	assert.Equal(t, "auto", modelGroup.GetDefaultValue())
 }
 
-// derivedModelDefault runs a model catalog through the live default-badge path --
-// modelOptionGroup's projection into the "model" option group, then
-// withModelGroupDefaultMarked's re-derivation of that group's DefaultValue via the
-// defaultModelIDForList ladder -- and returns the id the ladder badges. This is the
-// path OptionGroups takes on every read, so the ladder tests below exercise the
-// production entry point rather than a test-only adapter.
-func derivedModelDefault(t *testing.T, models []*ModelInfo, provider leapmuxv1.AgentProvider) string {
-	t.Helper()
-	group := modelOptionGroup(models, "", nil)
-	require.NotNil(t, group, "precondition: the catalog projects to a model group")
-	got := withModelGroupDefaultMarked([]*leapmuxv1.AvailableOptionGroup{group}, provider)
-	return optionids.GroupByID(got, OptionIDModel).GetDefaultValue()
-}
-
 // TestModelGroupDefault_PreservesACPCurrentModel verifies that for a provider with
 // no configured default (registered with nil defaultModels, like the ACP providers
 // that self-mark the currently-selected model in buildACPModels), the ladder leaves

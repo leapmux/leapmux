@@ -69,14 +69,10 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 		return false
 	}, "first subscribe delivered the current screen")
 
-	// Freeze the screen buffer before reading the head offset.
-	// cmd.exe keeps emitting prompt-setup bytes (alt-screen, title bar,
-	// cursor toggles) for hundreds of ms after start, so any wall-clock
-	// "settle" is racy on slow CI; Stop+WaitForReadDrained is sync.
-	svc.Terminals.StopTerminal("t-resub")
-	require.True(t, svc.Terminals.WaitForReadDrained("t-resub"))
-
-	_, currentOffset, _ := svc.Terminals.ScreenSnapshotSince("t-resub", 0)
+	// Freeze the screen buffer before reading the head offset. cmd.exe keeps
+	// emitting prompt-setup bytes (alt-screen, title bar, cursor toggles) for
+	// hundreds of ms after start, so any wall-clock "settle" is racy on slow CI.
+	currentOffset := testutil.FreezeTerminalOutput(t, svc.Terminals, "t-resub")
 	require.Greater(t, currentOffset, int64(0))
 
 	w2 := newTestWriter()
@@ -154,7 +150,7 @@ func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	ctx := context.Background()
 	svc, d, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-altrecover")
-	fillerLen := injectAltScreenAndFlushPastRing(t, svc, "t-altrecover")
+	wantEndOffset := freezeAndInjectAltScreenPastRing(t, svc, "t-altrecover")
 
 	w := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
@@ -172,37 +168,49 @@ func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 	require.NotNil(t, snap)
 	require.True(t, snap.GetIsSnapshot(),
 		"fell-behind cold subscribe must be a snapshot so the frontend resets first")
-	assert.True(t, bytes.HasPrefix(snap.GetData(), []byte("\x1b[?1049h")),
+	assert.True(t, bytes.HasPrefix(snap.GetData(), []byte(altScreenEnter)),
 		"snapshot must lead with the alt-screen restore — without it, vim/less render garbage after the frontend's terminal.reset()")
 
-	// The tracker prefix is synthesized; it must NOT inflate end_offset
-	// beyond the actual byte counter the client uses to resume.
-	currentTotal := int64(len("\x1b[?1049h") + fillerLen)
-	assert.GreaterOrEqual(t, snap.GetEndOffset(), currentTotal,
-		"end_offset reflects total bytes written, not prefix length")
+	// The tracker prefix is synthesized; it must NOT inflate end_offset, which
+	// is the byte counter the client resumes from. Exact, not a lower bound:
+	// the PTY is stopped, so every byte in that counter is one this test wrote.
+	assert.Equal(t, wantEndOffset, snap.GetEndOffset(),
+		"end_offset reflects total bytes written, not the snapshot payload's length")
 }
 
-// injectAltScreenAndFlushPastRing writes the alt-screen toggle followed
-// by enough plain bytes to overwrite the retained ring, then waits for
-// the manager's offset to confirm the bytes have landed. Returns the
-// filler length so callers can compute the expected end_offset. Shared
-// by service-layer tests that assert the modeTracker prefix appears on
-// a snapshot taken AFTER the toggle has fallen out of the ring.
-func injectAltScreenAndFlushPastRing(t *testing.T, svc *Service, terminalID string) int {
+// altScreenEnter is the escape a full-screen program (vim, less, htop) writes
+// to switch the terminal to its alternate screen. It is the toggle the
+// modeTracker has to re-synthesize once it has scrolled out of the ring.
+const altScreenEnter = "\x1b[?1049h"
+
+// preToggleOutput stands in for output a terminal emitted before the user ran
+// anything full-screen. A terminal in the wild always has some, and writing it
+// here is what forces the offset the callers assert to be a RUNNING TOTAL
+// rather than just the length of what this helper wrote last -- the two are
+// indistinguishable when the counter happens to start at zero.
+const preToggleOutput = "output that predates the toggle\r\n"
+
+// freezeAndInjectAltScreenPastRing ends the terminal's PTY (see
+// testutil.FreezeTerminalOutput -- an irreversible step, hence the name), then
+// writes the alt-screen toggle followed by enough plain bytes to overwrite the
+// retained ring. Returns the cumulative offset the screen buffer now sits at,
+// which is what callers assert ListTerminals / WatchEvents report. Shared by
+// service-layer tests that assert the modeTracker prefix appears on a snapshot
+// taken AFTER the toggle has fallen out of the ring.
+func freezeAndInjectAltScreenPastRing(t *testing.T, svc *Service, terminalID string) int64 {
 	t.Helper()
-	require.True(t, svc.Terminals.AppendOutput(terminalID, []byte("\x1b[?1049h")))
+	baseline := testutil.FreezeTerminalOutput(t, svc.Terminals, terminalID)
+
+	require.True(t, svc.Terminals.AppendOutput(terminalID, []byte(preToggleOutput)))
+	require.True(t, svc.Terminals.AppendOutput(terminalID, []byte(altScreenEnter)))
 	// 110 KB > screenBufferSize (100 KB), so the toggle is guaranteed
 	// out of the ring after this single write completes.
-	filler := make([]byte, 110*1024)
-	for i := range filler {
-		filler[i] = 'a'
-	}
+	filler := bytes.Repeat([]byte{'a'}, 110*1024)
 	require.True(t, svc.Terminals.AppendOutput(terminalID, filler))
-	testutil.AssertEventually(t, func() bool {
-		_, off, _ := svc.Terminals.ScreenSnapshotSince(terminalID, 0)
-		return off >= int64(len(filler))
-	}, "alt-screen + filler arrived")
-	return len(filler)
+	// AppendOutput writes through synchronously and the PTY reader has drained,
+	// so nothing else can advance the counter -- the arithmetic below is exact,
+	// not a guess about which bytes have landed yet.
+	return baseline + int64(len(preToggleOutput)+len(altScreenEnter)+len(filler))
 }
 
 // TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap: when the backend's
