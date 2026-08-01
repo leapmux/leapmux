@@ -163,4 +163,61 @@ describe('selection quote popover', () => {
       cancelFrame.mockRestore()
     }
   })
+
+  // A non-secure origin (plain http:// on a LAN) exposes no `navigator.clipboard`
+  // at all. The handler used to call `navigator.clipboard.writeText` bare, so it
+  // died on a TypeError right there and never reached the three statements after
+  // it -- leaving the text highlighted and the popover stuck open on top of not
+  // copying.
+  it('still clears the selection when the platform exposes no clipboard', () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      cb(0)
+      return 1
+    })
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})
+    const removeAllRanges = vi.fn()
+    const onSelectionActiveChange = vi.fn()
+    try {
+      render(() => (
+        <SelectionQuotePopover
+          onQuote={vi.fn()}
+          onSelectionActiveChange={onSelectionActiveChange}
+        >
+          <p data-testid="selectable">selected text</p>
+        </SelectionQuotePopover>
+      ))
+      const textNode = screen.getByTestId('selectable').firstChild!
+      const selectedFragment = document.createDocumentFragment()
+      selectedFragment.append(document.createTextNode('selected text'))
+
+      mockSelection({
+        isCollapsed: false,
+        rangeCount: 1,
+        anchorNode: textNode,
+        focusNode: textNode,
+        toString: () => 'selected text',
+        removeAllRanges,
+        getRangeAt: () => ({
+          getClientRects: () => [{ left: 0, right: 10, top: 10, bottom: 20 }],
+          cloneContents: () => selectedFragment.cloneNode(true),
+        }) as unknown as Range,
+      })
+
+      fireEvent.mouseUp(screen.getByTestId('selectable'))
+      fireEvent.click(screen.getByTestId('copy-selection-button'))
+
+      expect(removeAllRanges).toHaveBeenCalled()
+      expect(onSelectionActiveChange).toHaveBeenLastCalledWith(false)
+    }
+    finally {
+      if (clipboardDescriptor)
+        Object.defineProperty(navigator, 'clipboard', clipboardDescriptor)
+      else
+        Reflect.deleteProperty(navigator, 'clipboard')
+      requestFrame.mockRestore()
+      cancelFrame.mockRestore()
+    }
+  })
 })

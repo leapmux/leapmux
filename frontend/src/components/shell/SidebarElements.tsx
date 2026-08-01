@@ -126,7 +126,10 @@ export function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: Sid
   // object. Sidebar code cannot reach them -- both sidebars are typed
   // SidebarCommonProps, which does not declare them -- so this is runtime
   // surface, not API surface.
-  return mergeProps(opts, {
+  // Captured rather than returned inline so `solid/reactivity` can see what the
+  // merged object is and check its use; returning the call directly leaves the
+  // rule unable to analyse it.
+  const commonProps = mergeProps(opts, {
     get isCollapsed() { return display?.isCollapsed() ?? false },
     onExpand: display?.onExpand ?? (() => {}),
     initialOpenSections: display?.initialOpenSections,
@@ -145,6 +148,7 @@ export function buildCommonSidebarProps(opts: SidebarElementsOpts, display?: Sid
       return opts.isActiveWorkspaceArchived ? undefined : openTerminal
     },
   })
+  return commonProps
 }
 
 export function createLeftSidebarElement(opts: SidebarElementsOpts, display?: SidebarDisplayOpts): JSX.Element {

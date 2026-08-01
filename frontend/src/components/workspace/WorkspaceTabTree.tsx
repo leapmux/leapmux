@@ -6,13 +6,14 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import X from 'lucide-solid/icons/x'
-import { createContext, createMemo, createSignal, on, Show, useContext } from 'solid-js'
+import { createMemo, createSignal, on, Show, useContext } from 'solid-js'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { PREFIX_TAB_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { createStableContext } from '~/lib/createStableContext'
 import { createKeyedRows, createStableKeys, KeyedFor } from '~/lib/keyedRows'
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
@@ -133,6 +134,9 @@ const TabLeaf: Component<{
         props.onClose?.()
       }}
       data-testid="tab-tree-leaf"
+      // The tree's own statement of which row is active, so a test asserts on
+      // that rather than on the presence of a hashed style class.
+      data-active={props.isActive ? 'true' : 'false'}
       data-tab-id={props.tab.id}
       data-terminal-status={isTerminalTab(props.tab) ? props.tab.status : undefined}
     >
@@ -241,9 +245,9 @@ interface BranchActionsContextValue {
   isWorkerKnownOnline?: (workerId: string) => boolean
 }
 
-const RowSelectionContext = createContext<RowSelectionContextValue>()
-const RowEditingContext = createContext<RowEditingContextValue>()
-const BranchActionsContext = createContext<BranchActionsContextValue>({})
+const RowSelectionContext = createStableContext<RowSelectionContextValue>('workspace/WorkspaceTabTree#rowSelection')
+const RowEditingContext = createStableContext<RowEditingContextValue>('workspace/WorkspaceTabTree#rowEditing')
+const BranchActionsContext = createStableContext<BranchActionsContextValue>('workspace/WorkspaceTabTree#branchActions', {})
 
 function useRowSelection(): RowSelectionContextValue {
   const ctx = useContext(RowSelectionContext)

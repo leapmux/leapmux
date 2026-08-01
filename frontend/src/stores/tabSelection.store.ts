@@ -99,6 +99,40 @@ export function createTabSelectionStore(view: TabView, metadata: TabMetadataStor
   }
 
   /**
+   * A stored pointer, VALIDATED but never synthesised. Three answers, and a
+   * caller that persists needs all three kept apart:
+   *
+   *   - `undefined` — nothing was ever chosen for this scope. After a reload
+   *     that is every scope until `restoreTabSelection` runs, so a writer must
+   *     leave whatever is on disk alone.
+   *   - `null` — something WAS chosen and the tab it named is gone: closed
+   *     here, closed on another device, or moved to another workspace/tile.
+   *     The stored key is dead and should be cleared.
+   *   - a key — the choice still names a live tab of this scope. Persist it.
+   *
+   * {@link resolve} collapses the first two into `mruHead`. That is right for
+   * RENDERING — the UI always needs something to highlight — and wrong to
+   * persist, in a way that only bites across a reload: `mru` is never stored,
+   * so every tab comes back scoring zero and `mruHead` invents the FIRST tab.
+   * A writer that persisted that answer would overwrite the real key before
+   * the restore had read it back, and the restore would then read its own
+   * clobbered value.
+   *
+   * Same `belongs` discipline as `resolve`, and for the same reason: `view.get`
+   * is a global lookup, so a tab that merely MOVED is still "live" and would
+   * otherwise keep satisfying the pointer of the scope it left.
+   */
+  function chosen(
+    storedKey: string | null | undefined,
+    belongs: (tab: Tab) => boolean,
+  ): string | null | undefined {
+    if (storedKey == null)
+      return undefined
+    const tab = view.get(storedKey)
+    return tab && belongs(tab) ? storedKey : null
+  }
+
+  /**
    * The two writes that accompany EVERY activation, whatever its scope: stamp
    * MRU so the tab wins the next promotion, and dismiss the badge the user has
    * now seen. Keeping them together is what stops a caller from selecting a tab
@@ -125,6 +159,18 @@ export function createTabSelectionStore(view: TabView, metadata: TabMetadataStor
     activeTabForWorkspace(workspaceId: string): Tab | undefined {
       const key = this.activeKeyForWorkspace(workspaceId)
       return key ? view.get(key) : undefined
+    },
+
+    /**
+     * The workspace's CHOSEN pointer -- see {@link chosen} for the three-way
+     * answer and why persisting {@link activeKeyForWorkspace} instead is
+     * destructive across a reload.
+     */
+    chosenKeyForWorkspace(workspaceId: string): string | null | undefined {
+      return chosen(
+        state.activeByWorkspace[workspaceId],
+        tab => tab.workspaceId === workspaceId,
+      )
     },
 
     activeKeyForTile(tileId: string): string | null {
@@ -251,16 +297,25 @@ export function createTabSelectionStore(view: TabView, metadata: TabMetadataStor
     },
 
     /**
-     * Per-tile actives limited to `tileIds`. `activeByTile` spans every
-     * workspace (tile ids are global), so a caller persisting one workspace's
-     * slice must narrow it or it writes other workspaces' tiles under that
-     * workspace's key.
+     * Per-tile CHOSEN pointers, limited to `tileIds`.
+     *
+     * `activeByTile` spans every workspace (tile ids are global), so a caller
+     * persisting one workspace's slice must narrow it or it writes other
+     * workspaces' tiles under that workspace's key.
+     *
+     * Each entry carries {@link chosen}'s answer, and the three cases stay
+     * apart in the result: a tile nobody has chosen on is ABSENT, a tile whose
+     * choice is dead maps to `null`, and a live choice maps to its key. A
+     * caller that only filtered out the nulls could not tell "no tile has been
+     * chosen on yet" -- true on every reload until the restore runs -- from
+     * "every tile's choice is dead", and clearing on the first is what destroys
+     * the snapshot the restore was about to read.
      */
-    tileActivesFor(tileIds: Iterable<string>): Record<string, string | null> {
+    chosenTileActivesFor(tileIds: Iterable<string>): Record<string, string | null> {
       const out: Record<string, string | null> = {}
       for (const id of tileIds) {
-        const key = state.activeByTile[id]
-        if (key)
+        const key = chosen(state.activeByTile[id], tab => tab.tileId === id)
+        if (key !== undefined)
           out[id] = key
       }
       return out

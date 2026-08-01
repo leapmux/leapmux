@@ -1,12 +1,13 @@
 import type { ParentComponent } from 'solid-js'
-import { createContext, createSignal, useContext } from 'solid-js'
+import { createSignal, useContext } from 'solid-js'
+import { createStableContext } from '~/lib/createStableContext'
 
 interface WorkspaceState {
   activeWorkspaceId: () => string | null
   setActiveWorkspaceId: (id: string | null) => void
 }
 
-const WorkspaceContext = createContext<WorkspaceState>()
+const WorkspaceContext = createStableContext<WorkspaceState>('context/WorkspaceContext')
 
 export const WorkspaceProvider: ParentComponent = (props) => {
   const [activeWorkspaceId, setActiveWorkspaceId] = createSignal<string | null>(null)

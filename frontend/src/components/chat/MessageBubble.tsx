@@ -38,7 +38,7 @@ import { JsonHighlightHtml, ToolHeaderActions } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 
-function renderErrorFallback(label: string) {
+function messageErrorFallback(label: string) {
   return (err: unknown) => {
     logger.warn(label, err)
     const message = formatErrorMessage(err)
@@ -479,7 +479,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           data-role={sourceLabel(props.message.source)}
         >
           <div ref={contentRef} data-testid="message-content">
-            <ErrorBoundary fallback={renderErrorFallback('Failed to render message:')}>
+            <ErrorBoundary fallback={messageErrorFallback('Failed to render message:')}>
               {category().kind === 'hidden'
                 ? rawJsonBlock()
                 : category().kind === 'notification'

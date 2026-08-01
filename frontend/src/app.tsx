@@ -1,10 +1,10 @@
 import type { ParentComponent } from 'solid-js'
 import { Router } from '@solidjs/router'
 import { FileRoutes } from '@solidjs/start/router'
-import { createEffect, createResource, createSignal, ErrorBoundary, getOwner, Match, onCleanup, onMount, runWithOwner, Show, Suspense, Switch } from 'solid-js'
+import { createEffect, createSignal, ErrorBoundary, getOwner, Match, onCleanup, onMount, runWithOwner, Show, Suspense, Switch } from 'solid-js'
 import { getRuntimeState, isTauriApp, platformBridge, refreshRuntimeState } from '~/api/platformBridge'
 import { channelManager } from '~/api/workerRpc'
-import { showInfoToast } from '~/components/common/Toast'
+import { renderErrorFallback } from '~/components/common/ErrorFallback'
 import { LauncherView } from '~/components/desktop/LauncherView'
 import { AboutDialog } from '~/components/shell/AboutDialog'
 import { DesktopMinimalChrome, DesktopRouteChrome } from '~/components/shell/DesktopChrome'
@@ -15,7 +15,6 @@ import { PreferencesProvider, usePreferences } from '~/context/PreferencesContex
 import { useCoreShortcuts } from '~/hooks/useCoreShortcuts'
 import { initStorageCleanup, KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
 import { createLogger } from '~/lib/logger'
-import { resolveStack } from '~/lib/resolveStack'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
 import { heightFull } from '~/styles/shared.css'
 import '~/lib/oat'
@@ -90,30 +89,6 @@ const DesktopFadeIn: ParentComponent = (props) => {
   )
 }
 
-function AppErrorFallback(error: Error) {
-  const rawStack = () => error?.stack || ''
-  const [resolved] = createResource(rawStack, resolveStack)
-  const message = () => error?.message || String(error)
-  const displayText = () => `${message()}\n\n${resolved() ?? rawStack()}`
-
-  const handleClick = async () => {
-    await navigator.clipboard.writeText(displayText())
-    showInfoToast('Stack trace copied to clipboard')
-  }
-
-  return (
-    <div class="flex flex-col items-center justify-center p-4" style={{ position: 'fixed', inset: '0' }}>
-      <h1>Uncaught Error</h1>
-      <pre
-        style={{ 'max-width': '80vw', 'max-height': '50vh', 'cursor': 'pointer' }}
-        onClick={handleClick}
-      >
-        {displayText()}
-      </pre>
-    </div>
-  )
-}
-
 export default function App() {
   const disposeStorageCleanup = initStorageCleanup()
   onCleanup(disposeStorageCleanup)
@@ -161,19 +136,19 @@ export default function App() {
     }
   })
 
-  // Listen for localStorage changes from other tabs.
+  // Follow theme changes made in other tabs.
+  //
+  // The event is only used to learn WHICH key changed; the value is read back
+  // through `loadBrowserPrefs`. Parsing `e.newValue` directly -- which this did
+  // -- reads the raw `{ v, e }` TTL envelope that `localStorageSet` writes, so
+  // `JSON.parse(e.newValue).theme` was always `undefined`, the comparison
+  // against an equally-undefined old value was never true, and cross-tab theme
+  // sync had silently done nothing: a second tab kept the old theme until it
+  // was reloaded.
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === KEY_BROWSER_PREFS) {
-      const oldPrefs = e.oldValue ? JSON.parse(e.oldValue) : {}
-      const newPrefs = e.newValue ? JSON.parse(e.newValue) : {}
-      if (oldPrefs.theme !== newPrefs.theme) {
-        const val = newPrefs.theme
-        if (val === 'light' || val === 'dark' || val === 'system')
-          setThemePreference(val)
-        else
-          setThemePreference('system')
-      }
-    }
+    if (e.key !== KEY_BROWSER_PREFS)
+      return
+    setThemePreference(getStoredTheme())
   }
   window.addEventListener('storage', handleStorage)
   onCleanup(() => window.removeEventListener('storage', handleStorage))
@@ -227,7 +202,11 @@ export default function App() {
   })
 
   return (
-    <ErrorBoundary fallback={AppErrorFallback}>
+    // The outermost net. Anything it catches -- the providers, the launcher,
+    // the desktop chrome -- can only be retried by rebuilding all of them, so
+    // its reset does re-run the auth bootstrap. The boundary inside the router
+    // below exists so that a *route* fault never has to pay that price.
+    <ErrorBoundary fallback={renderErrorFallback}>
       <div class={heightFull}>
         <Switch>
           <Match when={desktopState() === 'connected'}>
@@ -237,7 +216,22 @@ export default function App() {
                   <PreferencesApplier>
                     <Router root={props => (
                       <Suspense>
-                        <DesktopRouteChrome>{props.children}</DesktopRouteChrome>
+                        <DesktopRouteChrome>
+                          {/*
+                            Scoped below AuthProvider and PreferencesProvider deliberately:
+                            a render fault in a route resets to a freshly-rendered route and
+                            leaves the session, preferences and pooled channels alone. The
+                            outer boundary would have torn all of them down and re-bootstrapped.
+
+                            Being INSIDE the Suspense above is what forces `ErrorFallback` to
+                            keep every suspending read out of its render: a suspended Suspense
+                            with no `fallback` renders nothing, so a fallback that read a
+                            pending resource would show a blank page instead of the error.
+                          */}
+                          <ErrorBoundary fallback={renderErrorFallback}>
+                            {props.children}
+                          </ErrorBoundary>
+                        </DesktopRouteChrome>
                       </Suspense>
                     )}
                     >

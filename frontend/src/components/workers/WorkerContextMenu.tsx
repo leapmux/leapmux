@@ -6,6 +6,7 @@ import { RelativeTime } from '~/components/chat/RelativeTime'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { showInfoToast } from '~/components/common/Toast'
+import { copyTextToClipboard } from '~/lib/clipboard'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { dangerMenuItem } from '~/styles/shared.css'
 import * as styles from './workerContextMenu.css'
@@ -61,6 +62,17 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
     })
   }
 
+  // Routed through `copyTextToClipboard`, which is guarded: a non-secure origin
+  // exposes no `navigator.clipboard` at all, so the bare
+  // `navigator.clipboard.writeText` this replaced threw a TypeError into an
+  // unhandled rejection. The toast is now conditional on the write actually
+  // landing -- it used to fire even when there was no info to copy.
+  const copyInfo = async () => {
+    const json = infoJson()
+    if (json && await copyTextToClipboard(json))
+      showInfoToast('Worker info copied to clipboard')
+  }
+
   return (
     <DropdownMenu trigger={rowContextMenuTrigger()}>
       <Show when={infoRows()}>
@@ -68,12 +80,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
           <button
             role="menuitem"
             class={styles.infoButton}
-            onClick={() => {
-              const json = infoJson()
-              if (json)
-                navigator.clipboard.writeText(json)
-              showInfoToast('Worker info copied to clipboard')
-            }}
+            onClick={() => void copyInfo()}
           >
             <span class={styles.infoGrid}>
               <For each={rows()}>

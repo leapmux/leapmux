@@ -1,5 +1,6 @@
 import type { JSX } from 'solid-js'
-import { createContext, createSignal, onCleanup, useContext } from 'solid-js'
+import { createSignal, onCleanup, useContext } from 'solid-js'
+import { createStableContext } from '~/lib/createStableContext'
 import { useOptionalSectionDrag } from './SectionDragContext'
 
 /** Prefix used for tab-bar zone droppable IDs. */
@@ -20,7 +21,7 @@ interface TabDragState {
   draggedTabKey: () => string | null
 }
 
-const TabDragContext = createContext<TabDragState>()
+const TabDragContext = createStableContext<TabDragState>('shell/TabDragContext')
 
 export function useTabDrag(): TabDragState {
   const ctx = useContext(TabDragContext)

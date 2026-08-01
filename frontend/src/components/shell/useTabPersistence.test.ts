@@ -1,4 +1,5 @@
 /// <reference types="vitest/globals" />
+import type { TestBridgeHandle } from '~/test-support/crdtBridge'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { activeTabKey, focusedTileKey, tileActiveTabsKey } from '~/components/shell/tabPersistenceKeys'
@@ -6,8 +7,8 @@ import { useTabPersistence } from '~/components/shell/useTabPersistence'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { setCRDTBridge } from '~/lib/crdt'
-import { emitAddTab } from '~/stores/tabOps'
-import { withTestBridge } from '~/test-support/crdtBridge'
+import { emitAddTab, emitMoveTabToWorkspace, emitRemoveTab } from '~/stores/tabOps'
+import { seedWorkspace, withTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
 
 beforeEach(() => {
@@ -26,7 +27,10 @@ const WS = 'ws-persist'
  * microtask so the effects have written before the assertions run.
  */
 async function withPersistence(
-  body: (ctx: ReturnType<typeof createTestTabStores> & { rootTileId: string }) => void,
+  body: (ctx: ReturnType<typeof createTestTabStores> & {
+    rootTileId: string
+    harness: TestBridgeHandle
+  }) => void,
   opts: { loading?: boolean } = {},
 ): Promise<void> {
   await withTestBridge(async (harness) => {
@@ -44,7 +48,7 @@ async function withPersistence(
           hasWorkspace: () => bootstrapped(),
         })
         try {
-          body({ ...stores, rootTileId: harness.rootTileId })
+          body({ ...stores, rootTileId: harness.rootTileId, harness })
         }
         catch (err) {
           dispose()
@@ -134,10 +138,14 @@ describe('useTabPersistence', () => {
   // Regression: the writers used to share `workspaceLoading` with the paint
   // gate, which a watchdog clears on a timer when the bootstrap is slow or never
   // arrives. That timer then authorised these writes against an EMPTY
-  // projection, and both derived effects fall through to `clearIfPresent` --
+  // projection, and both derived effects fell through to their clear branch --
   // deleting last session's keys while `restoreTabSelection`, gated on the
-  // projection, had not yet spent its one attempt to read them. Gating on the
-  // same predicate as the restore is what makes the writer unable to outrun it.
+  // projection, had not yet spent its one attempt to read them.
+  //
+  // The gate is NOT what makes this safe, though it was once described that
+  // way: it is not an ordering guarantee against the restore, which carries
+  // extra conditions of its own. What makes it safe is that nothing has been
+  // CHOSEN yet, so the writers touch nothing -- see the two tests below.
   it('does not delete a previous session\'s keys when the bootstrap has not landed', async () => {
     sessionStorageSet(activeTabKey(WS), `${TabType.AGENT}:from-last-session`)
     sessionStorageSet(tileActiveTabsKey(WS), JSON.stringify({ 'tile-1': `${TabType.AGENT}:from-last-session` }))
@@ -150,15 +158,110 @@ describe('useTabPersistence', () => {
     expect(sessionStorageGet(tileActiveTabsKey(WS))).not.toBeUndefined()
   })
 
-  // Closing the last tab must ERASE the pointer, not leave it naming a dead tab:
+  // Closing the LAST tab must erase the pointer, not leave it naming a dead tab:
   // the next load's `restoreTabSelection` reads `hasStoredState` off it and
   // spends its one restore attempt applying a previous session's selection.
-  it('clears the workspace active-tab key once the workspace has no tabs', async () => {
-    sessionStorageSet(activeTabKey(WS), `${TabType.AGENT}:gone`)
-    await withPersistence(({ view }) => {
-      expect(view.forWorkspace(WS), 'the workspace really is empty').toHaveLength(0)
+  //
+  // The tab has to be genuinely chosen and then genuinely closed. Nothing in
+  // the store rewrites `activeByWorkspace` on a close -- a tombstone is a CRDT
+  // op, not a store call -- so the pointer outlives its own tab, and a version
+  // of this test that only asserted on an empty workspace with nothing ever
+  // chosen would pass against a writer that never reclaims anything.
+  it('clears the workspace active-tab key when the last tab is closed', async () => {
+    await withPersistence(({ selection, view, rootTileId }) => {
+      emitAddTab({ type: TabType.AGENT, id: 'only', tileId: rootTileId, position: 'a' })
+      selection.setActiveById(TabType.AGENT, 'only')
+      emitRemoveTab(TabType.AGENT, 'only')
+      expect(view.forWorkspace(WS), 'the workspace really is empty now').toHaveLength(0)
+      expect(selection.state.activeByWorkspace[WS], 'but the pointer outlived its tab')
+        .toBe(`${TabType.AGENT}:only`)
     })
     expect(sessionStorageGet(activeTabKey(WS))).toBeUndefined()
+  })
+
+  // The per-tile half of the same reclamation. `activeByTile` is swept only for
+  // dead TILES, so a tile that outlives its tabs keeps pointing at one of them.
+  it('clears the per-tile keys when the last tab is closed', async () => {
+    await withPersistence(({ selection, rootTileId }) => {
+      emitAddTab({ type: TabType.AGENT, id: 'only', tileId: rootTileId, position: 'a' })
+      selection.setActiveById(TabType.AGENT, 'only')
+      emitRemoveTab(TabType.AGENT, 'only')
+      expect(selection.state.activeByTile[rootTileId], 'the tile pointer outlived its tab')
+        .toBe(`${TabType.AGENT}:only`)
+    })
+    expect(sessionStorageGet(tileActiveTabsKey(WS))).toBeUndefined()
+  })
+
+  // Closing the ACTIVE tab of a workspace that still has others. The pointer is
+  // now dead, but a choice WAS made, so the resolver's promotion is a real
+  // answer rather than an invented one -- and it is the tab the user is looking
+  // at. Persisting the dead key instead would send the next load through
+  // `mruHead` with every stamp back at zero, i.e. to the FIRST tab.
+  it('persists the promoted survivor when the active tab is closed', async () => {
+    await withPersistence(({ selection, rootTileId }) => {
+      emitAddTab({ type: TabType.AGENT, id: 'first', tileId: rootTileId, position: 'a' })
+      emitAddTab({ type: TabType.AGENT, id: 'second', tileId: rootTileId, position: 'b' })
+      emitAddTab({ type: TabType.AGENT, id: 'third', tileId: rootTileId, position: 'c' })
+      selection.setActiveById(TabType.AGENT, 'second')
+      selection.setActiveById(TabType.AGENT, 'third')
+      emitRemoveTab(TabType.AGENT, 'third')
+      expect(selection.state.activeByWorkspace[WS], 'the raw pointer is dead')
+        .toBe(`${TabType.AGENT}:third`)
+    })
+    // 'second' -- the most recently used survivor. NOT 'third' (dead), and not
+    // 'first', which is what a zero-MRU fallback picks.
+    expect(sessionStorageGet(activeTabKey(WS))).toBe(`${TabType.AGENT}:second`)
+  })
+
+  // A tab dragged to another workspace is still LIVE, so a liveness check alone
+  // keeps satisfying the pointer of the workspace it left. `belongs` is what
+  // makes it a real check; without it this workspace persists a key naming a tab
+  // that is now somebody else's, and the next load heals it to the first tab.
+  it('does not persist a pointer to a tab that moved to another workspace', async () => {
+    await withPersistence(({ selection, view, rootTileId, harness }) => {
+      const elsewhere = seedWorkspace(harness, 'other-ws', 'other-tile')
+      emitAddTab({ type: TabType.AGENT, id: 'stays', tileId: rootTileId, position: 'a' })
+      emitAddTab({ type: TabType.AGENT, id: 'moves', tileId: rootTileId, position: 'b' })
+      selection.setActiveById(TabType.AGENT, 'stays')
+      selection.setActiveById(TabType.AGENT, 'moves')
+      emitMoveTabToWorkspace(TabType.AGENT, 'moves', elsewhere, 'a')
+      expect(view.get(`${TabType.AGENT}:moves`)?.workspaceId, 'the tab really did move').toBe('other-ws')
+      expect(selection.state.activeByWorkspace[WS], 'the pointer still names the departed tab')
+        .toBe(`${TabType.AGENT}:moves`)
+    })
+    expect(sessionStorageGet(activeTabKey(WS))).toBe(`${TabType.AGENT}:stays`)
+  })
+
+  // The reload window: the workspace is projected with its tabs, but nothing has
+  // been chosen yet because `restoreTabSelection` has not run. `mru` is never
+  // persisted, so every tab comes back scoring zero and `activeKeyForWorkspace`
+  // synthesises the FIRST tab. Persisting that invented answer overwrote the
+  // stored key before the restore could read it, which is how a reload put the
+  // sidebar on the first tab while the tab bar -- reading the per-tile pointer,
+  // which is never synthesised -- correctly stayed on the second.
+  it('does NOT overwrite the stored active-tab key before anything is chosen', async () => {
+    sessionStorageSet(activeTabKey(WS), `${TabType.AGENT}:second`)
+    await withPersistence(({ selection, view, rootTileId }) => {
+      emitAddTab({ type: TabType.AGENT, id: 'first', tileId: rootTileId, position: 'a' })
+      emitAddTab({ type: TabType.AGENT, id: 'second', tileId: rootTileId, position: 'b' })
+      expect(view.forWorkspace(WS), 'the tabs really are projected').toHaveLength(2)
+      expect(selection.state.activeByWorkspace[WS], 'nothing chosen yet').toBeUndefined()
+      // What the writer must not persist: the synthesised first-tab answer.
+      expect(selection.activeKeyForWorkspace(WS)).toBe(`${TabType.AGENT}:first`)
+    })
+    expect(sessionStorageGet(activeTabKey(WS))).toBe(`${TabType.AGENT}:second`)
+  })
+
+  // Same window, per-tile half. An empty `activeByTile` means "no tile has a
+  // pointer", which is true on every reload until the restore runs -- clearing
+  // then destroys the snapshot that keeps the tab bar on the right tab.
+  it('does NOT clear the stored per-tile keys before anything is chosen', async () => {
+    sessionStorageSet(tileActiveTabsKey(WS), JSON.stringify({ 'tile-1': `${TabType.AGENT}:second` }))
+    await withPersistence(({ selection, rootTileId }) => {
+      emitAddTab({ type: TabType.AGENT, id: 'first', tileId: rootTileId, position: 'a' })
+      expect(selection.state.activeByTile[rootTileId], 'nothing chosen yet').toBeUndefined()
+    })
+    expect(sessionStorageGet(tileActiveTabsKey(WS))).toBe(JSON.stringify({ 'tile-1': `${TabType.AGENT}:second` }))
   })
 
   // The focus pointer is a user CHOICE that outlives the tab set -- tiles do not

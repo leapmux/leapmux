@@ -2,12 +2,13 @@ import type { ParentComponent } from 'solid-js'
 import type { User } from '~/generated/leapmux/v1/auth_pb'
 import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
-import { createContext, createEffect, createSignal, on, onMount, useContext } from 'solid-js'
+import { createEffect, createSignal, on, onMount, useContext } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { platformBridge } from '~/api/platformBridge'
 import { loadTimeouts, setOnAuthError } from '~/api/transport'
 import { channelManager } from '~/api/workerRpc'
 import { LoginRequestSchema } from '~/generated/leapmux/v1/auth_pb'
+import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { createLogger } from '~/lib/logger'
 import { isSoloMode, loadSystemInfo } from '~/lib/systemInfo'
@@ -43,7 +44,7 @@ export interface AuthState {
   isAuthenticated: () => boolean
 }
 
-const AuthContext = createContext<AuthState>()
+const AuthContext = createStableContext<AuthState>('context/AuthContext')
 
 export const AuthProvider: ParentComponent = (props) => {
   const [user, setUser] = createSignal<User | null>(null)

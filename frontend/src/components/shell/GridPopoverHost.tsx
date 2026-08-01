@@ -1,5 +1,6 @@
 import type { ParentComponent } from 'solid-js'
-import { createContext, createSignal, useContext } from 'solid-js'
+import { createSignal, useContext } from 'solid-js'
+import { createStableContext } from '~/lib/createStableContext'
 import { GridSizePopover } from './GridSizePopover'
 
 /**
@@ -17,7 +18,7 @@ export interface GridPopoverHost {
   open: (request: GridPopoverRequest) => void
 }
 
-const GridPopoverContext = createContext<GridPopoverHost | undefined>(undefined)
+const GridPopoverContext = createStableContext<GridPopoverHost | undefined>('shell/GridPopoverHost', undefined)
 
 /**
  * Read the host from context. Returns `undefined` when no

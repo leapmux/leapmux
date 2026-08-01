@@ -1,13 +1,23 @@
 /**
- * Write `text` to the system clipboard, ignoring empty inputs and
- * environments without a clipboard API. Errors (e.g. permission denied
- * on a non-secure context) are swallowed — auto-copy is a convenience,
- * not a contract.
+ * Write `text` to the system clipboard, reporting whether it landed.
+ *
+ * Never rejects and never throws: an empty input, a missing clipboard API (any
+ * non-secure origin — plain `http://` on a LAN — has no `navigator.clipboard`),
+ * a denied permission, or an unfocused document all resolve `false`. Callers
+ * that treat copying as a convenience can ignore the result with `void`; a
+ * caller that reports success to the user should await it, so it cannot claim
+ * to have copied something it did not.
  */
-export function copyTextToClipboard(text: string): void {
+export async function copyTextToClipboard(text: string): Promise<boolean> {
   if (text.length === 0)
-    return
+    return false
   if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText)
-    return
-  void navigator.clipboard.writeText(text).catch(() => {})
+    return false
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  }
+  catch {
+    return false
+  }
 }

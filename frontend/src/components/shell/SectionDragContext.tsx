@@ -1,8 +1,9 @@
 import type { JSX } from 'solid-js'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
 import { closestCenter, DragDropProvider, DragDropSensors, DragOverlay } from '@thisbeyond/solid-dnd'
-import { createContext, createSignal, useContext } from 'solid-js'
+import { createSignal, useContext } from 'solid-js'
 import { Sidebar } from '~/generated/leapmux/v1/section_pb'
+import { createStableContext } from '~/lib/createStableContext'
 import { mid } from '~/lib/lexorank'
 import { dragOverlayAboveFloating } from './FloatingWindowContainer.css'
 import {
@@ -40,7 +41,7 @@ interface SectionDragState {
   addExternalOverlayRenderer: (renderer: ExternalOverlayRenderer) => () => void
 }
 
-const SectionDragCtx = createContext<SectionDragState>()
+const SectionDragCtx = createStableContext<SectionDragState>('shell/SectionDragContext')
 
 export function useSectionDrag(): SectionDragState {
   const ctx = useContext(SectionDragCtx)

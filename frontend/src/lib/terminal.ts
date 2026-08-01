@@ -324,7 +324,7 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
   // (e.g. a click that clears highlight) are skipped so we don't
   // clobber whatever the user has on the clipboard.
   terminal.onSelectionChange(() => {
-    copyTextToClipboard(terminal.getSelection())
+    void copyTextToClipboard(terminal.getSelection())
   })
 
   return {

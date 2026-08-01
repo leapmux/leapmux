@@ -6,7 +6,7 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import File from 'lucide-solid/icons/file'
 import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
-import { batch, createContext, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
@@ -14,6 +14,7 @@ import { Icon } from '~/components/common/Icon'
 import { StartupSpinner } from '~/components/common/StartupPanel'
 import { Tooltip } from '~/components/common/Tooltip'
 import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { basename, detectFlavor, isAbsolute, relativeUnder, tildify, untildify } from '~/lib/paths'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
@@ -116,7 +117,7 @@ interface TreeContextValue {
   isTruncated: (path: string) => boolean
 }
 
-const TreeContext = createContext<TreeContextValue>()
+const TreeContext = createStableContext<TreeContextValue>('tree/DirectoryTree')
 
 function useTree(): TreeContextValue {
   const ctx = useContext(TreeContext)
