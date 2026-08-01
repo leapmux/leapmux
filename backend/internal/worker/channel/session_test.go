@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"sync"
@@ -2134,7 +2135,10 @@ func (w *queueTrackingWriter) SendError(int32, string) error {
 func (w *queueTrackingWriter) SendStream(*leapmuxv1.InnerStreamMessage) error { return nil }
 func (*queueTrackingWriter) ChannelID() string                                { return "" }
 func (*queueTrackingWriter) MaxPayloadBudget() int                            { return 0 }
-func (w *queueTrackingWriter) QueueError(int32, string)                       { w.queued.Add(1) }
+func (*queueTrackingWriter) BindStream(StreamController) (func(), bool) {
+	return func() {}, false
+}
+func (w *queueTrackingWriter) QueueError(int32, string) { w.queued.Add(1) }
 
 // Decrypt-failure CLOSE must go through trySendFn BEFORE HandleClose tears the
 // session down, so the CLOSE is enqueued on the connection writer's FIFO ahead
@@ -2671,4 +2675,272 @@ func TestHandleMessage_RekeyUnderLoad(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		echo(uint64(10+i), "after-"+string(rune('a'+i)))
 	}
+}
+
+func TestHandleMessage_StreamRequestRoutesToBoundController(t *testing.T) {
+	t.Parallel()
+
+	mgr, kp, _ := setupTestManager(t)
+	ctrl := &streamRequestRecordingController{}
+	ready := make(chan struct{})
+
+	dispatcher := NewDispatcher()
+	dispatcher.Register("stream", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		release, _ := s.BindStream(ctrl)
+		defer release()
+		close(ready)
+		select {}
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	initiatorSession := performHandshake(t, mgr, kp, "ch-stream-req", "user-stream-req")
+
+	openCT := sendRequest(t, initiatorSession, "ch-stream-req", &leapmuxv1.InnerRpcRequest{
+		Method: "stream", Payload: []byte("open"),
+	})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-stream-req",
+		Ciphertext:      openCT,
+		CorrelationId:   7,
+	})
+
+	<-ready
+
+	updateCT, err := encryptInner(t, initiatorSession, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_StreamRequest{
+			StreamRequest: &leapmuxv1.InnerStreamRequest{Payload: []byte("update")},
+		},
+	})
+	require.NoError(t, err)
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-stream-req",
+		Ciphertext:      updateCT,
+		CorrelationId:   7,
+	})
+
+	require.Eventually(t, func() bool {
+		ctrl.mu.Lock()
+		defer ctrl.mu.Unlock()
+		return len(ctrl.payloads) == 1 && string(ctrl.payloads[0]) == "update"
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestHandleMessage_StreamRequestUnboundIdIsDropped(t *testing.T) {
+	t.Parallel()
+
+	mgr, kp, sender := setupTestManager(t)
+	mgr.SetDispatcher(NewDispatcher())
+	initiatorSession := performHandshake(t, mgr, kp, "ch-unbound", "user-unbound")
+
+	updateCT, err := encryptInner(t, initiatorSession, &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_StreamRequest{
+			StreamRequest: &leapmuxv1.InnerStreamRequest{Payload: []byte("orphan")},
+		},
+	})
+	require.NoError(t, err)
+	// Must not panic or log as "unexpected kind" — unbound is a quiet drop.
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-unbound",
+		Ciphertext:      updateCT,
+		CorrelationId:   99,
+	})
+	assert.Empty(t, sender.messages())
+}
+
+func TestHandleClose_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
+	t.Parallel()
+
+	mgr, kp, _ := setupTestManager(t)
+	ctrl := &streamRequestRecordingController{}
+	ready := make(chan struct{})
+	order := make(chan string, 2)
+
+	dispatcher := NewDispatcher()
+	dispatcher.Register("stream", func(ctx context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		release, _ := s.BindStream(ctrl)
+		defer release()
+		close(ready)
+		<-ctx.Done()
+		order <- "ctx"
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	initiatorSession := performHandshake(t, mgr, kp, "ch-close-order", "user-close-order")
+	openCT := sendRequest(t, initiatorSession, "ch-close-order", &leapmuxv1.InnerRpcRequest{
+		Method: "stream", Payload: []byte("open"),
+	})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-close-order",
+		Ciphertext:      openCT,
+		CorrelationId:   3,
+	})
+	<-ready
+
+	origOnCancel := ctrl.onCancelHook
+	ctrl.onCancelHook = func() {
+		order <- "cancel"
+		if origOnCancel != nil {
+			origOnCancel()
+		}
+	}
+
+	mgr.HandleClose("ch-close-order")
+
+	require.Eventually(t, func() bool {
+		ctrl.mu.Lock()
+		defer ctrl.mu.Unlock()
+		return ctrl.cancelled
+	}, time.Second, 10*time.Millisecond)
+
+	first := <-order
+	assert.Equal(t, "cancel", first, "OnCancel must run before sess.ctx cancel reaches the handler")
+}
+
+func TestCloseAll_CallsOnCancelBeforeSessionCtxCancel(t *testing.T) {
+	t.Parallel()
+
+	mgr, kp, _ := setupTestManager(t)
+	ctrl := &streamRequestRecordingController{}
+	ready := make(chan struct{})
+	order := make(chan string, 2)
+
+	dispatcher := NewDispatcher()
+	dispatcher.Register("stream", func(ctx context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		release, _ := s.BindStream(ctrl)
+		defer release()
+		close(ready)
+		<-ctx.Done()
+		order <- "ctx"
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	initiatorSession := performHandshake(t, mgr, kp, "ch-closeall-order", "user-closeall-order")
+	openCT := sendRequest(t, initiatorSession, "ch-closeall-order", &leapmuxv1.InnerRpcRequest{
+		Method: "stream", Payload: []byte("open"),
+	})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-closeall-order",
+		Ciphertext:      openCT,
+		CorrelationId:   3,
+	})
+	<-ready
+
+	origOnCancel := ctrl.onCancelHook
+	ctrl.onCancelHook = func() {
+		order <- "cancel"
+		if origOnCancel != nil {
+			origOnCancel()
+		}
+	}
+
+	mgr.CloseAll()
+
+	require.Eventually(t, func() bool {
+		ctrl.mu.Lock()
+		defer ctrl.mu.Unlock()
+		return ctrl.cancelled
+	}, time.Second, 10*time.Millisecond)
+
+	first := <-order
+	assert.Equal(t, "cancel", first, "OnCancel must run before sess.ctx cancel reaches the handler")
+}
+
+func TestHandleMessage_ChunkedStreamRequestReassembles(t *testing.T) {
+	t.Parallel()
+
+	mgr, kp, _ := setupTestManager(t)
+	ctrl := &streamRequestRecordingController{}
+	ready := make(chan struct{})
+
+	dispatcher := NewDispatcher()
+	dispatcher.Register("stream", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
+		release, _ := s.BindStream(ctrl)
+		defer release()
+		close(ready)
+		select {}
+	})
+	mgr.SetDispatcher(dispatcher)
+
+	initiatorSession := performHandshake(t, mgr, kp, "ch-chunk-sr", "user-chunk-sr")
+	openCT := sendRequest(t, initiatorSession, "ch-chunk-sr", &leapmuxv1.InnerRpcRequest{
+		Method: "stream", Payload: []byte("open"),
+	})
+	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+		ProtocolVersion: 1,
+		ChannelId:       "ch-chunk-sr",
+		Ciphertext:      openCT,
+		CorrelationId:   11,
+	})
+	<-ready
+
+	payload := bytes.Repeat([]byte("x"), channelwire.MaxPlaintextPerChunk+50)
+	envelope, err := proto.Marshal(&leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_StreamRequest{
+			StreamRequest: &leapmuxv1.InnerStreamRequest{Payload: payload},
+		},
+	})
+	require.NoError(t, err)
+
+	for offset := 0; offset < len(envelope); {
+		end := offset + channelwire.MaxPlaintextPerChunk
+		if end > len(envelope) {
+			end = len(envelope)
+		}
+		chunk := envelope[offset:end]
+		offset = end
+		ct, encErr := initiatorSession.Encrypt(chunk)
+		require.NoError(t, encErr)
+		flags := leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_UNSPECIFIED
+		if offset < len(envelope) {
+			flags = leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE
+		}
+		mgr.HandleMessage(&leapmuxv1.ChannelMessage{
+			ProtocolVersion: 1,
+			ChannelId:       "ch-chunk-sr",
+			Ciphertext:      ct,
+			CorrelationId:   11,
+			Flags:           flags,
+		})
+	}
+
+	require.Eventually(t, func() bool {
+		ctrl.mu.Lock()
+		defer ctrl.mu.Unlock()
+		return len(ctrl.payloads) == 1 && bytes.Equal(ctrl.payloads[0], payload)
+	}, time.Second, 10*time.Millisecond)
+}
+
+type streamRequestRecordingController struct {
+	mu           sync.Mutex
+	payloads     [][]byte
+	cancelled    bool
+	onCancelHook func()
+}
+
+func (c *streamRequestRecordingController) OnClientFrame(payload []byte) {
+	c.mu.Lock()
+	c.payloads = append(c.payloads, append([]byte(nil), payload...))
+	c.mu.Unlock()
+}
+
+func (c *streamRequestRecordingController) OnCancel() {
+	c.mu.Lock()
+	c.cancelled = true
+	hook := c.onCancelHook
+	c.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+func encryptInner(t *testing.T, session *noiseutil.Session, msg *leapmuxv1.InnerMessage) ([]byte, error) {
+	t.Helper()
+	plain, err := proto.Marshal(msg)
+	require.NoError(t, err)
+	return session.Encrypt(plain)
 }

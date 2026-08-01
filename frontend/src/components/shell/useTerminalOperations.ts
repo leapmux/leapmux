@@ -17,9 +17,8 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { createInflightCache } from '~/lib/inflightCache'
-import { monotonicNow } from '~/lib/monotonicNow'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
-import { openedTerminalMetadata, resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
+import { openedTerminalMetadata, resolveOptimisticGitInfo } from '~/stores/tab.helpers'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 
@@ -172,57 +171,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     }
   }
 
-  // Throttle backend title updates: at most once per 500 ms per terminal.
-  // Kept short so a title set right before a shell exit (Ctrl+D) reaches
-  // the worker before the close handler persists meta to DB; otherwise
-  // the post-restart restore would show the stale pre-update title.
-  const TITLE_THROTTLE_MS = 500
-  const titleTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  const titleLastSent = new Map<string, number>()
-
-  const sendTitleToBackend = (terminalId: string, title: string) => {
-    const workerId = props.view.getTerminalTab(terminalId)?.workerId ?? ''
-    workerRpc.updateTerminalTitle(workerId, {
-      terminalId,
-      title,
-    }).catch(() => {})
-    titleLastSent.set(terminalId, monotonicNow())
-  }
-
-  const handleTerminalTitleChange = (terminalId: string, title: string) => {
-    props.metadata.patch(terminalId, { title })
-
-    // Debounced backend sync
-    const existing = titleTimers.get(terminalId)
-    if (existing)
-      clearTimeout(existing)
-
-    // Missing entry = never sent: treat as fully elapsed so the first
-    // update fires immediately (performance.now() starts near 0, so a
-    // `?? 0` sentinel would incorrectly delay early-session titles).
-    const last = titleLastSent.get(terminalId)
-    const elapsed = last === undefined ? TITLE_THROTTLE_MS : monotonicNow() - last
-    const delay = Math.max(0, TITLE_THROTTLE_MS - elapsed)
-    if (delay === 0) {
-      sendTitleToBackend(terminalId, title)
-    }
-    else {
-      titleTimers.set(terminalId, setTimeout(() => {
-        titleTimers.delete(terminalId)
-        sendTitleToBackend(terminalId, title)
-      }, delay))
-    }
-  }
-
-  const handleTerminalBell = (terminalId: string) => {
-    // Only notify if this terminal's tab is not active
-    const activeKey = props.selection.activeKeyForWorkspace(props.activeWorkspace()?.id ?? '')
-    const bellKey = tabKey({ type: TabType.TERMINAL, id: terminalId })
-    if (activeKey !== bellKey) {
-      props.metadata.patch(terminalId, { hasNotification: true })
-    }
-  }
-
   const handleTerminalResize = async (terminalId: string, cols: number, rows: number) => {
     try {
       const tab = props.view.getTerminalTab(terminalId)
@@ -309,8 +257,6 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     handleOpenTerminal,
     handleOpenTerminalWithShell,
     handleTerminalInput,
-    handleTerminalTitleChange,
-    handleTerminalBell,
     handleTerminalResize,
     handleTerminalClose,
   }

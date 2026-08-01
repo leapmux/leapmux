@@ -33,7 +33,7 @@ type fakeAgentMessagesTransport struct {
 
 func (t *fakeAgentMessagesTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv1.WatchEventsRequest,
 	onFrame func(*leapmuxv1.WatchEventsResponse),
-) (context.CancelFunc, <-chan struct{}, error) {
+) (streamevents.Handle, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	atomic.AddInt32(&t.opens, 1)
@@ -46,8 +46,23 @@ func (t *fakeAgentMessagesTransport) OpenWatchEvents(parentCtx context.Context, 
 		<-ctx.Done()
 		close(t.done)
 	}()
-	return cancel, t.done, nil
+	return &fakeAgentMessagesHandle{tr: t, cancel: cancel, done: t.done}, nil
 }
+
+type fakeAgentMessagesHandle struct {
+	tr     *fakeAgentMessagesTransport
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (h *fakeAgentMessagesHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
+	h.tr.mu.Lock()
+	h.tr.calls = append(h.tr.calls, req)
+	h.tr.mu.Unlock()
+	return nil
+}
+func (h *fakeAgentMessagesHandle) Cancel()               { h.cancel() }
+func (h *fakeAgentMessagesHandle) Done() <-chan struct{} { return h.done }
 
 func (t *fakeAgentMessagesTransport) push(seq int64) {
 	t.mu.Lock()

@@ -16,8 +16,8 @@ test.describe('Turn End Sound Preferences', () => {
     await page.goto('/')
     await openPreferencesDialog(page)
     await expect(page.getByRole('heading', { name: 'Turn End Sound' }).first()).toBeVisible()
-    await expect(page.getByRole('button', { name: 'None' }).first()).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Ding Dong' }).first()).toBeVisible()
+    await expect(page.getByRole('radio', { name: 'None' }).first()).toBeVisible()
+    await expect(page.getByRole('radio', { name: 'Ding Dong' }).first()).toBeVisible()
   })
 
   test('should persist browser-level turn end sound in localStorage', async ({ page, leapmuxServer }) => {
@@ -27,17 +27,17 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(page.getByRole('heading', { name: 'Turn End Sound' }).first()).toBeVisible()
 
     // Click "Ding Dong"
-    await page.getByRole('button', { name: 'Ding Dong' }).first().click()
+    await page.getByRole('radio', { name: 'Ding Dong' }).first().click()
     await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBe('ding-dong')
 
     // Click "None"
-    await page.getByRole('button', { name: 'None' }).first().click()
+    await page.getByRole('radio', { name: 'None' }).first().click()
     await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBe('none')
 
     // Click "Use account default" within the Turn End Sound section.
     // In the browser tab, "Use account default" buttons appear for: Theme, Terminal Theme,
     // Diff View, Turn End Sound. The Turn End Sound one is the 4th (0-indexed: 3).
-    await page.getByRole('button', { name: 'Use account default' }).nth(3).click()
+    await page.getByRole('radio', { name: 'Use account default' }).nth(3).click()
     await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBeNull()
   })
 
@@ -47,8 +47,8 @@ test.describe('Turn End Sound Preferences', () => {
     await openPreferencesDialog(page)
     await page.getByRole('tab', { name: 'Account Defaults' }).click()
     await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'None' }).first()).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Ding Dong' }).first()).toBeVisible()
+    await expect(page.getByRole('radio', { name: 'None' }).first()).toBeVisible()
+    await expect(page.getByRole('radio', { name: 'Ding Dong' }).first()).toBeVisible()
   })
 
   test('should persist account-level turn end sound via API', async ({ page, leapmuxServer }) => {
@@ -129,6 +129,7 @@ test.describe('Turn End Sound Preferences', () => {
 
     await sendMessage(page, TOOL_USING_PROMPT)
     await expectDoorbellCount(page, 1)
+    await waitForAgentIdle(page)
 
     // Open a second agent tab so we have somewhere to land after closing
     await openAgentViaUI(page)
@@ -153,8 +154,8 @@ test.describe('Turn End Sound Preferences', () => {
     await sendMessage(page, TOOL_USING_PROMPT)
     await expectDoorbellCount(page, 1)
 
-    // Opening a new agent tab restarts the WatchEvents stream, which replays
-    // the completed turn. The replay must not be mistaken for a live turn end.
+    // Opening a new agent tab revises the WatchEvents interest set (no stream
+    // restart). A catch-up replay must not be mistaken for a live turn end.
     await openAgentViaUI(page)
 
     await expectDoorbellQuiet(page, 1)
@@ -177,5 +178,24 @@ test.describe('Turn End Sound Preferences', () => {
     await expect(agentTabs.nth(1)).toHaveAttribute('aria-selected', 'true')
 
     await expectDoorbellQuiet(page, 1)
+  })
+
+  test('should play sound when a turn ends on a tab that is not visible', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await armTurnEndSound(page, 'ding-dong')
+    await waitForWorkspaceReady(page)
+
+    await openAgentViaUI(page)
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    await expect(agentTabs).toHaveCount(2)
+
+    await agentTabs.first().click()
+    await sendMessage(page, TOOL_USING_PROMPT)
+    // Hide the working agent before the turn ends — NOTIFY must still ring.
+    await agentTabs.nth(1).click()
+    await expect(agentTabs.nth(1)).toHaveAttribute('aria-selected', 'true')
+
+    await expectDoorbellCount(page, 1)
+    await expect(agentTabs.first().locator('[data-testid="tab-notification"]')).toBeVisible()
   })
 })

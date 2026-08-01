@@ -237,6 +237,7 @@ let cachedTauriDpi: Promise<typeof import('@tauri-apps/api/dpi')> | null = null
 let cachedTauriWindow: Promise<typeof import('@tauri-apps/api/window')> | null = null
 let cachedTauriClipboard: Promise<typeof import('@tauri-apps/plugin-clipboard-manager')> | null = null
 let cachedTauriOpener: Promise<typeof import('@tauri-apps/plugin-opener')> | null = null
+let cachedTauriNotification: Promise<typeof import('@tauri-apps/plugin-notification')> | null = null
 
 function loadTauriCore() {
   return (cachedTauriCore ??= import('@tauri-apps/api/core'))
@@ -260,6 +261,10 @@ function loadTauriClipboard() {
 
 function loadTauriOpener() {
   return (cachedTauriOpener ??= import('@tauri-apps/plugin-opener'))
+}
+
+function loadTauriNotification() {
+  return (cachedTauriNotification ??= import('@tauri-apps/plugin-notification'))
 }
 
 async function tauriInvoke<T>(
@@ -808,6 +813,23 @@ export const platformBridge = {
       return () => {}
     const { listen } = await loadTauriEvents()
     return listen(event, payload => callback(payload.payload))
+  },
+  async requestNotificationPermission(): Promise<boolean> {
+    if (!isTauriApp())
+      return false
+    const { isPermissionGranted, requestPermission } = await loadTauriNotification()
+    if (await isPermissionGranted())
+      return true
+    const result = await requestPermission()
+    return result === 'granted'
+  },
+  async showNotification(title: string, body: string, _tag?: string): Promise<void> {
+    if (!isTauriApp())
+      return
+    const { isPermissionGranted, sendNotification } = await loadTauriNotification()
+    if (!(await isPermissionGranted()))
+      throw new Error('notification permission denied')
+    sendNotification({ title, body })
   },
 }
 

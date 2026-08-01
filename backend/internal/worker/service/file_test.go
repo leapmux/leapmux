@@ -544,3 +544,6 @@ type budgetWriter struct {
 }
 
 func (w *budgetWriter) MaxPayloadBudget() int { return w.budget }
+func (*budgetWriter) BindStream(channel.StreamController) (func(), bool) {
+	return func() {}, false
+}

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/tunnel"
 )
 
@@ -275,7 +277,7 @@ func (c *Client) CallInner(ctx context.Context, targetWorkerID string, userID us
 // CLI simply stops receiving events and never learns why. Pooling is a
 // connection-reuse optimisation; it must not make two independent
 // subscribers share an identity.
-func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
+func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
 	ch, err := c.dedicatedChannel(ctx, targetWorkerID, DelegationScope{UserID: userID})
 	if err != nil {
 		return err
@@ -336,6 +338,12 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 	defer func() {
 		closed.Store(true)
 	}()
+	// Expose a controller so the local-IPC router can forward UpdateStream /
+	// CancelStream onto this dedicated channel's correlation id. Without it,
+	// a sibling-worker WatchEvents subscription can never revise its interest.
+	if bindCtrl != nil {
+		bindCtrl(newCrossWorkerStreamCtrl(ch, reqID))
+	}
 	select {
 	case <-done:
 		return streamErr
@@ -355,6 +363,146 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 	case <-ch.Context().Done():
 		return ch.Context().Err()
 	}
+}
+
+// crossWorkerStreamCtrl forwards client→worker stream frames onto a dedicated
+// cross-worker E2EE channel. Implements channel.StreamController so the
+// remoteipc Router's UpdateStream / CancelStream paths reach the remote
+// watchSession the same way a local BindStream does.
+//
+// Updates are enqueued to a dedicated goroutine so OnClientFrame never blocks
+// the StreamController hot path (StreamController contract).
+//
+// The loop goroutine is the SINGLE OWNER of the updates channel: it is the only
+// thing that ranges over it, and OnCancel is the only thing that closes it. A
+// send on a closed channel panics regardless of select/default, so senders
+// (OnClientFrame) never send on the channel directly — they post the payload
+// into a mutex-guarded pending slot that the loop drains. This makes the
+// send-vs-close race mechanically impossible rather than guarded by a comment.
+// OnCancel sets a closed flag under mu so a concurrent OnClientFrame observes
+// retirement and drops without posting; the loop exits once it drains the slot
+// and observes the close.
+type crossWorkerStreamCtrl struct {
+	ch    *tunnel.Channel
+	reqID uint64
+
+	mu      sync.Mutex
+	pending []byte // newest pending revision; nil when nothing parked
+	wake    chan struct{}
+	closed  bool
+
+	doneOnce sync.Once
+	done     chan struct{} // closed when the loop has exited
+}
+
+func newCrossWorkerStreamCtrl(ch *tunnel.Channel, reqID uint64) *crossWorkerStreamCtrl {
+	c := &crossWorkerStreamCtrl{
+		ch:    ch,
+		reqID: reqID,
+		wake:  make(chan struct{}, 1),
+		done:  make(chan struct{}),
+	}
+	go c.loop()
+	return c
+}
+
+func (c *crossWorkerStreamCtrl) loop() {
+	defer close(c.done)
+	chDone := c.ch.Context().Done()
+	for {
+		// Drain the pending slot under the lock so a post that races the drain
+		// is observed on the next wake rather than lost.
+		c.mu.Lock()
+		payload := c.pending
+		c.pending = nil
+		closed := c.closed
+		c.mu.Unlock()
+
+		if payload != nil {
+			if err := c.ch.SendStreamRequest(c.ch.Context(), c.reqID, payload, false); err != nil {
+				slog.Warn("cross-worker stream update failed",
+					"correlation_id", c.reqID, "error", err)
+			}
+		}
+
+		if closed {
+			// Drain anything posted between the snapshot above and the closed
+			// flag being observed — a final revision is still useful, and the
+			// cancel frame that follows supersedes it anyway.
+			c.mu.Lock()
+			payload = c.pending
+			c.pending = nil
+			c.mu.Unlock()
+			if payload != nil {
+				if err := c.ch.SendStreamRequest(c.ch.Context(), c.reqID, payload, false); err != nil {
+					// The channel may already be tearing down on the cancel path;
+					// a send error here is expected and not actionable.
+					slog.Debug("cross-worker stream final update dropped",
+						"correlation_id", c.reqID, "error", err)
+				}
+			}
+			return
+		}
+
+		select {
+		case <-c.wake:
+		case <-chDone:
+			// Channel gone; retire quietly. OnCancel (if it runs later) will
+			// see c.closed and skip the CancelStream send below.
+			c.mu.Lock()
+			c.closed = true
+			c.mu.Unlock()
+			return
+		}
+	}
+}
+
+func (c *crossWorkerStreamCtrl) OnClientFrame(payload []byte) {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.pending = payload
+	c.mu.Unlock()
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (c *crossWorkerStreamCtrl) OnCancel() {
+	c.doneOnce.Do(func() {
+		// Mark closed so OnClientFrame stops posting and the loop exits after
+		// draining its final pending slot. The loop owns wake; we never close
+		// it, avoiding the send-on-closed-channel hazard entirely.
+		c.mu.Lock()
+		alreadyClosed := c.closed
+		c.closed = true
+		c.mu.Unlock()
+		// Wake the loop so it observes the close promptly.
+		select {
+		case c.wake <- struct{}{}:
+		default:
+		}
+		// Wait for the loop to finish sending any in-flight revision before
+		// issuing the cancel; this keeps the ordering (updates-then-cancel)
+		// the remote watchSession expects. Skip the cancel if the channel
+		// context is already gone — the remote retires via channel teardown,
+		// and a send on a torn-down channel only logs noise.
+		<-c.done
+		if alreadyClosed {
+			return
+		}
+		ctx := c.ch.Context()
+		if ctx.Err() != nil {
+			return
+		}
+		if err := c.ch.CancelStream(ctx, c.reqID); err != nil {
+			slog.Debug("cross-worker stream cancel failed",
+				"correlation_id", c.reqID, "error", err)
+		}
+	})
 }
 
 // Close terminates all pooled channels.

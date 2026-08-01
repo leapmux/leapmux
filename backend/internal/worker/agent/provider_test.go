@@ -59,6 +59,39 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 		"item/started for non-contextCompaction items must NOT be classified as a notification — those go through PersistMessage as AGENT spans")
 }
 
+func TestProviderFor_TurnEndToolUses(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		provider leapmuxv1.AgentProvider
+		content  string
+		wantOK   bool
+		want     int32
+	}{
+		{"claude present", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{"type":"result","num_tool_uses":3}`, true, 3},
+		{"claude absent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{"type":"result"}`, false, 0},
+		{"claude malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{`, false, 0},
+		{"codex present", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"num_tool_uses":2}`, true, 2},
+		{"codex absent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"type":"result"}`, false, 0},
+		{"codex malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{`, false, 0},
+		{"pi present", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{"num_tool_uses":0}`, true, 0},
+		{"pi absent", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{}`, false, 0},
+		{"pi malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{`, false, 0},
+		{"acp present", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, `{"num_tool_uses":1}`, true, 1},
+		{"acp absent", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, `{"type":"result"}`, false, 0},
+		{"acp malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, `{`, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			count, ok := ProviderFor(tc.provider).TurnEndToolUses([]byte(tc.content))
+			assert.Equal(t, tc.wantOK, ok)
+			if ok {
+				assert.Equal(t, tc.want, count)
+			}
+		})
+	}
+}
+
 func TestProviderFor_ClaudeClassification(t *testing.T) {
 	t.Parallel()
 

@@ -35,11 +35,12 @@ import (
 // background goroutine may still be writing should call streamsSnapshot
 // instead of accessing the slice directly.
 type testResponseWriter struct {
-	channelID string
-	mu        sync.Mutex
-	responses []*leapmuxv1.InnerRpcResponse
-	errors    []testError
-	streams   []*leapmuxv1.InnerStreamMessage
+	channelID  string
+	mu         sync.Mutex
+	responses  []*leapmuxv1.InnerRpcResponse
+	errors     []testError
+	streams    []*leapmuxv1.InnerStreamMessage
+	streamCtrl channel.StreamController
 }
 
 type testError struct {
@@ -70,6 +71,32 @@ func (w *testResponseWriter) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 
 func (w *testResponseWriter) ChannelID() string   { return w.channelID }
 func (*testResponseWriter) MaxPayloadBudget() int { return 0 }
+func (w *testResponseWriter) BindStream(ctrl channel.StreamController) (func(), bool) {
+	w.mu.Lock()
+	w.streamCtrl = ctrl
+	w.mu.Unlock()
+	return func() {
+		w.mu.Lock()
+		w.streamCtrl = nil
+		w.mu.Unlock()
+	}, true
+}
+
+// deliverStreamRequest invokes the bound StreamController as if an
+// InnerStreamRequest arrived on the wire.
+func (w *testResponseWriter) deliverStreamRequest(payload []byte, cancel bool) {
+	w.mu.Lock()
+	ctrl := w.streamCtrl
+	w.mu.Unlock()
+	if ctrl == nil {
+		return
+	}
+	if cancel {
+		ctrl.OnCancel()
+		return
+	}
+	ctrl.OnClientFrame(payload)
+}
 
 // testChannelID is the channel id setupTestService's handshake
 // registers; every fresh testResponseWriter in this package shares it so a
@@ -209,7 +236,7 @@ func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id strin
 	require.NoError(t, svc.Terminals.StartTerminal(ctx, terminal.Options{
 		ID: id, Shell: testutil.TestShell(), WorkingDir: workingDir,
 		Cols: 80, Rows: 24,
-	}, func([]byte, int64) {}, nil))
+	}, func([]byte, int64, []terminal.Signal) {}, nil))
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, id)
 
 	require.NoError(t, svc.Queries.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -469,10 +496,13 @@ func TestWatchEvents_ClosedAgent_NotWatched(t *testing.T) {
 		},
 	}, w)
 
-	// Closed agent should produce a single stream error (NOT_FOUND).
-	require.Len(t, w.streams, 1, "closed agent should produce a stream error")
-	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
-	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
+	ack := waitWatchUpdateAck(t, w)
+	require.NotNil(t, ack)
+	require.Len(t, ack.GetRejectedAgents(), 1)
+	assert.Equal(t, "agent-closed", ack.GetRejectedAgents()[0].GetEntityId())
+	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND,
+		ack.GetRejectedAgents()[0].GetReason())
+	assert.False(t, streamEndedWithError(w), "partial rejection must not end the stream")
 
 	// Verify no watcher was registered.
 	agentWatchers := svc.Watchers.agents.count("agent-closed")
@@ -500,10 +530,13 @@ func TestWatchEvents_ClosedTerminal_NotWatched(t *testing.T) {
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-closed"}},
 	}, w)
 
-	// Closed terminal should produce a single stream error (NOT_FOUND).
-	require.Len(t, w.streams, 1, "closed terminal should produce a stream error")
-	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
-	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
+	ack := waitWatchUpdateAck(t, w)
+	require.NotNil(t, ack)
+	require.Len(t, ack.GetRejectedTerminals(), 1)
+	assert.Equal(t, "term-closed", ack.GetRejectedTerminals()[0].GetEntityId())
+	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND,
+		ack.GetRejectedTerminals()[0].GetReason())
+	assert.False(t, streamEndedWithError(w), "partial rejection must not end the stream")
 
 	// Verify no watcher was registered.
 	termWatchers := svc.Watchers.terminals.count("term-closed")
@@ -525,10 +558,12 @@ func TestWatchEvents_UnknownAgent_NotWatched(t *testing.T) {
 		},
 	}, w)
 
-	// All requested entities rejected => a single NOT_FOUND stream error.
-	require.Len(t, w.streams, 1, "an unknown agent should produce a stream error")
-	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
-	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
+	ack := waitWatchUpdateAck(t, w)
+	require.NotNil(t, ack)
+	require.Len(t, ack.GetRejectedAgents(), 1)
+	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND,
+		ack.GetRejectedAgents()[0].GetReason())
+	assert.False(t, streamEndedWithError(w))
 
 	assert.Equal(t, 0, svc.Watchers.agents.count("agent-unknown"),
 		"no watcher should be registered for an agent this worker does not hold")
@@ -544,9 +579,12 @@ func TestWatchEvents_UnknownTerminal_NotWatched(t *testing.T) {
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-unknown"}},
 	}, w)
 
-	require.Len(t, w.streams, 1, "an unknown terminal should produce a stream error")
-	assert.True(t, w.streams[0].GetIsError(), "stream message should be an error")
-	assert.Equal(t, int32(5), w.streams[0].GetErrorCode(), "error code should be NOT_FOUND")
+	ack := waitWatchUpdateAck(t, w)
+	require.NotNil(t, ack)
+	require.Len(t, ack.GetRejectedTerminals(), 1)
+	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_NOT_FOUND,
+		ack.GetRejectedTerminals()[0].GetReason())
+	assert.False(t, streamEndedWithError(w))
 
 	assert.Equal(t, 0, svc.Watchers.terminals.count("term-unknown"),
 		"no watcher should be registered for a terminal this worker does not hold")
@@ -570,23 +608,29 @@ func TestShutdown_BroadcastsDisconnectNoticeToLiveWatchers(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: terminalID,
+			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
 	}, wWatch)
+	waitWatchUpdateAck(t, wWatch)
+	waitTerminalWatchCount(t, svc, terminalID, 1)
 
 	svc.Shutdown()
 
-	var got []string
-	for _, s := range wWatch.streamsSnapshot() {
-		var resp leapmuxv1.WatchEventsResponse
-		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
-			continue
+	require.Eventually(t, func() bool {
+		var got []string
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			if data := resp.GetTerminalEvent().GetData(); data != nil {
+				got = append(got, string(data.GetData()))
+			}
 		}
-		if data := resp.GetTerminalEvent().GetData(); data != nil {
-			got = append(got, string(data.GetData()))
-		}
-	}
-	assert.Contains(t, strings.Join(got, ""),
-		"[Worker disconnected - Press Enter to restart]",
+		return strings.Contains(strings.Join(got, ""), "[Worker disconnected - Press Enter to restart]")
+	}, 2*time.Second, 10*time.Millisecond,
 		"Shutdown must broadcast the disconnect notice to live watchers, not only persist it")
 }
 
@@ -607,8 +651,13 @@ func TestShutdown_BroadcastsDisconnectNoticeBeforeDraining(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: terminalID,
+			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
 	}, wWatch)
+	waitWatchUpdateAck(t, wWatch)
+	waitTerminalWatchCount(t, svc, terminalID, 1)
 
 	// An agent startup that never finishes on its own: this is what Shutdown's
 	// AgentStartup.WaitForInFlight parks on.
@@ -677,7 +726,7 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 		ShellStartDir: "",
 		Cols:          80,
 		Rows:          24,
-	}, func([]byte, int64) {}, nil))
+	}, func([]byte, int64, []terminal.Signal) {}, nil))
 
 	require.True(t, svc.Terminals.UpdateTitle("term-1", "user@host: ~/dir"))
 
@@ -835,23 +884,23 @@ func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}, {AgentId: "agent-2"}},
 	}, w)
-	require.Equal(t, 1, svc.Watchers.agents.count("agent-1"), "precondition: agent-1 watched")
-	require.Equal(t, 1, svc.Watchers.agents.count("agent-2"), "precondition: agent-2 watched")
+	waitAgentWatchCount(t, svc, "agent-1", 1)
+	waitAgentWatchCount(t, svc, "agent-2", 1)
 
-	// The agent-2 tab closed; the client re-issues with only agent-1.
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+	// The agent-2 tab closed; the client revises with only agent-1.
+	payload, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
-	}, w)
+	})
+	require.NoError(t, err)
+	w.deliverStreamRequest(payload, false)
 
-	assert.Equal(t, 0, svc.Watchers.agents.count("agent-2"),
-		"the agent the new request omits must be unsubscribed")
-	assert.Equal(t, 1, svc.Watchers.agents.count("agent-1"),
-		"the agent the new request still names stays watched")
+	require.Eventually(t, func() bool {
+		return svc.Watchers.agents.count("agent-2") == 0 && svc.Watchers.agents.count("agent-1") == 1
+	}, time.Second, 10*time.Millisecond)
 }
 
-// TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions pins
-// the guard on replace-semantics' sharp edge, and the half of it that a
-// count assertion cannot see.
+// TestWatchEvents_TerminalLookupFailure_KeepsSubscriptions pins the guard
+// on replace-semantics' sharp edge for a LOOKUP_FAILED terminal half.
 //
 // The terminal lookup DEGRADES on error (it warns and carries on) rather
 // than returning like the agent one, so a failed query leaves every
@@ -860,11 +909,8 @@ func TestWatchEvents_NarrowedRequest_UnsubscribesTheOmittedAgent(t *testing.T) {
 // all -- turning a transient DB blip into a silently dead UI that only a
 // reconnect could fix.
 //
-// Keeping the set is necessary but not sufficient: the request arrived on
-// a NEW stream, so the surviving registrations must be re-pointed at it.
-// Left bound to the previous writer they address a correlation id the
-// client has already torn down -- SendStream still succeeds, so nothing
-// is retired, no error surfaces, and the terminal simply goes quiet.
+// Keeping the set is necessary but not sufficient: the surviving
+// registrations must stay bound to the same long-lived stream writer.
 func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testing.T) {
 	t.Parallel()
 
@@ -890,7 +936,7 @@ func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testi
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1"}},
 	}
 	dispatch(d, "WatchEvents", req, w)
-	require.Equal(t, 1, svc.Watchers.terminals.count("term-1"), "precondition: term-1 watched")
+	waitTerminalWatchCount(t, svc, "term-1", 1)
 
 	// Break ONLY the terminal lookup, so the agent half still verifies and
 	// the request does not fall into the everything-was-rejected branch --
@@ -903,27 +949,30 @@ func TestWatchEvents_TerminalLookupFailure_KeepsAndRebindsSubscriptions(t *testi
 	_, err := svc.DB.Exec("DROP TABLE terminals")
 	require.NoError(t, err)
 
-	// Re-issue on a SECOND writer, standing in for the fresh stream a
-	// resubscribe always arrives on.
-	resubscribed := newTestWriter()
-	dispatch(d, "WatchEvents", req, resubscribed)
+	// Re-issue on the SAME writer via a stream revision.
+	payload, err := proto.Marshal(req)
+	require.NoError(t, err)
+	w.deliverStreamRequest(payload, false)
 
 	assert.Equal(t, 1, svc.Watchers.terminals.count("term-1"),
 		"a failed lookup must not be read as 'watches no terminals'")
-	assert.Same(t, resubscribed, svc.Watchers.terminals.senderFor("term-1", testChannelID),
-		"the kept subscription must follow the stream that re-issued the request")
+	assert.Same(t, w, svc.Watchers.terminals.senderFor("term-1", testChannelID),
+		"the kept subscription must stay on the same stream")
+	ack := waitWatchUpdateAckWhere(t, w, func(a *leapmuxv1.WatchUpdateAck) bool {
+		return len(a.GetRejectedTerminals()) == 1
+	})
+	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+		ack.GetRejectedTerminals()[0].GetReason())
 }
 
 // TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry covers
-// the case rebinding cannot serve at all.
+// LOOKUP_FAILED when the channel holds no prior terminal registration.
 //
-// Rebinding preserves whatever this channel already holds -- but a page
-// refresh mints a NEW channel, which holds nothing. There is then no
-// registration to keep, no registration to create, and (because at least
-// one agent verified) no error either: the handler falls through the
-// success path and the client is told its subscription is live. Its
-// terminal panes stay blank for the channel's whole life, since a
-// healthy-looking stream never trips the retry.
+// A long-lived stream preserves whatever this channel already holds --
+// but a page refresh mints a NEW channel, which holds nothing. There is
+// then no registration to keep and none to create; the ack must list
+// LOOKUP_FAILED so the client retries rather than treating the stream as
+// successfully watching the terminal.
 func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.T) {
 	t.Parallel()
 
@@ -946,31 +995,27 @@ func TestWatchEvents_TerminalLookupFailure_TellsAFreshChannelToRetry(t *testing.
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1"}},
 	}, w)
 
+	waitAgentWatchCount(t, svc, "agent-1", 1)
 	assert.Equal(t, 0, svc.Watchers.terminals.count("term-1"),
-		"precondition: a rebind on a fresh channel registers nothing")
+		"precondition: a fresh channel registers nothing for failed terminals")
 
-	var sawError bool
-	for _, m := range w.streamsSnapshot() {
-		if m.GetIsError() {
-			sawError = true
-			assert.Equal(t, int32(codes.Unavailable), m.GetErrorCode(),
-				"a failed lookup is a worker-side fault, so the client should retry")
-		}
-	}
-	assert.True(t, sawError,
-		"a request whose terminals were never registered must not report success")
+	ack := waitWatchUpdateAckWhere(t, w, func(a *leapmuxv1.WatchUpdateAck) bool {
+		return len(a.GetRejectedTerminals()) == 1
+	})
+	require.NotNil(t, ack)
+	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+		ack.GetRejectedTerminals()[0].GetReason())
+	assert.False(t, streamEndedWithError(w),
+		"a failed terminal lookup must not kill the stream")
 }
 
 // TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError pins the only
-// way a client can retire its subscriptions while keeping the channel.
+// way a client can retire its subscriptions while keeping the stream.
 //
-// Closing a stream is client-local, so nothing reaches the worker; the
-// frontend therefore sends an empty WatchEvents when its last tab on a
-// worker closes. That has to be treated as a legitimate statement of
-// interest -- unsubscribe everything, say nothing -- and NOT as the
-// "you named entities and all of them were rejected" case, which
-// answers with a NotFound stream error the client would retry on
-// forever.
+// A cancel frame ends the stream; an empty WatchEvents revision keeps the
+// stream open and clears interest. That has to be treated as a legitimate
+// statement -- unsubscribe everything, ack with no rejections -- and NOT
+// as the "you named entities and all of them were rejected" case.
 func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
 	t.Parallel()
 
@@ -995,22 +1040,28 @@ func TestWatchEvents_EmptyRequestUnsubscribesWithoutAnError(t *testing.T) {
 		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1"}},
 		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-1"}},
 	}, w)
-	require.Equal(t, 1, svc.Watchers.agents.count("agent-1"), "precondition: agent-1 watched")
-	require.Equal(t, 1, svc.Watchers.terminals.count("term-1"), "precondition: term-1 watched")
+	waitAgentWatchCount(t, svc, "agent-1", 1)
+	waitTerminalWatchCount(t, svc, "term-1", 1)
 
 	unsubscribe := newTestWriter()
-	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{}, unsubscribe)
+	payload, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{})
+	require.NoError(t, err)
+	w.deliverStreamRequest(payload, false)
 
-	assert.False(t, svc.Watchers.agents.hasEntity("agent-1"),
-		"an empty request must retire the agent subscription")
-	assert.False(t, svc.Watchers.terminals.hasEntity("term-1"),
-		"an empty request must retire the terminal subscription")
+	require.Eventually(t, func() bool {
+		return !svc.Watchers.agents.hasEntity("agent-1") && !svc.Watchers.terminals.hasEntity("term-1")
+	}, time.Second, 10*time.Millisecond)
 
-	for _, s := range unsubscribe.streamsSnapshot() {
-		assert.False(t, s.GetIsError(),
-			"unsubscribing is a legitimate request, not a NotFound the client should retry")
-	}
-	assert.Empty(t, unsubscribe.errors, "and not an RPC error either")
+	ack := waitWatchUpdateAckWhere(t, w, func(a *leapmuxv1.WatchUpdateAck) bool {
+		return len(a.GetRejectedAgents()) == 0 && len(a.GetRejectedTerminals()) == 0 &&
+			!svc.Watchers.agents.hasEntity("agent-1")
+	})
+	require.NotNil(t, ack)
+	assert.Empty(t, ack.GetRejectedAgents())
+	assert.Empty(t, ack.GetRejectedTerminals())
+	assert.False(t, streamEndedWithError(w),
+		"unsubscribing is a legitimate request, not an error the client should retry")
+	_ = unsubscribe
 }
 
 // TestShutdown_LiveOutputBetweenPassesDoesNotDoubleTheNotice pins the

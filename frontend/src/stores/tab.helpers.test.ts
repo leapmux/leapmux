@@ -3,10 +3,10 @@ import type { AgentGitStatus, AgentInfo, AvailableOptionGroup } from '~/generate
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { AgentGitStatusSchema, AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
-import { TerminalInfoSchema, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, isSameRepo, isTabReadyForGitStatus, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue, tabDisplayLabel, terminalMetadata, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, isSameRepo, isTabReadyForGitStatus, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue, tabDisplayLabel, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -30,6 +30,20 @@ describe('tabDisplayLabel', () => {
     expect(tabDisplayLabel(file({ title: 'Renamed', filePath: '/repo/notes.txt' }))).toBe('Renamed')
     expect(tabDisplayLabel(agent({ title: 'My Agent' }))).toBe('My Agent')
     expect(tabDisplayLabel(terminal({ title: 'zsh' }))).toBe('zsh')
+  })
+
+  it('falls back to ptyTitle when the terminal has no title', () => {
+    expect(tabDisplayLabel(terminal({ title: '', ptyTitle: 'shell' }))).toBe('shell')
+  })
+
+  it('prefers an explicit title over ptyTitle (user rename sticks across OSC)', () => {
+    expect(tabDisplayLabel(terminal({ title: 'My Shell', ptyTitle: 'live' }))).toBe('My Shell')
+  })
+
+  it('tabTooltipText prefers ptyTitle for terminals', () => {
+    expect(tabTooltipText(terminal({ title: 'My Shell', ptyTitle: 'live' }))).toBe('live')
+    expect(tabTooltipText(terminal({ title: 'My Shell', ptyTitle: '' }))).toBe('My Shell')
+    expect(tabTooltipText(agent({ title: 'Agent A' }))).toBe('Agent A')
   })
 
   it('treats an empty-string title as no title (falls through to fallbacks)', () => {
@@ -759,5 +773,25 @@ describe('openedTerminalMetadata', () => {
     expect('shellStartDir' in openedTerminalMetadata({ title: 't', workingDir: '/w' })).toBe(false)
     expect(openedTerminalMetadata({ title: 't', workingDir: '/w', shellStartDir: '' }).shellStartDir).toBe('/w')
     expect(openedTerminalMetadata({ title: 't', workingDir: '/w', shellStartDir: '/s' }).shellStartDir).toBe('/s')
+  })
+})
+
+describe('terminalProgressBarProps', () => {
+  it('clamps percent into 0..100 and formats the CSS var', () => {
+    expect(terminalProgressBarProps(terminal({ progressPercent: 150, progressState: TerminalProgress_State.NORMAL }))).toEqual({
+      style: { '--progress-percent': '100%' },
+      title: '100%',
+    })
+    expect(terminalProgressBarProps(terminal({ progressPercent: -5, progressState: TerminalProgress_State.NORMAL }))).toEqual({
+      style: { '--progress-percent': '0%' },
+      title: '0%',
+    })
+  })
+
+  it('uses an indeterminate title when progress is indeterminate', () => {
+    expect(terminalProgressBarProps(terminal({
+      progressPercent: 40,
+      progressState: TerminalProgress_State.INDETERMINATE,
+    })).title).toBe('In progress')
   })
 })

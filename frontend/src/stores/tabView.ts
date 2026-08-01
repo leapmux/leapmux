@@ -347,6 +347,9 @@ export function createTabView(opts: CreateTabViewOpts) {
           contentReady: m.contentReady,
           startupError: m.startupError,
           startupMessage: m.startupMessage,
+          ptyTitle: m.ptyTitle,
+          progressState: m.progressState,
+          progressPercent: m.progressPercent,
         } satisfies TerminalTab
       default:
         return {

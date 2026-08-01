@@ -3,43 +3,22 @@ package streamevents
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// Transport abstracts "stream a WatchEvents subscription against
-// some backend." Two production wirings exist:
-//
-//   - hub-bound: open an E2EE channel via `*remote.Client.OpenE2EEChannel`,
-//     then `SendRPCNoWait` with atomically registered response and stream handlers.
-//   - local-IPC: call `RemoteIPCService.StreamInner` with method
-//     `worker.WatchEvents` over the per-agent socket.
-//
-// Both flows decode the same `WatchEventsResponse` payload off the
-// wire. By writing the cursor + reconnect logic against this
-// interface, callers (`agent messages --follow` and `events --include
-// agent,terminal`) share one implementation regardless of mode.
-type Transport interface {
-	// OpenWatchEvents starts a WatchEvents subscription with the
-	// given request. onFrame is called once per delivered
-	// WatchEventsResponse. The returned cancel function stops the
-	// subscription and returns when its goroutines have drained.
-	// done is closed when the subscription terminates (either via
-	// cancel or because the underlying transport ended).
-	OpenWatchEvents(ctx context.Context, req *leapmuxv1.WatchEventsRequest,
-		onFrame func(*leapmuxv1.WatchEventsResponse)) (cancel context.CancelFunc, done <-chan struct{}, err error)
-}
-
 // Subscription owns the cursor map plus one in-flight Transport
-// subscription. Callers can `Update(req)` to swap the entry list
-// (cancels + re-opens with cursors preserved); `Cancel()` to stop;
-// `Done()` to wait for the goroutine to drain.
+// subscription. Callers can `Update(req)` to revise the entry list on
+// the same stream; `Cancel()` to stop; `Done()` to wait for the
+// goroutine to drain.
 //
 // The cursor state lives outside the Transport so a re-subscribe (or
 // a fresh Subscription from a previous one) can resume cleanly. Lifecycle
 // operations are single-flight: Update and Cancel serialize the whole
-// cancel/wait/open/store sequence, not just field reads/writes, so concurrent
+// open/update/store sequence, not just field reads/writes, so concurrent
 // callers cannot orphan a newly-opened stream.
 type Subscription struct {
 	transport Transport
@@ -63,9 +42,43 @@ type Subscription struct {
 
 	lifecycleMu sync.Mutex
 	mu          sync.Mutex
-	cancel      context.CancelFunc
-	done        <-chan struct{}
+	handle      Handle
+	// lastReq is the most recent interest statement; LOOKUP_FAILED acks
+	// re-issue it after a short delay so CLI follow matches the UI retry.
+	lastReq *leapmuxv1.WatchEventsRequest
+	// retryCtx / retryCancel gate LOOKUP_FAILED retries. Cancel retires
+	// retryCancel so an in-flight retry bails before re-opening a stream the
+	// caller tore down — without it the retry (which uses context.Background)
+	// could orphan a worker-side subscription for the process lifetime, and a
+	// fresh open would re-arm the gate a prior Cancel had set. Re-opened on a
+	// clean fresh open so a transient miss after a reconnect gets a fresh
+	// budget. Guarded by lifecycleMu.
+	retryCtx    context.Context
+	retryCancel context.CancelFunc
+	// lookupAttempts bounds LOOKUP_FAILED retries per stream open. A new open
+	// (handle == nil → OpenWatchEvents) resets it so a transient miss after a
+	// clean reconnect gets a fresh budget.
+	lookupAttempts int
 }
+
+// LOOKUP_FAILED retry bounds. The first retry lands quickly (a transient
+// List*ByIDs miss often recovers in milliseconds); later ones back off. The
+// cap stops a flapping worker from spawning an unbounded retry ladder (each
+// retry produces another LOOKUP_FAILED ack that would spawn another goroutine).
+//
+// This is a one-off fixed-delay table; the frontend's equivalent
+// (useWatchEventsStreams → createExponentialBackoff) is a jittered exponential.
+// Sharing one backoff primitive across both is tracked in
+// https://github.com/leapmux/leapmux/issues/349.
+var lookupRetryDelays = [...]time.Duration{
+	200 * time.Millisecond,
+	500 * time.Millisecond,
+	time.Second,
+	2 * time.Second,
+	5 * time.Second,
+}
+
+const lookupRetryMax = len(lookupRetryDelays)
 
 // NewSubscription wires the transport and cursors. Callbacks fire
 // before the cursor map updates, so consumers see the raw event
@@ -76,6 +89,7 @@ func NewSubscription(t Transport, agents *AgentCursor, terminals *TerminalCursor
 	onTerminal func(*leapmuxv1.TerminalEvent),
 	onCursorReset func(terminalID string),
 ) *Subscription {
+	retryCtx, retryCancel := context.WithCancel(context.Background())
 	return &Subscription{
 		transport:     t,
 		agents:        agents,
@@ -83,46 +97,69 @@ func NewSubscription(t Transport, agents *AgentCursor, terminals *TerminalCursor
 		onAgent:       onAgent,
 		onTerminal:    onTerminal,
 		onCursorReset: onCursorReset,
+		retryCtx:      retryCtx,
+		retryCancel:   retryCancel,
 	}
 }
 
-// Update opens (or re-opens, if there's a live subscription) a
-// WatchEvents stream with `req` as the entry list. Existing cursors
-// are NOT inspected here — callers should build req from
-// `cursor.Snapshot(restrict)` so cursors are preserved.
+// Update opens (if needed) or revises the WatchEvents stream with `req`
+// as the entry list. Existing cursors are NOT inspected here — callers
+// should build req from `cursor.Snapshot(restrict)` so cursors are preserved.
 //
-// Update blocks until the previous subscription's goroutine has
-// drained. This is safe to call from a snapshot-reconciliation
-// goroutine that may be re-issuing every few hundred milliseconds.
+// A Handle whose Done channel has already closed is treated as dead: it is
+// dropped and a fresh stream is opened. Without that, reconnect loops that
+// wait on Done then call Update would revise a retired correlation id forever.
 func (s *Subscription) Update(ctx context.Context, req *leapmuxv1.WatchEventsRequest) error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
 	s.mu.Lock()
-	prevDone := s.done
-	prevCancel := s.cancel
+	handle := s.handle
 	s.mu.Unlock()
-	if prevCancel != nil {
-		prevCancel()
-		<-prevDone
+
+	if handle != nil {
+		select {
+		case <-handle.Done():
+			s.mu.Lock()
+			if s.handle == handle {
+				s.handle = nil
+			}
+			s.mu.Unlock()
+			handle = nil
+		default:
+		}
 	}
 
-	cancel, done, err := s.transport.OpenWatchEvents(ctx, req, s.dispatch)
-	if err != nil {
-		// The previous subscription was already cancelled and drained above, and
-		// the re-open failed, so there is no live subscription. Clear the stale
-		// cancel/done (they still point at the torn-down previous stream) so Done()
-		// reports "no subscription" (a closed channel) and a later Cancel() doesn't
-		// invoke a cancel func for an already-dead stream.
+	if handle == nil {
+		h, err := s.transport.OpenWatchEvents(ctx, req, s.dispatch)
+		if err != nil {
+			return fmt.Errorf("open watch events: %w", err)
+		}
+		// A fresh open is a clean slate for the LOOKUP_FAILED retry budget and
+		// re-arms the retry gate a prior Cancel retired. The gate is recreated
+		// (not un-cancelled) so a retry that lost the race with a Cancel-during-
+		// open cannot revive it via this path; only an explicit fresh open from
+		// the caller earns a new budget.
+		retryCtx, retryCancel := context.WithCancel(context.Background())
 		s.mu.Lock()
-		s.cancel = nil
-		s.done = nil
+		prevRetryCancel := s.retryCancel
+		s.retryCtx = retryCtx
+		s.retryCancel = retryCancel
+		s.handle = h
+		s.lastReq = req
+		s.lookupAttempts = 0
 		s.mu.Unlock()
-		return fmt.Errorf("open watch events: %w", err)
+		// Retire the previous gate after publishing the new one so a retry
+		// snapshotting under s.mu never observes a cancelled-but-not-replaced
+		// ctx; the new ctx is the live one.
+		prevRetryCancel()
+		return nil
+	}
+	if err := handle.Update(req); err != nil {
+		return fmt.Errorf("update watch events: %w", err)
 	}
 	s.mu.Lock()
-	s.cancel = cancel
-	s.done = done
+	s.lastReq = req
 	s.mu.Unlock()
 	return nil
 }
@@ -133,13 +170,19 @@ func (s *Subscription) Cancel() {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 
+	// Retire the retry gate so in-flight LOOKUP_FAILED retry goroutines bail
+	// (their timer selects on retryCtx) before they re-open a stream on
+	// context.Background — without this, a retry that wakes after Cancel
+	// orphans a worker-side subscription for the process lifetime.
 	s.mu.Lock()
-	cancel, done := s.cancel, s.done
-	s.cancel, s.done = nil, nil
+	retryCancel := s.retryCancel
+	handle := s.handle
+	s.handle = nil
 	s.mu.Unlock()
-	if cancel != nil {
-		cancel()
-		<-done
+	retryCancel()
+	if handle != nil {
+		handle.Cancel()
+		<-handle.Done()
 	}
 }
 
@@ -150,12 +193,12 @@ func (s *Subscription) Cancel() {
 func (s *Subscription) Done() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.done == nil {
+	if s.handle == nil {
 		closed := make(chan struct{})
 		close(closed)
 		return closed
 	}
-	return s.done
+	return s.handle.Done()
 }
 
 // dispatch is the Transport-facing frame callback. It runs cursor
@@ -167,64 +210,114 @@ func (s *Subscription) dispatch(resp *leapmuxv1.WatchEventsResponse) {
 		return
 	}
 	switch ev := resp.GetEvent().(type) {
+	case *leapmuxv1.WatchEventsResponse_UpdateAck:
+		s.dispatchUpdateAck(ev.UpdateAck)
 	case *leapmuxv1.WatchEventsResponse_AgentEvent:
-		ae := ev.AgentEvent
-		if ae == nil {
-			return
-		}
-		// A WatchEvents subscription registers its watcher BEFORE replaying
-		// history, so a message created in that window is delivered twice -- once
-		// live, once in the replay. The cursor is the high-water mark of seqs
-		// already forwarded, so a REPLAYED frame at or below it is that duplicate:
-		// advance the cursor (a monotonic no-op) but don't forward it again. The
-		// cursor advances BEFORE the callback so a callback that crashes doesn't leave
-		// the cursor stale on retry.
-		//
-		// A plain `seq <= cursor` drop is correct because message seqs are MONOTONIC:
-		// a deleted tail seq is never reused (the worker allocates from a per-agent
-		// high-water, see message_seq_hwm), so a LIVE frame for a new message ALWAYS
-		// carries seq > the highest seq forwarded, and the only frame that can land at
-		// seq <= cursor is the replay copy of a message already forwarded live. That
-		// makes the overlap dedup ORDER-INDEPENDENT: the register-before-replay message
-		// arrives once live and once replayed, and whichever lands first is forwarded
-		// (its seq > cursor then) while the second is dropped (seq <= cursor) -- no
-		// reliance on the live copy winning the race, and no risk of swallowing a
-		// (now-impossible) reused-seq live frame.
-		//
-		// The read-and-advance is ONE atomic Cursor.Advance, not a separate Get +
-		// Update: a reconnect (Update) lets a late frame from the torn-down old stream
-		// run dispatch concurrently with the new stream's replay of the SAME seq, and a
-		// non-atomic check would let both read the stale cursor, both see "not a
-		// duplicate," and forward the message twice. Advance forwards for exactly the
-		// one caller that strictly advances the cursor.
-		//
-		// Only PERSISTED messages (seq >= 0) participate. Ephemeral frames carry a
-		// negative sentinel seq (agent_session_info uses -1: live thinking-token /
-		// usage / rate-limit updates that are never replayed and have no place in the
-		// cursor); forward them unconditionally and leave the cursor untouched.
-		if msg := ae.GetAgentMessage(); msg != nil {
-			if seq := msg.GetSeq(); seq >= 0 {
-				if !s.agents.Advance(ae.GetAgentId(), seq) {
-					return
-				}
-			}
-		}
-		if s.onAgent != nil {
-			s.onAgent(ae)
-		}
+		s.dispatchAgentEvent(ev.AgentEvent)
 	case *leapmuxv1.WatchEventsResponse_TerminalEvent:
-		te := ev.TerminalEvent
-		if te == nil {
+		s.dispatchTerminalEvent(ev.TerminalEvent)
+	}
+}
+
+func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
+	if ack == nil {
+		return
+	}
+	retry := false
+	for _, r := range ack.GetRejectedAgents() {
+		slog.Debug("streamevents: agent watch rejected",
+			"entity_id", r.GetEntityId(), "reason", r.GetReason().String())
+		if r.GetReason() == leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED {
+			retry = true
+		}
+	}
+	for _, r := range ack.GetRejectedTerminals() {
+		slog.Debug("streamevents: terminal watch rejected",
+			"entity_id", r.GetEntityId(), "reason", r.GetReason().String())
+		if r.GetReason() == leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED {
+			retry = true
+		}
+	}
+	if !retry {
+		return
+	}
+	s.mu.Lock()
+	req := s.lastReq
+	attempt := s.lookupAttempts
+	retryCtx := s.retryCtx
+	if attempt >= lookupRetryMax {
+		s.mu.Unlock()
+		slog.Warn("streamevents: LOOKUP_FAILED retry budget exhausted",
+			"attempts", attempt)
+		return
+	}
+	s.lookupAttempts++
+	s.mu.Unlock()
+	if req == nil {
+		return
+	}
+	// Best-effort: restate the last interest after a short delay so a
+	// transient List*ByIDs miss recovers without an external reconnect. The
+	// retryCtx gate stops a retry that lost the race with Cancel from re-opening
+	// a stream the caller tore down; the bounded attempts stop a flapping worker
+	// from compounding into an unbounded retry ladder.
+	delay := lookupRetryDelays[attempt]
+	go func(r *leapmuxv1.WatchEventsRequest, delay time.Duration) {
+		t := time.NewTimer(delay)
+		defer t.Stop()
+		select {
+		case <-t.C:
+		case <-retryCtx.Done():
 			return
 		}
-		if data := te.GetData(); data != nil {
-			if data.GetIsSnapshot() && s.onCursorReset != nil {
-				s.onCursorReset(te.GetTerminalId())
+		if retryCtx.Err() != nil {
+			return
+		}
+		_ = s.Update(retryCtx, r)
+	}(req, delay)
+}
+
+func (s *Subscription) dispatchAgentEvent(ae *leapmuxv1.AgentEvent) {
+	if ae == nil {
+		return
+	}
+	if ae.GetTurnEnd() != nil {
+		slog.Debug("streamevents: ignoring agent turn_end notify frame",
+			"agent_id", ae.GetAgentId())
+		return
+	}
+	if msg := ae.GetAgentMessage(); msg != nil {
+		if seq := msg.GetSeq(); seq >= 0 {
+			if !s.agents.Advance(ae.GetAgentId(), seq) {
+				return
 			}
-			s.terminals.Update(te.GetTerminalId(), data.GetEndOffset())
 		}
-		if s.onTerminal != nil {
-			s.onTerminal(te)
+	}
+	if s.onAgent != nil {
+		s.onAgent(ae)
+	}
+}
+
+func (s *Subscription) dispatchTerminalEvent(te *leapmuxv1.TerminalEvent) {
+	if te == nil {
+		return
+	}
+	switch te.GetEvent().(type) {
+	case *leapmuxv1.TerminalEvent_Bell,
+		*leapmuxv1.TerminalEvent_Notification,
+		*leapmuxv1.TerminalEvent_TitleChanged,
+		*leapmuxv1.TerminalEvent_Progress:
+		slog.Debug("streamevents: ignoring terminal notify frame",
+			"terminal_id", te.GetTerminalId())
+		return
+	}
+	if data := te.GetData(); data != nil {
+		if data.GetIsSnapshot() && s.onCursorReset != nil {
+			s.onCursorReset(te.GetTerminalId())
 		}
+		s.terminals.Update(te.GetTerminalId(), data.GetEndOffset())
+	}
+	if s.onTerminal != nil {
+		s.onTerminal(te)
 	}
 }

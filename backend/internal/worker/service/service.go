@@ -209,6 +209,11 @@ type Service struct {
 	// ends in `git worktree remove`, so the inner acquisition happens there.
 	// Nothing may take a removal lock while holding an index lock.
 	gitIndexLocks sync.Map
+
+	// terminalBellMu / lastBellAt coalesce TerminalBell broadcasts per terminal
+	// (programs can emit BEL per keystroke).
+	terminalBellMu sync.Mutex
+	lastBellAt     map[string]time.Time
 }
 
 // cleanupRegistry holds id → cleanup callbacks under a single mutex.
@@ -443,6 +448,7 @@ func New(cfg Config) *Service {
 		AgentStartup:    newAgentStartupRegistry(),
 		TerminalStartup: newTerminalStartupRegistry(),
 		PrivateEvents:   NewPrivateEventsBus(),
+		lastBellAt:      make(map[string]time.Time),
 	}
 	// The seed is config data, so it is minted here -- the one place the raw
 	// string exists -- rather than inside the setter.

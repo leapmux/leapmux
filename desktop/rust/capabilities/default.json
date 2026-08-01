@@ -8,6 +8,7 @@
     "clipboard-manager:allow-read-image",
     "dialog:allow-save",
     "opener:default",
+    "notification:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-set-size",

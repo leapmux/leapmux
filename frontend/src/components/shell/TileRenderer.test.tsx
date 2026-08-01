@@ -97,8 +97,6 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
           handleOpenTerminalWithShell: () => {},
           handleTerminalInput: () => {},
           handleTerminalResize: () => {},
-          handleTerminalTitleChange: () => {},
-          handleTerminalBell: () => {},
         } as any,
       },
       workspace: {

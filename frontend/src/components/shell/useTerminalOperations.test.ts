@@ -10,6 +10,7 @@ import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { handleTerminalBell } from '~/hooks/terminalEvents'
 import { emitAddTab } from '~/stores/tabOps'
 import { flush } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -40,7 +41,6 @@ vi.mock('~/api/workerRpc', () => ({
   openTerminal: vi.fn(async () => ({ terminalId: 'new-tid', title: '' })),
   closeTerminal: vi.fn(async () => ({ result: { worktreeId: '', failureMessage: '' } })),
   resizeTerminal: vi.fn(async () => ({})),
-  updateTerminalTitle: vi.fn(async () => ({})),
 }))
 
 const sendInputMock = workerRpc.sendInput as unknown as ReturnType<typeof vi.fn>
@@ -484,28 +484,21 @@ describe('useterminaloperations.availableshells', () => {
   })
 })
 
-describe('useterminaloperations.handleterminalbell', () => {
+describe('terminal bell via watch events', () => {
   it('does not notify the active terminal tab on bell', () => {
-    // The user is already looking at this terminal — a dot would be noise.
-    const { ops, view, selection, add } = setup()
+    const { view, selection, metadata, add } = setup()
     add('term-1')
     selection.setActiveById(TabType.TERMINAL, 'term-1')
-
-    ops.handleTerminalBell('term-1')
-
+    handleTerminalBell('term-1', { metadata, selection, getActiveWorkspaceId: () => 'ws-1' })
     expect(view.getTerminalTab('term-1')?.hasNotification).not.toBe(true)
   })
 
   it('notifies a terminal tab that is not the active one', () => {
-    // The other half of the guard: without it the dot never appears at all,
-    // and a bell in a background terminal goes unseen.
-    const { ops, view, selection, add } = setup()
+    const { view, selection, metadata, add } = setup()
     add('term-1')
     add('term-2')
     selection.setActiveById(TabType.TERMINAL, 'term-2')
-
-    ops.handleTerminalBell('term-1')
-
+    handleTerminalBell('term-1', { metadata, selection, getActiveWorkspaceId: () => 'ws-1' })
     expect(view.getTerminalTab('term-1')?.hasNotification).toBe(true)
     expect(view.getTerminalTab('term-2')?.hasNotification).not.toBe(true)
   })

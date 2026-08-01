@@ -288,6 +288,9 @@ func (s *stubWriter) SendStream(*leapmuxv1.InnerStreamMessage) error {
 
 func (*stubWriter) ChannelID() string     { return "" }
 func (*stubWriter) MaxPayloadBudget() int { return 0 }
+func (*stubWriter) BindStream(StreamController) (func(), bool) {
+	return func() {}, false
+}
 
 // TestDispatcher_DispatchAsync_AddHappensBeforeGoroutine pins the
 // happens-before invariant that motivated the RegisterTracked /

@@ -18,8 +18,9 @@ import { createKeyedRows, createStableKeys, KeyedFor } from '~/lib/keyedRows'
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
-import { canCloseTab, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
+import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import { isTerminalTab } from '~/stores/tab.types'
+import * as tabBarStyles from '../shell/TabBar.css'
 import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
@@ -171,7 +172,7 @@ const TabLeaf: Component<{
           />
         )}
       >
-        <Tooltip text={tabDisplayLabel(props.tab)} showWhen="clipped">
+        <Tooltip text={tabTooltipText(props.tab)} showWhen="clipped">
           <span
             class={css.tabLabel}
             classList={terminalStatusClassList(isTerminalTab(props.tab) ? props.tab.status : undefined)}
@@ -179,6 +180,13 @@ const TabLeaf: Component<{
             {tabDisplayLabel(props.tab)}
           </span>
         </Tooltip>
+      </Show>
+      <Show when={terminalProgressVisible(props.tab)}>
+        <span
+          class={tabBarStyles.tabProgress}
+          data-testid="tab-progress"
+          {...terminalProgressBarProps(props.tab)}
+        />
       </Show>
       <Show when={props.canClose}>
         <div class={`${sidebarActions} ${css.leafActions}`}>

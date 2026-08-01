@@ -10,7 +10,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
@@ -107,277 +106,36 @@ func marshalWatchEvent(resp *leapmuxv1.WatchEventsResponse, entityID string) ([]
 // snapshots that would only feed sends nobody receives.
 func (s *replaySink) alive() bool { return s.dead == nil }
 
-// WatchEvents registers the channel as a watcher for agent/terminal events.
-// It replays messages per each agent entry's replay mode (LATEST page, or
-// AFTER_CURSOR from its cursor_seq), sends a statusChange marker, replays
-// pending control requests, then streams live events.
-// Access control is the owner gate the handler is registered behind; the
-// per-entity filtering below is existence, not authorization.
+// WatchEvents opens a long-lived bidirectional subscription. The opening
+// InnerRpcRequest carries the first WatchEventsRequest; every revision after
+// that rides an InnerStreamRequest on the SAME stream. Catch-up replay runs
+// only for entities that transition into WATCH_MODE_FULL.
 //
-// Dispatcher ctx is intentionally not threaded: the handler returns
-// after registering watchers + completing the synchronous replay, but
-// the live-event stream survives indefinitely via the registration
-// the handler leaves behind in the WatcherManager.
-// Using the dispatcher ctx for the replay's bootstrap reads would
-// risk cancelling them when the handler unwinds before the bg
-// goroutines finish writing to the stream.
+// Dispatcher ctx is intentionally not threaded: the live stream outlives the
+// handler via watchSession.
 func handleWatchEvents(svc *Service) channel.HandlerFunc {
 	return func(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.WatchEventsRequest
 		if err := unmarshalRequest(req, &r); err != nil {
-			// SendStream, not SendError: this call's correlation id is
-			// registered as a stream on the client, and an InnerRpcResponse
-			// on a stream id is dropped without a listener to receive it.
 			sendStreamError(sender, codes.InvalidArgument, "invalid request")
 			return
 		}
-
-		// The channel id is the subscription key, and it is also the key
-		// UnwatchAll is called with when the channel closes -- taking both
-		// from the writer keeps them the same string by construction.
-		channelID := sender.ChannelID()
-
-		// Resolve the requested agents and register watchers FIRST
-		// so no broadcasts are missed during the replay phase. Retain
-		// the fetched rows so the replay loop below doesn't have to
-		// re-fetch them. A single batched SELECT replaces N GetAgentByID
-		// round trips on page refresh; ListAgentsByIDs filters closed_at
-		// IS NULL, so closed rows fall into the "not returned" branch and
-		// land in rejectedAgentIDs with the same semantics as before.
-		// Dedup by id: setWatches collapses a repeated entity into one
-		// registration, and the replay loops below must agree with it or a
-		// request naming an agent twice replays its whole catch-up burst
-		// twice (two CatchUpStart/Complete brackets, the same message page
-		// rendered twice) and a repeated terminal writes the same screen
-		// bytes into xterm twice.
-		requestedAgentIDs := make([]string, 0, len(r.GetAgents()))
-		agentEntries := make([]*leapmuxv1.WatchAgentEntry, 0, len(r.GetAgents()))
-		seenAgentIDs := make(map[string]struct{}, len(r.GetAgents()))
-		for _, agentEntry := range r.GetAgents() {
-			agentID := agentEntry.GetAgentId()
-			if _, dup := seenAgentIDs[agentID]; dup {
-				continue
-			}
-			seenAgentIDs[agentID] = struct{}{}
-			requestedAgentIDs = append(requestedAgentIDs, agentID)
-			agentEntries = append(agentEntries, agentEntry)
-		}
-		agentRowsByID := make(map[string]db.Agent, len(requestedAgentIDs))
-		if len(requestedAgentIDs) > 0 {
-			rows, err := svc.Queries.ListAgentsByIDs(bgCtx(), requestedAgentIDs)
-			if err != nil {
-				slog.Error("WatchEvents: ListAgentsByIDs failed", "error", err)
-				// The set this channel watches is still whatever it was --
-				// a failed lookup says nothing about the client's interest.
-				// Rebind it at this stream anyway: the request arrived on a
-				// fresh correlation id, and leaving the registrations
-				// addressed to the previous one would keep events flowing
-				// to a listener the client has already torn down.
-				svc.Watchers.RebindWatches(channelID, sender)
-				sendStreamError(sender, codes.Internal, "failed to list agents")
-				return
-			}
-			for _, row := range rows {
-				agentRowsByID[row.ID] = row
-			}
-		}
-		var verifiedAgentIDs []string
-		var verifiedAgents []*leapmuxv1.WatchAgentEntry
-		var verifiedAgentRows []db.Agent
-		var rejectedAgentIDs []string
-		for _, agentEntry := range agentEntries {
-			agentID := agentEntry.GetAgentId()
-			agentRow, ok := agentRowsByID[agentID]
-			if !ok {
-				rejectedAgentIDs = append(rejectedAgentIDs, agentID)
-				continue
-			}
-			verifiedAgentIDs = append(verifiedAgentIDs, agentID)
-			verifiedAgents = append(verifiedAgents, agentEntry)
-			verifiedAgentRows = append(verifiedAgentRows, agentRow)
-		}
-
-		// Filter terminals by access control. Same batched-lookup and
-		// dedup rationale as the agent loop above.
-		requestedTerminals := r.GetTerminals()
-		requestedTerminalIDs := make([]string, 0, len(requestedTerminals))
-		afterOffsetByID := make(map[string]int64, len(requestedTerminals))
-		for _, entry := range requestedTerminals {
-			termID := entry.GetTerminalId()
-			if _, dup := afterOffsetByID[termID]; dup {
-				continue
-			}
-			requestedTerminalIDs = append(requestedTerminalIDs, termID)
-			afterOffsetByID[termID] = entry.GetAfterOffset()
-		}
-		termRowsByID := make(map[string]db.Terminal, len(requestedTerminalIDs))
-		// A failed lookup rejects every terminal, which must NOT be read
-		// as "this channel no longer watches any terminal" -- that would
-		// unsubscribe every live terminal on a transient DB error. Unlike
-		// the agent path, which returns outright, this one degrades: the
-		// terminal set is kept and merely rebound below.
-		termLookupFailed := false
-		if len(requestedTerminalIDs) > 0 {
-			rows, err := svc.Queries.ListTerminalsByIDs(bgCtx(), requestedTerminalIDs)
-			if err != nil {
-				slog.Warn("WatchEvents: ListTerminalsByIDs failed", "error", err)
-				termLookupFailed = true
-			}
-			for _, row := range rows {
-				termRowsByID[row.ID] = row
-			}
-		}
-		var verifiedTerminalIDs []string
-		var verifiedTerminalRows []db.Terminal
-		var rejectedTerminalIDs []string
-		for _, termID := range requestedTerminalIDs {
-			termRow, ok := termRowsByID[termID]
-			if !ok {
-				rejectedTerminalIDs = append(rejectedTerminalIDs, termID)
-				continue
-			}
-			verifiedTerminalIDs = append(verifiedTerminalIDs, termID)
-			verifiedTerminalRows = append(verifiedTerminalRows, termRow)
-		}
-
-		// Log any rejected entities for diagnostics.
-		if len(rejectedAgentIDs) > 0 || len(rejectedTerminalIDs) > 0 {
-			slog.Warn("WatchEvents: some requested entities were not found",
-				"rejected_agents", rejectedAgentIDs,
-				"rejected_terminals", rejectedTerminalIDs,
-				"verified_agents", len(verifiedAgents),
-				"verified_terminals", len(verifiedTerminalIDs))
-		}
-
-		// Registration happens HERE, after both verifications and before
-		// any replay, so the request's outcome and its side effect are
-		// decided together. Registering as each entity kind was verified
-		// meant a request that turned out to be wholly unsatisfiable had
-		// already replaced both registries by the time it returned an
-		// error.
-		switch {
-		case len(r.GetAgents()) == 0 && len(r.GetTerminals()) == 0:
-			// An explicit "I am watching nothing". This is the only way a
-			// client can retire its subscriptions without closing the
-			// channel, so it is a legitimate request, not an error: the
-			// frontend sends it when the last tab on a worker closes.
-			//
-			// Routed through UnwatchAll -- the same call the channel-close
-			// path and ReleaseLocalStream use -- rather than spelling out
-			// a pair of empty Set*Watches, so "retire this channel's
-			// subscriptions" has one implementation and the explicit and
-			// implicit paths cannot diverge if replace-semantics change.
-			svc.Watchers.UnwatchAll(channelID)
+		s := newWatchSession(svc, sender)
+		release, ok := sender.BindStream(s)
+		if !ok {
+			// BindStream refused — the transport has no revise/cancel path for
+			// this stream. newWatchSession already claimed channel ownership
+			// (BeginSession) and minted a bgCtx child, but run() never starts so
+			// its deferred cleanup never fires — retire both explicitly so we do
+			// not orphan ownership or leak the ctx (the agent.go handler cancels
+			// its own ctrl here for the same reason).
+			s.svc.Watchers.UnwatchSession(s.channelID, s.sessionID)
+			s.cancel()
+			sendStreamError(sender, codes.FailedPrecondition, "stream binding unavailable")
 			return
-		case len(verifiedAgents) == 0 && len(verifiedTerminalIDs) == 0:
-			// The client named entities and this worker holds none of them.
-			// Its interest is unsatisfiable, but that is not the same as "it
-			// wants nothing" -- a client racing a tab that has not been
-			// created here yet produces this too. Keep what is registered,
-			// rebind it to this stream, and let the error trip the client's
-			// retry.
-			svc.Watchers.RebindWatches(channelID, sender)
-			sendStreamError(sender, codes.NotFound,
-				fmt.Sprintf("agents %v and/or terminals %v not found",
-					rejectedAgentIDs, rejectedTerminalIDs))
-			return
-		default:
-			// One call per entity kind, not one per entity: the request
-			// states the channel's whole current interest, so entities it
-			// no longer names are unsubscribed here.
-			//
-			// A PARTIALLY rejected request therefore unsubscribes the
-			// rejected entity while reporting success, and this is only
-			// correct because every rejection reachable today is DURABLE:
-			// ListAgentsByIDs fails all-or-nothing (the error path returns
-			// above), so a rejected agent is one that is closed or that this
-			// worker never held -- unsubscribing it is right, and the client
-			// is not waiting on it.
-			//
-			// Introduce a TRANSIENT rejection -- a chunked or partial id
-			// lookup, say -- and this silently becomes a bug: that entity's
-			// tab loses its subscription with no error frame, so nothing
-			// retries and it stays blank until reload. Whoever adds one
-			// needs to make partial rejection report itself; see
-			// https://github.com/leapmux/leapmux/issues/314.
-			svc.Watchers.SetAgentWatches(channelID, verifiedAgentIDs, sender)
-			if termLookupFailed {
-				svc.Watchers.RebindTerminalWatches(channelID, sender)
-				// Rebinding preserves whatever this channel already held,
-				// which is the right call for an established stream -- but
-				// it registers NOTHING, so on a fresh channel (a page
-				// refresh mints a new one) the requested terminals end up
-				// unwatched while the client is told the subscription
-				// succeeded. Its panes then sit empty for the channel's
-				// whole life, because a healthy-looking stream never trips
-				// the retry.
-				//
-				// The lookup failing is a worker-side fault, not a
-				// statement about what the client may see, so say so and
-				// let the client come back. The agents registered above
-				// stay registered: the error ends this stream, and the
-				// retry re-states the full interest.
-				sendStreamError(sender, codes.Unavailable,
-					fmt.Sprintf("could not resolve terminals %v; retry", requestedTerminalIDs))
-				return
-			}
-			svc.Watchers.SetTerminalWatches(channelID, verifiedTerminalIDs, sender)
 		}
-
-		// One sink for the whole burst: the first dead-transport error
-		// stops every remaining send, and the alive() checks below stop the
-		// work that would have produced them.
-		//
-		// Built BEFORE the git batch below, not after: that batch forks a
-		// git process per distinct working dir, which is the single most
-		// expensive thing this handler does, and doing it ahead of the
-		// first alive() check meant a client that had already dropped
-		// still paid for every one of them.
-		sink := newReplaySink(sender)
-
-		// Compute git statuses in a single deduplicated batch so the
-		// per-agent replay loop below doesn't serialize N git shell-outs
-		// on page refresh (and multiple tabs on the same repo share one
-		// call). The DB rows are already in verifiedAgentRows from the
-		// access-control loop above.
-		var replayGitStatuses []*leapmuxv1.AgentGitStatus
-		if sink.alive() {
-			replayDirs := make([]string, len(verifiedAgentRows))
-			for i, row := range verifiedAgentRows {
-				replayDirs[i] = row.WorkingDir
-			}
-			replayGitStatuses = gitutil.BatchGetGitStatus(bgCtx(), replayDirs)
-		} else {
-			// Keep the index-parallel contract the loop below relies on.
-			replayGitStatuses = make([]*leapmuxv1.AgentGitStatus, len(verifiedAgentRows))
-		}
-
-		// Process each verified agent entry: replay messages, send status. Each
-		// agent's catch-up is the same bracketed sequence (CatchUpStart -> message
-		// replay -> todo refresh -> status -> control-request replay -> CatchUpComplete);
-		// replayAgentCatchUp owns it so the replayStartTail/catchUpLatestSeq bracketing
-		// invariant is visible at one boundary.
-		for i, agentEntry := range verifiedAgents {
-			if !sink.alive() {
-				break
-			}
-			svc.replayAgentCatchUp(sink, agentEntry, verifiedAgentRows[i], replayGitStatuses[i])
-		}
-
-		// Each terminal's catch-up is the same pair (screen delta or
-		// snapshot -> current startup status); replayTerminalCatchUp owns
-		// it so this loop reads like its agent counterpart above.
-		for i, termID := range verifiedTerminalIDs {
-			if !sink.alive() {
-				break
-			}
-			svc.replayTerminalCatchUp(sink, termID, afterOffsetByID[termID], verifiedTerminalRows[i])
-		}
-
-		// Stream stays open — events are pushed through the sender this
-		// call registered in the WatcherManager. The handler returns
-		// immediately; the registration is retired when the channel closes
-		// (or, for a local-IPC stream, when the router releases it).
+		go s.run(release)
+		s.submit(&r)
 	}
 }
 

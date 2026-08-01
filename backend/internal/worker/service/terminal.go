@@ -320,9 +320,8 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// UpdateTerminalTitle updates a terminal's title in both the in-memory
-	// manager and the database. The frontend throttles calls at 500ms
-	// intervals (kept short so a title set right before shell exit reaches
-	// the worker before the close handler persists meta to DB).
+	// manager and the database. Kept for explicit user renames; PTY-driven
+	// OSC titles are persisted via persistTerminalTitleFromSignal instead.
 	registerTerminalGated(d, "UpdateTerminalTitle",
 		func(_ context.Context, userID userid.UserID, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
@@ -574,6 +573,7 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	if postSpawnErr == nil && postSpawn.ClosedAt.Valid {
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
+			svc.clearTerminalBellCoalesce(terminalID)
 		}
 		svc.finishStartupAfterClose(&svc.TerminalStartup.startupCore, h, terminalID, gm)
 		return
@@ -692,6 +692,7 @@ func (svc *Service) runTerminalRestart(
 	if postSpawn, fetchErr := svc.Queries.GetTerminalForReady(bgCtx(), terminalID); fetchErr == nil && postSpawn.ClosedAt.Valid {
 		if startErr == nil {
 			svc.Terminals.RemoveTerminal(terminalID)
+			svc.clearTerminalBellCoalesce(terminalID)
 		}
 		svc.TerminalStartup.succeed(terminalID)
 		return
@@ -840,13 +841,20 @@ func (svc *Service) broadcastTerminalReady(terminalID string) {
 	})
 }
 
+// bellCoalesceWindow limits TerminalBell broadcasts: a program can emit BEL
+// per keystroke, so at most one bell event per terminal per window is enough.
+const bellCoalesceWindow = 250 * time.Millisecond
+
 // makeTerminalOutputFn builds the OutputHandler closure that broadcasts
 // data events to subscribers and pings the wake lock.
 func (svc *Service) makeTerminalOutputFn(terminalID string) terminal.OutputHandler {
-	return func(data []byte, endOffset int64) {
+	return func(data []byte, endOffset int64, signals []terminal.Signal) {
 		if svc.WakeLock != nil {
 			svc.WakeLock.RecordActivity()
 		}
+		// TerminalData is classContent, so BroadcastTerminalEvent self-gates:
+		// when nobody watches this terminal in FULL it short-circuits before
+		// the snapshot/marshal, and NOTIFY-only watchers receive just signals.
 		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
 			Event: &leapmuxv1.TerminalEvent_Data{
@@ -856,6 +864,81 @@ func (svc *Service) makeTerminalOutputFn(terminalID string) terminal.OutputHandl
 				},
 			},
 		})
+		for _, sig := range signals {
+			svc.broadcastTerminalSignal(terminalID, sig)
+		}
+	}
+}
+
+func (svc *Service) broadcastTerminalSignal(terminalID string, sig terminal.Signal) {
+	switch sig.Kind {
+	case terminal.SignalBell:
+		now := time.Now()
+		svc.terminalBellMu.Lock()
+		last := svc.lastBellAt[terminalID]
+		if !last.IsZero() && now.Sub(last) < bellCoalesceWindow {
+			svc.terminalBellMu.Unlock()
+			return
+		}
+		svc.lastBellAt[terminalID] = now
+		svc.terminalBellMu.Unlock()
+		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+			TerminalId: terminalID,
+			Event:      &leapmuxv1.TerminalEvent_Bell{Bell: &leapmuxv1.TerminalBell{}},
+		})
+	case terminal.SignalNotification:
+		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+			TerminalId: terminalID,
+			Event: &leapmuxv1.TerminalEvent_Notification{
+				Notification: &leapmuxv1.TerminalNotification{
+					Title: sig.Title,
+					Body:  sig.Body,
+				},
+			},
+		})
+	case terminal.SignalTitle:
+		// Broadcast the live OSC title only — do NOT write Meta.Title. That
+		// field is owned by the user-rename path (UpdateTerminalTitle) and by
+		// persistTerminalOnExit, which persists TerminalMeta.Title into the DB
+		// title column on shell exit. Writing the OSC value into Meta.Title
+		// would (a) clobber an in-memory user rename on the next ListTerminals
+		// hydration (the client maps Title → tab.title, which tabDisplayLabel
+		// prefers over the live ptyTitle) and (b) leak the OSC title into the DB
+		// title column when the shell exits. The frontend already routes the
+		// TerminalEvent_TitleChanged payload into a separate ptyTitle overlay
+		// that yields to an explicit rename, so the broadcast alone is the
+		// correct worker-side effect.
+		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+			TerminalId: terminalID,
+			Event: &leapmuxv1.TerminalEvent_TitleChanged{
+				TitleChanged: &leapmuxv1.TerminalTitleChanged{Title: sig.Title},
+			},
+		})
+	case terminal.SignalProgress:
+		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
+			TerminalId: terminalID,
+			Event: &leapmuxv1.TerminalEvent_Progress{
+				Progress: &leapmuxv1.TerminalProgress{
+					State:   terminalProgressState(sig.State),
+					Percent: sig.Percent,
+				},
+			},
+		})
+	}
+}
+
+func terminalProgressState(state terminal.ProgressState) leapmuxv1.TerminalProgress_State {
+	switch state {
+	case terminal.ProgressNormal:
+		return leapmuxv1.TerminalProgress_STATE_NORMAL
+	case terminal.ProgressError:
+		return leapmuxv1.TerminalProgress_STATE_ERROR
+	case terminal.ProgressIndeterminate:
+		return leapmuxv1.TerminalProgress_STATE_INDETERMINATE
+	case terminal.ProgressPaused:
+		return leapmuxv1.TerminalProgress_STATE_PAUSED
+	default:
+		return leapmuxv1.TerminalProgress_STATE_UNSPECIFIED
 	}
 }
 
@@ -863,10 +946,15 @@ func (svc *Service) makeTerminalOutputFn(terminalID string) terminal.OutputHandl
 // process exits: append the "Press Enter to restart" notice, persist
 // the final screen + metadata to the DB so a worker restart still finds
 // an exited row, and broadcast TerminalClosed. Does not set closed_at —
-// only explicit user close does that.
+// only explicit user close does that. Clears the bell-coalesce timer so a
+// naturally-exited terminal (which stays in the Manager for restart-via-Enter)
+// cannot leak its lastBellAt entry for the worker's life — the explicit-close
+// paths clear it via clearTerminalBellCoalesce, but the exit path does not flow
+// through those.
 func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 	return func(tid string, exitCode int) {
 		svc.persistTerminalOnExit(tid, exitCode)
+		svc.clearTerminalBellCoalesce(tid)
 		svc.Watchers.BroadcastTerminalEvent(tid, &leapmuxv1.TerminalEvent{
 			TerminalId: tid,
 			Event: &leapmuxv1.TerminalEvent_Closed{
@@ -876,4 +964,12 @@ func (svc *Service) makeTerminalExitFn() terminal.ExitHandler {
 			},
 		})
 	}
+}
+
+// clearTerminalBellCoalesce drops the per-terminal bell timer so closed
+// terminals cannot leak lastBellAt entries for the life of the worker.
+func (svc *Service) clearTerminalBellCoalesce(terminalID string) {
+	svc.terminalBellMu.Lock()
+	delete(svc.lastBellAt, terminalID)
+	svc.terminalBellMu.Unlock()
 }

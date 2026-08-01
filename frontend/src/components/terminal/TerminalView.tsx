@@ -31,8 +31,6 @@ interface TerminalViewProps {
   getLastOffset?: (id: string) => number | undefined
   onInput: (id: string, data: Uint8Array) => void
   onResize: (id: string, cols: number, rows: number) => void
-  onTitleChange: (id: string, title: string) => void
-  onBell: (id: string) => void
   /** Called once the terminal has painted any non-whitespace content. */
   onContentReady: (id: string) => void
   pageScrollRef?: (fn: (direction: -1 | 1) => void) => void
@@ -112,6 +110,24 @@ export function disposeTerminalInstance(id: string, opts?: { captureScreen?: boo
 
 export function getTerminalInstance(id: string): TerminalInstance | undefined {
   return instances.get(id)
+}
+
+/** Called when a terminal instance enters the map — used to flush buffered watch data. */
+type TerminalInstanceReadyListener = (id: string) => void
+// A Set, not a single slot: a second consumer (a test rendering two connection
+// hooks, or a future second workspace provider) registering its listener must
+// not silently seize and disable the first. Each registered listener is
+// notified; callers unsubscribe by passing the same reference to the remover.
+const terminalInstanceReadyListeners = new Set<TerminalInstanceReadyListener>()
+
+export function addTerminalInstanceReadyListener(cb: TerminalInstanceReadyListener): () => void {
+  terminalInstanceReadyListeners.add(cb)
+  return () => terminalInstanceReadyListeners.delete(cb)
+}
+
+function notifyTerminalInstanceReady(id: string): void {
+  for (const cb of terminalInstanceReadyListeners)
+    cb(id)
 }
 
 // During Vite HMR the module is re-evaluated, replacing `instances` with a
@@ -197,8 +213,6 @@ const TerminalContainer: Component<{
   startupMessage?: string
   onInput: (id: string, data: Uint8Array) => void
   onResize: (id: string, cols: number, rows: number) => void
-  onTitleChange: (id: string, title: string) => void
-  onBell: (id: string) => void
   onContentReady: (id: string) => void
 }> = (props) => {
   let ref: HTMLDivElement | undefined
@@ -217,11 +231,10 @@ const TerminalContainer: Component<{
         theme: props.theme,
       })
       instances.set(props.terminalId, instance)
+      notifyTerminalInstanceReady(props.terminalId)
 
       const id = props.terminalId
       const onInput = props.onInput
-      const onTitleChange = props.onTitleChange
-      const onBell = props.onBell
       instance.sendInput = data => onInput(id, data)
 
       // On macOS, suppress CMD+Arrow and ALT+Arrow so xterm.js doesn't
@@ -237,14 +250,6 @@ const TerminalContainer: Component<{
       instance.terminal.onData((data) => {
         if (!instances.get(id)?.suppressInput) {
           onInput(id, new TextEncoder().encode(data))
-        }
-      })
-      instance.terminal.onTitleChange((title) => {
-        onTitleChange(id, title)
-      })
-      instance.terminal.onBell(() => {
-        if (!instances.get(id)?.suppressInput) {
-          onBell(id)
         }
       })
     }
@@ -589,8 +594,6 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                     startupMessage={terminal()?.startupMessage}
                     onInput={props.onInput}
                     onResize={props.onResize}
-                    onTitleChange={props.onTitleChange}
-                    onBell={props.onBell}
                     onContentReady={props.onContentReady}
                   />
                 )}

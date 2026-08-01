@@ -14,6 +14,37 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
+// fakeHandle is an in-memory Handle for subscription tests.
+type fakeHandle struct {
+	mu       sync.Mutex
+	updates  []*leapmuxv1.WatchEventsRequest
+	cancel   context.CancelFunc
+	done     chan struct{}
+	updateFn func(*leapmuxv1.WatchEventsRequest) error
+}
+
+func (h *fakeHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
+	h.mu.Lock()
+	h.updates = append(h.updates, req)
+	fn := h.updateFn
+	h.mu.Unlock()
+	if fn != nil {
+		return fn(req)
+	}
+	return nil
+}
+
+func (h *fakeHandle) Cancel() {
+	h.mu.Lock()
+	cancel := h.cancel
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (h *fakeHandle) Done() <-chan struct{} { return h.done }
+
 // fakeTransport is an in-memory Transport implementation. Tests
 // drive `pushFrame` to deliver synthetic WatchEventsResponse frames
 // to the subscription's callback, and assert on the cursor map / on
@@ -22,8 +53,7 @@ type fakeTransport struct {
 	mu      sync.Mutex
 	calls   []*leapmuxv1.WatchEventsRequest
 	onFrame func(*leapmuxv1.WatchEventsResponse)
-	cancel  context.CancelFunc
-	done    chan struct{}
+	handle  *fakeHandle
 	openErr error
 	// openStarted/releaseOpen let tests pause OpenWatchEvents after the
 	// transport has been entered but before the stream is installed.
@@ -37,13 +67,13 @@ type fakeTransport struct {
 
 func (t *fakeTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv1.WatchEventsRequest,
 	onFrame func(*leapmuxv1.WatchEventsResponse),
-) (context.CancelFunc, <-chan struct{}, error) {
+) (Handle, error) {
 	t.mu.Lock()
 	if t.openErr != nil {
 		err := t.openErr
-		t.openErr = nil // clear so subsequent calls succeed (reconnect path)
+		t.openErr = nil
 		t.mu.Unlock()
-		return nil, nil, err
+		return nil, err
 	}
 	t.mu.Unlock()
 	if t.openStarted != nil {
@@ -64,13 +94,13 @@ func (t *fakeTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv
 		atomic.AddInt32(&t.active, -1)
 		close(done)
 	}()
+	h := &fakeHandle{cancel: cancel, done: done}
 	t.mu.Lock()
 	t.calls = append(t.calls, req)
 	t.onFrame = onFrame
-	t.cancel = cancel
-	t.done = done
+	t.handle = h
 	t.mu.Unlock()
-	return cancel, done, nil
+	return h, nil
 }
 
 func (t *fakeTransport) pushFrame(resp *leapmuxv1.WatchEventsResponse) {
@@ -82,13 +112,18 @@ func (t *fakeTransport) pushFrame(resp *leapmuxv1.WatchEventsResponse) {
 	}
 }
 
-func (t *fakeTransport) lastRequest() *leapmuxv1.WatchEventsRequest {
+func (t *fakeTransport) lastUpdate() *leapmuxv1.WatchEventsRequest {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if len(t.calls) == 0 {
+	if t.handle == nil {
 		return nil
 	}
-	return t.calls[len(t.calls)-1]
+	t.handle.mu.Lock()
+	defer t.handle.mu.Unlock()
+	if len(t.handle.updates) == 0 {
+		return nil
+	}
+	return t.handle.updates[len(t.handle.updates)-1]
 }
 
 // TestSubscription_HappyPath_AdvanceCursorAndCallback verifies one
@@ -121,6 +156,34 @@ func TestSubscription_HappyPath_AdvanceCursorAndCallback(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, "a-1", got.GetAgentId())
 }
+
+// TestSubscription_TurnEndNotifyDoesNotForward pins that AgentTurnEnd is a
+// UI-only notify frame: the CLI events stream must neither invoke onAgent nor
+// advance the agent cursor.
+func TestSubscription_TurnEndNotifyDoesNotForward(t *testing.T) {
+	tr := &fakeTransport{}
+	agents := NewAgentCursor()
+	var calls int
+	sub := NewSubscription(tr, agents, NewTerminalCursor(),
+		func(*leapmuxv1.AgentEvent) { calls++ },
+		nil, nil)
+	t.Cleanup(sub.Cancel)
+
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
+
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &leapmuxv1.AgentEvent{
+			AgentId: "a-1",
+			Event:   &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: &leapmuxv1.AgentTurnEnd{NumToolUses: protoInt32(2)}},
+		}},
+	})
+
+	assert.Equal(t, 0, calls, "turn_end must not reach onAgent")
+	assert.Equal(t, int64(0), agents.Get("a-1"), "turn_end must not advance the agent cursor")
+}
+
+func protoInt32(v int32) *int32 { return &v }
 
 // TestSubscription_DedupsOverlapMessageBySeq verifies the
 // register-before-replay overlap is collapsed: a WatchEvents subscription
@@ -323,13 +386,9 @@ func TestSubscription_CursorResetCallback(t *testing.T) {
 	}
 }
 
-// TestSubscription_UpdateCancelsPreviousAndCarriesCursor verifies
-// the cursor preservation contract on resubscribe: after the first
-// subscription advances its cursor, the next Update call's request
-// must reflect the new cursor for surviving tabs. This is the core
-// of why `agent messages --follow` and `events --include
-// agent,terminal` can re-issue without losing events.
-func TestSubscription_UpdateCancelsPreviousAndCarriesCursor(t *testing.T) {
+// TestSubscription_UpdateRevisesSameStream verifies that a second Update
+// sends a revision on the same stream instead of re-opening.
+func TestSubscription_UpdateRevisesSameStream(t *testing.T) {
 	tr := &fakeTransport{}
 	agents := NewAgentCursor()
 	terms := NewTerminalCursor()
@@ -346,19 +405,16 @@ func TestSubscription_UpdateCancelsPreviousAndCarriesCursor(t *testing.T) {
 	})
 	assert.Equal(t, int64(9), agents.Get("a-1"))
 
-	// Re-subscribe via the cursor's Snapshot — the resubscribe
-	// payload must carry seq=9 so the worker doesn't replay events
-	// we already saw.
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: agents.Snapshot(map[string]struct{}{"a-1": {}})}))
-	last := tr.lastRequest()
+	last := tr.lastUpdate()
 	require.NotNil(t, last)
 	require.Len(t, last.GetAgents(), 1)
 	assert.Equal(t, "a-1", last.GetAgents()[0].GetAgentId())
 	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
 	assert.Equal(t, int64(9), last.GetAgents()[0].GetCursorSeq())
-	assert.Equal(t, int32(2), atomic.LoadInt32(&tr.callsOpened),
-		"Update should cancel and re-open exactly once")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened),
+		"Update should revise the open stream, not re-open")
 }
 
 // TestSubscription_CancelIdempotent: repeated Cancel calls are safe
@@ -393,41 +449,191 @@ func TestSubscription_TransportOpenError(t *testing.T) {
 	t.Cleanup(sub.Cancel)
 }
 
+// TestSubscription_UpdateReopensAfterDone pins that a natural stream end
+// (Done closed, handle still non-nil) makes the next Update open a fresh
+// stream instead of revising the dead Handle — the agent messages --follow
+// reconnect loop.
+func TestSubscription_UpdateReopensAfterDone(t *testing.T) {
+	tr := &fakeTransport{}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
+	}))
+	require.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened))
+
+	// Simulate natural end: cancel the handle's ctx (closes Done) without
+	// going through Subscription.Cancel (which would nil s.handle).
+	tr.mu.Lock()
+	h := tr.handle
+	tr.mu.Unlock()
+	require.NotNil(t, h)
+	h.Cancel()
+	<-h.Done()
+
+	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
+	}))
+	assert.Equal(t, int32(2), atomic.LoadInt32(&tr.callsOpened),
+		"Update after Done must OpenWatchEvents again, not revise the dead handle")
+	sub.Cancel()
+}
+
+// TestSubscription_LookupFailedAckRetriesLastReq pins that a LOOKUP_FAILED
+// UpdateAck restates the stored lastReq after the short retry delay.
+func TestSubscription_LookupFailedAckRetriesLastReq(t *testing.T) {
+	tr := &fakeTransport{}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	t.Cleanup(sub.Cancel)
+
+	req := &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
+	}
+	require.NoError(t, sub.Update(context.Background(), req))
+	require.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened))
+
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+			RejectedAgents: []*leapmuxv1.WatchRejection{{
+				EntityId: "a-1",
+				Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+			}},
+		}},
+	})
+
+	require.Eventually(t, func() bool {
+		tr.mu.Lock()
+		h := tr.handle
+		tr.mu.Unlock()
+		if h == nil {
+			return false
+		}
+		h.mu.Lock()
+		n := len(h.updates)
+		h.mu.Unlock()
+		return n >= 1
+	}, time.Second, 20*time.Millisecond, "LOOKUP_FAILED ack must restate lastReq via Update")
+
+	tr.mu.Lock()
+	h := tr.handle
+	tr.mu.Unlock()
+	require.NotNil(t, h)
+	h.mu.Lock()
+	last := h.updates[len(h.updates)-1]
+	h.mu.Unlock()
+	require.NotNil(t, last)
+	require.Len(t, last.GetAgents(), 1)
+	assert.Equal(t, "a-1", last.GetAgents()[0].GetAgentId())
+}
+
+// TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel pins the fix for a
+// goroutine-leak / orphaned-subscription bug: the LOOKUP_FAILED retry used
+// context.Background with no Cancel guard, so a retry that woke after Cancel
+// reopened a fresh worker-side stream nobody would ever tear down. Cancel must
+// set the closed flag so the in-flight retry bails instead of re-opening.
+func TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel(t *testing.T) {
+	tr := &fakeTransport{}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+
+	req := &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
+	}
+	require.NoError(t, sub.Update(context.Background(), req))
+	openedBefore := atomic.LoadInt32(&tr.callsOpened)
+	require.Equal(t, int32(1), openedBefore)
+
+	// Push LOOKUP_FAILED, then Cancel inside the retry delay window.
+	tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+			RejectedAgents: []*leapmuxv1.WatchRejection{{
+				EntityId: "a-1",
+				Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+			}},
+		}},
+	})
+	// Cancel before the 200ms retry fires.
+	sub.Cancel()
+
+	// Wait past the longest possible retry delay and assert no re-open landed.
+	time.Sleep(lookupRetryDelays[len(lookupRetryDelays)-1] + 200*time.Millisecond)
+	assert.Equal(t, openedBefore, atomic.LoadInt32(&tr.callsOpened),
+		"LOOKUP_FAILED retry must not re-open a stream after Cancel")
+}
+
+// TestSubscription_LookupFailedRetryBudgetExhausts pins the bounded-retry fix:
+// previously every LOOKUP_FAILED ack spawned a fresh goroutine that produced
+// another LOOKUP_FAILED ack, compounding without limit on a flapping worker.
+// The retry must stop after lookupRetryMax attempts.
+func TestSubscription_LookupFailedRetryBudgetExhausts(t *testing.T) {
+	tr := &fakeTransport{}
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	t.Cleanup(sub.Cancel)
+
+	req := &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-missing"}},
+	}
+	require.NoError(t, sub.Update(context.Background(), req))
+
+	// Drive enough ack cycles to exhaust the budget. Each retry re-states the
+	// plan; we approximate the worker's perpetual LOOKUP_FAILED by pushing an
+	// ack whenever a retry Update lands.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if tr.lastUpdate() != nil {
+					tr.pushFrame(&leapmuxv1.WatchEventsResponse{
+						Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+							RejectedAgents: []*leapmuxv1.WatchRejection{{
+								EntityId: "a-missing",
+								Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+							}},
+						}},
+					})
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	}()
+	close(stop)
+
+	// Wait well past the sum of all retry delays, then assert opens stayed at 1.
+	time.Sleep(sumLookupRetryDelays() + 300*time.Millisecond)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened),
+		"LOOKUP_FAILED retries must stop after the budget is exhausted (no re-open ladder)")
+}
+
+func sumLookupRetryDelays() time.Duration {
+	var d time.Duration
+	for _, dd := range lookupRetryDelays {
+		d += dd
+	}
+	return d
+}
+
 // TestSubscription_UpdateErrorAfterSuccessLeavesCleanState covers the
-// success-then-failure path the single-failure TransportOpenError test misses: a
-// later Update cancels the live subscription and then the re-open fails. The
-// subscription must not retain the torn-down stream's cancel/done -- Done() reports
-// "no live subscription" (a closed channel), Cancel() is a safe no-op, and a fresh
-// Update recovers.
+// success-then-failure path: a later Update on an open stream fails.
+// The subscription must retain the live handle until Cancel.
 func TestSubscription_UpdateErrorAfterSuccessLeavesCleanState(t *testing.T) {
 	tr := &fakeTransport{}
 	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
 	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{}))
 
-	// Arm the next OpenWatchEvents to fail, then Update: it cancels the prior sub
-	// and the re-open errors.
 	tr.mu.Lock()
-	tr.openErr = errors.New("reopen failed")
+	tr.handle.updateFn = func(*leapmuxv1.WatchEventsRequest) error { return errors.New("update failed") }
 	tr.mu.Unlock()
 	require.Error(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{}))
 
-	// Done() must report a closed channel (no live subscription).
+	// Done() must still track the open stream.
 	select {
 	case <-sub.Done():
-	case <-time.After(time.Second):
-		t.Fatal("Done() did not report a closed channel after a failed re-open")
+		t.Fatal("Done() must not close while the stream is still open")
+	default:
 	}
-	// Cancel() must not hang on a stale done channel.
-	done := make(chan struct{})
-	go func() { sub.Cancel(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("Cancel() hung after a failed re-open")
-	}
-	// A fresh Update recovers (openErr was consumed by the failed attempt).
-	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{}))
-	t.Cleanup(sub.Cancel)
+	sub.Cancel()
+	t.Cleanup(func() {})
 }
 
 // TestSubscription_NilFrameDoesNotCrash defends the dispatcher
@@ -582,12 +788,8 @@ func TestSubscription_DoneOnFreshSubReturnsClosed(t *testing.T) {
 	}
 }
 
-// TestSubscription_RapidSequentialUpdates pins the back-to-back
-// Update behaviour the fan-out reconciler relies on: a snapshot
-// burst can issue Update twice in a row before the previous's
-// goroutine has finished cleaning up. Each Update must cancel its
-// predecessor and open a fresh subscription, leaving the latest one
-// live.
+// TestSubscription_RapidSequentialUpdates pins back-to-back Update behaviour:
+// after the first open, subsequent Updates revise the same stream.
 func TestSubscription_RapidSequentialUpdates(t *testing.T) {
 	tr := &fakeTransport{}
 	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
@@ -599,15 +801,12 @@ func TestSubscription_RapidSequentialUpdates(t *testing.T) {
 			Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("a-1", int64(i))},
 		}))
 	}
-	// Each Update calls OpenWatchEvents exactly once — the Subscription
-	// cancels the prior in-flight before opening the next.
-	assert.Equal(t, int32(updates), atomic.LoadInt32(&tr.callsOpened))
-	// The latest cursor (`updates-1`) is what the most recent
-	// subscribe asked for.
-	last := tr.lastRequest()
+	assert.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened))
+	last := tr.lastUpdate()
 	require.NotNil(t, last)
 	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
 	assert.Equal(t, int64(updates-1), last.GetAgents()[0].GetCursorSeq())
+	assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, last.GetAgents()[0].GetMode())
 }
 
 func TestSubscription_ConcurrentUpdatesAreLifecycleSingleFlight(t *testing.T) {
@@ -654,10 +853,10 @@ func TestSubscription_ConcurrentUpdatesAreLifecycleSingleFlight(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	assert.False(t, sawConcurrentOpen, "Update must not enter a replacement open while another Update is still opening")
+	assert.False(t, sawConcurrentOpen, "Update must not open a second stream while another Update is still opening")
 	require.Eventually(t, func() bool {
 		return atomic.LoadInt32(&tr.active) == 1
-	}, time.Second, 10*time.Millisecond, "only the latest stream should remain active")
+	}, time.Second, 10*time.Millisecond, "only one stream should remain active")
 }
 
 // TestSubscription_AgentMessageNilDoesNotAdvanceCursor: an

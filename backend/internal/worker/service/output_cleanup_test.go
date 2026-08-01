@@ -39,7 +39,7 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 	}))
 
 	// Register a watcher so broadcasts have somewhere to go.
-	svc.Watchers.SetAgentWatches("test-ch", []string{"agent-1"}, w)
+	svc.Watchers.SetAgentWatches("test-ch", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
 	svc.Output.ClearAgentRuntimeState("agent-1")
 
@@ -70,7 +70,7 @@ func TestClearAgentRuntimeState_NoPendingIsNoOp(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	svc.Watchers.SetAgentWatches("test-ch", []string{"agent-empty"}, w)
+	svc.Watchers.SetAgentWatches("test-ch", []watchEntry{{id: "agent-empty", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
 	svc.Output.ClearAgentRuntimeState("agent-empty")
 

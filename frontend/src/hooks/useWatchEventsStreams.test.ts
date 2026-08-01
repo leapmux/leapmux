@@ -1,0 +1,500 @@
+import type { WatchEventsResponse } from '~/generated/leapmux/v1/workspace_pb'
+import { batch, createMemo, createRoot, createSignal } from 'solid-js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { TabType, WatchMode, WatchRejectionReason } from '~/generated/leapmux/v1/workspace_pb'
+import { ChannelError } from '~/lib/channel'
+import { emitAddTab } from '~/stores/tabOps'
+import { installTestBridge } from '~/test-support/crdtBridge'
+import { createTestTabStores } from '~/test-support/tabStores'
+
+vi.mock('~/components/common/Toast', () => ({
+  showWarnToast: vi.fn(),
+}))
+
+vi.mock('~/api/workerRpc', () => ({
+  watchEventsViaChannel: vi.fn(),
+}))
+
+const { watchEventsViaChannel } = await import('~/api/workerRpc')
+const { useWatchEventsStreams } = await import('./useWatchEventsStreams')
+
+interface FakeHandle {
+  update: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
+  onEvent: (cb: (resp: WatchEventsResponse) => void) => void
+  onEnd: (cb: () => void) => void
+  onError: (cb: (err: Error) => void) => void
+  _emit: (resp: WatchEventsResponse) => void
+  _end: () => void
+  _error: (err: Error) => void
+}
+
+function makeHandle(): FakeHandle {
+  let onEvent: ((resp: WatchEventsResponse) => void) | undefined
+  let onEnd: (() => void) | undefined
+  let onErr: ((err: Error) => void) | undefined
+  return {
+    update: vi.fn(),
+    close: vi.fn(),
+    onEvent: (cb) => { onEvent = cb },
+    onEnd: (cb) => { onEnd = cb },
+    onError: (cb) => { onErr = cb },
+    _emit: resp => onEvent?.(resp),
+    _end: () => onEnd?.(),
+    _error: err => onErr?.(err),
+  }
+}
+
+describe('useWatchEventsStreams', () => {
+  const WS = 'ws-test'
+  let handles: FakeHandle[]
+  let disposeRoot: (() => void) | undefined
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    handles = []
+    disposeRoot?.()
+    disposeRoot = undefined
+    vi.mocked(watchEventsViaChannel).mockReset()
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      const h = makeHandle()
+      handles.push(h)
+      return h as never
+    })
+  })
+
+  afterEach(() => {
+    disposeRoot?.()
+    disposeRoot = undefined
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  async function flush() {
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
+  function mount(plansFn: () => Map<string, { agents: never[], terminals: never[] }>, opts: Partial<{
+    onEvent: (workerId: string, resp: unknown) => void
+    onWorkerOnline: (workerId: string, online: boolean) => void
+    onPromoted: (workerId: string, agentIds: string[]) => void
+  }> = {}) {
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    createRoot((dispose) => {
+      disposeRoot = dispose
+      const plans = createMemo(plansFn)
+      useWatchEventsStreams({
+        view: stores.view,
+        plans,
+        onEvent: opts.onEvent ?? (() => {}),
+        onWorkerOnline: opts.onWorkerOnline ?? (() => {}),
+        onPromoted: opts.onPromoted ?? (() => {}),
+      })
+    })
+    return { harness, stores }
+  }
+
+  it('opens one stream per worker', async () => {
+    const { harness } = mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+    ]))
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
+  })
+
+  it('plan mode change sends update without re-opening', async () => {
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    const [mode, setMode] = createSignal(WatchMode.NOTIFY)
+    createRoot((dispose) => {
+      disposeRoot = dispose
+      const plans = createMemo(() => new Map([
+        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [] }],
+      ]))
+      useWatchEventsStreams({
+        view: stores.view,
+        plans,
+        onEvent: () => {},
+        onWorkerOnline: () => {},
+        onPromoted: () => {},
+      })
+    })
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
+    setMode(WatchMode.FULL)
+    await flush()
+    expect(handles[0]!.update).toHaveBeenCalled()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
+  })
+
+  it('transport error marks worker offline and reconnects', async () => {
+    const online: boolean[] = []
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      { onWorkerOnline: (_w, o) => online.push(o) },
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    handles[0]!._error(new ChannelError('transport', 'lost'))
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(online).toContain(false)
+    expect(vi.mocked(watchEventsViaChannel).mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('plan changes enqueue synchronously without awaiting channel open', async () => {
+    let resolveOpen!: (h: FakeHandle) => void
+    vi.mocked(watchEventsViaChannel).mockImplementation(() => new Promise<FakeHandle>((resolve) => {
+      resolveOpen = resolve
+    }) as never)
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    const [mode, setMode] = createSignal(WatchMode.NOTIFY)
+    createRoot((dispose) => {
+      disposeRoot = dispose
+      const plans = createMemo(() => new Map([
+        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [] }],
+      ]))
+      useWatchEventsStreams({
+        view: stores.view,
+        plans,
+        onEvent: () => {},
+        onWorkerOnline: () => {},
+        onPromoted: () => {},
+      })
+    })
+    await Promise.resolve()
+    setMode(WatchMode.FULL)
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
+    expect(handles).toHaveLength(0)
+    const h = makeHandle()
+    resolveOpen(h)
+    await flush()
+    // Pending FULL plan drained after open completes — in-place update, no re-open.
+    expect(h.update).toHaveBeenCalled()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
+  })
+
+  it('coalesces rapid plan changes into one wire update', async () => {
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    const [mode, setMode] = createSignal(WatchMode.NOTIFY)
+    createRoot((dispose) => {
+      disposeRoot = dispose
+      const plans = createMemo(() => new Map([
+        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [] }],
+      ]))
+      useWatchEventsStreams({
+        view: stores.view,
+        plans,
+        onEvent: () => {},
+        onWorkerOnline: () => {},
+        onPromoted: () => {},
+      })
+    })
+    await flush()
+    handles[0]!.update.mockClear()
+    batch(() => {
+      setMode(WatchMode.FULL)
+      setMode(WatchMode.NOTIFY)
+      setMode(WatchMode.FULL)
+    })
+    await flush()
+    expect(handles[0]!.update).toHaveBeenCalledTimes(1)
+    expect(handles[0]!.update.mock.calls[0]![0].agents[0].mode).toBe(WatchMode.FULL)
+  })
+
+  it('cancels a worker stream when its last tab leaves the plan', async () => {
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    const [plans, setPlans] = createSignal(new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+    ]))
+    createRoot((dispose) => {
+      disposeRoot = dispose
+      useWatchEventsStreams({
+        view: stores.view,
+        plans,
+        onEvent: () => {},
+        onWorkerOnline: () => {},
+        onPromoted: () => {},
+      })
+    })
+    await flush()
+    expect(handles).toHaveLength(2)
+    setPlans(new Map([
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+    ]))
+    await flush()
+    expect(handles[0]!.close).toHaveBeenCalled()
+    expect(handles[1]!.close).not.toHaveBeenCalled()
+  })
+
+  it('retries LOOKUP_FAILED when the tab still exists', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    handles[0]!.update.mockClear()
+    handles[0]!._emit({
+      event: {
+        case: 'updateAck',
+        value: {
+          rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+          rejectedTerminals: [],
+        },
+      },
+    } as unknown as WatchEventsResponse)
+    await vi.advanceTimersByTimeAsync(500)
+    await flush()
+    expect(handles[0]!.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry NOT_FOUND even when the tab exists', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    handles[0]!.update.mockClear()
+    handles[0]!._emit({
+      event: {
+        case: 'updateAck',
+        value: {
+          rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND }],
+          rejectedTerminals: [],
+        },
+      },
+    } as unknown as WatchEventsResponse)
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(handles[0]!.update).not.toHaveBeenCalled()
+  })
+
+  it('does not retry LOOKUP_FAILED when the tab is gone', async () => {
+    mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+    )
+    await flush()
+    // No emitAddTab — the plan mentions a1 but no local tab exists.
+    handles[0]!.update.mockClear()
+    handles[0]!._emit({
+      event: {
+        case: 'updateAck',
+        value: {
+          rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+          rejectedTerminals: [],
+        },
+      },
+    } as unknown as WatchEventsResponse)
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(handles[0]!.update).not.toHaveBeenCalled()
+  })
+
+  it('stops retrying LOOKUP_FAILED after the retry budget is exhausted', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    handles[0]!.update.mockClear()
+    // Each ack schedules one retry; wait for it to fire before emitting the next
+    // so the pending-timer guard does not collapse the sequence.
+    for (let i = 0; i < 12; i++) {
+      handles[0]!._emit({
+        event: {
+          case: 'updateAck',
+          value: {
+            rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+            rejectedTerminals: [],
+          },
+        },
+      } as unknown as WatchEventsResponse)
+      await vi.advanceTimersByTimeAsync(20_000)
+      await flush()
+    }
+    // REJECTION_RETRY_MAX is 8.
+    expect(handles[0]!.update.mock.calls.length).toBe(8)
+  })
+
+  it('calls onPromoted when an agent transitions into FULL', async () => {
+    const promoted: Array<{ workerId: string, agentIds: string[] }> = []
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    const [mode, setMode] = createSignal(WatchMode.NOTIFY)
+    createRoot((dispose) => {
+      disposeRoot = dispose
+      const plans = createMemo(() => new Map([
+        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [] }],
+      ]))
+      useWatchEventsStreams({
+        view: stores.view,
+        plans,
+        onEvent: () => {},
+        onWorkerOnline: () => {},
+        onPromoted: (workerId, agentIds) => promoted.push({ workerId, agentIds }),
+      })
+    })
+    await flush()
+    expect(promoted).toEqual([])
+    setMode(WatchMode.FULL)
+    await flush()
+    // Promotion is ack-gated — wire update alone must not fire onPromoted.
+    expect(promoted).toEqual([])
+    handles[0]!._emit({
+      event: {
+        case: 'updateAck',
+        value: { updateId: 2n, rejectedAgents: [], rejectedTerminals: [] },
+      },
+    } as unknown as WatchEventsResponse)
+    await flush()
+    expect(promoted).toEqual([{ workerId: 'w1', agentIds: ['a1'] }])
+    setMode(WatchMode.FULL)
+    await flush()
+    expect(promoted).toHaveLength(1)
+  })
+
+  it('reconnects after a clean stream end without marking offline', async () => {
+    const online: boolean[] = []
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      { onWorkerOnline: (_w, o) => online.push(o) },
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    handles[0]!._end()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(online).not.toContain(false)
+    expect(vi.mocked(watchEventsViaChannel).mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('resets LOOKUP_FAILED retry budget after a settled updateAck', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    handles[0]!.update.mockClear()
+
+    for (let i = 0; i < 3; i++) {
+      handles[0]!._emit({
+        event: {
+          case: 'updateAck',
+          value: {
+            rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+            rejectedTerminals: [],
+          },
+        },
+      } as unknown as WatchEventsResponse)
+      await vi.advanceTimersByTimeAsync(20_000)
+      await flush()
+    }
+    expect(handles[0]!.update.mock.calls.length).toBe(3)
+
+    // Settled ack resets the rejection budget.
+    handles[0]!._emit({
+      event: {
+        case: 'updateAck',
+        value: { rejectedAgents: [], rejectedTerminals: [] },
+      },
+    } as unknown as WatchEventsResponse)
+    await flush()
+    handles[0]!.update.mockClear()
+
+    for (let i = 0; i < 12; i++) {
+      handles[0]!._emit({
+        event: {
+          case: 'updateAck',
+          value: {
+            rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+            rejectedTerminals: [],
+          },
+        },
+      } as unknown as WatchEventsResponse)
+      await vi.advanceTimersByTimeAsync(20_000)
+      await flush()
+    }
+    expect(handles[0]!.update.mock.calls.length).toBe(8)
+  })
+
+  it('keeps a sibling worker reconnect armed when another worker leaves the plan', async () => {
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    const [plans, setPlans] = createSignal(new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+    ]))
+    createRoot((dispose) => {
+      disposeRoot = dispose
+      useWatchEventsStreams({
+        view: stores.view,
+        plans,
+        onEvent: () => {},
+        onWorkerOnline: () => {},
+        onPromoted: () => {},
+      })
+    })
+    await flush()
+    expect(handles).toHaveLength(2)
+    const opensBefore = vi.mocked(watchEventsViaChannel).mock.calls.length
+
+    // End w1's stream so a reconnect is scheduled; then drop w2 from the plan.
+    // Cancelling w2 must not wipe w1's pending reconnect timer.
+    handles[0]!._end()
+    setPlans(new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
+    ]))
+    await flush()
+    expect(handles[1]!.close).toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(vi.mocked(watchEventsViaChannel).mock.calls.length).toBeGreaterThan(opensBefore)
+  })
+
+  it('marks only the failing worker offline on a transport error', async () => {
+    const online: Array<{ workerId: string, online: boolean }> = []
+    const harness = installTestBridge({ workspaceId: WS })
+    const stores = createTestTabStores(WS)
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
+    createRoot((dispose) => {
+      disposeRoot = dispose
+      const plans = createMemo(() => new Map([
+        ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
+        ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+      ]))
+      useWatchEventsStreams({
+        view: stores.view,
+        plans,
+        onEvent: () => {},
+        onWorkerOnline: (workerId, o) => online.push({ workerId, online: o }),
+        onPromoted: () => {},
+      })
+    })
+    await flush()
+    expect(handles).toHaveLength(2)
+    handles[0]!._error(new ChannelError('transport', 'gone'))
+    await flush()
+    expect(online.filter(e => !e.online)).toEqual([{ workerId: 'w1', online: false }])
+    expect(online.some(e => e.workerId === 'w2' && !e.online)).toBe(false)
+  })
+})

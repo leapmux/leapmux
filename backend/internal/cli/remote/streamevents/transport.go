@@ -3,8 +3,10 @@ package streamevents
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
+	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
@@ -13,6 +15,12 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/tunnel"
 )
+
+// errHandleClosed is returned by a Handle method invoked after the stream has
+// been cancelled or the transport ended. It tells the caller the revision did
+// not land (so it must re-state it later) rather than letting a silently-dropped
+// UpdateStream advance local state.
+var errHandleClosed = errors.New("streamevents: handle is closed")
 
 // transportLogger returns logger, or slog.Default() when nil, so a transport never
 // nil-derefs when surfacing a malformed frame. Shared by both transport constructors.
@@ -56,6 +64,35 @@ func logTerminalStreamError(logger *slog.Logger, transportName string, code int3
 		"transport", transportName, "code", code, "error", message)
 }
 
+// Handle is a live WatchEvents subscription on one transport stream.
+// Revisions ride Update; retirement is Cancel.
+type Handle interface {
+	Update(*leapmuxv1.WatchEventsRequest) error
+	Cancel()
+	Done() <-chan struct{}
+}
+
+// Transport abstracts "stream a WatchEvents subscription against
+// some backend." Two production wirings exist:
+//
+//   - hub-bound: open an E2EE channel via `*remote.Client.OpenE2EEChannel`,
+//     then `SendRPCNoWait` with atomically registered response and stream handlers.
+//   - local-IPC: call `RemoteIPCService.StreamInner` with method
+//     `worker.WatchEvents` over the per-agent socket.
+//
+// Both flows decode the same `WatchEventsResponse` payload off the
+// wire. By writing the cursor + reconnect logic against this
+// interface, callers (`agent messages --follow` and `events --include
+// agent,terminal`) share one implementation regardless of mode.
+type Transport interface {
+	// OpenWatchEvents starts a WatchEvents subscription with the
+	// given request. onFrame is called once per delivered
+	// WatchEventsResponse. The returned Handle sends revisions on
+	// the same stream and cancels it when done.
+	OpenWatchEvents(ctx context.Context, req *leapmuxv1.WatchEventsRequest,
+		onFrame func(*leapmuxv1.WatchEventsResponse)) (Handle, error)
+}
+
 // channelLike is the subset of `*tunnel.Channel` Transport needs.
 // Pulled into an interface so tests don't need a real Noise_NK
 // responder; production wires it to *tunnel.Channel directly.
@@ -66,6 +103,8 @@ func logTerminalStreamError(logger *slog.Logger, transportName string, code int3
 // interface is exactly the subset the transport calls, no more.
 type channelLike interface {
 	SendRPCNoWait(ctx context.Context, method string, payload []byte, handlers tunnel.RPCHandlers) (uint64, error)
+	SendStreamRequest(ctx context.Context, reqID uint64, payload []byte, cancel bool) error
+	CancelStream(ctx context.Context, reqID uint64) error
 	UnregisterStream(reqID uint64)
 	UnregisterPending(reqID uint64)
 	Context() context.Context
@@ -77,9 +116,8 @@ type channelLike interface {
 //
 // The transport does NOT own the channel's lifecycle — callers open
 // the channel, hand it in, and close it when they're done with the
-// worker (e.g. on snapshot eviction). Multiple Subscriptions can
-// share a channel sequentially (cancel one, open another) but not
-// concurrently — the WatchEvents handler is single-stream-per-channel.
+// worker (e.g. on snapshot eviction). Multiple revisions on one
+// stream are sent via Handle.Update; CancelStream retires it.
 type ChannelTransport struct {
 	channel channelLike
 	logger  *slog.Logger
@@ -91,38 +129,60 @@ func NewChannelTransport(ch channelLike, logger *slog.Logger) *ChannelTransport 
 	return &ChannelTransport{channel: ch, logger: transportLogger(logger)}
 }
 
-// OpenWatchEvents implements Transport.
-func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv1.WatchEventsRequest,
-	onFrame func(*leapmuxv1.WatchEventsResponse),
-) (context.CancelFunc, <-chan struct{}, error) {
-	if t.channel == nil {
-		return nil, nil, errors.New("nil channel")
+type channelHandle struct {
+	ch     channelLike
+	reqID  uint64
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   <-chan struct{}
+}
+
+func (h *channelHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
+	// A trailing Update after Cancel/Done silently drops on the wire; surface
+	// it so the caller knows the revision did not land (see localIPCHandle).
+	select {
+	case <-h.done:
+		return errHandleClosed
+	default:
 	}
 	payload, err := proto.Marshal(req)
 	if err != nil {
-		return nil, nil, err
+		return fmt.Errorf("marshal WatchEventsRequest: %w", err)
+	}
+	return h.ch.SendStreamRequest(h.ctx, h.reqID, payload, false)
+}
+
+func (h *channelHandle) Cancel() {
+	// Detach from the stream ctx so a Done-raced cancel still reaches the worker.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.ctx), 5*time.Second)
+	defer cancel()
+	if err := h.ch.CancelStream(ctx, h.reqID); err != nil {
+		slog.Debug("channelHandle.Cancel: CancelStream failed", "error", err)
+	}
+	// Wake the done goroutine: CancelStream retires the worker side and the
+	// local demux registration, but this transport's lifecycle is keyed off
+	// ctx, which nothing else cancels for a client-initiated retire.
+	h.cancel()
+}
+
+func (h *channelHandle) Done() <-chan struct{} { return h.done }
+
+// OpenWatchEvents implements Transport.
+func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv1.WatchEventsRequest,
+	onFrame func(*leapmuxv1.WatchEventsResponse),
+) (Handle, error) {
+	if t.channel == nil {
+		return nil, errors.New("nil channel")
+	}
+	payload, err := proto.Marshal(req)
+	if err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parentCtx)
 	// `closed` lets a frame already in flight when teardown runs observe that the
 	// subscription has ended and drop itself: the channel demux invokes this cb from
 	// its OWN goroutine and releases the channel lock before calling it, so a frame
 	// can race teardown.
-	//
-	// The flag is checked ONLY before `onFrame`, and is deliberately NOT
-	// synchronized with it. An earlier version held a mutex across onFrame to
-	// guarantee no frame is delivered after Done() closes, but that deadlocks:
-	// onFrame chains into the consumer's synchronous stdout encode, and if stdout
-	// back-pressures (a paused `--follow` reader) the cb blocks holding the mutex,
-	// so the teardown goroutine below can never acquire it to set
-	// `closed`/`cancel()` -- Done() never closes and Cancel()/Update() hang forever.
-	// Not holding it across onFrame lets teardown close `done` promptly while a
-	// blocked frame drains on its own. Guarding a lone bool with no compound
-	// invariant is exactly an atomic.Bool, so it is one -- the mutex it replaces
-	// only made the no-compound-invariant property harder to see. The cost is a
-	// narrow window where a late frame's onFrame runs just after Done() closes;
-	// consumers already tolerate this (the `agent messages --follow` loop treats a
-	// late `delivered` flip as a harmless backoff reset), and it
-	// matches the LocalIPCTransport, which delivers with no such guard at all.
 	var closed atomic.Bool
 	respCh := make(chan *leapmuxv1.InnerRpcResponse, 1)
 	reqID, err := t.channel.SendRPCNoWait(ctx, "WatchEvents", payload, tunnel.RPCHandlers{
@@ -131,14 +191,6 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 			if closed.Load() {
 				return
 			}
-			// A terminal frame ends the subscription. Without this the
-			// error envelope was handed to decodeWatchFrame, which parsed
-			// its empty payload into a blank WatchEventsResponse and
-			// delivered it as if it were data -- so a stream the worker had
-			// already ended kept the CLI waiting, and the reason never
-			// reached the log. Only the unary respCh arm below was ever
-			// treated as terminal, and a streaming handler no longer
-			// answers that way.
 			if msg.GetIsError() {
 				logTerminalStreamError(transportLogger(t.logger), "channel", msg.GetErrorCode(), msg.GetErrorMessage())
 				cancel()
@@ -157,35 +209,25 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 	})
 	if err != nil {
 		cancel()
-		return nil, nil, err
+		return nil, err
 	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		select {
 		case <-ctx.Done():
-			// Clean shutdown: caller invoked cancel.
 		case <-t.channel.Context().Done():
-			// Channel disconnected. Caller observes via Done().
 		case resp := <-respCh:
-			// Server returned a non-stream response (typically an
-			// error envelope). Treat as terminal — the consumer
-			// observes via Done() and may resubscribe — but surface
-			// WHY, or the subscription dies with no diagnostic.
 			if resp.GetIsError() {
 				logTerminalStreamError(transportLogger(t.logger), "channel", resp.GetErrorCode(), resp.GetErrorMessage())
 			}
 		}
-		// Flip `closed` BEFORE unregistering/closing so any frame the demux delivers
-		// from here on drops itself (see the cb guard above). A frame already inside
-		// onFrame is NOT waited for -- that is what keeps teardown from deadlocking
-		// behind a back-pressured stdout encode.
 		closed.Store(true)
 		t.channel.UnregisterStream(reqID)
 		t.channel.UnregisterPending(reqID)
 		cancel()
 	}()
-	return cancel, done, nil
+	return &channelHandle{ch: t.channel, reqID: reqID, ctx: ctx, cancel: cancel, done: done}, nil
 }
 
 // LocalIPCTransport runs a WatchEvents subscription via the per-agent
@@ -200,6 +242,7 @@ type LocalIPCTransport struct {
 	// sibling workers via the router's cross-worker dispatch.
 	targetWorkerID string
 	logger         *slog.Logger
+	nextReqID      atomic.Uint64
 }
 
 // NewLocalIPCTransport wires the local-IPC client + target. A nil
@@ -208,26 +251,79 @@ func NewLocalIPCTransport(client leapmuxv1connect.RemoteIPCServiceClient, target
 	return &LocalIPCTransport{client: client, targetWorkerID: targetWorkerID, logger: transportLogger(logger)}
 }
 
-// OpenWatchEvents implements Transport.
-func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv1.WatchEventsRequest,
-	onFrame func(*leapmuxv1.WatchEventsResponse),
-) (context.CancelFunc, <-chan struct{}, error) {
-	if t.client == nil {
-		return nil, nil, errors.New("nil RemoteIPCService client")
+type localIPCHandle struct {
+	client      leapmuxv1connect.RemoteIPCServiceClient
+	clientReqID string
+	parentCtx   context.Context
+	cancel      context.CancelFunc
+	done        <-chan struct{}
+	cancelled   atomic.Bool
+}
+
+func (h *localIPCHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
+	// Guard against a trailing Update that races Cancel/Done: once cancelled
+	// the worker side has retired the clientReqID and the router silently drops
+	// the frame while returning nil — so without this the caller would advance
+	// its local interest believing the revision landed, and never re-state it.
+	// Return a non-nil error so the caller treats the revision as unsent.
+	if h.cancelled.Load() {
+		return errHandleClosed
+	}
+	select {
+	case <-h.done:
+		return errHandleClosed
+	default:
 	}
 	payload, err := proto.Marshal(req)
 	if err != nil {
-		return nil, nil, err
+		return fmt.Errorf("marshal WatchEventsRequest: %w", err)
 	}
+	_, err = h.client.UpdateStream(h.parentCtx, connect.NewRequest(&leapmuxv1.UpdateStreamRequest{
+		ClientRequestId: h.clientReqID,
+		Payload:         payload,
+	}))
+	return err
+}
+
+func (h *localIPCHandle) Cancel() {
+	if h.cancelled.Swap(true) {
+		return
+	}
+	// Detach from parentCtx so a cancelled parent still retires the worker stream.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.parentCtx), 5*time.Second)
+	defer cancel()
+	if _, err := h.client.Cancel(ctx, connect.NewRequest(&leapmuxv1.CancelRequest{
+		ClientRequestId: h.clientReqID,
+	})); err != nil {
+		slog.Debug("localIPCHandle.Cancel failed", "error", err)
+	}
+	h.cancel()
+}
+
+func (h *localIPCHandle) Done() <-chan struct{} { return h.done }
+
+// OpenWatchEvents implements Transport.
+func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leapmuxv1.WatchEventsRequest,
+	onFrame func(*leapmuxv1.WatchEventsResponse),
+) (Handle, error) {
+	if t.client == nil {
+		return nil, errors.New("nil RemoteIPCService client")
+	}
+	payload, err := proto.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	clientReqID := fmt.Sprintf("watch-%d", t.nextReqID.Add(1))
 	ctx, cancel := context.WithCancel(parentCtx)
 	stream, err := t.client.StreamInner(ctx, connect.NewRequest(&leapmuxv1.StreamInnerRequest{
-		Method:         "worker.WatchEvents",
-		Payload:        payload,
-		TargetWorkerId: t.targetWorkerID,
+		Method:          "worker.WatchEvents",
+		Payload:         payload,
+		TargetWorkerId:  t.targetWorkerID,
+		ClientRequestId: clientReqID,
 	}))
 	if err != nil {
 		cancel()
-		return nil, nil, err
+		return nil, err
 	}
 	done := make(chan struct{})
 	go func() {
@@ -254,18 +350,16 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 				return
 			}
 		}
-		// Receive returned false; stream ended (or errored).
-		// The caller's Done() observer notices and can decide to retry.
 	}()
-	// Release the ctx child on every exit path, exactly as the ChannelTransport
-	// sibling does. The caller's cancel is the ONLY other release, and a consumer
-	// that observes Done() and stops -- rather than resubscribing -- never calls it,
-	// leaving this child attached to a long-lived parent for the process lifetime.
-	// Cancelling a stream that has already ended is a no-op, so this is safe to run
-	// ahead of (or instead of) the caller's cancel.
 	go func() {
 		<-done
 		cancel()
 	}()
-	return cancel, done, nil
+	return &localIPCHandle{
+		client:      t.client,
+		clientReqID: clientReqID,
+		parentCtx:   parentCtx,
+		cancel:      cancel,
+		done:        done,
+	}, nil
 }

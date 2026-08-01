@@ -39,7 +39,7 @@ func seedPendingControlRequest(t *testing.T, ctx context.Context, svc *Service, 
 		Payload:   []byte(`{"jsonrpc":"2.0","id":1,"method":"tool/permission"}`),
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []string{agentID}, w)
+	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: agentID, mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 	return requestID
 }
 

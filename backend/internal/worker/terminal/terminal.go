@@ -67,9 +67,10 @@ func NewScreenBufferWithOffset(initialOffset int64) *ScreenBuffer {
 }
 
 // Write appends data to the ring buffer and returns the cumulative byte
-// offset at the end of the write. Callers forward that offset to watchers
+// offset at the end of the write plus any notification-class signals the
+// tracker observed in this chunk. Callers forward the offset to watchers
 // so they can persist it as their resume cursor.
-func (sb *ScreenBuffer) Write(data []byte) int64 {
+func (sb *ScreenBuffer) Write(data []byte) (int64, []Signal) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -78,7 +79,9 @@ func (sb *ScreenBuffer) Write(data []byte) int64 {
 	// data), but feeding first reads naturally and keeps the tracker
 	// state consistent with what a fresh xterm receiving these same
 	// bytes would hold.
+	sb.tracker.beginChunk()
 	sb.tracker.feed(data)
+	signals := sb.tracker.drainSignals()
 	sb.total += int64(len(data))
 	// Writes larger than the ring would overwrite themselves; only the
 	// final len(buf) bytes can survive, so skip ahead to them.
@@ -86,7 +89,7 @@ func (sb *ScreenBuffer) Write(data []byte) int64 {
 		copy(sb.buf, data[len(data)-len(sb.buf):])
 		sb.pos = 0
 		sb.full = true
-		return sb.total
+		return sb.total, signals
 	}
 	for len(data) > 0 {
 		n := copy(sb.buf[sb.pos:], data)
@@ -97,7 +100,7 @@ func (sb *ScreenBuffer) Write(data []byte) int64 {
 			sb.full = true
 		}
 	}
-	return sb.total
+	return sb.total, signals
 }
 
 // TotalBytes returns the cumulative byte count ever written to this buffer.
@@ -228,8 +231,10 @@ func (sb *ScreenBuffer) SnapshotSince(afterOffset int64) (data []byte, endOffset
 
 // OutputHandler is called for each chunk of output from the PTY. The
 // endOffset is the cumulative byte counter *after* this chunk; callers
-// forward it to watchers as the resume cursor for this event.
-type OutputHandler func(data []byte, endOffset int64)
+// forward it to watchers as the resume cursor for this event. Signals
+// carry notification-class escape sequences (bell, title, notification,
+// progress) interpreted worker-side from this chunk.
+type OutputHandler func(data []byte, endOffset int64, signals []Signal)
 
 // Terminal manages a single PTY session.
 type Terminal struct {
@@ -366,8 +371,8 @@ func startWithScreenBuffer(ctx context.Context, opts Options, screenBuf *ScreenB
 	}
 
 	wrappedOutput := func(data []byte) {
-		endOffset := screenBuf.Write(data)
-		outputFn(data, endOffset)
+		endOffset, signals := screenBuf.Write(data)
+		outputFn(data, endOffset, signals)
 	}
 
 	t := &Terminal{

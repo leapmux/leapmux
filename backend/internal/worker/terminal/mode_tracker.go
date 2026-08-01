@@ -1,5 +1,13 @@
 package terminal
 
+import (
+	"bytes"
+	"encoding/base64"
+	"log/slog"
+	"strconv"
+	"strings"
+)
+
 // modeTracker observes PTY output bytes and keeps a minimal model of
 // sticky xterm state. It is NOT a terminal emulator — it tracks only
 // the modes listed below. Unknown escape sequences are skipped without
@@ -37,6 +45,21 @@ type modeTracker struct {
 	oscBuf     [oscBufCap]byte
 	oscLen     int
 	oscOverrun bool // true once oscLen hit cap; drop the OSC, keep parsing terminator.
+
+	// Per-chunk signal coalescing (reset by beginChunk, drained by drainSignals).
+	chunkSignals    []Signal
+	chunkBell       bool
+	chunkNotifCount int
+	droppedNotifs   int
+
+	kittyPending map[string]*kittyPending
+	kittyDropped map[string]struct{}
+}
+
+type kittyPending struct {
+	title string
+	body  string
+	bytes int
 }
 
 type parseState uint8
@@ -67,9 +90,45 @@ const (
 )
 
 const (
-	paramBufCap = 64  // CSI parameter cap; overflow aborts the sequence.
-	oscBufCap   = 256 // OSC body cap; overflow drops the OSC body silently.
+	paramBufCap              = 64   // CSI parameter cap; overflow aborts the sequence.
+	oscBufCap                = 2048 // OSC body cap; overflow drops the OSC body silently.
+	maxNotificationsPerChunk = 8
+	kittyMaxPending          = 4
+	kittyMaxBytes            = 4096
+	// kittyMaxDropped bounds the banned-id set. Without it a long-lived
+	// terminal emitting many distinct oversized (>kittyMaxBytes) kitty
+	// notifications grows kittyDropped without limit (the set is insert-only
+	// and lives for the modeTracker's lifetime). At the cap we clear and start
+	// over rather than refusing to ban, so a fresh burst of oversized
+	// notifications is still throttled.
+	kittyMaxDropped = 64
 )
+
+// beginChunk resets per-Write signal coalescing state. Call once before feed
+// for each ScreenBuffer.Write.
+func (t *modeTracker) beginChunk() {
+	t.chunkSignals = t.chunkSignals[:0]
+	t.chunkBell = false
+	t.chunkNotifCount = 0
+	t.droppedNotifs = 0
+}
+
+// drainSignals returns signals observed during the current chunk and clears
+// the coalescing slot.
+func (t *modeTracker) drainSignals() []Signal {
+	if t.droppedNotifs > 0 {
+		slog.Warn("terminal OSC notifications dropped in one PTY chunk",
+			"dropped", t.droppedNotifs,
+			"limit", maxNotificationsPerChunk,
+		)
+	}
+	out := append([]Signal(nil), t.chunkSignals...)
+	t.chunkSignals = t.chunkSignals[:0]
+	t.chunkBell = false
+	t.chunkNotifCount = 0
+	t.droppedNotifs = 0
+	return out
+}
 
 // feed processes a chunk of PTY output. Allocation-free when the chunk
 // contains no escape sequences (the >99% case for shell output). Partial
@@ -79,8 +138,11 @@ func (t *modeTracker) feed(data []byte) {
 	for _, b := range data {
 		switch t.parseState {
 		case stateGround:
-			if b == 0x1b {
+			switch b {
+			case 0x1b:
 				t.parseState = stateEsc
+			case 0x07:
+				t.emitBell()
 			}
 		case stateEsc:
 			t.handleEscIntro(b)
@@ -247,8 +309,7 @@ func setOrClearSlot[T comparable](slot *T, on, off T, set bool) {
 }
 
 // dispatchOSC handles a complete OSC body sitting in t.oscBuf[:t.oscLen].
-// We only care about Ps == 0 or 2 (window title). Bodies that overflowed
-// the cap are dropped (oscOverrun==true).
+// Bodies that overflowed the cap are dropped (oscOverrun==true).
 func (t *modeTracker) dispatchOSC() {
 	defer func() {
 		t.oscLen = 0
@@ -258,16 +319,258 @@ func (t *modeTracker) dispatchOSC() {
 		return
 	}
 	body := t.oscBuf[:t.oscLen]
-	// Body shape: `<Ps>;<text>`. We accept "0" or "2" as Ps.
-	if len(body) < 2 || body[1] != ';' {
+	if len(body) == 0 {
 		return
 	}
-	if body[0] != '0' && body[0] != '2' {
+	semi := bytes.IndexByte(body, ';')
+	if semi < 0 {
 		return
 	}
-	text := body[2:]
-	// Clone — we're aliasing a fixed-size array.
+	ps := string(body[:semi])
+	rest := body[semi+1:]
+
+	switch ps {
+	case "0", "2":
+		t.setTitle(rest)
+	case "1":
+		// Icon name only — ignored for title signals and snapshot title slot.
+	case "9":
+		t.dispatchOSC9(rest)
+	case "777":
+		t.dispatchOSC777(rest)
+	case "99":
+		t.dispatchOSC99(rest)
+	}
+}
+
+func (t *modeTracker) setTitle(text []byte) {
+	if t.title != nil && bytes.Equal(t.title, text) {
+		return
+	}
 	t.title = append(t.title[:0], text...)
+	t.replaceLastSignal(SignalTitle, Signal{Kind: SignalTitle, Title: string(text)})
+}
+
+func (t *modeTracker) dispatchOSC9(rest []byte) {
+	if bytes.HasPrefix(rest, []byte("4;")) {
+		t.dispatchOSC9Progress(rest[2:])
+		return
+	}
+	t.emitNotification("", string(rest))
+}
+
+func (t *modeTracker) dispatchOSC9Progress(rest []byte) {
+	parts := bytes.SplitN(rest, []byte(";"), 2)
+	if len(parts) == 0 || len(parts[0]) == 0 {
+		return
+	}
+	stateVal, err := strconv.Atoi(string(parts[0]))
+	if err != nil {
+		return
+	}
+	var state ProgressState
+	switch stateVal {
+	case 0:
+		state = ProgressClear
+	case 1:
+		state = ProgressNormal
+	case 2:
+		state = ProgressError
+	case 3:
+		state = ProgressIndeterminate
+	case 4:
+		state = ProgressPaused
+	default:
+		return
+	}
+	var percent int32
+	if len(parts) == 2 && len(parts[1]) > 0 {
+		p, err := strconv.Atoi(string(parts[1]))
+		if err != nil {
+			return
+		}
+		// Clamp to the documented 0..100 range rather than narrowing an
+		// arbitrary `int` to int32 (which silently wraps for out-of-range
+		// values like `OSC 9;4;1;9999999999`, producing a bogus/negative
+		// percent on the wire).
+		if p < 0 {
+			p = 0
+		} else if p > 100 {
+			p = 100
+		}
+		percent = int32(p)
+	}
+	t.replaceLastSignal(SignalProgress, Signal{Kind: SignalProgress, State: state, Percent: percent})
+}
+
+func (t *modeTracker) dispatchOSC777(rest []byte) {
+	parts := strings.SplitN(string(rest), ";", 3)
+	if len(parts) < 3 || parts[0] != "notify" {
+		return
+	}
+	t.emitNotification(parts[1], parts[2])
+}
+
+func (t *modeTracker) dispatchOSC99(rest []byte) {
+	semi := bytes.IndexByte(rest, ';')
+	if semi < 0 {
+		return
+	}
+	meta := rest[:semi]
+	payload := rest[semi+1:]
+
+	id := ""
+	done := true
+	part := "title"
+	encoded := false
+	for _, field := range bytes.Split(meta, []byte(":")) {
+		kv := bytes.SplitN(field, []byte("="), 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch string(kv[0]) {
+		case "i":
+			id = string(kv[1])
+		case "d":
+			done = string(kv[1]) != "0"
+		case "p":
+			part = string(kv[1])
+		case "e":
+			encoded = string(kv[1]) == "1"
+		}
+	}
+	if part == "?" {
+		return
+	}
+	if done && t.kittyDropped != nil {
+		if _, banned := t.kittyDropped[id]; banned {
+			return
+		}
+	}
+
+	text := string(payload)
+	if encoded {
+		decoded, err := base64.StdEncoding.DecodeString(text)
+		if err != nil {
+			return
+		}
+		text = string(decoded)
+	}
+
+	if !done {
+		p := t.kittyEnsure(id)
+		if p == nil {
+			return
+		}
+		add := len(text)
+		if p.bytes+add > kittyMaxBytes {
+			t.kittyDrop(id)
+			t.kittyMarkDropped(id)
+			return
+		}
+		switch part {
+		case "body":
+			p.body += text
+		default:
+			p.title += text
+		}
+		p.bytes += add
+		return
+	}
+
+	title, body := text, ""
+	if part == "body" {
+		title, body = "", text
+	}
+	if pending := t.kittyPending[id]; pending != nil {
+		add := len(text)
+		if pending.bytes+add > kittyMaxBytes {
+			t.kittyDrop(id)
+			t.kittyMarkDropped(id)
+			return
+		}
+		if pending.title != "" {
+			title = pending.title + title
+		}
+		if pending.body != "" {
+			body = pending.body + body
+		}
+		t.kittyDrop(id)
+	}
+	t.emitNotification(title, body)
+}
+
+func (t *modeTracker) kittyEnsure(id string) *kittyPending {
+	if t.kittyDropped != nil {
+		if _, banned := t.kittyDropped[id]; banned {
+			return nil
+		}
+	}
+	if p, ok := t.kittyPending[id]; ok {
+		return p
+	}
+	if t.kittyPending == nil {
+		t.kittyPending = make(map[string]*kittyPending)
+	}
+	if len(t.kittyPending) >= kittyMaxPending {
+		return nil
+	}
+	p := &kittyPending{}
+	t.kittyPending[id] = p
+	return p
+}
+
+func (t *modeTracker) kittyDrop(id string) {
+	if t.kittyPending == nil {
+		return
+	}
+	delete(t.kittyPending, id)
+}
+
+// kittyMarkDropped bans id from future notification delivery (an oversized
+// payload cannot be reassembled). The dropped set is bounded so a terminal
+// emitting many distinct oversized notifications cannot grow it without limit.
+func (t *modeTracker) kittyMarkDropped(id string) {
+	if t.kittyDropped == nil {
+		t.kittyDropped = make(map[string]struct{})
+	} else if len(t.kittyDropped) >= kittyMaxDropped {
+		// At capacity, clear and start over rather than refusing to ban: a
+		// fresh burst of oversized notifications is still throttled, and old
+		// (likely stale) bans are the safest to forget.
+		t.kittyDropped = make(map[string]struct{})
+	}
+	t.kittyDropped[id] = struct{}{}
+}
+
+func (t *modeTracker) emitBell() {
+	if t.chunkBell {
+		return
+	}
+	t.chunkBell = true
+	t.chunkSignals = append(t.chunkSignals, Signal{Kind: SignalBell})
+}
+
+func (t *modeTracker) emitNotification(title, body string) {
+	if t.chunkNotifCount >= maxNotificationsPerChunk {
+		t.droppedNotifs++
+		return
+	}
+	t.chunkNotifCount++
+	t.chunkSignals = append(t.chunkSignals, Signal{
+		Kind:  SignalNotification,
+		Title: title,
+		Body:  body,
+	})
+}
+
+func (t *modeTracker) replaceLastSignal(kind SignalKind, sig Signal) {
+	for i := len(t.chunkSignals) - 1; i >= 0; i-- {
+		if t.chunkSignals[i].Kind == kind {
+			t.chunkSignals[i] = sig
+			return
+		}
+	}
+	t.chunkSignals = append(t.chunkSignals, sig)
 }
 
 // snapshotPrefix returns the escape sequences that reproduce the

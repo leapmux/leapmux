@@ -266,6 +266,29 @@ describe('channelManager getOrOpenChannel', () => {
     expect(h.mgr.isOpen(ch1)).toBe(false)
   })
 
+  it('rekeys before a stream send when the pooled channel has aged', async () => {
+    const ch1 = await h.openTestChannel('w1')
+    const handle = h.mgr.stream(ch1, 'WatchEvents', new Uint8Array())
+    // StreamOpen advanced the initiator send nonce; consume it on the
+    // responder so simulateRekeyAck can decrypt the subsequent RekeyRequest.
+    {
+      const openMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
+      const pair = sessions.get(openMsg.channelId)!
+      pair.responder.receive.decrypt(openMsg.ciphertext)
+    }
+    agePastMaxAge((h.mgr as any).channels.get(ch1))
+    const sentBefore = h.mockWs.sent.length
+    handle.send(new Uint8Array([9, 9]))
+    // Gate engaged: the update is not on the wire yet.
+    expect(h.mockWs.sent.length).toBe(sentBefore)
+    await h.flushMicrotasks()
+    h.simulateRekeyAck()
+    await h.flushMicrotasks()
+    expect(h.mockWs.sent.length).toBeGreaterThan(sentBefore)
+    const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
+    expect(Number(sentMsg.correlationId)).toBe(handle.requestId)
+  })
+
   it('rekeys before call when the pooled channel has aged', async () => {
     const ch1 = await h.openTestChannel('w1')
     agePastMaxAge((h.mgr as any).channels.get(ch1))

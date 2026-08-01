@@ -32,9 +32,14 @@ type LocalDispatcher interface {
 //
 // The delegation bearer it authenticates with is scoped to (user, minting
 // worker), so the channel pool keys on (target, user) alone.
+//
+// StreamInner's bindCtrl, when non-nil, receives a StreamController that
+// forwards InnerStreamRequest frames onto the dedicated cross-worker
+// channel so UpdateStream / CancelStream work for sibling WatchEvents
+// the same way they do for local-IPC.
 type CrossWorkerClient interface {
 	CallInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte) ([]byte, error)
-	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error
+	StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error
 }
 
 // HubClient is the subset of the worker's hub-bound client the router
@@ -85,15 +90,25 @@ type Router struct {
 	// or a partial teardown can leave an entry behind. The Server
 	// janitor calls SweepStaleCancellers periodically to bound the
 	// worst-case lifetime of an orphaned cancel function.
-	StreamCancellers sync.Map // string → streamCancelEntry
+	StreamCancellers sync.Map // string → *streamCancelEntry
 }
 
 // streamCancelEntry pairs a stream's cancel function with the time it
 // was registered so the defense-in-depth sweep can drop entries left
-// behind by abnormal teardowns.
+// behind by abnormal teardowns. ctrl, when set by BindStream, receives
+// client follow-up frames (UpdateStream) and OnCancel on CancelStream.
+//
+// Stored as a POINTER in StreamCancellers so BindStream can install ctrl
+// without a Load-mutate-Store that races CancelStream's LoadAndDelete
+// (and without sync.Map.CompareAndSwap, which panics on non-comparable
+// values containing funcs/interfaces).
 type streamCancelEntry struct {
 	cancel       context.CancelFunc
 	registeredAt time.Time
+
+	mu        sync.Mutex
+	ctrl      channel.StreamController
+	cancelled bool // set under mu when CancelStream/Sweep retires the entry
 }
 
 func (r *Router) now() time.Time {
@@ -202,15 +217,29 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if clientReqID != "" {
-		r.StreamCancellers.Store(clientReqID, streamCancelEntry{cancel: cancel, registeredAt: r.now()})
-		defer r.StreamCancellers.Delete(clientReqID)
+		r.StreamCancellers.Store(clientReqID, &streamCancelEntry{cancel: cancel, registeredAt: r.now()})
+		// Retire the controller on transport drop — Delete alone leaves
+		// BindStream'd watchSession / privateEventsController running on bgCtx.
+		defer func() {
+			if v, ok := r.StreamCancellers.LoadAndDelete(clientReqID); ok {
+				if entry, ok := v.(*streamCancelEntry); ok {
+					entry.mu.Lock()
+					ctrl := entry.ctrl
+					entry.ctrl = nil
+					entry.mu.Unlock()
+					if ctrl != nil {
+						ctrl.OnCancel()
+					}
+				}
+			}
+		}()
 	}
 
 	switch ns := namespaceOf(method); ns {
 	case namespaceWorker:
 		bare := stripNamespace(method)
 		if targetWorkerID == "" || targetWorkerID == r.WorkerID {
-			return r.streamLocal(streamCtx, info, bare, payload, onMsg)
+			return r.streamLocal(streamCtx, info, bare, payload, clientReqID, onMsg)
 		}
 		if r.CrossWorker == nil {
 			return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("cross-worker client not configured"))
@@ -223,6 +252,8 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 				ErrorMessage: m.GetErrorMessage(),
 				ErrorCode:    m.GetErrorCode(),
 			})
+		}, func(ctrl channel.StreamController) {
+			r.bindStreamController(clientReqID, ctrl)
 		})
 	case namespaceHub:
 		if r.HubStreams == nil {
@@ -237,23 +268,85 @@ func (r *Router) StreamInner(ctx context.Context, info TokenInfo, method string,
 	}
 }
 
-func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string, payload []byte, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
+func (r *Router) streamLocal(ctx context.Context, info TokenInfo, method string, payload []byte, clientReqID string, onMsg func(*leapmuxv1.StreamInnerEnvelope) error) error {
 	if r.LocalDispatcher == nil {
 		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("local dispatcher not configured"))
 	}
 	var collector *streamCollector
 	r.withLocalStream(info, func(streamID string) {
 		collector = newStreamCollector(ctx, streamID, onMsg)
+		collector.router = r
+		collector.clientReqID = clientReqID
 		r.LocalDispatcher.DispatchWith(ctx, r.UserID, &leapmuxv1.InnerRpcRequest{Method: method, Payload: payload}, collector)
 		collector.wait()
 	})
 	return collector.outcome()
 }
 
+// bindStreamController installs ctrl on the StreamCancellers entry for
+// clientReqID. Used by local-IPC BindStream and by the cross-worker
+// StreamInner bindCtrl so both paths share one UpdateStream lookup.
+//
+// Returns true when ctrl was installed on a LIVE entry, false when the entry
+// was already retired (CancelStream/Sweep beat the bind). The caller MUST
+// treat false as "the controller will never receive OnCancel from this
+// registry" and arrange its own retirement (e.g. cancel its ctx) — otherwise
+// a controller bound to a dead entry leaks for the process lifetime, since the
+// entry is no longer in the map for a future CancelStream/UpdateStream to find.
+//
+// Mutates the pointed-to entry under its mutex so a concurrent
+// CancelStream LoadAndDelete cannot be resurrected by a late Store.
+func (r *Router) bindStreamController(clientReqID string, ctrl channel.StreamController) bool {
+	if clientReqID == "" || ctrl == nil {
+		return false
+	}
+	v, loaded := r.StreamCancellers.Load(clientReqID)
+	if !loaded {
+		return false
+	}
+	entry, ok := v.(*streamCancelEntry)
+	if !ok {
+		return false
+	}
+	entry.mu.Lock()
+	if entry.cancelled {
+		entry.mu.Unlock()
+		return false
+	}
+	entry.ctrl = ctrl
+	entry.mu.Unlock()
+	return true
+}
+
+// UpdateStream delivers a follow-up payload to an in-flight stream's controller.
+func (r *Router) UpdateStream(clientReqID string, payload []byte) {
+	if clientReqID == "" {
+		return
+	}
+	if v, ok := r.StreamCancellers.Load(clientReqID); ok {
+		if entry, ok := v.(*streamCancelEntry); ok {
+			entry.mu.Lock()
+			ctrl := entry.ctrl
+			entry.mu.Unlock()
+			if ctrl != nil {
+				ctrl.OnClientFrame(payload)
+			}
+		}
+	}
+}
+
 // CancelStream cancels an active stream by client_request_id.
 func (r *Router) CancelStream(clientReqID string) {
 	if v, ok := r.StreamCancellers.LoadAndDelete(clientReqID); ok {
-		if entry, ok := v.(streamCancelEntry); ok {
+		if entry, ok := v.(*streamCancelEntry); ok {
+			entry.mu.Lock()
+			ctrl := entry.ctrl
+			entry.ctrl = nil
+			entry.cancelled = true
+			entry.mu.Unlock()
+			if ctrl != nil {
+				ctrl.OnCancel()
+			}
 			entry.cancel()
 		}
 	}
@@ -269,12 +362,19 @@ func (r *Router) CancelStream(clientReqID string) {
 func (r *Router) SweepStaleCancellers(cutoff time.Time) int {
 	dropped := 0
 	r.StreamCancellers.Range(func(key, value any) bool {
-		entry, ok := value.(streamCancelEntry)
+		entry, ok := value.(*streamCancelEntry)
 		if !ok {
 			return true
 		}
 		if entry.registeredAt.Before(cutoff) {
 			r.StreamCancellers.Delete(key)
+			entry.mu.Lock()
+			ctrl := entry.ctrl
+			entry.ctrl = nil
+			entry.mu.Unlock()
+			if ctrl != nil {
+				ctrl.OnCancel()
+			}
 			entry.cancel()
 			dropped++
 		}
@@ -319,6 +419,9 @@ func (c *responseCollector) SendStream(*leapmuxv1.InnerStreamMessage) error {
 
 func (c *responseCollector) ChannelID() string   { return c.streamID }
 func (*responseCollector) MaxPayloadBudget() int { return 0 }
+func (*responseCollector) BindStream(channel.StreamController) (func(), bool) {
+	return func() {}, false
+}
 
 func (c *responseCollector) toResponse() *leapmuxv1.CallInnerResponse {
 	c.mu.Lock()
@@ -361,6 +464,10 @@ type streamCollector struct {
 	ctx      context.Context
 	onMsg    func(*leapmuxv1.StreamInnerEnvelope) error
 	streamID string
+	// router + clientReqID let BindStream fill the StreamCancellers entry so
+	// UpdateStream / CancelStream can reach the controller.
+	router      *Router
+	clientReqID string
 
 	finished atomic.Bool
 	done     chan struct{}
@@ -486,6 +593,34 @@ func (c *streamCollector) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 
 func (c *streamCollector) ChannelID() string   { return c.streamID }
 func (*streamCollector) MaxPayloadBudget() int { return 0 }
+
+// BindStream installs ctrl on the StreamCancellers entry for this IPC stream.
+// ok is false when the entry has already been retired (CancelStream/Sweep beat
+// the bind): the handler MUST then run its own retirement (cancel its ctx /
+// release ownership), since no future UpdateStream/CancelStream will reach a
+// controller never installed in the map.
+func (c *streamCollector) BindStream(ctrl channel.StreamController) (release func(), ok bool) {
+	if c.router == nil || c.clientReqID == "" {
+		return func() {}, false
+	}
+	if !c.router.bindStreamController(c.clientReqID, ctrl) {
+		return func() {}, false
+	}
+	return func() {
+		// Clear ctrl without cancelling -- the handler is already unwinding.
+		v, ok := c.router.StreamCancellers.Load(c.clientReqID)
+		if !ok {
+			return
+		}
+		e, ok := v.(*streamCancelEntry)
+		if !ok {
+			return
+		}
+		e.mu.Lock()
+		e.ctrl = nil
+		e.mu.Unlock()
+	}, true
+}
 
 // wait blocks until either the handler signals completion or the request
 // context is cancelled.

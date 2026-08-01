@@ -39,8 +39,16 @@ type fakeChannel struct {
 	streamOnSend *leapmuxv1.InnerStreamMessage
 	// respCh receives the response handler, so a test can deliver the terminal
 	// error envelope a server sends instead of a stream frame.
-	respCh chan<- *leapmuxv1.InnerRpcResponse
-	ctx    context.Context
+	respCh           chan<- *leapmuxv1.InnerRpcResponse
+	ctx              context.Context
+	streamRequests   []streamRequestRecord
+	cancelledStreams []uint64
+}
+
+type streamRequestRecord struct {
+	reqID   uint64
+	payload []byte
+	cancel  bool
 }
 
 func (f *fakeChannel) SendRPCNoWait(_ context.Context, _ string, _ []byte, handlers tunnel.RPCHandlers) (uint64, error) {
@@ -50,6 +58,14 @@ func (f *fakeChannel) SendRPCNoWait(_ context.Context, _ string, _ []byte, handl
 		f.cb(f.streamOnSend)
 	}
 	return 1, nil
+}
+func (f *fakeChannel) SendStreamRequest(_ context.Context, reqID uint64, payload []byte, cancel bool) error {
+	f.streamRequests = append(f.streamRequests, streamRequestRecord{reqID: reqID, payload: payload, cancel: cancel})
+	return nil
+}
+func (f *fakeChannel) CancelStream(_ context.Context, reqID uint64) error {
+	f.cancelledStreams = append(f.cancelledStreams, reqID)
+	return nil
 }
 func (f *fakeChannel) UnregisterStream(_ uint64)  {}
 func (f *fakeChannel) UnregisterPending(_ uint64) {}
@@ -62,13 +78,13 @@ func TestChannelTransportRegistersStreamBeforeSendingRequest(t *testing.T) {
 	}
 	transport := NewChannelTransport(fc, nil)
 	frames := 0
-	cancel, done, err := transport.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
+	handle, err := transport.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
 		frames++
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, frames, "a stream frame sent with the request response must not race callback registration")
-	cancel()
-	<-done
+	handle.Cancel()
+	<-handle.Done()
 }
 
 // TestChannelTransport_DropsFramesAfterTeardown asserts the cb guard: a frame the
@@ -80,7 +96,7 @@ func TestChannelTransport_DropsFramesAfterTeardown(t *testing.T) {
 	tr := NewChannelTransport(fc, nil)
 
 	frames := 0
-	cancel, done, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
+	handle, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
 		frames++
 	})
 	require.NoError(t, err)
@@ -92,8 +108,8 @@ func TestChannelTransport_DropsFramesAfterTeardown(t *testing.T) {
 	require.Equal(t, 1, frames)
 
 	// Tear down and wait for Done() (the goroutine sets `closed` before closing done).
-	cancel()
-	<-done
+	handle.Cancel()
+	<-handle.Done()
 
 	// A late frame the demux still had in flight must be dropped, not delivered.
 	fc.cb(&leapmuxv1.InnerStreamMessage{})
@@ -113,7 +129,7 @@ func TestChannelTransport_TeardownNotBlockedByInFlightFrame(t *testing.T) {
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	cancel, done, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
+	handle, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
 		close(entered)
 		<-release // simulate a back-pressured stdout encode that blocks
 	})
@@ -126,9 +142,9 @@ func TestChannelTransport_TeardownNotBlockedByInFlightFrame(t *testing.T) {
 	<-entered // the cb is now inside onFrame
 
 	// Teardown must finish even though a frame is wedged in onFrame.
-	cancel()
+	handle.Cancel()
 	select {
-	case <-done:
+	case <-handle.Done():
 	case <-time.After(2 * time.Second):
 		close(release)
 		t.Fatal("Done() did not close while a frame was blocked in onFrame (teardown deadlock)")
@@ -150,7 +166,7 @@ func TestChannelTransport_LogsTerminalErrorEnvelope(t *testing.T) {
 	h := &capturingHandler{}
 	tr := NewChannelTransport(fc, slog.New(h))
 
-	_, done, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	handle, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
 	require.NoError(t, err)
 	require.NotNil(t, fc.respCh)
 
@@ -162,7 +178,7 @@ func TestChannelTransport_LogsTerminalErrorEnvelope(t *testing.T) {
 	}
 
 	select {
-	case <-done:
+	case <-handle.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("a terminal error envelope must end the subscription")
 	}
@@ -179,18 +195,85 @@ func TestChannelTransport_CleanTerminalResponseIsNotLoggedAsError(t *testing.T) 
 	h := &capturingHandler{}
 	tr := NewChannelTransport(fc, slog.New(h))
 
-	_, done, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	handle, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
 	require.NoError(t, err)
 	require.NotNil(t, fc.respCh)
 
 	fc.respCh <- &leapmuxv1.InnerRpcResponse{}
 
 	select {
-	case <-done:
+	case <-handle.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("a terminal response must end the subscription")
 	}
 	require.Empty(t, h.records, "a clean termination is not an error")
+}
+
+func TestChannelTransport_UpdateSendsStreamRequest(t *testing.T) {
+	fc := &fakeChannel{ctx: context.Background()}
+	tr := NewChannelTransport(fc, nil)
+	handle, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+
+	req := &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("a-1", 0)},
+	}
+	require.NoError(t, handle.Update(req))
+	require.Len(t, fc.streamRequests, 1)
+	assert.False(t, fc.streamRequests[0].cancel)
+	assert.NotEmpty(t, fc.streamRequests[0].payload)
+}
+
+func TestChannelTransport_CancelSendsCancelStream(t *testing.T) {
+	fc := &fakeChannel{ctx: context.Background()}
+	tr := NewChannelTransport(fc, nil)
+	handle, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+	handle.Cancel()
+	require.Equal(t, []uint64{1}, fc.cancelledStreams)
+	<-handle.Done()
+}
+
+// TestChannelTransport_UpdateAfterCancelReturnsError pins the guard against a
+// trailing Update that races Cancel/Done: without it, SendStreamRequest for an
+// already-retired correlation id is silently dropped while Update returns nil,
+// so the caller would advance its local interest believing the revision landed.
+func TestChannelTransport_UpdateAfterCancelReturnsError(t *testing.T) {
+	fc := &fakeChannel{ctx: context.Background()}
+	tr := NewChannelTransport(fc, nil)
+	handle, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+	handle.Cancel()
+	<-handle.Done()
+
+	err = handle.Update(&leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("a-1", 0)},
+	})
+	require.Error(t, err)
+	// Only the cancel-stream from Cancel landed — the trailing Update sent nothing.
+	streamSends := 0
+	for _, r := range fc.streamRequests {
+		if !r.cancel {
+			streamSends++
+		}
+	}
+	assert.Equal(t, 0, streamSends, "Update after Cancel must not send on the wire")
+}
+
+// TestChannelTransport_CancelAfterParentCancelled pins WithoutCancel: tearing
+// down the parent ctx must not prevent CancelStream from reaching the worker.
+func TestChannelTransport_CancelAfterParentCancelled(t *testing.T) {
+	fc := &fakeChannel{ctx: context.Background()}
+	tr := NewChannelTransport(fc, nil)
+	parent, cancelParent := context.WithCancel(context.Background())
+	handle, err := tr.OpenWatchEvents(parent, &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {})
+	require.NoError(t, err)
+
+	cancelParent()
+	handle.Cancel()
+	require.Equal(t, []uint64{1}, fc.cancelledStreams,
+		"CancelStream must still fire after the parent context is cancelled")
+	<-handle.Done()
 }
 
 func TestChannelTransport_LogsMalformedFrame(t *testing.T) {
@@ -199,7 +282,7 @@ func TestChannelTransport_LogsMalformedFrame(t *testing.T) {
 	tr := NewChannelTransport(fc, slog.New(h))
 
 	frames := 0
-	_, _, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
+	_, err := tr.OpenWatchEvents(context.Background(), &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) {
 		frames++
 	})
 	require.NoError(t, err)

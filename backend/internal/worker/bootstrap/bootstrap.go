@@ -152,13 +152,9 @@ func Wire(p Params) *Wiring {
 	})
 	svc.RestoreState()
 
-	// Retire a channel's event subscriptions when it closes. Set now
-	// rather than passed to NewManager because it needs the service the
-	// manager itself is a dependency of; SetDispatcher below has the same
-	// shape for the same reason.
-	channelMgr.SetOnChannelClose(func(channelID string) {
-		svc.Watchers.UnwatchAll(channelID)
-	})
+	// WatchEvents stream teardown owns UnwatchAll via watchSession.OnCancel
+	// (stream cancel / channel releaseAll). Do not also wire UnwatchAll here
+	// -- two paths to one effect that can disagree.
 	// When a channel opens, record its negotiated payload budget on the
 	// agent stdout scanners; release on close so the live ceiling rises
 	// back to the worker configured budget once no channels remain (and

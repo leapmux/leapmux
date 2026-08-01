@@ -226,6 +226,15 @@ describe('preferencesContext — revealAfterDownload (default-on)', () => {
     expect(loadBrowserPrefs().theme).toBe('dark')
     expect('revealAfterDownload' in loadBrowserPrefs()).toBe(false)
   })
+
+  it('round-trips terminalOsNotifications in browser prefs', () => {
+    const ctx = captureContext()
+    expect(ctx.get().terminalOsNotifications()).toBe(false)
+    ctx.get().setTerminalOsNotifications(true)
+    expect(loadBrowserPrefs().terminalOsNotifications).toBe(true)
+    ctx.get().setTerminalOsNotifications(false)
+    expect('terminalOsNotifications' in loadBrowserPrefs()).toBe(false)
+  })
 })
 
 describe('preferencesContext — reload from API', () => {

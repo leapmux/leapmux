@@ -23,6 +23,7 @@ import { pluginFor, providerFor } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { isTabOnScreen } from '~/hooks/watchPlan'
 import { createLogger } from '~/lib/logger'
 import { extractCompactionContextTokens, extractContextUsage, extractPlanFilePath, extractPlanUpdated, extractResultMetadata, extractSettingsChanges, getInnerMessage, normalizeContextUsage, parseMessageContent } from '~/lib/messageParser'
 import { emitSettingsChanged } from '~/lib/settingsChangedEvent'
@@ -285,17 +286,20 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
 
 /**
  * Handle a turn-end result divider (the caller gates on category.kind ===
- * 'result_divider'). Play the turn-end sound via onTurnEnd, clear the per-turn
- * thinking-token estimate, and rehydrate contextWindow / total_cost_usd. Each provider
- * plugin classifies its terminal envelope (Claude type:"result", Codex turn/completed,
- * ACP stopReason, Pi agent_end) as `result_divider`, so this is provider-agnostic.
+ * 'result_divider'). Clears the per-turn thinking-token estimate and rehydrates
+ * contextWindow / total_cost_usd. Turn-end sound and tab badging are owned by
+ * the worker's AgentTurnEnd event (`handleTurnEnd`), not this divider — leaving
+ * both would ring a visible tab twice.
+ *
+ * Each provider plugin classifies its terminal envelope (Claude type:"result",
+ * Codex turn/completed, ACP stopReason, Pi agent_end) as `result_divider`, so
+ * this is provider-agnostic.
  */
 export function handleResultDivider(
   agentId: string,
   msg: AgentChatMessage,
   parsed: ParsedMessageContent,
   stores: AgentMessageStores,
-  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
   catchUpPhase: CatchUpPhase,
 ): void {
   const { agentSessionStore, chatStore, view } = stores
@@ -323,11 +327,8 @@ export function handleResultDivider(
     agentSessionStore.updateInfo(agentId, { codexTurnId: '' })
   }
   if (meta.subtype && catchUpPhase === 'live') {
-    onTurnEnd?.(agentId, meta.numToolUses)
-    // Turn boundary: reclaim any command stream orphaned by a mid-stream delete that
-    // never received its own stream-end (its buffer was spared to keep in-flight
-    // segments; by the turn's end a still-buffered orphan is genuinely stuck). No-op
-    // when nothing was orphaned.
+    // Turn-end sound is owned by AgentTurnEnd (worker NOTIFY event); do not
+    // also ring here or a visible tab dings twice.
     chatStore.sweepOrphanedBufferedSpans(agentId)
   }
   if (meta.contextUsage) {
@@ -483,7 +484,7 @@ export function handleAgentMessage(
   // terminal envelope (Claude type:"result", Codex turn/completed, ACP stopReason,
   // Pi agent_end) as `result_divider`, so this gate is provider-agnostic.
   if (category.kind === 'result_divider')
-    handleResultDivider(agentId, msg, parsed, stores, onTurnEnd, catchUpPhase)
+    handleResultDivider(agentId, msg, parsed, stores, catchUpPhase)
 }
 
 /**
@@ -670,17 +671,15 @@ export function handleStreamChunk(agentId: string, value: AgentStreamChunk, chat
 }
 
 /**
- * The `streamEnd` arm: close the streaming buffer (command stream or free-form text) and
- * badge the tab when the agent isn't the one on screen.
+ * The `streamEnd` arm: close the streaming buffer (command stream or free-form
+ * text). Tab badging for a finished turn is owned by `handleTurnEnd`.
  */
-export function handleStreamEnd(agentId: string, value: AgentStreamEnd, stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata' | 'selection' | 'getActiveWorkspaceId'>): void {
-  const { chatStore, metadata, selection, getActiveWorkspaceId } = stores
+export function handleStreamEnd(agentId: string, value: AgentStreamEnd, stores: Pick<AgentMessageStores, 'chatStore'>): void {
+  const { chatStore } = stores
   if (value.spanId)
     chatStore.clearCommandStream(agentId, value.spanId)
   else
     chatStore.streamingText.clear(agentId)
-  if (selection.activeKeyForWorkspace(getActiveWorkspaceId() ?? '') !== tabKey({ type: TabType.AGENT, id: agentId }))
-    metadata.patch(agentId, { hasNotification: true })
 }
 
 /**
@@ -721,8 +720,8 @@ export function handleControlRequest(
   controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, payload, claimToken: cr.claimToken })
   if (catchUpPhase === 'live') {
     // Light up the tab badge so a user looking at a sibling tab knows the background
-    // agent is now waiting on them.
-    if (selection.activeKeyForWorkspace(getActiveWorkspaceId() ?? '') !== tabKey({ type: TabType.AGENT, id: cr.agentId }))
+    // agent is now waiting on them. Match FULL's on-screen rule (tile-active).
+    if (!isAgentTabOnScreen(cr.agentId, view, selection, getActiveWorkspaceId))
       metadata.patch(cr.agentId, { hasNotification: true })
     // The agent paused mid-turn to wait on the user; it is no longer thinking, and this
     // pause may produce no agent message and no INACTIVE, so drop the per-turn estimate
@@ -730,6 +729,32 @@ export function handleControlRequest(
     agentSessionStore.clearThinkingTokens(agentId)
     onTurnEnd?.(agentId)
   }
+}
+
+/**
+ * AgentTurnEnd NOTIFY event: badge when the tab is not on-screen (tile-active),
+ * then play the turn-end sound (unless numToolUses is explicitly zero).
+ */
+export function isAgentTabOnScreen(
+  agentId: string,
+  view: Pick<TabView, 'getAgentTab'>,
+  selection: TabSelectionStore,
+  getActiveWorkspaceId: () => string | null,
+): boolean {
+  return isTabOnScreen(view.getAgentTab(agentId), getActiveWorkspaceId(), tileId => selection.activeKeyForTile(tileId))
+}
+
+export function handleTurnEnd(
+  agentId: string,
+  value: { numToolUses?: number },
+  stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'>,
+  onTurnEnd: ((agentId: string, numToolUses?: number) => void) | undefined,
+): void {
+  const { metadata, selection, getActiveWorkspaceId, view } = stores
+  if (!isAgentTabOnScreen(agentId, view, selection, getActiveWorkspaceId))
+    metadata.patch(agentId, { hasNotification: true })
+  const uses = value.numToolUses
+  onTurnEnd?.(agentId, uses === undefined ? undefined : uses)
 }
 
 /**
@@ -777,66 +802,7 @@ export function handleAgentStatusChange(
 }
 
 /**
- * The `statusChange` arm for an agent in a workspace the user is NOT looking at.
- *
- * The metadata write is the SAME `buildAgentStatusTabUpdate` the foreground path
- * uses. The sidebar renders every workspace, so a background row has to be as
- * correct as a foreground one, and a second hand-rolled subset of the same patch
- * is exactly how `agentSessionId` / `startupError` / `startupMessage` / settings
- * quietly fell out of it.
- *
- * The pending-outbound drain is shared, and MUST be. It is the only flush for
- * messages composed while an agent was STARTING, it fires on the single
- * STARTING -> ACTIVE/STARTUP_FAILED edge, and that edge is NOT replayed on
- * switch-in: the resubscribe's status snapshot finds the tab already ACTIVE and
- * `drainPendingOutboundOnStart` returns at its `prev?.agentStatus !== STARTING`
- * guard. Skipping it here stranded the message at "Queued — … is starting…" for
- * the life of the page, with `pendingOutbound.remove` reachable only via tab
- * forget.
- *
- * Deliberately NOT routed through `handleAgentStatusChange`: `settingsLoading`
- * is KEYLESS, so a background agent's push would stop the spinner for a settings
- * change the user has in flight on the agent they ARE looking at; and
- * `setWorkerOnline` / `handleAgentInactive` (control-request clear, turn-end
- * ding) are on-screen concerns.
- */
-export function applyBackgroundAgentStatusChange(
-  sc: AgentStatusChange,
-  stores: Pick<AgentMessageStores, 'chatStore' | 'view' | 'metadata'>,
-  settingsLoading: ReturnType<typeof createLoadingSignal>,
-): void {
-  const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
-  if (!hasStatus && sc.gitStatus === undefined && sc.optionGroups.length === 0)
-    return
-  applyAgentStatusTabUpdate(sc, stores, settingsLoading)
-}
-
-/**
- * Everything a status push writes onto an agent's tab row, for BOTH the
- * on-screen and background paths.
- *
- * The shared `buildAgentStatusTabUpdate` already guarantees the two write the
- * same FIELDS. What this adds is that its arguments are DERIVED the same way --
- * which is the half that kept drifting, and the half this call site's own doc
- * says is how `agentSessionId` / `startupError` / `startupMessage` quietly fell
- * out of the background row before. Every one of the steps below feeds that
- * builder, and each is a place the two copies could disagree:
- *
- *   - `prev` is read BEFORE the patch overwrites it, and is needed twice over:
- *     the drain fires on the STARTING -> ACTIVE/STARTUP_FAILED edge, and
- *     `resolveSettingsTabFields` reads it to keep in-flight optimistic axis
- *     values and to stabilize each unchanged option-group element. Suppressing
- *     an equal-but-fresh whole field is NOT among them -- `tabMetadata.patch`
- *     does that for every producer at the write point.
- *   - the label cache is primed at this data-ingestion boundary so notification
- *     renderers can resolve human names when an inline label is missing
- *     (`resolveSettingsTabFields` itself is pure).
- *
- * What stays OUT is what genuinely differs: the aggregate settings spinner
- * (`settingsLoading` is keyless, so a background push must not stop a spinner
- * the user has in flight on the agent they are looking at), `setWorkerOnline`,
- * and `handleAgentInactive` -- all on-screen concerns, and all order-independent
- * of this write.
+ * Everything a status push writes onto an agent's tab row.
  */
 function applyAgentStatusTabUpdate(
   sc: AgentStatusChange,

@@ -80,6 +80,10 @@ type channelSession struct {
 	// or classical handshake, so the rekey knows whether to expect an ML-KEM
 	// ciphertext. Matches m.encryptionMode at open time.
 	encryptionMode leapmuxv1.EncryptionMode
+	// streams maps live server-stream correlation ids to their controllers so
+	// client->worker InnerStreamRequest frames can revise or cancel a
+	// subscription without tearing the channel down.
+	streams streamRegistry
 }
 
 // CloseCallback is called when a channel is closed, allowing cleanup
@@ -153,10 +157,11 @@ func (m *Manager) SetDispatcher(d *Dispatcher) {
 	m.dispatcher = d
 }
 
-// SetOnChannelClose registers the callback fired when a channel closes,
-// which is what retires that channel's event subscriptions. Call it
-// after the service exists and before the Manager is reachable from the
-// connect loop (SetChannelMgr); like SetDispatcher, it is a bootstrap
+// SetOnChannelClose registers an optional callback fired when a channel
+// closes. WatchEvents subscriptions are NOT retired here — each stream's
+// StreamController.OnCancel (via streams.releaseAll) owns that teardown.
+// Call it after the service exists and before the Manager is reachable from
+// the connect loop (SetChannelMgr); like SetDispatcher, it is a bootstrap
 // write, not a runtime one.
 func (m *Manager) SetOnChannelClose(cb CloseCallback) {
 	m.closeCallback = cb
@@ -360,6 +365,7 @@ func (m *Manager) HandleOpen(req *leapmuxv1.ChannelOpenRequest) *leapmuxv1.Chann
 		compositeKey:   m.compositeKey,
 		encryptionMode: m.encryptionMode,
 	}
+	sess.sender.streams = &sess.streams
 	m.sessions[req.GetChannelId()] = sess
 	// Observe while still holding m.mu so HandleClose cannot Release
 	// (no-op) between insert and Observe and leave an orphan budget that
@@ -523,6 +529,9 @@ func (m *Manager) HandleMessage(msg *leapmuxv1.ChannelMessage) {
 
 	case *leapmuxv1.InnerMessage_RekeyRequest:
 		sess.handleRekeyRequest(requestID, kind.RekeyRequest)
+
+	case *leapmuxv1.InnerMessage_StreamRequest:
+		sess.streams.deliver(requestID, kind.StreamRequest)
 
 	default:
 		slog.Warn("unexpected inner message kind",
@@ -769,6 +778,14 @@ func (m *Manager) HandleClose(channelID string) {
 	// unreferenced; the delete above ensures no future receive iteration
 	// finds the session.
 
+	if ok {
+		// Release stream controllers BEFORE cancelling sess.ctx so a
+		// controller that wants to run a synchronous teardown (e.g. the
+		// watch session's UnwatchAll) still has a live session to do it
+		// against.
+		sess.streams.releaseAll()
+	}
+
 	// Cancel the session ctx after dropping the lock so handlers
 	// blocked on subprocess wait can unwind without re-entering the
 	// manager's lock from their cleanup paths.
@@ -787,21 +804,28 @@ func (m *Manager) HandleClose(channelID string) {
 	slog.Info("channel closed", "channel_id", channelID)
 }
 
-// CloseAll removes all channel sessions and invokes the close callback
-// for each one, allowing associated resources (e.g. watchers) to be
-// cleaned up.
+// CloseAll removes all channel sessions. Stream controllers are released
+// (OnCancel) before each session ctx is cancelled, matching HandleClose.
 func (m *Manager) CloseAll() {
 	m.mu.Lock()
 	channels := make([]string, 0, len(m.sessions))
 	cancels := make([]context.CancelFunc, 0, len(m.sessions))
+	sessions := make([]*channelSession, 0, len(m.sessions))
 	for id, sess := range m.sessions {
 		channels = append(channels, id)
+		sessions = append(sessions, sess)
 		if sess.cancel != nil {
 			cancels = append(cancels, sess.cancel)
 		}
 	}
 	m.sessions = make(map[string]*channelSession)
 	m.mu.Unlock()
+
+	// Release stream controllers before cancelling session ctxs (same
+	// ordering as HandleClose).
+	for _, sess := range sessions {
+		sess.streams.releaseAll()
+	}
 
 	for _, cancel := range cancels {
 		cancel()
@@ -844,6 +868,10 @@ type channelSender struct {
 	// (or on the connection writer's byte budget) so a torn-down session never
 	// strands one. nil in focused unit tests, which the gate accepts.
 	lifetime context.Context
+	// streams is the session's client-frame registry. Bound after the session
+	// is constructed so boundSender.BindStream can register without holding
+	// the session itself.
+	streams *streamRegistry
 	// errorSends carries error responses issued from the worker's SHARED
 	// Connect receive goroutine to this session's drainer. It stays even though
 	// the connection writer removed network blocking, because the receive
@@ -1076,4 +1104,19 @@ func (b *boundSender) ChannelID() string {
 // MaxPayloadBudget returns the negotiated application payload budget.
 func (b *boundSender) MaxPayloadBudget() int {
 	return b.sender.MaxPayloadBudget()
+}
+
+// BindStream installs ctrl as the receiver of client frames on this writer's
+// correlation id. ok is false when the sender has no stream registry (tests
+// stubs, or a miswired sender) — callers must not start a long-lived session
+// that expects revise/cancel frames.
+func (b *boundSender) BindStream(ctrl StreamController) (release func(), ok bool) {
+	if b.sender.streams == nil {
+		return nil, false
+	}
+	return b.sender.bindStream(b.requestID, ctrl), true
+}
+
+func (s *channelSender) bindStream(requestID uint64, ctrl StreamController) func() {
+	return s.streams.bind(requestID, ctrl)
 }

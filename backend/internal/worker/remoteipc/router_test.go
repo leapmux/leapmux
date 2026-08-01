@@ -59,6 +59,12 @@ type fakeCrossWorker struct {
 	callPayload []byte
 	resp        []byte
 	respErr     error
+	// bindCtrl, when set, is handed to the router's bindCtrl callback so
+	// UpdateStream tests can assert delivery on the cross-worker path.
+	bindCtrl channel.StreamController
+	// hold blocks StreamInner until closed, so UpdateStream can land while
+	// the canceller entry is still live.
+	hold <-chan struct{}
 }
 
 func (f *fakeCrossWorker) CallInner(_ context.Context, target string, _ userid.UserID, method string, payload []byte) ([]byte, error) {
@@ -68,14 +74,32 @@ func (f *fakeCrossWorker) CallInner(_ context.Context, target string, _ userid.U
 	return f.resp, f.respErr
 }
 
-func (f *fakeCrossWorker) StreamInner(_ context.Context, target string, _ userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
+func (f *fakeCrossWorker) StreamInner(ctx context.Context, target string, _ userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
 	f.mu.Lock()
 	f.callTarget, f.callMethod, f.callPayload = target, method, payload
+	hold := f.hold
+	ctrl := f.bindCtrl
+	resp := f.resp
+	respErr := f.respErr
 	f.mu.Unlock()
-	if f.respErr != nil {
-		return f.respErr
+	if respErr != nil {
+		return respErr
 	}
-	onMsg(&leapmuxv1.InnerStreamMessage{Payload: f.resp, End: true})
+	if bindCtrl != nil {
+		if ctrl != nil {
+			bindCtrl(ctrl)
+		} else {
+			bindCtrl(&recordingStreamController{})
+		}
+	}
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	onMsg(&leapmuxv1.InnerStreamMessage{Payload: resp, End: true})
 	return nil
 }
 
@@ -599,6 +623,244 @@ func TestRouter_CancelStream_ByClientRequestID(t *testing.T) {
 	case <-streamErr:
 	case <-time.After(2 * time.Second):
 		t.Fatal("CancelStream didn't unblock the streamer")
+	}
+}
+
+func TestRouter_UpdateStream_DeliversToController(t *testing.T) {
+	ctrl := &recordingStreamController{}
+	ready := make(chan struct{})
+	dispatcher := &ctrlStreamDispatcher{ctrl: ctrl, ready: ready}
+	r := &remoteipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		LocalDispatcher: dispatcher,
+	}
+	go func() {
+		_ = r.StreamInner(context.Background(), remoteipc.TokenInfo{},
+			"worker.WatchEvents", []byte("{}"), "A", "req-update",
+			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+	}()
+	<-ready
+	r.UpdateStream("req-update", []byte("revision"))
+	require.Eventually(t, func() bool {
+		ctrl.mu.Lock()
+		defer ctrl.mu.Unlock()
+		return len(ctrl.payloads) == 1 && string(ctrl.payloads[0]) == "revision"
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestRouter_UpdateStream_CrossWorkerDeliversToBoundController(t *testing.T) {
+	ctrl := &recordingStreamController{}
+	hold := make(chan struct{})
+	cross := &fakeCrossWorker{bindCtrl: ctrl, hold: hold}
+	r := &remoteipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		CrossWorker: cross,
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- r.StreamInner(context.Background(), remoteipc.TokenInfo{},
+			"worker.WatchEvents", []byte("{}"), "B", "req-xw-update",
+			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+	}()
+	// Give StreamInner time to bind the controller before UpdateStream.
+	require.Eventually(t, func() bool {
+		_, ok := r.StreamCancellers.Load("req-xw-update")
+		return ok
+	}, time.Second, 10*time.Millisecond)
+	r.UpdateStream("req-xw-update", []byte("sibling-revision"))
+	require.Eventually(t, func() bool {
+		ctrl.mu.Lock()
+		defer ctrl.mu.Unlock()
+		return len(ctrl.payloads) == 1 && string(ctrl.payloads[0]) == "sibling-revision"
+	}, time.Second, 10*time.Millisecond)
+	close(hold)
+	require.NoError(t, <-done)
+}
+
+func TestRouter_CancelStream_CrossWorkerCallsOnCancel(t *testing.T) {
+	ctrl := &recordingStreamController{}
+	hold := make(chan struct{})
+	cross := &fakeCrossWorker{bindCtrl: ctrl, hold: hold}
+	r := &remoteipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		CrossWorker: cross,
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- r.StreamInner(context.Background(), remoteipc.TokenInfo{},
+			"worker.WatchEvents", []byte("{}"), "B", "req-xw-cancel",
+			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+	}()
+	require.Eventually(t, func() bool {
+		_, ok := r.StreamCancellers.Load("req-xw-cancel")
+		return ok
+	}, time.Second, 10*time.Millisecond)
+
+	r.CancelStream("req-xw-cancel")
+	require.Eventually(t, func() bool {
+		ctrl.mu.Lock()
+		defer ctrl.mu.Unlock()
+		return ctrl.cancelled
+	}, time.Second, 10*time.Millisecond)
+	// CancelStream cancels the stream ctx, which unblocks hold via ctx.Done.
+	require.ErrorIs(t, <-done, context.Canceled)
+}
+
+func TestRouter_UpdateStream_UnknownOrEmptyIdIsNoop(t *testing.T) {
+	r := &remoteipc.Router{WorkerID: "A", UserID: userid.MustNew("u")}
+	// Must not panic — empty and unbound ids are quiet no-ops.
+	r.UpdateStream("", []byte("x"))
+	r.UpdateStream("no-such-req", []byte("x"))
+}
+
+func TestRouter_CancelStream_CallsOnCancel(t *testing.T) {
+	ctrl := &recordingStreamController{}
+	ready := make(chan struct{})
+	order := make(chan string, 2)
+	dispatcher := &ctrlStreamDispatcher{ctrl: ctrl, ready: ready, onCancelOrder: order}
+	r := &remoteipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		LocalDispatcher: dispatcher,
+	}
+	go func() {
+		_ = r.StreamInner(context.Background(), remoteipc.TokenInfo{},
+			"worker.WatchEvents", []byte("{}"), "A", "req-oncancel",
+			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+	}()
+	<-ready
+	r.CancelStream("req-oncancel")
+	require.Eventually(t, func() bool {
+		ctrl.mu.Lock()
+		defer ctrl.mu.Unlock()
+		return ctrl.cancelled
+	}, time.Second, 10*time.Millisecond)
+	first := <-order
+	assert.Equal(t, "cancel", first, "OnCancel must run before the stream ctx is cancelled")
+}
+
+// TestRouter_BindStream_RefusesAfterCancel pins the TOCTOU fix: when
+// CancelStream retires an entry between the initial StreamCancellers.Store
+// (in StreamInner) and the handler's BindStream call, BindStream must return
+// ok=false so the handler runs its own retirement. Without it, the controller
+// was installed on a retired entry, never received OnCancel from the registry,
+// and leaked on its bgCtx for the process lifetime.
+func TestRouter_BindStream_RefusesAfterCancel(t *testing.T) {
+	ctrl := &recordingStreamController{}
+	dispatcher := &cancelRaceDispatcher{
+		ctrl:       ctrl,
+		registered: make(chan struct{}),
+		proceed:    make(chan struct{}),
+		bindResult: make(chan bool, 1),
+	}
+	r := &remoteipc.Router{
+		WorkerID: "A", UserID: userid.MustNew("u"),
+		LocalDispatcher: dispatcher,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.StreamInner(context.Background(), remoteipc.TokenInfo{},
+			"worker.WatchEvents", []byte("{}"), "A", "req-bind-race",
+			func(*leapmuxv1.StreamInnerEnvelope) error { return nil })
+	}()
+
+	// Wait for the handler to register its entry but BEFORE it calls BindStream
+	// (the dispatcher parks on ready until we release it), then retire it.
+	<-dispatcher.registered
+	r.CancelStream("req-bind-race")
+	close(dispatcher.proceed)
+
+	// The bind must observe the retirement and return ok=false. The handler
+	// then owns its ctx-based retirement (the <-ctx.Done() in DispatchWith).
+	require.Eventually(t, func() bool {
+		select {
+		case res := <-dispatcher.bindResult:
+			return !res
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond, "BindStream must return ok=false when CancelStream retired the entry")
+
+	// The late-bound controller must never receive OnCancel from the registry
+	// (it was never installed); the handler's ctx cancel is the sole retirement.
+	assert.False(t, ctrl.cancelled, "late controller must not receive registry OnCancel")
+
+	// Drain the StreamInner goroutine.
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+}
+
+type cancelRaceDispatcher struct {
+	ctrl       *recordingStreamController
+	registered chan struct{}
+	proceed    chan struct{}
+	bindResult chan bool
+}
+
+func (d *cancelRaceDispatcher) DispatchWith(ctx context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	// Simulate the watchSession handler: the entry is already stored by
+	// StreamInner, so signal that the cancel race window is open, wait for it
+	// to be retired, then attempt the bind.
+	close(d.registered)
+	<-d.proceed
+	release, ok := w.BindStream(d.ctrl)
+	d.bindResult <- ok
+	if ok {
+		defer release()
+	}
+	<-ctx.Done()
+}
+
+type recordingStreamController struct {
+	mu           sync.Mutex
+	payloads     [][]byte
+	cancelled    bool
+	onCancelHook func()
+}
+
+func (c *recordingStreamController) OnClientFrame(payload []byte) {
+	c.mu.Lock()
+	c.payloads = append(c.payloads, append([]byte(nil), payload...))
+	c.mu.Unlock()
+}
+
+func (c *recordingStreamController) OnCancel() {
+	if c.onCancelHook != nil {
+		c.onCancelHook()
+	}
+	c.mu.Lock()
+	c.cancelled = true
+	c.mu.Unlock()
+}
+
+type ctrlStreamDispatcher struct {
+	ctrl          *recordingStreamController
+	ready         chan struct{}
+	onCancelOrder chan string
+}
+
+func (d *ctrlStreamDispatcher) DispatchWith(ctx context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	release, _ := w.BindStream(d.ctrl)
+	defer release()
+	if d.onCancelOrder != nil {
+		orig := d.ctrl.onCancelHook
+		d.ctrl.onCancelHook = func() {
+			d.onCancelOrder <- "cancel"
+			if orig != nil {
+				orig()
+			}
+		}
+	}
+	close(d.ready)
+	<-ctx.Done()
+	if d.onCancelOrder != nil {
+		d.onCancelOrder <- "ctx"
 	}
 }
 

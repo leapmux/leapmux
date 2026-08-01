@@ -4,6 +4,7 @@ import type { DiffViewPreference, TurnEndSoundPreference } from '~/context/Prefe
 import type { TerminalThemePreference } from '~/lib/terminal'
 import { For, Show } from 'solid-js'
 import { usePreferences } from '~/context/PreferencesContext'
+import { requestOsNotificationPermission } from '~/lib/osNotification'
 import * as styles from './PreferencesDialog.css'
 
 const themeOptions = [
@@ -358,6 +359,26 @@ export const AccountAppearanceSettings: Component = () => {
             </div>
           </div>
         </Show>
+      </div>
+
+      <div class={styles.section}>
+        <h3>Terminal Notifications</h3>
+        <PillToggle
+          pressed={prefs.terminalOsNotifications()}
+          onClick={async () => {
+            const next = !prefs.terminalOsNotifications()
+            if (next) {
+              const granted = await requestOsNotificationPermission()
+              if (!granted) {
+                prefs.setTerminalOsNotifications(false)
+                return
+              }
+            }
+            prefs.setTerminalOsNotifications(next)
+          }}
+        >
+          OS notifications for terminal alerts
+        </PillToggle>
       </div>
 
       <div class={styles.section}>

@@ -541,7 +541,7 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	svc.Watchers.SetAgentWatches("test-ch", []string{"agent-1"}, w)
+	svc.Watchers.SetAgentWatches("test-ch", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
 	dispatch(d, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",
@@ -995,7 +995,7 @@ func TestSendControlResponse_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	svc.Watchers.SetAgentWatches("test-ch", []string{"agent-1"}, w)
+	svc.Watchers.SetAgentWatches("test-ch", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
 	answer := &leapmuxv1.SendControlResponseRequest{
 		AgentId: "agent-1",

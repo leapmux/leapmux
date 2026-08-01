@@ -4,10 +4,11 @@ import type { listTerminals } from '~/api/workerRpc'
 import type { AgentGitStatus, AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
-import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
 import { updateSettingsLabelCache } from '~/lib/settingsLabelCache'
+import { isTerminalTab } from './tab.types'
 
 /**
  * Module note: pure helpers over `Tab` records — no signals, no
@@ -497,17 +498,52 @@ export function tabKey(tab: { type: TabType, id: string }): string {
 
 /**
  * Human-readable label for a tab. Prefer `tab.title` (server-set or
- * user-renamed); fall back to a type-aware default. FILE tabs derive
- * their label from `basename(filePath)` so the workspace tree and the
- * tab strip stay in sync — both surfaces show the same name once the
- * worker's path hydrator has filled `filePath` in.
+ * user-renamed); for terminals fall back to `ptyTitle` (live OSC) before the
+ * generic default. An empty OSC must leave a user's rename alone — see
+ * `handleTerminalTitleChanged`, which only patches `ptyTitle` when non-empty.
  */
 export function tabDisplayLabel(tab: Tab): string {
   if (tab.title)
     return tab.title
+  if (tab.type === TabType.TERMINAL && tab.ptyTitle)
+    return tab.ptyTitle
   if (tab.type === TabType.FILE)
     return (tab.filePath ? basename(tab.filePath) : '') || 'File'
   return tab.type === TabType.AGENT ? 'Agent' : 'Terminal'
+}
+
+/**
+ * Tooltip text for a tab. Terminals prefer the live PTY title when present
+ * (plan: render `ptyTitle` as the tooltip regardless of the strip label).
+ */
+export function tabTooltipText(tab: Tab): string {
+  if (tab.type === TabType.TERMINAL && tab.ptyTitle)
+    return tab.ptyTitle
+  return tabDisplayLabel(tab)
+}
+
+/** Whether a terminal tab should show the OSC 9;4 progress affordance. */
+export function terminalProgressVisible(tab: Tab): boolean {
+  if (!isTerminalTab(tab) || tab.progressState === undefined)
+    return false
+  return tab.progressState !== TerminalProgress_State.UNSPECIFIED
+}
+
+export function terminalProgressPercent(tab: Tab): number {
+  return isTerminalTab(tab) ? (tab.progressPercent ?? 0) : 0
+}
+
+export function terminalProgressIndeterminate(tab: Tab): boolean {
+  return isTerminalTab(tab) && tab.progressState === TerminalProgress_State.INDETERMINATE
+}
+
+/** CSS custom property + title for the tab OSC progress bar. */
+export function terminalProgressBarProps(tab: Tab): { style: { '--progress-percent': string }, title: string } {
+  const percent = Math.max(0, Math.min(100, terminalProgressPercent(tab)))
+  return {
+    style: { '--progress-percent': `${percent}%` },
+    title: terminalProgressIndeterminate(tab) ? 'In progress' : `${percent}%`,
+  }
 }
 
 /**

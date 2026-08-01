@@ -410,6 +410,7 @@ export function resizeTerminal(workerId: string, req: MessageInitShape<typeof Re
   return callWorker(workerId, 'ResizeTerminal', ResizeTerminalRequestSchema, ResizeTerminalResponseSchema, req)
 }
 
+/** Explicit user rename — PTY OSC titles are persisted worker-side instead. */
 export function updateTerminalTitle(workerId: string, req: MessageInitShape<typeof UpdateTerminalTitleRequestSchema>): Promise<UpdateTerminalTitleResponse> {
   return callWorker(workerId, 'UpdateTerminalTitle', UpdateTerminalTitleRequestSchema, UpdateTerminalTitleResponseSchema, req)
 }
@@ -502,8 +503,12 @@ export interface WatchEventsHandle {
   /** Callback for stream errors. */
   onError: (cb: (err: Error) => void) => void
   /**
-   * Remove the stream listener from the channel, preventing the old
-   * callback from processing events after a stream restart.
+   * Revise the channel's watch interest in place (InnerStreamRequest).
+   * Synchronous enqueue — never awaits channel open.
+   */
+  update: (request: MessageInitShape<typeof WatchEventsRequestSchema>) => void
+  /**
+   * Cancel the stream on the wire and drop the local listener.
    */
   close: () => void
 }
@@ -535,6 +540,10 @@ export async function watchEventsViaChannel(
     onEvent: buffered.onEvent,
     onEnd: buffered.onEnd,
     onError: buffered.onError,
-    close: () => { channelManager.removeStreamListener(channelId, streamHandle.requestId) },
+    update: (req) => {
+      const next = create(WatchEventsRequestSchema, req)
+      streamHandle.send(toBinary(WatchEventsRequestSchema, next))
+    },
+    close: () => { streamHandle.cancel() },
   }
 }
