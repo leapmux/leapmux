@@ -138,7 +138,7 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
       <button
         role="menuitem"
         data-testid={tid('copy-path-button')}
-        onClick={() => copyTextToClipboard(props.path)}
+        onClick={() => void copyTextToClipboard(props.path)}
       >
         <Icon icon={Copy} size="sm" />
         Copy path
@@ -149,7 +149,7 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
           data-testid={tid('copy-relative-path-button')}
           onClick={() => {
             const rel = relativizePath(props.path, props.rootPath!, props.homeDir, props.flavor)
-            copyTextToClipboard(rel)
+            void copyTextToClipboard(rel)
           }}
         >
           <Icon icon={Copy} size="sm" />

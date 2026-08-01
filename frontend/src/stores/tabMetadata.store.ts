@@ -73,6 +73,13 @@ export interface SharedMeta {
    * Local-only monotonic activation counter. Higher = more recently activated.
    * Never persisted and never in the projection; it orders the MRU views within
    * a single client session.
+   *
+   * The cost of "never persisted" is that after a RELOAD every tab scores zero,
+   * and since `mruHead` compares with a strict `>` the winner stays `tabs[0]` --
+   * so every MRU-driven answer silently degrades to position order until the
+   * user activates something. `useTabPersistence` is built to not make that
+   * worse (it never persists a synthesised `mruHead`), but the fallback itself
+   * is still wrong: https://github.com/leapmux/leapmux/issues/345
    */
   mru?: number
   workingDir?: string

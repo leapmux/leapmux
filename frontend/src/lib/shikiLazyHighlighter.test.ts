@@ -94,7 +94,12 @@ describe('createLazyOnigurumaHighlighter', () => {
         desynced.push(key)
     }
     expect(desynced).toEqual([])
-  })
+    // Loads every bundled grammar -- 200-odd -- serially through the Oniguruma
+    // WASM engine, which takes 7-10s on a loaded machine. Vitest's 5s default
+    // made this the one test in the suite that failed on CPU contention rather
+    // than on the invariant it guards. Exhaustiveness is the point of the test,
+    // so the budget moves rather than the coverage.
+  }, 60_000)
 
   it('deduplicates concurrent loads of the same language (same in-flight promise)', async () => {
     const hl = createLazyOnigurumaHighlighter()

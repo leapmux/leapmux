@@ -3,10 +3,11 @@ import type { ThemePreference } from '~/app'
 import type { BrowserPreferences, EnterKeyMode } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemePreference } from '~/lib/terminal'
-import { createContext, createEffect, createSignal, onMount, useContext } from 'solid-js'
+import { createEffect, createSignal, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { DiffView, TurnEndSound } from '~/generated/leapmux/v1/user_pb'
 import { KEY_BROWSER_PREFS, loadBrowserPrefs, localStorageSet } from '~/lib/browserStorage'
+import { createStableContext } from '~/lib/createStableContext'
 import { setDebugEnabled } from '~/lib/logger'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
@@ -100,7 +101,7 @@ interface PreferencesState {
   reload: () => Promise<void>
 }
 
-const PreferencesContext = createContext<PreferencesState>()
+const PreferencesContext = createStableContext<PreferencesState>('context/PreferencesContext')
 
 /** Build a CSS font-family string by quoting each font name and joining with commas. */
 function buildFontFamily(fonts: string[]): string {

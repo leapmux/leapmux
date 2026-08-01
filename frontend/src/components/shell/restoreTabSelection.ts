@@ -76,6 +76,17 @@ export function createTabSelectionRestorer(opts: RestoreTabSelectionOpts) {
     // tick this workspace is active — outlives the thing it was waiting for.
     // The other two exits below cover "the tab arrived" and "someone chose"; a
     // workspace that disappears matched neither.
+    //
+    // There is deliberately NO fourth exit for a tab that was tombstoned or
+    // removed before it could be delivered. Every signal that could detect one
+    // — absence from the projection, an elapsed-tick budget — is
+    // indistinguishable from the late arrival this retry exists for, and only a
+    // tombstoned record is monotonic enough to be safe to act on. The cost of
+    // the gap is bounded and small (this function's three lookups re-run while
+    // the entry is stranded, until the user selects anything), and
+    // `useTabPersistence` only ever persists a key that was live when written,
+    // so reaching the state at all needs the tab to die between that write and
+    // the next load.
     if (!opts.hasWorkspace(workspaceId)) {
       pendingTileBackfill.delete(workspaceId)
       return
@@ -154,10 +165,11 @@ export function createTabSelectionRestorer(opts: RestoreTabSelectionOpts) {
 
     // The stored tab can land in a LATER frame than the rest of its workspace —
     // and, without any race at all, whenever it MOVED tile since it was last
-    // activated (nothing rewrites `activeByTile` on a move, and `tileActivesFor`
-    // narrows to current tile ids, so the workspace key names a tab whose tile
-    // has no stored entry). `selection.restore` filed the workspace pointer
-    // regardless; its tile back-fill is what needs the retry.
+    // activated (nothing rewrites `activeByTile` on a move, and
+    // `chosenTileActivesFor` drops the entry of a tile the tab has left, so the
+    // workspace key names a tab whose tile has no stored entry).
+    // `selection.restore` filed the workspace pointer regardless; its tile
+    // back-fill is what needs the retry.
     if (activeKey && !opts.view.get(activeKey))
       pendingTileBackfill.set(workspaceId, activeKey)
 

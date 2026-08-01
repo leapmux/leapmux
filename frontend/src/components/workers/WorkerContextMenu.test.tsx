@@ -1,7 +1,13 @@
 /// <reference types="vitest/globals" />
-import { render, screen } from '@solidjs/testing-library'
+import { render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { WorkerContextMenu } from './WorkerContextMenu'
+
+const showInfoToast = vi.hoisted(() => vi.fn())
+vi.mock('~/components/common/Toast', () => ({ showInfoToast }))
+
+const copyTextToClipboard = vi.hoisted(() => vi.fn(async (_text: string) => true))
+vi.mock('~/lib/clipboard', () => ({ copyTextToClipboard }))
 
 // Mock the modules that affect visibility.
 vi.mock('~/api/platformBridge', async (importOriginal) => {
@@ -45,6 +51,9 @@ function renderMenu(opts?: { hasTunnels?: boolean, autoRegistered?: boolean }) {
 describe('workerContextMenu', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    showInfoToast.mockClear()
+    copyTextToClipboard.mockClear()
+    copyTextToClipboard.mockImplementation(async () => true)
   })
 
   it('"add tunnel..." hidden when tunnel not available', async () => {
@@ -82,5 +91,28 @@ describe('workerContextMenu', () => {
     // on next launch — the menu item would be a dead-end click.
     renderMenu({ autoRegistered: true })
     expect(screen.queryByText('Deregister...')).not.toBeInTheDocument()
+  })
+
+  describe('copying worker info', () => {
+    it('copies the info JSON and confirms', async () => {
+      renderMenu()
+      screen.getByText('linux (amd64)').click()
+
+      await waitFor(() => expect(copyTextToClipboard).toHaveBeenCalled())
+      expect(copyTextToClipboard.mock.calls[0][0]).toContain('linux')
+      expect(showInfoToast).toHaveBeenCalledWith('Worker info copied to clipboard')
+    })
+
+    // The toast used to fire unconditionally, so it claimed success on any
+    // platform without a clipboard (a non-secure origin exposes none) and even
+    // when there was nothing to copy at all.
+    it('stays silent when the copy does not land', async () => {
+      copyTextToClipboard.mockImplementation(async () => false)
+      renderMenu()
+      screen.getByText('linux (amd64)').click()
+
+      await waitFor(() => expect(copyTextToClipboard).toHaveBeenCalled())
+      expect(showInfoToast).not.toHaveBeenCalled()
+    })
   })
 })

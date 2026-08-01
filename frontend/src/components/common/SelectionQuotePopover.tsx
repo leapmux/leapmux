@@ -3,6 +3,7 @@ import Copy from 'lucide-solid/icons/copy'
 import Quote from 'lucide-solid/icons/quote'
 import { createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { copyTextToClipboard } from '~/lib/clipboard'
 import { extractLineRange, extractSelectionMarkdown } from '~/lib/quoteUtils'
 import * as styles from './SelectionQuotePopover.css'
 
@@ -141,7 +142,12 @@ export function SelectionQuotePopover(props: SelectionQuotePopoverProps): JSX.El
 
     const lineRange = extractLineRange(selection)
     const text = lineRange ? selection.toString() : extractSelectionMarkdown(selection)
-    void navigator.clipboard.writeText(text)
+    // Guarded, because the three statements below depend on reaching them. A
+    // non-secure origin exposes no `navigator.clipboard` at all, so the bare
+    // `navigator.clipboard.writeText` this replaced threw a TypeError right
+    // here -- leaving the selection highlighted and the popover stuck open, on
+    // top of not copying.
+    void copyTextToClipboard(text)
     selection.removeAllRanges()
     setSelectionActive(false)
     hidePopover()

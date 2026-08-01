@@ -1,5 +1,7 @@
 // @refresh reload
 import { mount, StartClient } from '@solidjs/start/client'
+import { showWarnToast } from '~/components/common/Toast'
+import { installGlobalErrorSink } from '~/lib/installGlobalErrorSink'
 import { scheduleRenderPipelineWarmup } from '~/lib/renderPipelineWarmup'
 import { installResizeObserverLoopErrorSuppressor } from '~/lib/suppressResizeObserverLoopError'
 
@@ -12,6 +14,18 @@ import { installResizeObserverLoopErrorSuppressor } from '~/lib/suppressResizeOb
 // browser's native error reporting untouched.
 if (import.meta.env.DEV)
   installResizeObserverLoopErrorSuppressor()
+
+// Catch what the ErrorBoundaries structurally cannot: faults thrown from event
+// handlers, promise rejections, timers and socket callbacks never touch the
+// render graph, so before this they were invisible to the user and unlogged in
+// prod. Installed AFTER the suppressor so its capture-phase listener still wins
+// on the benign ResizeObserver events (the sink filters them too, for prod,
+// where the suppressor is not installed at all).
+//
+// `showWarnToast` is passed in rather than imported by the sink: it both renders
+// the toast and logs at warn level, so the sink deliberately does neither and
+// the fault is reported exactly once.
+installGlobalErrorSink({ report: showWarnToast })
 
 // Vinxi's generated client handler probes this module for a default export even
 // though the Solid client entry only needs the side-effectful mount call below.

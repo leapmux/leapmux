@@ -1,8 +1,9 @@
 import type { ParentComponent } from 'solid-js'
 import type { TunnelStore } from '~/stores/tunnel.store'
-import { createContext, useContext } from 'solid-js'
+import { useContext } from 'solid-js'
+import { createStableContext } from '~/lib/createStableContext'
 
-const TunnelContext = createContext<TunnelStore>()
+const TunnelContext = createStableContext<TunnelStore>('context/TunnelContext')
 
 export const TunnelProvider: ParentComponent<{ store: TunnelStore }> = (props) => {
   // eslint-disable-next-line solid/reactivity -- store is a stable object, not a reactive primitive
