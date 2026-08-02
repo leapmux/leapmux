@@ -102,15 +102,12 @@ func TestRestartTerminal_HappyPath(t *testing.T) {
 	require.Empty(t, w3.errors)
 	require.Len(t, w3.responses, 1, "RestartTerminal should return a response")
 
-	// New PTY must come up.
+	// New PTY must come up. openTerminalViaRPC already registered
+	// terminal cleanup; WaitForExit resolves against the current
+	// exitDone, so it covers this respawned PTY as well.
 	testutil.AssertEventually(t, func() bool {
 		return svc.Terminals.HasTerminal(terminalID) && !svc.Terminals.IsExited(terminalID)
 	}, "restart spawn")
-	// Register cleanup AFTER t.TempDir() above so this t.Cleanup runs
-	// first (LIFO): the respawned PTY must be stopped before the temp
-	// working-dir is removed, or Windows' unlinkat fails because cmd.exe
-	// still has the dir open as its CWD.
-	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 
 	require.Equal(t, int64(2), ipc.count.Load(), "TerminalSpawning should fire again on restart")
 	tokensAfter, _, cleanupsExecuted := ipc.snapshot()
@@ -356,7 +353,6 @@ func TestRestartTerminal_PreservesTitle(t *testing.T) {
 	testutil.AssertEventually(t, func() bool {
 		return svc.Terminals.HasTerminal(terminalID) && !svc.Terminals.IsExited(terminalID)
 	}, "respawn")
-	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 
 	// In-memory meta and DB row should both still carry the user title.
 	meta, ok := svc.Terminals.GetMeta(terminalID)

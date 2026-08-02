@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // noIdentityRemoteIPC fails every spawn with ErrMissingIdentity and records
@@ -123,7 +122,6 @@ func TestRestartTerminal_MissingIdentityFailsAndRetiresPreviousToken(t *testing.
 	defer drainAllInFlight(svc)
 
 	terminalID := openTerminalViaRPC(t, svc, d, w, t.TempDir())
-	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 	require.Equal(t, 1, ipc.calls, "the initial open mints a token")
 	require.Zero(t, ipc.cleanups, "nothing has retired it yet")
 

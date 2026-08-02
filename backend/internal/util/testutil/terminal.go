@@ -55,6 +55,12 @@ type TerminalCleaner interface {
 // WaitForExit call blocks until the manager's exit-handler goroutine
 // has finished, which subsumes any test-local "exit handler fired"
 // channel a wrapped ExitHandler might close.
+//
+// Register this AFTER any t.TempDir used as the shell's WorkingDir so
+// LIFO cleanup kills the process before RemoveAll. On Windows a live
+// shell keeps its CWD open, and TempDir cleanup then fails with
+// "The process cannot access the file because it is being used by
+// another process."
 func RegisterTerminalCleanup(t *testing.T, mgr TerminalCleaner, id string) {
 	t.Helper()
 	t.Cleanup(func() {

@@ -262,6 +262,15 @@ func startTestTerminal(t *testing.T, svc *Service, ctx context.Context, id strin
 // unmarshal, and wait for the PTY to register in the manager. Returns
 // the terminal id minted by the worker. Tests that need to assert
 // against the dispatch response should call dispatch directly.
+//
+// Always registers terminal cleanup (same as startTestTerminal). Callers
+// typically pass t.TempDir() as workingDir; that cleanup is registered
+// before this helper runs, so LIFO cleanup stops the shell first. Without
+// that order, Windows unlinkat on the temp dir fails with "used by
+// another process" because the live cmd.exe still has the directory open
+// as its CWD. Shutdown deliberately leaves PTYs running (it only
+// broadcasts the disconnect notice), so relying on svc.Shutdown alone
+// does not release the handle.
 func openTerminalViaRPC(t *testing.T, svc *Service, d *channel.Dispatcher, w *testResponseWriter, workingDir string) string {
 	t.Helper()
 	dispatch(d, "OpenTerminal", &leapmuxv1.OpenTerminalRequest{
@@ -283,6 +292,7 @@ func openTerminalViaRPC(t *testing.T, svc *Service, d *channel.Dispatcher, w *te
 	terminalID := openResp.GetTerminalId()
 	require.NotEmpty(t, terminalID)
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 	return terminalID
 }
 
@@ -762,6 +772,12 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 		return bytes.Contains(screen, []byte("shutdown_test"))
 	}, "expected terminal screen to contain 'shutdown_test'")
 
+	// Kill the PTY after Shutdown via RegisterTerminalCleanup (not
+	// StopAll): Shutdown deliberately leaves shells running, and on
+	// Windows cmd.exe holding workingDir as CWD makes t.TempDir's
+	// RemoveAll fail unless the process is stopped and reaped first.
+	testutil.RegisterTerminalCleanup(t, svc.Terminals, "term-1")
+
 	// Call Shutdown — should persist screen to DB.
 	svc.Shutdown()
 
@@ -773,9 +789,6 @@ func TestShutdown_PersistsTerminalScreenSnapshots(t *testing.T) {
 	assert.Contains(t, string(dbTerm.Screen), "[Worker disconnected - Press Enter to restart]")
 	assert.Equal(t, "user@host: ~/dir", dbTerm.Title, "title should be persisted after Shutdown")
 	assert.False(t, dbTerm.ClosedAt.Valid, "Shutdown should not set closed_at")
-
-	// Clean up.
-	svc.Terminals.StopAll()
 }
 
 // TestShutdown_PreservesNaturalExitCode pins the contract that
