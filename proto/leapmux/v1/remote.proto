@@ -27,6 +27,10 @@ service RemoteIPCService {
   rpc Whoami(WhoamiRequest) returns (WhoamiResponse);
   // Cancel cancels a still-running streaming RPC by its client request ID.
   rpc Cancel(CancelRequest) returns (CancelResponse);
+  // UpdateStream delivers a follow-up request to an in-flight StreamInner
+  // stream, the cleartext-IPC counterpart of InnerStreamRequest. Cancel remains
+  // the terminal half.
+  rpc UpdateStream(UpdateStreamRequest) returns (UpdateStreamResponse);
 }
 
 message CallInnerRequest {
@@ -85,3 +89,10 @@ message CancelRequest {
 }
 
 message CancelResponse {}
+
+message UpdateStreamRequest {
+  string client_request_id = 1;
+  bytes payload = 2;
+}
+
+message UpdateStreamResponse {}

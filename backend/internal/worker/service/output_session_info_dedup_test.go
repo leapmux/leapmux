@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -58,6 +59,9 @@ func (m *sessionInfoCapturingWriter) SendStream(s *leapmuxv1.InnerStreamMessage)
 
 func (m *sessionInfoCapturingWriter) ChannelID() string   { return m.channelID }
 func (*sessionInfoCapturingWriter) MaxPayloadBudget() int { return 0 }
+func (*sessionInfoCapturingWriter) BindStream(channel.StreamController) (func(), bool) {
+	return func() {}, false
+}
 
 func (m *sessionInfoCapturingWriter) snapshot() []map[string]interface{} {
 	m.mu.Lock()
@@ -84,7 +88,7 @@ func newSessionInfoFixture(t *testing.T) (agent.OutputSink, *sessionInfoCapturin
 	}))
 
 	mock := &sessionInfoCapturingWriter{channelID: "ch-1"}
-	svc.Watchers.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
+	svc.Watchers.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
 	return sink, mock

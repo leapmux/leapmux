@@ -28,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 	"github.com/leapmux/leapmux/util/validate"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -965,12 +966,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// existing E2EE channel. The bootstrap-replay sends one
 	// FileTabPathRegistered per worker_file_tabs row the caller owns before
 	// any live events.
-	// SnapshotAndSubscribe drives the stream lifetime off the sender's
-	// channel directly, not the dispatcher ctx (which only covers the
-	// initial subscribe call). The bgCtx() passed in is the snapshot
-	// cursor's context, intentionally background so a slow snapshot
-	// doesn't get cancelled by the RPC dispatcher unwinding after the
-	// subscribe returns. Dispatcher ctx is intentionally not threaded.
+	//
+	// SnapshotAndSubscribe drives the stream lifetime off a cancellable
+	// context bound to the stream's correlation id (via BindStream). An
+	// InnerStreamRequest{cancel: true} from the client cancels that ctx,
+	// which exits the subscribe loop and deletes the subscriber. The
+	// dispatcher ctx is intentionally not used: it only covers the initial
+	// subscribe call and would cancel the moment the handler returns.
 	// Registered as STREAMING: the browser opens this with
 	// channelManager.stream and holds the correlation id in
 	// streamListeners only, so a unary reply -- an owner-gate rejection, or
@@ -978,11 +980,24 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// error to retry from.
 	registerOwnerGatedStream(d, "WatchWorkerPrivateEvents",
 		func(_ context.Context, caller userid.UserID, _ *leapmuxv1.WatchWorkerPrivateEventsRequest, sender channel.ResponseWriter) {
+			ctx, cancel := context.WithCancel(bgCtx())
+			ctrl := &privateEventsController{cancel: cancel}
+			release, ok := sender.BindStream(ctrl)
+			if !ok {
+				cancel()
+				sendStreamError(sender, codes.FailedPrecondition, "stream binding unavailable")
+				return
+			}
+			defer release()
+			defer cancel()
 			_ = svc.PrivateEvents.SnapshotAndSubscribe(
-				bgCtx(),
+				ctx,
 				caller,
 				func(owner userid.UserID) []*leapmuxv1.WorkerPrivateEvent {
-					snapshot, err := svc.FileTabPaths.SnapshotForOwner(bgCtx(), owner)
+					// Use the cancellable stream ctx, not bgCtx: a client cancel
+					// frame during a slow/large snapshot must retire the stream
+					// rather than waiting out the SQLite busy timeout.
+					snapshot, err := svc.FileTabPaths.SnapshotForOwner(ctx, owner)
 					if err != nil {
 						return nil
 					}

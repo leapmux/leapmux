@@ -127,6 +127,10 @@ export interface TerminalTab extends BaseTab {
    * reconnect when a screen snapshot is restored.
    */
   contentReady?: boolean
+  /** PTY-driven title from worker-side OSC parsing; tab strip falls back before generic label. */
+  ptyTitle?: string
+  progressState?: import('~/generated/leapmux/v1/terminal_pb').TerminalProgress_State
+  progressPercent?: number
 }
 
 /**

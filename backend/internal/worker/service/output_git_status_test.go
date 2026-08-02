@@ -12,6 +12,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -43,6 +44,9 @@ func (m *agentEventCapturingWriter) SendStream(s *leapmuxv1.InnerStreamMessage) 
 }
 func (m *agentEventCapturingWriter) ChannelID() string   { return m.channelID }
 func (*agentEventCapturingWriter) MaxPayloadBudget() int { return 0 }
+func (*agentEventCapturingWriter) BindStream(channel.StreamController) (func(), bool) {
+	return func() {}, false
+}
 
 func (m *agentEventCapturingWriter) lastStatus() *leapmuxv1.AgentStatusChange {
 	m.mu.Lock()
@@ -80,7 +84,7 @@ func newGitStatusFixture(t *testing.T) (*agentOutputSink, *agentEventCapturingWr
 	}))
 
 	mock := &agentEventCapturingWriter{channelID: "ch-1"}
-	svc.Watchers.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
+	svc.Watchers.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).(*agentOutputSink)
 	return sink, mock

@@ -1,12 +1,43 @@
+import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
 import solid from 'vite-plugin-solid'
 import { defineConfig } from 'vitest/config'
 
+const require = createRequire(import.meta.url)
+
+// vite-plugin-solid aliases `solid-refresh` -> the virtual id `/@solid-refresh`
+// unconditionally -- even under `hot: false`, which only stops the babel HMR
+// injection into components. So a direct import of `solid-refresh` (here,
+// createStableContext's HMR reproduction) resolves to `/@solid-refresh`, a
+// non-file path. On Windows vitest's `convertIdToImportUrl` turns that into
+// `file:///@solid-refresh`, which Node's `fileURLToPath` rejects with
+// "The argument 'filename' must be a file URL object, file URL string, or
+// absolute path string" -- the Windows-only failure introduced by #347.
+// POSIX round-trips the virtual id harmlessly, which is why the suite stays
+// green on macOS/Linux.
+//
+// Re-resolve the virtual id to the real runtime file so the module id is a
+// proper OS path on every platform. A user alias can't win here (Vite's
+// mergeAlias puts the plugin's regex alias first, and the alias plugin runs
+// before user pre-plugins), but vite-plugin-solid's own resolveId is itself
+// `enforce: 'pre'`, and a pre-plugin registered ahead of it runs first in the
+// same group -- first non-null resolveId result wins. Harmless to the dev
+// server: this config is test-only, and the dev server resolves `/@solid-refresh`
+// through the plugin's load hook before this resolution would be consulted.
+const resolveSolidRefreshVirtual = {
+  name: 'resolve-solid-refresh-to-file',
+  enforce: 'pre' as const,
+  resolveId(id: string) {
+    if (id === '/@solid-refresh')
+      return require.resolve('solid-refresh/dist/solid-refresh.mjs')
+  },
+}
+
 export default defineConfig({
   // hot: false — HMR-runtime injection (/@solid-refresh) breaks fileURLToPath
   // on Windows and tests don't need it.
-  plugins: [vanillaExtractPlugin(), solid({ hot: false })],
+  plugins: [vanillaExtractPlugin(), resolveSolidRefreshVirtual, solid({ hot: false })],
   resolve: {
     alias: {
       '~': resolve(__dirname, 'src'),

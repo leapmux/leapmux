@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,6 +14,12 @@ import (
 // rather than `[]byte("\x1b[?1049h")` repeatedly.
 func feedString(t *modeTracker, s string) {
 	t.feed([]byte(s))
+}
+
+func feedAndSignals(t *modeTracker, s string) []Signal {
+	t.beginChunk()
+	t.feed([]byte(s))
+	return t.drainSignals()
 }
 
 // TestModeTracker_PerModeSetReset is the table that covers every tracked
@@ -249,11 +256,17 @@ func TestModeTracker_OSC_BodyOverflow(t *testing.T) {
 	feedString(tr, "\x1b]0;previous\x07")
 	require.Equal(t, []byte("\x1b]0;previous\x07"), tr.snapshotPrefix())
 
-	// 300 bytes of body — well past oscBufCap=256.
-	overflow := "\x1b]0;" + strings.Repeat("X", 300) + "\x07"
+	// 2100 bytes of body — well past oscBufCap=2048.
+	overflow := "\x1b]0;" + strings.Repeat("X", 2100) + "\x07"
 	feedString(tr, overflow)
 	assert.Equal(t, []byte("\x1b]0;previous\x07"), tr.snapshotPrefix(),
 		"overflowed OSC body must leave the previous title intact")
+
+	// Parser must recover for the next valid sequence after an overrun.
+	feedString(tr, "\x1b[?1049h")
+	prefix := tr.snapshotPrefix()
+	assert.Contains(t, string(prefix), "\x1b[?1049h")
+	assert.Contains(t, string(prefix), "previous")
 }
 
 // TestModeTracker_OSC_AbortedByNewEscape: an OSC interrupted by a fresh
@@ -349,4 +362,232 @@ func TestModeTracker_NoAllocOnTypicalShellOutput(t *testing.T) {
 	tr.feed(chunk)
 	allocs := testing.AllocsPerRun(10, func() { tr.feed(chunk) })
 	assert.Zero(t, allocs, "steady-state mixed-CSI+OSC feed must not allocate")
+}
+
+func TestModeTracker_BellGroundState(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	sigs := feedAndSignals(tr, "\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, SignalBell, sigs[0].Kind)
+
+	// BEL terminating OSC 0 must not also emit a bell signal.
+	sigs = feedAndSignals(tr, "\x1b]0;title\x07")
+	for _, s := range sigs {
+		assert.NotEqual(t, SignalBell, s.Kind, "OSC BEL terminator must not emit SignalBell")
+	}
+}
+
+func TestModeTracker_BellSplitAcrossFeeds(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	tr.beginChunk()
+	tr.feed([]byte("\x07"))
+	tr.feed([]byte("x"))
+	sigs := tr.drainSignals()
+	require.Len(t, sigs, 1)
+	assert.Equal(t, SignalBell, sigs[0].Kind)
+}
+
+func TestModeTracker_SignalTitleOSC0And2(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	sigs := feedAndSignals(tr, "\x1b]0;hello\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, SignalTitle, sigs[0].Kind)
+	assert.Equal(t, "hello", sigs[0].Title)
+
+	sigs = feedAndSignals(tr, "\x1b]2;world\x1b\\")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, "world", sigs[0].Title)
+
+	sigs = feedAndSignals(tr, "\x1b]0;world\x07")
+	assert.Empty(t, sigs, "re-emitting the same title emits nothing")
+}
+
+func TestModeTracker_SignalTitleOSC1Ignored(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	sigs := feedAndSignals(tr, "\x1b]1;icon\x07")
+	assert.Empty(t, sigs)
+	assert.Nil(t, tr.snapshotPrefix())
+}
+
+func TestModeTracker_SignalNotificationOSC9(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	sigs := feedAndSignals(tr, "\x1b]9;hello\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, SignalNotification, sigs[0].Kind)
+	assert.Empty(t, sigs[0].Title)
+	assert.Equal(t, "hello", sigs[0].Body)
+}
+
+func TestModeTracker_SignalProgressOSC9(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	sigs := feedAndSignals(tr, "\x1b]9;4;1;42\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, SignalProgress, sigs[0].Kind)
+	assert.Equal(t, ProgressNormal, sigs[0].State)
+	assert.Equal(t, int32(42), sigs[0].Percent)
+
+	sigs = feedAndSignals(tr, "\x1b]9;4;0\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, ProgressClear, sigs[0].State)
+}
+
+// TestModeTracker_SignalProgressOSC9PercentClamped pins the overflow fix: an
+// out-of-range percent must clamp to the documented 0..100 range instead of
+// narrowing an arbitrary int to int32 (which silently wrapped to a bogus /
+// negative value on the wire).
+func TestModeTracker_SignalProgressOSC9PercentClamped(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		seq    string
+		expect int32
+	}{
+		{"over range clamps to 100", "\x1b]9;4;1;9999999999\x07", 100},
+		{"negative clamps to 0", "\x1b]9;4;1;-5\x07", 0},
+		{"boundary 100", "\x1b]9;4;1;100\x07", 100},
+		{"boundary 0", "\x1b]9;4;1;0\x07", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tr := &modeTracker{}
+			sigs := feedAndSignals(tr, tc.seq)
+			require.Len(t, sigs, 1)
+			assert.Equal(t, SignalProgress, sigs[0].Kind)
+			assert.Equal(t, tc.expect, sigs[0].Percent)
+		})
+	}
+}
+
+// TestModeTracker_KittyDroppedBounded pins the unbounded-growth fix: the
+// banned-id set must cap at kittyMaxDropped rather than accumulating one entry
+// per distinct oversized notification for the tracker's lifetime.
+func TestModeTracker_KittyDroppedBounded(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	// Emit more distinct oversized kitty notifications than the cap. Each uses a
+	// unique id and a single done payload exceeding kittyMaxBytes so it is banned.
+	oversized := strings.Repeat("x", kittyMaxBytes+1)
+	for i := 0; i < kittyMaxDropped+40; i++ {
+		feedAndSignals(tr, "\x1b]99;i="+strconv.Itoa(i)+";"+oversized+"\x07")
+	}
+	assert.LessOrEqual(t, len(tr.kittyDropped), kittyMaxDropped,
+		"kittyDropped must be capped, not unbounded")
+}
+
+func TestModeTracker_SignalNotificationOSC777(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	sigs := feedAndSignals(tr, "\x1b]777;notify;Title;Body;with;semicolons\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, "Title", sigs[0].Title)
+	assert.Equal(t, "Body;with;semicolons", sigs[0].Body)
+}
+
+func TestModeTracker_SignalNotificationOSC99(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	sigs := feedAndSignals(tr, "\x1b]99;i=1:d=1:p=title;Hello\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, "Hello", sigs[0].Title)
+
+	sigs = feedAndSignals(tr, "\x1b]99;i=2:d=0:p=title;Part1\x07")
+	assert.Empty(t, sigs)
+	sigs = feedAndSignals(tr, "\x1b]99;i=2:d=1:p=body;Part2\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, "Part1", sigs[0].Title)
+	assert.Equal(t, "Part2", sigs[0].Body)
+
+	sigs = feedAndSignals(tr, "\x1b]99;i=3:d=1:e=1:p=title;SGVsbG8=\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, "Hello", sigs[0].Title)
+
+	assert.Empty(t, feedAndSignals(tr, "\x1b]99;i=4:d=1:p=?;ignored\x07"))
+}
+
+func TestModeTracker_SignalNotificationOSC99Overflow(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	chunk := strings.Repeat("x", 1500)
+	assert.Empty(t, feedAndSignals(tr, "\x1b]99;i=big:d=0:p=body;"+chunk+"\x07"))
+	assert.Empty(t, feedAndSignals(tr, "\x1b]99;i=big:d=0:p=body;"+chunk+"\x07"))
+	assert.Empty(t, feedAndSignals(tr, "\x1b]99;i=big:d=0:p=body;"+chunk+"\x07"))
+	require.Contains(t, tr.kittyDropped, "big")
+	assert.Empty(t, feedAndSignals(tr, "\x1b]99;i=big:d=1:p=body;more\x07"))
+}
+
+func TestModeTracker_SignalNotificationOSC99MaxPending(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	for i := 0; i < kittyMaxPending; i++ {
+		id := string(rune('a' + i))
+		assert.Empty(t, feedAndSignals(tr, "\x1b]99;i="+id+":d=0:p=title;chunk\x07"))
+	}
+	assert.Empty(t, feedAndSignals(tr, "\x1b]99;i=overflow:d=0:p=title;drop\x07"))
+}
+
+func TestModeTracker_BellCoalescingPerChunk(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	tr.beginChunk()
+	for i := 0; i < 100; i++ {
+		tr.feed([]byte{'\x07'})
+	}
+	sigs := tr.drainSignals()
+	require.Len(t, sigs, 1)
+	assert.Equal(t, SignalBell, sigs[0].Kind)
+}
+
+func TestModeTracker_TitleCoalescingPerChunk(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	sigs := feedAndSignals(tr, "\x1b]0;first\x07\x1b]0;last\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, "last", sigs[0].Title)
+}
+
+func TestModeTracker_ProgressCoalescingPerChunk(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	sigs := feedAndSignals(tr, "\x1b]9;4;1;10\x07\x1b]9;4;1;90\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, SignalProgress, sigs[0].Kind)
+	assert.Equal(t, ProgressNormal, sigs[0].State)
+	assert.Equal(t, int32(90), sigs[0].Percent)
+}
+
+func TestModeTracker_MaxNotificationsPerChunk(t *testing.T) {
+	t.Parallel()
+
+	tr := &modeTracker{}
+	tr.beginChunk()
+	for i := 0; i < maxNotificationsPerChunk+5; i++ {
+		tr.feed([]byte("\x1b]9;body\x07"))
+	}
+	sigs := tr.drainSignals()
+	require.Len(t, sigs, maxNotificationsPerChunk)
+	for _, s := range sigs {
+		assert.Equal(t, SignalNotification, s.Kind)
+	}
 }

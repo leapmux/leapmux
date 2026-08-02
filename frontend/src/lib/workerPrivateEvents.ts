@@ -52,6 +52,11 @@ interface OpenStreamOpts {
 export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
   let stopped = false
   let currentClose: (() => void) | null = null
+  // Resolver for a active stream wait, so teardown can wake the loop immediately
+  // instead of waiting for a transport-level error that may never fire —
+  // handle.cancel() detaches the listener synchronously, so onEnd/onError never
+  // resolve the stream-wait Promise on a clean teardown with a live channel.
+  let wakeStream: (() => void) | null = null
   // Resolver for a pending reconnect wait, so teardown can wake the loop
   // immediately instead of letting it sit out the full backoff delay.
   let wakeReconnect: (() => void) | null = null
@@ -84,16 +89,10 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
         const req = create(WatchWorkerPrivateEventsRequestSchema, {})
         const payload = toBinary(WatchWorkerPrivateEventsRequestSchema, req)
         const handle = channelManager.stream(channelId, 'WatchWorkerPrivateEvents', payload)
-        // LEAK: `removeStreamListener` unregisters the LOCAL listener only —
-        // it sends no cancel frame, and `ChannelManager.stream` exposes none.
-        // The worker's `SnapshotAndSubscribe` loop exits only on `ctx.Done()`
-        // (a background ctx) or a send error, so its goroutine and buffered
-        // channel stay registered; a re-opened worker stream then adds a
-        // SECOND subscriber and every event is pushed twice.
-        // Tracked: https://github.com/leapmux/leapmux/issues/337
-        currentClose = () => channelManager.removeStreamListener(channelId, handle.requestId)
+        currentClose = () => handle.cancel()
 
         await new Promise<void>((resolve) => {
+          wakeStream = resolve
           handle.onMessage((msg) => {
             if (!healthy) {
               healthy = true
@@ -138,6 +137,7 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
       catch (err) {
         log.debug('failed to open private event stream; will retry', { workerId: opts.workerId, err })
       }
+      wakeStream = null
       currentClose = null
       if (stopped)
         return
@@ -156,6 +156,8 @@ export function openWorkerPrivateEventStream(opts: OpenStreamOpts): () => void {
   return () => {
     stopped = true
     reconnectBackoff.cancelAll()
+    wakeStream?.()
+    wakeStream = null
     wakeReconnect?.()
     wakeReconnect = null
     try {

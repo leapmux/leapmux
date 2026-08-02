@@ -85,6 +85,23 @@ export const tabNotification = style({
   flexShrink: 0,
 })
 
+/** Thin task-progress bar for OSC 9;4 terminal tabs. */
+export const tabProgress = style({
+  'width': '24px',
+  'height': '3px',
+  'borderRadius': '2px',
+  'backgroundColor': 'var(--border)',
+  'overflow': 'hidden',
+  'flexShrink': 0,
+  '::after': {
+    content: '""',
+    display: 'block',
+    height: '100%',
+    backgroundColor: 'var(--primary)',
+    width: 'var(--progress-percent, 0%)',
+  },
+})
+
 export const tabLabel = style({
   fontSize: 'var(--text-8)',
   opacity: 0.6,

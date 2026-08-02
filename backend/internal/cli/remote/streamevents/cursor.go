@@ -181,12 +181,14 @@ func AgentWatchEntry(id string, seq int64) *leapmuxv1.WatchAgentEntry {
 		return &leapmuxv1.WatchAgentEntry{
 			AgentId: id,
 			Replay:  leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
+			Mode:    leapmuxv1.WatchMode_WATCH_MODE_FULL,
 		}
 	}
 	return &leapmuxv1.WatchAgentEntry{
 		AgentId:   id,
 		Replay:    leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR,
 		CursorSeq: seq,
+		Mode:      leapmuxv1.WatchMode_WATCH_MODE_FULL,
 	}
 }
 
@@ -203,6 +205,10 @@ type TerminalCursor = Cursor[*leapmuxv1.WatchTerminalEntry]
 // NewTerminalCursor returns an empty cursor.
 func NewTerminalCursor() *TerminalCursor {
 	return NewCursor(func(id string, off int64) *leapmuxv1.WatchTerminalEntry {
-		return &leapmuxv1.WatchTerminalEntry{TerminalId: id, AfterOffset: off}
+		return &leapmuxv1.WatchTerminalEntry{
+			TerminalId:  id,
+			AfterOffset: off,
+			Mode:        leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}
 	})
 }

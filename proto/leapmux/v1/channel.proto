@@ -179,6 +179,8 @@ message InnerMessage {
     RekeyRequest rekey_request = 4;
     RekeyAck rekey_ack = 5;
     RekeyReject rekey_reject = 6;
+    // Client -> Worker frame on an already-open stream (see InnerStreamRequest).
+    InnerStreamRequest stream_request = 7;
   }
 }
 
@@ -238,4 +240,22 @@ message InnerStreamMessage {
   bool is_error = 3;
   string error_message = 4;
   int32 error_code = 5;
+}
+
+// InnerStreamRequest is a Client -> Worker frame addressed to an ALREADY-OPEN
+// stream's correlation id. It is what makes a channel stream bidirectional: a
+// client can revise or retire a subscription without tearing the stream down
+// and re-issuing it.
+//
+// Before this existed a stream close was purely client-local -- no frame
+// reached the worker -- so a subscription could only be retired by closing the
+// channel, or by a method-specific "whole current interest" re-request that
+// also forced a full replay.
+message InnerStreamRequest {
+  // Method-specific follow-up, in the same encoding the opening
+  // InnerRpcRequest.payload used. Empty on a pure cancel frame.
+  bytes payload = 1;
+  // The client is done. The worker releases the stream and answers with a
+  // terminal InnerStreamMessage{end: true}. No further client frames follow.
+  bool cancel = 2;
 }

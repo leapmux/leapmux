@@ -263,7 +263,7 @@ func TestWatchEvents_ReplaysLatestPageForFreshSubscriber(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			wWatch := newTestWriter()
 			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: tc.replay}},
+				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: tc.replay, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 			}, wWatch)
 
 			collectReplayedSeqs := func() []int64 {
@@ -330,7 +330,7 @@ func TestWatchEvents_ResumeReplaysForwardPageFromCursor(t *testing.T) {
 	// Resume from the 6th message's seq (cursor = seqs[5]).
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: seqs[5]}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: seqs[5], Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	collectReplayedSeqs := func() []int64 {
@@ -406,7 +406,7 @@ func TestWatchEvents_ResumeEmitsCatchUpStart(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: seqs[5]}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: seqs[5], Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	var events []*leapmuxv1.AgentEvent
@@ -469,7 +469,7 @@ func TestWatchEvents_FreshSubscribeEmitsCatchUpFrames(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	var complete *leapmuxv1.CatchUpComplete
@@ -526,7 +526,7 @@ func TestWatchEvents_AfterCursorWithZeroSeqReplaysLatest(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: 0}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	collectReplayedSeqs := func() []int64 {
@@ -592,7 +592,7 @@ func TestWatchEvents_ReplayShipsTodosSnapshot(t *testing.T) {
 	// would use AFTER pages and never re-fetch the todo snapshot.
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: seqs[0]}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: seqs[0], Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	collectTodos := func() []*leapmuxv1.TodoItem {
@@ -649,7 +649,7 @@ func TestWatchEvents_CatchUpCompleteCarriesLatestSeq(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	var latest int64 = -2

@@ -16,7 +16,7 @@ func TestScreenBuffer_SnapshotSince_CaughtUp(t *testing.T) {
 	t.Parallel()
 
 	sb := NewScreenBuffer()
-	end := sb.Write([]byte("hello"))
+	end, _ := sb.Write([]byte("hello"))
 
 	data, offset, isSnap := sb.SnapshotSince(end)
 	assert.Nil(t, data)
@@ -127,8 +127,10 @@ func TestScreenBuffer_Write_ReturnsEndOffset(t *testing.T) {
 	t.Parallel()
 
 	sb := NewScreenBuffer()
-	assert.Equal(t, int64(5), sb.Write([]byte("hello")))
-	assert.Equal(t, int64(11), sb.Write([]byte(" world")))
+	end1, _ := sb.Write([]byte("hello"))
+	assert.Equal(t, int64(5), end1)
+	end2, _ := sb.Write([]byte(" world"))
+	assert.Equal(t, int64(11), end2)
 	assert.Equal(t, int64(11), sb.TotalBytes())
 }
 
@@ -261,7 +263,7 @@ func TestScreenBuffer_Write_LargerThanRing(t *testing.T) {
 	for i := range big {
 		big[i] = byte(i & 0xff)
 	}
-	end := sb.Write(big)
+	end, _ := sb.Write(big)
 	assert.Equal(t, int64(2*screenBufferSize), end)
 	assert.Equal(t, int64(2*screenBufferSize), sb.TotalBytes())
 

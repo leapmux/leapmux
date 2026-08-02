@@ -7,11 +7,15 @@
  * else: status and git fields drive the SIDEBAR, which renders every workspace
  * at once. Re-stating a subset in one arm is how the status half went missing.
  */
-import type { TerminalStatusChange } from '~/generated/leapmux/v1/terminal_pb'
+import type { TerminalNotification, TerminalProgress, TerminalStatusChange, TerminalTitleChanged } from '~/generated/leapmux/v1/terminal_pb'
 import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
-import { toGitTabFields } from '~/stores/tab.helpers'
+import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { isTabOnScreen } from '~/hooks/watchPlan'
+import { notifyOs } from '~/lib/osNotification'
+import { tabKey, toGitTabFields } from '~/stores/tab.helpers'
 
 /**
  * The terminal-exit transition, in one place.
@@ -116,4 +120,90 @@ export function applyTerminalStatusChange(
       })
       break
   }
+}
+
+function isWorkspaceActiveTerminal(
+  terminalId: string,
+  selection: TabSelectionStore,
+  getActiveWorkspaceId: () => string | null,
+  view?: { getTerminalTab: (id: string) => { tileId?: string, workspaceId?: string } | undefined },
+): boolean {
+  const tab = view?.getTerminalTab(terminalId)
+  if (tab?.tileId) {
+    // Tile-placed: the shared on-screen rule (same source as tabWatchMode).
+    return isTabOnScreen(
+      { tileId: tab.tileId, workspaceId: tab.workspaceId, type: TabType.TERMINAL, id: terminalId },
+      getActiveWorkspaceId(),
+      tileId => selection.activeKeyForTile(tileId),
+    )
+  }
+  // No tile placement yet — fall back to the workspace-active key.
+  return selection.activeKeyForWorkspace(getActiveWorkspaceId() ?? '') === tabKey({ type: TabType.TERMINAL, id: terminalId })
+}
+
+interface TerminalBadgeDeps {
+  metadata: TabMetadataStore
+  selection: TabSelectionStore
+  getActiveWorkspaceId: () => string | null
+  view?: { getTerminalTab: (id: string) => { tileId?: string, workspaceId?: string } | undefined }
+}
+
+/**
+ * Badge a terminal tab when it is not on screen. Returns whether the tab was
+ * active (so callers that have a follow-up action for the non-active case —
+ * e.g. raising an OS notification — can gate on it without recomputing the
+ * on-screen predicate. Both the bell and notification arms share this prelude.
+ */
+function badgeTerminalIfNotOnScreen(terminalId: string, deps: TerminalBadgeDeps): boolean {
+  const active = isWorkspaceActiveTerminal(terminalId, deps.selection, deps.getActiveWorkspaceId, deps.view)
+  if (!active)
+    deps.metadata.patch(terminalId, { hasNotification: true })
+  return active
+}
+
+/** NOTIFY-class bell: badge when the tab is not on-screen (tile-active). */
+export function handleTerminalBell(terminalId: string, deps: TerminalBadgeDeps): void {
+  badgeTerminalIfNotOnScreen(terminalId, deps)
+}
+
+/** NOTIFY-class OSC notification: badge + optional OS notification when not focused. */
+export function handleTerminalNotification(
+  terminalId: string,
+  value: TerminalNotification,
+  deps: TerminalBadgeDeps,
+): void {
+  // Skip the desktop notification when the user is already looking at this tab.
+  if (badgeTerminalIfNotOnScreen(terminalId, deps))
+    return
+  const title = value.title || 'Terminal'
+  const body = value.body || ''
+  notifyOs({ title, body, tag: terminalId })
+}
+
+/**
+ * NOTIFY-class PTY title from OSC 0/2.
+ *
+ * Patches only `ptyTitle` so an explicit user rename in `title` keeps winning
+ * `tabDisplayLabel`. An empty OSC is a no-op (never clears a rename).
+ */
+export function handleTerminalTitleChanged(
+  terminalId: string,
+  value: TerminalTitleChanged,
+  metadata: TabMetadataStore,
+): void {
+  if (!value.title)
+    return
+  metadata.patch(terminalId, { ptyTitle: value.title })
+}
+
+/** NOTIFY-class task progress (OSC 9;4). */
+export function handleTerminalProgress(
+  terminalId: string,
+  value: TerminalProgress,
+  metadata: TabMetadataStore,
+): void {
+  metadata.patch(terminalId, {
+    progressState: value.state,
+    progressPercent: value.percent,
+  })
 }

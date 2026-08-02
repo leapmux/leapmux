@@ -73,6 +73,9 @@ interface PreferencesState {
   setBrowserTurnEndSoundVolume: (value: number | null) => void
   browserDebugLogging: () => boolean | null
   setBrowserDebugLogging: (value: boolean | null) => void
+  /** Browser-level terminal OSC desktop notifications (default off). */
+  terminalOsNotifications: () => boolean
+  setTerminalOsNotifications: (value: boolean) => void
 
   // --- Account-level setters (Hub DB) ---
   /** Account-level theme default. */
@@ -247,6 +250,14 @@ export const PreferencesProvider: ParentComponent = (props) => {
     updateBrowserPref('enterKeyMode', value)
   }
 
+  const [terminalOsNotifications, setTerminalOsNotificationsSignal] = createSignal(
+    initialPrefs.terminalOsNotifications === true,
+  )
+  const setTerminalOsNotifications = (value: boolean) => {
+    setTerminalOsNotificationsSignal(value)
+    updateBrowserPref('terminalOsNotifications', value || undefined)
+  }
+
   const [customKeybindings, setCustomKeybindingsSignal] = createSignal<UserKeybindingOverride[]>([])
 
   // --- Resolved values (browser override → account default → hardcoded) ---
@@ -392,6 +403,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setBrowserTurnEndSoundVolume,
       browserDebugLogging,
       setBrowserDebugLogging,
+      terminalOsNotifications,
+      setTerminalOsNotifications,
       accountTheme,
       accountTerminalTheme,
       accountUiFontCustomEnabled,

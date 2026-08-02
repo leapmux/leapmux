@@ -368,6 +368,25 @@ describe('channelManager stream', () => {
     // Still live: a non-terminal throw does not unregister.
     expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(true)
   })
+
+  it('stream handle send and cancel route through sendOnStream', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    const sentBefore = h.mockWs.sent.length
+    handle.send(new Uint8Array([5, 6]))
+    expect(h.mockWs.sent.length).toBeGreaterThan(sentBefore)
+    const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
+    expect(Number(sentMsg.correlationId)).toBe(handle.requestId)
+    expect(() => handle.cancel()).not.toThrow()
+    expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(false)
+  })
+
+  it('cancel on a closed channel does not throw', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const handle = h.mgr.stream(channelId, 'WatchEvents', new Uint8Array())
+    await h.mgr.closeChannel(channelId)
+    expect(() => handle.cancel()).not.toThrow()
+  })
 })
 
 describe('channelManager message routing', () => {

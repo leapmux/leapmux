@@ -144,7 +144,7 @@ func TestCallInner_DelegationFailureSurfaces(t *testing.T) {
 // version's onMsg callback shouldn't swallow the upstream error.
 func TestStreamInner_DelegationFailureSurfaces(t *testing.T) {
 	c := New(context.Background(), "http://hub.test", &PinStore{}, &stubDelegationProvider{err: errors.New("mint denied")})
-	err := c.StreamInner(context.Background(), "worker-B", userid.MustNew("user-1"), "WatchEvents", nil, nil)
+	err := c.StreamInner(context.Background(), "worker-B", userid.MustNew("user-1"), "WatchEvents", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint denied")
 }

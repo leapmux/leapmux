@@ -18,6 +18,7 @@ const { openWorkerPrivateEventStream } = await import('./workerPrivateEvents')
 
 interface FakeStream {
   requestId: string
+  cancel: ReturnType<typeof vi.fn>
   emitMessage: (payload: Uint8Array) => void
   emitError: (err: Error) => void
   emitEnd: () => void
@@ -30,8 +31,10 @@ function makeFakeStream(): { handle: unknown, control: FakeStream } {
   let onEnd: (() => void) | undefined
   let onErr: ((err: Error) => void) | undefined
   const requestId = `req-${nextReq++}`
+  const cancel = vi.fn()
   const handle = {
     requestId,
+    cancel,
     onMessage: (cb: (m: { payload: Uint8Array }) => void) => { onMsg = cb },
     onEnd: (cb: () => void) => { onEnd = cb },
     onError: (cb: (err: Error) => void) => { onErr = cb },
@@ -40,6 +43,7 @@ function makeFakeStream(): { handle: unknown, control: FakeStream } {
     handle,
     control: {
       requestId,
+      cancel,
       emitMessage: p => onMsg?.({ payload: p }),
       emitError: e => onErr?.(e),
       emitEnd: () => onEnd?.(),
@@ -132,6 +136,35 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     expect(stream).toHaveBeenCalledTimes(baseline + 2)
 
     stop2()
+  })
+
+  it('teardown calls cancel on the stream handle (#337)', async () => {
+    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
+    await tick(0)
+    expect(streams[0].cancel).toHaveBeenCalledTimes(0)
+    stop()
+    expect(streams[0].cancel).toHaveBeenCalledOnce()
+  })
+
+  it('teardown wakes a parked loop so it does not linger on a clean close with a live channel', async () => {
+    // Regression: handle.cancel() detaches the stream listener synchronously,
+    // so onEnd/onError never fire and the loop's first `await new Promise`
+    // never resolved — the closure stayed alive until a transport error
+    // eventually fired. teardown must wake the parked loop directly.
+    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
+    await tick(0)
+    expect(stream).toHaveBeenCalledTimes(1)
+
+    // Clean teardown: cancel the handle without emitting end/error. The loop
+    // is parked in the stream-wait Promise.
+    stop()
+    // Advance timers: with the fix, the loop observed the wake and exited
+    // (stopped=true short-circuits). Without the fix, the loop would still be
+    // parked and a reconnect could fire after the backoff window.
+    await tick(10_000)
+    // No new stream should be opened: teardown set stopped=true and woke the
+    // parked loop, so the reconnect backoff branch never runs.
+    expect(stream).toHaveBeenCalledTimes(1)
   })
 
   it('stops reconnecting after teardown', async () => {

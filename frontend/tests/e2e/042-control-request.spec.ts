@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { openAgentViaUI, sendMessage } from './helpers/ui'
+import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { loginViaToken, openAgentViaUI, openWorkspace, sendMessage, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
 
 /** Wait for the control request banner to appear and return a scoped locator. */
 async function waitForControlBanner(page: Page) {
@@ -225,5 +226,68 @@ test.describe('Control Request - AskUserQuestion', () => {
       const body = document.body.textContent || ''
       return body.includes('Red') && body.includes('Large')
     })
+  })
+
+  test('control request on a background agent tab badges it', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    await openAgentViaUI(page)
+    await expect(agentTabs).toHaveCount(2)
+
+    // Raise the control request on agent 1, then hide it behind agent 2 before
+    // the banner can claim focus — the NOTIFY path must still light the badge.
+    await agentTabs.first().click()
+    await sendMessage(
+      page,
+      `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2}]}`,
+    )
+    await agentTabs.nth(1).click()
+    await expect(agentTabs.nth(1)).toHaveAttribute('aria-selected', 'true')
+
+    await expect(agentTabs.first().locator('[data-testid="tab-notification"]')).toBeVisible()
+    await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
+
+    await agentTabs.first().click()
+    await expect(agentTabs.first().locator('[data-testid="tab-notification"]')).not.toBeVisible()
+    await waitForControlBanner(page)
+  })
+
+  test('control request on a background workspace badges its tab when returned to', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const ws1 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Active')
+    const ws2 = await createWorkspaceViaAPI(hubUrl, adminToken, 'Control Background')
+    await openAgentViaAPI(hubUrl, adminToken, workerId, ws1)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
+    await openAgentViaAPI(hubUrl, adminToken, workerId, ws2)
+
+    try {
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, ws2)
+      await waitForWorkspaceReady(page)
+
+      const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+      await expect(agentTabs).toHaveCount(2)
+      // Leave agent 2 selected so agent 1 can keep its badge after we return.
+      await agentTabs.first().click()
+      await sendMessage(
+        page,
+        `Use AskUserQuestion and tell me what I answered: {"questions":[${COLOR_Q_2}]}`,
+      )
+      await agentTabs.nth(1).click()
+      await workspaceRow(page, ws1).click()
+      await waitForWorkspaceReady(page)
+
+      // Return with agent 2 still active. Retry until the backgrounded agent's
+      // control request has arrived (NOTIFY while we were on ws1).
+      await expect(async () => {
+        await workspaceRow(page, ws2).click()
+        await waitForWorkspaceReady(page)
+        expect(await agentTabs.first().locator('[data-testid="tab-notification"]').count()).toBe(1)
+      }).toPass()
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, ws1).catch(() => {})
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, ws2).catch(() => {})
+    }
   })
 })

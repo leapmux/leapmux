@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -26,6 +27,9 @@ func (w *agentMessageCapturingWriter) SendResponse(_ *leapmuxv1.InnerRpcResponse
 func (w *agentMessageCapturingWriter) SendError(_ int32, _ string) error                { return nil }
 func (w *agentMessageCapturingWriter) ChannelID() string                                { return w.channelID }
 func (*agentMessageCapturingWriter) MaxPayloadBudget() int                              { return 0 }
+func (*agentMessageCapturingWriter) BindStream(channel.StreamController) (func(), bool) {
+	return func() {}, false
+}
 func (w *agentMessageCapturingWriter) SendStream(s *leapmuxv1.InnerStreamMessage) error {
 	resp := &leapmuxv1.WatchEventsResponse{}
 	if err := proto.Unmarshal(s.GetPayload(), resp); err != nil {
@@ -68,7 +72,7 @@ func TestNotificationReseqBroadcast_CarriesPreviousSeq(t *testing.T) {
 	}))
 
 	mock := &agentMessageCapturingWriter{channelID: "ch-1"}
-	svc.Watchers.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
+	svc.Watchers.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})
@@ -112,7 +116,7 @@ func TestNotificationReseqBroadcast_CarriesMarkType(t *testing.T) {
 	}))
 
 	mock := &agentMessageCapturingWriter{channelID: "ch-1"}
-	svc.Watchers.SetAgentWatches("ch-1", []string{"agent-1"}, mock)
+	svc.Watchers.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})

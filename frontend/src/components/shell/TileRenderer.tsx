@@ -511,11 +511,21 @@ export function createTileRenderer(opts: TileRendererOpts) {
         }}
         onClose={handleTabClose}
         onRename={(tab, title) => {
-          metadata.patch(tab.id, { title })
+          // Clearing ptyTitle lets a manual rename stick: TitleChanged only
+          // patches ptyTitle, and tabDisplayLabel prefers title.
+          metadata.patch(tab.id, tab.type === TabType.TERMINAL
+            ? { title, ptyTitle: '' }
+            : { title })
           if (tab.type === TabType.AGENT) {
             const renameWorkerId = view.getAgentTab(tab.id)?.workerId ?? ''
             workerRpc.renameAgent(renameWorkerId, { agentId: tab.id, title }).catch((err) => {
               showWarnToast('Failed to rename agent', err)
+            })
+          }
+          else if (tab.type === TabType.TERMINAL) {
+            const renameWorkerId = view.getTerminalTab(tab.id)?.workerId ?? ''
+            workerRpc.updateTerminalTitle(renameWorkerId, { terminalId: tab.id, title }).catch((err) => {
+              showWarnToast('Failed to rename terminal', err)
             })
           }
         }}
@@ -586,8 +596,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
           tileFocused={props.tileFocused}
           onInput={termOps.handleTerminalInput}
           onResize={termOps.handleTerminalResize}
-          onTitleChange={termOps.handleTerminalTitleChange}
-          onBell={termOps.handleTerminalBell}
           onContentReady={id => metadata.patch(id, { contentReady: true })}
           pageScrollRef={(fn) => {
             terminalPageScroll = fn

@@ -55,6 +55,8 @@ export interface BrowserPreferences {
    * `false` explicitly to opt out.
    */
   revealAfterDownload?: boolean
+  /** Desktop/browser terminal OSC notifications (OSC 9 / 777 / 99). Default off. */
+  terminalOsNotifications?: boolean
 }
 
 // ---------------------------------------------------------------------------

@@ -442,6 +442,7 @@ func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action lea
 		func() {
 			svc.TerminalStartup.cancelAndClear(terminalID, closeWorktreeDispositionFor(action, linkPolicy))
 			svc.Terminals.RemoveTerminal(terminalID)
+			svc.clearTerminalBellCoalesce(terminalID)
 			svc.terminalCleanups.run(terminalID)
 		},
 		func() (bool, error) { return rowsAffected(svc.Queries.CloseTerminal(bgCtx(), terminalID)) },

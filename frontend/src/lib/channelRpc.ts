@@ -13,7 +13,7 @@ import type { Reassembler } from './reassembler'
  */
 import type { InnerRpcResponse, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
-import { InnerMessageSchema, InnerRpcRequestSchema } from '~/generated/leapmux/v1/channel_pb'
+import { InnerMessageSchema, InnerRpcRequestSchema, InnerStreamRequestSchema } from '~/generated/leapmux/v1/channel_pb'
 import { abortError, ChannelError } from './channelError'
 import { formatErrorMessage } from './errors'
 import { createLogger } from './logger'
@@ -92,6 +92,22 @@ export function buildRequestPlaintext(method: string, payload: Uint8Array): Uint
   })
   const envelope = create(InnerMessageSchema, {
     kind: { case: 'request', value: innerReq },
+  })
+  return toBinary(InnerMessageSchema, envelope)
+}
+
+/**
+ * Encode an InnerStreamRequest envelope — the client→worker frame on an
+ * ALREADY-OPEN stream. Sibling of buildRequestPlaintext, so the two request
+ * framings live side by side.
+ */
+export function buildStreamRequestPlaintext(payload: Uint8Array, cancel: boolean): Uint8Array {
+  const streamReq = create(InnerStreamRequestSchema, {
+    payload,
+    cancel,
+  })
+  const envelope = create(InnerMessageSchema, {
+    kind: { case: 'streamRequest', value: streamReq },
   })
   return toBinary(InnerMessageSchema, envelope)
 }
@@ -234,6 +250,35 @@ export class ChannelRpcMux {
       this.deps.onSendFailure(ch, err)
       // Non-ChannelError throws are session/runtime failures (encrypt, etc.),
       // not client validation — report as transport so callers reconnect.
+      return err instanceof ChannelError ? err : new ChannelError('transport', formatErrorMessage(err))
+    }
+  }
+
+  /**
+   * Send a follow-up (or cancel) frame on an open stream. Reuses the stream's
+   * OWN correlation id — never ch.nextRequestId++ — because the frame is
+   * addressed to the subscription, not to a new call.
+   *
+   * On cancel the local registration is dropped immediately; the worker's
+   * terminal end frame then lands on an unregistered id and is discarded.
+   */
+  sendOnStream(ch: RpcChannel, correlationId: number, payload: Uint8Array, cancel: boolean): ChannelError | null {
+    if (!ch.streamListeners.has(correlationId)) {
+      // Distinguish "already gone" from success so callers do not advance
+      // local interest after a silent no-op.
+      return new ChannelError('client', 'stream not registered')
+    }
+    const plaintext = buildStreamRequestPlaintext(payload, cancel)
+    if (cancel) {
+      // Drop the local registration first so a racing end frame is discarded.
+      this.unregisterRequest(ch, correlationId)
+    }
+    try {
+      this.deps.send(ch, plaintext, correlationId)
+      return null
+    }
+    catch (err) {
+      this.deps.onSendFailure(ch, err)
       return err instanceof ChannelError ? err : new ChannelError('transport', formatErrorMessage(err))
     }
   }

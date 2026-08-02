@@ -285,11 +285,6 @@ export const AppShell: Component = () => {
     agentSessionStore,
     settingsLoading,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    getWorkerId: () => {
-      const tileId = layoutStore.focusedTileId()
-      const tab = tileId ? selection.activeTabForTile(tileId) ?? null : null
-      return tab?.workerId ?? ''
-    },
     onTurnEnd: handleTurnEnd,
   })
 

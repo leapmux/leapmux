@@ -185,41 +185,112 @@ message CleanupWorkspaceResponse {
 
 // --- Event Streaming (per-agent / per-terminal) ---
 
+// WatchMode selects how much of an entity's traffic this channel receives.
+enum WatchMode {
+  // Treated as NOTIFY: an entry that says nothing about how much it wants gets
+  // the cheap half, never the expensive one.
+  WATCH_MODE_UNSPECIFIED = 0;
+  // Notification-class events only -- status changes, control requests and
+  // cancels, agent turn ends, terminal bells / notifications / titles /
+  // progress, terminal exits. Enough to keep a badge, a spinner, a title and a
+  // sound honest for a tab nobody is looking at, with none of the traffic only
+  // a rendered tab can use.
+  WATCH_MODE_NOTIFY = 1;
+  // Everything NOTIFY carries plus the entity's content: chat messages, stream
+  // deltas, to-do snapshots, terminal bytes -- and, on the transition INTO this
+  // mode, a catch-up replay.
+  WATCH_MODE_FULL = 2;
+}
+
 // WatchEventsRequest states the channel's WHOLE current interest, not an
-// increment. Entities the request omits are unsubscribed, so a
-// terminals-only request drops every agent subscription the channel held,
-// and an empty request unsubscribes everything -- that is the only way to
-// retire subscriptions without closing the channel, since a client-side
-// stream close produces no frame the worker can see.
+// increment. Entities the request omits are unsubscribed.
 //
-// A client must therefore send its full set every time, and must send an
-// empty request when it stops watching anything. Sending a partial set
-// silently deafens whatever it left out.
+// The opening InnerRpcRequest carries the first one; every revision after that
+// rides an InnerStreamRequest on the SAME stream, so changing the set never
+// tears the subscription down and never re-replays entities that did not
+// change. The stream is retired by an InnerStreamRequest{cancel: true} or by
+// the channel closing -- an empty request now means "watching nothing" and
+// leaves the stream open.
+//
+// Revisions COALESCE: each states the whole interest, so the worker may apply
+// only the newest of a burst. A client waiting on revision N therefore accepts
+// any WatchUpdateAck with update_id >= N.
 message WatchEventsRequest {
   repeated WatchAgentEntry agents = 1;
   repeated WatchTerminalEntry terminals = 2;
+  // Echoed on WatchUpdateAck. Client-chosen, monotonic per stream; 0 is fine
+  // for a client that does not track revisions.
+  uint64 update_id = 3;
 }
 
 message WatchAgentEntry {
   string agent_id = 1;
-  // Which history to replay before the live stream begins. Defaults (UNSPECIFIED)
-  // to LATEST -- the cold-start view.
+  // Which history to replay when this entry TRANSITIONS into WATCH_MODE_FULL.
+  // Ignored while the entry is already FULL (no replay is owed) or NOTIFY.
   WatchReplayMode replay = 2;
   // Exclusive lower bound for AFTER_CURSOR replay (replay seq > cursor_seq);
-  // ignored for LATEST.
+  // ignored for LATEST / while not transitioning into FULL.
   int64 cursor_seq = 3;
+  WatchMode mode = 4;
 }
 
 message WatchTerminalEntry {
   string terminal_id = 1;
+  // Resume cursor for the screen replay owed on the transition into
+  // WATCH_MODE_FULL. Ignored otherwise.
   int64 after_offset = 2;
+  WatchMode mode = 3;
 }
 
 message WatchEventsResponse {
   oneof event {
     AgentEvent agent_event = 1;
     TerminalEvent terminal_event = 2;
+    WatchUpdateAck update_ack = 3;
   }
+}
+
+// WatchRejectionReason says WHY one entity in a WatchEventsRequest was not
+// subscribed. Modelled on ChannelOpenErrorCode (channel.proto) rather than on a
+// bare ConnectRPC code: what the client has to decide is settle-vs-retry, and a
+// status code loses that distinction the moment two causes map onto one code.
+enum WatchRejectionReason {
+  // Never sent. Present so an unrecognized reason is read as "unknown", which
+  // clients treat as DURABLE -- the safe direction, since a wrongly-settled
+  // entry is re-stated by the next real tab change while a wrongly-retried one
+  // loops forever.
+  WATCH_REJECTION_REASON_UNSPECIFIED = 0;
+  // DURABLE. This worker holds no live row with that id: closed, never created
+  // here, or living on a different worker. The client stops asking.
+  WATCH_REJECTION_REASON_NOT_FOUND = 1;
+  // TRANSIENT. The worker could not resolve the id at all, so this says
+  // NOTHING about whether the entity exists. Whatever the channel already had
+  // registered for it was left untouched. The client retries.
+  WATCH_REJECTION_REASON_LOOKUP_FAILED = 2;
+}
+
+// WatchRejection names one entity the worker did not subscribe, and why.
+message WatchRejection {
+  string entity_id = 1;
+  WatchRejectionReason reason = 2;
+}
+
+// WatchUpdateAck reports what one WatchEventsRequest actually subscribed. It is
+// sent for EVERY request, applied cleanly or not, and it never ends the stream.
+//
+// It is what makes a partial rejection recoverable. Registration is
+// replace-semantics, so an entity the worker cannot resolve is left
+// unsubscribed; without an ack that outcome was indistinguishable from success
+// and nothing ever retried it (issue #314). Carrying a REASON per entity --
+// rather than a bare id list plus a whole-request flag -- is what lets the
+// client settle a closed agent while retrying a transient fault, which is the
+// loop-vs-silence trade-off that kept #314 open. It also means a future per-id
+// or chunked lookup, the exact "transient rejection" #314 warns about, needs no
+// protocol change: it is already just another entity carrying LOOKUP_FAILED.
+message WatchUpdateAck {
+  uint64 update_id = 1;
+  repeated WatchRejection rejected_agents = 2;
+  repeated WatchRejection rejected_terminals = 3;
 }
 
 message AgentEvent {
@@ -236,7 +307,19 @@ message AgentEvent {
     CatchUpComplete catch_up_complete = 10;
     AgentTodosChanged todos_changed = 11;
     CatchUpStart catch_up_start = 12;
+    AgentTurnEnd turn_end = 13;
   }
+}
+
+// AgentTurnEnd fires when the agent finishes a turn. NOTIFY-class, so a tab
+// nobody is looking at still rings and still badges -- which the turn-end
+// divider it accompanies cannot do, being a chat message only a rendered tab
+// receives.
+message AgentTurnEnd {
+  // Tool calls in the finished turn, when the provider reports one. Clients
+  // suppress the turn-end sound for a zero-tool turn, so a provider that cannot
+  // say leaves this UNSET rather than sending 0.
+  optional int32 num_tool_uses = 1;
 }
 
 // CatchUpStart is broadcast at the START of a WatchEvents (re)subscribe, BEFORE the
@@ -283,6 +366,10 @@ message TerminalEvent {
     TerminalData data = 2;
     TerminalClosed closed = 3;
     TerminalStatusChange status_change = 4;
+    TerminalBell bell = 5;
+    TerminalNotification notification = 6;
+    TerminalTitleChanged title_changed = 7;
+    TerminalProgress progress = 8;
   }
 }
 

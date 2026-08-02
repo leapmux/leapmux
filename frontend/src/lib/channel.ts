@@ -583,6 +583,8 @@ export class ChannelManager {
     onMessage: (cb: (msg: InnerStreamMessage) => void) => void
     onEnd: (cb: () => void) => void
     onError: (cb: (err: Error) => void) => void
+    send: (payload: Uint8Array) => void
+    cancel: () => void
   } {
     const ch = this.pool.get(channelId)
     // Streams require a verified session; call() still allows 'opening' so the
@@ -626,11 +628,62 @@ export class ChannelManager {
         throw sendErr
     }
 
+    const sendOnStream = (payload: Uint8Array, cancel: boolean): void => {
+      const live = this.pool.get(channelId)
+      if (!live || live.state === 'closed') {
+        if (cancel)
+          return
+        throw new ChannelError('client', 'channel not open')
+      }
+      const doSend = (): ChannelError | null => this.rpc.sendOnStream(live, handle.requestId, payload, cancel)
+      if (this.session.needsRekeyGate(live)) {
+        // Rekey must complete before the frame is meaningful; await it so
+        // callers learn about send failure instead of advancing local state
+        // on a fire-and-forget drop. deliverDeferredError fires the handle's
+        // onError listener when registered (the watch stream always registers
+        // one), so a post-rekey channel death clears inflight interest and
+        // triggers a reconnect rather than leaving local state believing the
+        // revision landed.
+        void this.session.ensureRekeyed(live).then(() => {
+          if (live.state === 'closed' || !this.pool.has(channelId)) {
+            if (!cancel) {
+              queueMicrotask(() => {
+                handle.deliverDeferredError(
+                  new ChannelError('client', 'channel not open'),
+                  'stream update dropped after rekey with no onError listener',
+                )
+              })
+            }
+            return
+          }
+          const err = doSend()
+          if (err && !cancel) {
+            queueMicrotask(() => {
+              handle.deliverDeferredError(err, 'stream update failed with no onError listener')
+            })
+          }
+        }).catch((err) => {
+          if (cancel)
+            return
+          const e = err instanceof Error ? err : new ChannelError('client', formatErrorMessage(err))
+          queueMicrotask(() => {
+            handle.deliverDeferredError(e, 'stream update rekey failed with no onError listener')
+          })
+        })
+        return
+      }
+      const err = doSend()
+      if (err && !cancel)
+        throw err
+    }
+
     return {
       requestId: handle.requestId,
       onMessage: handle.onMessage,
       onEnd: handle.onEnd,
       onError: handle.onError,
+      send: (payload: Uint8Array) => sendOnStream(payload, false),
+      cancel: () => sendOnStream(new Uint8Array(), true),
     }
   }
 

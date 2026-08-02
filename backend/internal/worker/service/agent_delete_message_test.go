@@ -44,7 +44,7 @@ func TestDeleteAgentMessage_BroadcastsDeletedSeq(t *testing.T) {
 		DeliveryError: "delivery failed", ID: "msg-1", AgentID: "agent-1",
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
+	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
 	dispatch(d, "DeleteAgentMessage", &leapmuxv1.DeleteAgentMessageRequest{
 		AgentId:   "agent-1",
@@ -114,7 +114,7 @@ func TestDeleteAgentMessage_ReportsNewLatestSeq(t *testing.T) {
 	require.Less(t, seq1, seq2)
 	require.Less(t, seq2, seq3)
 
-	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
+	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
 	// Delete a NON-tail row (msg-1): the live tail is unchanged (still seq3).
 	dispatch(d, "DeleteAgentMessage", &leapmuxv1.DeleteAgentMessageRequest{AgentId: "agent-1", MessageId: "msg-1"}, w)
@@ -171,7 +171,7 @@ func TestDeleteAgentMessage_RejectsNonFailedUserMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
+	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
 	for _, id := range []string{"user-ok", "agent-msg"} {
 		dispatch(d, "DeleteAgentMessage", &leapmuxv1.DeleteAgentMessageRequest{

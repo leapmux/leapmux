@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Corpus tests run hand-crafted but realistic PTY byte traces through
@@ -144,6 +145,11 @@ func TestCorpus_BashPromptCommand(t *testing.T) {
 	assert.Equal(t, "me@host:/home/me/work/leapmux", string(tr.title),
 		"title must reflect the LAST OSC 0 emitted, not an earlier one")
 	assert.False(t, tr.altScreen, "no alt-screen toggles in this corpus")
+
+	sigs := feedAndSignals(tr, "\x1b]0;me@host:final\x07")
+	require.Len(t, sigs, 1)
+	assert.Equal(t, SignalTitle, sigs[0].Kind)
+	assert.Equal(t, "me@host:final", sigs[0].Title)
 }
 
 // TestCorpus_TmuxNested simulates tmux: the outer tmux enters alt

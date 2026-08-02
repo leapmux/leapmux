@@ -390,9 +390,11 @@ func TestWatchEvents_ListAgentsByIDsErrorReturnsInternalStreamError(t *testing.T
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a1"}},
 	}, w)
 
-	streams := w.streamsSnapshot()
-	require.Len(t, streams, 1)
-	assert.True(t, streams[0].GetIsError())
-	assert.Equal(t, int32(codes.Internal), streams[0].GetErrorCode())
-	assert.Contains(t, streams[0].GetErrorMessage(), "failed to list agents")
+	ack := waitWatchUpdateAck(t, w)
+	require.NotNil(t, ack)
+	require.Len(t, ack.GetRejectedAgents(), 1)
+	assert.Equal(t, "a1", ack.GetRejectedAgents()[0].GetEntityId())
+	assert.Equal(t, leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
+		ack.GetRejectedAgents()[0].GetReason())
+	assert.False(t, streamEndedWithError(w))
 }

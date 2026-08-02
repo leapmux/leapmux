@@ -121,8 +121,6 @@ describe('terminalView', () => {
           tileFocused
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>
@@ -171,8 +169,6 @@ describe('terminalView', () => {
           tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>
@@ -192,39 +188,8 @@ describe('terminalView', () => {
     expect(mockCreateTerminalInstance.mock.calls.length, 'and no xterm was re-created').toBe(createCalls)
   })
 
-  it('does not forward bell notifications during snapshot replay', async () => {
-    const instance = makeMockTerminalInstance()
-    mockCreateTerminalInstance.mockReturnValue(instance)
-    const onBell = vi.fn()
-
-    render(() => (
-      <PreferencesProvider>
-        <TerminalView
-          terminals={[{
-            id: 'term-1',
-            type: TabType.TERMINAL,
-            workspaceId: 'ws-1',
-            screen: new TextEncoder().encode('\x07restored'),
-          }]}
-          activeTerminalId="term-1"
-          visible
-          tileFocused={false}
-          onInput={vi.fn()}
-          onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={onBell}
-          onContentReady={vi.fn()}
-        />
-      </PreferencesProvider>
-    ))
-
-    await waitFor(() => {
-      expect(instance.terminal.write).toHaveBeenCalled()
-      expect(instance.suppressInput).toBe(false)
-    })
-
-    expect(onBell).not.toHaveBeenCalled()
-  })
+  // Bell during snapshot replay is owned by the worker-side test suite
+  // (service/terminal_test.go); TerminalView no longer wires xterm onBell.
 
   // The overlay covers an xterm that hasn't painted content yet. The
   // label comes from the backend's TerminalStatusChange.startup_message
@@ -251,8 +216,6 @@ describe('terminalView', () => {
           tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>
@@ -281,8 +244,6 @@ describe('terminalView', () => {
           tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>
@@ -311,8 +272,6 @@ describe('terminalView', () => {
           tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>
@@ -355,8 +314,6 @@ describe('terminalView', () => {
           tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>
@@ -408,8 +365,6 @@ describe('terminalView', () => {
           tileFocused
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>
@@ -461,8 +416,6 @@ describe('terminalView', () => {
             tileFocused
             onInput={vi.fn()}
             onResize={vi.fn()}
-            onTitleChange={vi.fn()}
-            onBell={vi.fn()}
             onContentReady={vi.fn()}
           />
         </PreferencesProvider>
@@ -547,8 +500,6 @@ describe('terminalView', () => {
             tileFocused
             onInput={vi.fn()}
             onResize={vi.fn()}
-            onTitleChange={vi.fn()}
-            onBell={vi.fn()}
             onContentReady={vi.fn()}
           />
           <TerminalView
@@ -558,8 +509,6 @@ describe('terminalView', () => {
             tileFocused
             onInput={vi.fn()}
             onResize={vi.fn()}
-            onTitleChange={vi.fn()}
-            onBell={vi.fn()}
             onContentReady={vi.fn()}
           />
         </PreferencesProvider>
@@ -616,8 +565,6 @@ describe('terminalView', () => {
           tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
           pageScrollRef={(fn) => { pageScroll = fn }}
         />
@@ -664,8 +611,6 @@ describe('terminalView', () => {
           tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>
@@ -714,8 +659,6 @@ describe('terminalView', () => {
           tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>
@@ -776,8 +719,6 @@ describe('disposeTerminalInstance scrollback capture', () => {
           tileFocused={false}
           onInput={vi.fn()}
           onResize={vi.fn()}
-          onTitleChange={vi.fn()}
-          onBell={vi.fn()}
           onContentReady={vi.fn()}
         />
       </PreferencesProvider>

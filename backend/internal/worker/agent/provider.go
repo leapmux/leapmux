@@ -124,6 +124,11 @@ type Provider interface {
 	// attachment. A nil return accepts it; a non-nil error rejects the whole send. Providers with
 	// no restrictions accept everything.
 	ValidateAttachment(attachment classifiedAttachment) error
+	// TurnEndToolUses reports how many tool calls the finished turn made, when
+	// the provider's turn-end envelope carries the count. Clients suppress the
+	// turn-end sound for a zero-tool turn, so a provider that cannot say must
+	// return ok=false rather than 0.
+	TurnEndToolUses(content []byte) (count int32, ok bool)
 }
 
 type noopProvider struct{}
@@ -160,6 +165,24 @@ func (noopProvider) SyntheticInterruptNotice() string { return "" }
 // don't ride raw control frames carries no eager-parse path. The ACP-based providers inherit this
 // via their noopProvider embedding.
 func (noopProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
+
+func (noopProvider) TurnEndToolUses(content []byte) (int32, bool) {
+	return defaultTurnEndToolUses(content)
+}
+
+// defaultTurnEndToolUses reads a top-level "num_tool_uses" number. Every
+// provider shipped today puts it there, but the decision stays behind the
+// interface: the moment one does not, its plugin overrides instead of a
+// package-level helper growing a switch (see CLAUDE.md).
+func defaultTurnEndToolUses(content []byte) (int32, bool) {
+	var env struct {
+		NumToolUses *int32 `json:"num_tool_uses"`
+	}
+	if err := json.Unmarshal(content, &env); err != nil || env.NumToolUses == nil {
+		return 0, false
+	}
+	return *env.NumToolUses, true
+}
 
 var (
 	providerMu       sync.RWMutex
@@ -202,7 +225,12 @@ func PermissionModeOrDefault(provider leapmuxv1.AgentProvider, mode string) stri
 	return mode
 }
 
-type codexProvider struct{}
+// codexProvider embeds noopProvider so it inherits the TurnEndToolUses default
+// (Codex puts num_tool_uses at the envelope top level, like every shipped
+// provider). Override the method here only if Codex's shape diverges.
+type codexProvider struct {
+	noopProvider
+}
 
 func (codexProvider) Classify(raw json.RawMessage) NotificationClassification {
 	var env struct {
@@ -312,7 +340,9 @@ func (codexProvider) SyntheticInterruptNotice() string { return "[Request interr
 // PermissionModeFromRawInput: Codex has no set_permission_mode raw control frame.
 func (codexProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
 
-type claudeProvider struct{}
+type claudeProvider struct {
+	noopProvider
+}
 
 func (claudeProvider) Classify(raw json.RawMessage) NotificationClassification {
 	var env struct {
@@ -422,7 +452,9 @@ func (claudeProvider) PermissionModeFromRawInput(content string) (string, bool) 
 // same pattern as Claude's api_retry. extension_error stays
 // unconsolidated: each error message is meaningful and merging would hide
 // partial failures.
-type piProvider struct{}
+type piProvider struct {
+	noopProvider
+}
 
 func (piProvider) Classify(raw json.RawMessage) NotificationClassification {
 	var env struct {

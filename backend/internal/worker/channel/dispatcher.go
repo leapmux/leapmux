@@ -25,6 +25,11 @@ type ResponseWriter interface {
 	// for this channel (min(hub, worker) at open), or 0 when the writer is
 	// not channel-backed (cleartext IPC / test stubs).
 	MaxPayloadBudget() int
+	// BindStream installs ctrl as the receiver of client frames on this
+	// writer's correlation id and returns a release func to call when the
+	// stream ends. ok is false for writers whose transport carries no client
+	// frames, so a handler can degrade instead of assuming.
+	BindStream(ctrl StreamController) (release func(), ok bool)
 }
 
 // errorQueuer is implemented by response writers that can hand an error to a

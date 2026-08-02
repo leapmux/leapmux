@@ -93,7 +93,7 @@ func TestSendAgentMessage_AutoStartBroadcastsStartingDuringEnsureRunning(t *test
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
+	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",
@@ -146,7 +146,7 @@ func TestSendAgentMessage_AutoStartFailureRevertsToInactive(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []string{"agent-1"}, w)
+	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",

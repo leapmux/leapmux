@@ -336,6 +336,13 @@ func (h *handler) Cancel(ctx context.Context, req *connect.Request[leapmuxv1.Can
 	return connect.NewResponse(&leapmuxv1.CancelResponse{}), nil
 }
 
+func (h *handler) UpdateStream(ctx context.Context, req *connect.Request[leapmuxv1.UpdateStreamRequest]) (*connect.Response[leapmuxv1.UpdateStreamResponse], error) {
+	if id := req.Msg.GetClientRequestId(); id != "" {
+		h.router.UpdateStream(id, req.Msg.GetPayload())
+	}
+	return connect.NewResponse(&leapmuxv1.UpdateStreamResponse{}), nil
+}
+
 // tabTypeWireName projects a TabType enum to the canonical lowercase
 // wire string ("agent" / "terminal" / "file"). Returns "" for the
 // unspecified zero value so callers can guard the env-var emit with

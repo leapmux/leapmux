@@ -28,7 +28,7 @@ func TestTerminal_StartAndStop(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64) {
+	}, func(data []byte, _ int64, _ []Signal) {
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -81,7 +81,7 @@ func TestTerminal_AppImage_ScrubsEnv(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64) {
+	}, func(data []byte, _ int64, _ []Signal) {
 		mu.Lock()
 		defer mu.Unlock()
 		output = append(output, data...)
@@ -145,7 +145,7 @@ func TestTerminal_Resize(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func([]byte, int64) {})
+	}, func([]byte, int64, []Signal) {})
 	require.NoError(t, err, "Start")
 	defer func() {
 		term.Stop()
@@ -160,7 +160,7 @@ func TestTerminal_SendInputAfterStop(t *testing.T) {
 		ID:         "test-stopped",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64) {})
+	}, func([]byte, int64, []Signal) {})
 	require.NoError(t, err, "Start")
 
 	term.Stop()
@@ -174,7 +174,7 @@ func TestTerminal_IsExited(t *testing.T) {
 		ID:         "test-exited",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64) {})
+	}, func([]byte, int64, []Signal) {})
 	require.NoError(t, err, "Start")
 
 	assert.False(t, term.IsExited(), "expected IsExited = false before stop")
@@ -192,7 +192,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 		ID:         "tm-1",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64) {}, nil)
+	}, func([]byte, int64, []Signal) {}, nil)
 	require.NoError(t, err, "StartTerminal")
 
 	assert.True(t, m.HasTerminal("tm-1"), "expected HasTerminal = true")
@@ -202,7 +202,7 @@ func TestManager_StartAndRemove(t *testing.T) {
 		ID:         "tm-1",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64) {}, nil)
+	}, func([]byte, int64, []Signal) {}, nil)
 	assert.Error(t, err, "expected error for duplicate terminal")
 
 	// StopTerminal keeps it in the map (exited but not removed).
@@ -226,7 +226,7 @@ func TestManager_ExitedTerminalRejectsInput(t *testing.T) {
 		ID:         "tm-exit",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64) {}, nil)
+	}, func([]byte, int64, []Signal) {}, nil)
 	require.NoError(t, err, "StartTerminal")
 
 	// Stop and wait for exit.
@@ -254,7 +254,7 @@ func TestManager_ExitNotification(t *testing.T) {
 		ID:         "tm-notify",
 		Shell:      testutil.TestShell(),
 		WorkingDir: t.TempDir(),
-	}, func([]byte, int64) {}, func(id string, code int) {
+	}, func([]byte, int64, []Signal) {}, func(id string, code int) {
 		gotID = id
 		gotCode = code
 		close(exitCh)
@@ -284,7 +284,7 @@ func TestManager_StopAll(t *testing.T) {
 			ID:         id,
 			Shell:      testutil.TestShell(),
 			WorkingDir: t.TempDir(),
-		}, func([]byte, int64) {}, nil)
+		}, func([]byte, int64, []Signal) {}, nil)
 		require.NoError(t, err, "StartTerminal(%s)", id)
 	}
 
@@ -327,7 +327,7 @@ func TestManager_Resize_SameDimensions(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func([]byte, int64) {}, nil)
+	}, func([]byte, int64, []Signal) {}, nil)
 	require.NoError(t, err)
 	defer m.StopAll()
 
@@ -352,7 +352,7 @@ func TestManager_ScreenSnapshotSince(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64) {
+	}, func(data []byte, _ int64, _ []Signal) {
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -406,7 +406,7 @@ func TestManager_SnapshotAfterExit(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64) {
+	}, func(data []byte, _ int64, _ []Signal) {
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -458,7 +458,7 @@ func TestManager_AppendOutput_AdvancesOffset(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64) {}, nil)
+	}, func(data []byte, _ int64, _ []Signal) {}, nil)
 	require.NoError(t, err)
 	testutil.RegisterTerminalCleanup(t, m, "tm-append")
 
@@ -557,7 +557,7 @@ func newTestManagerWithTerminal(t *testing.T, opts Options) *Manager {
 	t.Helper()
 	id := opts.ID
 	m := NewManager()
-	err := m.StartTerminal(context.Background(), opts, func(data []byte, _ int64) {}, nil)
+	err := m.StartTerminal(context.Background(), opts, func(data []byte, _ int64, _ []Signal) {}, nil)
 	require.NoError(t, err)
 	testutil.RegisterTerminalCleanup(t, m, id)
 	return m
@@ -607,7 +607,7 @@ func TestSnapshotTerminal(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func(data []byte, _ int64) {
+	}, func(data []byte, _ int64, _ []Signal) {
 		mu.Lock()
 		output = append(output, data...)
 		mu.Unlock()
@@ -678,7 +678,7 @@ func TestUpdateTitle(t *testing.T) {
 		WorkingDir: t.TempDir(),
 		Cols:       80,
 		Rows:       24,
-	}, func([]byte, int64) {}, nil)
+	}, func([]byte, int64, []Signal) {}, nil)
 	require.NoError(t, err)
 
 	// Initially empty title via ListByIDs.
@@ -836,7 +836,7 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 		Rows:       24,
 	}
 
-	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64) {}, nil), "StartTerminal")
+	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64, []Signal) {}, nil), "StartTerminal")
 
 	require.NoError(t, m.SendInput(id, []byte("echo first"+testutil.TestShellEnter())))
 	testutil.AssertEventually(t, func() bool {
@@ -853,7 +853,7 @@ func TestRestart_PreservesScreenBufferOffset(t *testing.T) {
 	_, preTotal, _ := m.ScreenSnapshotSince(id, 0)
 	require.Greater(t, preTotal, int64(0), "should have written some bytes pre-restart")
 
-	require.NoError(t, m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64) {}, nil), "RestartTerminal")
+	require.NoError(t, m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64, []Signal) {}, nil), "RestartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
 
 	newTerm := m.terminals[id]
@@ -885,7 +885,7 @@ func TestRestart_NewBufferWithFallbackOffset(t *testing.T) {
 		Rows:       24,
 	}
 
-	require.NoError(t, m.RestartTerminal(context.Background(), opts, fallback, func([]byte, int64) {}, nil), "RestartTerminal")
+	require.NoError(t, m.RestartTerminal(context.Background(), opts, fallback, func([]byte, int64, []Signal) {}, nil), "RestartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
 
 	newTerm := m.terminals[id]
@@ -908,11 +908,11 @@ func TestRestart_FailsIfStillRunning(t *testing.T) {
 		Cols:       80,
 		Rows:       24,
 	}
-	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64) {}, nil), "StartTerminal")
+	require.NoError(t, m.StartTerminal(context.Background(), opts, func([]byte, int64, []Signal) {}, nil), "StartTerminal")
 	testutil.RegisterTerminalCleanup(t, m, id)
 
 	original := m.terminals[id]
-	err := m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64) {}, nil)
+	err := m.RestartTerminal(context.Background(), opts, 0, func([]byte, int64, []Signal) {}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still running")
 	assert.Same(t, original, m.terminals[id], "failed restart must not swap out the live *Terminal")

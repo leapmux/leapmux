@@ -57,7 +57,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 	// the current screen contents.
 	w1 := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: 0}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w1)
 
 	testutil.AssertEventually(t, func() bool {
@@ -77,7 +77,7 @@ func TestWatchEvents_Terminal_ResubscribeWithCurrentOffset_NoDuplicate(t *testin
 
 	w2 := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: currentOffset}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-resub", AfterOffset: currentOffset, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w2)
 
 	// dispatch is synchronous: catch-up has run by the time it returns.
@@ -117,7 +117,7 @@ func TestWatchEvents_Terminal_IncrementalDeltaAfterResubscribe(t *testing.T) {
 	// is_snapshot=false containing only the new bytes.
 	w2 := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-delta", AfterOffset: firstOffset}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-delta", AfterOffset: firstOffset, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w2)
 
 	var delta *leapmuxv1.TerminalData
@@ -154,7 +154,7 @@ func TestWatchEvents_Terminal_AltScreenRecoveryAfterRingWrap(t *testing.T) {
 
 	w := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-altrecover", AfterOffset: 0}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-altrecover", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w)
 
 	var snap *leapmuxv1.TerminalData
@@ -242,7 +242,7 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 	// window.
 	w := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-wrap", AfterOffset: 0}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "t-wrap", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, w)
 
 	var snap *leapmuxv1.TerminalData

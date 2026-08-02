@@ -3,16 +3,15 @@ import type { TerminalStatusChange } from '~/generated/leapmux/v1/terminal_pb'
 import type { AgentTab, Tab, TerminalTab } from '~/stores/tab.types'
 import { createRoot, mapArray } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
 import { providerFor } from '~/components/chat/providers/registry'
 import { AgentProvider, AgentStatus, ContentCompression, MessageSource, WatchReplayMode } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { applyAgentLifecycle, applyBackgroundAgentStatusChange, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
+import { TabType, WatchMode } from '~/generated/leapmux/v1/workspace_pb'
+import { applyAgentLifecycle, applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, clearCompletedSpanStream, drainPendingOutboundOnStart, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentStatusChange, handleControlRequest, handleResultDivider, handleStreamChunk, handleStreamEnd, handleTurnEnd, resolveSettingsTabFields, shouldClearThinkingTokensForMessage, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
-import { applyTerminalStatusChange } from '~/hooks/terminalEvents'
-import { collectWorkerOfflineTargets, reconcileLaggingTails } from '~/hooks/useWorkspaceConnection'
-import { agentWatchEntry, buildWatchTargetsKey, unsubscribeAllWatchEvents } from '~/hooks/watchTargets'
+import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged } from '~/hooks/terminalEvents'
+import { collectWorkerOfflineTargets, enqueuePendingTerminalData, MAX_PENDING_TERMINAL_FRAMES, reconcileLaggingTails } from '~/hooks/useWorkspaceConnection'
+import { agentWatchEntry, watchPlanKey } from '~/hooks/watchPlan'
 import { extractCompactionContextTokens, extractResultMetadata, parseMessageContent } from '~/lib/messageParser'
 import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -35,6 +34,11 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
     },
   }
 })
+
+vi.mock('~/components/common/Toast', () => ({
+  showWarnToast: vi.fn(),
+  showInfoToast: vi.fn(),
+}))
 
 /**
  * Types a simulated catch-up phase as the runtime union so the guard
@@ -91,40 +95,26 @@ function simulatePhase(phase: 'catchingUp' | 'live'): 'catchingUp' | 'live' {
   return phase
 }
 
-describe('watch target helpers', () => {
+describe('watch plan helpers', () => {
   it('maps resume cursors to explicit replay modes', () => {
-    expect(agentWatchEntry('a1', 0n)).toMatchObject({
+    expect(agentWatchEntry('a1', 0n, WatchMode.FULL)).toMatchObject({
       agentId: 'a1',
       replay: WatchReplayMode.LATEST,
       cursorSeq: 0n,
+      mode: WatchMode.FULL,
     })
-    expect(agentWatchEntry('a1', 42n)).toMatchObject({
+    expect(agentWatchEntry('a1', 42n, WatchMode.NOTIFY)).toMatchObject({
       agentId: 'a1',
       replay: WatchReplayMode.AFTER_CURSOR,
       cursorSeq: 42n,
+      mode: WatchMode.NOTIFY,
     })
   })
 
-  it('distinguishes active and non-active target roles in the subscription key', () => {
-    const active = buildWatchTargetsKey(
-      'w1',
-      [agentWatchEntry('a1', 0n), agentWatchEntry('a2', 0n)],
-      ['t1', 't2'],
-      new Set(['a2']),
-      new Set(['t2']),
-    )
-    const movedToActive = buildWatchTargetsKey(
-      'w1',
-      [agentWatchEntry('a1', 0n), agentWatchEntry('a2', 0n)],
-      ['t1', 't2'],
-      new Set(),
-      new Set(),
-    )
-    expect(active).not.toBe(movedToActive)
-    expect(active).toContain('aa:a1')
-    expect(active).toContain('pa:a2')
-    expect(active).toContain('at:t1')
-    expect(active).toContain('pt:t2')
+  it('watchPlanKey moves when a mode changes', () => {
+    const notify = { agents: [{ agentId: 'a1', mode: WatchMode.NOTIFY } as never], terminals: [] as never[] }
+    const full = { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] as never[] }
+    expect(watchPlanKey(notify)).not.toBe(watchPlanKey(full))
   })
 })
 
@@ -1213,7 +1203,7 @@ describe('drainPendingOutboundOnStart', () => {
  * replayed, so a message composed against a starting agent in a background
  * workspace was stranded at "Queued" for the life of the page.
  */
-describe('applyBackgroundAgentStatusChange', () => {
+describe('handleAgentStatusChange for background agents', () => {
   function backgroundStores() {
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
@@ -1225,13 +1215,18 @@ describe('applyBackgroundAgentStatusChange', () => {
 
   it('drains a message queued against a starting agent', () => {
     createRoot((dispose) => {
-      const { view, metadata, chatStore } = backgroundStores()
+      const { view, metadata, chatStore, selection } = backgroundStores()
+      const agentSessionStore = createAgentSessionStore()
       chatStore.pendingOutbound.enqueue('bg-1', { localId: 'l1', content: 'hi', attachments: [] })
 
-      applyBackgroundAgentStatusChange(
+      handleAgentStatusChange(
+        'bg-1',
         { agentId: 'bg-1', status: AgentStatus.STARTUP_FAILED, startupError: 'boom', optionGroups: [] } as unknown as AgentStatusChange,
-        { chatStore, view, metadata },
+        'live',
+        { chatStore, view, metadata, selection, getActiveWorkspaceId: () => WS, controlStore: createControlStore(), agentSessionStore },
         createLoadingSignal(),
+        () => {},
+        undefined,
       )
 
       expect(chatStore.pendingOutbound.take('bg-1'), 'the queue must not outlive the transition').toHaveLength(0)
@@ -1242,12 +1237,17 @@ describe('applyBackgroundAgentStatusChange', () => {
 
   it('writes the startup fields the foreground path writes', () => {
     createRoot((dispose) => {
-      const { view, metadata, chatStore } = backgroundStores()
+      const { view, metadata, chatStore, selection } = backgroundStores()
+      const agentSessionStore = createAgentSessionStore()
 
-      applyBackgroundAgentStatusChange(
+      handleAgentStatusChange(
+        'bg-1',
         { agentId: 'bg-1', status: AgentStatus.STARTUP_FAILED, startupError: 'boom', optionGroups: [] } as unknown as AgentStatusChange,
-        { chatStore, view, metadata },
+        'live',
+        { chatStore, view, metadata, selection, getActiveWorkspaceId: () => WS, controlStore: createControlStore(), agentSessionStore },
         createLoadingSignal(),
+        () => {},
+        undefined,
       )
 
       const tab = view.getAgentTab('bg-1')
@@ -1699,7 +1699,7 @@ describe('agentMessage sub-handlers', () => {
     })
   })
 
-  it('handleResultDivider fires onTurnEnd only in the live phase, not during catch-up replay', () => {
+  it('handleResultDivider does not fire onTurnEnd — AgentTurnEnd owns that', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
       const stores = {
@@ -1711,17 +1711,12 @@ describe('agentMessage sub-handlers', () => {
         getActiveWorkspaceId: () => WS,
       }
       const turnEnds: string[] = []
-      const onTurnEnd = (id: string) => turnEnds.push(id)
       const msg = agentMessage({ type: 'result', subtype: 'success', total_cost_usd: 0.25 })
       const parsed = parseMessageContent(msg)
 
-      // A catch-up replay must not re-play the turn-end side effects.
-      handleResultDivider('a1', msg, parsed, stores, onTurnEnd, 'catchingUp')
+      handleResultDivider('a1', msg, parsed, stores, 'catchingUp')
+      handleResultDivider('a1', msg, parsed, stores, 'live')
       expect(turnEnds).toEqual([])
-
-      // A live divider fires onTurnEnd and rehydrates total cost.
-      handleResultDivider('a1', msg, parsed, stores, onTurnEnd, 'live')
-      expect(turnEnds).toEqual(['a1'])
       expect(stores.agentSessionStore.getInfo('a1').totalCostUsd).toBe(0.25)
       dispose()
     })
@@ -2024,29 +2019,162 @@ describe('extracted handleAgentEvent arm handlers', () => {
   })
 
   describe('handleStreamEnd', () => {
-    it('clears the free-form streaming text and badges a backgrounded tab', () => {
+    it('clears the free-form streaming text without badging', () => {
       createRoot((dispose) => {
         const chatStore = createChatStore()
         const tabs = makeTabStores()
         tabs.addAgent('a1')
         tabs.addAgent('a2')
-        tabs.selection.setActiveById(TabType.AGENT, 'a2') // a1 is backgrounded
+        tabs.selection.setActiveById(TabType.AGENT, 'a2')
         chatStore.streamingText.set('a1', 'partial')
-        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore, view: tabs.view, metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS })
+        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore })
         expect(chatStore.streamingText.get('a1')).toBe('')
+        expect(tabs.view.getAgentTab('a1')?.hasNotification).toBeFalsy()
+        dispose()
+      })
+    })
+  })
+
+  describe('handleTurnEnd', () => {
+    it('fires onTurnEnd with and without numToolUses', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addAgent('a1')
+        tabs.addAgent('a2')
+        tabs.selection.setActiveById(TabType.AGENT, 'a2')
+        const ended: Array<{ id: string, uses?: number }> = []
+        const stores = { metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS, view: tabs.view }
+        handleTurnEnd('a1', {}, stores, (id, uses) => ended.push({ id, uses }))
+        handleTurnEnd('a2', { numToolUses: 3 }, stores, (id, uses) => ended.push({ id, uses }))
+        expect(ended).toEqual([{ id: 'a1', uses: undefined }, { id: 'a2', uses: 3 }])
         expect(tabs.view.getAgentTab('a1')?.hasNotification).toBe(true)
+        expect(tabs.view.getAgentTab('a2')?.hasNotification).not.toBe(true)
         dispose()
       })
     })
 
-    it('does not badge the tab when the agent IS the active tab', () => {
+    it('does not badge a tile-active agent when another tab is workspace-active', () => {
       createRoot((dispose) => {
-        const chatStore = createChatStore()
         const tabs = makeTabStores()
+        const secondTile = tabs.layoutStore.splitTile(tabs.rootTileId, 'horizontal')!
         tabs.addAgent('a1')
+        tabs.addAgent('a2', {}, { tileId: secondTile, activate: false })
+        tabs.selection.setActiveById(TabType.AGENT, 'a2')
         tabs.selection.setActiveById(TabType.AGENT, 'a1')
-        handleStreamEnd('a1', { spanId: '' } as unknown as AgentStreamEnd, { chatStore, view: tabs.view, metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS })
-        expect(tabs.view.getAgentTab('a1')?.hasNotification).toBeFalsy()
+        const stores = { metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS, view: tabs.view }
+        handleTurnEnd('a2', {}, stores, undefined)
+        expect(tabs.view.getAgentTab('a2')?.hasNotification).not.toBe(true)
+        dispose()
+      })
+    })
+  })
+
+  describe('enqueuePendingTerminalData', () => {
+    it('buffers deltas and lets a snapshot clear prior frames', () => {
+      const pending = new Map<string, Array<{ data: Uint8Array, isSnapshot: boolean, endOffset: bigint }>>()
+      enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([1]), isSnapshot: false, endOffset: 1n })
+      enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([2]), isSnapshot: false, endOffset: 2n })
+      enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([9]), isSnapshot: true, endOffset: 9n })
+      expect(pending.get('t1')).toHaveLength(1)
+      expect(pending.get('t1')![0].endOffset).toBe(9n)
+    })
+
+    it('caps the queue so a never-mounting terminal cannot grow it without bound', () => {
+      const pending = new Map<string, Array<{ data: Uint8Array, isSnapshot: boolean, endOffset: bigint }>>()
+      // Enqueue well over the cap; only the newest MAX_PENDING_TERMINAL_FRAMES survive.
+      for (let i = 0; i < MAX_PENDING_TERMINAL_FRAMES + 50; i++)
+        enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([i]), isSnapshot: false, endOffset: BigInt(i) })
+      expect(pending.get('t1')).toHaveLength(MAX_PENDING_TERMINAL_FRAMES)
+      // The oldest frames were dropped; the last surviving frame is the most recent.
+      expect(pending.get('t1')!.at(-1)!.endOffset).toBe(BigInt(MAX_PENDING_TERMINAL_FRAMES + 49))
+    })
+  })
+
+  describe('terminal notify events', () => {
+    it('bell badges a background terminal tab', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('t1')
+        tabs.addTerminal('t2')
+        tabs.selection.setActiveById(TabType.TERMINAL, 't2')
+        handleTerminalBell('t1', { metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS, view: tabs.view })
+        expect(tabs.view.getTerminalTab('t1')?.hasNotification).toBe(true)
+        dispose()
+      })
+    })
+
+    it('does not badge a tile-active terminal when another tab is workspace-active', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        const secondTile = tabs.layoutStore.splitTile(tabs.rootTileId, 'horizontal')!
+        tabs.addTerminal('t1')
+        nextPosition += 1
+        emitAddTab({ type: TabType.TERMINAL, id: 't2', tileId: secondTile, position: `p${nextPosition}`, workerId: '' })
+        tabs.selection.setActiveById(TabType.TERMINAL, 't2')
+        tabs.selection.setActiveById(TabType.TERMINAL, 't1')
+        handleTerminalBell('t2', { metadata: tabs.metadata, selection: tabs.selection, getActiveWorkspaceId: () => WS, view: tabs.view })
+        expect(tabs.view.getTerminalTab('t2')?.hasNotification).not.toBe(true)
+        dispose()
+      })
+    })
+
+    it('titleChanged patches ptyTitle only', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('t1')
+        handleTerminalTitleChanged('t1', { title: 'shell' } as never, tabs.metadata)
+        expect(tabs.metadata.get('t1')?.ptyTitle).toBe('shell')
+        expect(tabs.metadata.get('t1')?.title ?? '').toBe('')
+        dispose()
+      })
+    })
+
+    it('titleChanged ignores an empty OSC title so a rename sticks', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('t1')
+        tabs.metadata.patch('t1', { title: 'My Shell', ptyTitle: '' })
+        handleTerminalTitleChanged('t1', { title: '' } as never, tabs.metadata)
+        expect(tabs.metadata.get('t1')?.title).toBe('My Shell')
+        expect(tabs.metadata.get('t1')?.ptyTitle ?? '').toBe('')
+        dispose()
+      })
+    })
+
+    it('titleChanged does not overwrite a user rename in title', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('t1')
+        tabs.metadata.patch('t1', { title: 'My Shell', ptyTitle: '' })
+        handleTerminalTitleChanged('t1', { title: 'live-pty' } as never, tabs.metadata)
+        expect(tabs.metadata.get('t1')?.title).toBe('My Shell')
+        expect(tabs.metadata.get('t1')?.ptyTitle).toBe('live-pty')
+        dispose()
+      })
+    })
+
+    it('notification badges a background terminal and leaves the active one alone', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('t1')
+        tabs.addTerminal('t2')
+        tabs.selection.setActiveById(TabType.TERMINAL, 't2')
+        handleTerminalNotification('t1', { title: '', body: 'hi' } as never, {
+          metadata: tabs.metadata,
+          selection: tabs.selection,
+          getActiveWorkspaceId: () => WS,
+        })
+        expect(tabs.view.getTerminalTab('t1')?.hasNotification).toBe(true)
+        dispose()
+      })
+    })
+
+    it('progress patches metadata fields', () => {
+      createRoot((dispose) => {
+        const tabs = makeTabStores()
+        tabs.addTerminal('t1')
+        handleTerminalProgress('t1', { state: 1, percent: 42 } as never, tabs.metadata)
+        expect(tabs.metadata.get('t1')?.progressPercent).toBe(42)
         dispose()
       })
     })
@@ -2077,6 +2205,21 @@ describe('extracted handleAgentEvent arm handlers', () => {
         expect(s.controlStore.getRequests('a1')).toHaveLength(1)
         expect(s.tabs.view.getAgentTab('a1')?.hasNotification).toBe(true)
         expect(ended).toBe('a1')
+        dispose()
+      })
+    })
+
+    it('does not badge a tile-active agent on control request when another tab is workspace-active', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        const secondTile = s.tabs.layoutStore.splitTile(s.tabs.rootTileId, 'horizontal')!
+        s.tabs.addAgent('a1', { agentStatus: AgentStatus.ACTIVE })
+        s.tabs.addAgent('a2', {}, { tileId: secondTile, activate: false })
+        s.tabs.selection.setActiveById(TabType.AGENT, 'a2')
+        s.tabs.selection.setActiveById(TabType.AGENT, 'a1')
+        handleControlRequest('a2', req('a2'), 'live', s, undefined)
+        expect(s.controlStore.getRequests('a2')).toHaveLength(1)
+        expect(s.tabs.view.getAgentTab('a2')?.hasNotification).not.toBe(true)
         dispose()
       })
     })
@@ -2161,6 +2304,38 @@ describe('extracted handleAgentEvent arm handlers', () => {
         dispose()
       })
     })
+
+    it('applies the same status fields with and without a loaded chat window', () => {
+      createRoot((dispose) => {
+        const s = argStores()
+        s.tabs.addAgent('with-chat', { agentStatus: AgentStatus.STARTING })
+        s.tabs.addAgent('no-chat', { agentStatus: AgentStatus.STARTING })
+        s.chatStore.setMessages('with-chat', [{
+          id: 'm1',
+          seq: 1n,
+          source: MessageSource.USER,
+          content: new Uint8Array(),
+          createdAt: 0n,
+          agentProvider: AgentProvider.CLAUDE_CODE,
+        } as never])
+
+        for (const agentId of ['with-chat', 'no-chat'] as const) {
+          const sc = {
+            agentId,
+            status: AgentStatus.ACTIVE,
+            workerOnline: true,
+            optionGroups: [],
+            startupError: '',
+            startupMessage: '',
+          } as unknown as AgentStatusChange
+          handleAgentStatusChange(agentId, sc, 'live', s, createLoadingSignal(), () => {}, undefined)
+        }
+
+        expect(s.tabs.view.getAgentTab('with-chat')?.agentStatus).toBe(AgentStatus.ACTIVE)
+        expect(s.tabs.view.getAgentTab('no-chat')?.agentStatus).toBe(AgentStatus.ACTIVE)
+        dispose()
+      })
+    })
   })
 })
 
@@ -2235,79 +2410,6 @@ describe('shouldClearThinkingTokensForMessage', () => {
     // A plugin (e.g. Claude) that always clears overrides the default main-scope
     // gate, so even a message with a non-empty parentSpanId clears.
     expect(shouldClearThinkingTokensForMessage(agentMsg('sys-tu-999'), alwaysClears)).toBe(true)
-  })
-})
-
-describe('retiring watch subscriptions', () => {
-  it('sends an empty request rather than only closing the handle locally', async () => {
-    // Closing a handle removes a stream listener and produces no frame the
-    // worker can see, so the worker would go on shipping events for tabs
-    // nobody is listening to. The empty request is the only unsubscribe.
-    const close = vi.fn()
-    vi.mocked(watchEventsViaChannel).mockResolvedValue({ close } as never)
-
-    await unsubscribeAllWatchEvents('worker-1')
-
-    expect(watchEventsViaChannel).toHaveBeenCalledWith('worker-1', { agents: [], terminals: [] })
-    expect(close).toHaveBeenCalledOnce()
-  })
-
-  it('swallows a failure, because a dead channel has already retired them', async () => {
-    vi.mocked(watchEventsViaChannel).mockRejectedValue(new Error('channel closed'))
-
-    await expect(unsubscribeAllWatchEvents('worker-1')).resolves.toBeUndefined()
-  })
-
-  it('does not open a channel just to say it is watching nothing', async () => {
-    // A channel that does not exist holds no subscriptions, so opening
-    // one -- a full Noise_NK + ML-KEM handshake plus a hub round trip --
-    // purely to announce that nothing is wanted is cost with no effect.
-    // The watch effect reaches this branch on ordinary paths that never
-    // had a channel, such as a resolved workerId before tabs hydrate.
-    vi.clearAllMocks()
-    vi.mocked(channelManager.hasOpenChannelForWorker).mockReturnValue(false)
-
-    await unsubscribeAllWatchEvents('worker-1')
-
-    expect(channelManager.getOrOpenChannel).not.toHaveBeenCalled()
-    expect(watchEventsViaChannel).not.toHaveBeenCalled()
-  })
-
-  it('abandons the unsubscribe if the watch set changed while the channel opened', async () => {
-    // The regression: opening the channel can block on a full handshake, and
-    // the user can open a new tab in that window. Landing afterwards, an empty
-    // request is read as "watching nothing" and wipes the subscription that tab
-    // just made -- with no error, so nothing ever re-subscribes and the tab
-    // goes permanently silent.
-    vi.clearAllMocks()
-    vi.mocked(channelManager.hasOpenChannelForWorker).mockReturnValue(true)
-    const close = vi.fn()
-    vi.mocked(watchEventsViaChannel).mockResolvedValue({ close } as never)
-
-    let current = true
-    vi.mocked(channelManager.getOrOpenChannel).mockImplementation(async () => {
-      // A newer effect run supersedes this one while the open is in flight.
-      current = false
-      return 'ch-1'
-    })
-
-    await unsubscribeAllWatchEvents('worker-1', () => current)
-
-    expect(watchEventsViaChannel).not.toHaveBeenCalled()
-    expect(close).not.toHaveBeenCalled()
-  })
-
-  it('still unsubscribes when the watch set is unchanged', async () => {
-    vi.clearAllMocks()
-    vi.mocked(channelManager.hasOpenChannelForWorker).mockReturnValue(true)
-    const close = vi.fn()
-    vi.mocked(watchEventsViaChannel).mockResolvedValue({ close } as never)
-    vi.mocked(channelManager.getOrOpenChannel).mockResolvedValue('ch-1')
-
-    await unsubscribeAllWatchEvents('worker-1', () => true)
-
-    expect(watchEventsViaChannel).toHaveBeenCalledWith('worker-1', { agents: [], terminals: [] })
-    expect(close).toHaveBeenCalledOnce()
   })
 })
 

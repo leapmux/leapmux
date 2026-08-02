@@ -721,6 +721,39 @@ func (ch *Channel) UnregisterStream(reqID uint64) {
 	ch.unregisterRequest(reqID, false, true)
 }
 
+// SendStreamRequest puts an InnerStreamRequest on an already-open stream's
+// correlation id. Unlike SendRPCNoWait it allocates no id: the frame is
+// addressed to the stream reqID names.
+func (ch *Channel) SendStreamRequest(ctx context.Context, reqID uint64, payload []byte, cancel bool) error {
+	if ctx == nil {
+		return errors.New("rpc operation context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := ch.ctx.Err(); err != nil {
+		return fmt.Errorf("channel closed: %w", err)
+	}
+	inner := &leapmuxv1.InnerMessage{
+		Kind: &leapmuxv1.InnerMessage_StreamRequest{
+			StreamRequest: &leapmuxv1.InnerStreamRequest{
+				Payload: payload,
+				Cancel:  cancel,
+			},
+		},
+	}
+	return ch.sendInnerContext(ctx, reqID, inner)
+}
+
+// CancelStream tells the worker to release the stream, then drops the local
+// registrations. Replaces the bare UnregisterStream teardown, which left the
+// worker's subscriber alive.
+func (ch *Channel) CancelStream(ctx context.Context, reqID uint64) error {
+	err := ch.SendStreamRequest(ctx, reqID, nil, true)
+	ch.UnregisterStream(reqID)
+	return err
+}
+
 // allocateReqIDLocked returns the next outbound correlation id, skipping any id
 // whose handler is still registered.
 //
@@ -855,6 +888,11 @@ func (ch *Channel) sendInnerRaw(ctx context.Context, correlationID uint64, msg *
 	// still gates ENTRY, inside the gate (see SendGate.Send).
 	if err := ch.sendGate.Send(ctx, ch.ctx, plaintext,
 		func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
+			if ch.ws == nil {
+				// Partial Channels in unit tests have no websocket; the send
+				// gate path is what we exercise, not the wire write.
+				return nil
+			}
 			// Encrypt under rekeyMu so the CipherState key swap that
 			// handleRekeyAck performs on Ack (recvLoop goroutine) cannot
 			// observe a half-incremented nonce or rotate Send mid-Encrypt.

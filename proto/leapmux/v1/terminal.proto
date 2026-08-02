@@ -147,6 +147,48 @@ message TerminalClosed {
   int32 exit_code = 1;
 }
 
+// The four messages below all report escape sequences the WORKER interpreted.
+// The client used to do it from xterm callbacks, which only fire for a terminal
+// it is rendering -- so a hidden pane had no bell, no notification and a frozen
+// title, exactly when those matter most. All four are NOTIFY-class.
+
+// TerminalBell reports BEL (0x07) emitted as a bell rather than as an OSC
+// string terminator. Coalesced worker-side: at most one per terminal per
+// bellCoalesceWindow, because a program can emit BEL per keystroke.
+message TerminalBell {}
+
+// TerminalNotification reports a desktop notification the program asked for:
+// OSC 9 (iTerm2/WezTerm/foot, body only), OSC 777;notify (urxvt/foot, title +
+// body) or OSC 99 (kitty, chunked).
+message TerminalNotification {
+  string title = 1;  // Empty for OSC 9, which carries no title.
+  string body = 2;
+}
+
+// TerminalTitleChanged reports OSC 0 (icon + title) or OSC 2 (title). OSC 1
+// (icon only) is ignored. Emitted only when the value actually changes.
+//
+// This replaces the client's xterm onTitleChange -> UpdateTerminalTitle round
+// trip, which fired once per shell prompt on most setups.
+message TerminalTitleChanged {
+  string title = 1;
+}
+
+// TerminalProgress reports the ConEmu / Windows Terminal progress protocol,
+// OSC 9;4;<state>;<percent>.
+message TerminalProgress {
+  enum State {
+    STATE_UNSPECIFIED = 0;  // 0 -- clear any progress affordance.
+    STATE_NORMAL = 1;
+    STATE_ERROR = 2;
+    STATE_INDETERMINATE = 3;
+    STATE_PAUSED = 4;
+  }
+  State state = 1;
+  // 0..100. Meaningless for INDETERMINATE and for STATE_UNSPECIFIED.
+  int32 percent = 2;
+}
+
 // TerminalStatusChange notifies watchers of terminal lifecycle transitions,
 // in particular STARTING → READY or STARTING → STARTUP_FAILED during the
 // window between OpenTerminal returning and the PTY being ready for input.

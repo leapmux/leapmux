@@ -89,7 +89,7 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	// Watch the agent to capture broadcasts.
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	require.Eventually(t, func() bool {
@@ -177,7 +177,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	release()
@@ -333,7 +333,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	release()
@@ -795,28 +795,32 @@ func TestOpenTerminal_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: terminalID}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: terminalID,
+			Mode:       leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
 	}, wWatch)
+	waitWatchUpdateAck(t, wWatch)
 
-	// Catch-up replay fires synchronously during the WatchEvents handler,
-	// so the streams slice is already populated when dispatch returns.
-	var sawStartingWithMsg bool
-	for _, s := range wWatch.streamsSnapshot() {
-		var resp leapmuxv1.WatchEventsResponse
-		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
-			continue
+	// Catch-up replay runs on the watchSession apply loop after the ack.
+	require.Eventually(t, func() bool {
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			sc := resp.GetTerminalEvent().GetStatusChange()
+			if sc == nil {
+				continue
+			}
+			if sc.GetStatus() == leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING {
+				assert.Equal(t, "Starting zsh…", sc.GetStartupMessage(),
+					"catch-up replay must surface the phase label the OpenTerminal sync prologue registered")
+				return true
+			}
 		}
-		sc := resp.GetTerminalEvent().GetStatusChange()
-		if sc == nil {
-			continue
-		}
-		if sc.GetStatus() == leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTING {
-			assert.Equal(t, "Starting zsh…", sc.GetStartupMessage(),
-				"catch-up replay must surface the phase label the OpenTerminal sync prologue registered")
-			sawStartingWithMsg = true
-		}
-	}
-	assert.True(t, sawStartingWithMsg,
+		return false
+	}, 2*time.Second, 10*time.Millisecond,
 		"expected a STARTING statusChange in the catch-up replay")
 }
 
@@ -1006,24 +1010,26 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
+	waitWatchUpdateAck(t, wWatch)
 
-	var sawStartingWithMsg bool
-	for _, s := range wWatch.streamsSnapshot() {
-		var resp leapmuxv1.WatchEventsResponse
-		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
-			continue
+	require.Eventually(t, func() bool {
+		for _, s := range wWatch.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+				continue
+			}
+			sc := resp.GetAgentEvent().GetStatusChange()
+			if sc == nil || sc.GetStatus() != leapmuxv1.AgentStatus_AGENT_STATUS_STARTING {
+				continue
+			}
+			assert.Equal(t, "Starting Claude Code…", sc.GetStartupMessage(),
+				"catch-up replay must surface the phase label stored in the registry")
+			return true
 		}
-		sc := resp.GetAgentEvent().GetStatusChange()
-		if sc == nil || sc.GetStatus() != leapmuxv1.AgentStatus_AGENT_STATUS_STARTING {
-			continue
-		}
-		assert.Equal(t, "Starting Claude Code…", sc.GetStartupMessage(),
-			"catch-up replay must surface the phase label stored in the registry")
-		sawStartingWithMsg = true
-	}
-	assert.True(t, sawStartingWithMsg,
+		return false
+	}, 2*time.Second, 10*time.Millisecond,
 		"expected a STARTING statusChange in the catch-up replay")
 }
 
@@ -1059,7 +1065,7 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	require.Eventually(t, func() bool {
@@ -1187,7 +1193,7 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
 
 	require.Eventually(t, func() bool {
@@ -1308,7 +1314,7 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 		if err := svc.Queries.CreateAgent(ctx, params); err != nil {
 			return err
 		}
-		svc.Watchers.SetAgentWatches(wWatch.channelID, []string{params.ID}, wWatch)
+		svc.Watchers.SetAgentWatches(wWatch.channelID, []watchEntry{{id: params.ID, mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, wWatch)
 		return nil
 	}
 

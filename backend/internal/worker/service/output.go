@@ -862,8 +862,20 @@ func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) er
 	if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker); err != nil {
 		return err
 	}
+	count, ok := agent.ProviderFor(s.agentProvider).TurnEndToolUses(content)
+	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+		AgentId: s.agentID,
+		Event:   &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: turnEndEvent(count, ok)},
+	})
 	go s.BroadcastGitStatus()
 	return nil
+}
+
+func turnEndEvent(count int32, ok bool) *leapmuxv1.AgentTurnEnd {
+	if !ok {
+		return &leapmuxv1.AgentTurnEnd{}
+	}
+	return &leapmuxv1.AgentTurnEnd{NumToolUses: &count}
 }
 
 func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {

@@ -2032,3 +2032,47 @@ func TestPoisonReassemblyIsIdempotent(t *testing.T) {
 	assert.Zero(t, ch.liveReassemblyLocked(), "a tombstone is not counted, no matter how many times it was poisoned")
 	assert.True(t, ch.reassembly[7].Poisoned)
 }
+
+func TestSendStreamRequestReusesStreamReqID(t *testing.T) {
+	ch := newReassemblyTestChannel(t)
+	_, err := ch.SendRPCNoWait(context.Background(), "WatchEvents", []byte("open"), RPCHandlers{
+		Stream: func(*leapmuxv1.InnerStreamMessage) {},
+	})
+	require.NoError(t, err)
+
+	ch.mu.Lock()
+	require.Len(t, ch.streamCbs, 1)
+	var reqID uint64
+	for id := range ch.streamCbs {
+		reqID = id
+	}
+	ch.mu.Unlock()
+
+	_ = ch.SendStreamRequest(context.Background(), reqID, []byte("update"), false)
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	assert.Len(t, ch.streamCbs, 1, "SendStreamRequest must not allocate a new handler")
+	assert.NotContains(t, ch.pending, reqID, "SendStreamRequest must not register a unary pending handler")
+}
+
+func TestCancelStreamUnregistersHandler(t *testing.T) {
+	ch := newReassemblyTestChannel(t)
+	_, err := ch.SendRPCNoWait(context.Background(), "WatchEvents", []byte("open"), RPCHandlers{
+		Stream: func(*leapmuxv1.InnerStreamMessage) {},
+	})
+	require.NoError(t, err)
+
+	ch.mu.Lock()
+	var reqID uint64
+	for id := range ch.streamCbs {
+		reqID = id
+	}
+	ch.mu.Unlock()
+
+	_ = ch.CancelStream(context.Background(), reqID)
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	assert.Empty(t, ch.streamCbs, "CancelStream must drop the stream handler")
+}

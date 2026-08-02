@@ -125,6 +125,11 @@ export interface TerminalMeta {
    * the resubscribe cursor: it cannot lag behind a join that has not recomputed.
    */
   lastOffset?: number
+  /** PTY-driven title from OSC 0/2; does not replace a user rename (`title`). */
+  ptyTitle?: string
+  /** Task progress from OSC 9;4 (ConEmu / Windows Terminal protocol). */
+  progressState?: import('~/generated/leapmux/v1/terminal_pb').TerminalProgress_State
+  progressPercent?: number
   cols?: number
   rows?: number
   contentReady?: boolean

@@ -232,4 +232,30 @@ test.describe('Terminal', () => {
       expect(newRows).toBeGreaterThan(initialRows)
     }).toPass()
   })
+
+  test('switching back into a hidden terminal keeps prior content without a blank frame', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    await openTerminalViaUI(page)
+    await expect(page.locator('.xterm')).toBeVisible()
+    await typeInTerminal(page, 'echo KEEP_ON_SWITCH')
+    await waitForTerminalText(page, 'KEEP_ON_SWITCH')
+
+    // Cover with the workspace's existing agent tab — demotion must clear nothing.
+    const agentTab = page.locator('[data-testid="tab"][data-tab-type="agent"]').first()
+    await agentTab.click()
+    await expect(agentTab).toHaveAttribute('aria-selected', 'true')
+
+    // Queue output while hidden, then switch back and assert both markers without
+    // an intervening empty read (retained buffer + ring catch-up).
+    const termTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]').first()
+    await termTab.click()
+    await typeInTerminal(page, 'sleep 0.5; echo HIDDEN_OUTPUT')
+    await agentTab.click()
+
+    await termTab.click()
+    // Immediate: retained buffer still has the pre-hide marker (no blank frame).
+    expect(await getTerminalText(page)).toContain('KEEP_ON_SWITCH')
+    // Shortly: catch-up / live bytes for what ran while hidden.
+    await waitForTerminalText(page, 'HIDDEN_OUTPUT')
+  })
 })

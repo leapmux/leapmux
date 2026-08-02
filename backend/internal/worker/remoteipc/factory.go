@@ -221,11 +221,11 @@ func (a crossWorkerAdapter) CallInner(ctx context.Context, targetWorkerID string
 	return a.c.CallInner(ctx, targetWorkerID, userID, method, payload)
 }
 
-func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage)) error {
+func (a crossWorkerAdapter) StreamInner(ctx context.Context, targetWorkerID string, userID userid.UserID, method string, payload []byte, onMsg func(*leapmuxv1.InnerStreamMessage), bindCtrl func(channel.StreamController)) error {
 	if a.c == nil {
 		return errors.New("cross-worker client not configured")
 	}
-	return a.c.StreamInner(ctx, targetWorkerID, userID, method, payload, onMsg)
+	return a.c.StreamInner(ctx, targetWorkerID, userID, method, payload, onMsg, bindCtrl)
 }
 
 // hubBridgeAdapter satisfies HubClient. The user id is forwarded verbatim --

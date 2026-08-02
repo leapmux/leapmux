@@ -4,7 +4,7 @@ import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { InnerRpcResponseSchema, InnerStreamMessageSchema } from '~/generated/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
-import { buildRequestPlaintext, ChannelRpcMux } from './channelRpc'
+import { buildRequestPlaintext, buildStreamRequestPlaintext, ChannelRpcMux } from './channelRpc'
 import { Reassembler } from './reassembler'
 
 function safeCall(fn: () => void): void {
@@ -324,5 +324,40 @@ describe('channelRpc', () => {
     handle.onError(onError)
     handle.deliverDeferredError(new ChannelError('client', 'channel not open'), 'unused')
     expect(onError).toHaveBeenCalledOnce()
+  })
+
+  it('buildStreamRequestPlaintext round-trips cancel and payload', () => {
+    const pt = buildStreamRequestPlaintext(new Uint8Array([1, 2]), true)
+    expect(pt.length).toBeGreaterThan(0)
+    const pt2 = buildStreamRequestPlaintext(new Uint8Array([1, 2]), true)
+    expect(pt2).toEqual(pt)
+  })
+
+  it('sendOnStream reuses the stream correlation id and does not advance nextRequestId', () => {
+    const ch = makeChannel({ nextRequestId: 5 })
+    ch.streamListeners.set(3, { onMessage: () => {}, onEnd: () => {}, onError: () => {} })
+    const { mux, sent } = makeMux()
+    const err = mux.sendOnStream(ch, 3, new Uint8Array([7]), false)
+    expect(err).toBeNull()
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.requestId).toBe(3)
+    expect(ch.nextRequestId).toBe(5)
+  })
+
+  it('sendOnStream cancel unregisters locally', () => {
+    const ch = makeChannel()
+    ch.streamListeners.set(2, { onMessage: () => {}, onEnd: () => {}, onError: () => {} })
+    const { mux } = makeMux()
+    mux.sendOnStream(ch, 2, new Uint8Array(), true)
+    expect(ch.streamListeners.has(2)).toBe(false)
+  })
+
+  it('sendOnStream on an unregistered id returns an error', () => {
+    const ch = makeChannel()
+    const { mux, sent } = makeMux()
+    const err = mux.sendOnStream(ch, 99, new Uint8Array([1]), false)
+    expect(err).not.toBeNull()
+    expect(err?.message).toMatch(/not registered/)
+    expect(sent).toHaveLength(0)
   })
 })
