@@ -110,10 +110,25 @@ message UserCrdtState {
   map<string, TabRecord>                    tabs                 = 3;
   map<string, FloatingWindowRecord>         floating_windows     = 4;
   map<string, WorkspaceContentsRecord>      workspaces           = 5;
-  HLC                                       compaction_watermark = 6;
-  HLC                                       max_hlc              = 7;
-  int64                                     current_epoch        = 8;
-  google.protobuf.Timestamp                 epoch_started_at     = 9;
+  HLC                                       compaction_watermark   = 6;
+  HLC                                       max_hlc                = 7;
+  int64                                     current_epoch          = 8;
+  google.protobuf.Timestamp                 epoch_started_at       = 9;
+  // Lagging floor for op-batch DELETION. Op batches whose last canonical
+  // HLC is ≤ this watermark may be deleted by maybeCompact; tombstones are
+  // pruned at the tighter compaction_watermark. The two diverge on purpose:
+  // tombstone pruning is load-bearing for correctness (HLC monotonicity,
+  // bounded user_state growth), while op-batch deletion is pure storage
+  // optimization — the op log is an append-only history and replaying a
+  // longer tail is sound (each op is idempotent under the CRDT merge), so it
+  // can live longer than the tombstone-prune window. resume (decideResume)
+  // gates on THIS watermark, not compaction_watermark, because it is the
+  // "can the server still reconstruct the delta?" test: a cursor above it
+  // means the journal still holds every batch the client needs.
+  // Invariant: op_retention_watermark ≤ compaction_watermark ≤ max_hlc.
+  // Left zero on a fresh state (same as compaction_watermark); maybeCompact
+  // is the sole writer.
+  HLC                                       op_retention_watermark = 10;
 }
 
 // UserMaterialized is the public projection sent to a subscriber on

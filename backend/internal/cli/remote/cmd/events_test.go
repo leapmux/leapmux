@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -38,4 +39,61 @@ func TestOpKindName_ClassifiesEveryCrdtOpBody(t *testing.T) {
 			assert.Equal(t, tc.want, opKindName(tc.op))
 		})
 	}
+}
+
+// TestEventToJSON_ClassifiesEveryWatchUserEventKind is the frame-level sibling
+// of the op-level test above, and exists for the same reason: an unhandled
+// oneof arm falls through to {"kind":"unknown"}, which silently breaks scripts
+// filtering the stream.
+//
+// It caught `batch_end` shipping unlabeled. That arm is emitted after EVERY
+// committed batch on the live broadcast path -- not only on resume -- so the
+// gap put one unknown line in the stream per user edit, and dropped the at_hlc
+// watermark a resume-aware consumer needs.
+//
+// The case list is exhaustive over the WatchUserEvent oneof BY CONSTRUCTION:
+// the compiler rejects an entry whose wrapper type does not exist, and a NEW
+// arm is caught because adding one without extending eventToJSON leaves the
+// author with a failing "no arm renders unknown" contract the moment they add
+// its case here. Keep it in step with proto/leapmux/v1/user_ops.proto.
+func TestEventToJSON_ClassifiesEveryWatchUserEventKind(t *testing.T) {
+	cases := []struct {
+		name string
+		evt  *leapmuxv1.WatchUserEvent
+		want string
+	}{
+		{"Initial", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Initial{Initial: &leapmuxv1.UserMaterialized{}}}, "materialized"},
+		{"Batch", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Batch{Batch: &leapmuxv1.OpBatch{}}}, "batch"},
+		{"EntityMaterialized", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_EntityMaterialized{EntityMaterialized: &leapmuxv1.EntityMaterialized{}}}, "entity_materialized"},
+		{"EntityRemoved", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_EntityRemoved{EntityRemoved: &leapmuxv1.EntityRemoved{}}}, "entity_removed"},
+		{"Delta", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Delta{Delta: &leapmuxv1.ResumeDelta{}}}, "resume_delta"},
+		{"BatchEnd", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_BatchEnd{BatchEnd: &leapmuxv1.BatchEnd{}}}, "batch_end"},
+		{"Presence", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Presence{Presence: &leapmuxv1.PresenceUpdate{}}}, "presence"},
+		{"Renamed", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Renamed{Renamed: &leapmuxv1.WorkspaceRenamed{}}}, "workspace_renamed"},
+		{"Created", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Created{Created: &leapmuxv1.WorkspaceCreated{}}}, "workspace_created"},
+		{"Deleted", &leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Deleted{Deleted: &leapmuxv1.WorkspaceDeleted{}}}, "workspace_deleted"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := eventToJSON(tc.evt)
+			assert.Equal(t, tc.want, got["kind"])
+			assert.NotEqual(t, "unknown", got["kind"], "every oneof arm must render a real label")
+		})
+	}
+
+	// The nested case: a ResumeDelta's frames recurse through the same switch,
+	// so an arm missing there is invisible to the flat cases above. BatchEnd is
+	// the arm resumeCatchUpSink.End appends to every delta.
+	t.Run("frames nested in a resume delta", func(t *testing.T) {
+		got := eventToJSON(&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Delta{Delta: &leapmuxv1.ResumeDelta{
+			Frames: []*leapmuxv1.WatchUserEvent{
+				{Event: &leapmuxv1.WatchUserEvent_BatchEnd{BatchEnd: &leapmuxv1.BatchEnd{}}},
+			},
+		}}})
+		frames, ok := got["frames"].([]map[string]any)
+		require.True(t, ok, "a delta must project its frames")
+		require.Len(t, frames, 1)
+		assert.Equal(t, "batch_end", frames[0]["kind"],
+			"frames inside a delta go through the same switch, so a missing arm shows up here too")
+	})
 }

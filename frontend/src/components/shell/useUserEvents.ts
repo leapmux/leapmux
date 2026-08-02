@@ -1,4 +1,4 @@
-import type { UserMaterialized } from '~/generated/leapmux/v1/user_crdt_pb'
+import type { HLC, UserMaterialized } from '~/generated/leapmux/v1/user_crdt_pb'
 import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
 import type { HLCClock, PendingOpsManager } from '~/lib/crdt'
 import type { ActiveClientStore } from '~/lib/presence/activeClient'
@@ -9,11 +9,36 @@ import { WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
 import { base64ToUint8Array } from '~/lib/base64'
 import { KEY_USER_EVENTS_RELAY_SEQ } from '~/lib/browserStorage'
 import { unframeBytes } from '~/lib/channelFraming'
+import { formatHlcWire, parseHlcWire } from '~/lib/crdt/hlc'
 import { createLogger } from '~/lib/logger'
 import { createPersistedSeq } from '~/lib/persistedSeq'
 import { createExponentialBackoff } from '~/lib/retry'
 
 const log = createLogger('useUserEvents')
+
+/**
+ * Whether a hub payload naming `frameUserID` may be adopted by a session whose
+ * own id is `ownUserID`.
+ *
+ * FAIL-CLOSED and defined ONCE. Both adoption points -- the `initial`
+ * UserMaterialized and the `delta` ResumeDelta -- must refuse a payload that
+ * names another tenant, and `loadHydrationState` applies the same rule to the
+ * persisted checkpoint. Two hand-copied predicates meant a change to this
+ * security-relevant rule was one edit away from covering only one frame kind;
+ * they had already drifted to logging through different channels.
+ *
+ * An unknown local id refuses rather than adopts. A payload that names NO
+ * tenant is allowed through: proto3 normalizes an unset string to "", and the
+ * per-socket generation guard already answers "is this frame stale?" -- this
+ * one only answers "is this frame mine?".
+ */
+function isOwnTenant(ownUserID: string, frameUserID: string, what: string): boolean {
+  if (!ownUserID || (frameUserID && frameUserID !== ownUserID)) {
+    log.warn(`refusing a ${what} for another tenant`, { expected: ownUserID, got: frameUserID })
+    return false
+  }
+  return true
+}
 
 const RECONNECT_BASE_DELAY_MS = 250
 const RECONNECT_MAX_DELAY_MS = 5_000
@@ -38,6 +63,38 @@ function isTerminalCloseCode(code: number): boolean {
   return TERMINAL_CLOSE_CODES.has(code)
 }
 
+/**
+ * Round-trip a resume watermark through the wire codec and return the PARSED
+ * value, or undefined when it is absent or unusable.
+ *
+ * Two things this settles that a bare truthiness check did not. First, the
+ * value that goes on the wire is now the one the validator approved: the caller
+ * used to evaluate `parseHlcWire(formatHlcWire(watermark))` purely for its
+ * truthiness, discard it, and send the unvalidated sibling. They are equal
+ * today (the round trip is idempotent for a well-formed HLC), but only by
+ * assumption, and the parsed value has the further benefit of being a fresh
+ * message rather than a live reference into the manager's state.
+ *
+ * Second, it actually degrades. formatHlcWire THROWS a TypeError on a
+ * non-string clientId by design -- so a non-proto caller fails loudly -- and
+ * calling it bare from inside the WS-open effect meant that throw escaped the
+ * reactive computation AFTER the teardown, killing the subscription for the
+ * rest of the page session. That is the opposite of the "degrade to a
+ * full-snapshot reconnect" the call site promised.
+ */
+function validateResumeHlc(watermark: HLC | undefined): HLC | undefined {
+  if (!watermark)
+    return undefined
+  try {
+    return parseHlcWire(formatHlcWire(watermark)) ?? undefined
+  }
+  catch {
+    // Malformed beyond what the wire format can express: no cursor, so the
+    // connect takes a full snapshot.
+    return undefined
+  }
+}
+
 // Ids for the desktop sidecar's userevents relay, handed out in dispatch order: the
 // sidecar compares them to ignore a close whose relay a later open already replaced,
 // and to ignore an open a later one has superseded. A stale-looking open matters
@@ -48,6 +105,17 @@ function isTerminalCloseCode(code: number): boolean {
 // already holds.
 /** Exported for tests; production code reaches it only through useUserEvents. */
 export const nextUserEventsRelayId = createPersistedSeq(KEY_USER_EVENTS_RELAY_SEQ)
+
+/**
+ * The resume cursor this client presents on reconnect: its highest applied
+ * canonical HLC plus the epoch it was seen under. Sent on the /ws/userevents
+ * URL so the hub can ship a ResumeDelta instead of a full snapshot. Resolved
+ * from the per-user persisted watermark at socket-open.
+ */
+export interface ResumeToken {
+  hlc: HLC
+  epoch: bigint
+}
 
 /**
  * useUserEvents opens a single per-user WebSocket connection at
@@ -79,8 +147,17 @@ export interface UseUserEventsOpts {
   activeClient: ActiveClientStore
   /** PendingOpsManager that owns confirmed + speculative state. */
   pending: () => PendingOpsManager | null
+  /**
+   * Gate accessor for the WS open effect: the effect will not open the socket
+   * until this returns true. useCrdtRuntime sets it once hydration (loading +
+   * replaying the persisted checkpoint + op-log) has completed, so the resume
+   * cursor resolves against hydrated confirmedState rather than empty state.
+   * Undefined/always-true preserves the pre-hydration behavior (open as soon
+   * as userId is truthy).
+   */
+  ready?: () => boolean
   /** Optional override for the WebSocket URL builder (tests). */
-  buildWsUrl?: (workspaceIds: string[]) => string
+  buildWsUrl?: (workspaceIds: string[], resume: ResumeToken | null) => string
   /** Called when an EntityRemoved drops a pending op (caller may toast). */
   onPendingDropped?: () => void
   /**
@@ -221,21 +298,78 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
   // The effect depends on both userId AND reconnectKey so that
   // calling `reconnect()` re-runs the WebSocket setup even when the
   // user's identity hasn't changed.
-  createEffect(on([opts.userId, reconnectKey], ([userId]) => {
+  // readyGate defaults to always-true when the caller doesn't wire hydration,
+  // preserving the prior "open as soon as userId is truthy" behavior. Included
+  // in the WS effect's deps so a late hydration completion re-fires the effect
+  // and opens the socket against the now-hydrated confirmedState.
+  const readyGate = opts.ready ?? (() => true)
+  createEffect(on([opts.userId, reconnectKey, readyGate], ([userId]) => {
     tearDown()
     if (!userId)
       return
+    // Hydration gate: do not open the socket (or resolve the resume cursor)
+    // until useCrdtRuntime signals the persisted checkpoint + op-log have
+    // been loaded and replayed. Without this, a cold reload would resolve
+    // the cursor against empty confirmedState and force a full snapshot even
+    // when a valid checkpoint exists.
+    if (!readyGate())
+      return
     const generation = connectionGeneration
 
+    // Resolve the resume cursor ONCE per connect attempt from the per-user
+    // persisted watermark. The hub decides RESUME vs FALLBACK server-side from
+    // this; a missing/stale cursor just yields a full snapshot (today's
+    // behavior). Resolved here (not inside each transport branch) so the native
+    // WS URL and the desktop sidecar RPC carry the same token.
+    //
+    // Refresh guard: a delta is only correct folded onto NON-EMPTY confirmed
+    // state (the delta is a catch-up over the current visible set, not a full
+    // replacement). Across a page refresh/restart, useCrdtRuntime now hydrates
+    // confirmedState from the persisted checkpoint + op-log (checkpointStore.ts)
+    // BEFORE this effect opens the socket (the `ready` gate), so confirmedState
+    // is populated on a cold reload too and a delta lands on a non-empty base.
+    // When hydration found no checkpoint (or the store is unavailable / the
+    // pair failed to parse and was wiped), confirmedState stays empty and the
+    // guard suppresses the cursor — sending it would make the hub resume a
+    // delta the client folds onto empty maps, yielding partial state. So only
+    // send the cursor when the live confirmedState is actually populated.
+    const pendingMgr = opts.pending()
+    const pendingState = pendingMgr?.state
+    // A delta is only correct folded onto NON-EMPTY confirmed state, and the
+    // populated check is authored on PendingOpsManager (next to the state whose
+    // shape it describes) so it stays correct as the schema grows. Null
+    // manager (briefly, before the userId effect constructs it) counts as
+    // empty — a cold start.
+    // The cursor is the manager's IN-MEMORY watermark, and only that.
+    //
+    // A cold reload gets it from the IndexedDB checkpoint (useCrdtRuntime gates
+    // this effect on hydration completing), and an in-session reconnect from
+    // live state -- so there is no case where confirmedState is populated but
+    // the watermark is missing, and hence nothing for a second persisted copy
+    // to rescue. There used to be one in localStorage; it could never be the
+    // source, because the token below requires confirmedPopulated and every
+    // path that populates confirmedState also seeds the watermark.
+    //
+    // The confirmedPopulated guard stays: a cursor is only meaningful if the
+    // state it describes is actually loaded, or the hub's delta would fold onto
+    // empty maps.
+    const confirmedPopulated = pendingMgr?.isConfirmedPopulated() ?? false
+    const validated = confirmedPopulated ? validateResumeHlc(pendingState?.resumeWatermark) : undefined
+    const resume: ResumeToken | null
+      = pendingState && validated
+        ? { hlc: validated, epoch: pendingState.currentEpoch }
+        : null
+
     // Decode one relay frame and dispatch it, resetting the reconnect streak on
-    // the bootstrap (initial) frame. Shared by the desktop-bridge and native
-    // WebSocket transports so the initial-frame backoff-reset rule can't drift
-    // between them.
+    // the bootstrap frame. Shared by the desktop-bridge and native WebSocket
+    // transports so the bootstrap-frame backoff-reset rule can't drift between
+    // them. A successful resume arrives as `delta` (not `initial`), but it is
+    // equally a completed bootstrap, so the streak resets on either.
     const handleFrame = (raw: Uint8Array) => {
       const evt = decodeFrame(raw)
       if (!evt)
         return
-      if (evt.event.case === 'initial')
+      if (evt.event.case === 'initial' || evt.event.case === 'delta')
         reconnectBackoff.reset(RECONNECT_KEY)
       dispatchEvent(opts, evt, setBootstrapped, setClock)
     }
@@ -306,7 +440,7 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
             unsubClose?.()
             return
           }
-          return platformBridge.openUserEventsRelay(relayId, workspaceIds)
+          return platformBridge.openUserEventsRelay(relayId, workspaceIds, resume)
         })
         .catch(() => {
           scheduleReconnect(userId, generation)
@@ -324,7 +458,7 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     }
 
     const builder = opts.buildWsUrl ?? defaultBuildWsUrl
-    const url = builder(opts.allowedWorkspaceIds?.() ?? [])
+    const url = builder(opts.allowedWorkspaceIds?.() ?? [], resume)
     let ws: WebSocket
     try {
       ws = new WebSocket(url, ['userevents-relay'])
@@ -404,11 +538,21 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
 // session implies the user — no user_id query parameter. The browser cannot
 // import Go, so it keeps its own copy -- like channel.ts's channel framing --
 // and the two must stay in lockstep.
-function defaultBuildWsUrl(workspaceIds: string[]): string {
+//
+// `resume`, when present, appends `resume_after_hlc=<physical>.<logical>.<client_id>`
+// (via the shared formatHlcWire so the wire shape is authored once per language)
+// and `resume_epoch=<epoch>` so the hub can attempt a delta resume. The hub
+// falls back to a full snapshot if the cursor is stale, so sending it is always
+// safe; omitted when there is no watermark (first connect, cleared storage).
+function defaultBuildWsUrl(workspaceIds: string[], resume: ResumeToken | null): string {
   const base = window.location.origin.replace(/^http/, 'ws')
   const params = new URLSearchParams()
   if (workspaceIds.length > 0)
     params.set('workspace_ids', workspaceIds.join(','))
+  if (resume) {
+    params.set('resume_after_hlc', formatHlcWire(resume.hlc))
+    params.set('resume_epoch', resume.epoch.toString())
+  }
   const qs = params.toString()
   return `${base}/ws/userevents${qs ? `?${qs}` : ''}`
 }
@@ -420,36 +564,68 @@ function dispatchEvent(
   setClock: (c: HLCClock | null) => void,
 ): void {
   const e = evt.event
+  // Resolve the manager ONCE. Exactly one arm runs per call, and this executes
+  // from a WS listener with no tracking scope, so re-reading the accessor per
+  // arm (five copies of `const pending = opts.pending()`) bought nothing. The
+  // per-arm `if (pending)` guards stay: the manager is null until the userId
+  // effect constructs it, and `presence` / `created` / `renamed` / `deleted`
+  // must keep running while it is.
+  const pending = opts.pending()
   switch (e.case) {
     case 'initial':
-      // Only mark bootstrapped when the payload was actually adopted. A frame
-      // refused for naming another tenant must not flip this flag: downstream
-      // reads it as "the CRDT is live", so a refused bootstrap would look
-      // identical to a successful one while the shell held no state at all.
-      if (applyMaterialized(opts, e.value, setClock))
-        setBootstrapped(true)
+      // Only adopt when the payload was actually accepted. A frame refused for
+      // naming another tenant must not reach the adoption tail: downstream
+      // reads `bootstrapped` as "the CRDT is live", so a refused bootstrap
+      // would look identical to a successful one while the shell held no state
+      // at all.
+      if (pending && applyMaterialized(opts, pending, e.value))
+        adoptBootstrapFrame(opts, pending, e.value.subscriberClientId, setBootstrapped, setClock)
       break
-    case 'batch': {
-      const pending = opts.pending()
+    case 'delta': {
+      // A successful resume: the hub shipped the ordered frame stream (the
+      // post-cursor tail plus materialized/removed visibility transitions)
+      // instead of a full snapshot. applyDelta folds it into the EXISTING
+      // confirmedState (no wholesale replace), so the UI does not blank on
+      // reconnect. The hub falls back to `initial` (handled above) when the
+      // cursor is at/below the compaction watermark or the epoch is stale, in
+      // which case applyMaterialized re-seeds the watermark from the snapshot.
+      if (!pending)
+        break
+      // Refuse a delta that is not this tenant's, the same fail-closed check
+      // applyMaterialized applies to `initial` and loadHydrationState applies
+      // to the persisted checkpoint. A resume is now the normal cold start
+      // and was the only one of the three adoption points that failed open.
+      // The per-socket generation guard answers "is this frame stale?", not
+      // "is this frame mine?".
+      if (!isOwnTenant(opts.userId(), e.value.userId, 'resume delta'))
+        break
+      if (pending.applyDelta(e.value).droppedPending)
+        opts.onPendingDropped?.()
+      // Same adoption tail as the `initial` arm, and deliberately the same
+      // CALL: a resume is the normal cold start now, so anything `initial`
+      // establishes has to be established here too. The two arms hand-copied
+      // this sequence and had already drifted apart twice.
+      adoptBootstrapFrame(opts, pending, e.value.subscriberClientId, setBootstrapped, setClock)
+      break
+    }
+    case 'batch':
       if (pending)
         pending.consumeRemote(e.value)
       break
-    }
-    case 'entityMaterialized': {
-      const pending = opts.pending()
+    case 'entityMaterialized':
       if (pending)
         pending.consumeEntityMaterialized(e.value)
       break
-    }
-    case 'entityRemoved': {
-      const pending = opts.pending()
-      if (pending) {
-        const result = pending.consumeEntityRemoved(e.value)
-        if (result.droppedPending)
-          opts.onPendingDropped?.()
-      }
+    case 'batchEnd':
+      // Closes a batch's frame sequence and is the ONLY point the resume
+      // cursor advances -- see the BatchEnd proto doc.
+      if (pending)
+        pending.consumeBatchEnd(e.value.atHlc)
       break
-    }
+    case 'entityRemoved':
+      if (pending && pending.consumeEntityRemoved(e.value).droppedPending)
+        opts.onPendingDropped?.()
+      break
     case 'presence':
       opts.activeClient.update(e.value.workspaceId, e.value.activeClientId)
       break
@@ -485,15 +661,62 @@ function dispatchEvent(
   }
 }
 
-/** Returns true when the payload was adopted; false when it was refused. */
+/**
+ * The tail both bootstrap-bearing frames run once their payload is accepted:
+ * an `initial` UserMaterialized and a `delta` ResumeDelta.
+ *
+ * ONE sequence, in one place, because the two arms establish the same four
+ * things and a resume is now the normal cold start — a client that keeps
+ * resuming may never see an `initial` frame at all. Hand-copied, the tail had
+ * already drifted twice: the delta arm reached production without adopting the
+ * hub's subscriber identity (so the active-client gate compared against '' for
+ * the life of the page) and without the workspace-list refresh.
+ *
+ * `subscriberClientId` is empty when the hub named none; proto3 normalizes an
+ * unset string to "", and adopting "" would overwrite a good identity with
+ * nothing.
+ */
+function adoptBootstrapFrame(
+  opts: UseUserEventsOpts,
+  pending: PendingOpsManager,
+  subscriberClientId: string,
+  setBootstrapped: (b: boolean) => void,
+  setClock: (c: HLCClock | null) => void,
+): void {
+  // The hub derives this from the authenticated session; the active-client gate
+  // compares broadcast `active_client_id` against it, never against the local
+  // random nanoid.
+  if (subscriberClientId)
+    opts.onSubscriberClientId?.(subscriberClientId)
+  setClock(pending.clock)
+  setBootstrapped(true)
+  // Refresh the workspace list on EVERY bootstrap. Workspace lifecycle
+  // (`created`/`renamed`/`deleted`) is delivered as its own frame on the live
+  // stream, and the sidebar list comes from a separate `listWorkspaces` call
+  // driven solely by this callback — so a create, rename or delete that
+  // happened while this client was disconnected reaches it through NEITHER
+  // path: the gap's lifecycle frames were never sent, and neither
+  // `UserMaterialized` nor `ResumeDelta` carries them (ResumeDelta carries
+  // entity_materialized|batch|entity_removed|batch_end -- entity data and batch
+  // boundaries, never workspace lifecycle). Without this, a reconnect leaves
+  // the sidebar showing a deleted workspace, a stale title, or missing a new
+  // one indefinitely.
+  opts.onWorkspaceLifecycleChanged?.()
+}
+
+/**
+ * Install an `initial` snapshot into `pending`. Returns true when the payload
+ * was adopted; false when it was refused for naming another tenant, in which
+ * case the caller must NOT run the adoption tail.
+ *
+ * Takes the already-resolved manager rather than re-reading `opts.pending()`:
+ * dispatchEvent resolves it once for every arm.
+ */
 function applyMaterialized(
   opts: UseUserEventsOpts,
+  pending: PendingOpsManager,
   materialized: UserMaterialized,
-  setClock: (c: HLCClock | null) => void,
 ): boolean {
-  const pending = opts.pending()
-  if (!pending)
-    return false
   // Refuse a payload that names another tenant. UserMaterialized carries its
   // OWN user_id, so adopting it unconditionally would let the frame -- not the
   // socket it arrived on -- decide whose workspaces, tiles and tabs this shell
@@ -503,14 +726,8 @@ function applyMaterialized(
   // "is this frame stale?" and not "is this frame mine?".
   //
   // Fail closed: an unknown local id refuses rather than adopts.
-  const ownUserID = opts.userId()
-  if (!ownUserID || (materialized.userId && materialized.userId !== ownUserID)) {
-    console.warn('[userevents] refusing a materialized payload for another tenant', {
-      expected: ownUserID,
-      got: materialized.userId,
-    })
+  if (!isOwnTenant(opts.userId(), materialized.userId, 'materialized payload'))
     return false
-  }
   pending.bootstrap({
     userId: materialized.userId,
     nodes: materialized.nodes as never,
@@ -520,8 +737,5 @@ function applyMaterialized(
     maxHlc: materialized.maxHlc as never,
     currentEpoch: materialized.currentEpoch,
   })
-  if (materialized.subscriberClientId)
-    opts.onSubscriberClientId?.(materialized.subscriberClientId)
-  setClock(pending.clock)
   return true
 }

@@ -1281,11 +1281,18 @@ func TestManager_BroadcastFiltering_AllowedSet(t *testing.T) {
 
 // TestManager_Compaction_DropsOldOps_RetainsDedup asserts the canonical
 // compaction contract: after TickHousekeeping runs, every op committed
-// at or below the new compaction_watermark has been dropped from the
+// at or below the new op_retention_watermark has been dropped from the
 // op log, but the per-op dedup row is retained — so a retry of any of
 // those op_ids still returns the original canonical HLC.
+//
+// Op-batch deletion gates on op_retention_watermark, which lags the
+// compaction_watermark by OpRetentionTTL (the two are decoupled so a longer
+// resume window doesn't force a looser tombstone-prune line). This test sets
+// the retention TTL to zero via WithOpRetentionTTL so the floor meets the
+// compaction watermark and the committed batch is dropped; the production
+// 24h default would retain it for a day.
 func TestManager_Compaction_DropsOldOps_RetainsDedup(t *testing.T) {
-	mgr, j, _ := runManager(t, "user-1", allowAll{}, 20_000)
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 20_000, crdt.WithOpRetentionTTL(0))
 	seedRootInternal(t, mgr, "w1", "root1")
 	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
 
@@ -1313,7 +1320,7 @@ func TestManager_Compaction_DropsOldOps_RetainsDedup(t *testing.T) {
 
 	postOps := j.batchCount()
 	postDedup := j.dedupCount()
-	assert.Equal(t, 0, postOps, "compaction must drop ops at or below watermark")
+	assert.Equal(t, 0, postOps, "compaction must drop ops at or below op_retention_watermark (TTL=0 → equals compaction watermark)")
 	assert.Equal(t, preDedup, postDedup, "dedup rows must survive compaction (until TTL expiry)")
 
 	// Resubmit the same batch — should return canonical HLCs from the
@@ -1331,6 +1338,113 @@ func TestManager_Compaction_DropsOldOps_RetainsDedup(t *testing.T) {
 		assert.Equal(t, crdt.HLCCmp(originalHLCs[i], op.GetCanonicalHlc()), 0,
 			"post-compaction retry must echo the original canonical HLC")
 	}
+}
+
+// TestManager_Compaction_RetainsOpsAcrossDecoupledWindow pins that op-batch
+// deletion gates on op_retention_watermark (which lags compaction_watermark
+// by OpRetentionTTL), NOT on compaction_watermark: with a positive TTL, a
+// compaction tick advances compaction_watermark to max_hlc but leaves
+// op_retention_watermark strictly below it, so committed batches in the lag
+// window SURVIVE compaction (they're still needed for delta-resume). This is
+// the decoupling that widens the resume window from ~60s to the TTL.
+func TestManager_Compaction_RetainsOpsAcrossDecoupledWindow(t *testing.T) {
+	// nowSeed well above OpRetentionTTL in ms so the lagged floor is positive
+	// (not clamped to zero): 2h in ms = 7.2e6; TTL = 1h. The committed batch
+	// lands at ~7.2e6+ ms, so op_retention_watermark = ~7.2e6 - 3.6e6 ≈ 3.6e6,
+	// comfortably below the batch and below compaction_watermark.
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 7_200_000, crdt.WithOpRetentionTTL(time.Hour))
+	seedRootInternal(t, mgr, "w1", "root1")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	batch := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")
+	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{batch},
+	})
+	require.NoError(t, err)
+	require.Greater(t, j.batchCount(), 0, "batch must be journaled before compaction")
+
+	mgr.TickHousekeeping(context.Background())
+
+	cw := mgr.State().GetCompactionWatermark()
+	rw := mgr.State().GetOpRetentionWatermark()
+	require.False(t, crdt.HLCIsZero(cw), "compaction must advance compaction_watermark to max_hlc")
+	require.False(t, crdt.HLCIsZero(rw), "op_retention_watermark must be set after compaction")
+	require.True(t, crdt.HLCCmp(rw, cw) < 0,
+		"op_retention_watermark must lag compaction_watermark (the decoupling)")
+
+	// The batch's max canonical HLC equals max_hlc (the only commit), so it
+	// sits between rw (exclusive) and cw (inclusive). It must survive: the
+	// journal still needs it for any resume whose cursor is above rw.
+	assert.Greater(t, j.batchCount(), 0,
+		"batches above op_retention_watermark must survive compaction even when at/below compaction_watermark")
+
+	// And a second tick must not drop them either (idempotent retention floor).
+	mgr.TickHousekeeping(context.Background())
+	assert.Greater(t, j.batchCount(), 0, "a second compaction tick must not drop retained batches")
+}
+
+// TestManager_Compaction_OpRetentionWatermarkClampsToZeroOnYoungState pins the
+// young-state clamp: when max_hlc.physical < OpRetentionTTL, the lagged floor
+// goes negative and is clamped to zero (HLCIsZero), so decideResume's
+// `cursor > op_retention_watermark` admits every non-zero cursor — i.e. every
+// resumable client until the state outlives the TTL. Without the clamp the
+// floor would carry a negative physical and HLCCmp would still order below any
+// real cursor, but the zero clamp makes the intent explicit and keeps the
+// watermark HLCIsZero so it round-trips cleanly through the proto blob.
+func TestManager_Compaction_OpRetentionWatermarkClampsToZeroOnYoungState(t *testing.T) {
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 1_000, crdt.WithOpRetentionTTL(time.Hour))
+	seedRootInternal(t, mgr, "w1", "root1")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+	batch := addTabBatch(t, "b1", "tA", "root1", "wkr1", "p1")
+	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{batch},
+	})
+	require.NoError(t, err)
+
+	mgr.TickHousekeeping(context.Background())
+	rw := mgr.State().GetOpRetentionWatermark()
+	assert.True(t, crdt.HLCIsZero(rw),
+		"op_retention_watermark must clamp to zero when max_hlc.physical < OpRetentionTTL")
+}
+
+// TestManager_Bootstrap_PreservesPersistedOpRetentionWatermark pins maybeCompact
+// as the SOLE writer of op_retention_watermark: Bootstrap loads whatever was
+// persisted and does not adjust it.
+//
+// The zero-op_retention/non-zero-compaction shape below is not a corrupt blob —
+// it is exactly what maybeCompact writes for a young account, where
+// laggedRetentionWatermark clamps max_hlc-minus-TTL to zero so every resumable
+// client passes the floor. Bootstrap must not "repair" it: collapsing the floor
+// up to compaction_watermark (== max_hlc) would reject every cursor a client can
+// hold and force the full projection snapshot on every reconnect — inverting the
+// deliberate clamp, and re-introducing the exact cost #267 exists to remove.
+func TestManager_Bootstrap_PreservesPersistedOpRetentionWatermark(t *testing.T) {
+	j := newFakeJournal()
+	cw := &leapmuxv1.HLC{Physical: 1_700_000_000_000, Logical: 3, ClientId: "hub-user1"}
+	// The shape maybeCompact persists for a young account: compaction_watermark
+	// at max_hlc, op_retention_watermark clamped to zero.
+	j.state = &leapmuxv1.UserCrdtState{
+		UserId:              "user-1",
+		Nodes:               map[string]*leapmuxv1.NodeRecord{},
+		Tabs:                map[string]*leapmuxv1.TabRecord{},
+		FloatingWindows:     map[string]*leapmuxv1.FloatingWindowRecord{},
+		Workspaces:          map[string]*leapmuxv1.WorkspaceContentsRecord{},
+		MaxHlc:              &leapmuxv1.HLC{Physical: 1_700_000_000_000, Logical: 3, ClientId: "hub-user1"},
+		CompactionWatermark: cw,
+		CurrentEpoch:        1,
+	}
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, allowAll{}, nil, func() time.Time {
+		return time.UnixMilli(1_700_000_000_000)
+	})
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+
+	state := mgr.State()
+	assert.True(t, crdt.HLCIsZero(state.GetOpRetentionWatermark()),
+		"Bootstrap must leave the persisted op_retention_watermark untouched, not collapse it to compaction_watermark")
+	assert.Equal(t, cw.GetPhysical(), state.GetCompactionWatermark().GetPhysical(),
+		"compaction_watermark must load unchanged")
 }
 
 func TestManager_HousekeepingDeletesDedupRowsAfterExpiresAt(t *testing.T) {

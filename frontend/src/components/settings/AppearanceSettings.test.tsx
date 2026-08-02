@@ -1,6 +1,10 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
-import { PillGroupForTest } from './AppearanceSettings'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { nextTerminalOsNotifications, PillGroupForTest } from './AppearanceSettings'
+
+// The OS permission prompt is the one dependency the toggle's branches turn on.
+const requestPermission = vi.hoisted(() => vi.fn<() => Promise<boolean>>())
+vi.mock('~/lib/osNotification', () => ({ requestOsNotificationPermission: requestPermission }))
 
 /**
  * The preference pills are one-of-N groups, so they carry radiogroup/radio
@@ -85,5 +89,39 @@ describe('pillGroup', () => {
     const onSelect = renderGroup('light')
     fireEvent.keyDown(screen.getByRole('radiogroup', { name: 'Theme' }), { key: 'ArrowRight' })
     expect(onSelect).toHaveBeenLastCalledWith(null)
+  })
+})
+
+/**
+ * The terminal-OS-notifications toggle. The decision is a two-branch permission
+ * flow that had no coverage: the toggle shipped as an inline async callback, so
+ * the only way to reach either branch was a full component render against the
+ * real PreferencesProvider.
+ */
+describe('nextTerminalOsNotifications', () => {
+  beforeEach(() => {
+    requestPermission.mockReset()
+  })
+
+  it('stores true when the user grants permission', async () => {
+    requestPermission.mockResolvedValue(true)
+    await expect(nextTerminalOsNotifications(false)).resolves.toBe(true)
+    expect(requestPermission).toHaveBeenCalledTimes(1)
+  })
+
+  it('stays off when the user declines', async () => {
+    // The branch that matters: showing the toggle ON with no OS permission
+    // behind it would promise notifications that can never arrive.
+    requestPermission.mockResolvedValue(false)
+    await expect(nextTerminalOsNotifications(false)).resolves.toBe(false)
+    expect(requestPermission).toHaveBeenCalledTimes(1)
+  })
+
+  it('turns off without prompting', async () => {
+    // Re-asking for a permission the user is in the act of switching OFF is
+    // prompt fatigue, and on a denied origin the browser answers from its own
+    // sticky decision anyway -- which would flip the toggle back on.
+    await expect(nextTerminalOsNotifications(true)).resolves.toBe(false)
+    expect(requestPermission).not.toHaveBeenCalled()
   })
 })

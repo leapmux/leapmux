@@ -247,9 +247,12 @@ type UserOpBatchRow struct {
 	BatchID      string
 	BodyHash     []byte
 	BatchPayload []byte
-	OpCount      int64
-	Epoch        int64
-	CommittedAt  time.Time
+	// TransitionsPayload is the proto-marshalled BatchTransitions the resume
+	// path replays as visibility-transition frames (see crdt.ResumeBatch).
+	TransitionsPayload []byte
+	OpCount            int64
+	Epoch              int64
+	CommittedAt        time.Time
 }
 
 // UserStateRow is the materialized UserCrdtState blob.
@@ -773,8 +776,12 @@ type InsertUserOpBatchParams struct {
 	BatchID      string
 	BodyHash     []byte
 	BatchPayload []byte
-	OpCount      int64
-	Epoch        int64
+	// TransitionsPayload is the proto-marshalled BatchTransitions (per-entity
+	// {pre,post} workspace) the resume path replays as visibility-transition
+	// frames.
+	TransitionsPayload []byte
+	OpCount            int64
+	Epoch              int64
 }
 
 type ListUserOpBatchesAfterParams struct {
@@ -797,11 +804,18 @@ type DeleteUserOpBatchesThroughParams struct {
 
 // UpsertUserStateParams writes a fresh state blob.
 type UpsertUserStateParams struct {
-	UserID         userid.UserID
-	StatePayload   []byte
-	CurrentEpoch   int64
-	EpochStartedAt time.Time
-	UpdatedAt      time.Time
+	UserID       userid.UserID
+	StatePayload []byte
+	// CompactionPhysicalMs is StatePayload's own compaction_watermark.physical,
+	// projected into a column so SQL can filter on it. Callers MUST derive it
+	// from the very state they are marshalling into StatePayload -- it is the
+	// bound the cross-user retention sweep trusts to decide which op batches are
+	// already absorbed, and a value that outran the blob would license deleting
+	// ops no Bootstrap could then replay.
+	CompactionPhysicalMs int64
+	CurrentEpoch         int64
+	EpochStartedAt       time.Time
+	UpdatedAt            time.Time
 }
 
 type AdvanceUserEpochParams struct {

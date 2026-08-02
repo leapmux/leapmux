@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/channelwire"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 )
 
@@ -496,10 +497,31 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request) 
 		s.writeErrOrOK(id, s.app.CloseChannelRelay(m.CloseChannelRelay.GetRelayId()))
 
 	case *desktoppb.Request_OpenUserEventsRelay:
+		req := m.OpenUserEventsRelay
+		// Validate the resume cursor. The hub's ParseResumeCursor rejects a
+		// malformed resume_after_hlc / resume_epoch with HTTP 400 (a malformed
+		// cursor is a client bug, not a legacy client). The sidecar is the ONLY
+		// path between the desktop frontend and the hub, so it applies the SAME
+		// strictness: a malformed field rejects the relay-open RPC (the frontend
+		// treats it as a failed open → reconnect, and on the next attempt sends
+		// a well-formed cursor or none) rather than silently degrading to a
+		// full-snapshot connect. Degrade+log would let a frontend serialization
+		// regression limp along on full snapshots with a warn buried in sidecar
+		// logs the frontend never surfaces — exactly the silent failure the
+		// hub's 400 exists to catch.
+		cursor, epoch, err := channelwire.ParseResumeCursor(req.GetResumeHlc(), req.GetResumeEpoch())
+		if err != nil {
+			slog.Warn("userevents relay: rejected malformed resume cursor",
+				"resume_hlc", req.GetResumeHlc(), "resume_epoch", req.GetResumeEpoch(), "error", err)
+			s.writeError(id, err)
+			return
+		}
 		s.writeErrOrOK(id, s.app.OpenUserEventsRelay(
 			ctx,
-			m.OpenUserEventsRelay.GetRelayId(),
-			m.OpenUserEventsRelay.GetWorkspaceIds(),
+			req.GetRelayId(),
+			req.GetWorkspaceIds(),
+			cursor,
+			epoch,
 		))
 
 	case *desktoppb.Request_CloseUserEventsRelay:

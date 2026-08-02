@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,12 +40,12 @@ func blockFirstUserEventsDial(t *testing.T) (dialing chan struct{}, release chan
 	original := dialUserEvents
 	t.Cleanup(func() { dialUserEvents = original })
 	var blocked atomic.Bool
-	dialUserEvents = func(ctx context.Context, proxy *HubProxy, workspaceIDs []string) (*websocket.Conn, error) {
+	dialUserEvents = func(ctx context.Context, proxy *HubProxy, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
 		if blocked.CompareAndSwap(false, true) {
 			close(dialing)
 			<-release
 		}
-		return original(ctx, proxy, workspaceIDs)
+		return original(ctx, proxy, workspaceIDs, cursor, epoch)
 	}
 	return dialing, release
 }
@@ -70,11 +71,11 @@ func TestApp_OpenUserEventsRelay_ConcurrentOpenDoesNotTearDownTheSuccessor(t *te
 
 	// A opens first and blocks inside its dial.
 	openA := make(chan error, 1)
-	go func() { openA <- app.OpenUserEventsRelay(context.Background(), 1, nil) }()
+	go func() { openA <- app.OpenUserEventsRelay(context.Background(), 1, nil, nil, 0) }()
 	<-dialing
 
 	// B -- a later attempt -- opens and installs while A is still dialing.
-	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 2, nil))
+	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 2, nil, nil, 0))
 	app.lifecycleMu.RLock()
 	relayB := app.connection.userEventsRelay
 	app.lifecycleMu.RUnlock()
@@ -106,14 +107,14 @@ func TestApp_CloseUserEventsRelay_IgnoresStaleOwner(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
 
-	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 1, nil))
+	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 1, nil, nil, 0))
 	app.lifecycleMu.RLock()
 	relayA := app.connection.userEventsRelay
 	app.lifecycleMu.RUnlock()
 	require.NotNil(t, relayA)
 
 	// The force-restart open hands the slot to a fresh relay owned by B.
-	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 2, nil))
+	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 2, nil, nil, 0))
 	app.lifecycleMu.RLock()
 	relayB := app.connection.userEventsRelay
 	app.lifecycleMu.RUnlock()
@@ -147,13 +148,13 @@ func TestApp_OpenUserEventsRelay_StaleOpenLeavesTheNewerRelayInstalled(t *testin
 	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
 	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
 
-	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 9, nil))
+	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 9, nil, nil, 0))
 	app.lifecycleMu.RLock()
 	relayBefore := app.connection.userEventsRelay
 	app.lifecycleMu.RUnlock()
 	require.NotNil(t, relayBefore)
 
-	require.Error(t, app.OpenUserEventsRelay(context.Background(), 8, nil),
+	require.Error(t, app.OpenUserEventsRelay(context.Background(), 8, nil, nil, 0),
 		"an open that ran entirely after a newer one is stale")
 
 	app.lifecycleMu.RLock()
@@ -172,9 +173,41 @@ func TestApp_OpenUserEventsRelay_StaleOpenLeavesTheNewerRelayInstalled(t *testin
 // it must break loudly, not silently dial unpinned.
 func TestDialUserEvents_FailsClosedWithoutPinnedWSClient(t *testing.T) {
 	proxy := &HubProxy{baseURL: "http://hub.example"} // wsClient deliberately nil
-	_, err := dialUserEvents(context.Background(), proxy, nil)
+	_, err := dialUserEvents(context.Background(), proxy, nil, nil, 0)
 	require.Error(t, err, "a nil wsClient must fail the dial, not degrade to http.DefaultClient")
 	assert.Contains(t, err.Error(), "pinned WebSocket client")
+}
+
+// TestApp_OpenUserEventsRelay_ForwardsResumeCursor pins the load-bearing
+// desktop forwarding path: a non-nil resume cursor passed to OpenUserEventsRelay
+// must reach dialUserEvents unchanged, so the hub receives it on the /ws/userevents
+// URL and can ship a ResumeDelta. A regression that dropped the cursor arg would
+// silently disable desktop resume (every reconnect would full-snapshot). The
+// existing relay tests all pass nil cursors; this is the only one that forwards a
+// real one.
+func TestApp_OpenUserEventsRelay_ForwardsResumeCursor(t *testing.T) {
+	server := userEventsTestServer(t)
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+	installTestConnection(app, newHTTPProxy(server.URL), nil, server.URL)
+
+	cursor := &leapmuxv1.HLC{Physical: 1754100000000, Logical: 3, ClientId: "c-abc"}
+	var gotCursor *leapmuxv1.HLC
+	var gotEpoch int64
+	original := dialUserEvents
+	t.Cleanup(func() { dialUserEvents = original })
+	dialUserEvents = func(ctx context.Context, proxy *HubProxy, workspaceIDs []string, c *leapmuxv1.HLC, e int64) (*websocket.Conn, error) {
+		gotCursor = c
+		gotEpoch = e
+		return original(ctx, proxy, workspaceIDs, c, e)
+	}
+
+	require.NoError(t, app.OpenUserEventsRelay(context.Background(), 1, nil, cursor, 42))
+	require.NotNil(t, gotCursor, "the resume cursor must be forwarded to the dial")
+	assert.Equal(t, cursor.GetPhysical(), gotCursor.GetPhysical())
+	assert.Equal(t, cursor.GetLogical(), gotCursor.GetLogical())
+	assert.Equal(t, cursor.GetClientId(), gotCursor.GetClientId())
+	assert.Equal(t, int64(42), gotEpoch, "the resume epoch must be forwarded to the dial")
 }
 
 // The guard above only matters because production proxies always carry a pinned

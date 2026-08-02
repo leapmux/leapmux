@@ -247,6 +247,128 @@ message WatchUserEvent {
     WorkspaceRenamed     renamed             = 6;
     WorkspaceCreated     created             = 7;
     WorkspaceDeleted     deleted             = 8;
+    // Sent instead of `initial` when a reconnect's resume cursor is still
+    // within the hub's op-retention window (see ResumeDelta). Either
+    // `initial` or `delta` is the first frame; never both.
+    ResumeDelta          delta               = 9;
+    // Terminates one committed batch's catch-up sequence. See BatchEnd.
+    BatchEnd             batch_end           = 10;
+  }
+}
+
+// BatchEnd closes the frame sequence a single committed batch produces, so a
+// client can tell "I have all of batch B" from "I have some of batch B".
+//
+// One batch fans out as up to three separate frames -- entity_materialized*,
+// then batch, then entity_removed* -- and every one of them carries the SAME
+// at_hlc (the batch's last-op canonical HLC). A client that advanced its resume
+// watermark on each frame therefore reached the batch's max HLC as soon as the
+// FIRST frame landed. If the socket then dropped mid-sequence, the persisted
+// cursor sat above ops that were never applied, and because the resume scan is
+// strictly-greater the hub would never re-send them: a silent, permanent
+// divergence (now also written into the client's IndexedDB checkpoint).
+//
+// So the watermark advances HERE and nowhere else. A drop mid-sequence leaves
+// the cursor at the previous batch, and the whole batch is re-sent on resume --
+// harmless, because every op re-applies under the same canonical HLC and the
+// client's LWW compare is strictly-greater.
+//
+// Emitted for EVERY batch a subscriber is sent, including one whose ops are all
+// filtered out of that subscriber's view. That is deliberate: it lets a
+// narrowly-filtered subscriber advance past traffic it cannot see instead of
+// re-scanning the same journal tail on every reconnect. It is safe because an
+// entity that later becomes visible arrives as a full EntityMaterialized
+// record, never as its historical ops.
+message BatchEnd {
+  HLC at_hlc = 1;  // the batch's last-op canonical HLC; the client's new watermark
+}
+
+// ResumeDelta is the resume counterpart to UserMaterialized: the post-cursor
+// op tail a reconnecting client needs to catch up, rather than the full
+// materialized snapshot. Sent as the first (and only bootstrap) frame on a
+// successful resume (see Manager.SubscribeWithACL). max_hlc is the max HLC the
+// client adopts as its new watermark -- the max over every emitted frame's own
+// HLC (visible-op canonical HLCs AND the at_hlc of each materialized/removed
+// transition frame), NOT the live state max, so the watermark is always an HLC
+// the client genuinely received. The client MUST advance its resume watermark
+// to max_hlc (in addition to observing it into the HLC clock), matching how
+// bootstrap adopts UserMaterialized.max_hlc.
+//
+// frames carries the ordered stream the subscriber missed as WatchUserEvent
+// values — the SAME envelope live Send uses (entity_materialized | batch |
+// entity_removed | batch_end). For each tail batch, in commit order, the hub emits
+// frames in the SAME materialized → batch → removed order a live broadcast
+// uses (see emitCatchUpFrames), filtered by the SAME pre/post stable-
+// visibility rule. The client dispatches each frame through the SAME handlers
+// a live broadcast uses, so the two catch-up paths cannot drift. An entity
+// that crossed IN arrives as entity_materialized carrying its BATCH-ERA full
+// record (BatchTransition.record), not a live current-state clone.
+message ResumeDelta {
+  repeated WatchUserEvent frames = 1;  // ordered catch-up stream (entity_materialized|batch|entity_removed|batch_end)
+  HLC              max_hlc     = 2;  // max HLC over every emitted frame (client's new watermark)
+  int64            current_epoch = 3;  // for SubmitOps epoch echo
+  // Hub-derived identity of THIS subscriber -- same value and purpose as
+  // UserMaterialized.subscriber_client_id, carried here because a resume is now
+  // the normal COLD-START path: the client hydrates confirmedState from its
+  // IndexedDB checkpoint and resumes instead of bootstrapping, so a freshly
+  // loaded page has no earlier `initial` frame to have learned it from.
+  // Leaving it unset made the frontend's active-client gate compare against an
+  // empty string, which disables the gate outright (every refreshed tab plays
+  // the turn-end sound regardless of which client is active).
+  string           subscriber_client_id = 4;
+  // Owning tenant, mirroring UserMaterialized.user_id, so the client can refuse
+  // a delta that is not its own.
+  //
+  // The `initial` arm has always fail-closed on this (applyMaterialized, the
+  // client half of crdt.Manager.requireOwnState), and so does the cold-start
+  // hydration path. A resume is now the NORMAL cold start, and was the only one
+  // of the three that fails OPEN: with no tenant on the message the check was
+  // not merely skipped, it was inexpressible, so a delta was adopted on the
+  // strength of the socket alone -- and, via the op-log observer, written into
+  // the device's IndexedDB checkpoint where it survives refreshes. The hub
+  // cannot mis-route today (the manager is keyed by the authenticated user id),
+  // which makes this defence in depth rather than a live bug; it is here so all
+  // three adoption points answer "is this mine?" the same way.
+  string           user_id = 5;
+}
+
+// BatchTransitions is the per-batch, per-entity workspace-transition log the
+// hub persists alongside each OpBatch so the resume path can replay the SAME
+// pre/post stable-visibility classification the live broadcast applies. It is
+// the wire encoding of ValidationResult.AffectedEntities
+// (map[EntityRef]EntityWorkspaceTransition): one entry per entity the batch
+// touched, each carrying its pre- and post-batch owning workspace. This is a
+// STORAGE-ONLY message: it never crosses a client-facing wire surface.
+message BatchTransitions {
+  repeated BatchTransition entries = 1;
+}
+
+// BatchTransition is one entity's pre/post-batch workspace. Exactly one
+// identity arm is set (a oneof, so multi-kind rows are unrepresentable), and
+// its arm implies the EntityKind (Node / Tab / FloatingWindow / WorkspaceRoot)
+// -- mirroring the EntityKind the Go-side EntityRef carries. The optional
+// `record` oneof carries the entity's POST-batch record snapshot, captured at
+// commit time when Pre != Post (a visibility-crossing candidate), so the
+// resume path can build a materialized frame from the batch-era record instead
+// of reading CURRENT live state (which a later tail batch may have
+// edited/tombstoned). Only set for entity kinds that have a materialized frame
+// (Node / Tab / FloatingWindow); absent for WorkspaceRoot (no
+// EntityMaterialized variant), stable-visibility edits (Pre == Post), and
+// tombstoned records (a tombstone is projection-ignored, so no frame is
+// materialized for it -- matching live buildEntityMaterializedEvent).
+message BatchTransition {
+  oneof identity {
+    string node_id      = 1;  // EntityKindNode
+    TabIdent tab        = 2;  // EntityKindTab
+    string window_id    = 3;  // EntityKindFloatingWindow
+    string workspace_id = 4;  // EntityKindWorkspaceRoot
+  }
+  string pre_workspace  = 5;
+  string post_workspace = 6;
+  oneof record {              // post-batch record snapshot (omitted => no materialized frame for this entry)
+    NodeRecord           node_record           = 7;
+    TabRecord            tab_record            = 8;
+    FloatingWindowRecord floating_window_record = 9;
   }
 }
 

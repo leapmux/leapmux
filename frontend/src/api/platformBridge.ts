@@ -1,6 +1,7 @@
 import type { BuildInfo } from '~/lib/buildEnv'
 import type { TrailingDebounced } from '~/lib/debounce'
 import { arrayBufferToBase64, base64ToArrayBuffer } from '~/lib/base64'
+import { formatHlcWire } from '~/lib/crdt/hlc'
 import { trailingDebounce } from '~/lib/debounce'
 import { createLogger } from '~/lib/logger'
 import { isMac } from '~/lib/shortcuts/platform'
@@ -750,9 +751,24 @@ export const platformBridge = {
   // weight here: this open force-restarts the relay (the hub sends UserMaterialized
   // only at subscribe time, so reusing a live relay would leave a fresh page without
   // its bootstrap), so the sidecar also uses the id to ignore an OPEN that a newer
-  // one has already superseded.
-  async openUserEventsRelay(relayId: number, workspaceIds: string[] = []): Promise<void> {
-    await tauriInvoke('open_userevents_relay', { relayId, workspaceIds })
+  // one has already superseded. `resume`, when present, is the per-user resume
+  // cursor the sidecar threads into the /ws/userevents URL so the hub can ship a
+  // ResumeDelta; serialized as a wire string + epoch (Tauri IPC carries no
+  // bigint), mirroring the resume_after_hlc query-param shape the Go side parses.
+  async openUserEventsRelay(
+    relayId: number,
+    workspaceIds: string[] = [],
+    resume?: { hlc: { physical: bigint, logical: bigint, clientId: string }, epoch: bigint } | null,
+  ): Promise<void> {
+    const resumeHlc = resume
+      ? formatHlcWire(resume.hlc)
+      : null
+    await tauriInvoke('open_userevents_relay', {
+      relayId,
+      workspaceIds,
+      resumeHlc,
+      resumeEpoch: resume ? resume.epoch.toString() : null,
+    })
   },
   async closeUserEventsRelay(relayId: number): Promise<void> {
     await tauriInvoke('close_userevents_relay', { relayId })

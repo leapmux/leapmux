@@ -27,6 +27,7 @@ function installBridge(wsId: string, rootNodeId: string | null) {
       enqueued.push(batch)
       return batch.batchId
     },
+    flushNow: () => {},
     clock: () => new HLCClock('c-1'),
     originClientId: () => 'c-1',
     speculativeState: () => state,

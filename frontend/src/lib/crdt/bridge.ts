@@ -46,6 +46,24 @@ export interface CRDTBridge {
    */
   enqueue: (batch: OpBatch) => string
   /**
+   * Send everything queued NOW, for a page-unload handler.
+   *
+   * `enqueue` only queues and arms a ~16 ms timer, and on a real unload
+   * (Cmd+R, tab close) that timer never fires -- so a store that materializes a
+   * debounced gesture on `pagehide` still loses it. Calling this immediately
+   * afterwards, in the SAME handler, is what gets it onto the wire: the request
+   * goes out over a `keepalive` transport, which survives the document being
+   * torn down.
+   *
+   * In one handler rather than a second `pagehide` listener in the runtime,
+   * because listener order would otherwise decide it: DOM listeners on one
+   * target fire in registration order, the runtime mounts BEFORE the stores, and
+   * a microtask defer does not help (the checkpoint runs after each callback,
+   * not after all of them). Sequential statements in one handler need no
+   * ordering argument at all.
+   */
+  flushNow: () => void
+  /**
    * Mint advisory client_hlcs from the same monotonic stream the
    * pending manager uses.
    *

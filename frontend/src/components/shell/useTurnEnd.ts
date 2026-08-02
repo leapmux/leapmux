@@ -33,7 +33,7 @@ export interface UseTurnEndOpts {
   activeClient: ReturnType<typeof createActiveClientStore>
   effectiveClientId: () => string
   getActiveWorkspaceId: () => string | null | undefined
-  ownClientId: string
+  ownClientId: () => string
   setTurnEndTrigger: (updater: (v: number) => number) => void
   isAgentClosing: (agentId: string) => boolean
 }
@@ -81,7 +81,7 @@ export function useTurnEnd(opts: UseTurnEndOpts): (agentId: string, numToolUses?
       // multi-context tests where the audio stack is either suppressed
       // or unobservable (jsdom-like envs).
       window.dispatchEvent(new CustomEvent('leapmux:turn-end-played', {
-        detail: { agentId, ownClientId: opts.ownClientId, effectiveClientId: opts.effectiveClientId() },
+        detail: { agentId, ownClientId: opts.ownClientId(), effectiveClientId: opts.effectiveClientId() },
       }))
     }
   }

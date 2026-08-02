@@ -51,7 +51,7 @@ func TestOpTarget_ClassifiesEveryOpKind(t *testing.T) {
 }
 
 // TestOpTarget_UnknownBodyIsKindUnknown pins the fall-through: a nil body
-// yields EntityKindUnknown, which batchVisibleOpsEvent treats as not-visible
+// yields EntityKindUnknown, which opVisibleForSubscriber treats as not-visible
 // (IsAllowed("") is false) so a malformed op is dropped rather than crashing.
 func TestOpTarget_UnknownBodyIsKindUnknown(t *testing.T) {
 	ref := crdt.OpTarget(&leapmuxv1.CrdtOp{})

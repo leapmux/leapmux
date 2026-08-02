@@ -1,6 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { userCRDTClient, userCRDTUnloadClient } from '~/api/clients'
 import { showWarnToast } from '~/components/common/Toast'
 import { BatchRejectionReason, OpBatchSchema } from '~/generated/leapmux/v1/user_ops_pb'
 import { createOpsSubmitter } from './useOpsSubmitter'
@@ -10,7 +11,12 @@ import { createOpsSubmitter } from './useOpsSubmitter'
 vi.mock('~/components/common/Toast', () => ({ showWarnToast: vi.fn() }))
 // Default client is never used (every test injects its own), but the module
 // pulls it in at import time.
-vi.mock('~/api/clients', () => ({ userCRDTClient: { submitOps: vi.fn() } }))
+vi.mock('~/api/clients', () => ({
+  userCRDTClient: { submitOps: vi.fn() },
+  // The unload path uses a SECOND client, over the keepalive transport: a
+  // normal fetch started while the page is unloading is cancelled with it.
+  userCRDTUnloadClient: { submitOps: vi.fn() },
+}))
 
 function batch(id: string) {
   return create(OpBatchSchema, { batchId: id, ops: [] })
@@ -73,7 +79,7 @@ async function advancePastBackoff() {
   await vi.advanceTimersByTimeAsync(300)
 }
 
-describe('createopssubmitter (retry requeue)', () => {
+describe('createOpsSubmitter (retry requeue)', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
@@ -333,7 +339,7 @@ describe('createopssubmitter (retry requeue)', () => {
   })
 })
 
-describe('createopssubmitter (pending manager unavailable)', () => {
+describe('createOpsSubmitter (pending manager unavailable)', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
@@ -387,5 +393,222 @@ describe('createopssubmitter (pending manager unavailable)', () => {
       expect(vi.getTimerCount()).toBe(0)
       expect(submitOps).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe('createOpsSubmitter (op coalescing)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  function opacityBatch(batchId: string, opId: string, windowId: string, opacity: number) {
+    return create(OpBatchSchema, {
+      batchId,
+      ops: [{
+        opId,
+        body: { case: 'setFloatingWindowRegister', value: { windowId, field: { case: 'opacity', value: opacity } } },
+      }],
+    })
+  }
+
+  it('sends only the last write to a register and drops the superseded batches', async () => {
+    await createRoot(async (dispose) => {
+      const pending = makeFakePending()
+      const submitOps = vi.fn().mockResolvedValue({ results: [] })
+      const submitter = createOpsSubmitter({
+        pending: () => pending as never,
+        client: { submitOps } as never,
+      })
+
+      // A gesture-shaped burst: three writes to one register inside one window.
+      submitter.enqueue(opacityBatch('b1', 'o1', 'w1', 0.9))
+      submitter.enqueue(opacityBatch('b2', 'o2', 'w1', 0.8))
+      submitter.enqueue(opacityBatch('b3', 'o3', 'w1', 0.7))
+      await vi.advanceTimersByTimeAsync(20)
+
+      expect(submitOps).toHaveBeenCalledTimes(1)
+      const sent = submitOps.mock.calls[0]![0].batches
+      expect(sent.map((b: { batchId: string }) => b.batchId)).toEqual(['b3'])
+      dispose()
+    })
+  })
+
+  // The integration point that makes coalescing safe. Each batch was already
+  // applied speculatively at enqueue, and only a BatchResult clears a pending
+  // entry -- so a batch the hub never sees must have its entry dropped here, or
+  // the optimistic overlay waits on it for the life of the page.
+  it('drops the pending entry of a batch that coalesced away entirely', async () => {
+    await createRoot(async (dispose) => {
+      const pending = makeFakePending()
+      const submitOps = vi.fn().mockResolvedValue({ results: [] })
+      const submitter = createOpsSubmitter({
+        pending: () => pending as never,
+        client: { submitOps } as never,
+      })
+
+      submitter.enqueue(opacityBatch('b1', 'o1', 'w1', 0.9))
+      submitter.enqueue(opacityBatch('b2', 'o2', 'w1', 0.7))
+      await vi.advanceTimersByTimeAsync(20)
+
+      // Both were submitted speculatively; only the superseded one is reverted.
+      expect(pending.submit).toHaveBeenCalledTimes(2)
+      expect(pending.revertPendingBatch).toHaveBeenCalledTimes(1)
+      expect(pending.revertPendingBatch).toHaveBeenCalledWith('b1')
+      dispose()
+    })
+  })
+
+  it('does not coalesce writes to different windows', async () => {
+    await createRoot(async (dispose) => {
+      const pending = makeFakePending()
+      const submitOps = vi.fn().mockResolvedValue({ results: [] })
+      const submitter = createOpsSubmitter({
+        pending: () => pending as never,
+        client: { submitOps } as never,
+      })
+
+      submitter.enqueue(opacityBatch('b1', 'o1', 'w1', 0.9))
+      submitter.enqueue(opacityBatch('b2', 'o2', 'w2', 0.9))
+      await vi.advanceTimersByTimeAsync(20)
+
+      const sent = submitOps.mock.calls[0]![0].batches
+      expect(sent.map((b: { batchId: string }) => b.batchId)).toEqual(['b1', 'b2'])
+      expect(pending.revertPendingBatch).not.toHaveBeenCalled()
+      dispose()
+    })
+  })
+})
+
+describe('createOpsSubmitter (parked-retry supersession)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  function xBatch(batchId: string, opId: string, windowId: string, x: number) {
+    return create(OpBatchSchema, {
+      batchId,
+      ops: [{
+        opId,
+        body: { case: 'setFloatingWindowRegister', value: { windowId, field: { case: 'x', value: x } } },
+      }],
+    })
+  }
+
+  // A batch parked in transport backoff has left the queue but never reached
+  // the hub, so dedup will not apply when its timer fires: it commits with a
+  // FRESH canonical HLC, newer than the write that superseded it, and the stale
+  // mid-gesture value wins LWW on the hub and every peer. A drag that hits one
+  // dropped request would land the window back where it was mid-drag.
+  it('cancels a parked retry once a newer write to the same register goes out', async () => {
+    await createRoot(async (dispose) => {
+      const pending = makeFakePending()
+      const submitOps = vi.fn()
+        .mockRejectedValueOnce(new Error('network down'))
+        .mockResolvedValue({ results: [] })
+      const submitter = createOpsSubmitter({
+        pending: () => pending as never,
+        client: { submitOps } as never,
+      })
+
+      // Drag frame 1 fails at the transport layer and parks.
+      submitter.enqueue(xBatch('b1', 'o1', 'w1', 0.1))
+      await vi.advanceTimersByTimeAsync(20)
+      expect(submitOps).toHaveBeenCalledTimes(1)
+
+      // Drag frame 2 goes out and supersedes it.
+      submitter.enqueue(xBatch('b2', 'o2', 'w1', 0.9))
+      await vi.advanceTimersByTimeAsync(20)
+      expect(submitOps).toHaveBeenCalledTimes(2)
+      expect(pending.revertPendingBatch).toHaveBeenCalledWith('b1')
+
+      // Well past the transport backoff: the parked batch must NOT be re-sent.
+      await vi.advanceTimersByTimeAsync(5000)
+      const sentBatchIds: string[] = submitOps.mock.calls.flatMap(
+        c => (c[0] as { batches: { batchId: string }[] }).batches.map(b => b.batchId),
+      )
+      expect(sentBatchIds).toEqual(['b1', 'b2'])
+      dispose()
+    })
+  })
+
+  it('still retries a parked batch nothing supersedes', async () => {
+    await createRoot(async (dispose) => {
+      const pending = makeFakePending()
+      const submitOps = vi.fn()
+        .mockRejectedValueOnce(new Error('network down'))
+        .mockResolvedValue({ results: [] })
+      const submitter = createOpsSubmitter({
+        pending: () => pending as never,
+        client: { submitOps } as never,
+      })
+
+      submitter.enqueue(xBatch('b1', 'o1', 'w1', 0.1))
+      await vi.advanceTimersByTimeAsync(20)
+
+      // A write to a DIFFERENT window must not cancel it.
+      submitter.enqueue(xBatch('b2', 'o2', 'w2', 0.9))
+      await vi.advanceTimersByTimeAsync(20)
+      expect(pending.revertPendingBatch).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(5000)
+      const sentBatchIds: string[] = submitOps.mock.calls.flatMap(
+        c => (c[0] as { batches: { batchId: string }[] }).batches.map(b => b.batchId),
+      )
+      expect(sentBatchIds).toContain('b1')
+      expect(sentBatchIds.filter(id => id === 'b1')).toHaveLength(2)
+      dispose()
+    })
+  })
+})
+
+// A `pagehide` flush that only ENQUEUES is inert on a real unload: enqueue arms
+// a ~16 ms timer and the page is gone before it fires. What makes the op arrive
+// is sending it over the keepalive transport, from inside the handler.
+describe('createOpsSubmitter unload flush', () => {
+  // Fake timers so `enqueue`'s 16 ms auto-flush cannot fire and add a call the
+  // assertions here would attribute to the explicit flush under test.
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(userCRDTClient.submitOps).mockClear()
+    vi.mocked(userCRDTUnloadClient.submitOps).mockClear()
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('sends over the keepalive client when flushing for unload', async () => {
+    const submitter = createOpsSubmitter({ pending: () => makeFakePending() as never })
+    vi.mocked(userCRDTUnloadClient.submitOps).mockResolvedValue({ results: [] } as never)
+
+    submitter.enqueue(batch('b1'))
+    await submitter.flush({ unload: true })
+
+    expect(userCRDTUnloadClient.submitOps).toHaveBeenCalledTimes(1)
+    expect(userCRDTClient.submitOps).not.toHaveBeenCalled()
+  })
+
+  it('uses the ordinary client for a normal flush', async () => {
+    const submitter = createOpsSubmitter({ pending: () => makeFakePending() as never })
+    vi.mocked(userCRDTClient.submitOps).mockResolvedValue({ results: [] } as never)
+
+    submitter.enqueue(batch('b1'))
+    await submitter.flush()
+
+    expect(userCRDTClient.submitOps).toHaveBeenCalledTimes(1)
+    expect(userCRDTUnloadClient.submitOps).not.toHaveBeenCalled()
+  })
+
+  // keepalive shares a 64 KiB budget across every in-flight request and fails
+  // outright above it, so an oversized unload flush must not be handed to it --
+  // that would turn a probably-cancelled send into a guaranteed rejection.
+  it('falls back to the ordinary client when the batch exceeds the keepalive budget', async () => {
+    const submitter = createOpsSubmitter({ pending: () => makeFakePending() as never })
+    vi.mocked(userCRDTClient.submitOps).mockResolvedValue({ results: [] } as never)
+
+    const huge = create(OpBatchSchema, {
+      batchId: 'huge',
+      ops: Array.from({ length: 1000 }, () => ({})),
+    })
+    submitter.enqueue(huge)
+    await submitter.flush({ unload: true })
+
+    expect(userCRDTClient.submitOps).toHaveBeenCalledTimes(1)
+    expect(userCRDTUnloadClient.submitOps).not.toHaveBeenCalled()
   })
 })

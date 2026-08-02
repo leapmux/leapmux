@@ -72,3 +72,11 @@ func (s *cleanupStore) CompactPublishedRevocationEvents(
 ) (int64, error) {
 	return newRevocationEventStore(s.conn).CompactPublished(ctx, p.Cutoff)
 }
+
+// DeleteUserOpBatchesBeforePhysical is the retention backstop for CRDT
+// op batches -- see the query's own doc for why the HLC-based compaction tick
+// cannot drain a dormant account, and why the cutoff is an HLC physical rather
+// than the committed_at wall clock.
+func (s *cleanupStore) DeleteUserOpBatchesBeforePhysical(ctx context.Context, cutoffPhysicalMs int64) (int64, error) {
+	return rowsAffected(s.conn.q.DeleteUserOpBatchesBeforePhysical(ctx, cutoffPhysicalMs))
+}

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,7 +12,6 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/leapmux/leapmux/channelwire"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -80,10 +80,10 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Tenancy is the authenticated user. No client-supplied user_id query
-	// parameter: channelwire.UserEventsURL only encodes workspace_ids, and
-	// accepting a foreign id would let any authenticated user drive
-	// registry.Get (which performs no authorization) into bootstrapping an
-	// arbitrary tenant's CRDT Manager.
+	// parameter: channelwire.UserEventsURL encodes only workspace_ids and the
+	// resume cursor (resume_after_hlc / resume_epoch), and accepting a foreign
+	// id would let any authenticated user drive registry.Get (which performs no
+	// authorization) into bootstrapping an arbitrary tenant's CRDT Manager.
 	userID := user.ID.String()
 	workspaceIDs := []string{}
 	if raw := r.URL.Query().Get("workspace_ids"); raw != "" {
@@ -92,6 +92,19 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				workspaceIDs = append(workspaceIDs, w)
 			}
 		}
+	}
+	// Resume cursor: a reconnecting client presents its last-applied HLC plus
+	// the epoch it saw it under. Both params absent is a first connect (the
+	// hub's SubscribeWithACL treats a nil cursor as FALLBACK → full snapshot).
+	// A malformed resume_after_hlc or resume_epoch is a genuine client bug, not
+	// a legacy client, so it is rejected with 400 rather than silently degrading
+	// (silent degradation would mask the bug and let a broken client limp along
+	// with full-snapshot reconnects forever). resume_epoch without a matching
+	// resume_after_hlc is likewise malformed.
+	resumeCursor, resumeEpoch, resumeErr := channelwire.ParseResumeCursorFromQuery(r.URL.Query())
+	if resumeErr != nil {
+		http.Error(w, resumeErr.Error(), http.StatusBadRequest)
+		return
 	}
 
 	mgr, err := h.registry.Get(r.Context(), userID)
@@ -130,14 +143,15 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// 64-deep buffer covers the bootstrap-burst window where a fresh
-	// subscriber sees every entity_materialized at once. The Send below
-	// is non-blocking: a full buffer triggers ErrSubscriberSlow which
-	// cancels this subscriber's ctx and tears down the connection. Per
-	// the Subscriber.Send contract the manager must not be blocked by
-	// one slow client — back-pressure here would head-of-line stall
-	// every other subscriber for this user.
-	pending := make(chan *crdt.MarshaledEvent, 64)
+	// 64-deep buffer covers the steady-state burst window after bootstrap.
+	// During SubscribeWithACL's RESUME path the subscriber is registered
+	// before this writer loop starts, and live broadcasts enqueue via Send
+	// while the journal scan runs — parking those frames in a slice (instead
+	// of the bounded channel) so a multi-page scan under load cannot trip
+	// ErrSubscriberSlow and drop the reconnect. The two phases, the cap, the
+	// mutex and the buffers all live in subscriberQueue -- see its doc for why
+	// they are one value rather than five locals mutated from three places here.
+	queue := newSubscriberQueue()
 	sub := &crdt.Subscriber{
 		UserID:                user.ID.String(),
 		ClientID:              presenceClientID(user),
@@ -145,23 +159,42 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Filter is resolved and installed under subscribeExpandMu by
 		// SubscribeWithACL below (see the resolve-then-register TOCTOU it closes).
 		Send: func(evt *crdt.MarshaledEvent) error {
-			select {
-			case pending <- evt:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				// Buffer is full: drop this subscriber rather than block
-				// the manager goroutine. Cancelling ctx causes the writer
-				// loop below to exit and the deferred unsub to fire,
-				// removing us from the manager's subs set so subsequent
-				// broadcasts skip us entirely.
-				slog.Warn("userevents: subscriber buffer full, dropping connection",
-					"user_id", user.ID, "client_id", presenceClientID(user))
-				cancel()
-				return crdt.ErrSubscriberSlow
+			err := queue.Send(ctx, evt)
+			if !errors.Is(err, crdt.ErrSubscriberSlow) {
+				return err
 			}
+			// The two phases overflow for different reasons and deserve
+			// different answers.
+			if !queue.Released() {
+				// PRE-BOOTSTRAP: a resume scan is still running. Tearing down
+				// here sent the client back with the same cursor to rebuild the
+				// same multi-page scan, under the load that caused the overflow.
+				// Flag it instead: the manager's post-scan check turns this into
+				// ONE snapshot, and resumeFallback's OnRebaseline discards the
+				// parked buffer before taking the baseline, so the frame this
+				// call could not hold is superseded rather than lost.
+				slog.Warn("userevents: park buffer full during resume, falling back to a snapshot",
+					"user_id", user.ID, "client_id", presenceClientID(user))
+				return err
+			}
+			// STEADY STATE: there is no scan to fall back from, so drop the
+			// subscriber rather than block the manager goroutine. Cancelling ctx
+			// exits the writer loop below and fires the deferred unsub, so later
+			// broadcasts skip us.
+			slog.Warn("userevents: subscriber buffer full, dropping connection",
+				"user_id", user.ID, "client_id", presenceClientID(user))
+			cancel()
+			return err
 		},
+		// A resume that gives up re-registers and takes a snapshot at a LATER
+		// point than anything parked during the scan. Those parked frames are
+		// superseded by the snapshot, and replaying them over it would reinstate
+		// stale entity records for good (the client applies materialized /
+		// removed wholesale, with no HLC compare). The manager calls this under
+		// its projection lock at exactly that moment, so dropping the buffer
+		// here discards precisely the superseded frames and nothing newer.
+		OnRebaseline: queue.Rebaseline,
+		Overflowed:   queue.Overflowed,
 	}
 	// Resolve the workspace filter and register the subscriber atomically under
 	// the manager's subscribe/expand lock. This closes the resolve-then-register
@@ -177,42 +210,65 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// StatusInternalError is terminal there and would surface as a fatal stream
 	// error instead). Keying on the specific authz code keeps this robust if the
 	// callee's error coding changes.
-	initial, unsub, err := mgr.SubscribeWithACL(sub, func() (map[string]bool, error) {
+	// Resolve the workspace filter, register the subscriber, and emit the
+	// bootstrap frame. SubscribeWithACL returns a discriminated SubscribeOutcome:
+	// Mode == ResumeDelta (the post-cursor op tail) when the client's cursor is
+	// still within the compaction window, or Mode == SubscribeInitial (a full
+	// UserMaterialized snapshot) otherwise — including a first-connect with no
+	// cursor. Exactly one bootstrap arm is selected; the first frame on the wire
+	// is therefore exactly one of `delta` or `initial`, never both. The same
+	// resolve callback and subscribeExpandMu serialization apply to both paths.
+	resolve := func() (map[string]bool, error) {
 		return resolveAllowedWorkspacesSetForUser(ctx, h.store, workspaceIDs, user)
-	})
+	}
+	out, err := mgr.SubscribeWithACL(ctx, sub, resumeCursor, resumeEpoch, resolve)
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodePermissionDenied {
 			_ = wsConn.Close(websocket.StatusPolicyViolation, "forbidden")
 		} else {
-			slog.Error("userevents: resolve allowed workspaces failed", "user_id", user.ID, "error", err)
+			slog.Error("userevents: resume setup failed", "user_id", user.ID, "error", err)
 			_ = wsConn.Close(websocket.StatusTryAgainLater, "temporarily unavailable, retry")
 		}
 		return
 	}
-	defer unsub()
-
-	// Stamp the hub-derived client identity so the frontend's
-	// active-client gate has something stable to compare against. The
-	// namespaced derivation (session id → bearer kind/token id → user
-	// id) is shared
-	// with `UpdatePresence` and the manager's presence refcount, so
-	// both the local gate's comparison value and the server's
-	// disconnect-driven cleanup pivot on the same id.
-	initial.SubscriberClientId = sub.ClientID
+	defer out.Unsub()()
 
 	defer func() {
 		_ = wsConn.Close(websocket.StatusNormalClosure, "")
 	}()
 
-	// Send the initial UserMaterialized as the first frame. The initial
-	// payload is per-subscriber-unique (their filter dictates the
-	// materialized rows) so wrap in a fresh MarshaledEvent.
-	initialEvt := crdt.NewMarshaledEvent(&leapmuxv1.WatchUserEvent{
-		Event: &leapmuxv1.WatchUserEvent_Initial{Initial: initial},
-	})
-	if err := writeUserEvent(ctx, wsConn, initialEvt); err != nil {
-		slog.Debug("userevents: write initial failed", "user_id", user.ID, "error", err)
+	// Send the first (and only bootstrap) frame. BOTH arms stamp
+	// subscriber_client_id: it is the frontend active-client gate's only source
+	// of its own identity, and since the client-checkpoint work a resume is the
+	// normal COLD-START path — a refreshed page hydrates from IndexedDB and
+	// resumes, so there is no earlier `initial` frame it could have learned the
+	// id from. (It used to be delta-only-safe on the assumption that a resume
+	// always followed a bootstrap in the same page session; cross-refresh resume
+	// broke that assumption.)
+	//
+	// The hub-derived client identity it stamps is the same namespaced
+	// derivation (session id → bearer kind/token id → user id) that
+	// `UpdatePresence` and the manager's presence refcount use, so the local
+	// gate's comparison value and the server's disconnect-driven cleanup pivot
+	// on one id. userID comes from the authenticated session — the same value
+	// the manager was resolved under.
+	//
+	// Either payload is per-subscriber-unique (their filter dictates the rows),
+	// so it wraps in a fresh MarshaledEvent rather than a shared one.
+	bootstrapEvt := crdt.NewMarshaledEvent(out.Bootstrap(sub.ClientID, userID))
+	if err := writeUserEvent(ctx, wsConn, bootstrapEvt); err != nil {
+		slog.Debug("userevents: write bootstrap failed", "user_id", user.ID, "mode", out.Mode(), "error", err)
 		return
+	}
+
+	// Open the bounded live queue and flush frames that parked during the
+	// subscribe/scan window (before this writer loop). Order: bootstrap
+	// frame (above) → parked live catch-up → steady-state live queue.
+	for _, evt := range queue.Release() {
+		if err := writeUserEvent(ctx, wsConn, evt); err != nil {
+			slog.Debug("userevents: write parked event failed", "user_id", user.ID, "error", err)
+			return
+		}
 	}
 
 	// Drain client-side reads in a goroutine so the WebSocket library
@@ -233,7 +289,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
-		case evt := <-pending:
+		case evt := <-queue.Live():
 			if err := writeUserEvent(ctx, wsConn, evt); err != nil {
 				slog.Debug("userevents: write event failed", "user_id", user.ID, "error", err)
 				return
@@ -255,7 +311,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the channel relay applies.
 //
 // This socket does NOT need the channel relay's queue: the broadcaster
-// already feeds it through a bounded `pending` channel whose Send drops
+// already feeds it through subscriberQueue's bounded live channel, whose Send drops
 // and cancels rather than blocking, so the backlog is bounded at the
 // source and a relayWriter here would only queue behind a queue.
 //

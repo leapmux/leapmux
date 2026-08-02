@@ -120,6 +120,30 @@ func eventToJSON(evt *leapmuxv1.WatchUserEvent) map[string]any {
 			"at_hlc": hlcToJSON(e.EntityRemoved.GetAtHlc()),
 			"entity": removedEntitySummary(e.EntityRemoved),
 		}
+	case *leapmuxv1.WatchUserEvent_Delta:
+		// A ResumeDelta carries an ordered stream of the same WatchUserEvent
+		// frames live Send uses. The CLI currently connects with a nil cursor
+		// (always a full snapshot), but handle the arm so a future resume-aware
+		// `leapmux events` surfaces the frames instead of printing "unknown".
+		frames := make([]map[string]any, 0, len(e.Delta.GetFrames()))
+		for _, frame := range e.Delta.GetFrames() {
+			frames = append(frames, eventToJSON(frame))
+		}
+		return map[string]any{
+			"kind":          "resume_delta",
+			"current_epoch": e.Delta.GetCurrentEpoch(),
+			"max_hlc":       hlcToJSON(e.Delta.GetMaxHlc()),
+			"frames":        frames,
+		}
+	case *leapmuxv1.WatchUserEvent_BatchEnd:
+		// Emitted after EVERY committed batch on the live path, not just on
+		// resume, so leaving this unhandled put one {"kind":"unknown"} line in
+		// the stream per user edit. at_hlc is the batch boundary a resume-aware
+		// consumer advances its cursor on.
+		return map[string]any{
+			"kind":   "batch_end",
+			"at_hlc": hlcToJSON(e.BatchEnd.GetAtHlc()),
+		}
 	case *leapmuxv1.WatchUserEvent_Presence:
 		return map[string]any{
 			"kind":             "presence",

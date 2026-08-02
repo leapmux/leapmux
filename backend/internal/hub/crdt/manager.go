@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -27,6 +28,22 @@ const (
 	HubReservedPrincipal = "hub"
 	// DedupTTL is how long a batch_id stays in user_recent_batch_ids.
 	DedupTTL = 14 * 24 * time.Hour
+	// OpRetentionTTL is how far behind max_hlc the op_retention_watermark
+	// lags: op batches whose last canonical HLC is older than this (relative
+	// to the live max_hlc) may be deleted by maybeCompact, while tombstones
+	// are pruned at the much tighter compaction_watermark (= max_hlc). The
+	// two diverge because tombstone pruning is load-bearing for correctness
+	// (HLC monotonicity, bounded user_state growth), while op-batch deletion
+	// is pure storage optimization — the op log is an append-only history
+	// and replaying a longer tail is sound (each op is idempotent under the
+	// CRDT merge). The retention window is what widens delta-resume beyond a
+	// ~60s reconnect gap to multi-hour gaps (a client refresh after a few
+	// hours still resumes instead of taking a full snapshot), so long as the
+	// post-cursor tail still fits MaxResumeDeltaOps / MaxResumeDeltaBytes —
+	// those budget caps are independent and still force a FALLBACK when the
+	// tail is too large to ship as a delta. 24h is a conservative first
+	// window; pick it against measured per-user op volume before widening.
+	OpRetentionTTL = 24 * time.Hour
 	// PresenceClearGrace is how long the manager waits after a
 	// client's last WS subscription closes before clearing its
 	// presence entries. A reconnect within the grace window cancels
@@ -46,7 +63,86 @@ const (
 	// keeps the worst-case orphan lifetime predictable without adding
 	// observable load.
 	presenceSweepInterval = time.Hour
+	// MaxResumeDeltaOps bounds the op-count budget a SubscribeWithACL replay may
+	// ship as a delta before falling back to a full materialized snapshot. A
+	// reconnecting client whose last-applied HLC is far enough behind that the
+	// post-cursor journal tail exceeds this many ops gets a full `initial`
+	// frame instead -- the delta would be larger than the snapshot it exists
+	// to avoid. Picked well above a single busy session's churn but below the
+	// point where marshaling + writing the tail costs more than materialized.
+	MaxResumeDeltaOps = 5000
+	// MaxResumeDeltaBytes bounds the decoded journal payload a resume may ship
+	// (sum of batch_payload + transitions_payload over the accepted tail).
+	// Op count alone under-budgets after per-batch record snapshots landed in
+	// transitions_payload: a few thousand ops can still exceed the client WS
+	// read limit (UserEventsReadLimit / desktop maxFrameSize). Cap well under
+	// those frame ceilings so an oversized tail falls back to `initial`
+	// instead of reconnect-looping on a frame the client cannot read.
+	//
+	// MEASURED ON SOURCE ROWS, NOT ON THE EMITTED FRAME, so it is approximate
+	// with respect to what actually goes on the wire -- and approximate in the
+	// permissive direction: buildResumeDelta ADDS to the rows it reads (one
+	// BatchEnd per tail batch, synthesized EntityRemoved frames, a fresh AtHlc
+	// stamp on each EntityMaterialized, and a WatchUserEvent envelope per
+	// frame). The budget is checked during a streaming, paged scan, before any
+	// delta exists to measure, which is also what makes it the right place to
+	// bound MEMORY. Nothing here bounds that gap: op count does NOT bound the
+	// transition frames, because a single SetFloatingWindowRegister(workspace_id)
+	// drags a whole subtree into AffectedEntities, so transition entries per batch
+	// are themselves bounded by this byte budget rather than by
+	// MaxResumeDeltaOps. What the wire actually carries is therefore gated
+	// separately and exactly, by MaxResumeDeltaFrameBytes below: buildResumeDelta
+	// runs proto.Size on the BUILT delta as an ADDITIONAL check after this one, so
+	// raising either ceiling cannot silently produce an unreadable frame.
+	MaxResumeDeltaBytes = 4 << 20 // 4 MiB
+	// resumeDeltaEnvelopeHeadroom is what the wire frame adds on top of the
+	// ResumeDelta MaxResumeDeltaFrameBytes measures: the WatchUserEvent oneof
+	// wrapper, the 4-byte length prefix channelwire.WriteFramedBytes prepends,
+	// and the subscriber_client_id + user_id SubscribeOutcome.Bootstrap stamps
+	// onto the delta AFTER buildResumeDelta has sized it. Real overhead is a few
+	// tags, two varint lengths and two ids -- a few hundred bytes. 64 KiB is
+	// deliberate slack (the same figure, for the same reason, as
+	// channelwire.InnerEnvelopeHeadroom) so that adding a field to ResumeDelta or
+	// to the bootstrap stamping cannot quietly push a passing delta over the
+	// read limit.
+	resumeDeltaEnvelopeHeadroom = 64 << 10 // 64 KiB
+	// MaxResumeDeltaFrameBytes is the ceiling on the BUILT ResumeDelta, checked
+	// with proto.Size in buildResumeDelta once the frame stream is assembled.
+	//
+	// Derived from channelwire.UserEventsReadLimit rather than written as its own
+	// number: that limit is what the subscriber's socket enforces
+	// (wsConn.SetReadLimit in ws_userevents.go, and the same value on every Go
+	// consumer via OpenUserEventsWS), and the desktop sidecar's frame ceiling is
+	// that plus 4 MiB, so the read limit is the binding one. A delta past it does
+	// not degrade -- the whole delta is ONE WebSocket message, so the read fails,
+	// the client reconnects with the same cursor, rebuilds the same oversized
+	// frame, and loops with no server-side error. Deriving keeps the gate moving
+	// with the limit it protects instead of drifting from it.
+	MaxResumeDeltaFrameBytes = channelwire.UserEventsReadLimit - resumeDeltaEnvelopeHeadroom
 )
+
+// OpRetentionCutoffPhysicalMs is the HLC physical below which an op batch is
+// eligible for deletion, given wall-clock time now and a retention window ttl.
+//
+// This is the ONE definition of the retention floor. The cross-user sweep
+// (store.CleanupStore.DeleteUserOpBatchesBeforePhysical) deletes rows below
+// it, and Manager.decideResume refuses a resume cursor below it, so the set of
+// rows the sweep may remove and the set of cursors a resume may accept cannot
+// disagree.
+//
+// It returns an HLC physical rather than a wall clock because the cursor lives
+// in that domain. HLC physical is Unix epoch-ms, but it is NOT the local wall
+// clock: Clock.Tick clamps it monotonically and Clock.Observe re-seeds it from
+// persisted state, so it can run permanently ahead of real time after a
+// backward clock correction. Deriving the cutoff FROM now() and comparing it
+// AGAINST HLC physicals is the deliberate arrangement -- the floor advances
+// with real time (so dormant accounts drain) while both sides read one number.
+// Sweeping the committed_at column instead would reintroduce the split, and
+// worse, committed_at is stamped by the DB server, a different machine under
+// Postgres and MySQL.
+func OpRetentionCutoffPhysicalMs(now time.Time, ttl time.Duration) int64 {
+	return now.Add(-ttl).UnixMilli()
+}
 
 // SubmitInput is what callers hand the manager. internal=true skips
 // per-op auth and is required for SetWorkspaceRootNodeOp.
@@ -180,6 +276,20 @@ type Manager struct {
 	// can mutate it before NewManager finishes building the controller.
 	clearGrace time.Duration
 
+	// opRetentionTTL seeds the lag between compaction_watermark and
+	// op_retention_watermark in maybeCompact. Held on Manager so
+	// WithOpRetentionTTL can mutate it before Start, and so tests can shrink
+	// it to milliseconds to assert the retention/drop boundary without
+	// sleeping through the production 24h default.
+	opRetentionTTL time.Duration
+
+	// maxResumeDeltaFrameBytes is the ceiling buildResumeDelta enforces on the
+	// BUILT delta (proto.Size). Held on Manager rather than read from the
+	// constant so WithMaxResumeDeltaFrameBytes can shrink it in tests, which is
+	// the only way to exercise the FALLBACK without materializing a ~16 MiB
+	// fixture.
+	maxResumeDeltaFrameBytes int
+
 	// reconcileNudger, when set, is told which workers hosted a tab a batch
 	// just tombstoned, so each can converge immediately instead of waiting out
 	// its reconciler interval. Nil disables the nudge.
@@ -235,7 +345,21 @@ type Manager struct {
 	nudgeWG sync.WaitGroup
 }
 
+// overflowed reports whether the transport flagged a dropped frame. A nil
+// callback (every non-websocket caller, and every test that does not care)
+// reads as "no overflow".
+func (s *Subscriber) overflowed() bool {
+	return s.Overflowed != nil && s.Overflowed()
+}
+
 // SubscriberFilter narrows the events a subscriber receives.
+//
+// The WorkspaceIDs map is treated as immutable after the filter value is
+// installed on a Subscriber: expand/contract REPLACE the whole Filter via
+// WithWorkspace / WithoutWorkspace rather than mutating the map in place.
+// That makes a plain value copy of SubscriberFilter safe to hand to a
+// long-running resume scan without snapshotFilter — no concurrent map
+// read/write against lifecycle expand/contract.
 type SubscriberFilter struct {
 	WorkspaceIDs map[string]bool
 }
@@ -252,6 +376,56 @@ func (f SubscriberFilter) IsAllowed(workspaceID string) bool {
 		return true
 	}
 	return f.WorkspaceIDs[workspaceID]
+}
+
+// WithWorkspace returns a filter that also allows workspaceID. The receiver
+// is never mutated: a new map is allocated when the key is absent. A nil
+// (allow-all) filter is already allowed for every id, so it is returned
+// unchanged. Callers MUST assign the result (sub.Filter = sub.Filter.WithWorkspace(id)).
+func (f SubscriberFilter) WithWorkspace(workspaceID string) SubscriberFilter {
+	if workspaceID == "" || f.IsAllowed(workspaceID) {
+		return f
+	}
+	// f.WorkspaceIDs is non-nil here (nil would have IsAllowed==true).
+	next := make(map[string]bool, len(f.WorkspaceIDs)+1)
+	for ws, allowed := range f.WorkspaceIDs {
+		next[ws] = allowed
+	}
+	next[workspaceID] = true
+	return SubscriberFilter{WorkspaceIDs: next}
+}
+
+// WithoutWorkspace returns a filter that no longer allows workspaceID. The
+// receiver is never mutated. A nil (allow-all) filter is returned unchanged
+// (contractors only run on concrete ACL maps). Callers MUST assign the result.
+func (f SubscriberFilter) WithoutWorkspace(workspaceID string) SubscriberFilter {
+	if f.WorkspaceIDs == nil {
+		return f
+	}
+	if _, ok := f.WorkspaceIDs[workspaceID]; !ok {
+		return f
+	}
+	next := make(map[string]bool, len(f.WorkspaceIDs))
+	for ws, allowed := range f.WorkspaceIDs {
+		if ws == workspaceID {
+			continue
+		}
+		next[ws] = allowed
+	}
+	return SubscriberFilter{WorkspaceIDs: next}
+}
+
+// NewSubscriberFilter copies ids into a private map so the caller cannot
+// mutate the filter through the input map. nil means allow-all.
+func NewSubscriberFilter(ids map[string]bool) SubscriberFilter {
+	if ids == nil {
+		return SubscriberFilter{}
+	}
+	out := make(map[string]bool, len(ids))
+	for ws, allowed := range ids {
+		out[ws] = allowed
+	}
+	return SubscriberFilter{WorkspaceIDs: out}
 }
 
 // Subscriber is a single open user-event subscription (one connected
@@ -274,6 +448,49 @@ type Subscriber struct {
 	// those IDs when ACLs change.
 	RequestedWorkspaceIDs map[string]bool
 	Filter                SubscriberFilter
+	// resumeSuppressThrough, when non-nil, is the register-time MaxHlc
+	// high-water for a RESUME subscribe. Live batch broadcasts whose
+	// last-op HLC is <= this value are skipped for this subscriber: those
+	// batches are owned by the ResumeDelta journal scan, and delivering
+	// them via broadcast as well would dual-deliver the same catch-up
+	// frames. Set atomically with registration under m.projection (see
+	// SubscribeWithACL); left set for the life of the connection (later
+	// commits always have a strictly greater HLC). Presence / lifecycle
+	// frames bypass this gate (they go through broadcastTo, not sendTo).
+	resumeSuppressThrough *leapmuxv1.HLC
+	// Overflowed, when set, reports that the transport could not buffer a frame
+	// while the resume scan was running.
+	//
+	// The transport used to answer that by tearing the connection down, which
+	// sent the client back with the SAME cursor to rebuild the SAME multi-page
+	// scan -- under the sustained broadcast load that caused the overflow, so it
+	// could overflow again. The loop is bounded (the widening gap eventually
+	// trips MaxResumeDeltaOps and FALLBACKs anyway), but every round is a wasted
+	// multi-page journal scan on a hub already under the load that triggered it.
+	// buildResumeDelta consults this instead and converts the overflow into ONE
+	// snapshot.
+	//
+	// A CALLBACK, like OnRebaseline, rather than a flag on this struct: the
+	// state belongs to the transport's queue, and Subscriber is copied by value
+	// (see cloneSubscriber), which no synchronisation primitive survives.
+	Overflowed func() bool
+	// OnRebaseline, when set, is called at the moment a RESUME registration is
+	// replaced by a FALLBACK one (resumeFallback), while m.projection is held
+	// and BEFORE the materialized baseline is taken.
+	//
+	// It exists because the transport buffers frames it has not written yet.
+	// During the resume scan the subscriber is registered, so live broadcasts
+	// enqueue normally; if the scan then gives up, the snapshot is computed at a
+	// LATER point than those queued frames. Writing them after the snapshot
+	// would apply older entity records on top of newer ones -- and unlike batch
+	// ops, entity_materialized / entity_removed are applied wholesale by the
+	// client with no HLC compare, so nothing corrects it afterwards.
+	//
+	// Called under m.projection precisely so no broadcast can interleave: every
+	// frame queued before this point is superseded by the snapshot, and every
+	// frame after it is newer than the snapshot. Implementations must not block
+	// or re-enter the manager.
+	OnRebaseline func()
 	// Send delivers one event to this subscriber.
 	//
 	// Contract: Send MUST return promptly — implementations either push
@@ -413,6 +630,35 @@ func WithPresenceClearGrace(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.clearGrace = d }
 }
 
+// WithOpRetentionTTL overrides the lag between compaction_watermark and
+// op_retention_watermark (the floor below which op batches may be deleted).
+// Tests use this to shrink the retention window to milliseconds so they can
+// assert the drop/retain boundary and the resume gate without sleeping through
+// the production 24h default (`OpRetentionTTL`).
+//
+// TEST-ONLY, and deliberately not wired to production config: it shifts THIS
+// manager's compaction lag and resume gate, but the cross-user retention sweep
+// in the cleanup job reads the `OpRetentionTTL` constant directly and has no
+// per-manager reach (a dormant user has no resident manager at all -- that is
+// the case the sweep exists for). Widening the window here without widening
+// the constant would admit cursors whose rows the sweep has already deleted.
+func WithOpRetentionTTL(d time.Duration) ManagerOption {
+	return func(m *Manager) { m.opRetentionTTL = d }
+}
+
+// WithMaxResumeDeltaFrameBytes overrides the ceiling buildResumeDelta enforces
+// on the BUILT ResumeDelta (`MaxResumeDeltaFrameBytes`).
+//
+// TEST-ONLY, and deliberately not wired to production config: the production
+// value is DERIVED from channelwire.UserEventsReadLimit, the limit every
+// subscriber's socket actually enforces, so an operator-tunable copy could only
+// disagree with the socket it exists to protect. Tests shrink it to a few
+// hundred bytes to assert the over-ceiling FALLBACK without building a ~16 MiB
+// fixture.
+func WithMaxResumeDeltaFrameBytes(n int) ManagerOption {
+	return func(m *Manager) { m.maxResumeDeltaFrameBytes = n }
+}
+
 // truncateRunes returns the first n runes of s, never splitting one.
 func truncateRunes(s string, n int) string {
 	if len(s) <= n {
@@ -448,21 +694,23 @@ func NewManager(owner userid.UserID, journal Journal, auth AuthChecker, logger *
 	// every hub-internal commit for that user rather than just looking wrong.
 	hubID := HubReservedPrincipal + "-" + truncateRunes(owner.String(), 8)
 	m := &Manager{
-		owner:       owner,
-		clock:       NewClock("hub-canonical"),
-		hubClientID: hubID,
-		auth:        auth,
-		journal:     journal,
-		now:         now,
-		logger:      logger.With("user_id", owner.String()),
-		clearGrace:  PresenceClearGrace,
-		submitCh:    make(chan submitJob, 64),
-		internalCh:  make(chan submitJob, 16),
-		seedCh:      make(chan seedJob),
-		startedChan: make(chan struct{}),
-		stop:        make(chan struct{}),
-		done:        make(chan struct{}),
-		subscribers: newSubscriberController(),
+		owner:                    owner,
+		clock:                    NewClock("hub-canonical"),
+		hubClientID:              hubID,
+		auth:                     auth,
+		journal:                  journal,
+		now:                      now,
+		logger:                   logger.With("user_id", owner.String()),
+		clearGrace:               PresenceClearGrace,
+		opRetentionTTL:           OpRetentionTTL,
+		maxResumeDeltaFrameBytes: MaxResumeDeltaFrameBytes,
+		submitCh:                 make(chan submitJob, 64),
+		internalCh:               make(chan submitJob, 16),
+		seedCh:                   make(chan seedJob),
+		startedChan:              make(chan struct{}),
+		stop:                     make(chan struct{}),
+		done:                     make(chan struct{}),
+		subscribers:              newSubscriberController(),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -761,96 +1009,6 @@ func (m *Manager) HeartbeatPresence(ctx context.Context, workspaceID, clientID s
 	return m.presenceCtl.PostHeartbeat(ctx, workspaceID, clientID)
 }
 
-// SubscribeWithACL resolves a subscriber's workspace filter and registers it
-// atomically under subscribeExpandMu, closing the resolve-then-register TOCTOU.
-//
-// resolve reads the DB ACL and returns the allowed workspace set; it runs while
-// this holds subscribeExpandMu, the SAME lock ExpandSubscribersForWorkspace
-// holds across a workspace-create expansion. That serialization means a
-// concurrent create of a workspace the user owns is ordered either FULLY before
-// resolve() -- so resolve reads the post-commit ACL and the workspace is already
-// included -- or FULLY after this Add -- so the create's expand pass sees the
-// now-registered subscriber. Without it, a filter resolved from the pre-commit
-// ACL could be Added after the whole expansion finished, and the expand (which
-// only visits already-registered subscribers) would miss it, so the subscriber
-// would never see the new workspace until it reconnected.
-//
-// resolve's error is returned unregistered so the caller can reject the
-// connection before streaming any events. Lock order
-// subscribeExpandMu -> projection -> m.mu is preserved because Subscribe
-// (called here) takes only projection and m.mu.
-func (m *Manager) SubscribeWithACL(sub *Subscriber, resolve func() (map[string]bool, error)) (initial *leapmuxv1.UserMaterialized, unsub func(), err error) {
-	m.subscribeExpandMu.Lock()
-	defer m.subscribeExpandMu.Unlock()
-	allowed, err := resolve()
-	if err != nil {
-		return nil, nil, err
-	}
-	sub.Filter.WorkspaceIDs = allowed
-	initial, unsub = m.Subscribe(sub)
-	return initial, unsub, nil
-}
-
-// Subscribe attaches a new subscriber. Returns an unsubscribe
-// callback. Bootstrap is sent inline (the caller's stream layer
-// formats it).
-//
-// The production userevents path registers through SubscribeWithACL, which
-// resolves the filter and calls this Add while holding subscribeExpandMu so a
-// concurrent workspace-create expansion cannot leave a straggler with a stale
-// pre-commit filter (see SubscribeWithACL). A direct Subscribe (tests, or a
-// caller that has already resolved a filter under no such lock) does NOT get
-// that guarantee.
-//
-// Subscribers with a non-empty ClientID contribute to a refcount keyed
-// on that id. The first Subscribe cancels any pending deferred clear;
-// the last unsub schedules one PresenceClearGrace into the future. A
-// reconnect inside the grace window keeps the client's presence
-// entries intact so the active-client gate doesn't flicker.
-func (m *Manager) Subscribe(sub *Subscriber) (initial *leapmuxv1.UserMaterialized, unsub func()) {
-	// The whole sequence runs under m.projection -- the same lock broadcasts
-	// take -- so a subscriber's registration + initial snapshot are atomic with
-	// respect to any concurrent broadcast: the filter captured by Add and the
-	// materialized baseline can never straddle a filter mutation. (The
-	// production path must go through SubscribeWithACL rather than resolving a
-	// filter and Adding it here unserialized -- a workspace-create expansion
-	// only visits already-registered subscribers; see SubscribeWithACL.) The
-	// cost is that the O(N) materializedLocked clone below is serialized
-	// against broadcasts for that duration (a large-user-doc connect briefly stalls
-	// the user's commit/broadcast pipeline); relaxing it -- computing the
-	// snapshot outside m.projection -- would reopen exactly that straddle
-	// window, so it is held deliberately.
-	//
-	// Within that, m.mu is only RLocked for the clone. materializedLocked walks
-	// every visible node/tab/floating-window for the subscriber's filter; taking
-	// the state write lock would block every concurrent commit, whereas the RLock
-	// only contends the brief state-swap. Subscriber visibility is identical
-	// either way: by the time we take the state RLock the subscriber is in
-	// subscribers, so it sees the next broadcast, and the initial snapshot
-	// computed under RLock is strictly newer-than-or-equal to whatever a commit
-	// that lost the race would have produced.
-	m.projection.Lock()
-	initialFilter := m.subscribers.Add(sub)
-	m.presenceCtl.OnConnect(sub.ClientID)
-
-	m.mu.RLock()
-	initial = m.materializedLocked(initialFilter)
-	m.mu.RUnlock()
-	m.projection.Unlock()
-	// Idempotent unsub: a caller that invokes it twice (an error-path cleanup
-	// racing a deferred cleanup, or the partway-through-unsubscribe teardown the
-	// registry hardens against) must not decrement the presence refcount twice --
-	// that would underflow the count and prematurely clear a client that still has
-	// live connections, flickering the active-client gate.
-	var unsubOnce sync.Once
-	return initial, func() {
-		unsubOnce.Do(func() {
-			m.subscribers.Remove(sub)
-			m.presenceCtl.OnDisconnect(sub.ClientID)
-		})
-	}
-}
-
 // Materialized returns the public projection filtered to a given
 // allowed-set (used by tests / one-shot callers).
 func (m *Manager) Materialized(filter SubscriberFilter) *leapmuxv1.UserMaterialized {
@@ -1063,7 +1221,7 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 	preState := m.state
 
 	// 11. Commit: journal + index views + state advance, all in one tx.
-	if err := m.commit(ctx, in, batch, working); err != nil {
+	if err := m.commit(ctx, in, batch, working, res); err != nil {
 		// A commit failure is a transient store error (the journal DB write) --
 		// the batch already passed ValidateBatch, so the body-hash step inside
 		// commit cannot fail here in practice. Surface it as a retryable Submit
@@ -1236,7 +1394,7 @@ func (m *Manager) runDedup(ctx context.Context, in SubmitInput, batch *leapmuxv1
 // state stays at `m.state` and the canonical HLCs minted for this batch
 // are simply discarded (they're strictly greater than any future tick,
 // so no client can observe them).
-func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.OpBatch, working *leapmuxv1.UserCrdtState) error {
+func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.OpBatch, working *leapmuxv1.UserCrdtState, res ValidationResult) error {
 	// DiffProjectionForBatch skips the per-tab chain walks for tabs the
 	// batch cannot possibly transition. Non-structural batches (the
 	// common case: user-triggered tab open/move/close) re-project only
@@ -1250,6 +1408,12 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 	if err != nil {
 		return fmt.Errorf("hash batch body: %w", err)
 	}
+	// Persist the per-batch AffectedEntities (the {pre, post} workspace
+	// transitions ValidateBatch computed) alongside the OpBatch. The resume
+	// path decodes them to replay the SAME pre/post stable-visibility
+	// classification the live broadcast applies to this very batch, so the two
+	// catch-up paths cannot drift (see buildResumeDelta).
+	transitions := AffectedEntitiesToProto(res.AffectedEntities, working)
 	if err := m.journal.CommitBatch(ctx, CommitBatch{
 		UserID:      m.owner.String(),
 		Batch:       batch,
@@ -1262,7 +1426,8 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 			OpCount:           int64(len(batch.GetOps())),
 			ExpiresAt:         m.now().Add(DedupTTL),
 		},
-		IndexDiff: diff,
+		IndexDiff:   diff,
+		Transitions: transitions,
 	}); err != nil {
 		return fmt.Errorf("commit batch: %w", err)
 	}

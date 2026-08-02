@@ -578,6 +578,20 @@ type CleanupStore interface {
 	HardDeleteWorkersBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteExpiredRegistrationKeysBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	HardDeleteUsersBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// DeleteUserOpBatchesBeforePhysical hard-deletes CRDT op batches whose HLC
+	// physical is below cutoffPhysicalMs, across all users, in bounded passes
+	// (the caller drains until a pass deletes nothing). It is the retention
+	// backstop for crdt.OpRetentionTTL: Manager.maybeCompact deletes by HLC but
+	// only runs while a user is committing, so a dormant account would otherwise
+	// retain its final retention window of batches indefinitely.
+	//
+	// The cutoff is an HLC physical rather than a wall clock so this deletes
+	// EXACTLY the set Manager.decideResume refuses. Sweeping the committed_at
+	// column instead would put the two floors in different time domains -- the
+	// hub's monotonically-clamped HLC versus the DB server's wall clock -- and
+	// any skew between them lets this delete rows a live cursor still passes,
+	// which ListUserOpBatchesAfter reports as a short tail rather than an error.
+	DeleteUserOpBatchesBeforePhysical(ctx context.Context, cutoffPhysicalMs int64) (int64, error)
 	// ClearStalePendingEmails wipes pending_email columns for users whose
 	// pending_email_expires_at is older than cutoff. Frees up index slots
 	// and ensures stale codes don't leak into future lookups.

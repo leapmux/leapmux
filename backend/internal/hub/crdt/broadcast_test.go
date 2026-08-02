@@ -286,7 +286,7 @@ func TestBroadcast_AlwaysVisible_ForwardsRawOps(t *testing.T) {
 // the workspace membership ops (SetWorkspaceRegister / TombstoneWorkspace) —
 // which replaced the old out-of-band MutateInternal and now flow through the
 // serialized submit pipeline — are broadcast to subscribers that admit the
-// workspace. The EntityKindWorkspaceRoot arm of batchVisibleOpsEvent keeps an
+// workspace. The EntityKindWorkspaceRoot arm of opVisibleForSubscriber keeps an
 // op when EITHER pre or post is visible (distinct from the
 // preVisible && postVisible rule for other entities), so a subscriber whose
 // filter contains the workspace must receive both ops as raw batch ops. A

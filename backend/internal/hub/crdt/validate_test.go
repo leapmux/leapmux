@@ -278,6 +278,48 @@ func TestValidate_ValueDomain_OpacityOutOfRange(t *testing.T) {
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason)
 }
 
+// An op whose target carries an EMPTY id must be rejected at submit time.
+//
+// Nothing downstream tolerates one, and nothing used to catch it: OpTarget
+// returns EntityRef{Kind: Node, NodeID: ""} without complaint, and the
+// completeness check signals failure by RETURNING the offending entity id, so an
+// empty id read as success. The batch committed and broadcast normally; the
+// damage appeared later and elsewhere, when AffectedEntitiesToProto wrote the
+// empty identity into transitions_payload, transitionEntryRef refused to decode
+// it, and MissingTransitionOp reported the op as uncovered -- so every
+// subsequent resume for that user failed with ErrResumeCorrupt and logged a
+// corrupt journal row, blaming storage for an ordinary bad op. One such batch
+// disabled delta-resume for the entire retention window.
+func TestValidate_ValueDomain_EmptyTargetID(t *testing.T) {
+	pre := seedWorkspaceWithRoot("w1", "root1")
+	for _, tc := range []struct {
+		name string
+		op   *leapmuxv1.CrdtOp
+	}{
+		{"node", stamped(&leapmuxv1.SetNodeRegisterOp{
+			NodeId: "",
+			Field:  &leapmuxv1.SetNodeRegisterOp_ParentId{ParentId: "root1"},
+		}, hlcAt(10, 0, "a"))},
+		{"tab", stamped(&leapmuxv1.SetTabRegisterOp{
+			TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+			TabId:   "",
+			Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
+		}, hlcAt(10, 1, "a"))},
+		{"floating window", stamped(&leapmuxv1.SetFloatingWindowRegisterOp{
+			WindowId: "",
+			Field:    &leapmuxv1.SetFloatingWindowRegisterOp_Opacity{Opacity: 0.5},
+		}, hlcAt(10, 2, "a"))},
+		{"tombstone node", stamped(&leapmuxv1.TombstoneNodeOp{NodeId: ""}, hlcAt(10, 3, "a"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tc.op}, true, "p1", allowAll{})
+			assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN, res.Reason,
+				"an unnamed target must be refused at submit, not surface as a corrupt journal row on every later resume")
+			assert.Equal(t, tc.op.GetOpId(), res.OffendingOpID)
+		})
+	}
+}
+
 // TestValidate_WorkerRef_AcceptsAccessibleWorker proves the happy
 // path: a SetTabRegister(worker_id=X) where the principal can use X
 // commits without trouble. Pairs with the rejection test below so

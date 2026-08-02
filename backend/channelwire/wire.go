@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/coder/websocket"
@@ -236,20 +237,177 @@ func HTTPToWS(rawURL string) string {
 // UserEventsURL builds the per-user WebSocket URL the hub serves at
 // /ws/userevents. baseURL is an http(s) URL; it is rewritten to ws(s)
 // via HTTPToWS. workspaceIDs is optional — when non-empty it scopes the
-// subscription to those workspaces. The authenticated session implies
-// the user; no user_id query parameter is required. Used by every
+// subscription to those workspaces. The authenticated session implies the
+// user; no user_id query parameter is required. Used by every
 // client that opens the user-events feed (desktop relay, remote CLI,
 // worker-side relay) so the query-string shape stays consistent.
-func UserEventsURL(baseURL string, workspaceIDs []string) string {
+//
+// cursor is the client's last-applied canonical HLC (nil on a first connect,
+// which makes the hub send a full snapshot); epoch is the current_epoch it saw
+// it under (0 when there is no cursor). The hub falls back to a full snapshot
+// when the cursor is nil/zero or at/below the op-retention watermark (the
+// lagging floor decideResume actually gates on -- NOT compaction_watermark,
+// which always equals max_hlc and would reject every cursor).
+func UserEventsURL(baseURL string, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) string {
 	q := url.Values{}
 	if len(workspaceIDs) > 0 {
 		q.Set("workspace_ids", strings.Join(workspaceIDs, ","))
+	}
+	// Gate on the DECODER's own accept rule, not the weaker all-zero test.
+	// hlcIsZero only rejects {0,0,""}, but DecodeResumeHLC rejects any
+	// physical <= 0 (the shared corpus pins `{"raw": "0.4.c", "ok": false}`), so
+	// a cursor like {Physical: 0, Logical: 7, ClientId: "c"} used to be written
+	// onto the URL and then 400'd by the hub -- an error where the intent was to
+	// omit the cursor and degrade to a full snapshot. Asking the decoder keeps
+	// the encode and decode sides one rule instead of two that must agree.
+	if resumeCursorEncodable(cursor) {
+		q.Set("resume_after_hlc", EncodeResumeHLC(cursor))
+		q.Set("resume_epoch", strconv.FormatInt(epoch, 10))
 	}
 	qs := q.Encode()
 	if qs == "" {
 		return HTTPToWS(baseURL) + "/ws/userevents"
 	}
 	return HTTPToWS(baseURL) + "/ws/userevents?" + qs
+}
+
+// EncodeResumeHLC renders an HLC as the "<physical>.<logical>.<client_id>"
+// triple carried in the resume_after_hlc query param. Inverse of
+// DecodeResumeHLC.
+func EncodeResumeHLC(h *leapmuxv1.HLC) string {
+	return strconv.FormatInt(h.GetPhysical(), 10) + "." +
+		strconv.FormatInt(h.GetLogical(), 10) + "." +
+		h.GetClientId()
+}
+
+// DecodeResumeHLC parses the resume_after_hlc query param back into an HLC,
+// returning nil for malformed input (non-numeric physical/logical, a
+// `+`-signed number, missing client_id, or a client_id longer than 128 chars
+// as a sanity bound). Inverse of EncodeResumeHLC.
+//
+// nil is NOT a silent degrade: the only caller, ParseResumeCursor, turns it
+// into an error that the hub answers with HTTP 400 and the desktop sidecar
+// answers with a rejected relay-open RPC. A malformed cursor is a client bug,
+// and failing loudly beats limping along on full snapshots forever.
+//
+// plusSigned is rejected even though strconv.ParseInt accepts it, because the
+// TS decoder (frontend/src/lib/crdt/hlc.ts parseHlcWire) does not — and neither
+// encoder ever emits it. Silently accepting on one side only would mean a
+// cursor the hub honours but the client considers corrupt (or vice versa).
+// testdata/hlc_wire_corpus.json pins the agreed grammar from both languages.
+func DecodeResumeHLC(raw string) *leapmuxv1.HLC {
+	dot1 := strings.IndexByte(raw, '.')
+	if dot1 <= 0 {
+		return nil
+	}
+	dot2 := strings.IndexByte(raw[dot1+1:], '.')
+	if dot2 <= 0 {
+		return nil
+	}
+	dot2 += dot1 + 1
+	physicalRaw, logicalRaw := raw[:dot1], raw[dot1+1:dot2]
+	if plusSigned(physicalRaw) || plusSigned(logicalRaw) {
+		return nil
+	}
+	physical, err := strconv.ParseInt(physicalRaw, 10, 64)
+	if err != nil || physical <= 0 {
+		return nil
+	}
+	logical, err := strconv.ParseInt(logicalRaw, 10, 64)
+	if err != nil || logical < 0 {
+		return nil
+	}
+	clientID := raw[dot2+1:]
+	if clientID == "" || len(clientID) > 128 {
+		return nil
+	}
+	return &leapmuxv1.HLC{Physical: physical, Logical: logical, ClientId: clientID}
+}
+
+// ParseResumeCursor validates a (resume_after_hlc, resume_epoch) pair from its
+// raw wire strings into a cursor HLC + epoch. The single authority for "what
+// counts as a well-formed cursor" so the hub (URL query params) and the desktop
+// sidecar (proto fields) cannot drift: both decode the same two strings and
+// apply the same strictness (a malformed cursor is a client bug, not a legacy
+// client — callers surface the error rather than silently degrading).
+//
+// Both empty → (nil, 0, nil): a first connect. resume_epoch without a matching
+// resume_after_hlc, or either field present-but-malformed, returns an error.
+//
+// The epoch is domain-checked, not merely parsed. `current_epoch` is
+// `NOT NULL DEFAULT 1` in every dialect and only ever increments, so zero and
+// negative are not values the hub can hold — accepting them would let a client
+// bug (a serializer that emits 0 for "unset") sail past this gate and fail
+// silently downstream instead, where `decideResume`'s epoch equality just
+// misses and degrades that client to a full snapshot on every single connect,
+// forever, with nothing logged. That is precisely the "limping along on full
+// snapshots" outcome this function exists to turn into a loud 400.
+func ParseResumeCursor(hlcRaw, epochRaw string) (cursor *leapmuxv1.HLC, epoch int64, err error) {
+	if hlcRaw == "" {
+		if epochRaw != "" {
+			return nil, 0, fmt.Errorf("resume_epoch requires resume_after_hlc")
+		}
+		return nil, 0, nil
+	}
+	cursor = DecodeResumeHLC(hlcRaw)
+	if cursor == nil {
+		return nil, 0, fmt.Errorf("malformed resume_after_hlc %q", hlcRaw)
+	}
+	if epochRaw == "" {
+		// resume_after_hlc is present, so resume_epoch is required. A bare
+		// ParseInt("") would report "malformed" for an absent value, misdirecting
+		// debugging.
+		return nil, 0, fmt.Errorf("resume_epoch required with resume_after_hlc")
+	}
+	// plusSigned for the same reason DecodeResumeHLC rejects it: ParseInt accepts
+	// "+7" but neither producer emits it (both stringify a bigint), so allowing
+	// it here would make this decoder laxer than the TS one it must match.
+	if plusSigned(epochRaw) {
+		return nil, 0, fmt.Errorf("malformed resume_epoch %q", epochRaw)
+	}
+	e, perr := strconv.ParseInt(epochRaw, 10, 64)
+	if perr != nil {
+		return nil, 0, fmt.Errorf("malformed resume_epoch %q", epochRaw)
+	}
+	if e <= 0 {
+		return nil, 0, fmt.Errorf("out-of-range resume_epoch %q: epochs start at 1", epochRaw)
+	}
+	return cursor, e, nil
+}
+
+// ParseResumeCursorFromQuery extracts the resume params from a URL query and
+// validates them via ParseResumeCursor.
+//
+// It lives HERE, next to UserEventsURL, because UserEventsURL is what WRITES
+// these two keys -- so the reader and the writer of the query-param names are
+// one file, and a rename cannot land on one side only. It previously sat in the
+// hub's service package under the name `ParseResumeCursor`, shadowing the
+// function it delegated to and putting the key literals two packages away from
+// their producer.
+func ParseResumeCursorFromQuery(q url.Values) (*leapmuxv1.HLC, int64, error) {
+	return ParseResumeCursor(q.Get("resume_after_hlc"), q.Get("resume_epoch"))
+}
+
+// plusSigned reports whether s carries an explicit leading `+`.
+// strconv.ParseInt accepts that form; the TS decoder's `^-?\d+$` does not, and
+// no encoder emits it. Rejecting here keeps one grammar across both languages.
+func plusSigned(s string) bool {
+	return len(s) > 0 && s[0] == '+'
+}
+
+// resumeCursorEncodable reports whether `cursor` would survive the round trip
+// through DecodeResumeHLC -- i.e. whether putting it on the wire produces a
+// cursor the hub will accept rather than a 400.
+//
+// Defined SOLELY in terms of the decoder so the two can never diverge: any rule
+// DecodeResumeHLC gains is automatically honoured here. That is also why there is
+// no separate nil/zero pre-test -- EncodeResumeHLC is nil-safe (it reads the
+// cursor through generated getters) and DecodeResumeHLC already rejects
+// physical <= 0 and an empty client id, so the ordinary "first connect" nil/zero
+// cursor falls out as false without a second, hand-maintained predicate to keep
+// in sync.
+func resumeCursorEncodable(cursor *leapmuxv1.HLC) bool {
+	return DecodeResumeHLC(EncodeResumeHLC(cursor)) != nil
 }
 
 // WriteFramedBytes writes a length-prefixed binary frame to a
@@ -392,17 +550,17 @@ const UserEventsReadLimit = 16 * 1024 * 1024
 // `bearer` is added as "Authorization: Bearer <bearer>". `httpClient`
 // may be nil; pass one when the caller's transport requires
 // unix/npipe dialers or shared HTTP/2 settings.
-func OpenUserEventsWS(ctx context.Context, httpClient *http.Client, hubURL, bearer string, workspaceIDs []string) (*websocket.Conn, error) {
+func OpenUserEventsWS(ctx context.Context, httpClient *http.Client, hubURL, bearer string, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
 	header := http.Header{}
 	if bearer != "" {
 		header.Set("Authorization", "Bearer "+bearer)
 	}
-	return OpenUserEventsWSWithHeader(ctx, httpClient, hubURL, header, workspaceIDs)
+	return OpenUserEventsWSWithHeader(ctx, httpClient, hubURL, header, workspaceIDs, cursor, epoch)
 }
 
 // OpenUserEventsWSWithHeader is OpenUserEventsWS for callers whose authentication
 // is already represented by HTTP headers, such as the desktop cookie jar.
-func OpenUserEventsWSWithHeader(ctx context.Context, httpClient *http.Client, hubURL string, header http.Header, workspaceIDs []string) (*websocket.Conn, error) {
+func OpenUserEventsWSWithHeader(ctx context.Context, httpClient *http.Client, hubURL string, header http.Header, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
 	opts := &websocket.DialOptions{
 		Subprotocols: []string{"userevents-relay"},
 		HTTPHeader:   header.Clone(),
@@ -410,7 +568,7 @@ func OpenUserEventsWSWithHeader(ctx context.Context, httpClient *http.Client, hu
 	if httpClient != nil {
 		opts.HTTPClient = httpClient
 	}
-	ws, _, err := websocket.Dial(ctx, UserEventsURL(hubURL, workspaceIDs), opts)
+	ws, _, err := websocket.Dial(ctx, UserEventsURL(hubURL, workspaceIDs, cursor, epoch), opts)
 	if err != nil {
 		return nil, fmt.Errorf("dial /ws/userevents: %w", err)
 	}

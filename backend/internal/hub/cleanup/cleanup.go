@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/periodic"
 )
@@ -14,6 +15,9 @@ const (
 	cleanupRetention               = 7 * 24 * time.Hour
 	cleanupJitter                  = 5 * time.Minute
 	maxRevocationCompactionBatches = 100
+	// Bounded like maxRevocationCompactionBatches so one pass cannot monopolize
+	// the cleanup goroutine; the next tick picks up whatever is left.
+	maxOpBatchSweepBatches = 100
 )
 
 // StartLoop starts a background goroutine that periodically hard-deletes
@@ -56,29 +60,57 @@ func run(ctx context.Context, st store.Store) {
 	// Expired delegation tokens (TTL passed without an explicit revoke)
 	// are also worth pruning eagerly since they accumulate one-per-spawn.
 	cleanupStep("expired delegation tokens", func() (int64, error) { return cs.DeleteExpiredDelegationTokensBefore(ctx, now) })
+	// CRDT op-batch retention. Manager.maybeCompact deletes by HLC on the commit
+	// path, but its tick short-circuits once compaction_watermark reaches
+	// max_hlc -- so an account that stops being used keeps its final
+	// OpRetentionTTL of batches (and their transitions_payload record
+	// snapshots) forever. Drain that tail here on the shared schedule.
+	//
+	// The cutoff is expressed as an HLC physical, the SAME quantity
+	// decideResume gates the resume cursor on, so this deletes exactly the set
+	// a resume would refuse. Passing a wall clock instead would split one
+	// invariant across two time domains; see the query's doc for what that
+	// costs.
+	opBatchCutoff := crdt.OpRetentionCutoffPhysicalMs(now, crdt.OpRetentionTTL)
+	cleanupStep("crdt op batches", func() (int64, error) {
+		return drainUntilEmpty(ctx, maxOpBatchSweepBatches, func() (int64, error) {
+			return cs.DeleteUserOpBatchesBeforePhysical(ctx, opBatchCutoff)
+		})
+	})
 	cleanupStep("published revocation events", func() (int64, error) {
-		var total int64
-		for range maxRevocationCompactionBatches {
-			if ctx.Err() != nil {
-				return total, nil
-			}
-			deleted, err := cs.CompactPublishedRevocationEvents(ctx, store.CompactRevocationEventsParams{
+		return drainUntilEmpty(ctx, maxRevocationCompactionBatches, func() (int64, error) {
+			return cs.CompactPublishedRevocationEvents(ctx, store.CompactRevocationEventsParams{
 				Cutoff: cutoff,
 			})
-			total += deleted
-			// Drain until a batch deletes nothing rather than stopping on a partial
-			// page. The delete query caps each batch at its own internal LIMIT;
-			// terminating on deleted==0 keeps this loop correct no matter what that
-			// page size is, instead of assuming it equals the shared CleanupBatchLimit
-			// constant -- which is a separate source of truth that could silently
-			// drift from the SQL LIMIT and either stop compaction early (a slow leak)
-			// or fire an extra no-op query.
-			if err != nil || deleted == 0 {
-				return total, err
-			}
-		}
-		return total, nil
+		})
 	})
+}
+
+// drainUntilEmpty runs a paged delete until it deletes nothing, a pass fails, the
+// context is cancelled, or maxPasses is reached, and reports the running total.
+//
+// Terminating on deleted==0 rather than on a short page keeps every caller
+// correct no matter what its query's internal LIMIT is, instead of duplicating
+// that page size as a second source of truth in Go -- which could silently drift
+// from the SQL and either stop the sweep early (a slow leak) or fire an extra
+// no-op query. maxPasses is the runaway bound, not the expected pass count.
+//
+// A cancelled context returns the total WITHOUT an error: the rows already
+// deleted are committed and the remainder is picked up by the next scheduled
+// sweep, so shutdown mid-drain is a pause, not a failure worth logging.
+func drainUntilEmpty(ctx context.Context, maxPasses int, pass func() (int64, error)) (int64, error) {
+	var total int64
+	for range maxPasses {
+		if ctx.Err() != nil {
+			return total, nil
+		}
+		deleted, err := pass()
+		total += deleted
+		if err != nil || deleted == 0 {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
 func cleanupStep(name string, fn func() (int64, error)) {

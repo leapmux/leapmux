@@ -1,3 +1,4 @@
+import type { UserEventsHook } from './useUserEvents'
 import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
 import { create, toBinary } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
@@ -22,6 +23,7 @@ import {
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { KEY_USER_EVENTS_RELAY_SEQ, localStorageGet, localStorageSet } from '~/lib/browserStorage'
+import { isStatePopulated } from '~/lib/crdt/pendingOps'
 import { createActiveClientStore } from '~/lib/presence/activeClient'
 import { nextUserEventsRelayId, useUserEvents } from './useUserEvents'
 
@@ -41,6 +43,10 @@ const bridge = vi.hoisted(() => ({
   openCalls: 0,
   closeCalls: 0,
   openedRelayIds: [] as number[],
+  // Resume token handed to each relay open, so the DESKTOP branch's cursor
+  // threading is assertable. The fake used to accept only `relayId`, silently
+  // discarding the token -- dropping it in the hook would have shipped green.
+  openedResumeTokens: [] as unknown[],
   closedRelayIds: [] as number[],
   // When true, onEvent registers the listener synchronously (as Rust does) but
   // leaves its promise pending until releaseOnEvent() -- the real registration gap,
@@ -75,9 +81,10 @@ vi.mock('~/api/platformBridge', () => ({
         bridge.pendingOnEvent.push(() => resolve(unlisten))
       })
     },
-    openUserEventsRelay: async (relayId: number) => {
+    openUserEventsRelay: async (relayId: number, _workspaceIds?: string[], resume?: unknown) => {
       bridge.openCalls++
       bridge.openedRelayIds.push(relayId)
+      bridge.openedResumeTokens.push(resume)
     },
     closeUserEventsRelay: async (relayId: number) => {
       bridge.closeCalls++
@@ -98,16 +105,65 @@ interface FakePending {
   consumeRemote: ReturnType<typeof vi.fn>
   consumeEntityMaterialized: ReturnType<typeof vi.fn>
   consumeEntityRemoved: ReturnType<typeof vi.fn>
+  applyDelta: ReturnType<typeof vi.fn>
+  consumeBatchEnd: ReturnType<typeof vi.fn>
   clock: { observe: ReturnType<typeof vi.fn> }
+  isConfirmedPopulated: () => boolean
+  // The refresh-guard reads confirmedState.workspaces/nodes/tabs/floatingWindows
+  // via isConfirmedPopulated() to decide whether a resume cursor is safe to
+  // send. Populated = an in-session reconnect (state survives in memory);
+  // empty/absent = a cold start.
+  state: {
+    confirmedState: { workspaces: Record<string, unknown>, nodes: Record<string, unknown>, tabs: Record<string, unknown>, floatingWindows: Record<string, unknown> }
+    resumeWatermark?: { physical: bigint, logical: bigint, clientId: string }
+    currentEpoch: bigint
+  }
 }
 
-function makeFakePending(opts?: { droppedPending?: boolean }): FakePending {
+function makeFakePending(opts?: {
+  droppedPending?: boolean
+  populated?: boolean
+  populateMap?: 'workspaces' | 'nodes' | 'tabs' | 'floatingWindows'
+  /** The in-memory resume cursor. This IS the only cursor source now. */
+  watermark?: { physical: bigint, logical: bigint, clientId: string }
+  epoch?: bigint
+}): FakePending {
+  // `populated` simulates an in-session reconnect: confirmedState already
+  // holds an entity, so the refresh-guard sends the resume cursor. `populateMap`
+  // targets a specific map (defaults to workspaces) so the OR over all four
+  // maps (now centralized in isConfirmedPopulated) can be pinned per-map.
+  const map = opts?.populateMap ?? 'workspaces'
+  const entry = opts?.populated ? { x1: {} } : {}
+  const confirmedState = {
+    workspaces: map === 'workspaces' ? entry : {},
+    nodes: map === 'nodes' ? entry : {},
+    tabs: map === 'tabs' ? entry : {},
+    floatingWindows: map === 'floatingWindows' ? entry : {},
+  }
   return {
     bootstrap: vi.fn(),
     consumeRemote: vi.fn(),
     consumeEntityMaterialized: vi.fn(),
     consumeEntityRemoved: vi.fn(() => ({ droppedPending: opts?.droppedPending ?? false })),
+    applyDelta: vi.fn(() => ({ droppedPending: opts?.droppedPending ?? false })),
+    consumeBatchEnd: vi.fn(),
     clock: { observe: vi.fn() },
+    // Delegates to the PRODUCTION predicate rather than re-implementing it.
+    // A hand-copied mirror meant every cursor-suppression case below asserted
+    // against the fake's own branch: the real rule could gain a fifth map or
+    // invert a condition and this suite would stay green while the refresh
+    // guard it exists to pin was broken.
+    isConfirmedPopulated: () => isStatePopulated(confirmedState),
+    state: {
+      confirmedState,
+      // Carried on the fake because production always carries them: every path
+      // that populates confirmedState (bootstrap, hydrate, an applied frame)
+      // also seeds the watermark and epoch. A fake that omitted them described a
+      // state the app never reaches, and let a cursor-source test pass against a
+      // shape that could not occur.
+      resumeWatermark: opts?.watermark,
+      currentEpoch: opts?.epoch ?? 0n,
+    },
   }
 }
 
@@ -170,6 +226,7 @@ beforeEach(() => {
   bridge.openCalls = 0
   bridge.closeCalls = 0
   bridge.openedRelayIds.length = 0
+  bridge.openedResumeTokens.length = 0
   bridge.closedRelayIds.length = 0
   bridge.deferOnEvent = false
   bridge.pendingOnEvent.length = 0
@@ -192,7 +249,7 @@ async function flushEffects(): Promise<void> {
   await Promise.resolve()
 }
 
-describe('useuserevents (websocket dispatch)', () => {
+describe('useUserEvents (websocket dispatch)', () => {
   it('opens a single socket when userId becomes non-empty', async () => {
     await createRoot(async (dispose) => {
       const [userId] = createSignal('user-1')
@@ -225,6 +282,198 @@ describe('useuserevents (websocket dispatch)', () => {
       })
       await flushEffects()
       expect(FakeSocket.instances).toHaveLength(0)
+      dispose()
+    })
+  })
+
+  it('does not open a socket until the `ready` hydration gate flips true', async () => {
+    // useCrdtRuntime passes `ready: hydrated` so the WS open effect waits for
+    // the persisted checkpoint + op-log to be loaded + replayed before opening.
+    // The resume cursor must resolve against hydrated confirmedState (the tight
+    // T_now), not empty state — so the socket must not open while ready() is
+    // false, then open once it flips true (re-firing the effect via the dep).
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      const [ready, setReady] = createSignal(false)
+      const pending = makeFakePending({ populated: true })
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        ready,
+        buildWsUrl: ws => `ws://test/userevents?w=${ws.join(',')}`,
+      })
+      await flushEffects()
+      // Hydration not complete: no socket yet even though userId is set.
+      expect(FakeSocket.instances).toHaveLength(0)
+      setReady(true)
+      await flushEffects()
+      expect(FakeSocket.instances).toHaveLength(1)
+      dispose()
+    })
+  })
+
+  it('opens immediately when no `ready` gate is supplied (prior behavior)', async () => {
+    // Callers that don't wire hydration get readyGate = () => true, so the
+    // socket opens as soon as userId is truthy — the pre-hydration behavior.
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      const pending = makeFakePending()
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: ws => `ws://test/userevents?w=${ws.join(',')}`,
+      })
+      await flushEffects()
+      expect(FakeSocket.instances).toHaveLength(1)
+      dispose()
+    })
+  })
+
+  it('threads the resume watermark into the URL builder', async () => {
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      // populated = an in-session reconnect: confirmedState holds a workspace,
+      // so the refresh-guard sends the cursor.
+      const pending = makeFakePending({
+        populated: true,
+        watermark: { physical: 1754100000000n, logical: 3n, clientId: 'c-abc' },
+        epoch: 7n,
+      })
+      let captured: { hlc: { physical: bigint, logical: bigint, clientId: string }, epoch: bigint } | null | undefined
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: (ws, resume) => {
+          captured = resume
+          return `ws://test/userevents?w=${ws.join(',')}`
+        },
+      })
+      await flushEffects()
+      expect(captured).toBeDefined()
+      expect(captured!.hlc.physical).toBe(1754100000000n)
+      expect(captured!.hlc.clientId).toBe('c-abc')
+      expect(captured!.epoch).toBe(7n)
+      dispose()
+    })
+  })
+
+  it('suppresses the resume cursor when confirmedState is empty even though a watermark exists', async () => {
+    // Hydration that found no checkpoint leaves confirmedState empty. Sending a
+    // cursor then would make the hub ship a delta the client folds onto empty
+    // maps (a partial result), so the guard suppresses it and takes a full
+    // snapshot instead.
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-cold')
+      const pending = makeFakePending({
+        watermark: { physical: 999n, logical: 0n, clientId: 'c-stale' },
+        epoch: 3n,
+      }) // empty confirmedState (cold start)
+      let captured: unknown = 'unset'
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: (_ws, resume) => {
+          captured = resume
+          return 'ws://test/userevents'
+        },
+      })
+      await flushEffects()
+      expect(captured).toBeNull()
+      dispose()
+    })
+  })
+
+  it('sends the resume cursor when confirmedState has only nodes (not workspaces)', async () => {
+    // The refresh-guard treats ANY of workspaces/nodes/tabs as "populated".
+    // Pin the OR per-map so a future change that narrowed the check to just
+    // workspaces (and regressed the transient nodes-but-no-workspace-record
+    // case) would fail loudly.
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-nodes-only')
+      const pending = makeFakePending({ populated: true, populateMap: 'nodes', watermark: { physical: 500n, logical: 1n, clientId: 'c-n' }, epoch: 2n })
+      let captured: unknown = 'unset'
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: (_ws, resume) => {
+          captured = resume
+          return 'ws://test/userevents'
+        },
+      })
+      await flushEffects()
+      expect(captured).not.toBeNull()
+      dispose()
+    })
+  })
+
+  it('sends the resume cursor when confirmedState has only floating windows', async () => {
+    // The refresh-guard enumerates EVERY top-level map of confirmedState,
+    // including floatingWindows (a user whose only state is a detached floating
+    // window must still count as populated). Pin it so a future map addition
+    // or a narrowing to just workspaces/nodes/tabs fails loudly.
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-fw-only')
+      const pending = makeFakePending({ populated: true, populateMap: 'floatingWindows', watermark: { physical: 600n, logical: 0n, clientId: 'c-fw' }, epoch: 4n })
+      let captured: unknown = 'unset'
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: (_ws, resume) => {
+          captured = resume
+          return 'ws://test/userevents'
+        },
+      })
+      await flushEffects()
+      expect(captured).not.toBeNull()
+      dispose()
+    })
+  })
+
+  it('suppresses the resume cursor when pending() returns null (no manager yet)', async () => {
+    // The manager can be null briefly before the userId effect constructs it.
+    // A watermark present during that window must not crash the guard (it
+    // reads pending()?.state) and must yield a null cursor.
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-null-pending')
+      let captured: unknown = 'unset'
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => null as never,
+        buildWsUrl: (_ws, resume) => {
+          captured = resume
+          return 'ws://test/userevents'
+        },
+      })
+      await flushEffects()
+      expect(captured).toBeNull()
+      dispose()
+    })
+  })
+
+  it('passes a null resume token when there is no watermark', async () => {
+    // No watermark on the manager: nothing to resume from.
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-no-wm')
+      const pending = makeFakePending()
+      let captured: unknown = 'unset'
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: (_ws, resume) => {
+          captured = resume
+          return 'ws://test/userevents'
+        },
+      })
+      await flushEffects()
+      expect(captured).toBeNull()
       dispose()
     })
   })
@@ -498,6 +747,236 @@ describe('useuserevents (websocket dispatch)', () => {
     })
   })
 
+  // The `delta` arm is now the normal COLD-START path (a refreshed page hydrates
+  // from IndexedDB and resumes rather than bootstrapping), so everything the
+  // `initial` arm establishes has to be established here too. Two things were
+  // missing and are pinned below.
+  it('adopts the subscriber client id and refreshes the workspace list on a delta', async () => {
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      const pending = makeFakePending({ populated: true })
+      const onSubscriberClientId = vi.fn()
+      const onWorkspaceLifecycleChanged = vi.fn()
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        onSubscriberClientId,
+        onWorkspaceLifecycleChanged,
+        buildWsUrl: () => 'ws://test/userevents',
+      })
+      await flushEffects()
+      const sock = FakeSocket.instances[0]!
+
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: {
+          case: 'delta',
+          value: {
+            frames: [],
+            maxHlc: create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' }),
+            currentEpoch: 2n,
+            subscriberClientId: 'client-from-hub',
+          },
+        },
+      }))
+
+      expect(pending.applyDelta).toHaveBeenCalledTimes(1)
+      // Without this the active-client gate compares against '' for the life of
+      // the page, which disables it outright -- every refreshed tab would play
+      // the turn-end sound regardless of which client is active.
+      expect(onSubscriberClientId).toHaveBeenCalledWith('client-from-hub')
+      // Workspace lifecycle frames are not replayed in a delta, and the sidebar
+      // list comes from a separate listWorkspaces driven by this callback -- so
+      // without it a create/rename/delete during the gap never reaches the UI.
+      expect(onWorkspaceLifecycleChanged).toHaveBeenCalledTimes(1)
+      dispose()
+    })
+  })
+
+  // The third thing the `initial` arm establishes that the `delta` arm did not:
+  // a tenancy check. `initial` refuses a foreign UserMaterialized, and the
+  // cold-start hydration path refuses a foreign checkpoint; the delta arm --
+  // now the normal cold start -- failed OPEN, and could not have done otherwise
+  // because ResumeDelta carried no user_id to compare. Adopting one would fold
+  // another tenant's records into confirmedState AND, via the op-log observer,
+  // into this device's IndexedDB checkpoint, where they survive refreshes.
+  it('refuses a delta that names a different tenant', async () => {
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      const pending = makeFakePending({ populated: true })
+      const onSubscriberClientId = vi.fn()
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        onSubscriberClientId,
+        buildWsUrl: () => 'ws://test/userevents',
+      })
+      await flushEffects()
+      const sock = FakeSocket.instances[0]!
+
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: {
+          case: 'delta',
+          value: {
+            frames: [],
+            maxHlc: create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' }),
+            currentEpoch: 2n,
+            subscriberClientId: 'client-from-hub',
+            userId: 'someone-else',
+          },
+        },
+      }))
+
+      expect(pending.applyDelta).not.toHaveBeenCalled()
+      // Nothing downstream of the refusal may run either -- adopting the hub's
+      // subscriber identity from a frame we just rejected would be incoherent.
+      expect(onSubscriberClientId).not.toHaveBeenCalled()
+      dispose()
+    })
+  })
+
+  // `initial` and `delta` are the two bootstrap-bearing arms, and they adopt
+  // the SAME four things in the SAME order. They used to hand-copy that tail
+  // and had drifted twice -- the delta arm shipped without the subscriber-id
+  // adoption and without the workspace-list refresh. This pins both halves:
+  // the sequence each arm runs, and that the two are identical.
+  it('runs the same adoption sequence for the initial and the delta arm', async () => {
+    interface AdoptionTrace {
+      /** Callback names in fire order. */
+      order: string[]
+      /** `bootstrapped()` / `clock()` sampled from inside each callback. */
+      liveAtSubscriber: { bootstrapped: boolean, clock: boolean }
+      liveAtLifecycle: { bootstrapped: boolean, clock: boolean }
+    }
+
+    const traceFor = (arm: 'initial' | 'delta'): Promise<AdoptionTrace> =>
+      createRoot(async (dispose) => {
+        const [userId] = createSignal('user-1')
+        const pending = makeFakePending({ populated: true })
+        const trace: AdoptionTrace = {
+          order: [],
+          liveAtSubscriber: { bootstrapped: false, clock: false },
+          liveAtLifecycle: { bootstrapped: false, clock: false },
+        }
+        // Assigned before any frame can arrive; the callbacks below only run
+        // from a socket message, which the test drives after `useUserEvents`
+        // has returned.
+        let hook: UserEventsHook | undefined
+        const sample = (): { bootstrapped: boolean, clock: boolean } => ({
+          bootstrapped: hook?.bootstrapped() ?? false,
+          clock: (hook?.clock() ?? null) !== null,
+        })
+        hook = useUserEvents({
+          userId,
+          activeClient: createActiveClientStore(),
+          pending: () => pending as never,
+          onSubscriberClientId: () => {
+            trace.order.push('subscriber')
+            trace.liveAtSubscriber = sample()
+          },
+          onWorkspaceLifecycleChanged: () => {
+            trace.order.push('lifecycle')
+            trace.liveAtLifecycle = sample()
+          },
+          buildWsUrl: () => 'ws://test/userevents',
+        })
+        await flushEffects()
+        const sock = FakeSocket.instances.at(-1)!
+
+        sock.sendEvent(create(WatchUserEventSchema, arm === 'initial'
+          ? {
+              event: {
+                case: 'initial',
+                value: create(UserMaterializedSchema, {
+                  userId: 'user-1',
+                  subscriberClientId: 'client-from-hub',
+                  currentEpoch: 2n,
+                  maxHlc: create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' }),
+                }),
+              },
+            }
+          : {
+              event: {
+                case: 'delta',
+                value: {
+                  frames: [],
+                  maxHlc: create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' }),
+                  currentEpoch: 2n,
+                  subscriberClientId: 'client-from-hub',
+                  userId: 'user-1',
+                },
+              },
+            }))
+
+        dispose()
+        return trace
+      })
+
+    const initial = await traceFor('initial')
+    const delta = await traceFor('delta')
+    expect(initial).toEqual(delta)
+    // ...and it is the RIGHT sequence, not two identical wrong ones. The
+    // subscriber id is adopted BEFORE the shell is told the CRDT is live, so
+    // nothing downstream of `bootstrapped` can read a '' identity; the
+    // workspace refresh fires LAST, once the clock and the flag are both set.
+    expect(initial.order).toEqual(['subscriber', 'lifecycle'])
+    expect(initial.liveAtSubscriber).toEqual({ bootstrapped: false, clock: false })
+    expect(initial.liveAtLifecycle).toEqual({ bootstrapped: true, clock: true })
+  })
+
+  it('accepts a delta whose user_id matches', async () => {
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      const pending = makeFakePending({ populated: true })
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: () => 'ws://test/userevents',
+      })
+      await flushEffects()
+      const sock = FakeSocket.instances[0]!
+
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: {
+          case: 'delta',
+          value: {
+            frames: [],
+            maxHlc: create(HLCSchema, { physical: 300n, logical: 0n, clientId: 'hub' }),
+            currentEpoch: 2n,
+            userId: 'user-1',
+          },
+        },
+      }))
+
+      expect(pending.applyDelta).toHaveBeenCalledTimes(1)
+      dispose()
+    })
+  })
+
+  it('routes a batchEnd frame to the manager (the only watermark-advance point)', async () => {
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      const pending = makeFakePending()
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: () => 'ws://test/userevents',
+      })
+      await flushEffects()
+      const sock = FakeSocket.instances[0]!
+
+      const atHlc = create(HLCSchema, { physical: 400n, logical: 2n, clientId: 'hub' })
+      sock.sendEvent(create(WatchUserEventSchema, { event: { case: 'batchEnd', value: { atHlc } } }))
+
+      expect(pending.consumeBatchEnd).toHaveBeenCalledTimes(1)
+      expect(pending.consumeBatchEnd.mock.calls[0][0]).toMatchObject({ physical: 400n, logical: 2n })
+      dispose()
+    })
+  })
+
   it('ignores a message that arrives on a socket superseded by teardown', async () => {
     await createRoot(async (dispose) => {
       const [userId, setUserId] = createSignal('user-1')
@@ -724,7 +1203,7 @@ describe('useuserevents (websocket dispatch)', () => {
   })
 })
 
-describe('useuserevents (desktop bridge path)', () => {
+describe('useUserEvents (desktop bridge path)', () => {
   // Flush the effect, the onEvent Promise.all, and the .then that opens the
   // relay -- the desktop path is several microtasks deep before it is live.
   async function settleBridge(): Promise<void> {
@@ -745,6 +1224,55 @@ describe('useuserevents (desktop bridge path)', () => {
       expect(bridge.openCalls).toBe(1)
       expect(bridge.handlers.has('userevents:message')).toBe(true)
       expect(bridge.handlers.has('userevents:close')).toBe(true)
+      dispose()
+    })
+  })
+
+  // The browser branch's cursor threading is covered via the buildWsUrl
+  // override, but the DESKTOP branch hands the token to the sidecar as an RPC
+  // argument -- a second serialization hop with its own chance to drop it.
+  // Nothing asserted that hop, so removing the third argument at the
+  // openUserEventsRelay call site would have shipped green.
+  it('threads the resume watermark into the relay open', async () => {
+    bridge.isTauri = true
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        // populated => an in-session reconnect, so the cursor is sent.
+        pending: () => makeFakePending({
+          populated: true,
+          watermark: { physical: 1754100000000n, logical: 3n, clientId: 'c-abc' },
+          epoch: 7n,
+        }) as never,
+      })
+      await settleBridge()
+      expect(bridge.openCalls).toBe(1)
+      const resume = bridge.openedResumeTokens[0] as {
+        hlc: { physical: bigint, logical: bigint, clientId: string }
+        epoch: bigint
+      } | null
+      expect(resume).toBeTruthy()
+      expect(resume!.hlc.physical).toBe(1754100000000n)
+      expect(resume!.hlc.clientId).toBe('c-abc')
+      expect(resume!.epoch).toBe(7n)
+      dispose()
+    })
+  })
+
+  it('passes a null resume token to the relay open when there is no watermark', async () => {
+    bridge.isTauri = true
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-1')
+      useUserEvents({
+        userId,
+        activeClient: createActiveClientStore(),
+        pending: () => makeFakePending({ populated: true }) as never,
+      })
+      await settleBridge()
+      expect(bridge.openCalls).toBe(1)
+      expect(bridge.openedResumeTokens[0] ?? null).toBeNull()
       dispose()
     })
   })
@@ -918,7 +1446,7 @@ describe('useuserevents (desktop bridge path)', () => {
 // bootstrap. The persisted high-water mark is what carries the ordering through
 // a reload. The mark is a plain monotonic counter (NOT the wall clock), so the
 // ordering holds regardless of any clock step between page loads.
-describe('nextusereventsrelayid', () => {
+describe('nextUserEventsRelayId', () => {
   it('hands out strictly increasing ids and persists the high-water mark', () => {
     const first = nextUserEventsRelayId()
     const markAfterFirst = localStorageGet<number>(KEY_USER_EVENTS_RELAY_SEQ)

@@ -1,0 +1,152 @@
+{
+  "_readme": "Cross-language resume-cursor HLC wire format. The Go hub (channelwire.EncodeResumeHLC / DecodeResumeHLC / ParseResumeCursor) and the TypeScript client (hlc.ts formatHlcWire / parseHlcWire) parse the SAME '<physical>.<logical>.<client_id>' triple, and the client pre-validates a persisted cursor with parseHlcWire(formatHlcWire(x)) before sending so a corrupted value the hub would 400 never leaves the browser (otherwise the browser surfaces a non-terminal 1006 close and reconnects in a tight loop). The two decoders are hand-mirrored by a prose contract; this fixture is the single source both sides assert against so a rule added or tightened on one side but not the other reddens CI here (backend/channelwire/wire_test.go and frontend/src/lib/crdt/hlc.test.ts) instead of drifting back into the reconnect storm the validation exists to prevent. Each case is a raw wire string plus the expected decode: ok=true with physical/logical/clientId, or ok=false (decoder must reject, returning nil/undefined). physical must be > 0 and int64-bounded; logical must be >= 0 and int64-bounded; clientId must be non-empty and <= 128 chars; all three segments must be present.",
+  "cases": [
+    {
+      "raw": "1754100000000.3.c-abc",
+      "ok": true,
+      "physical": "1754100000000",
+      "logical": "3",
+      "clientId": "c-abc"
+    },
+    {
+      "raw": "1.0.c",
+      "ok": true,
+      "physical": "1",
+      "logical": "0",
+      "clientId": "c"
+    },
+    {
+      "raw": "9223372036854775807.9223372036854775807.client",
+      "ok": true,
+      "physical": "9223372036854775807",
+      "logical": "9223372036854775807",
+      "clientId": "client"
+    },
+    {
+      "raw": "",
+      "ok": false
+    },
+    {
+      "raw": "123",
+      "ok": false
+    },
+    {
+      "raw": "123.4",
+      "ok": false
+    },
+    {
+      "raw": "123.4.",
+      "ok": false
+    },
+    {
+      "raw": "abc.4.c",
+      "ok": false
+    },
+    {
+      "raw": "123.abc.c",
+      "ok": false
+    },
+    {
+      "raw": "0.4.c",
+      "ok": false
+    },
+    {
+      "raw": "-5.4.c",
+      "ok": false
+    },
+    {
+      "raw": "123.-1.c",
+      "ok": false
+    },
+    {
+      "raw": "123.4..",
+      "ok": true,
+      "physical": "123",
+      "logical": "4",
+      "clientId": "."
+    },
+    {
+      "raw": "123..c",
+      "ok": false
+    },
+    {
+      "raw": "9223372036854775808.4.c",
+      "ok": false
+    },
+    {
+      "raw": "123.9223372036854775808.c",
+      "ok": false
+    },
+    {
+      "raw": "123.4.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "ok": false,
+      "_note": "129 bytes: one over the bound. The previous fixture was NAMED \"ExactlyOneHundredAndTwentyEight\" but was 141 chars, so neither edge of the bound was pinned."
+    },
+    {
+      "raw": "123.4.dot.in.client",
+      "ok": true,
+      "physical": "123",
+      "logical": "4",
+      "clientId": "dot.in.client"
+    },
+    {
+      "raw": " 123.4.c",
+      "ok": false,
+      "_note": "leading whitespace: Go ParseInt rejects, TS BigInt accepts without the strict-digit guard"
+    },
+    {
+      "raw": "+123.4.c",
+      "ok": false,
+      "_note": "explicit plus sign: Go ParseInt ACCEPTS it, TS /^-?\\d+$/ rejects it, and neither encoder emits it -- the Go decoder rejects explicitly (plusSigned) so both sides agree"
+    },
+    {
+      "raw": "123.+4.c",
+      "ok": false,
+      "_note": "plus sign on the logical segment, same rule as above"
+    },
+    {
+      "raw": "0012.4.c",
+      "ok": true,
+      "physical": "12",
+      "logical": "4",
+      "clientId": "c",
+      "_note": "leading zeros: both Go ParseInt and TS BigInt accept; pinned as the agreed contract so neither side tightens it unilaterally"
+    },
+    {
+      "raw": "123.4.c ",
+      "ok": true,
+      "physical": "123",
+      "logical": "4",
+      "clientId": "c ",
+      "_note": "trailing whitespace in clientId — both sides accept (only length/empty checked); pinned as current contract"
+    },
+    {
+      "raw": "123.4.c",
+      "ok": true,
+      "physical": "123",
+      "logical": "4",
+      "clientId": "c"
+    },
+    {
+      "raw": "123.4.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "ok": true,
+      "physical": "123",
+      "logical": "4",
+      "clientId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "_note": "exactly 128 bytes: the largest ACCEPTED client id. Guards the accept side, which Go had no case for -- flipping `> 128` to `>= 128` there used to leave both this corpus and the Go suite green."
+    },
+    {
+      "raw": "123.4.éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "ok": true,
+      "physical": "123",
+      "logical": "4",
+      "clientId": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "_note": "64 two-byte characters = 128 BYTES, 64 UTF-16 units. Accepted. Pins that both decoders measure the same quantity."
+    },
+    {
+      "raw": "123.4.ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "ok": false,
+      "_note": "65 two-byte characters = 130 BYTES but only 65 UTF-16 units. REJECTED. A TS decoder counting .length would accept this and the hub would answer 400, and since 1006 is not terminal the client would reconnect with the same cursor forever."
+    }
+  ]
+}

@@ -50,6 +50,15 @@ var unguardedOwnerFilterQueries = map[string]string{
 	"GetWorktreeForTab":         "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
 	"RemoveWorktreeTab":         "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
 	"DeleteWorktreeTabsByTabID": "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
+	// The owner column here is JOIN plumbing, not a caller filter. The sweep
+	// takes no caller id at all (see its entry in unscopedOwnerKeyedQueries);
+	// the only user_id comparison is user_state.user_id = user_op_batches.user_id,
+	// correlating each batch to ITS OWN owner's compaction watermark so the sweep
+	// cannot delete a tail that user's state_payload has not absorbed yet. There
+	// is no caller id to route through userid.OwnerFilter, and a blank owner
+	// cannot widen anything: the correlation is column-to-column, so a row can
+	// only ever match its own user_state row.
+	"DeleteUserOpBatchesBeforePhysical": "cross-user retention sweep; its only user_id comparison correlates each batch to its own owner's compaction watermark, and it accepts no caller id to guard",
 }
 
 // unscopedOwnerKeyedQueries are the queries that touch an owner-keyed table --
@@ -91,6 +100,12 @@ var unscopedOwnerKeyedQueries = map[string]string{
 	"DeleteOAuthUserLinksByProvider": "deleting a provider must drop every owner's link to it; see DeleteOAuthTokensByProvider",
 	// Retention GC over the CRDT dedup window.
 	"DeleteExpiredRecentBatchIDs": "a retention sweep over expired dedup entries; the cutoff is the predicate and every owner's expired rows must go",
+	// (DeleteUserOpBatchesBeforePhysical, the CRDT op-batch retention sweep, used
+	// to sit here. It now NAMES user_id -- correlating each batch to its own
+	// owner's compaction watermark so it cannot delete a tail that user's
+	// state_payload has not absorbed -- so it is owner-scoped by this check's
+	// definition and belongs only in unguardedOwnerFilterQueries, where its
+	// caller-side reason lives.)
 
 	// ---- the non-owner half IS a key ----
 

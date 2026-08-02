@@ -16,17 +16,18 @@ var _ store.UserOpBatchesStore = (*userOpBatchesStore)(nil)
 
 func (s *userOpBatchesStore) Insert(ctx context.Context, p store.InsertUserOpBatchParams) error {
 	return mapErr(s.conn.q.InsertUserOpBatch(ctx, gendb.InsertUserOpBatchParams{
-		UserID:       p.UserID.String(),
-		PhysicalMs:   p.PhysicalMs,
-		Logical:      p.Logical,
-		LastLogical:  p.LastLogical,
-		OriginClient: p.OriginClient,
-		PrincipalID:  p.PrincipalID,
-		BatchID:      p.BatchID,
-		BodyHash:     p.BodyHash,
-		BatchPayload: p.BatchPayload,
-		OpCount:      int32(p.OpCount),
-		Epoch:        p.Epoch,
+		UserID:             p.UserID.String(),
+		PhysicalMs:         p.PhysicalMs,
+		Logical:            p.Logical,
+		LastLogical:        p.LastLogical,
+		OriginClient:       p.OriginClient,
+		PrincipalID:        p.PrincipalID,
+		BatchID:            p.BatchID,
+		BodyHash:           p.BodyHash,
+		BatchPayload:       p.BatchPayload,
+		TransitionsPayload: p.TransitionsPayload,
+		OpCount:            int32(p.OpCount),
+		Epoch:              p.Epoch,
 	}))
 }
 
@@ -56,18 +57,19 @@ func (s *userOpBatchesStore) ListAfter(ctx context.Context, p store.ListUserOpBa
 
 func toUserOpBatchRow(r gendb.UserOpBatch) store.UserOpBatchRow {
 	return store.UserOpBatchRow{
-		UserID:       r.UserID,
-		PhysicalMs:   r.PhysicalMs,
-		Logical:      r.Logical,
-		LastLogical:  r.LastLogical,
-		OriginClient: r.OriginClient,
-		PrincipalID:  r.PrincipalID,
-		BatchID:      r.BatchID,
-		BodyHash:     r.BodyHash,
-		BatchPayload: r.BatchPayload,
-		OpCount:      int64(r.OpCount),
-		Epoch:        r.Epoch,
-		CommittedAt:  r.CommittedAt.Time,
+		UserID:             r.UserID,
+		PhysicalMs:         r.PhysicalMs,
+		Logical:            r.Logical,
+		LastLogical:        r.LastLogical,
+		OriginClient:       r.OriginClient,
+		PrincipalID:        r.PrincipalID,
+		BatchID:            r.BatchID,
+		BodyHash:           r.BodyHash,
+		BatchPayload:       r.BatchPayload,
+		TransitionsPayload: r.TransitionsPayload,
+		OpCount:            int64(r.OpCount),
+		Epoch:              r.Epoch,
+		CommittedAt:        r.CommittedAt.Time,
 	}
 }
 

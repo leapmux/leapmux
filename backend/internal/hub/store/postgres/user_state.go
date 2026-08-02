@@ -42,11 +42,12 @@ func (s *userStateStore) Get(ctx context.Context, userID userid.UserID) (*store.
 
 func (s *userStateStore) Upsert(ctx context.Context, p store.UpsertUserStateParams) error {
 	return mapErr(s.conn.q.UpsertUserState(ctx, gendb.UpsertUserStateParams{
-		UserID:         p.UserID.String(),
-		StatePayload:   p.StatePayload,
-		CurrentEpoch:   p.CurrentEpoch,
-		EpochStartedAt: pgtime.New(p.EpochStartedAt),
-		UpdatedAt:      pgtime.New(p.UpdatedAt),
+		UserID:               p.UserID.String(),
+		StatePayload:         p.StatePayload,
+		CompactionPhysicalMs: p.CompactionPhysicalMs,
+		CurrentEpoch:         p.CurrentEpoch,
+		EpochStartedAt:       pgtime.New(p.EpochStartedAt),
+		UpdatedAt:            pgtime.New(p.UpdatedAt),
 	}))
 }
 

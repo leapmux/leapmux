@@ -47,6 +47,31 @@ func TestOrderedAffectedRefs_NodesBeforeWindowsBeforeTabs(t *testing.T) {
 	}
 }
 
+// WorkspaceID is the only identity a WorkspaceRoot ref carries, so without a
+// tie-break on it two such refs compare equal and sort.Slice -- which is not
+// stable -- orders them arbitrarily. No frame is emitted for that kind today, so
+// this pins the comparator's totality by construction rather than by the accident
+// of which kinds currently have frame arms.
+func TestOrderedAffectedRefs_TotalOrderAcrossWorkspaceRoots(t *testing.T) {
+	affected := map[EntityRef]EntityWorkspaceTransition{
+		{Kind: EntityKindWorkspaceRoot, WorkspaceID: "ws-c"}: {},
+		{Kind: EntityKindWorkspaceRoot, WorkspaceID: "ws-a"}: {},
+		{Kind: EntityKindWorkspaceRoot, WorkspaceID: "ws-b"}: {},
+	}
+
+	for range 32 {
+		got := orderedAffectedRefs(affected)
+		require.Len(t, got, 3)
+
+		ids := make([]string, len(got))
+		for i, a := range got {
+			ids[i] = a.ref.WorkspaceID
+		}
+		assert.Equal(t, []string{"ws-a", "ws-b", "ws-c"}, ids,
+			"refs that differ only in WorkspaceID must still have a total order")
+	}
+}
+
 func TestOrderedAffectedRefs_CarriesTheTransition(t *testing.T) {
 	// The two passes read `trans` off the slice rather than re-hashing the map;
 	// if the pairing were lost, every visibility test would silently see the
