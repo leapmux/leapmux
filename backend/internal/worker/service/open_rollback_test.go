@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,12 +96,15 @@ func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 	}, w)
 
 	require.Empty(t, w.errors)
-	require.Eventually(t, func() bool {
-		return currentBranchName(t, repoDir) == originalBranch && !localBranchExists(t, repoDir, branchName)
-	}, 5*time.Second, 20*time.Millisecond)
+	// Same ordering as the worktree rollback tests: wait until failStartup has
+	// finished rollbackGitMode, then assert. Polling git while rollback's
+	// checkout / branch -D still holds the repo races Windows mandatory locks
+	// on .git/config ("Permission denied").
 	for _, id := range collectAgentIDs(w) {
 		waitForStartupFailure(t, svc, id)
 	}
+	assert.Equal(t, originalBranch, currentBranchName(t, repoDir))
+	assert.False(t, localBranchExists(t, repoDir, branchName))
 }
 
 func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing.T) {
@@ -126,14 +128,14 @@ func TestOpenAgent_RollsBackCreatedBranchToDetachedHEADOnStartFailure(t *testing
 	}, w)
 
 	require.Empty(t, w.errors)
-	require.Eventually(t, func() bool {
-		head := strings.TrimSpace(mustGitOutput(t, ctx, repoDir, "rev-parse", "--abbrev-ref", "HEAD"))
-		commit := strings.TrimSpace(mustGitOutput(t, ctx, repoDir, "rev-parse", "HEAD"))
-		return head == "HEAD" && commit == originalCommit && !localBranchExists(t, repoDir, branchName)
-	}, 5*time.Second, 20*time.Millisecond)
+	// See TestOpenAgent_RollsBackCreatedBranchOnStartFailure for why the
+	// wait-for-fail synchronization precedes the git asserts.
 	for _, id := range collectAgentIDs(w) {
 		waitForStartupFailure(t, svc, id)
 	}
+	assert.Equal(t, "HEAD", currentBranchName(t, repoDir))
+	assert.Equal(t, originalCommit, strings.TrimSpace(mustGitOutput(t, ctx, repoDir, "rev-parse", "HEAD")))
+	assert.False(t, localBranchExists(t, repoDir, branchName))
 }
 
 func TestOpenTerminal_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
@@ -190,12 +192,13 @@ func TestOpenTerminal_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 	}, w)
 
 	require.Empty(t, w.errors)
-	require.Eventually(t, func() bool {
-		return currentBranchName(t, repoDir) == originalBranch && !localBranchExists(t, repoDir, branchName)
-	}, 5*time.Second, 20*time.Millisecond)
+	// See TestOpenAgent_RollsBackCreatedBranchOnStartFailure for why the
+	// wait-for-fail synchronization precedes the git asserts.
 	for _, id := range collectTerminalIDs(w) {
 		waitForStartupFailure(t, svc, id)
 	}
+	assert.Equal(t, originalBranch, currentBranchName(t, repoDir))
+	assert.False(t, localBranchExists(t, repoDir, branchName))
 }
 
 // expectedWorktreePath is where the worker puts the worktree it creates for
