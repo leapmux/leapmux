@@ -2,9 +2,10 @@
 import { create } from '@bufbuild/protobuf'
 import { createEffect, createRoot } from 'solid-js'
 import { unwrap } from 'solid-js/store'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AgentGitStatusSchema, AgentStatus, AvailableOptionGroupSchema } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createTabMetadataStore, liveTabIds } from './tabMetadata.store'
 
 /**
@@ -21,6 +22,11 @@ import { createTabMetadataStore, liveTabIds } from './tabMetadata.store'
  * fan-out across each registry snapshot.
  */
 const flush = () => new Promise<void>(queueMicrotask)
+
+// The store reads `KEY_TAB_MRU` eagerly on construction now; isolate every test
+// so a prior test's stamps cannot leak into the next store's seed.
+beforeEach(() => sessionStorage.clear())
+afterEach(() => sessionStorage.clear())
 
 describe('tabMetadata', () => {
   describe('patch', () => {
@@ -510,6 +516,101 @@ describe('tabMetadata', () => {
       const back = m.touchMru('a1')
       expect(back).toBeGreaterThan(other)
       expect(m.get('a1')!.mru!).toBeGreaterThan(m.get('a2')!.mru!)
+    })
+  })
+
+  /**
+   * MRU is persisted to sessionStorage (`KEY_TAB_MRU`) so a reload restores the
+   * prior ordering rather than leaving every tab at zero (which made `mruHead`
+   * silently fall back to `tabs[0]`). The store seeds eagerly on construction
+   * and writes back (deduped) from `touchMru`, `remove`, and `retainOnly`.
+   */
+  describe('mru persistence', () => {
+    it('writes the stamp map to sessionStorage on touchMru', () => {
+      const m = createTabMetadataStore()
+      m.touchMru('a')
+      m.touchMru('b')
+      expect(sessionStorageGet<Record<string, number>>(KEY_TAB_MRU)).toEqual({ a: 1, b: 2 })
+    })
+
+    it('seeds byTabId and mruCounter from a stored stamp map', () => {
+      sessionStorageSet(KEY_TAB_MRU, { a: 5, b: 8 })
+      const m = createTabMetadataStore()
+      // Both stamps restored onto the rows...
+      expect(m.get('a')?.mru).toBe(5)
+      expect(m.get('b')?.mru).toBe(8)
+      // ...and the counter resumes above the high-water mark, so the next touch
+      // does not collide with a restored stamp.
+      expect(m.touchMru('c')).toBe(9)
+    })
+
+    it('drops a closed tab\'s stamp on remove', () => {
+      const m = createTabMetadataStore()
+      m.touchMru('a')
+      m.touchMru('b')
+      m.remove('a')
+      expect(sessionStorageGet<Record<string, number>>(KEY_TAB_MRU)).toEqual({ b: 2 })
+    })
+
+    it('drops swept tabs\' stamps on retainOnly', () => {
+      const m = createTabMetadataStore()
+      m.touchMru('a')
+      m.touchMru('b')
+      m.touchMru('c')
+      m.retainOnly(new Set(['b']))
+      expect(sessionStorageGet<Record<string, number>>(KEY_TAB_MRU)).toEqual({ b: 2 })
+    })
+
+    it('ignores invalid stamps (non-number, non-positive, NaN) in the seed', () => {
+      sessionStorageSet(KEY_TAB_MRU, { good: 3, bad: 'x' as unknown as number, zero: 0, neg: -1, nan: Number.NaN })
+      const m = createTabMetadataStore()
+      expect(m.get('good')?.mru).toBe(3)
+      expect(m.get('bad')).toBeUndefined()
+      expect(m.get('zero')).toBeUndefined()
+      expect(m.get('neg')).toBeUndefined()
+      expect(m.get('nan')).toBeUndefined()
+      // Counter is the max of valid stamps only.
+      expect(m.touchMru('next')).toBe(4)
+    })
+
+    it('does not rewrite storage when the stamp map is unchanged', () => {
+      sessionStorageSet(KEY_TAB_MRU, { a: 1 })
+      // Spy on sessionStorageSet so the assertion fires even when the value is
+      // byte-identical — a missing dedupe would still call the wrapper, and a
+      // string-only comparison of the stored payload could not tell.
+      const spy = vi.spyOn(sessionStorage, 'setItem')
+      const callsBefore = spy.mock.calls.length
+      const m = createTabMetadataStore()
+      // A metadata-only patch changes no `mru`, so the persister must dedupe.
+      m.patch('a', { title: 'renamed' })
+      expect(spy.mock.calls.length, 'no write for a metadata-only patch').toBe(callsBefore)
+      spy.mockRestore()
+    })
+
+    /**
+     * The end-to-end behaviour issue #345 names: a reload wipes memory, the new
+     * store reconstructs its MRU ordering from what the previous session wrote.
+     * Each half is covered above; this pins that they compose — the second store
+     * sees the first's stamps, seeds `mruCounter` above them, and a fresh touch
+     * wins over every restored one.
+     */
+    it('survives a simulated reload: store B seeds from store A\'s writes', () => {
+      const a = createTabMetadataStore()
+      a.touchMru('first')
+      a.touchMru('second') // 'second' is the MRU head at handoff
+      a.patch('second', { title: 'has metadata too' })
+
+      // New store — what a page reload constructs.
+      const b = createTabMetadataStore()
+      expect(b.get('first')?.mru).toBe(1)
+      expect(b.get('second')?.mru).toBe(2)
+      // Metadata on other fields is NOT carried by KEY_TAB_MRU (it holds stamps
+      // only); a separate hydrator repopulates the rest. This pins that contract
+      // so a future change that accidentally broadens the blob is caught.
+      expect(b.get('second')?.title).toBeUndefined()
+
+      // A fresh touch on 'first' must outrank the restored head.
+      expect(b.touchMru('first')).toBeGreaterThan(b.get('second')!.mru!)
     })
   })
 

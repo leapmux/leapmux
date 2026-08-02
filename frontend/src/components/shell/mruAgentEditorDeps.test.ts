@@ -1,7 +1,8 @@
 /// <reference types="vitest/globals" />
 import { createRoot } from 'solid-js'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { KEY_TAB_MRU, sessionStorageSet } from '~/lib/browserStorage'
 import { getCRDTBridge, setCRDTBridge } from '~/lib/crdt'
 import { emitSplitTile } from '~/stores/layoutOps'
 import { tabKey } from '~/stores/tab.helpers'
@@ -10,6 +11,7 @@ import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
 import { mruAgentEditorDeps } from './mruAgentEditorDeps'
 
+beforeEach(() => sessionStorage.clear())
 afterEach(() => setCRDTBridge(null))
 
 const WS = 'ws-test'
@@ -95,6 +97,28 @@ describe('mruAgentEditorDeps', () => {
         workspaceId: WS,
       } as never)).not.toThrow()
       expect(s.layoutStore.focusedTileId()).toBe(s.harness.rootTileId)
+      dispose()
+    })
+  })
+
+  /**
+   * Regression for issue #345: before `mru` was persisted, every tab came back
+   * scoring zero after a reload, so `mruOrder` silently degraded to position
+   * order — and a new agent could be seeded with the wrong tab's `workingDir`.
+   * The store now seeds from `KEY_TAB_MRU` on construction, so the prior
+   * session's ordering survives the (simulated) reload.
+   */
+  it('honours the persisted MRU ordering across a reload, not position order', () => {
+    // Seed the prior session's stamps: 'a1' was touched last (higher stamp),
+    // even though 'a2' was added second (position order).
+    sessionStorageSet(KEY_TAB_MRU, { a1: 2, a2: 1 })
+    createRoot((dispose) => {
+      const s = setup()
+      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: s.harness.rootTileId, position: 'a' })
+      emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: s.harness.rootTileId, position: 'b' })
+
+      // 'a1' leads — the persisted stamp wins, not the add order.
+      expect(s.deps.mruTabs()[0]?.id).toBe('a1')
       dispose()
     })
   })

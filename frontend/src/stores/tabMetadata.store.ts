@@ -4,6 +4,7 @@ import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import type { HLC, UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
 import { createEffect, createMemo } from 'solid-js'
 import { createStore, produce, unwrap } from 'solid-js/store'
+import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { sameKeys } from '~/lib/sameKeys'
 import { shallowEqual, shallowEqualArrays } from '~/lib/shallowEqual'
@@ -70,16 +71,18 @@ export interface SharedMeta {
    */
   hydrated?: boolean
   /**
-   * Local-only monotonic activation counter. Higher = more recently activated.
-   * Never persisted and never in the projection; it orders the MRU views within
-   * a single client session.
+   * Monotonic activation counter. Higher = more recently activated. Never enters
+   * the CRDT (two devices should not fight over which tab was touched last) and
+   * never reaches the projection; it orders the MRU views within one client.
    *
-   * The cost of "never persisted" is that after a RELOAD every tab scores zero,
-   * and since `mruHead` compares with a strict `>` the winner stays `tabs[0]` --
-   * so every MRU-driven answer silently degrades to position order until the
-   * user activates something. `useTabPersistence` is built to not make that
-   * worse (it never persists a synthesised `mruHead`), but the fallback itself
-   * is still wrong: https://github.com/leapmux/leapmux/issues/345
+   * Persisted to sessionStorage as `KEY_TAB_MRU` (`Record<tabId, number>`) so a
+   * reload restores the prior ordering instead of leaving every tab at zero. A
+   * zero score after reload used to make `mruHead` silently fall back to
+   * `tabs[0]` (position order), which corrupted close-promotion, `mruOrder`, and
+   * the `workingDir`/`homeDir` seed a new agent inherits from the MRU tab.
+   *
+   * Seeded eagerly in `createTabMetadataStore` (see `loadMru`) because `mruHead`
+   * is read during render before any CRDT-gated hook could rehydrate it.
    */
   mru?: number
   workingDir?: string
@@ -273,10 +276,89 @@ function sameStoredValue(prev: unknown, next: unknown): boolean {
   return shallowEqual(prev, next)
 }
 
-export function createTabMetadataStore() {
-  const [state, setState] = createStore<{ byTabId: Record<string, TabMetadata> }>({ byTabId: {} })
+/**
+ * Read and validate the persisted MRU stamp map.
+ *
+ * Returns the cleaned `Record<tabId, number>` (finite, positive stamps only)
+ * plus the high-water mark, or `{ stamps: {}, max: 0 }` if storage is empty or
+ * every entry was invalid. Validating here means the seed loop below can index
+ * straight in without re-checking.
+ *
+ * One JSON blob keyed by tab id — no workspace dimension, because `tabMetadata`
+ * itself is keyed by globally-unique tab id and holds every workspace at once.
+ * Exact-match (a singleton), not a templated prefix family: see `KEY_TAB_MRU`.
+ */
+function loadMru(): { stamps: Record<string, number>, max: number } {
+  const raw = sessionStorageGet<unknown>(KEY_TAB_MRU)
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+    return { stamps: {}, max: 0 }
+  const stamps: Record<string, number> = {}
+  let max = 0
+  for (const [tabId, stamp] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof stamp === 'number' && Number.isFinite(stamp) && stamp > 0) {
+      stamps[tabId] = stamp
+      if (stamp > max)
+        max = stamp
+    }
+  }
+  return { stamps, max }
+}
 
-  let mruCounter = 0
+/**
+ * Derive the persisted MRU map from a `byTabId` snapshot: `{ tabId: mru }` for
+ * every row carrying a stamp. Kept separate from the persister so the seed
+ * (which builds the snapshot, not the store) and the dedupe cache (which holds
+ * the last serialised value) can share one canonical projection.
+ */
+function mruSnapshot(byTabId: Record<string, TabMetadata>): Record<string, number> {
+  const mru: Record<string, number> = {}
+  for (const [tabId, meta] of Object.entries(byTabId)) {
+    if (meta.mru !== undefined)
+      mru[tabId] = meta.mru
+  }
+  return mru
+}
+
+/**
+ * Write the MRU stamp map back, deduped against the last value written.
+ *
+ * Every mutation that changes an `mru` field (`touchMru`) or the live row set
+ * (`remove`, `retainOnly`) calls this. The map is small (one entry per tab) and
+ * `touchMru` is already a no-op at the head, so writes happen only on genuine
+ * ordering changes. It additionally skips when nothing carries an `mru` stamp
+ * yet — the very first activation writes, a metadata-only `patch` never does.
+ *
+ * `initialJson` primes the dedupe cache with the canonical serialisation of the
+ * seed the store was constructed from, so the first mutation after a clean
+ * reload rewrites only if it genuinely changes the map.
+ */
+function createMruPersister(initialJson: string) {
+  let lastWritten = initialJson
+  return (byTabId: Record<string, TabMetadata>) => {
+    const mru = mruSnapshot(byTabId)
+    const json = JSON.stringify(mru)
+    if (json === lastWritten)
+      return
+    lastWritten = json
+    sessionStorageSet(KEY_TAB_MRU, mru)
+  }
+}
+
+export function createTabMetadataStore() {
+  // Seed MRU eagerly, before any render can read `mruHead`. The bootstrap
+  // sequence (auth → WebSocket → projection fills) means `mruHead` is consulted
+  // during render before a CRDT-gated hook could rehydrate it, so a lazy/hook
+  // read-back would race render and lose. An empty seed (first run, or the
+  // sessionStorage key expired) leaves the counter at zero, matching the old
+  // behaviour. See the `mru` field doc for why this is persisted at all.
+  const { stamps: seedStamps, max: seedMax } = loadMru()
+  const seedByTabId: Record<string, TabMetadata> = Object.fromEntries(
+    Object.entries(seedStamps).map(([tabId, mru]) => [tabId, { mru }] satisfies [string, TabMetadata]),
+  )
+  const persistMru = createMruPersister(JSON.stringify(mruSnapshot(seedByTabId)))
+
+  const [state, setState] = createStore<{ byTabId: Record<string, TabMetadata> }>({ byTabId: seedByTabId })
+  let mruCounter = seedMax
 
   return {
     state,
@@ -318,6 +400,7 @@ export function createTabMetadataStore() {
       setState(produce((s) => {
         delete s.byTabId[tabId]
       }))
+      persistMru(state.byTabId)
     },
 
     /**
@@ -343,6 +426,7 @@ export function createTabMetadataStore() {
             delete s.byTabId[tabId]
         }
       }))
+      persistMru(state.byTabId)
     },
 
     /**
@@ -359,12 +443,16 @@ export function createTabMetadataStore() {
      * re-activates that tile's ALREADY-active tab (TileRenderer's `onFocus`), so
      * every click paid a full rebuild -- including the click that ends a
      * drag-select, which destroyed the selection the user had just made.
+     *
+     * Persisted (deduped) so a reload restores the ordering rather than leaving
+     * every tab at zero — see the `mru` field doc.
      */
     touchMru(tabId: string): number {
       if (state.byTabId[tabId]?.mru === mruCounter)
         return mruCounter
       mruCounter += 1
       this.patch(tabId, { mru: mruCounter })
+      persistMru(state.byTabId)
       return mruCounter
     },
   }

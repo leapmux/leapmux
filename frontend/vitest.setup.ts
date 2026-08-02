@@ -26,6 +26,15 @@ beforeEach(() => {
     disposeBridgeRoot = dispose
     installTestBridge({ userId: 'user-test', workspaceId: 'ws-test', rootTileId: 'main-tile' })
   })
+  // Clear browser storage: several stores now seed themselves from sessionStorage
+  // on construction (e.g. `createTabMetadataStore` reads `KEY_TAB_MRU` eagerly,
+  // before any render can run), and ~20 test files build it transitively through
+  // `createTestTabStores`. Without a global clear, state leaked by one test
+  // hydrates into the next. Per-file `beforeEach` clears remain where a test
+  // needs finer control, but this is the backstop that makes the eager-seed
+  // stores safe to construct anywhere.
+  sessionStorage.clear()
+  localStorage.clear()
 })
 
 afterEach(() => {

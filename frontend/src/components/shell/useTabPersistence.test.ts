@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { activeTabKey, focusedTileKey, tileActiveTabsKey } from '~/components/shell/tabPersistenceKeys'
 import { useTabPersistence } from '~/components/shell/useTabPersistence'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { setCRDTBridge } from '~/lib/crdt'
 import { emitAddTab, emitMoveTabToWorkspace, emitRemoveTab } from '~/stores/tabOps'
 import { seedWorkspace, withTestBridge } from '~/test-support/crdtBridge'
@@ -233,35 +233,40 @@ describe('useTabPersistence', () => {
   })
 
   // The reload window: the workspace is projected with its tabs, but nothing has
-  // been chosen yet because `restoreTabSelection` has not run. `mru` is never
-  // persisted, so every tab comes back scoring zero and `activeKeyForWorkspace`
-  // synthesises the FIRST tab. Persisting that invented answer overwrote the
-  // stored key before the restore could read it, which is how a reload put the
-  // sidebar on the first tab while the tab bar -- reading the per-tile pointer,
-  // which is never synthesised -- correctly stayed on the second.
-  it('does NOT overwrite the stored active-tab key before anything is chosen', async () => {
-    sessionStorageSet(activeTabKey(WS), `${TabType.AGENT}:second`)
+  // been chosen yet because `restoreTabSelection` has not run. The MRU stamps
+  // ARE persisted (`KEY_TAB_MRU`, seeded eagerly by `createTabMetadataStore`), so
+  // `activeKeyForWorkspace`'s healed `mruHead` is the genuinely most-recent tab
+  // rather than a synthesised first-tab. Persisting that answer is idempotent —
+  // it is the same key `restore()` would apply — so the writer no longer needs
+  // to no-op in this window; it simply persists the healed head.
+  it('persists the healed MRU head when nothing has been chosen, seeded from the prior session', async () => {
+    // Seed the prior session's MRU (keyed by raw tab id, like `byTabId`):
+    // 'second' was touched last (higher stamp).
+    sessionStorageSet(KEY_TAB_MRU, { first: 1, second: 2 })
     await withPersistence(({ selection, view, rootTileId }) => {
       emitAddTab({ type: TabType.AGENT, id: 'first', tileId: rootTileId, position: 'a' })
       emitAddTab({ type: TabType.AGENT, id: 'second', tileId: rootTileId, position: 'b' })
       expect(view.forWorkspace(WS), 'the tabs really are projected').toHaveLength(2)
       expect(selection.state.activeByWorkspace[WS], 'nothing chosen yet').toBeUndefined()
-      // What the writer must not persist: the synthesised first-tab answer.
-      expect(selection.activeKeyForWorkspace(WS)).toBe(`${TabType.AGENT}:first`)
+      // The healed head is the MRU tab, NOT position-order `first`.
+      expect(selection.activeKeyForWorkspace(WS)).toBe(`${TabType.AGENT}:second`)
     })
     expect(sessionStorageGet(activeTabKey(WS))).toBe(`${TabType.AGENT}:second`)
   })
 
-  // Same window, per-tile half. An empty `activeByTile` means "no tile has a
-  // pointer", which is true on every reload until the restore runs -- clearing
-  // then destroys the snapshot that keeps the tab bar on the right tab.
-  it('does NOT clear the stored per-tile keys before anything is chosen', async () => {
-    sessionStorageSet(tileActiveTabsKey(WS), JSON.stringify({ 'tile-1': `${TabType.AGENT}:second` }))
+  // Same window, per-tile half. The healed per-tile pointer is persisted too —
+  // there is no longer a "nothing chosen, so clear" branch that could destroy the
+  // snapshot the restore was about to read. The healed answer is the tile's MRU
+  // head, seeded from the prior session.
+  it('persists the healed per-tile pointer when nothing has been chosen', async () => {
+    sessionStorageSet(KEY_TAB_MRU, { first: 1 })
     await withPersistence(({ selection, rootTileId }) => {
       emitAddTab({ type: TabType.AGENT, id: 'first', tileId: rootTileId, position: 'a' })
       expect(selection.state.activeByTile[rootTileId], 'nothing chosen yet').toBeUndefined()
     })
-    expect(sessionStorageGet(tileActiveTabsKey(WS))).toBe(JSON.stringify({ 'tile-1': `${TabType.AGENT}:second` }))
+    const raw = sessionStorageGet<string>(tileActiveTabsKey(WS))
+    expect(raw, 'tileActiveTabs key present').not.toBeUndefined()
+    expect(Object.values(JSON.parse(raw!))).toContain(`${TabType.AGENT}:first`)
   })
 
   // The focus pointer is a user CHOICE that outlives the tab set -- tiles do not

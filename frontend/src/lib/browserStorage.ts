@@ -95,6 +95,8 @@ export const PREFIX_DIRECTORY_TREE = 'leapmux:directoryTree:'
 export const KEY_CLI_PATH_CHECKED = 'leapmux:cli-path-checked'
 export const KEY_EXPANDED_WORKSPACES = 'leapmux:expandedWorkspaces'
 export const KEY_CLIENT_ID = 'leapmux:client-id'
+/** Per-tab MRU stamp map (`Record<tabId, number>`), single blob. See tabMetadata.store. */
+export const KEY_TAB_MRU = 'leapmux:tab-mru'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const HOUR_MS = 60 * 60 * 1000
@@ -198,6 +200,11 @@ export const SESSION_EXACT_KEY_TTLS: ReadonlyMap<string, number> = new Map([
   [KEY_EXPANDED_WORKSPACES, 30 * DAY_MS],
   [KEY_CLIENT_ID, 30 * DAY_MS],
   [KEY_CLI_PATH_CHECKED, 1 * DAY_MS],
+  // Per-tab MRU stamp map. A single JSON blob keyed by globally-unique tab id
+  // (no workspace dimension, so it is an exact singleton rather than a templated
+  // prefix family). 30 days matches the sibling tab-pointer keys so a user who
+  // returns after a long break still lands on the tab they touched last.
+  [KEY_TAB_MRU, 30 * DAY_MS],
 ])
 
 // ---------------------------------------------------------------------------
