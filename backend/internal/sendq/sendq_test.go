@@ -413,7 +413,7 @@ func TestWriterOverBudgetTeardownMatchesClose(t *testing.T) {
 	assert.Zero(t, w.QueuedBytes())
 
 	select {
-	case <-w.WakeChForTest():
+	case <-w.Wake():
 	default:
 		t.Fatal("the budget kill must wake the drain goroutine rather than rely on the context")
 	}
@@ -927,4 +927,185 @@ func TestSignalDrainedWakesEveryWaiter(t *testing.T) {
 			t.Fatalf("waiter %d was not woken by signalDrained", i)
 		}
 	}
+}
+
+func TestWriterDrainWritesFIFOAndReturnsNilWhenEmpty(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var got []uint64
+	w := NewUnstarted(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write: func(_ context.Context, m *leapmuxv1.ChannelMessage) error {
+			got = append(got, m.GetCorrelationId())
+			return nil
+		},
+		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+	})
+	defer w.Close()
+
+	require.NoError(t, w.Enqueue(testFrame(1)))
+	require.NoError(t, w.Enqueue(testFrame(2)))
+	require.NoError(t, w.Drain())
+	assert.Equal(t, []uint64{1, 2}, got)
+	require.NoError(t, w.Drain(), "empty drain returns nil")
+	assert.Equal(t, []uint64{1, 2}, got)
+}
+
+func TestWriterDrainAfterCloseWritesNothing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wrote int
+	w := NewUnstarted(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error {
+			wrote++
+			return nil
+		},
+		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+	})
+	require.NoError(t, w.Enqueue(testFrame(1)))
+	w.Close()
+	require.NoError(t, w.Drain())
+	assert.Zero(t, wrote)
+}
+
+func TestWriterFlushReturnsErrClosedWhenQueueWasDiscarded(t *testing.T) {
+	t.Parallel()
+	w := NewUnstarted(context.Background(), Config[string]{
+		Write:    func(context.Context, string) error { return nil },
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+	})
+	require.NoError(t, w.Enqueue("frame"))
+	w.Close() // discards without writing
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	assert.ErrorIs(t, w.Flush(ctx), ErrClosed,
+		"Flush must not report success when Close discarded queued frames")
+}
+
+func TestWriterDrainLimitedYieldsAndResignals(t *testing.T) {
+	t.Parallel()
+	wrote := make([]string, 0, 4)
+	w := NewUnstarted(context.Background(), Config[string]{
+		Write: func(_ context.Context, s string) error {
+			wrote = append(wrote, s)
+			return nil
+		},
+		Size:     func(s string) int { return len(s) },
+		MaxBytes: 1024,
+	})
+	t.Cleanup(w.Close)
+	for i := 0; i < 4; i++ {
+		require.NoError(t, w.Enqueue(string(rune('a'+i))))
+	}
+	require.NoError(t, w.DrainLimited(DrainLimits{MaxFrames: 2}))
+	require.Equal(t, []string{"a", "b"}, wrote)
+	require.Equal(t, 2, w.QueuedLen())
+	// Remaining frames must re-arm Wake so a handler select can turn again.
+	select {
+	case <-w.Wake():
+	case <-time.After(time.Second):
+		t.Fatal("DrainLimited must re-signal Wake when frames remain")
+	}
+	require.NoError(t, w.DrainLimited(DrainLimits{MaxFrames: 2}))
+	require.Equal(t, []string{"a", "b", "c", "d"}, wrote)
+}
+
+func TestWriterConcurrentDrainPanics(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	w := NewUnstarted(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error {
+			close(started)
+			<-release
+			return nil
+		},
+		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+	})
+	defer w.Close()
+	t.Cleanup(func() { close(release) })
+
+	require.NoError(t, w.Enqueue(testFrame(1)))
+	go func() { _ = w.Drain() }()
+	<-started
+	assert.Panics(t, func() { _ = w.Drain() })
+}
+
+func TestWriterFlushStaysParkedAcrossMultiFrameDrain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	gate := make(chan struct{})
+	var wrote atomic.Int32
+	w := NewUnstarted(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error {
+			<-gate
+			wrote.Add(1)
+			return nil
+		},
+		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+	})
+	defer w.Close()
+
+	require.NoError(t, w.Enqueue(testFrame(1)))
+	require.NoError(t, w.Enqueue(testFrame(2)))
+
+	flushDone := make(chan error, 1)
+	go func() {
+		fctx, fcancel := context.WithTimeout(context.Background(), time.Second)
+		defer fcancel()
+		flushDone <- w.Flush(fctx)
+	}()
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- w.Drain() }()
+
+	select {
+	case <-flushDone:
+		t.Fatal("Flush returned before all frames left the drain")
+	case <-time.After(20 * time.Millisecond):
+	}
+	assert.Equal(t, int32(0), wrote.Load())
+
+	close(gate)
+	require.NoError(t, <-drainDone)
+	require.NoError(t, <-flushDone)
+	assert.Equal(t, int32(2), wrote.Load())
+}
+
+func TestWriterWriteTimeoutGivesUpUnderHandlerDrain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	gaveUp := make(chan error, 1)
+	w := NewUnstarted(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error {
+			select {}
+		},
+		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+		WriteTimeout: testShortWriteTimeout,
+		OnGiveUp: func(err error) {
+			cancel()
+			select {
+			case gaveUp <- err:
+			default:
+			}
+		},
+	})
+	defer w.Close()
+
+	require.NoError(t, w.Enqueue(testFrame(1)))
+	go func() { _ = w.Drain() }()
+
+	select {
+	case err := <-gaveUp:
+		require.Error(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("WriteTimeout must give up under handler drain")
+	}
+	assert.True(t, w.IsClosed(), "give-up must close the queue even while Drain is parked in Write")
+	assert.ErrorIs(t, w.Enqueue(testFrame(2)), ErrClosed)
 }

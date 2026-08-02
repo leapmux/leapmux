@@ -64,15 +64,32 @@ func (p *PendingRequests) SendAndWait(
 		p.mu.Unlock()
 	}()
 
-	if err := conn.Send(msg); err != nil {
+	// Request/response RPCs (ChannelOpen, notifications) ride the waitable
+	// data path: they must not consume the tiny-control reserve, and they
+	// can park under backpressure instead of soft-failing.
+	if err := conn.SendWait(ctx, msg); err != nil {
 		return nil, fmt.Errorf("send to worker: %w", err)
 	}
 
 	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	case resp := <-ch:
 		return resp, nil
+	case <-ctx.Done():
+		// Prefer an already-buffered response over timeout/cancel when both
+		// are ready (Go select is random among ready cases).
+		select {
+		case resp := <-ch:
+			return resp, nil
+		default:
+			return nil, ctx.Err()
+		}
+	case <-conn.Done():
+		select {
+		case resp := <-ch:
+			return resp, nil
+		default:
+			return nil, ErrConnectionClosed
+		}
 	}
 }
 

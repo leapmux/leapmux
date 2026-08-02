@@ -268,6 +268,9 @@ func (h *ChannelRelayHandler) relayFrontendMessageToWorker(info channelmgr.Chann
 			ChannelMessage: msg,
 		},
 	}); err != nil {
+		// Over-budget on the data path fences the worker connection. Unlike
+		// the frontend relay there is no documented replay for this
+		// direction; recovery is the frontend reopening the channel.
 		slog.Debug("channel relay: failed to relay to worker",
 			"channel_id", channelID, "error", err)
 		return errTerminalChannelRelay

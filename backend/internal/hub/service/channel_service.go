@@ -120,7 +120,7 @@ func (s *ChannelService) GetWorkerHandshakeParams(
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker has no public key"))
 	}
 
-	encMode := conn.EncryptionMode
+	encMode := conn.EncryptionMode()
 	if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
 		encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
 	}

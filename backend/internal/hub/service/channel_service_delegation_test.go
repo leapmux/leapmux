@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -151,13 +152,10 @@ func openMemoryStore(t *testing.T) store.Store {
 func (e *bearerChannelEnv) captureWorker(t *testing.T, workerID string) (chan *leapmuxv1.ConnectResponse, *workermgr.Conn) {
 	t.Helper()
 	ch := make(chan *leapmuxv1.ConnectResponse, 8)
-	conn := &workermgr.Conn{
-		WorkerID: workerID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			ch <- msg
-			return nil
-		},
-	}
+	conn := workermgrtest.NewConnWithWrite(t, workerID, func(msg *leapmuxv1.ConnectResponse) error {
+		ch <- msg
+		return nil
+	})
 	_, _ = e.workerMgr.Register(conn)
 	return ch, conn
 }

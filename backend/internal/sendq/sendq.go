@@ -1,21 +1,38 @@
 // Package sendq is the bounded outbound queue every long-lived stream in this
 // system writes through.
 //
-// Two connections own one today: the Hub's frontend websocket relay
-// (internal/hub/service.relayWriter) and the worker's Connect bidi stream
-// (internal/worker/hub.Client). Both face the same hazard -- a synchronous
+// Three connections own one today: the Hub's frontend websocket relay
+// (internal/hub/service.relayWriter), the worker's Connect bidi stream
+// (internal/worker/hub.Client), and the Hub's Connect server handler
+// (internal/hub/workermgr.Conn). All face the same hazard -- a synchronous
 // write under shared infrastructure turns one slow peer into a stall of every
-// multiplexed producer behind it -- and both recover the same way: queue,
-// drain from one goroutine, disconnect (or park) when the peer cannot keep up.
+// multiplexed producer behind it -- and all recover the same way: queue,
+// drain from one owner, disconnect (or park) when the peer cannot keep up.
 //
-// Frames are never dropped mid-stream on the Enqueue path: an ordered,
-// encrypted ciphertext stream has no resync for a hole, and reconnect +
-// replay-from-DB (Hub) or producer backpressure (worker) already exist.
-// TryEnqueue is the deliberate exception for best-effort frames issued from a
-// shared receive goroutine that must never block. TryEnqueueControl is the
-// must-deliver twin: it may consume a reserved ControlReserve slice of the
-// byte budget that data paths leave free, so a saturated data burst cannot
-// silently drop an open-response / access-ack / teardown CLOSE.
+// Two drain modes share one queue:
+//
+//   - Goroutine-drained (New): a background goroutine owns the transport
+//     Write. Used by the frontend relay and the worker's Hub client, where the
+//     owner is free to spawn one and the write has no handler-lifetime
+//     coupling.
+//   - Handler-drained (NewUnstarted + Drain): the Connect *server* handler
+//     owns every Write by selecting on Wake and calling Drain from its own
+//     goroutine. A write that outlives that handler panics
+//     ("Write called after Handler finished"); spawning a drain goroutine
+//     would recreate that hazard whenever Unregister returned first. The
+//     handler must call Close before it returns (via Fence), which latches
+//     the queue so Drain cannot start a write afterward.
+//
+// Delivery classes (three deliberate APIs, not one "must"):
+//
+//   - Enqueue / EnqueueWait: data path. Over budget disconnects (Enqueue) or
+//     parks (EnqueueWait). Ordered ciphertext has no resync for a hole.
+//   - TryEnqueue: best-effort, never blocks, never tears down.
+//   - TryEnqueueControl: reserved-budget TRY-enqueue. Data paths leave
+//     ControlReserve free so a saturated bulk burst cannot starve tiny
+//     control frames (acks, CLOSE, heartbeat). A false return means even
+//     the reserve is gone -- callers must treat that as soft fail or reset;
+//     the name is not a delivery guarantee.
 //
 // Nothing here bounds how MANY writers exist. A shared pool, and the eviction
 // policy it would need, is tracked in
@@ -34,8 +51,9 @@ import (
 // Config configures a Writer. MaxBytes is required; every other bound may be
 // zeroed to disable it.
 type Config[T any] struct {
-	// Write is the ONLY caller of the underlying transport. The drain
-	// goroutine owns it exclusively.
+	// Write is the ONLY caller of the underlying transport. Exactly one drain
+	// owner -- the goroutine New starts, or the caller of NewUnstarted via
+	// Drain -- invokes it.
 	Write func(context.Context, T) error
 	// Size returns the bytes charged for an item, excluding FrameOverhead.
 	Size func(T) int
@@ -64,20 +82,50 @@ type Config[T any] struct {
 }
 
 var (
-	// ErrClosed is returned by Enqueue once the writer is torn down.
+	// ErrClosed is returned by Enqueue once the writer is torn down, and by
+	// Flush when the writer closed or gave up before the waited-for frames
+	// reached the transport (including when Close discarded them).
 	ErrClosed = errors.New("sendq: writer closed")
 	// ErrOverBudget is the cause passed to OnGiveUp when Enqueue blows the
 	// byte budget. Callers of Enqueue itself still see ErrClosed: a client
 	// that cannot keep up is disconnected, and further enqueues must stop.
 	ErrOverBudget = errors.New("sendq: queue over byte budget")
+	// errConcurrentDrain is the panic value Drain raises when a second
+	// goroutine tries to own the drain. Typed so recoverers can re-panic it
+	// without treating a programming invariant as a transport write panic.
+	errConcurrentDrain = errors.New("sendq: concurrent Drain")
 )
+
+// IsConcurrentDrainPanic reports whether a recovered panic value is the
+// intentional concurrent-Drain ownership panic.
+func IsConcurrentDrainPanic(r any) bool {
+	return r == errConcurrentDrain
+}
+
+// Default Connect-stream queue bounds shared by the Hub workermgr.Conn and
+// the worker hub.Client. Keeping one definition stops the two sides of the
+// bidi link from drifting on budget or watchdog behaviour.
+const (
+	DefaultMaxBytes       = 32 * 1024 * 1024
+	DefaultControlReserve = 256 * 1024
+	DefaultFrameOverhead  = 256
+	DefaultWriteTimeout   = 30 * time.Second
+)
+
+// DrainLimits bounds one Drain turn so a handler select can yield to receives.
+// Zero MaxFrames and MaxDuration means unlimited (full drain).
+type DrainLimits struct {
+	MaxFrames   int
+	MaxDuration time.Duration
+}
 
 type queued[T any] struct {
 	item T
 	size int
 }
 
-// Writer is a bounded outbound queue drained by a single goroutine.
+// Writer is a bounded outbound queue drained by exactly one owner -- either
+// the goroutine New starts, or the caller of NewUnstarted via Drain.
 type Writer[T any] struct {
 	cfg Config[T]
 	ctx context.Context
@@ -88,12 +136,16 @@ type Writer[T any] struct {
 	watchdogArmed atomic.Bool
 	lastProgress  time.Time
 
+	// draining is set for the duration of Drain so a concurrent second
+	// drainer panics rather than racing finishWrite / writing.
+	draining atomic.Bool
+
 	mu          sync.Mutex
 	queue       []queued[T]
 	queuedBytes int
 	closed      bool
 	gaveUp      bool
-	// writing is true from the moment the drain goroutine pops a frame until
+	// writing is true from the moment the drain pops a frame until
 	// its Write returns. Flush needs it because pop() removes the frame before
 	// the write happens, so an empty queue alone does not mean the last frame
 	// reached the transport.
@@ -118,9 +170,22 @@ func New[T any](ctx context.Context, cfg Config[T]) *Writer[T] {
 	return w
 }
 
+// NewUnstarted constructs a Writer without starting a drain goroutine. The
+// caller owns the drain: it must call Drain from exactly one goroutine (the
+// typical pattern is select{ case <-w.Wake(): w.Drain() }), and must call
+// Close before that goroutine goes away so no write can outlive it.
+//
+// The Connect server handler uses this mode because a write against a finished
+// handler panics; a background drain would recreate that hazard whenever the
+// handler returned first.
+func NewUnstarted[T any](ctx context.Context, cfg Config[T]) *Writer[T] {
+	return newWriter(ctx, cfg)
+}
+
 // newWriter constructs a Writer without starting the drain. Tests that drive
 // writeItem or the budget accounting directly use it so they do not race the
-// drain goroutine on lastProgress.
+// drain goroutine on lastProgress. Production handler-drain callers use
+// NewUnstarted instead.
 func newWriter[T any](ctx context.Context, cfg Config[T]) *Writer[T] {
 	if cfg.MaxBytes <= 0 {
 		panic("sendq: Config.MaxBytes must be positive")
@@ -241,10 +306,11 @@ func (w *Writer[T]) TryEnqueue(item T) bool {
 }
 
 // TryEnqueueControl appends item if the FULL MaxBytes budget allows. It is the
-// must-deliver path for receive-goroutine control frames: data paths leave
-// ControlReserve free so a saturated bulk burst cannot starve an open
-// response, access ack, or teardown CLOSE. Still never blocks and never
-// tears the connection down — a false return means even the reserve is gone.
+// reserved-budget try path for receive-goroutine control frames: data paths
+// leave ControlReserve free so a saturated bulk burst cannot starve an open
+// response, access ack, or teardown CLOSE. Still never blocks and never tears
+// the connection down — a false return means even the reserve is gone, and
+// the caller must decide soft-fail vs reset. It is not a delivery guarantee.
 func (w *Writer[T]) TryEnqueueControl(item T) bool {
 	return w.tryEnqueueAgainst(item, w.cfg.MaxBytes)
 }
@@ -354,17 +420,18 @@ func (w *Writer[T]) signalDrained() {
 // Flush blocks until the queue is empty AND the in-flight write has returned,
 // so every frame enqueued before the call has been handed to the transport.
 //
-// Returns nil on a full drain, and also once the writer is closed or has given
-// up: the queue was discarded, so there is nothing left to wait for and no
-// later call could do better. Returns an error only when the WAIT was cut
-// short -- ctx expired, or the writer's own connection context ended -- because
-// only then might frames still have been drainable.
+// Returns nil only when the queue is idle (empty and not writing) while the
+// writer is still open. Returns ErrClosed if the writer closed or gave up --
+// including when Close discarded queued frames -- so a caller that needs
+// "reached the wire" (shutdown notify) cannot mistakingly treat a discard as
+// success. Returns ctx.Err / the writer's context error when the wait was cut
+// short while frames were still drainable.
 //
 // This is what makes a graceful shutdown's last words actually leave the
 // machine. Enqueue and EnqueueWait return once a frame is QUEUED, so a caller
 // that broadcasts and then tears the connection down is racing the drain
 // goroutine: on an idle box the drain wins and nobody notices, under load it
-// loses and the frames are discarded by Close with no error anywhere.
+// loses and the frames are discarded by Close -- Flush reports ErrClosed.
 func (w *Writer[T]) Flush(ctx context.Context) error {
 	for {
 		// Capture the current generation channel under the same lock that read
@@ -372,10 +439,13 @@ func (w *Writer[T]) Flush(ctx context.Context) error {
 		// closes the channel this iteration parks on.
 		w.mu.Lock()
 		idle := len(w.queue) == 0 && !w.writing
-		done := w.closed || w.gaveUp
+		tornDown := w.closed || w.gaveUp
 		drained := w.drained
 		w.mu.Unlock()
-		if idle || done {
+		if idle {
+			if tornDown {
+				return ErrClosed
+			}
 			return nil
 		}
 		select {
@@ -450,6 +520,89 @@ func (w *Writer[T]) giveUp(err error) {
 	}
 }
 
+// Wake returns the depth-1 wake channel that fires when a frame is enqueued
+// (or the writer closes). Exactly one goroutine may select on it: a second
+// consumer would steal the coalesced signal that signalNonBlocking depends on.
+// The goroutine-drained path parks on it inside run(); a handler-drained
+// caller parks on it in its own select and then calls Drain.
+func (w *Writer[T]) Wake() <-chan struct{} {
+	return w.wake
+}
+
+// Drain pops and writes every currently queued frame (unlimited), then
+// returns. See DrainLimited for a bounded turn used by handler selects.
+func (w *Writer[T]) Drain() error {
+	return w.DrainLimited(DrainLimits{})
+}
+
+// DrainLimited pops and writes queued frames until the queue is empty, a write
+// fails, or the limits are hit. A non-nil error means the drain gave up (write
+// failure, stall, or watchdog) and the caller should stop -- the queue is
+// already closed. Nil with limits hit leaves remaining frames queued and
+// re-signals Wake so a handler select can run another turn after servicing
+// receives.
+//
+// Popping one at a time is load-bearing: pop sets writing atomically with
+// removal, which is the only thing that keeps Flush from returning between
+// two frames of the same batch. A concurrent second Drain panics with
+// errConcurrentDrain.
+//
+// The caller must own the drain exclusively. run() is the goroutine-drained
+// implementation of that ownership; a NewUnstarted caller is the handler-
+// drained one.
+func (w *Writer[T]) DrainLimited(lim DrainLimits) error {
+	if !w.draining.CompareAndSwap(false, true) {
+		panic(errConcurrentDrain)
+	}
+	defer w.draining.Store(false)
+
+	// Restart the stall clock: reaching here means the peer owed us nothing
+	// until this wake-up. Idle time is not stalled time, and this socket may
+	// have no keepalive to refresh the clock for us.
+	w.lastProgress = w.now()
+	start := w.now()
+	frames := 0
+
+	for {
+		if lim.MaxFrames > 0 && frames >= lim.MaxFrames {
+			w.signalWakeIfQueued()
+			return nil
+		}
+		if lim.MaxDuration > 0 && w.now().Sub(start) >= lim.MaxDuration {
+			w.signalWakeIfQueued()
+			return nil
+		}
+		frame, ok := w.pop()
+		if !ok {
+			return nil
+		}
+		frames++
+		// Wake EnqueueWait parkers as soon as the bytes leave the queue,
+		// not after the (up to WriteTimeout-long) write finishes. The
+		// budget is already free; delaying the signal couples backpressure
+		// relief to write latency for no functional reason.
+		w.signalBudgetFreed()
+		err := w.writeItem(frame.item)
+		w.finishWrite()
+		if err != nil {
+			if w.isClosed() {
+				return err
+			}
+			w.giveUp(err)
+			return err
+		}
+	}
+}
+
+func (w *Writer[T]) signalWakeIfQueued() {
+	w.mu.Lock()
+	has := !w.closed && len(w.queue) > 0
+	w.mu.Unlock()
+	if has {
+		w.signalWake()
+	}
+}
+
 func (w *Writer[T]) run() {
 	defer w.Close()
 	w.lastProgress = w.now()
@@ -460,31 +613,8 @@ func (w *Writer[T]) run() {
 		case <-w.wake:
 		}
 
-		// Restart the stall clock: the inner loop below only ever exits
-		// with an empty queue, so reaching here means the client owed us
-		// nothing until this wake-up. Idle time is not stalled time, and
-		// this socket may have no keepalive to refresh the clock for us.
-		w.lastProgress = w.now()
-
-		for {
-			frame, ok := w.pop()
-			if !ok {
-				break
-			}
-			// Wake EnqueueWait parkers as soon as the bytes leave the queue,
-			// not after the (up to WriteTimeout-long) write finishes. The
-			// budget is already free; delaying the signal couples backpressure
-			// relief to write latency for no functional reason.
-			w.signalBudgetFreed()
-			err := w.writeItem(frame.item)
-			w.finishWrite()
-			if err != nil {
-				if w.isClosed() {
-					return
-				}
-				w.giveUp(err)
-				return
-			}
+		if err := w.Drain(); err != nil {
+			return
 		}
 		if w.isClosed() {
 			return
@@ -579,10 +709,4 @@ func (w *Writer[T]) SetLastProgressForTest(t time.Time) {
 // through the queue. For tests of the stall bound in isolation.
 func (w *Writer[T]) WriteItemForTest(item T) error {
 	return w.writeItem(item)
-}
-
-// WakeChForTest exposes the wake channel so over-budget teardown tests can
-// assert the drain was nudged. For tests.
-func (w *Writer[T]) WakeChForTest() <-chan struct{} {
-	return w.wake
 }

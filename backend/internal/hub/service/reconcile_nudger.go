@@ -47,7 +47,7 @@ func (n *ReconcileNudger) NudgeReconcile(workerID string) {
 	if conn == nil {
 		return
 	}
-	err := conn.Send(&leapmuxv1.ConnectResponse{
+	err := conn.SendControl(&leapmuxv1.ConnectResponse{
 		Payload: &leapmuxv1.ConnectResponse_ReconcileNudge{
 			ReconcileNudge: &leapmuxv1.ReconcileNudge{},
 		},
