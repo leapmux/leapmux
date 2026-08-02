@@ -67,7 +67,7 @@ func setupAgentWithWatcher(t *testing.T, svc *Service, w *testResponseWriter, ag
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent(agentID) })
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: agentID, mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 	return sink
 }
 

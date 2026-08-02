@@ -61,7 +61,7 @@ func newRefreshTestFixture(t *testing.T, seed settingsSeed) refreshTestFixture {
 	}))
 
 	mock := newTestWatcher("ch-1")
-	svc.Watchers.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	registerAgentWatch(svc, "ch-1", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, mock)
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	return refreshTestFixture{svc: svc, sink: sink, mock: mock}

@@ -123,7 +123,7 @@ func TestBroadcastTerminalEvent_DeduplicatesWithinPerTerminal(t *testing.T) {
 
 	// Register the same channel 5 times for the same terminal.
 	for i := 0; i < 5; i++ {
-		m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+		m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 	}
 
 	m.BroadcastTerminalEvent("term-1", testTerminalEvent("term-1", []byte("a")))
@@ -138,7 +138,7 @@ func TestBroadcastAgentEvent_DeduplicatesWithinWatchers(t *testing.T) {
 	mock := newTestWatcher("ch-1")
 
 	for i := 0; i < 5; i++ {
-		m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+		m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 	}
 
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
@@ -153,8 +153,8 @@ func TestBroadcastTerminalEvent_DistinctWatchersAllReceive(t *testing.T) {
 	mock1 := newTestWatcher("ch-1")
 	mock2 := newTestWatcher("ch-2")
 
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock1)
-	m.SetTerminalWatches("ch-2", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock2)
+	m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock1)
+	m.terminals.setWatches("ch-2", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock2)
 
 	m.BroadcastTerminalEvent("term-1", testTerminalEvent("term-1", []byte("a")))
 
@@ -173,7 +173,7 @@ func TestWatchTerminal_IdempotentRegistration(t *testing.T) {
 	mock := newTestWatcher("ch-1")
 
 	for i := 0; i < 5; i++ {
-		m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+		m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 	}
 
 	assert.Equal(t, 1, m.terminals.count("term-1"))
@@ -191,7 +191,7 @@ func TestWatchAgent_IdempotentRegistration(t *testing.T) {
 	mock := newTestWatcher("ch-1")
 
 	for i := 0; i < 5; i++ {
-		m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+		m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 	}
 
 	assert.Equal(t, 1, m.agents.count("agent-1"))
@@ -212,8 +212,8 @@ func TestWatchAgent_ReRegisterReplacesTheSender(t *testing.T) {
 	first := newTestWatcher("ch-1")
 	second := newTestWatcher("ch-1")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, first)
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, second)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, first)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, second)
 
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 
@@ -228,7 +228,7 @@ func TestAgentEvent_DoesNotReachTerminalWatchers(t *testing.T) {
 	mock := newTestWatcher("ch-1")
 
 	// Only register for terminal events.
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 
@@ -242,7 +242,7 @@ func TestTerminalEvent_DoesNotReachAgentWatchers(t *testing.T) {
 	mock := newTestWatcher("ch-1")
 
 	// Only register for agent events.
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	m.BroadcastTerminalEvent("term-1", testTerminalEvent("term-1", []byte("a")))
 
@@ -255,8 +255,8 @@ func TestUnwatchAll_RemovesFromAllLists(t *testing.T) {
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "term-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "term-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	m.UnwatchAll("ch-1")
 
@@ -315,11 +315,11 @@ func TestModesForChannel_ReflectsCurrentRegistrations(t *testing.T) {
 
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
-	m.SetAgentWatches("ch-1", []watchEntry{
+	m.agents.setWatches("ch-1", []watchEntry{
 		{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL},
 		{id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY},
 	}, mock)
-	m.SetTerminalWatches("ch-1", []watchEntry{
+	m.terminals.setWatches("ch-1", []watchEntry{
 		{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL},
 	}, mock)
 
@@ -330,7 +330,7 @@ func TestModesForChannel_ReflectsCurrentRegistrations(t *testing.T) {
 	assert.Empty(t, m.AgentModesForChannel("ch-other"))
 
 	// After replace, omitted entities disappear from the snapshot.
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
 	agentModes = m.AgentModesForChannel("ch-1")
 	require.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, agentModes["agent-1"])
 	_, has2 := agentModes["agent-2"]
@@ -361,7 +361,7 @@ func TestBroadcast_DropsWatcherOnSendError(t *testing.T) {
 	mock := newTestWatcher("ch-dead")
 	mock.failSends(errors.New("transport gone"))
 
-	m.SetAgentWatches("ch-dead", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-dead", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	// First broadcast hits the dead sender once.
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
@@ -381,7 +381,7 @@ func TestBroadcast_TerminalDropsWatcherOnSendError(t *testing.T) {
 	mock := newTestWatcher("ch-dead")
 	mock.failSends(errors.New("transport gone"))
 
-	m.SetTerminalWatches("ch-dead", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.terminals.setWatches("ch-dead", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	m.BroadcastTerminalEvent("term-1", testTerminalEvent("term-1", []byte("a")))
 	assert.Equal(t, int64(1), mock.streamCount.Load())
@@ -400,8 +400,8 @@ func TestBroadcast_DropsOnlyDeadWatcher(t *testing.T) {
 	mockDead.failSends(errors.New("transport gone"))
 	mockLive := newTestWatcher("ch-live")
 
-	m.SetAgentWatches("ch-dead", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockDead)
-	m.SetAgentWatches("ch-live", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockLive)
+	m.agents.setWatches("ch-dead", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockDead)
+	m.agents.setWatches("ch-live", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockLive)
 
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 	assert.Equal(t, int64(1), mockDead.streamCount.Load())
@@ -428,7 +428,7 @@ func TestBroadcast_KeepsWatcherWhenChannelRejectsOneMessage(t *testing.T) {
 	mock := newTestWatcher("ch-1")
 	mock.failSends(fmt.Errorf("message too large: 99 > 10: %w", channel.ErrMessageRejected))
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 
 	assert.Equal(t, 1, m.agents.count("agent-1"),
@@ -450,7 +450,7 @@ func TestBroadcast_TerminalKeepsWatcherWhenChannelRejectsOneMessage(t *testing.T
 	mock := newTestWatcher("ch-1")
 	mock.failSends(fmt.Errorf("message too large: 99 > 10: %w", channel.ErrMessageRejected))
 
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 	m.BroadcastTerminalEvent("term-1", testTerminalEvent("term-1", []byte("a")))
 
 	assert.Equal(t, 1, m.terminals.count("term-1"),
@@ -470,14 +470,14 @@ func TestWatcher_ReSubscribeAfterInvalidate(t *testing.T) {
 	// First registration: send fails, watcher gets dropped.
 	mockDead := newTestWatcher("ch-1")
 	mockDead.failSends(errors.New("transport gone"))
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockDead)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockDead)
 
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 	assert.Equal(t, 0, m.agents.count("agent-1"), "precondition: dead watcher should be dropped")
 
 	// Re-subscribe on the same channel ID with a fresh sender.
 	mockAlive := newTestWatcher("ch-1")
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockAlive)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockAlive)
 
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 	assert.Equal(t, int64(1), mockAlive.streamCount.Load(), "re-subscribed watcher should receive broadcasts")
@@ -500,7 +500,7 @@ func TestWatcher_InvalidateScopedToEntity(t *testing.T) {
 	mock := newTestWatcher("ch-multi")
 	mock.failSends(errors.New("transport gone"))
 
-	m.SetAgentWatches("ch-multi", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-multi", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	// First send to agent-1 fails — should drop the agent-1 registration
 	// but leave agent-2's intact (same channel, same sender).
@@ -536,13 +536,13 @@ func TestWatcher_AnotherChannelRegisteringDoesNotDisarmTheSweep(t *testing.T) {
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 	mock.failSends(errors.New("transport gone"))
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	// Subscribe the other channel from inside the (unlocked) send loop so
 	// the interleaving is deterministic rather than timing-dependent.
 	other := newTestWatcher("ch-2")
 	registerOther := func() {
-		m.SetAgentWatches("ch-2", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, other)
+		m.agents.setWatches("ch-2", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, other)
 	}
 	mock.onSend.Store(&registerOther)
 
@@ -554,20 +554,20 @@ func TestWatcher_AnotherChannelRegisteringDoesNotDisarmTheSweep(t *testing.T) {
 }
 
 // TestWatcher_TerminalRegistrationDoesNotDisarmTheAgentSweep is the
-// cross-registry twin, and models the real handler shape: WatchEvents
-// calls SetAgentWatches and SetTerminalWatches separately, so an agent
-// broadcast can land between the two. The terminal call must not perturb
-// the agent registration's generation.
+// cross-registry twin, and models the real handler shape: a watchSession
+// calls SetAgentWatchesForSession and SetTerminalWatchesForSession
+// separately, so an agent broadcast can land between the two. The terminal
+// call must not perturb the agent registration's generation.
 func TestWatcher_TerminalRegistrationDoesNotDisarmTheAgentSweep(t *testing.T) {
 	t.Parallel()
 
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 	mock.failSends(errors.New("transport gone"))
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	registerTerminal := func() {
-		m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+		m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 	}
 	mock.onSend.Store(&registerTerminal)
 
@@ -587,10 +587,10 @@ func TestUnwatchAll_PreservesOtherChannels(t *testing.T) {
 	mock1 := newTestWatcher("ch-1")
 	mock2 := newTestWatcher("ch-2")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock1)
-	m.SetAgentWatches("ch-2", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock2)
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock1)
-	m.SetTerminalWatches("ch-2", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock2)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock1)
+	m.agents.setWatches("ch-2", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock2)
+	m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock1)
+	m.terminals.setWatches("ch-2", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock2)
 
 	// Unwatch only ch-1.
 	m.UnwatchAll("ch-1")
@@ -621,7 +621,7 @@ func TestWatcher_ResubscribeDuringBroadcastDoesNotRaceSender(t *testing.T) {
 
 	m := NewWatcherManager()
 	firstMock := newTestWatcher("ch-race")
-	m.SetAgentWatches("ch-race", []watchEntry{{id: "agent-race", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, firstMock)
+	m.agents.setWatches("ch-race", []watchEntry{{id: "agent-race", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, firstMock)
 
 	const rounds = 200
 	event := testAgentEvent("agent-race")
@@ -635,7 +635,7 @@ func TestWatcher_ResubscribeDuringBroadcastDoesNotRaceSender(t *testing.T) {
 		for i := 0; i < rounds; i++ {
 			nextMock := newTestWatcher("ch-race")
 			mocks = append(mocks, nextMock)
-			m.SetAgentWatches("ch-race", []watchEntry{{id: "agent-race", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, nextMock)
+			m.agents.setWatches("ch-race", []watchEntry{{id: "agent-race", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, nextMock)
 		}
 	}()
 
@@ -669,11 +669,11 @@ func TestWatcher_FailedSendDoesNotDropAFresherResubscribe(t *testing.T) {
 	m := NewWatcherManager()
 	staleMock := newTestWatcher("ch-1")
 	staleMock.failSends(errors.New("transport gone"))
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, staleMock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, staleMock)
 
 	freshMock := newTestWatcher("ch-1")
 	resubscribe := func() {
-		m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, freshMock)
+		m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, freshMock)
 	}
 	staleMock.onSend.Store(&resubscribe)
 
@@ -707,12 +707,12 @@ func TestWatcher_StaleFailureDoesNotDropAReusedChannelID(t *testing.T) {
 	m := NewWatcherManager()
 	staleMock := newTestWatcher("ch-1")
 	staleMock.failSends(errors.New("transport gone"))
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, staleMock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, staleMock)
 
 	freshMock := newTestWatcher("ch-1")
 	teardownAndResubscribe := func() {
 		m.UnwatchAll("ch-1")
-		m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, freshMock)
+		m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, freshMock)
 	}
 	staleMock.onSend.Store(&teardownAndResubscribe)
 
@@ -744,9 +744,9 @@ func TestBroadcast_DropsEverySimultaneouslyFailingWatcher(t *testing.T) {
 	mockDeadA.failSends(errors.New("transport gone"))
 	mockDeadB.failSends(errors.New("peer dropped"))
 
-	m.SetAgentWatches("ch-dead-a", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockDeadA)
-	m.SetAgentWatches("ch-live", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockLive)
-	m.SetAgentWatches("ch-dead-b", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockDeadB)
+	m.agents.setWatches("ch-dead-a", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockDeadA)
+	m.agents.setWatches("ch-live", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockLive)
+	m.agents.setWatches("ch-dead-b", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mockDeadB)
 
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 
@@ -769,7 +769,7 @@ func TestRetire_RemovesTheEntityEntryWhenItEmpties(t *testing.T) {
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 	mock.failSends(errors.New("transport gone"))
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 
@@ -784,8 +784,8 @@ func TestUnwatchAll_RemovesTheEntityEntryWhenItEmpties(t *testing.T) {
 
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	m.UnwatchAll("ch-1")
 
@@ -807,11 +807,11 @@ func TestSetAgentWatches_DropsEntitiesTheNewRequestOmits(t *testing.T) {
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 	require.Equal(t, 1, m.agents.count("agent-2"), "precondition: both agents watched")
 
 	// The tab for agent-2 closed; the client re-issues with the rest.
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	assert.Equal(t, 0, m.agents.count("agent-2"), "the omitted agent must be unsubscribed")
 	m.BroadcastAgentEvent("agent-2", testAgentEvent("agent-2"))
@@ -829,8 +829,8 @@ func TestSetTerminalWatches_DropsEntitiesTheNewRequestOmits(t *testing.T) {
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "term-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "term-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.terminals.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	assert.Equal(t, 0, m.terminals.count("term-2"), "the omitted terminal must be unsubscribed")
 	assert.Equal(t, 1, m.terminals.count("term-1"), "the retained terminal stays")
@@ -846,11 +846,11 @@ func TestSetAgentWatches_LeavesOtherChannelsAlone(t *testing.T) {
 	mine := newTestWatcher("ch-1")
 	theirs := newTestWatcher("ch-2")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mine)
-	m.SetAgentWatches("ch-2", []watchEntry{{id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, theirs)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mine)
+	m.agents.setWatches("ch-2", []watchEntry{{id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, theirs)
 
 	// ch-1 drops agent-2; ch-2 still wants it.
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mine)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mine)
 
 	assert.Equal(t, []string{"ch-2"}, m.agents.channelIDs("agent-2"),
 		"pruning one channel must not disturb another channel's subscription")
@@ -868,8 +868,8 @@ func TestSetAgentWatches_EmptySetUnsubscribesEverything(t *testing.T) {
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
-	m.SetAgentWatches("ch-1", nil, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", nil, mock)
 
 	assert.False(t, m.agents.hasEntity("agent-1"), "agent-1 entry must be gone")
 	assert.False(t, m.agents.hasEntity("agent-2"), "agent-2 entry must be gone")
@@ -884,7 +884,7 @@ func TestSetAgentWatches_RepeatedIDRegistersOnce(t *testing.T) {
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}, {id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 
 	assert.Equal(t, 1, m.agents.count("agent-1"))
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
@@ -907,8 +907,8 @@ func TestSetAgentWatches_SecondStreamOnSameChannelReplacesTheFirst(t *testing.T)
 	firstStream := newTestWatcher("ch-1")
 	secondStream := newTestWatcher("ch-1")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, firstStream)
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, secondStream)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, firstStream)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, secondStream)
 
 	assert.False(t, m.agents.hasEntity("agent-1"),
 		"the first stream's exclusive subscription is dropped, silently")
@@ -1068,7 +1068,7 @@ func TestBroadcast_ModeReregisterChangesDelivery(t *testing.T) {
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",
 		Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: 1}},
@@ -1076,7 +1076,7 @@ func TestBroadcast_ModeReregisterChangesDelivery(t *testing.T) {
 	assert.Equal(t, int64(0), mock.streamCount.Load(), "NOTIFY skips content")
 
 	// Same channel, same entity, new mode — no extra registration.
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
 	assert.Equal(t, 1, m.agents.count("agent-1"))
 
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
@@ -1085,7 +1085,7 @@ func TestBroadcast_ModeReregisterChangesDelivery(t *testing.T) {
 	})
 	assert.Equal(t, int64(1), mock.streamCount.Load(), "FULL receives content after mode flip")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",
 		Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: 3}},
@@ -1099,7 +1099,7 @@ func TestBroadcast_ContentSkippedForNotifyOnlyRegistration(t *testing.T) {
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
 
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",
@@ -1118,12 +1118,12 @@ func TestBroadcast_ContentSelfGatesWithoutFullWatcher(t *testing.T) {
 	// caller): when no channel holds the entity in FULL, a classContent event
 	// must short-circuit before any snapshot/send — whether the audience is
 	// NOTIFY-only, empty, or a mix. Pin the contract so a new content event
-	// does not need to remember its own HasFull*Watcher guard.
+	// does not need to remember its own FULL-mode guard.
 	t.Run("NOTIFY-only audience skips content", func(t *testing.T) {
 		t.Parallel()
 		m := NewWatcherManager()
 		notify := newTestWatcher("ch-1")
-		m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, notify)
+		m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, notify)
 		m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 			AgentId: "agent-1",
 			Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: 1}},
@@ -1146,8 +1146,8 @@ func TestBroadcast_ContentSelfGatesWithoutFullWatcher(t *testing.T) {
 		m := NewWatcherManager()
 		notify := newTestWatcher("ch-notify")
 		full := newTestWatcher("ch-full")
-		m.SetAgentWatches("ch-notify", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, notify)
-		m.SetAgentWatches("ch-full", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, full)
+		m.agents.setWatches("ch-notify", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, notify)
+		m.agents.setWatches("ch-full", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, full)
 		m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 			AgentId: "agent-1",
 			Event:   &leapmuxv1.AgentEvent_AgentMessage{AgentMessage: &leapmuxv1.AgentChatMessage{Seq: 1}},
@@ -1164,8 +1164,8 @@ func TestBroadcast_NotifyDeliveredToBothModes(t *testing.T) {
 	notify := newTestWatcher("ch-notify")
 	full := newTestWatcher("ch-full")
 
-	m.SetAgentWatches("ch-notify", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, notify)
-	m.SetAgentWatches("ch-full", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, full)
+	m.agents.setWatches("ch-notify", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, notify)
+	m.agents.setWatches("ch-full", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, full)
 
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 
@@ -1189,7 +1189,7 @@ func TestBroadcast_LazyMarshalSkipsWhenAllNotify(t *testing.T) {
 	m := NewWatcherManager()
 	mock := &payloadCountingWriter{mockResponseWriter: *newTestWatcher("ch-1")}
 
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
 
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",
@@ -1235,7 +1235,7 @@ func TestBroadcast_MessageDeletedReachesNotifyWatcher(t *testing.T) {
 
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
 
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",
@@ -1257,7 +1257,7 @@ func TestBroadcast_TodosChangedReachesNotifyWatcher(t *testing.T) {
 
 	m := NewWatcherManager()
 	mock := newTestWatcher("ch-1")
-	m.SetAgentWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+	m.agents.setWatches("ch-1", []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
 
 	m.BroadcastAgentEvent("agent-1", &leapmuxv1.AgentEvent{
 		AgentId: "agent-1",
@@ -1268,18 +1268,18 @@ func TestBroadcast_TodosChangedReachesNotifyWatcher(t *testing.T) {
 	assert.Equal(t, int64(1), mock.streamCount.Load())
 }
 
-func TestHasFullTerminalWatcher(t *testing.T) {
+func TestHasFullWatcher(t *testing.T) {
 	t.Parallel()
 
-	m := NewWatcherManager()
+	r := newWatcherRegistry()
 	mock := newTestWatcher("ch-1")
-	assert.False(t, m.HasFullTerminalWatcher("term-1"))
+	assert.False(t, r.hasFullWatcher("term-1"))
 
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
-	assert.False(t, m.HasFullTerminalWatcher("term-1"))
+	r.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}, mock)
+	assert.False(t, r.hasFullWatcher("term-1"))
 
-	m.SetTerminalWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
-	assert.True(t, m.HasFullTerminalWatcher("term-1"))
+	r.setWatches("ch-1", []watchEntry{{id: "term-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, mock)
+	assert.True(t, r.hasFullWatcher("term-1"))
 }
 
 func TestEventClassCoversEveryTerminalOneofArm(t *testing.T) {

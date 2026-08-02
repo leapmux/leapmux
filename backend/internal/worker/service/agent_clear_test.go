@@ -104,7 +104,7 @@ func TestSendAgentMessage_SlashClearBroadcastsUserBeforeContextCleared(t *testin
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",
@@ -166,7 +166,7 @@ func TestSendAgentMessage_SlashClearBroadcastsStartingDuringRestart(t *testing.T
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",
@@ -244,7 +244,7 @@ func TestSendAgentMessage_SlashClearRestartFailureSkipsContextCleared(t *testing
 		return nil, errors.New("forced restart failure")
 	}
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",
@@ -293,7 +293,7 @@ func TestSendAgentRawMessage_CodexInterruptPersistsSyntheticUserMarker(t *testin
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-codex", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-codex", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-codex",
@@ -343,7 +343,7 @@ func TestSendAgentRawMessage_ClaudeInterruptDoesNotPersistSyntheticUserMarker(t 
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-claude", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-claude", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{
 		AgentId: "agent-claude",

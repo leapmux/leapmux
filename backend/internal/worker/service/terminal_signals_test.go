@@ -39,9 +39,7 @@ func dbUpsertTerminalParams(id, workingDir string) db.UpsertTerminalParams {
 func registerTerminalNotifyWatch(t *testing.T, svc *Service, terminalID string) *testResponseWriter {
 	t.Helper()
 	w := newTestWriter()
-	svc.Watchers.SetTerminalWatches("ch-signals", []watchEntry{{
-		id: terminalID, mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY,
-	}}, w)
+	registerTerminalWatch(svc, "ch-signals", terminalID, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, w)
 	return w
 }
 

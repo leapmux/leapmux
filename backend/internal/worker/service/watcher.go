@@ -268,8 +268,8 @@ func modeIsFull(mode leapmuxv1.WatchMode) bool {
 // the entity in FULL mode, so a worker whose tabs are all backgrounded pays
 // neither the snapshot nor the marshal for chat deltas / terminal bytes. This
 // is the single interest gate: callers (e.g. makeTerminalOutputFn) do not need
-// their own HasFullTerminalWatcher check, and adding a new content event does
-// not require remembering to gate it. Marshal is still lazy per-watcher, so a
+// their own FULL-mode check, and adding a new content event does not require
+// remembering to gate it. Marshal is still lazy per-watcher, so a
 // mixed FULL/NOTIFY audience only encodes once the first eligible watcher is
 // reached.
 func (r *watcherRegistry) broadcast(entityID string, resp *leapmuxv1.WatchEventsResponse, class eventClass) {
@@ -363,19 +363,9 @@ func (m *WatcherManager) isOwner(channelID string, sessionID uint64) bool {
 	return m.channelOwners[channelID] == sessionID
 }
 
-// SetAgentWatches makes channelID's agent subscriptions exactly entries.
-//
-// Production routes through SetAgentWatchesForSession (session-scoped, so a
-// cancelled/superseded watchSession cannot re-register). This non-session
-// variant survives as the registry's primitive test surface — see
-// https://github.com/leapmux/leapmux/issues/348 for the retire-or-document
-// decision.
-func (m *WatcherManager) SetAgentWatches(channelID string, entries []watchEntry, sender channel.ResponseWriter) {
-	m.agents.setWatches(channelID, entries, sender)
-}
-
-// SetAgentWatchesForSession is SetAgentWatches gated on session ownership —
-// a cancelled or superseded session cannot re-register after UnwatchAll.
+// SetAgentWatchesForSession makes channelID's agent subscriptions exactly
+// entries, but only if sessionID still owns channelID — a cancelled or
+// superseded watchSession cannot re-register after UnwatchAll.
 func (m *WatcherManager) SetAgentWatchesForSession(channelID string, sessionID uint64, entries []watchEntry, sender channel.ResponseWriter) {
 	if !m.isOwner(channelID, sessionID) {
 		return
@@ -383,15 +373,8 @@ func (m *WatcherManager) SetAgentWatchesForSession(channelID string, sessionID u
 	m.agents.setWatches(channelID, entries, sender)
 }
 
-// SetTerminalWatches makes channelID's terminal subscriptions exactly entries.
-//
-// See SetAgentWatches: production uses SetTerminalWatchesForSession; this
-// variant is the registry's primitive test surface (issue #348).
-func (m *WatcherManager) SetTerminalWatches(channelID string, entries []watchEntry, sender channel.ResponseWriter) {
-	m.terminals.setWatches(channelID, entries, sender)
-}
-
-// SetTerminalWatchesForSession is SetTerminalWatches gated on session ownership.
+// SetTerminalWatchesForSession makes channelID's terminal subscriptions exactly
+// entries, gated on session ownership (see SetAgentWatchesForSession).
 func (m *WatcherManager) SetTerminalWatchesForSession(channelID string, sessionID uint64, entries []watchEntry, sender channel.ResponseWriter) {
 	if !m.isOwner(channelID, sessionID) {
 		return
@@ -432,20 +415,6 @@ func (m *WatcherManager) UnwatchSession(channelID string, sessionID uint64) {
 	m.ownerMu.Unlock()
 	m.agents.unwatchAll(channelID)
 	m.terminals.unwatchAll(channelID)
-}
-
-// HasFullAgentWatcher reports whether any channel watches agentID in FULL mode.
-//
-// Currently unused in production (the terminal path gates on
-// HasFullTerminalWatcher; the agent path relies on broadcast's lazy marshal).
-// Retained as primitive test surface — see issue #348.
-func (m *WatcherManager) HasFullAgentWatcher(agentID string) bool {
-	return m.agents.hasFullWatcher(agentID)
-}
-
-// HasFullTerminalWatcher reports whether any channel watches terminalID in FULL mode.
-func (m *WatcherManager) HasFullTerminalWatcher(terminalID string) bool {
-	return m.terminals.hasFullWatcher(terminalID)
 }
 
 // BroadcastAgentEvent sends an AgentEvent to all watchers of the given agent.
