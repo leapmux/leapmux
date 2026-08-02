@@ -42,6 +42,21 @@ import (
 // failure and on runtime shutdown -- one constant so the two paths cannot drift.
 const crdtShutdownTimeout = 10 * time.Second
 
+// handlerGrace is how long in-flight HTTP handlers are given to finish on their
+// own once shutdown begins before their shared base context is cancelled to force
+// unwinding. It must stay strictly below httpDrainTimeout (asserted in
+// server_handler_context_test.go) so the forced cancellation still leaves the
+// drain time to observe the handlers returning and close their connections. 5s is
+// generous for a handler making progress (a Connect unary is already capped at
+// APITimeout) and far short of the drain's 10s. See BaseContext on the http.Server
+// literal in NewServer and the grace timer in the shutdown goroutine in Serve.
+const handlerGrace = 5 * time.Second
+
+// httpDrainTimeout bounds http.Server.Shutdown's wait for in-flight handlers to
+// return. handlerGrace cancels the laggards before this expires, so the drain
+// should not need its full budget in practice; the constant is the hard ceiling.
+const httpDrainTimeout = 10 * time.Second
+
 // ServerOption configures optional aspects of a Hub server.
 type ServerOption func(*serverOptions)
 
@@ -66,6 +81,7 @@ type Server struct {
 	tcpLn             net.Listener
 	localLn           net.Listener
 	listenURL         string
+	cancelHandlers    context.CancelFunc
 	shutdownCh        chan struct{}
 	authContexts      *auth.AuthContextRegistry
 	workerMgr         *workermgr.Manager
@@ -154,6 +170,16 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 
 	shutdownCh := make(chan struct{})
+
+	// handlerCtx is the parent of every in-flight HTTP handler's request context
+	// (via http.Server.BaseContext below). It is cancelled handlerGrace into
+	// shutdown so a handler the per-registry teardown paths cannot reach (every
+	// mux route, not just the worker Connect streams) is forced to unwind before
+	// the drain's deadline. Created beside shutdownCh so the two shutdown signals
+	// live together; cancelHandlers is released through acquiredResources on any
+	// construction failure.
+	handlerCtx, cancelHandlers := context.WithCancel(context.Background())
+	acquired.cancelHandlers = cancelHandlers
 
 	// The registry is built WITH its gate: ConnForUser cannot serve a
 	// user-supplied worker id without the ownership + delegation-scope check,
@@ -334,9 +360,17 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
 
+	// BaseContext seeds the context of EVERY accepted connection (and thus every
+	// request and h2c stream) with handlerCtx. Cancelling handlerCtx during
+	// shutdown cascades to r.Context() for in-flight handlers on both HTTP/1.1
+	// and h2c, without per-handler wiring -- the structural bound for the class
+	// of bug where a mux route doing unbounded I/O parks the drain. net/http
+	// derives connCtx from BaseContext in Serve->conn.serve, and h2c's
+	// sc.baseCtx comes from the same chain.
 	server := &http.Server{
 		Handler:           logging.HTTPMiddleware(metrics.HTTPMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return handlerCtx },
 		Protocols:         protocols,
 		HTTP2: &http.HTTP2Config{
 			MaxConcurrentStreams: 1000,
@@ -379,6 +413,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		tcpLn:             tcpLn,
 		localLn:           localLn,
 		listenURL:         listenURL,
+		cancelHandlers:    cancelHandlers,
 		shutdownCh:        shutdownCh,
 		authContexts:      authContexts,
 		workerMgr:         wMgr,
@@ -529,18 +564,26 @@ func (s *Server) Serve(ctx context.Context) error {
 		// 2. Notify connected workers to delay reconnection, then end their
 		// Connect streams. Both halves matter to the drain below: a notified
 		// worker still holds its stream until it decides to reconnect, and the
-		// drain waits on the handler that stream is parked in.
-		//
-		// This releases the drain for handlers the worker registry knows about.
-		// A handler outside it (a mux route doing outbound I/O) is bounded only
-		// by whatever deadline it sets itself; making that structural, via a
-		// shutdown-scoped BaseContext every handler derives from, is tracked in
-		// https://github.com/leapmux/leapmux/issues/343
+		// drain waits on the handler that stream is parked in. This releases the
+		// drain for the handlers the worker registry knows about. Handlers it
+		// does not are bounded structurally by the handlerCtx cancel below.
 		notifyCtx, cancelNotify := context.WithTimeout(context.Background(), 2*time.Second)
 		s.workerMgr.NotifyShutdownAndFence(notifyCtx, 10)
 		cancelNotify()
 
-		// 3. Drain in-flight HTTP requests, then force-close any connections
+		// 3. Cancel every in-flight handler the per-registry teardown above did
+		// not reach, then drain what is left. handlerCtx is the BaseContext of
+		// the http.Server, so cancelling it cascades to r.Context() for every
+		// in-flight request (HTTP/1.1 and h2c). handlerGrace lets short handlers
+		// finish on their own before the forced unwind, so a quick store read is
+		// not cut off; only a handler parked past the grace (e.g. a mux route on
+		// unbounded outbound I/O) is cancelled. This is the structural bound
+		// FenceAll cannot express, since FenceAll only reaches handlers the
+		// worker registry knows about.
+		graceTimer := time.AfterFunc(handlerGrace, s.cancelHandlers)
+		defer graceTimer.Stop()
+
+		// Drain in-flight HTTP requests, then force-close any connections
 		// the drain left behind. On Windows each accepted named-pipe
 		// connection is its own pipe instance; if any survive, the next
 		// ListenPipe with FILE_FLAG_FIRST_PIPE_INSTANCE on the same name
@@ -562,7 +605,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// TCP listener needs no equivalent — a lingering accepted TCP conn does
 		// not block rebinding the port, whereas a surviving named-pipe instance
 		// does block the next ListenPipe(FIRST_PIPE_INSTANCE).
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), httpDrainTimeout)
 		defer cancel()
 		httpShutdownErr := s.server.Shutdown(shutdownCtx)
 		httpCloseErr := s.server.Close()
@@ -713,11 +756,12 @@ func (e serverTeardownErrors) finalize() error {
 // same "remember to extend the sites below" trap in miniature: a new acquired.close
 // site added after them would have leaked both.
 type acquiredResources struct {
-	tcpLn        net.Listener
-	localLn      net.Listener
-	store        store.Store
-	authContexts *auth.AuthContextRegistry
-	crdtRegistry *crdt.Registry
+	tcpLn          net.Listener
+	localLn        net.Listener
+	store          store.Store
+	authContexts   *auth.AuthContextRegistry
+	crdtRegistry   *crdt.Registry
+	cancelHandlers context.CancelFunc
 }
 
 // close releases the acquired resources, joining the primary construction
@@ -732,6 +776,9 @@ func (r acquiredResources) close(primary error) error {
 	}
 	if r.authContexts != nil {
 		r.authContexts.Stop()
+	}
+	if r.cancelHandlers != nil {
+		r.cancelHandlers()
 	}
 	return serverTeardownErrors{
 		primary:       primary,
