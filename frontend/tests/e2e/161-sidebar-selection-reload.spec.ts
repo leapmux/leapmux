@@ -7,13 +7,22 @@ import { openTerminalViaUI, sidebarLeaves, waitForWorkspaceReady } from './helpe
  * `activeKeyForWorkspace`, the bar asks `activeKeyForTile` -- so a reload is the
  * one moment they can disagree, and nothing exercised it.
  *
- * They did disagree. `activeKeyForWorkspace` heals on read by synthesising
- * `mruHead` when nothing is chosen, `mru` is never persisted, and
- * `useTabPersistence` had no ordering guarantee against `restoreTabSelection`:
- * on the ticks where the writer ran first it persisted that synthesised
- * first-tab answer over the real stored key, and the restore then read back its
- * own clobbered value. The per-tile key was never synthesised, so the bar
- * stayed correct while the tree jumped to the first tab.
+ * They used to disagree. `activeKeyForWorkspace` heals on read by synthesising
+ * `mruHead` when nothing is chosen, and `mru` was never persisted, so every tab
+ * came back scoring zero and the healed answer was always the FIRST tab.
+ * `useTabPersistence` then had no ordering guarantee against
+ * `restoreTabSelection`: on the ticks where the writer ran first it persisted
+ * that synthesised first-tab answer over the real stored key, and the restore
+ * read back its own clobbered value. The per-tile key was never synthesised, so
+ * the bar stayed correct while the tree jumped to the first tab.
+ *
+ * That is now fixed at the root: `mru` is persisted to sessionStorage
+ * (`KEY_TAB_MRU`, seeded eagerly by `createTabMetadataStore`), so the healed
+ * head after a reload is the genuinely most-recent tab. The writer no longer
+ * needs to no-op in the reload window — its healed answer is now idempotent —
+ * so the defensive three-way `chosen` machinery was removed. This spec stays
+ * as the end-to-end guard: both the bar and the tree must land on the tab the
+ * user actually activated, not the first one.
  *
  * Only a real reload reproduces it -- the unit tests in
  * `useTabPersistence.test.ts` pin the window itself, this pins the symptom.
