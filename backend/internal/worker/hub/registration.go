@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/cenkalti/backoff/v6"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -51,7 +50,7 @@ func registerWithClient(
 	registrationKey string,
 	version string,
 	publicKey, mlkemPublicKey, slhdsaPublicKey []byte,
-	bo backoff.BackOff,
+	bo backoff,
 ) (*RegistrationResult, error) {
 	if registrationKey == "" {
 		return nil, errors.New("registration key is required")
@@ -99,7 +98,7 @@ func registerWithClient(
 			}
 		}
 
-		interval := bo.NextBackOff()
+		interval := bo.Next()
 		slog.Warn("hub unavailable, retrying registration...", "error", err, "backoff", interval)
 		select {
 		case <-ctx.Done():

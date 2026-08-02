@@ -12,13 +12,13 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/cenkalti/backoff/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/util/backoffutil"
 )
 
 // TestNew_DispatchesOnURLScheme verifies the scheme-dispatch branches in
@@ -226,12 +226,7 @@ func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
 	client := &Client{}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	bo := backoff.NewExponentialBackOff()
-	bo.InitialInterval = 10 * time.Millisecond
-	bo.MaxInterval = 500 * time.Millisecond
-	bo.Multiplier = 4.0
-	bo.RandomizationFactor = 0
-	bo.Reset()
+	bo := backoffutil.NewBackoff(10*time.Millisecond, 500*time.Millisecond, 0)
 
 	mockConnect := func(_ context.Context, _ string) error {
 		n := attempts.Add(1)
@@ -241,10 +236,10 @@ func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
 			// First call: fail immediately → backoff=10ms.
 			return fmt.Errorf("fail 1")
 		case 2:
-			// Second call: fail immediately → backoff=40ms.
+			// Second call: fail immediately → backoff=20ms.
 			return fmt.Errorf("fail 2")
 		case 3:
-			// Third call: fail immediately → backoff=160ms.
+			// Third call: fail immediately → backoff=40ms.
 			return fmt.Errorf("fail 3")
 		case 4:
 			// Fourth call: succeed for longer than threshold → should reset backoff.
@@ -263,7 +258,7 @@ func TestConnectWithReconnect_ResetsBackoffAfterLongConnection(t *testing.T) {
 
 	require.GreaterOrEqual(t, len(timestamps), 6, "expected at least 6 timestamps")
 
-	// Gap between call 3 and 4 should be large (160ms backoff).
+	// Gap between call 3 and 4 should be large (40ms backoff).
 	// Gap between call 5 and 6 should be small (10ms, reset to InitialInterval).
 	gap34 := timestamps[3].Sub(timestamps[2])
 	gap56 := timestamps[5].Sub(timestamps[4])
@@ -279,12 +274,8 @@ func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 	client := &Client{}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	bo := backoff.NewExponentialBackOff()
-	bo.InitialInterval = 2 * time.Millisecond
-	bo.MaxInterval = 10 * time.Millisecond
-	bo.Multiplier = 2.0
-	bo.RandomizationFactor = 0
-	bo.Reset()
+	const maxInterval = 10 * time.Millisecond
+	bo := backoffutil.NewBackoff(2*time.Millisecond, maxInterval, 0)
 
 	mockConnect := func(_ context.Context, _ string) error {
 		n := attempts.Add(1)
@@ -303,7 +294,7 @@ func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 	tolerance := 50 * time.Millisecond
 	for i := 1; i < len(timestamps); i++ {
 		gap := timestamps[i].Sub(timestamps[i-1])
-		assert.LessOrEqual(t, gap, bo.MaxInterval+tolerance, "gap[%d]=%v exceeds MaxInterval=%v", i, gap, bo.MaxInterval)
+		assert.LessOrEqual(t, gap, maxInterval+tolerance, "gap[%d]=%v exceeds MaxInterval=%v", i, gap, maxInterval)
 	}
 }
 

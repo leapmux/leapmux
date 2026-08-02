@@ -219,7 +219,13 @@ message WatchEventsRequest {
   repeated WatchAgentEntry agents = 1;
   repeated WatchTerminalEntry terminals = 2;
   // Echoed on WatchUpdateAck. Client-chosen, monotonic per stream; 0 is fine
-  // for a client that does not track revisions.
+  // for a client that does not track revisions. "Per stream" here means per the
+  // client's logical subscription lifetime: a client that resets update_id on
+  // each fresh stream open MUST treat acks from prior stream generations as
+  // stale (the generation boundary does not by itself make a buffered ack from
+  // the prior stream current). Clients that keep a single monotonic counter for
+  // the whole subscription life (never resetting on reconnect) are immune; this
+  // is the stronger form both known clients (frontend and CLI) implement.
   uint64 update_id = 3;
 }
 

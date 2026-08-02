@@ -3,16 +3,10 @@ package hub
 import (
 	"time"
 
-	"github.com/cenkalti/backoff/v6"
+	"github.com/leapmux/leapmux/internal/util/backoffutil"
 )
 
 // newFastBackoff creates a fast exponential backoff for testing.
-func newFastBackoff() *backoff.ExponentialBackOff {
-	b := backoff.NewExponentialBackOff()
-	b.InitialInterval = 1 * time.Millisecond
-	b.MaxInterval = 10 * time.Millisecond
-	b.Multiplier = 2.0
-	b.RandomizationFactor = 0
-	b.Reset()
-	return b
+func newFastBackoff() *backoffutil.Backoff {
+	return backoffutil.NewBackoff(1*time.Millisecond, 10*time.Millisecond, 0)
 }

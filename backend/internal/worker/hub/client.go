@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cenkalti/backoff/v6"
 	"golang.org/x/net/http2"
 
 	"connectrpc.com/connect"
@@ -614,7 +613,7 @@ func (c *Client) ConnectWithReconnect(ctx context.Context, authToken string) {
 	c.connectWithReconnect(ctx, authToken, c.Connect, newDefaultBackoff(), resetThreshold)
 }
 
-func (c *Client) connectWithReconnect(ctx context.Context, authToken string, connect connectFn, bo backoff.BackOff, threshold time.Duration) {
+func (c *Client) connectWithReconnect(ctx context.Context, authToken string, connect connectFn, bo backoff, threshold time.Duration) {
 	for {
 		start := time.Now()
 		err := connect(ctx, authToken)
@@ -651,7 +650,7 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 			bo.Reset()
 		}
 
-		interval := bo.NextBackOff()
+		interval := bo.Next()
 		slog.Warn("disconnected from hub, reconnecting...", "error", err, "backoff", interval)
 		select {
 		case <-ctx.Done():
