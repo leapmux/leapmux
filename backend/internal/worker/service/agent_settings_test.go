@@ -300,7 +300,7 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 		Options:      []*leapmuxv1.AvailableOption{{Id: "safe"}, {Id: "fast"}},
 	}})
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
@@ -366,7 +366,7 @@ func TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange(t *testing.T) {
 		Options:       `{"model":"auto"}`,
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
@@ -428,7 +428,7 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
 			}))
-			svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 			dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 				AgentId: "agent-1",
@@ -468,7 +468,7 @@ func TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: agent.EffortAuto}),
 	}))
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	// A model the static Claude seed does not list, plus an explicit effort the live catalog would
 	// offer for it. The agent is stopped, so OptionGroups serves the static fallback (no such model).
@@ -516,7 +516,7 @@ func TestUpdateAgentSettings_UnsupportedEffortWithoutModelSwitch(t *testing.T) {
 				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: "medium"}),
 			}))
-			svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 			// No model in the request: this is NOT a model switch, only an effort edit.
 			dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
@@ -559,7 +559,7 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 			agent.OptionIDPermissionMode: agent.PermissionModeDefault,
 		}),
 	}))
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	// The edit changes ONLY permission mode -- no model, no effort -- so the stale xhigh is
 	// inherited via the merge, not explicitly sent.
@@ -599,7 +599,7 @@ func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 			agent.CodexOptionSandboxPolicy: agent.CodexSandboxReadOnly,
 		}),
 	}))
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
@@ -724,7 +724,7 @@ func TestUpdateAgentSettings_RespelledModelKeepsEffort(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
 	}))
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	// "OPUS[1M]" normalizes to the stored "opus[1m]" -- same model, just a different spelling.
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
@@ -763,7 +763,7 @@ func TestUpdateAgentSettings_AliasedModelKeepsExplicitEffort(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
 	}))
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	// Fully-qualified alias for the SAME model, plus an explicit "max" -- a tier opus[1m]
 	// supports. The alias normalizes to the stored "opus[1m]", so this is not a switch, and
@@ -801,7 +801,7 @@ func TestUpdateAgentSettings_OfflineEffortLabelUsesNewModelCatalog(t *testing.T)
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "medium"}),
 	}))
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	// Switch to sonnet and to a tier sonnet offers (high), so effort actually changes and the
 	// label must resolve against sonnet's catalog.
@@ -839,7 +839,7 @@ func TestUpdateAgentSettings_DropsForeignSecondaryAxis(t *testing.T) {
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "anthropic/claude-x"}),
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
@@ -892,7 +892,7 @@ func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 				AgentProvider: tc.provider,
 				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "auto"}),
 			}))
-			svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 			dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 				AgentId:  "agent-1",
@@ -924,7 +924,7 @@ func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "gpt-5.5"}),
 	}))
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
@@ -958,7 +958,7 @@ func TestUpdateAgentSettings_KeepsKnownWellKnownAxis(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "sonnet"}),
 	}))
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
@@ -1036,7 +1036,7 @@ func TestApplySettingsViaRestartBroadcastsConfirmedCatalog(t *testing.T) {
 	restartCalls := 0
 	svc.startAgentFn = mockAgentStarter(t, svc, func(agent.Options) { restartCalls++ })
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: agentID, mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
@@ -1632,7 +1632,7 @@ func TestUpdateAgentSettings_BroadcastsGoosePermissionModeLabels(t *testing.T) {
 		}),
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-goose", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-goose", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-goose",
@@ -1694,7 +1694,7 @@ func TestNotifyPermissionModeChanged_ResolvesLabels(t *testing.T) {
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "auto", agent.OptionIDPermissionMode: "auto"}),
 	}))
 
-	svc.Watchers.SetAgentWatches(w.channelID, []watchEntry{{id: "agent-goose", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+	registerAgentWatch(svc, w.channelID, "agent-goose", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	sink := svc.Output.NewSink("agent-goose", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE)
 	sink.NotifyPermissionModeChanged("auto", "approve")

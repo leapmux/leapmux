@@ -1314,7 +1314,7 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 		if err := svc.Queries.CreateAgent(ctx, params); err != nil {
 			return err
 		}
-		svc.Watchers.SetAgentWatches(wWatch.channelID, []watchEntry{{id: params.ID, mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, wWatch)
+		registerAgentWatch(svc, wWatch.channelID, params.ID, leapmuxv1.WatchMode_WATCH_MODE_FULL, wWatch)
 		return nil
 	}
 
