@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cenkalti/backoff/v6"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/remote"
 	"github.com/leapmux/leapmux/internal/cli/remote/streamevents"
@@ -300,10 +299,10 @@ func decodeJSON(data []byte) (any, bool) {
 // where the old duration-only rule kept reconnect latency pinned high through a
 // run of sub-maxBackoff flaps.
 type reconnectBackoff struct {
-	inner *backoff.ExponentialBackOff
+	inner *backoffutil.Backoff
 	// pending is the wait the NEXT afterSession returns. It exists because this
 	// loop's contract is "wait the current value, then grow", whereas
-	// NextBackOff grows as it returns -- so the first value has to be taken
+	// Backoff.Next grows as it returns -- so the first value has to be taken
 	// eagerly and each later call returns what the previous one produced.
 	pending time.Duration
 }
@@ -311,8 +310,8 @@ type reconnectBackoff struct {
 func newReconnectBackoff(initial, maxInterval time.Duration) reconnectBackoff {
 	// Deterministic (no jitter): the follower is one process reconnecting to
 	// its own worker, not a fleet, and the sequence is asserted directly.
-	b := backoffutil.NewCapped(initial, maxInterval, 0)
-	return reconnectBackoff{inner: b, pending: b.NextBackOff()}
+	b := backoffutil.NewBackoff(initial, maxInterval, 0)
+	return reconnectBackoff{inner: b, pending: b.Next()}
 }
 
 // afterSession returns how long to wait before the next reconnect and advances
@@ -327,10 +326,10 @@ func newReconnectBackoff(initial, maxInterval time.Duration) reconnectBackoff {
 func (b *reconnectBackoff) afterSession(deliveredEvent bool) time.Duration {
 	if deliveredEvent {
 		b.inner.Reset()
-		b.pending = b.inner.NextBackOff()
+		b.pending = b.inner.Next()
 	}
 	wait := b.pending
-	b.pending = b.inner.NextBackOff()
+	b.pending = b.inner.Next()
 	return wait
 }
 
@@ -524,6 +523,12 @@ func tailAgentMessages(ctx context.Context, c *remote.Client, workerID, agentID 
 				if err := em.Err(); err != nil {
 					return err
 				}
+				return nil
+			}
+			// ErrSubscriptionClosed means the Subscription was Cancelled (the
+			// process is shutting down via the deferred Cancel); it is not a
+			// subscribe failure and must not surface to the user as one.
+			if errors.Is(err, streamevents.ErrSubscriptionClosed) {
 				return nil
 			}
 			if emitErr := em.emitError(agentID, "subscribe_failed", err); emitErr != nil {

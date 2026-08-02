@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/cenkalti/backoff/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/backoffutil"
 )
 
 // mockConnectorClient implements WorkerConnectorServiceClient for
@@ -110,16 +110,16 @@ func TestRegisterWithClient_DoesNotRetryUnauthenticated(t *testing.T) {
 	assert.Equal(t, int32(1), attempts.Load(), "Unauthenticated must not be retried")
 }
 
-// recordingBackoff records each NextBackOff result so tests can assert
+// recordingBackoff records each Next result so tests can assert
 // on the values requested rather than wall-clock elapsed time, which is
 // noisy on Windows where the scheduler tick (~15.6ms) dwarfs 10ms sleeps.
 type recordingBackoff struct {
-	inner     backoff.BackOff
+	inner     *backoffutil.Backoff
 	intervals []time.Duration
 }
 
-func (r *recordingBackoff) NextBackOff() time.Duration {
-	d := r.inner.NextBackOff()
+func (r *recordingBackoff) Next() time.Duration {
+	d := r.inner.Next()
 	r.intervals = append(r.intervals, d)
 	return d
 }
@@ -140,12 +140,7 @@ func TestRegisterWithClient_BackoffIncreases(t *testing.T) {
 		},
 	}
 
-	inner := backoff.NewExponentialBackOff()
-	inner.InitialInterval = 10 * time.Millisecond
-	inner.MaxInterval = 100 * time.Millisecond
-	inner.Multiplier = 2.0
-	inner.RandomizationFactor = 0
-	inner.Reset()
+	inner := backoffutil.NewBackoff(10*time.Millisecond, 100*time.Millisecond, 0)
 	rec := &recordingBackoff{inner: inner}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

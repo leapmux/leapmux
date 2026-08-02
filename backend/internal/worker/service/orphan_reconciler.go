@@ -174,7 +174,7 @@ func (r *OrphanReconciler) Run(ctx context.Context) {
 	// budget. Capped at the ordinary interval, so a worker that is genuinely
 	// offline decays into the hourly cadence instead of hammering a hub that
 	// cannot answer.
-	retryBackoff := backoffutil.NewCapped(reconcileRetryBase, r.interval, 0)
+	retryBackoff := backoffutil.NewBackoff(reconcileRetryBase, r.interval, 0)
 	var (
 		retryTimer *time.Timer
 		retryC     <-chan time.Time
@@ -191,7 +191,7 @@ func (r *OrphanReconciler) Run(ctx context.Context) {
 			retryBackoff.Reset()
 			return
 		}
-		retryTimer = time.NewTimer(retryBackoff.NextBackOff())
+		retryTimer = time.NewTimer(retryBackoff.Next())
 		retryC = retryTimer.C
 	}
 	defer func() {
