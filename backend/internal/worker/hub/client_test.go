@@ -532,8 +532,8 @@ func TestClientSendDoesNotBlockReceiveWhenTransportBlocked(t *testing.T) {
 			return nil
 		},
 		Size:          connectReqSize,
-		MaxBytes:      connectQueueMaxBytes,
-		FrameOverhead: connectFrameOverhead,
+		MaxBytes:      sendq.DefaultMaxBytes,
+		FrameOverhead: sendq.DefaultFrameOverhead,
 		OnGiveUp:      func(error) { cancel() },
 	})
 	t.Cleanup(func() { c.writer.Close() })
@@ -575,8 +575,8 @@ func TestClientWriteFailureCancelsConnection(t *testing.T) {
 			return errors.New("stream write failed")
 		},
 		Size:          connectReqSize,
-		MaxBytes:      connectQueueMaxBytes,
-		FrameOverhead: connectFrameOverhead,
+		MaxBytes:      sendq.DefaultMaxBytes,
+		FrameOverhead: sendq.DefaultFrameOverhead,
 		OnGiveUp: func(error) {
 			c.cancelConn()
 		},
@@ -707,8 +707,8 @@ func TestClientLastSendTimeAdvancesOnEnqueue(t *testing.T) {
 	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
 		Write:         func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
 		Size:          connectReqSize,
-		MaxBytes:      connectQueueMaxBytes,
-		FrameOverhead: connectFrameOverhead,
+		MaxBytes:      sendq.DefaultMaxBytes,
+		FrameOverhead: sendq.DefaultFrameOverhead,
 	})
 	t.Cleanup(func() { c.writer.Close() })
 

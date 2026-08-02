@@ -14,7 +14,6 @@ import (
 func TestPendingRequests_Complete(t *testing.T) {
 	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
 
-	// We can't use a real stream, so test Complete directly.
 	ch := make(chan *leapmuxv1.ConnectRequest, 1)
 	p.mu.Lock()
 	p.pending["req-1"] = ch
@@ -50,38 +49,115 @@ func TestPendingRequests_SendAndWait_NilConn(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestPendingRequests_SendAndWait_ContextCancel(t *testing.T) {
+func TestPendingRequests_SendAndWait_FencedConn(t *testing.T) {
 	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
+	conn, _ := newTestConn(t, "b1", nil, nil)
+	conn.Fence()
 
-	// Create a conn with nil stream — Send will fail.
-	conn := &Conn{WorkerID: "b1"}
+	_, err := p.SendAndWait(context.Background(), conn, &leapmuxv1.ConnectResponse{})
+	require.ErrorIs(t, err, ErrConnectionClosed)
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+func TestSendAndWait_PrefersBufferedResponseOverDone(t *testing.T) {
+	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
+	conn, rec := newAutoDrainedConn(t, "b1", nil)
 
-	_, err := p.SendAndWait(ctx, conn, &leapmuxv1.ConnectResponse{})
-	require.Error(t, err)
+	errCh := make(chan error, 1)
+	respCh := make(chan *leapmuxv1.ConnectRequest, 1)
+	go func() {
+		resp, err := p.SendAndWait(context.Background(), conn, &leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
+				ChannelOpen: &leapmuxv1.ChannelOpenRequest{ChannelId: "ch-1"},
+			},
+		})
+		respCh <- resp
+		errCh <- err
+	}()
+
+	require.Eventually(t, func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(p.pending) > 0
+	}, time.Second, 5*time.Millisecond)
+
+	var reqID string
+	require.Eventually(t, func() bool {
+		msgs := rec.Messages()
+		if len(msgs) == 0 {
+			return false
+		}
+		reqID = msgs[0].GetRequestId()
+		return reqID != ""
+	}, time.Second, 5*time.Millisecond)
+
+	require.True(t, p.Complete(reqID, &leapmuxv1.ConnectRequest{
+		RequestId: reqID,
+		Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
+			ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{ChannelId: "ch-1"},
+		},
+	}))
+	conn.Fence()
+
+	select {
+	case err := <-errCh:
+		require.NoError(t, err, "buffered response must win over Done")
+		got := <-respCh
+		require.NotNil(t, got)
+		assert.Equal(t, "ch-1", got.GetChannelOpenResp().GetChannelId())
+	case <-time.After(time.Second):
+		t.Fatal("SendAndWait did not return")
+	}
+}
+
+func TestSendAndWait_FailsFastWhenTheConnIsFenced(t *testing.T) {
+	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
+	conn, rec := newAutoDrainedConn(t, "b1", nil)
+	_ = rec
+
+	// Enqueue succeeds; fence while waiting for the response so Done fires
+	// before the default timeout.
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := p.SendAndWait(context.Background(), conn, &leapmuxv1.ConnectResponse{
+			Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
+				ChannelOpen: &leapmuxv1.ChannelOpenRequest{ChannelId: "ch-1"},
+			},
+		})
+		errCh <- err
+	}()
+
+	// Wait until the request is pending, then fence.
+	require.Eventually(t, func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(p.pending) > 0
+	}, time.Second, 5*time.Millisecond)
+
+	conn.Fence()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, ErrConnectionClosed)
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("SendAndWait must fail fast on Done, not burn the default timeout")
+	}
 }
 
 func TestPendingRequests_OutOfOrder(t *testing.T) {
 	p := NewPendingRequests(func() time.Duration { return 30 * time.Second })
 
-	// Use a channel to safely capture sent messages from concurrent goroutines.
 	sentMsgs := make(chan *leapmuxv1.ConnectResponse, 2)
-	conn := &Conn{
-		WorkerID: "b1",
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sentMsgs <- msg
-			return nil
-		},
-	}
+	conn, pump := newTestConn(t, "b1", func(msg *leapmuxv1.ConnectResponse) error {
+		sentMsgs <- msg
+		return nil
+	}, nil)
+	pumpStart(t, pump, conn)
 
 	type result struct {
 		resp *leapmuxv1.ConnectRequest
 		err  error
 	}
 
-	// Launch two concurrent SendAndWait calls using ChannelOpen messages.
 	ch1Result := make(chan result, 1)
 	ch2Result := make(chan result, 1)
 
@@ -103,7 +179,6 @@ func TestPendingRequests_OutOfOrder(t *testing.T) {
 		ch2Result <- result{resp, err}
 	}()
 
-	// Collect both sent messages and capture their request IDs.
 	var reqID1, reqID2 string
 	for i := 0; i < 2; i++ {
 		select {
@@ -125,7 +200,6 @@ func TestPendingRequests_OutOfOrder(t *testing.T) {
 	require.NotEmpty(t, reqID1, "missing request ID for ch-1")
 	require.NotEmpty(t, reqID2, "missing request ID for ch-2")
 
-	// Complete ch-2 first, then ch-1 (out of order).
 	require.True(t, p.Complete(reqID2, &leapmuxv1.ConnectRequest{
 		RequestId: reqID2,
 		Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
@@ -140,7 +214,6 @@ func TestPendingRequests_OutOfOrder(t *testing.T) {
 		},
 	}))
 
-	// Verify each goroutine received its correct response.
 	select {
 	case r := <-ch1Result:
 		require.NoError(t, r.err, "ch-1 error")

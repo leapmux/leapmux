@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
-	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -155,14 +156,14 @@ func TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant(t *testing.T) {
 	reg := newRecordingRegistry(t, journal)
 	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, nil)
 
+	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
-	conn := &workermgr.Conn{
-		WorkerID: "w1",
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			sent = append(sent, msg)
-			return nil
-		},
-	}
+	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
+		mu.Lock()
+		sent = append(sent, msg)
+		mu.Unlock()
+		return nil
+	})
 
 	// Empty worker report: the worker hosts nothing, so every row the hub
 	// listed for this registrant is stale.
@@ -173,7 +174,11 @@ func TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant(t *testing.T) {
 	assert.Equal(t, []string{"tab-a"}, journal.tombstonedTabs(userA.ID))
 	assert.Empty(t, journal.tombstonedTabs(userB.ID),
 		"a row owned by someone other than the registrant is out of scope entirely")
-	assert.Len(t, sent, 1, "the worker must still get its sync response")
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(sent) == 1
+	}, time.Second, time.Millisecond, "the worker must still get its sync response")
 
 	// Batch ids must stay unique per submit within one sync, otherwise a
 	// second batch would dedup against the first.
@@ -200,17 +205,18 @@ func TestHandleWorkspaceTabsSync_ManagerGetFailureStillResponds(t *testing.T) {
 	reg.failFor = userA.ID
 	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, nil)
 
-	sent := 0
-	conn := &workermgr.Conn{
-		WorkerID: "w1",
-		SendFn:   func(*leapmuxv1.ConnectResponse) error { sent++; return nil },
-	}
+	var sent atomic.Int32
+	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error {
+		sent.Add(1)
+		return nil
+	})
 
 	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{})
 
 	assert.Equal(t, []string{userA.ID}, reg.seen())
 	assert.Empty(t, journal.tombstonedTabs(userA.ID), "nothing commits when the manager cannot be resolved")
-	assert.Equal(t, 1, sent, "the worker still gets its sync response")
+	require.Eventually(t, func() bool { return sent.Load() == 1 }, time.Second, time.Millisecond,
+		"the worker still gets its sync response")
 }
 
 // TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible pins what
@@ -232,11 +238,14 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 
 	journal := newTabSyncJournal()
 	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), nil)
+	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
-	conn := &workermgr.Conn{WorkerID: "w1", SendFn: func(msg *leapmuxv1.ConnectResponse) error {
+	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
+		mu.Lock()
 		sent = append(sent, msg)
+		mu.Unlock()
 		return nil
-	}}
+	})
 
 	// The worker hosts the tab, in alice's workspace, exactly as her row says.
 	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{
@@ -245,8 +254,14 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 		},
 	})
 
-	require.Len(t, sent, 1)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(sent) == 1
+	}, time.Second, time.Millisecond)
+	mu.Lock()
 	require.NotNil(t, sent[0].GetWorkerTabInventoryResp(), "the sync is acknowledged")
+	mu.Unlock()
 	// The tombstone journal is now the only observable: the response carries no
 	// per-tab classification (see WorkerTabInventoryResponse). Alice's tab
 	// matched her own row, so nothing of hers is stale -- and Bob's
@@ -270,7 +285,10 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 	journal := newTabSyncJournal()
 	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), nil)
 	sent := 0
-	conn := &workermgr.Conn{WorkerID: "w1", SendFn: func(*leapmuxv1.ConnectResponse) error { sent++; return nil }}
+	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
+		sent++
+		return nil
+	})
 
 	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", "", "req-1", &leapmuxv1.WorkerTabInventory{
 		Tabs: []*leapmuxv1.TabRef{

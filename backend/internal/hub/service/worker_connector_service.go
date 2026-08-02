@@ -177,25 +177,23 @@ func (s *WorkerConnectorService) Connect(
 	// the newly connected worker.
 	connCtx, cancelConn := context.WithCancel(ctx)
 	defer cancelConn()
-	conn := &workermgr.Conn{
-		WorkerID: worker.ID,
-		Stream:   stream,
-		Cancel:   cancelConn,
-		// Greet the worker with its own identity. Register sends this before it
-		// publishes the conn, so it lands before any ChannelOpen this connection could
-		// carry -- which the worker needs, because requireWorkerOwner gates every
-		// machine-scoped family on the owner and a session can exist the moment the
-		// conn is reachable. Handing it to Register rather than sending it here is what
-		// makes that ordering impossible to get wrong.
+	conn, pump := workermgr.NewConn(connCtx, cancelConn, worker.ID, stream.Send,
+		// Greet the worker with its own identity. Register enqueues this before
+		// it publishes the conn, so with a single handler drain it is
+		// mechanically the first frame written -- which the worker needs,
+		// because requireWorkerOwner gates every machine-scoped family on the
+		// owner and a session can exist the moment the conn is reachable.
+		// Handing it to Register rather than sending it here is what makes
+		// that ordering impossible to get wrong.
 		//
-		// worker.RegisteredBy is already in hand from the GetByAuthToken above, so this
-		// costs no query.
-		Greeting: &leapmuxv1.ConnectResponse{
+		// worker.RegisteredBy is already in hand from the GetByAuthToken above,
+		// so this costs no query.
+		&leapmuxv1.ConnectResponse{
 			Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
 				WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: worker.RegisteredBy},
 			},
 		},
-	}
+	)
 	replaced, err := s.workerMgr.Register(conn)
 	if err != nil {
 		if errors.Is(err, workermgr.ErrRegistryFenced) {
@@ -219,11 +217,18 @@ func (s *WorkerConnectorService) Connect(
 		s.cleanupWorker(worker.ID)
 	}
 	ctx = connCtx
+	// Teardown order is deliberate and lives in ONE defer so it cannot drift
+	// via LIFO comment mistakes:
+	//  1. Unregister removes the conn from the registry (no new Hub sends).
+	//  2. Drain writes every remaining frame while this handler still owns
+	//     the stream (write-after-finish proof).
+	//  3. Fence closes the queue and cancels Done.
+	//  4. cleanupWorker only if we were still the registered conn.
 	defer func() {
-		// Only run cleanup if this connection is still the registered one.
-		// A newer worker process may have already replaced it, in which
-		// case we must not unregister the replacement or close its agents.
-		if s.workerMgr.Unregister(worker.ID, conn) {
+		removed := s.workerMgr.Unregister(worker.ID, conn)
+		_ = pump.Drain()
+		conn.Fence()
+		if removed {
 			s.cleanupWorker(worker.ID)
 		}
 	}()
@@ -236,17 +241,23 @@ func (s *WorkerConnectorService) Connect(
 	slog.Info("worker connected", "worker_id", worker.ID, "status", worker.Status)
 	defer slog.Info("worker disconnected", "worker_id", worker.ID)
 
-	// Process pending notifications.
+	// Process pending notifications. A deregistering worker used to early-
+	// return after the inline ProcessPendingNotifications call, before the
+	// receive goroutine and main loop. Under enqueue semantics nothing drains
+	// that path, so the deregister instruction would reach the wire only via
+	// the final Drain defer -- racing stream teardown -- and pending.Complete
+	// (which only runs from the loop) could never fire, so MarkDeleted /
+	// ClearDeregistering never ran on the ack path. Both cases now run through
+	// the main loop, which drains and routes acks.
+	var notifyDone chan struct{} // nil for a normal worker: a nil select case blocks forever
 	if s.notifier != nil {
 		if worker.Status == leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING {
-			// Worker is being deregistered — process notifications inline, then close.
-			if err := s.notifier.ProcessPendingNotifications(ctx, worker.ID); err != nil {
-				slog.Error("failed to process pending notifications (deregistering)", "worker_id", worker.ID, "error", err)
-			}
-			return nil
+			notifyDone = make(chan struct{})
 		}
-		// Normal worker: process pending notifications in background.
 		go func() {
+			if notifyDone != nil {
+				defer close(notifyDone)
+			}
 			if err := s.notifier.ProcessPendingNotifications(ctx, worker.ID); err != nil {
 				slog.Error("failed to process pending notifications", "worker_id", worker.ID, "error", err)
 			}
@@ -278,11 +289,21 @@ func (s *WorkerConnectorService) Connect(
 	const workerIdleTimeout = 10 * time.Second
 	idleTimer := time.NewTimer(workerIdleTimeout)
 	defer idleTimer.Stop()
+	// Deregistering workers must not compete with the receive-idle timer:
+	// ProcessPendingNotifications parks in SendAndWait and a quiet worker
+	// would otherwise be torn down mid-ack. Nil select case blocks forever.
+	var idleC <-chan time.Time
+	if notifyDone == nil {
+		idleC = idleTimer.C
+	}
 
 	// resetIdle stops + drains + re-arms the idle timer. Folded into a
 	// helper so every successful receive (both branches) reuses one
 	// implementation instead of repeating the drain dance.
 	resetIdle := func() {
+		if notifyDone != nil {
+			return
+		}
 		if !idleTimer.Stop() {
 			select {
 			case <-idleTimer.C:
@@ -313,7 +334,7 @@ func (s *WorkerConnectorService) Connect(
 				return err
 			}
 
-		case <-idleTimer.C:
+		case <-idleC:
 			// A message may have arrived at the same instant the timer
 			// fired. Go's select picks randomly among ready cases, so
 			// drain msgCh before deciding to disconnect.
@@ -329,6 +350,17 @@ func (s *WorkerConnectorService) Connect(
 			default:
 			}
 			slog.Warn("worker idle timeout, assuming disconnected", "worker_id", worker.ID)
+			return nil
+
+		case <-pump.Ready():
+			// Bounded turn so a large outbound backlog yields to receives /
+			// idle / ctx. Remaining frames re-signal Ready. Teardown uses
+			// the full Drain in the defer above.
+			if err := pump.DrainTurn(); err != nil {
+				return nil // give-up already fenced + cancelled
+			}
+
+		case <-notifyDone:
 			return nil
 
 		case <-ctx.Done():
@@ -363,14 +395,14 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		// Cache encryption mode on the live connection (not persisted to DB).
 		encMode := hb.GetEncryptionMode()
 		if encMode == leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
-			if conn.EncryptionMode != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
+			if conn.EncryptionMode() != leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED {
 				// The worker already declared a mode; sending UNSPECIFIED
 				// afterwards is a bug — reject the connection.
-				return fmt.Errorf("worker sent unspecified encryption mode after previously declaring %v", conn.EncryptionMode)
+				return fmt.Errorf("worker sent unspecified encryption mode after previously declaring %v", conn.EncryptionMode())
 			}
 			encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
 		}
-		conn.EncryptionMode = encMode
+		conn.SetEncryptionMode(encMode)
 		// Persist worker's public keys if provided (sent with the initial heartbeat).
 		if pk := hb.GetPublicKey(); len(pk) > 0 {
 			mlkemPK := hb.GetMlkemPublicKey()
@@ -390,9 +422,8 @@ func (s *WorkerConnectorService) processWorkerMessage(
 				slog.Warn("failed to update worker public key", "worker_id", workerID, "error", err)
 			}
 		}
-		// Send heartbeat response via conn.Send() to serialize with
-		// other writes (e.g. channel relay) on the same bidi stream.
-		if err := conn.Send(&leapmuxv1.ConnectResponse{
+		// Heartbeat is a must-deliver control frame.
+		if err := conn.SendControl(&leapmuxv1.ConnectResponse{
 			Payload: &leapmuxv1.ConnectResponse_Heartbeat{
 				Heartbeat: &leapmuxv1.Heartbeat{},
 			},
@@ -477,7 +508,7 @@ func (s *WorkerConnectorService) closeWorkerChannel(conn *workermgr.Conn, worker
 	if len(closed) == 0 {
 		return
 	}
-	if err := conn.Send(newChannelCloseResponse(channelID)); err != nil {
+	if err := conn.SendControl(newChannelCloseResponse(channelID)); err != nil {
 		slog.Debug("failed to close terminal worker channel",
 			"worker_id", workerID, "channel_id", channelID, "error", err)
 	}
@@ -633,7 +664,7 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 	// Always send a response even when both lists are empty so the
 	// worker can rely on the round-trip to mark its initial sync
 	// complete.
-	if err := conn.Send(&leapmuxv1.ConnectResponse{
+	if err := conn.SendControl(&leapmuxv1.ConnectResponse{
 		RequestId: requestID,
 		Payload: &leapmuxv1.ConnectResponse_WorkerTabInventoryResp{
 			WorkerTabInventoryResp: resp,

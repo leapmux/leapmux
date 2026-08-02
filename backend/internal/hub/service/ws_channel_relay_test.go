@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -486,13 +488,11 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	}, nil)
 
 	workerMsgs := make(chan *leapmuxv1.ConnectResponse, 4)
-	_, _ = wm.Register(&workermgr.Conn{
-		WorkerID: workerID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			workerMsgs <- msg
-			return nil
-		},
+	wconn := workermgrtest.NewConnWithWrite(t, workerID, func(msg *leapmuxv1.ConnectResponse) error {
+		workerMsgs <- msg
+		return nil
 	})
+	_, _ = wm.Register(wconn)
 
 	srv := httptest.NewServer(NewChannelRelayHandler(st, wm, cm, newTestAuthContexts(t), nil, false).WithTokenValidator(tv))
 	t.Cleanup(srv.Close)
@@ -559,25 +559,35 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 
 	t.Run("live worker receives the wrapped ciphertext", func(t *testing.T) {
 		wm := workermgr.New(workermgr.DenyAllReach())
+		var mu sync.Mutex
 		var got []*leapmuxv1.ConnectResponse
-		_, _ = wm.Register(&workermgr.Conn{WorkerID: "w1", SendFn: func(m *leapmuxv1.ConnectResponse) error {
+		conn := workermgrtest.NewConnWithWrite(t, "w1", func(m *leapmuxv1.ConnectResponse) error {
+			mu.Lock()
 			got = append(got, m)
+			mu.Unlock()
 			return nil
-		}})
+		})
+		_, _ = wm.Register(conn)
 		h := &ChannelRelayHandler{workerMgr: wm, channelMgr: channelmgr.New(0)}
 		err := h.relayFrontendMessageToWorker(
 			channelmgr.ChannelInfo{ChannelID: "ch", WorkerID: "w1"}, msg("ch"))
 		require.NoError(t, err)
-		require.Len(t, got, 1)
+		require.Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(got) == 1
+		}, time.Second, 5*time.Millisecond)
+		mu.Lock()
+		defer mu.Unlock()
 		assert.Equal(t, "ch", got[0].GetChannelMessage().GetChannelId())
 		assert.Equal(t, []byte("ct"), got[0].GetChannelMessage().GetCiphertext())
 	})
 
-	t.Run("broken worker stream is terminal", func(t *testing.T) {
+	t.Run("fenced worker stream is terminal", func(t *testing.T) {
 		wm := workermgr.New(workermgr.DenyAllReach())
-		_, _ = wm.Register(&workermgr.Conn{WorkerID: "w1", SendFn: func(*leapmuxv1.ConnectResponse) error {
-			return errors.New("stream closed")
-		}})
+		conn, _ := workermgrtest.NewRecordedConn(t, "w1")
+		_, _ = wm.Register(conn)
+		conn.Fence()
 		h := &ChannelRelayHandler{workerMgr: wm, channelMgr: channelmgr.New(0)}
 		err := h.relayFrontendMessageToWorker(
 			channelmgr.ChannelInfo{ChannelID: "ch", WorkerID: "w1"}, msg("ch"))

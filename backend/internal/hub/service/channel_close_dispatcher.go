@@ -61,15 +61,27 @@ func newWorkerCloseDispatcher(workerMgr workerConnRegistry) *workerCloseDispatch
 // alive. Only the sender goroutine count is bounded. The method name matches the
 // channelCloseEnqueuer interface so this dispatcher satisfies it directly.
 func (d *workerCloseDispatcher) enqueueChannelCloses(closed []channelmgr.ClosedChannel) {
-	d.mu.Lock()
-	// defer, not a trailing Unlock: this body calls out to the registry, and a
-	// panic there with the lock held explicitly would wedge every subsequent
-	// channel teardown rather than failing the one call.
-	defer d.mu.Unlock()
+	// Look up live conns outside d.mu so registry RLock does not nest under
+	// the dispatcher lock under large teardown bursts.
+	live := make([]channelmgr.ClosedChannel, 0, len(closed))
 	for _, cc := range closed {
-		if cc.WorkerID == "" || cc.ChannelID == "" || d.workerMgr.ConnForTrustedPath(cc.WorkerID) == nil {
+		if cc.WorkerID == "" || cc.ChannelID == "" {
 			continue
 		}
+		if d.workerMgr.ConnForTrustedPath(cc.WorkerID) == nil {
+			continue
+		}
+		live = append(live, cc)
+	}
+	if len(live) == 0 {
+		return
+	}
+
+	d.mu.Lock()
+	// defer, not a trailing Unlock: this body appends to pending/ready, and a
+	// panic with the lock held would wedge every subsequent channel teardown.
+	defer d.mu.Unlock()
+	for _, cc := range live {
 		workerPending := d.pending[cc.WorkerID]
 		if workerPending == nil {
 			workerPending = &pendingWorkerCloses{}
@@ -111,9 +123,7 @@ func (d *workerCloseDispatcher) runWorker() {
 		// channelmgr.fanOutTeardown defense. d.mu is released above and
 		// deliverWorkerCloses's own locked sections are panic-free map/slice ops, so
 		// recovery can never resume holding the lock; the loop then continues,
-		// keeping this worker and its slot accounting intact. (The innermost
-		// sendChannelCloseNotification also recovers conn.Send; this widens the
-		// guard from that one call to the whole delivery body.)
+		// keeping this worker and its slot accounting intact.
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -155,22 +165,14 @@ func (d *workerCloseDispatcher) deliverWorkerCloses(workerID string) {
 	d.mu.Unlock()
 }
 
-// sendChannelCloseNotification writes one channel-close notification to a
-// worker, recovering from any panic. Conn.Send already fences on a closed flag
-// -- a send racing worker disconnect returns ErrConnectionClosed rather than
-// writing through a finished HTTP/2 response writer -- so the panic the old
-// inline recover guarded against is structurally prevented. The recover remains
-// as defense in depth because this runs on a detached dispatcher goroutine
-// (runWorker) with no caller to propagate an error to: an unrecovered panic
-// here would crash the whole Hub process instead of dropping one notification.
+// sendChannelCloseNotification enqueues one channel-close control frame.
+// The real write runs on the Connect handler's pump; this call is a pure
+// hub-code enqueue that cannot panic through third-party transport code.
 func sendChannelCloseNotification(conn *workermgr.Conn, channelID string) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("recovered from panic sending channel close",
-				"channel_id", channelID, "worker_id", conn.WorkerID, "panic", r)
-		}
-	}()
-	_ = conn.Send(newChannelCloseResponse(channelID))
+	if err := conn.SendControl(newChannelCloseResponse(channelID)); err != nil {
+		slog.Warn("failed to enqueue channel close control frame",
+			"channel_id", channelID, "worker_id", conn.WorkerID, "error", err)
+	}
 }
 
 // newChannelCloseResponse builds the worker ConnectResponse that notifies a

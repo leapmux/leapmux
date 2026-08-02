@@ -3,6 +3,7 @@ package workermgr
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,67 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
+// local equivalents of workermgrtest — this package cannot import that one
+// without a cycle (workermgrtest imports workermgr).
+
+type testRecorder struct {
+	mu   sync.Mutex
+	msgs []*leapmuxv1.ConnectResponse
+	err  error
+}
+
+func (r *testRecorder) Write(msg *leapmuxv1.ConnectResponse) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return r.err
+	}
+	r.msgs = append(r.msgs, msg)
+	return nil
+}
+
+func (r *testRecorder) Len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.msgs)
+}
+
+func (r *testRecorder) Messages() []*leapmuxv1.ConnectResponse {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*leapmuxv1.ConnectResponse, len(r.msgs))
+	copy(out, r.msgs)
+	return out
+}
+
+func newTestConn(t *testing.T, workerID string, write func(*leapmuxv1.ConnectResponse) error, greeting *leapmuxv1.ConnectResponse) (*Conn, *SendPump) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	if write == nil {
+		write = func(*leapmuxv1.ConnectResponse) error { return nil }
+	}
+	conn, pump := NewConn(ctx, cancel, workerID, write, greeting)
+	t.Cleanup(conn.Fence)
+	return conn, pump
+}
+
+func newAutoDrainedConn(t *testing.T, workerID string, greeting *leapmuxv1.ConnectResponse) (*Conn, *testRecorder) {
+	t.Helper()
+	rec := &testRecorder{}
+	conn, pump := newTestConn(t, workerID, rec.Write, greeting)
+	go func() {
+		for {
+			select {
+			case <-pump.Ready():
+				_ = pump.Drain()
+			case <-conn.Done():
+				return
+			}
+		}
+	}()
+	return conn, rec
+}
+
 func TestWaitForRegistrationChange_Notified(t *testing.T) {
 	m := New(DenyAllReach())
 
@@ -23,7 +85,6 @@ func TestWaitForRegistrationChange_Notified(t *testing.T) {
 		done <- m.WaitForRegistrationChange(context.Background(), "token-1", 5*time.Second)
 	}()
 
-	// Wait for the goroutine to register the waiter.
 	testutil.AssertEventually(t, func() bool {
 		m.regMu.Lock()
 		defer m.regMu.Unlock()
@@ -59,7 +120,6 @@ func TestWaitForRegistrationChange_ContextCancel(t *testing.T) {
 		done <- m.WaitForRegistrationChange(ctx, "token-3", 5*time.Second)
 	}()
 
-	// Wait for the goroutine to register the waiter.
 	testutil.AssertEventually(t, func() bool {
 		m.regMu.Lock()
 		defer m.regMu.Unlock()
@@ -79,7 +139,6 @@ func TestWaitForRegistrationChange_ContextCancel(t *testing.T) {
 
 func TestNotifyRegistrationChange_NoWaiters(t *testing.T) {
 	m := New(DenyAllReach())
-	// Should not panic.
 	m.NotifyRegistrationChange("nonexistent-token")
 }
 
@@ -91,35 +150,28 @@ func TestMarkDeregistering(t *testing.T) {
 	m.MarkDeregistering("b1")
 	assert.True(t, m.IsDeregistering("b1"))
 
-	// Other workers should not be affected.
 	assert.False(t, m.IsDeregistering("b2"))
 }
 
 func TestRegister_ReturnsReplacedFlag(t *testing.T) {
 	m := New(DenyAllReach())
 
-	conn1 := &Conn{WorkerID: "w1"}
-	conn2 := &Conn{WorkerID: "w1"}
-	conn3 := &Conn{WorkerID: "w2"}
+	conn1, _ := newTestConn(t, "w1", nil, nil)
+	conn2, _ := newTestConn(t, "w1", nil, nil)
+	conn3, _ := newTestConn(t, "w2", nil, nil)
 
-	// First registration for w1: not a replacement.
 	replaced, err := m.Register(conn1)
 	require.NoError(t, err)
 	assert.False(t, replaced)
-	// Second registration for w1: replaces conn1.
 	replaced, err = m.Register(conn2)
 	require.NoError(t, err)
 	assert.True(t, replaced)
-	// First registration for w2: not a replacement.
 	replaced, err = m.Register(conn3)
 	require.NoError(t, err)
 	assert.False(t, replaced)
 
-	// Verify conn2 is the current connection for w1.
 	assert.Equal(t, conn2, m.ConnForTrustedPath("w1"))
-	// Unregister with old conn1 should return false (already replaced).
 	assert.False(t, m.Unregister("w1", conn1))
-	// Unregister with current conn2 should return true.
 	assert.True(t, m.Unregister("w1", conn2))
 }
 
@@ -127,13 +179,20 @@ func TestRegister_FencesReplacedConnection(t *testing.T) {
 	m := New(DenyAllReach())
 	oldSends := 0
 	cancelled := false
-	oldConn := &Conn{WorkerID: "w1", SendFn: func(*leapmuxv1.ConnectResponse) error {
+	oldConn, _ := newTestConn(t, "w1", func(*leapmuxv1.ConnectResponse) error {
 		oldSends++
 		return nil
-	}, Cancel: func() { cancelled = true }}
+	}, nil)
+	// Swap cancel so we can observe fencing.
+	oldCancel := oldConn.cancel
+	oldConn.cancel = func() {
+		cancelled = true
+		oldCancel()
+	}
 	_, _ = m.Register(oldConn)
 
-	replaced2, err2 := m.Register(&Conn{WorkerID: "w1"})
+	newConn, _ := newTestConn(t, "w1", nil, nil)
+	replaced2, err2 := m.Register(newConn)
 	require.NoError(t, err2)
 	assert.True(t, replaced2)
 	assert.ErrorIs(t, oldConn.Send(&leapmuxv1.ConnectResponse{}), ErrConnectionClosed)
@@ -141,13 +200,13 @@ func TestRegister_FencesReplacedConnection(t *testing.T) {
 	assert.True(t, cancelled)
 }
 
-func TestConnCloseRejectsLaterSend(t *testing.T) {
+func TestConnFenceRejectsLaterSend(t *testing.T) {
 	sent := 0
-	conn := &Conn{SendFn: func(*leapmuxv1.ConnectResponse) error {
+	conn, _ := newTestConn(t, "w1", func(*leapmuxv1.ConnectResponse) error {
 		sent++
 		return nil
-	}}
-	conn.Close()
+	}, nil)
+	conn.Fence()
 
 	err := conn.Send(&leapmuxv1.ConnectResponse{})
 
@@ -155,61 +214,76 @@ func TestConnCloseRejectsLaterSend(t *testing.T) {
 	assert.Zero(t, sent)
 }
 
-func TestConnCloseWaitsForInFlightSend(t *testing.T) {
+func TestFenceReturnsWhileAWriteIsParked(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	conn := &Conn{SendFn: func(*leapmuxv1.ConnectResponse) error {
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	conn, pump := newTestConn(t, "w1", func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
-	}}
-	sendDone := make(chan error, 1)
-	go func() { sendDone <- conn.Send(&leapmuxv1.ConnectResponse{}) }()
+	}, nil)
+	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{}))
+	go func() { _ = pump.Drain() }()
 	<-started
-	closeDone := make(chan struct{})
-	go func() {
-		conn.Close()
-		close(closeDone)
-	}()
 
+	fenceDone := make(chan struct{})
+	go func() {
+		conn.Fence()
+		close(fenceDone)
+	}()
 	select {
-	case <-closeDone:
-		t.Fatal("Close returned while a send was still using the stream")
-	case <-time.After(20 * time.Millisecond):
+	case <-fenceDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Fence blocked behind a parked drain write")
 	}
-	close(release)
-	require.NoError(t, <-sendDone)
-	select {
-	case <-closeDone:
-	case <-time.After(time.Second):
-		t.Fatal("Close did not return after the in-flight send completed")
-	}
-	assert.ErrorIs(t, conn.Send(&leapmuxv1.ConnectResponse{}), ErrConnectionClosed)
 }
 
-func TestUnregisterStopsRoutingBeforeWaitingForInFlightSend(t *testing.T) {
+func TestUnregisterReturnsWhileAWriteIsParked(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	conn := &Conn{WorkerID: "worker", SendFn: func(*leapmuxv1.ConnectResponse) error {
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	conn, pump := newTestConn(t, "worker", func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
-	}}
+	}, nil)
 	mgr := New(DenyAllReach())
 	_, _ = mgr.Register(conn)
-	go func() { _ = conn.Send(&leapmuxv1.ConnectResponse{}) }()
+	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{}))
+	go func() { _ = pump.Drain() }()
 	<-started
+
 	unregistered := make(chan bool, 1)
 	go func() { unregistered <- mgr.Unregister("worker", conn) }()
 
-	testutil.AssertEventually(t, func() bool { return !mgr.OnlineForTrustedPath("worker") })
 	select {
-	case <-unregistered:
-		t.Fatal("Unregister returned before the in-flight send completed")
-	default:
+	case removed := <-unregistered:
+		assert.True(t, removed)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Unregister blocked behind a parked drain write")
 	}
-	close(release)
-	assert.True(t, <-unregistered)
+	assert.False(t, mgr.OnlineForTrustedPath("worker"))
+
+	// Unregister no longer Fences: the handler drains then Fences so leftover
+	// frames are not discarded. Send may still enqueue until Fence.
+	require.NoError(t, conn.Send(&leapmuxv1.ConnectResponse{}))
+	conn.Fence()
+	assert.ErrorIs(t, conn.Send(&leapmuxv1.ConnectResponse{}), ErrConnectionClosed)
 }
 
 func TestManager_ConnForTrustedPath_NotRegistered(t *testing.T) {
@@ -232,69 +306,66 @@ func TestClearDeregistering(t *testing.T) {
 	m.ClearDeregistering("b1")
 	assert.False(t, m.IsDeregistering("b1"))
 
-	// ClearDeregistering on non-existent key should not panic.
 	m.ClearDeregistering("nonexistent")
 }
 
-// Register must send a Conn's Greeting BEFORE publishing it.
-//
-// The ordering is the greeting's entire purpose: the Hub greets a worker with its
-// own identity, which the worker needs before the first ChannelOpen creates a
-// session (every machine-scoped handler gates on it). Until Register publishes the
-// conn, nothing else can look it up to send on -- so a greeting sent here is
-// mechanically first. This pins that the send happens on the pre-publication side.
+// Register enqueues a Conn's Greeting BEFORE publishing it. With a single
+// handler drain that makes it mechanically the first frame written.
 func TestRegisterSendsGreetingBeforePublishing(t *testing.T) {
 	m := New(DenyAllReach())
 
-	var sentWhilePublished []bool
-	conn := &Conn{
-		WorkerID: "w1",
-		Greeting: &leapmuxv1.ConnectResponse{},
+	rec := &testRecorder{}
+	greeting := &leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
+			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "alice"},
+		},
 	}
-	conn.SendFn = func(*leapmuxv1.ConnectResponse) error {
-		// If the conn were already published, ConnForTrustedPath would find it.
-		sentWhilePublished = append(sentWhilePublished, m.ConnForTrustedPath("w1") != nil)
-		return nil
-	}
+	conn, pump := newTestConn(t, "w1", rec.Write, greeting)
 
 	replaced, err := m.Register(conn)
 	require.NoError(t, err)
 	assert.False(t, replaced)
+	assert.Nil(t, conn.Greeting, "Register clears Greeting after enqueue")
+	assert.Same(t, conn, m.ConnForTrustedPath("w1"), "conn must be published after Register")
+	assert.Zero(t, rec.Len(), "greeting is queued, not written, until Drain")
 
-	require.Len(t, sentWhilePublished, 1, "the greeting must be sent exactly once")
-	assert.False(t, sentWhilePublished[0],
-		"the greeting must be sent BEFORE the conn is published, or a ChannelOpen can precede it")
+	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+	}))
+	require.NoError(t, pump.Drain())
+
+	msgs := rec.Messages()
+	require.Len(t, msgs, 2)
+	assert.NotNil(t, msgs[0].GetWorkerIdentity(), "greeting must be frame 0")
+	assert.NotNil(t, msgs[1].GetHeartbeat(), "post-Register enqueue drains after the greeting")
 }
 
-// A conn whose greeting cannot be delivered must NOT be published: a stream that
-// cannot carry its greeting cannot carry a channel either, and publishing it would
-// advertise the worker as reachable on a connection already known to be broken.
-func TestRegisterDoesNotPublishOnGreetingFailure(t *testing.T) {
+// A greeting that cannot be enqueued (fenced queue) must not be published.
+func TestRegisterRefusesGreetingOnAFencedConn(t *testing.T) {
 	m := New(DenyAllReach())
-	boom := errors.New("stream gone")
-	conn := &Conn{
-		WorkerID: "w1",
-		Greeting: &leapmuxv1.ConnectResponse{},
-		SendFn:   func(*leapmuxv1.ConnectResponse) error { return boom },
-	}
+	conn, _ := newTestConn(t, "w1", nil, &leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
+			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "alice"},
+		},
+	})
+	conn.Fence()
 
 	replaced, err := m.Register(conn)
-	require.ErrorIs(t, err, boom)
+	require.ErrorIs(t, err, ErrConnectionClosed)
 	assert.False(t, replaced)
-
-	assert.Nil(t, m.ConnForTrustedPath("w1"), "a conn whose greeting failed must not be published")
+	assert.Nil(t, m.ConnForTrustedPath("w1"), "a conn whose greeting cannot be enqueued must not be published")
 }
 
 // A conn with no greeting registers exactly as before -- the field is optional.
 func TestRegisterWithoutGreetingPublishes(t *testing.T) {
 	m := New(DenyAllReach())
-	replaced, err := m.Register(&Conn{WorkerID: "w1"})
+	conn, _ := newTestConn(t, "w1", nil, nil)
+	replaced, err := m.Register(conn)
 	require.NoError(t, err)
 	assert.False(t, replaced)
 	assert.NotNil(t, m.ConnForTrustedPath("w1"))
 }
 
-// fakeReachAuthorizer records what it was asked and answers a fixed verdict.
 type fakeReachAuthorizer struct {
 	err   error
 	asked []string
@@ -305,14 +376,6 @@ func (f *fakeReachAuthorizer) AuthorizeWorkerReach(_ context.Context, _ *auth.Us
 	return f.err
 }
 
-// A Manager cannot be constructed without a gate.
-//
-// This is what makes the gate structural rather than a wiring convention:
-// "ungated" is not a reachable state, so a hub composition that forgets the
-// authorizer fails at construction instead of serving the registry unchecked
-// (or denying everything and looking like a permissions bug). The typed-nil
-// case is checked too -- a nil *T in an interface is a NON-nil interface, so
-// `a == nil` alone would let it through and panic on the first reach.
 func TestNew_RequiresReachAuthorizer(t *testing.T) {
 	assert.Panics(t, func() { New(nil) },
 		"a registry with no gate must not be constructible")
@@ -322,10 +385,9 @@ func TestNew_RequiresReachAuthorizer(t *testing.T) {
 		"a typed-nil authorizer is still no gate")
 }
 
-// DenyAllReach is a real deny, not a placeholder that happens to work.
 func TestDenyAllReach_Denies(t *testing.T) {
 	m := New(DenyAllReach())
-	conn := &Conn{WorkerID: "w1"}
+	conn, _ := newTestConn(t, "w1", nil, nil)
 	_, err := m.Register(conn)
 	require.NoError(t, err)
 
@@ -335,16 +397,10 @@ func TestDenyAllReach_Denies(t *testing.T) {
 	assert.Nil(t, got, "no connection may be returned by a deny-all registry")
 }
 
-// A nil principal is a deny, not a panic.
-//
-// ConnForUser is the fail-closed gate, so its own degenerate input has to have
-// a defined answer: every authorizer dereferences user.ID, so passing nil
-// through would crash the request goroutine instead of refusing. The authorizer
-// must not even be consulted.
 func TestManager_ConnForUser_NilUserDenies(t *testing.T) {
 	allow := &fakeReachAuthorizer{}
 	m := New(allow)
-	conn := &Conn{WorkerID: "w1"}
+	conn, _ := newTestConn(t, "w1", nil, nil)
 	_, err := m.Register(conn)
 	require.NoError(t, err)
 
@@ -354,23 +410,12 @@ func TestManager_ConnForUser_NilUserDenies(t *testing.T) {
 	assert.Empty(t, allow.asked, "the authorizer must never be handed a nil principal")
 }
 
-// A worker being deregistered is not reachable by its user, even while its
-// connection is still open.
-//
-// Deregistration is asynchronous -- the flag is set when the notification is
-// SENT and cleared only when the worker ACKS it -- and for an offline worker
-// the notification sits queued until it reconnects, so the window is unbounded.
-// Before this, the operator's containment action left the machine fully
-// reachable for all of it. The trusted path must stay open in the same state,
-// because that is how the deregister notification reaches the worker at all: a
-// gate there would make the teardown unable to complete and the flag permanent.
 func TestManager_ConnForUser_DeregisteringWorkerIsUnreachable(t *testing.T) {
 	m := New(&fakeReachAuthorizer{})
-	conn := &Conn{WorkerID: "w1"}
+	conn, _ := newTestConn(t, "w1", nil, nil)
 	_, err := m.Register(conn)
 	require.NoError(t, err)
 
-	// Control: reachable before the operator acts.
 	got, err := m.ConnForUser(context.Background(), &auth.UserInfo{}, "w1")
 	require.NoError(t, err)
 	require.Same(t, conn, got, "control: an ordinary worker is reachable")
@@ -383,37 +428,24 @@ func TestManager_ConnForUser_DeregisteringWorkerIsUnreachable(t *testing.T) {
 	assert.Same(t, conn, m.ConnForTrustedPath("w1"),
 		"the trusted path stays open: it is how the deregister notification is delivered")
 
-	// The worker acks, the flag clears, and reach is restored -- so the gate is
-	// the flag rather than the registration being torn down underneath it.
 	m.ClearDeregistering("w1")
 	got, err = m.ConnForUser(context.Background(), &auth.UserInfo{}, "w1")
 	require.NoError(t, err)
 	assert.Same(t, conn, got, "clearing the flag restores user-directed reach")
 }
 
-// The deny has to reach the client as a PERMANENT refusal.
-//
-// requireOnlineWorker forwards this error verbatim to the RPC boundary, next to
-// the coded denials the real authorizer returns. A bare error maps to
-// CodeUnknown, which a client reads as a transient fault -- so a decision that
-// will never change would drive an endless retry loop against it.
 func TestErrReachDenied_IsPermissionDenied(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(ErrReachDenied),
 		"a permanent deny must not reach the client as an unknown fault")
 }
 
-// A denied reach must not disclose the online/offline bit.
-//
-// Returning the conn (or a distinguishable nil) after a failed check would keep
-// the liveness oracle open, which is the exact exposure the gate closes.
 func TestManager_ConnForUser_DeniedDoesNotLeakLiveness(t *testing.T) {
 	denied := &fakeReachAuthorizer{err: errors.New("not your worker")}
 	m := New(denied)
-	online := &Conn{WorkerID: "online"}
+	online, _ := newTestConn(t, "online", nil, nil)
 	_, err := m.Register(online)
 	require.NoError(t, err)
 
-	// A worker that IS connected and one that is not must be indistinguishable.
 	for _, workerID := range []string{"online", "never-registered"} {
 		got, err := m.ConnForUser(context.Background(), &auth.UserInfo{}, workerID)
 		require.Error(t, err, "a denied reach must error")
@@ -423,12 +455,10 @@ func TestManager_ConnForUser_DeniedDoesNotLeakLiveness(t *testing.T) {
 		"the authorizer runs for both, so neither answer depends on connectedness")
 }
 
-// An authorized reach returns the live connection, and a nil conn means
-// "authorized but offline" -- not "denied".
 func TestManager_ConnForUser_AuthorizedReturnsConn(t *testing.T) {
 	allow := &fakeReachAuthorizer{}
 	m := New(allow)
-	conn := &Conn{WorkerID: "w1"}
+	conn, _ := newTestConn(t, "w1", nil, nil)
 	_, err := m.Register(conn)
 	require.NoError(t, err)
 

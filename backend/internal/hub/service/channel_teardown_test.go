@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
@@ -141,15 +142,14 @@ func (e *teardownEnv) seedDelegationRow(t *testing.T) (tokenID string) {
 // captureWorker registers a fake online worker that records every
 // ConnectResponse the hub sends; tests assert the ChannelClose
 // notification fires after a delegation revoke.
-func (e *teardownEnv) captureWorker() chan *leapmuxv1.ConnectResponse {
+func (e *teardownEnv) captureWorker(t *testing.T) chan *leapmuxv1.ConnectResponse {
+	t.Helper()
 	ch := make(chan *leapmuxv1.ConnectResponse, 16)
-	_, _ = e.workerMgr.Register(&workermgr.Conn{
-		WorkerID: e.workerID,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			ch <- msg
-			return nil
-		},
+	conn := workermgrtest.NewConnWithWrite(t, e.workerID, func(msg *leapmuxv1.ConnectResponse) error {
+		ch <- msg
+		return nil
 	})
+	_, _ = e.workerMgr.Register(conn)
 	return ch
 }
 
@@ -175,7 +175,7 @@ func TestWorkerDelegationRevoke_TearsDownOpenChannels(t *testing.T) {
 	}, nil)
 	require.True(t, env.channelMgr.Exists(channelID))
 
-	workerSent := env.captureWorker()
+	workerSent := env.captureWorker(t)
 
 	// Hit the revoke endpoint as the worker that minted the bearer.
 	req, err := http.NewRequest(http.MethodPost, env.revokeURL, nil)
@@ -225,7 +225,7 @@ func TestWorkerDelegationRevoke_LeavesOtherChannelsUntouched(t *testing.T) {
 	}, nil)
 	env.channelMgr.RegisterWithAuthInfo(cookieCh, env.workerID, env.userID, channelmgr.AuthInfo{}, nil)
 
-	env.captureWorker()
+	env.captureWorker(t)
 
 	req, _ := http.NewRequest(http.MethodPost, env.revokeURL, nil)
 	req.Header.Set("Authorization", "Bearer "+env.workerAuthTok)
@@ -273,24 +273,20 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 
 	closesA := make(chan *leapmuxv1.ConnectResponse, 4)
 	closesB := make(chan *leapmuxv1.ConnectResponse, 4)
-	_, _ = env.workerMgr.Register(&workermgr.Conn{
-		WorkerID: workerA,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			if msg.GetChannelClose() != nil {
-				closesA <- msg
-			}
-			return nil
-		},
+	connA := workermgrtest.NewConnWithWrite(t, workerA, func(msg *leapmuxv1.ConnectResponse) error {
+		if msg.GetChannelClose() != nil {
+			closesA <- msg
+		}
+		return nil
 	})
-	_, _ = env.workerMgr.Register(&workermgr.Conn{
-		WorkerID: workerB,
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			if msg.GetChannelClose() != nil {
-				closesB <- msg
-			}
-			return nil
-		},
+	_, _ = env.workerMgr.Register(connA)
+	connB := workermgrtest.NewConnWithWrite(t, workerB, func(msg *leapmuxv1.ConnectResponse) error {
+		if msg.GetChannelClose() != nil {
+			closesB <- msg
+		}
+		return nil
 	})
+	_, _ = env.workerMgr.Register(connB)
 
 	closed := env.channelSvc.CloseChannelsByUserRevocation(env.userID, 1)
 	assert.Equal(t, 2, closed, "both of the user's channels should be torn down")

@@ -29,31 +29,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	// connectQueueMaxBytes caps the Connect bidi stream's outbound queue by
-	// payload plus per-frame overhead. It is the memory bound for one worker's
-	// Hub link: a wall-clock stall cutoff on a server-to-server connection
-	// invites a reconnect storm under sustained load, so there is none -- the
-	// byte budget alone disconnects a Hub that cannot keep up.
-	connectQueueMaxBytes = 32 * 1024 * 1024
-
-	// connectControlReserve is the slice of connectQueueMaxBytes that data
-	// paths (Send / EnqueueWait) leave free for must-deliver receive-goroutine
-	// control frames (ChannelOpenResp, DeregisterAck,
-	// nonce-desync CLOSE). Sized for many tiny control frames; a saturated
-	// bulk burst must not silently drop a handshake/teardown frame.
-	connectControlReserve = 256 * 1024
-
-	// connectWriteTimeout bounds ONE stream.Send. A frame that cannot leave
-	// the process within this window means the Hub's receive window has been
-	// full for that long.
-	connectWriteTimeout = 30 * time.Second
-
-	// connectFrameOverhead is charged per queued ConnectRequest on top of its
-	// marshalled size, so many tiny frames (heartbeats, acks) still cost the
-	// budget something.
-	connectFrameOverhead = 256
-)
+// Connect-stream queue bounds are sendq.Default* so Hub and worker stay on
+// one definition. A wall-clock stall cutoff on a server-to-server connection
+// invites a reconnect storm under sustained load, so there is none -- the
+// byte budget alone disconnects a Hub that cannot keep up.
 
 // ErrNotConnected is returned by Send when no Connect stream is active.
 var ErrNotConnected = errors.New("not connected")
@@ -365,10 +344,10 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		Size: func(m *leapmuxv1.ConnectRequest) int {
 			return proto.Size(m)
 		},
-		MaxBytes:       connectQueueMaxBytes,
-		ControlReserve: connectControlReserve,
-		FrameOverhead:  connectFrameOverhead,
-		WriteTimeout:   connectWriteTimeout,
+		MaxBytes:       sendq.DefaultMaxBytes,
+		ControlReserve: sendq.DefaultControlReserve,
+		FrameOverhead:  sendq.DefaultFrameOverhead,
+		WriteTimeout:   sendq.DefaultWriteTimeout,
 		OnGiveUp: func(err error) {
 			slog.Warn("hub connect stream writer gave up; reconnecting", "error", err)
 			connCancel()

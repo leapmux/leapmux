@@ -14,29 +14,34 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
+func boundedNotifyCtx(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	return context.WithTimeout(context.Background(), 2*time.Second)
+}
+
 func TestNotifyShutdownAndFence_SendsToAllWorkers(t *testing.T) {
 	m := New(DenyAllReach())
 
 	var mu sync.Mutex
 	var received []*leapmuxv1.ConnectResponse
 
-	makeMockConn := func(workerID string) *Conn {
-		return &Conn{
-			WorkerID: workerID,
-			SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-				mu.Lock()
-				defer mu.Unlock()
-				received = append(received, msg)
-				return nil
-			},
-		}
+	makeConn := func(workerID string) *Conn {
+		conn, pump := newTestConn(t, workerID, func(msg *leapmuxv1.ConnectResponse) error {
+			mu.Lock()
+			defer mu.Unlock()
+			received = append(received, msg)
+			return nil
+		}, nil)
+		pumpStart(t, pump, conn)
+		return conn
 	}
+	_, _ = m.Register(makeConn("w1"))
+	_, _ = m.Register(makeConn("w2"))
+	_, _ = m.Register(makeConn("w3"))
 
-	_, _ = m.Register(makeMockConn("w1"))
-	_, _ = m.Register(makeMockConn("w2"))
-	_, _ = m.Register(makeMockConn("w3"))
-
-	m.NotifyShutdownAndFence(context.Background(), 10)
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+	m.NotifyShutdownAndFence(ctx, 10)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -49,20 +54,40 @@ func TestNotifyShutdownAndFence_SendsToAllWorkers(t *testing.T) {
 	}
 }
 
+func pumpStart(t *testing.T, pump *SendPump, conn *Conn) {
+	t.Helper()
+	go func() {
+		for {
+			select {
+			case <-pump.Ready():
+				_ = pump.Drain()
+			case <-conn.Done():
+				return
+			}
+		}
+	}()
+}
+
 func TestNotifyShutdownAndFence_CustomRetryDelay(t *testing.T) {
 	m := New(DenyAllReach())
 
+	var mu sync.Mutex
 	var received *leapmuxv1.ConnectResponse
-	_, _ = m.Register(&Conn{
-		WorkerID: "w1",
-		SendFn: func(msg *leapmuxv1.ConnectResponse) error {
-			received = msg
-			return nil
-		},
-	})
+	conn, pump := newTestConn(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
+		mu.Lock()
+		defer mu.Unlock()
+		received = msg
+		return nil
+	}, nil)
+	pumpStart(t, pump, conn)
+	_, _ = m.Register(conn)
 
-	m.NotifyShutdownAndFence(context.Background(), 30)
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+	m.NotifyShutdownAndFence(ctx, 30)
 
+	mu.Lock()
+	defer mu.Unlock()
 	require.NotNil(t, received)
 	payload, ok := received.GetPayload().(*leapmuxv1.ConnectResponse_HubShuttingDown)
 	require.True(t, ok)
@@ -71,8 +96,9 @@ func TestNotifyShutdownAndFence_CustomRetryDelay(t *testing.T) {
 
 func TestNotifyShutdownAndFence_NoWorkers(t *testing.T) {
 	m := New(DenyAllReach())
-	// Should not panic when no workers are connected.
-	m.NotifyShutdownAndFence(context.Background(), 10)
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+	m.NotifyShutdownAndFence(ctx, 10)
 }
 
 func TestNotifyShutdownAndFence_ContinuesOnSendError(t *testing.T) {
@@ -81,61 +107,66 @@ func TestNotifyShutdownAndFence_ContinuesOnSendError(t *testing.T) {
 	sendCount := 0
 	var mu sync.Mutex
 
-	// First worker: send fails.
-	_, _ = m.Register(&Conn{
-		WorkerID: "w-fail",
-		SendFn: func(_ *leapmuxv1.ConnectResponse) error {
-			mu.Lock()
-			defer mu.Unlock()
-			sendCount++
-			return fmt.Errorf("connection reset")
-		},
-	})
+	failConn, failPump := newTestConn(t, "w-fail", func(*leapmuxv1.ConnectResponse) error {
+		mu.Lock()
+		defer mu.Unlock()
+		sendCount++
+		return fmt.Errorf("connection reset")
+	}, nil)
+	pumpStart(t, failPump, failConn)
+	_, _ = m.Register(failConn)
 
-	// Second worker: send succeeds.
-	_, _ = m.Register(&Conn{
-		WorkerID: "w-ok",
-		SendFn: func(_ *leapmuxv1.ConnectResponse) error {
-			mu.Lock()
-			defer mu.Unlock()
-			sendCount++
-			return nil
-		},
-	})
+	okConn, okPump := newTestConn(t, "w-ok", func(*leapmuxv1.ConnectResponse) error {
+		mu.Lock()
+		defer mu.Unlock()
+		sendCount++
+		return nil
+	}, nil)
+	pumpStart(t, okPump, okConn)
+	_, _ = m.Register(okConn)
 
-	// Should not panic or abort; best-effort delivery.
-	m.NotifyShutdownAndFence(context.Background(), 10)
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+	m.NotifyShutdownAndFence(ctx, 10)
 
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, 2, sendCount, "should attempt to send to all workers even on error")
 }
 
-// The notification alone leaves the stream open -- a worker holds it until it
-// decides to reconnect -- so NotifyShutdownAndFence must also end the handler, or the
-// Hub's HTTP drain waits on a connection nothing is going to close.
 func TestNotifyShutdownAndFence_FencesConnectionsAfterDelivering(t *testing.T) {
 	m := New(DenyAllReach())
 
 	var delivered, cancelled atomic.Int32
 	makeConn := func(workerID string) *Conn {
-		return &Conn{
-			WorkerID: workerID,
-			SendFn: func(*leapmuxv1.ConnectResponse) error {
-				// Fencing must come after delivery: a worker that never hears
-				// the notification reconnects on its ordinary backoff instead
-				// of the delay the Hub asked for.
-				assert.Zero(t, cancelled.Load(), "connection fenced before its notification was sent")
-				delivered.Add(1)
-				return nil
-			},
-			Cancel: func() { cancelled.Add(1) },
-		}
+		ctx, cancel := context.WithCancel(context.Background())
+		conn, pump := NewConn(ctx, func() {
+			cancelled.Add(1)
+			cancel()
+		}, workerID, func(*leapmuxv1.ConnectResponse) error {
+			assert.Zero(t, cancelled.Load(), "connection fenced before its notification was sent")
+			delivered.Add(1)
+			return nil
+		}, nil)
+		t.Cleanup(conn.Fence)
+		go func() {
+			for {
+				select {
+				case <-pump.Ready():
+					_ = pump.Drain()
+				case <-conn.Done():
+					return
+				}
+			}
+		}()
+		return conn
 	}
 	_, _ = m.Register(makeConn("w1"))
 	_, _ = m.Register(makeConn("w2"))
 
-	m.NotifyShutdownAndFence(context.Background(), 10)
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+	m.NotifyShutdownAndFence(ctx, 10)
 
 	assert.Equal(t, int32(2), delivered.Load(), "both workers notified")
 	assert.Equal(t, int32(2), cancelled.Load(), "both Connect handlers cancelled")
@@ -143,9 +174,6 @@ func TestNotifyShutdownAndFence_FencesConnectionsAfterDelivering(t *testing.T) {
 		"a fenced connection must refuse further sends")
 }
 
-// A worker that cannot be notified inside the budget is exactly the one that
-// would otherwise hold the drain open for the full idle timeout, so the fence
-// has to run on the deadline path too.
 func TestNotifyShutdownAndFence_FencesConnectionsWhenContextExpires(t *testing.T) {
 	m := New(DenyAllReach())
 
@@ -153,15 +181,28 @@ func TestNotifyShutdownAndFence_FencesConnectionsWhenContextExpires(t *testing.T
 	t.Cleanup(func() { close(release) })
 	started := make(chan struct{})
 	var cancelled atomic.Bool
-	_, _ = m.Register(&Conn{
-		WorkerID: "wedged",
-		SendFn: func(*leapmuxv1.ConnectResponse) error {
-			close(started)
-			<-release
-			return nil
-		},
-		Cancel: func() { cancelled.Store(true) },
-	})
+
+	ctxConn, cancelConn := context.WithCancel(context.Background())
+	conn, pump := NewConn(ctxConn, func() {
+		cancelled.Store(true)
+		cancelConn()
+	}, "wedged", func(*leapmuxv1.ConnectResponse) error {
+		close(started)
+		<-release
+		return nil
+	}, nil)
+	t.Cleanup(conn.Fence)
+	go func() {
+		for {
+			select {
+			case <-pump.Ready():
+				_ = pump.Drain()
+			case <-conn.Done():
+				return
+			}
+		}
+	}()
+	_, _ = m.Register(conn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -181,102 +222,90 @@ func TestNotifyShutdownAndFence_FencesConnectionsWhenContextExpires(t *testing.T
 
 func TestFenceAll_NoConnections(t *testing.T) {
 	m := New(DenyAllReach())
-	// Nothing registered is the state a Hub that never had a worker shuts down
-	// in; the copy-then-fence walk must not panic on it.
 	assert.NotPanics(t, m.FenceAll)
 }
 
-// A registered connection is not obliged to carry a Cancel -- the test doubles
-// throughout this package do not, and neither would a conn published before its
-// handler context exists. Fencing one must still stop its sends.
 func TestFenceAll_ConnectionWithoutCancel(t *testing.T) {
 	m := New(DenyAllReach())
-	_, _ = m.Register(&Conn{
-		WorkerID: "no-cancel",
-		SendFn:   func(*leapmuxv1.ConnectResponse) error { return nil },
-	})
+	conn, _ := newAutoDrainedConn(t, "no-cancel", nil)
+	// NewConn always has cancel; clearing it still must stop sends via queue Close.
+	conn.cancel = nil
+	_, _ = m.Register(conn)
 
 	assert.NotPanics(t, m.FenceAll)
 	assert.ErrorIs(t, m.ConnForTrustedPath("no-cancel").Send(&leapmuxv1.ConnectResponse{}), ErrConnectionClosed)
 }
 
-// The registry lock must not be held while a connection is cancelled. Cancel
-// wakes the Connect handler, whose defer runs Unregister -- and Unregister
-// takes the write lock. Fencing under the read lock would make the Hub's own
-// shutdown the thing that wedges it.
 func TestFenceAll_DoesNotHoldManagerLockDuringCancel(t *testing.T) {
 	m := New(DenyAllReach())
 
 	reRegistered := make(chan struct{})
-	_, _ = m.Register(&Conn{
-		WorkerID: "fenced",
-		Cancel: func() {
-			go func() {
-				// Refused (the latch is already set) -- what matters here is
-				// that it RETURNS rather than blocking, which it could only do
-				// by acquiring the registry lock.
-				_, _ = m.Register(&Conn{WorkerID: "successor"})
-				close(reRegistered)
-			}()
-			select {
-			case <-reRegistered:
-			case <-time.After(time.Second):
-				assert.Fail(t, "Register blocked behind FenceAll's registry lock")
-			}
-		},
-	})
+	var once sync.Once
+	ctx, cancel := context.WithCancel(context.Background())
+	conn, _ := NewConn(ctx, func() {
+		cancel()
+		go func() {
+			succ, _ := newTestConn(t, "successor", nil, nil)
+			_, _ = m.Register(succ)
+			once.Do(func() { close(reRegistered) })
+		}()
+		select {
+		case <-reRegistered:
+		case <-time.After(time.Second):
+			assert.Fail(t, "Register blocked behind FenceAll's registry lock")
+		}
+	}, "fenced", func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
+	t.Cleanup(conn.Fence)
+	_, _ = m.Register(conn)
 
 	m.FenceAll()
 	<-reRegistered
 }
 
-// A Connect handler can pass the shutdown interceptor -- a one-shot check --
-// microseconds before the Hub starts shutting down, then spend a store round
-// trip and a greeting write getting here. Fencing a snapshot would let it
-// publish a connection nothing ever cancels, and that handler holds the Hub's
-// HTTP drain open until workerIdleTimeout.
 func TestRegister_RefusedOnceFenced(t *testing.T) {
 	m := New(DenyAllReach())
 	m.FenceAll()
 
 	var cancelled atomic.Bool
-	var sends atomic.Int32
-	late := &Conn{
-		WorkerID: "late",
-		SendFn: func(*leapmuxv1.ConnectResponse) error {
-			sends.Add(1)
-			return nil
+	var writes atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	late, pump := NewConn(ctx, func() {
+		cancelled.Store(true)
+		cancel()
+	}, "late", func(*leapmuxv1.ConnectResponse) error {
+		writes.Add(1)
+		return nil
+	}, &leapmuxv1.ConnectResponse{
+		Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
+			WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "someone"},
 		},
-		Cancel: func() { cancelled.Store(true) },
-		Greeting: &leapmuxv1.ConnectResponse{
-			Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
-				WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "someone"},
-			},
-		},
-	}
+	})
+	t.Cleanup(late.Fence)
+	go func() {
+		for {
+			select {
+			case <-pump.Ready():
+				_ = pump.Drain()
+			case <-late.Done():
+				return
+			}
+		}
+	}()
+
 	replaced, err := m.Register(late)
 
 	require.ErrorIs(t, err, ErrRegistryFenced, "a fenced registry must refuse a late registration")
 	assert.False(t, replaced)
 	assert.True(t, cancelled.Load(), "the refused connection's handler must still be ended")
-	// The refusal has to come BEFORE the greeting write, or the worker reads
-	// its own identity and only then sees the stream end -- a sequence that
-	// reads like the Hub accepted it and then dropped it.
-	assert.Zero(t, sends.Load(), "a refused connection must not be greeted first")
+	assert.Zero(t, writes.Load(), "a refused connection must not write a greeting")
 	assert.ErrorIs(t, late.Send(&leapmuxv1.ConnectResponse{}), ErrConnectionClosed)
 	assert.Nil(t, m.ConnForTrustedPath("late"), "a refused connection must not be published")
 }
 
-// The latch is what makes the fence total rather than point-in-time: whichever
-// order these two run in, the connection must end up fenced. Without it, a
-// Register that lands after FenceAll's snapshot leaves a live, unfenced conn.
 func TestRegister_RacingFenceAllNeverLeavesALiveConn(t *testing.T) {
 	for i := range 200 {
 		m := New(DenyAllReach())
-		conn := &Conn{
-			WorkerID: "racer",
-			SendFn:   func(*leapmuxv1.ConnectResponse) error { return nil },
-		}
+		conn, _ := newTestConn(t, "racer", nil, nil)
 
 		var wg sync.WaitGroup
 		wg.Add(2)
@@ -289,84 +318,54 @@ func TestRegister_RacingFenceAllNeverLeavesALiveConn(t *testing.T) {
 	}
 }
 
-// Unregister must wait for an in-flight send on BOTH paths, replaced or not.
-// The caller is the connection's own handler, about to return; if it returns
-// while a background sender is inside Stream.Send, net/http panics
-// ("Write called after Handler finished") on the sender's goroutine and the
-// response-writer state has already been recycled into a pool.
-func TestUnregister_WaitsForInFlightSendWhenReplaced(t *testing.T) {
-	m := New(DenyAllReach())
-
-	sendStarted := make(chan struct{})
-	releaseSend := make(chan struct{})
-	old := &Conn{
-		WorkerID: "w",
-		SendFn: func(*leapmuxv1.ConnectResponse) error {
-			close(sendStarted)
-			<-releaseSend
-			return nil
-		},
-	}
-	_, _ = m.Register(old)
-
-	sendDone := make(chan struct{})
-	go func() {
-		defer close(sendDone)
-		_ = old.Send(&leapmuxv1.ConnectResponse{})
-	}()
-	<-sendStarted
-
-	// A reconnect publishes a successor, so Unregister will take its
-	// "not the registered conn" path -- the one that used to skip the wait.
-	_, _ = m.Register(&Conn{WorkerID: "w", SendFn: func(*leapmuxv1.ConnectResponse) error { return nil }})
-
-	unregistered := make(chan bool, 1)
-	go func() { unregistered <- m.Unregister("w", old) }()
-
-	select {
-	case <-unregistered:
-		t.Fatal("Unregister returned while a send was still on the old stream; the handler would return into a write-after-finish panic")
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	close(releaseSend)
-	<-sendDone
-	select {
-	case removed := <-unregistered:
-		assert.False(t, removed, "the superseded conn must not remove its replacement's registration")
-	case <-time.After(5 * time.Second):
-		t.Fatal("Unregister never returned after the in-flight send finished")
-	}
-}
-
-func TestNotifyShutdownAndFence_DoesNotHoldManagerLockDuringSend(t *testing.T) {
+func TestNotifyShutdownAndFence_DoesNotBlockRegisterWhileAWriteIsParked(t *testing.T) {
 	m := New(DenyAllReach())
 	started := make(chan struct{})
 	release := make(chan struct{})
-	_, _ = m.Register(&Conn{WorkerID: "blocked", SendFn: func(*leapmuxv1.ConnectResponse) error {
+	t.Cleanup(func() { close(release) })
+
+	ctxConn, cancelConn := context.WithCancel(context.Background())
+	conn, pump := NewConn(ctxConn, cancelConn, "blocked", func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
-	}})
+	}, nil)
+	t.Cleanup(conn.Fence)
+	go func() {
+		for {
+			select {
+			case <-pump.Ready():
+				_ = pump.Drain()
+			case <-conn.Done():
+				return
+			}
+		}
+	}()
+	_, _ = m.Register(conn)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		m.NotifyShutdownAndFence(context.Background(), 10)
+		m.NotifyShutdownAndFence(ctx, 10)
 		close(done)
 	}()
 	<-started
 
 	registered := make(chan struct{})
 	go func() {
-		_, _ = m.Register(&Conn{WorkerID: "new"})
+		// Registry is fenced by Notify's deferred FenceAll once ctx expires
+		// or delivery completes; registering a new worker while the write is
+		// parked must not block on the manager lock either way.
+		succ, _ := newTestConn(t, "new", nil, nil)
+		_, _ = m.Register(succ)
 		close(registered)
 	}()
 	select {
 	case <-registered:
 	case <-time.After(time.Second):
-		t.Fatal("Register blocked behind a shutdown notification send")
+		t.Fatal("Register blocked behind a parked shutdown write")
 	}
-	close(release)
 	<-done
 }
 
@@ -375,11 +374,26 @@ func TestNotifyShutdownAndFence_ReturnsWhenContextExpires(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	_, _ = m.Register(&Conn{WorkerID: "blocked", SendFn: func(*leapmuxv1.ConnectResponse) error {
+
+	ctxConn, cancelConn := context.WithCancel(context.Background())
+	conn, pump := NewConn(ctxConn, cancelConn, "blocked", func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
-	}})
+	}, nil)
+	t.Cleanup(conn.Fence)
+	go func() {
+		for {
+			select {
+			case <-pump.Ready():
+				_ = pump.Drain()
+			case <-conn.Done():
+				return
+			}
+		}
+	}()
+	_, _ = m.Register(conn)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	done := make(chan struct{})
@@ -393,4 +407,78 @@ func TestNotifyShutdownAndFence_ReturnsWhenContextExpires(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("NotifyShutdownAndFence ignored context expiration")
 	}
+}
+
+func TestNotifyShutdownAndFence_CountsOnlyFramesThatReachedTheWire(t *testing.T) {
+	m := New(DenyAllReach())
+
+	var wrote atomic.Int32
+	drained, drainedPump := newTestConn(t, "drained", func(*leapmuxv1.ConnectResponse) error {
+		wrote.Add(1)
+		return nil
+	}, nil)
+	pumpStart(t, drainedPump, drained)
+	_, _ = m.Register(drained)
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	started := make(chan struct{})
+	parked, pump := newTestConn(t, "parked", func(*leapmuxv1.ConnectResponse) error {
+		close(started)
+		<-release
+		return nil
+	}, nil)
+	go func() {
+		for {
+			select {
+			case <-pump.Ready():
+				_ = pump.Drain()
+			case <-parked.Done():
+				return
+			}
+		}
+	}()
+	_, _ = m.Register(parked)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	m.NotifyShutdownAndFence(ctx, 10)
+	<-started
+
+	// Only the drained conn's write completed inside the budget; the parked
+	// one is still mid-write when Flush times out. NotifySuccess counts
+	// frames that reached the wire — drained succeeded, parked did not.
+	assert.Equal(t, int32(1), wrote.Load(), "only the drained conn's notification reached the wire")
+}
+
+func TestNotifyShutdownAndFence_FencesAfterTheNotificationDrains(t *testing.T) {
+	m := New(DenyAllReach())
+
+	var mu sync.Mutex
+	var order []string
+	conn, pump := newTestConn(t, "w1", func(*leapmuxv1.ConnectResponse) error {
+		mu.Lock()
+		order = append(order, "write")
+		mu.Unlock()
+		return nil
+	}, nil)
+	// Observe cancel ordering.
+	prev := conn.cancel
+	conn.cancel = func() {
+		mu.Lock()
+		order = append(order, "fence")
+		mu.Unlock()
+		prev()
+	}
+	pumpStart(t, pump, conn)
+	_, _ = m.Register(conn)
+
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+	m.NotifyShutdownAndFence(ctx, 10)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"write", "fence"}, order,
+		"notification must reach the wire before the connection is fenced")
 }
