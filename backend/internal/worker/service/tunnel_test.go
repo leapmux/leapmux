@@ -1902,7 +1902,6 @@ func TestWaitWriteSeqReachedIsBoundedByContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	start := time.Now()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1912,8 +1911,11 @@ func TestWaitWriteSeqReachedIsBoundedByContext(t *testing.T) {
 	}()
 	select {
 	case <-done:
-		assert.Less(t, time.Since(start), time.Second,
-			"the flush wait must return promptly once its context expires")
+		// No elapsed-time assertion here: reaching this arm at all IS the
+		// proof. `waitReached` would block forever without the context bound,
+		// so the failing case is the other arm, and it fails with a message
+		// naming the actual defect. A second `assert.Less` on top only adds a
+		// budget that machine load can cross while the code is correct.
 	case <-time.After(2 * time.Second):
 		t.Fatal("writeGate.waitReached did not return when its context expired")
 	}

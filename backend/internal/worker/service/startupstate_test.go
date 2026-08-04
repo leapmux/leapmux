@@ -74,13 +74,24 @@ func TestStartupCore_WaitForPendingResize_WakesOnSignal(t *testing.T) {
 		r.setPendingResize(id, 90, 30)
 	}()
 
+	// The two outcomes are deliberately FAR apart. `ok` alone cannot tell them
+	// apart -- `waitForPendingResize` calls `takePendingResize` after either
+	// select arm, so a broken chan signal still returns the right dims once the
+	// timer fires -- which makes elapsed time the only discriminator. With a
+	// 500ms timeout and a 200ms bound the margin was 300ms, close enough to
+	// machine jitter to fail on a loaded box while the signal worked fine.
+	//
+	// A 30s timeout against a 5s bound keeps exactly the same proof with ~25s of
+	// margin instead: the signal path completes in single-digit ms, and the
+	// timeout path cannot finish under 30s, so nothing load can do reaches the
+	// boundary. The test still exits in milliseconds when it passes.
 	start := time.Now()
-	cols, rows, ok := r.waitForPendingResize(id, 500*time.Millisecond)
+	cols, rows, ok := r.waitForPendingResize(id, 30*time.Second)
 	elapsed := time.Since(start)
 	require.True(t, ok)
 	assert.Equal(t, uint16(90), cols)
 	assert.Equal(t, uint16(30), rows)
-	assert.Less(t, elapsed, 200*time.Millisecond,
+	assert.Less(t, elapsed, 5*time.Second,
 		"chan signal should wake the waiter in ms, not hit the timeout")
 }
 
