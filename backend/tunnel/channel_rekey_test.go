@@ -41,6 +41,32 @@ func withRekeyWatchdog(d time.Duration) rekeyChannelOption {
 	return func(ch *Channel) { ch.rekey.watchdogTimeout = d }
 }
 
+// withCancelGate parks ch.cancel so a test can inspect what a resolution has --
+// and has not -- done at the moment it cancels the channel. entered is closed on
+// the way in, and the cancel completes once release is closed; later cancels
+// fall straight through.
+//
+// A gate rather than a lock barrier, because there is no lock to hold on the
+// right side of the ordering: a terminal resolution takes ch.mu to CLAIM the
+// waiter list, then cancels, then broadcasts without taking anything (see
+// cancelAndResolveRekeyTerminal). Holding ch.mu parks it before the cancel --
+// the wrong side -- and the old broadcast-first order parked there too, so the
+// two are indistinguishable that way.
+//
+// Options run before pairedRekeyChannel starts recvLoop, so wrapping the field
+// here never races that goroutine.
+func withCancelGate(entered chan<- struct{}, release <-chan struct{}) rekeyChannelOption {
+	return func(ch *Channel) {
+		inner := ch.cancel
+		announce := sync.OnceFunc(func() { close(entered) })
+		ch.cancel = func() {
+			announce()
+			<-release
+			inner()
+		}
+	}
+}
+
 // pairedRekeyChannel stands up a Noise pair over a WebSocket with the client's
 // recvLoop running so Ack/Reject can complete an in-band rekey round trip.
 func pairedRekeyChannel(t *testing.T, opts ...rekeyChannelOption) (ch *Channel, peerSession *noiseutil.Session, peerWS *websocket.Conn) {
@@ -444,6 +470,111 @@ func TestChannelRekeyTimeoutCancelsChannel(t *testing.T) {
 		assert.True(t, ch.Closed(), "Ack timeout must cancel the channel")
 	case <-time.After(30 * time.Second):
 		t.Fatal("rekey timeout did not fire")
+	}
+}
+
+// TestChannelRekeyTimeoutCancelsBeforeWakingWaiters pins the ordering
+// TestChannelRekeyTimeoutCancelsChannel above can only observe by luck: the
+// watchdog must cancel the channel BEFORE it broadcasts the timeout, never
+// after.
+//
+// Broadcasting first leaves a window -- outcome delivered, ch.ctx still live --
+// in which the waking sender returns "rekey timeout" from a channel that still
+// reports Closed() == false. A pooled caller (crossworker.channelFor, the
+// desktop TunnelManager) consults Closed() to decide whether to re-resolve, so
+// in that window it hands the dead channel straight back out. The window is a
+// few instructions wide, which is why it surfaced as a one-off Windows CI
+// failure rather than a reproducible one.
+//
+// Parking the cancel makes it deterministic in both directions: broadcast-first
+// reaches the waiter before the gate opens, cancel-first cannot.
+func TestChannelRekeyTimeoutCancelsBeforeWakingWaiters(t *testing.T) {
+	t.Parallel()
+
+	cancelling := make(chan struct{})
+	resumeCancel := make(chan struct{})
+	// OnceFunc so the cleanup can never strand the watchdog inside the gate,
+	// however the body exits, and never double-closes when it did not.
+	resume := sync.OnceFunc(func() { close(resumeCancel) })
+	t.Cleanup(resume)
+
+	ch, _, _ := pairedRekeyChannel(t,
+		withRekeyWatchdog(50*time.Millisecond),
+		withCancelGate(cancelling, resumeCancel))
+
+	waiter := make(chan rekeyOutcome, 1)
+	rekeyDone := make(chan struct{})
+	ch.mu.Lock()
+	ch.rekey.rekeyWaiters = []chan rekeyOutcome{waiter}
+	ch.rekey.rekeyDone = rekeyDone
+	ch.rekey.rekeyReqID = 9
+	ch.mu.Unlock()
+
+	go ch.runRekeyTimer(rekeyDone)
+
+	select {
+	case <-cancelling:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog did not cancel the channel at its deadline")
+	}
+	// The watchdog is parked inside ch.cancel: it has claimed the rekey but the
+	// channel is not dead yet, so the timeout must not have reached a waiter.
+	require.Empty(t, waiter, "the outcome must not be broadcast before the cancel")
+
+	resume()
+
+	select {
+	case outcome := <-waiter:
+		require.Error(t, outcome.err)
+		assert.Contains(t, outcome.err.Error(), "rekey timeout")
+		assert.True(t, ch.Closed(), "the cancel must be visible to every waiter it wakes")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog did not broadcast the timeout after the cancel")
+	}
+}
+
+// TestChannelRekeyAwaitPrefersTerminalOutcomeOverCancel pins the other half of
+// that ordering. Cancelling before the broadcast makes ch.ctx.Done() ready
+// first, so a sender parked in awaitRekeyOutcome can wake on the cancel arm
+// while the timeout outcome is still in flight. It must report the reason the
+// channel died -- "rekey timeout" -- not the cancel that reason performed, and
+// it must not resolve the already-claimed rekey out from under the claimant
+// with a substitute "channel closed" outcome.
+//
+// Without this, cancelling first would only trade the flake in
+// TestChannelRekeyTimeoutCancelsChannel's Closed() assertion for a flake in its
+// error-message assertion.
+func TestChannelRekeyAwaitPrefersTerminalOutcomeOverCancel(t *testing.T) {
+	ch, _, _ := pairedRekeyChannel(t)
+
+	waiter := make(chan rekeyOutcome, 1)
+	ch.mu.Lock()
+	ch.rekey.rekeyWaiters = []chan rekeyOutcome{waiter}
+	ch.mu.Unlock()
+
+	// Reproduce the exact state cancelAndResolveRekeyTerminal is in between its
+	// claim and its broadcast: waiters claimed, channel already cancelled.
+	claim := ch.claimRekeyResolution()
+	ch.cancel()
+
+	got := make(chan error, 1)
+	go func() { got <- ch.awaitRekeyOutcome(waiter) }()
+
+	select {
+	case err := <-got:
+		t.Fatalf("await returned %v instead of parking for the claimed resolution", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	ch.broadcastRekeyResolution(claim, rekeyOutcome{accepted: false, err: errors.New("rekey timeout")})
+
+	select {
+	case err := <-got:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "rekey timeout",
+			"the claimant's cause must win over the cancel it performed")
+	case <-time.After(5 * time.Second):
+		t.Fatal("await did not surface the claimed resolution's outcome")
 	}
 }
 

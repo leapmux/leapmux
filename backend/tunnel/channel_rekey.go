@@ -26,9 +26,10 @@ import (
 // not hold a back-reference to the Channel, both to avoid a setup cycle and to
 // keep the surface that can touch channel state explicit at each call site (the
 // Channel passes itself in). The methods are safe for the Channel's goroutine
-// layout: ensure/start/await/runTimer run on sender goroutines, resolve /
-// handleRekeyAck / handleRekeyReject run on the recvLoop goroutine, and the two
-// locks keep those from racing on the shared fields.
+// layout: ensure/start/await run on sender goroutines, runTimer on a detached
+// watchdog goroutine, resolve / handleRekeyAck / handleRekeyReject on the
+// recvLoop goroutine, and the two locks keep those from racing on the shared
+// fields.
 type rekeyController struct {
 	// lastRekeyAt is handshake time until the first successful in-band rekey.
 	// Captured via time.Now(); Go embeds a monotonic reading, so Before/Sub/Add
@@ -96,11 +97,12 @@ type rekeyOutcome struct {
 	retryAfter time.Duration // from RekeyReject.retry_after_ms; 0 → DefaultRejectBackoff
 	// err is non-nil when the rekey failed terminally (timeout, send error,
 	// derivation failure) rather than being peer-rejected. A terminal failure
-	// cancels the channel and surfaces as an error to the waiting sender; a peer
-	// Reject (accepted == false, err == nil) arms the backoff in resolveRekey and
-	// returns success to the caller. That (accepted, err) pair is how resolveRekey
-	// tells a Reject from every other resolution path, so no other path may
-	// construct it.
+	// surfaces as an error to the waiting sender, and — for every cause that
+	// leaves the transport unusable — cancels the channel first, via
+	// cancelAndResolveRekeyTerminal. A peer Reject (accepted == false,
+	// err == nil) arms the backoff in resolveRekey and returns success to the
+	// caller. That (accepted, err) pair is how resolveRekey tells a Reject from
+	// every other resolution path, so no other path may construct it.
 	err error
 }
 
@@ -109,16 +111,16 @@ type rekeyOutcome struct {
 // caller owns, so it can be genuinely zeroed — see GenerateEphemeralX25519Seed)
 // and the ML-KEM shared secret (nil in classic mode). The responder's ephemeral
 // public key arrives on the RekeyAck; DeriveRekeySecrets then combines the two
-// into the dhSecret both directions rotate on. Zeroed once resolveRekey has
-// consumed it.
+// into the dhSecret both directions rotate on. Zeroed once the resolution that
+// claims it has consumed it.
 type rekeySecrets struct {
 	ephemeralSeed []byte
 	pqShared      []byte
 }
 
 // zero wipes both halves of the in-flight rekey material. Called by every
-// resolution path through resolveRekey so the fresh DH/ML-KEM secrets do not
-// linger past the rekey they were generated for.
+// resolution path through claimRekeyResolution so the fresh DH/ML-KEM secrets
+// do not linger past the rekey they were generated for.
 func (rm *rekeySecrets) zero() {
 	if rm == nil {
 		return
@@ -163,7 +165,7 @@ func (ch *Channel) ensureRekeyed(ctx context.Context) error {
 	// rekeyMu released: wait for the Ack/Reject/timeout that resolveRekey
 	// (or the timer) will deliver to this waiter. Other senders proceed in the
 	// meantime, encrypting under the current key.
-	return ch.awaitRekeyOutcome(ctx, wait)
+	return ch.awaitRekeyOutcome(wait)
 }
 
 // startRekeyLocked checks policy and, if a rekey is due, generates the fresh
@@ -337,17 +339,62 @@ func (ch *Channel) runRekeyTimer(done <-chan struct{}) {
 		// Rekey resolved (Ack/Reject/send-failure on another path): retire.
 		return
 	case <-timer.C:
-		// No resolution in time: terminal failure. resolveRekey broadcasts the
-		// error to every waiter and closes done; the channel cancel is the
-		// terminal-failure consequence the starter owns.
-		ch.resolveRekey(rekeyOutcome{accepted: false, err: errors.New("rekey timeout")})
-		ch.cancel()
+		// No resolution in time: terminal failure. The cancel is the
+		// terminal-failure consequence the starter owns, and it must be visible
+		// BEFORE the error reaches a waiter -- see
+		// cancelAndResolveRekeyTerminal, which closes done and broadcasts to
+		// every waiter around it.
+		ch.cancelAndResolveRekeyTerminal(errors.New("rekey timeout"))
 	case <-ch.ctx.Done():
 		ch.resolveRekey(rekeyOutcome{
 			accepted: false,
 			err:      fmt.Errorf("channel closed: %w", ch.ctx.Err()),
 		})
 	}
+}
+
+// terminalRekeyOutcome shapes a terminal failure, the one outcome shape that is
+// never a peer Reject. err must be non-nil: a nil err is exactly what
+// resolveRekey reads as "the peer rejected", which arms a backoff and reports
+// success to the waiting sender.
+func terminalRekeyOutcome(err error) rekeyOutcome {
+	if err == nil {
+		err = errors.New("rekey resolved terminally with no error")
+	}
+	return rekeyOutcome{accepted: false, err: err}
+}
+
+// resolveRekeyTerminal resolves an in-flight rekey with a terminal failure,
+// leaving the channel open. It is safe to call while holding rekeyMu (as
+// startRekeyLocked does), precisely because a terminal outcome never arms the
+// reject backoff — the only thing in resolveRekey that takes that lock.
+//
+// Use [Channel.cancelAndResolveRekeyTerminal] instead when the failure also
+// kills the channel.
+func (ch *Channel) resolveRekeyTerminal(err error) {
+	ch.drainRekeyWaiters(terminalRekeyOutcome(err))
+}
+
+// cancelAndResolveRekeyTerminal fails an in-flight rekey terminally AND cancels
+// the channel, in the one order a waiting sender can rely on:
+//
+//  1. CLAIM the waiter list, so a sender woken by the cancel in step 2 cannot
+//     resolve the rekey out from under us and report a vague "channel closed"
+//     in place of the reason we are cancelling for.
+//  2. CANCEL, so every waiter observes ch.Closed() == true the instant it sees
+//     the error. Pooled callers (crossworker.channelFor, the desktop
+//     TunnelManager) consult Closed() to decide whether to re-resolve a fresh
+//     channel, so broadcasting first opens a window in which a dead channel
+//     still reports healthy and gets handed straight back out.
+//  3. BROADCAST, waking every claimed waiter with the real cause.
+//
+// Like resolveRekeyTerminal it never arms the reject backoff, so it too is safe
+// under rekeyMu.
+func (ch *Channel) cancelAndResolveRekeyTerminal(err error) {
+	outcome := terminalRekeyOutcome(err)
+	claim := ch.claimRekeyResolution()
+	ch.cancel()
+	ch.broadcastRekeyResolution(claim, outcome)
 }
 
 // resolveRekey is the single resolution path for an in-flight rekey: it arms the
@@ -360,24 +407,10 @@ func (ch *Channel) runRekeyTimer(done <-chan struct{}) {
 //
 // Callers must NOT hold rekeyMu: the backoff arm below takes it and Go mutexes
 // are not reentrant. A resolution raised WITH rekeyMu held must go through
-// [Channel.resolveRekeyTerminal] instead, which cannot reach the arm because its
-// signature only accepts a terminal error — that makes the rule structural
-// rather than a comment a future edit can quietly break.
-
-// resolveRekeyTerminal resolves an in-flight rekey with a terminal failure. It
-// is the ONLY resolution entry point safe to call while holding rekeyMu, and it
-// is safe precisely because a terminal outcome never arms the reject backoff —
-// the only thing in resolveRekey that takes that lock.
-//
-// err must be non-nil; a nil err would be a peer-Reject-shaped outcome, which
-// belongs on resolveRekey.
-func (ch *Channel) resolveRekeyTerminal(err error) {
-	if err == nil {
-		err = errors.New("rekey resolved terminally with no error")
-	}
-	ch.drainRekeyWaiters(rekeyOutcome{accepted: false, err: err})
-}
-
+// [Channel.resolveRekeyTerminal] or [Channel.cancelAndResolveRekeyTerminal]
+// instead, neither of which can reach the arm because their signatures only
+// accept a terminal error — that makes the rule structural rather than a comment
+// a future edit can quietly break.
 func (ch *Channel) resolveRekey(outcome rekeyOutcome) {
 	rk := &ch.rekey
 	// A peer Reject (accepted=false with no terminal err) arms the age-only
@@ -411,37 +444,64 @@ func (ch *Channel) resolveRekey(outcome rekeyOutcome) {
 	ch.drainRekeyWaiters(outcome)
 }
 
-// drainRekeyWaiters is the half of a resolution that touches only ch.mu: claim
-// the waiter list, material and timer signal, wipe the material, and broadcast
-// the outcome. Split out so resolveRekeyTerminal can reach it without going
-// past the rekeyMu-taking backoff arm.
+// drainRekeyWaiters is the half of a resolution that never touches rekeyMu:
+// claim the waiter list, material and timer signal, wipe the material, and
+// broadcast the outcome. Split out so resolveRekeyTerminal can reach it without
+// going past the rekeyMu-taking backoff arm.
 func (ch *Channel) drainRekeyWaiters(outcome rekeyOutcome) {
+	ch.broadcastRekeyResolution(ch.claimRekeyResolution(), outcome)
+}
+
+// rekeyResolution is what one resolution claimed from the controller: every
+// waiter registered at claim time, plus the watchdog's disarm signal. Claiming
+// and broadcasting are separate steps only so a terminal failure can cancel the
+// channel BETWEEN them — see [Channel.cancelAndResolveRekeyTerminal]. Every
+// other path takes both in one go via drainRekeyWaiters.
+type rekeyResolution struct {
+	waiters []chan rekeyOutcome
+	done    chan struct{}
+}
+
+// claimRekeyResolution takes ownership of the in-flight rekey under ch.mu —
+// waiters, material and disarm signal — and wipes the fresh secrets. The claim
+// is exclusive: a resolution arriving afterwards (a duplicate Ack, a timer that
+// fired alongside a Reject) claims an empty resolution and broadcasts nothing.
+//
+// A claimant MUST pass the claim to broadcastRekeyResolution. Once a claim
+// exists, awaitRekeyOutcome parks on its waiter for the claimant's outcome —
+// that is what carries the watchdog's "rekey timeout" past the cancel it
+// performs between the two steps — so a claim that never broadcasts strands
+// every sender waiting on that rekey.
+func (ch *Channel) claimRekeyResolution() rekeyResolution {
 	rk := &ch.rekey
 	ch.mu.Lock()
-	waiters := rk.rekeyWaiters
+	claim := rekeyResolution{waiters: rk.rekeyWaiters, done: rk.rekeyDone}
 	rk.rekeyWaiters = nil
 	rm := rk.rekeyMaterial
 	rk.rekeyMaterial = nil
-	done := rk.rekeyDone
 	rk.rekeyDone = nil
 	ch.mu.Unlock()
 	rm.zero()
-	if waiters == nil {
-		// A resolution arrived for a rekey that was never in flight, or that a
-		// concurrent resolution already drained. Close done (if any) so a timer
-		// that captured it still retires, but there is nothing to broadcast.
-		if done != nil {
-			close(done)
-		}
-		return
+	return claim
+}
+
+// broadcastRekeyResolution disarms the watchdog and delivers outcome to every
+// waiter the claim captured.
+func (ch *Channel) broadcastRekeyResolution(claim rekeyResolution, outcome rekeyOutcome) {
+	if claim.done != nil {
+		// Closed even when the claim is empty, so a timer that captured this
+		// done channel still retires.
+		close(claim.done)
 	}
-	if done != nil {
-		close(done)
+	if len(claim.waiters) == 0 {
+		// A resolution for a rekey that was never in flight, or that a
+		// concurrent resolution already claimed: nothing to broadcast.
+		return
 	}
 	if outcome.err != nil {
 		slog.Warn("in-band rekey failed", "channel_id", ch.channelID, "reason", outcome.err)
 	}
-	for _, w := range waiters {
+	for _, w := range claim.waiters {
 		select {
 		case w <- outcome:
 		default:
@@ -454,46 +514,68 @@ func (ch *Channel) drainRekeyWaiters(outcome rekeyOutcome) {
 // awaitRekeyOutcome blocks until the in-flight rekey resolves (Ack/Reject from
 // handleRekeyAck/handleRekeyReject, a terminal failure via resolveRekey, or
 // channel close). Called with rekeyMu NOT held so other sends can proceed.
-func (ch *Channel) awaitRekeyOutcome(ctx context.Context, wait chan rekeyOutcome) error {
+//
+// It deliberately takes no caller ctx: the Request is already on the wire, and
+// the wait is bounded by the watchdog (sessionVerifyTimeout in production) —
+// the worst-case latency CallRPC documents.
+func (ch *Channel) awaitRekeyOutcome(wait chan rekeyOutcome) error {
 	select {
 	case outcome := <-wait:
-		if outcome.accepted {
-			return nil
-		}
-		// A terminal failure (timeout / send error / derivation failure) already
-		// cancelled the channel; surface it as an error rather than a retryable
-		// Reject.
-		if outcome.err != nil {
-			return outcome.err
-		}
-		// A peer Reject: resolveRekey already armed rekeyNotBefore under rekeyMu
-		// (before draining the waiters, so a concurrent sender cannot slip a
-		// redundant Request past the backoff). Only the hard-ceiling consequence
-		// is this caller's. lastRekeyAt is read under rekeyMu because
-		// handleRekeyAck writes it on the recvLoop goroutine while this runs on a
-		// sender goroutine.
-		ch.rekey.rekeyMu.Lock()
-		pastCeiling := channelwire.PastHardCeiling(time.Now(), ch.rekey.lastRekeyAt)
-		ch.rekey.rekeyMu.Unlock()
-		if pastCeiling {
-			ch.cancel()
-			return errors.New("session key past hard ceiling after rekey reject")
-		}
-		return nil
+		return ch.rekeyOutcomeError(outcome)
 	case <-ch.ctx.Done():
-		// Channel closed while waiting. Drain the in-flight rekey via the single
-		// funnel so the fresh ephemeral seed + ML-KEM shared secret are zeroed
-		// and any joiner is woken — covers the narrow window where Close() fires
-		// after the Request was sent but before runRekeyTimer was scheduled
-		// (otherwise no goroutine watches rekeyDone, and this arm would return
-		// without zeroing rekeyMaterial). resolveRekey is a no-op if a timer /
-		// Ack already drained it.
+		// Channel closed while waiting. Resolve the in-flight rekey via the
+		// single funnel so the fresh ephemeral seed + ML-KEM shared secret are
+		// zeroed and any joiner is woken — covers the narrow window where
+		// Close() fires after the Request was sent but before runRekeyTimer was
+		// scheduled (otherwise no goroutine watches rekeyDone, and this arm
+		// would return without zeroing rekeyMaterial).
+		//
+		// A no-op if a timer / Ack already claimed the rekey, and the receive
+		// below then parks for THAT claimant's outcome rather than reporting the
+		// cancel — deliberately. The cancel that woke us is often the claimant's
+		// own doing (cancelAndResolveRekeyTerminal cancels between its claim and
+		// its broadcast), and "rekey timeout" is the cause this caller needs,
+		// not the symptom it produced. Either way the receive is bounded:
+		// whoever claims a rekey is obliged to broadcast to every waiter it
+		// claimed, and if nobody had claimed it, the resolve above just did and
+		// delivered to us.
 		ch.resolveRekey(rekeyOutcome{
 			accepted: false,
 			err:      fmt.Errorf("channel closed: %w", ch.ctx.Err()),
 		})
-		return fmt.Errorf("channel closed: %w", ch.ctx.Err())
+		return ch.rekeyOutcomeError(<-wait)
 	}
+}
+
+// rekeyOutcomeError maps a resolved rekey outcome onto what ensureRekeyed's
+// caller sees: nil on accept, the failure on a terminal error, and nil on a
+// peer Reject — a Reject is retryable, so the sender proceeds under the current
+// key unless that key is now past the hard ceiling.
+func (ch *Channel) rekeyOutcomeError(outcome rekeyOutcome) error {
+	if outcome.accepted {
+		return nil
+	}
+	// A terminal failure (timeout / send error / Ack derivation failure):
+	// surface it as an error rather than a retryable Reject. Where the failure
+	// also killed the channel the cancel is already visible here, because
+	// cancelAndResolveRekeyTerminal cancels before it broadcasts.
+	if outcome.err != nil {
+		return outcome.err
+	}
+	// A peer Reject: resolveRekey already armed rekeyNotBefore under rekeyMu
+	// (before draining the waiters, so a concurrent sender cannot slip a
+	// redundant Request past the backoff). Only the hard-ceiling consequence
+	// is this caller's. lastRekeyAt is read under rekeyMu because
+	// handleRekeyAck writes it on the recvLoop goroutine while this runs on a
+	// sender goroutine.
+	ch.rekey.rekeyMu.Lock()
+	pastCeiling := channelwire.PastHardCeiling(time.Now(), ch.rekey.lastRekeyAt)
+	ch.rekey.rekeyMu.Unlock()
+	if pastCeiling {
+		ch.cancel()
+		return errors.New("session key past hard ceiling after rekey reject")
+	}
+	return nil
 }
 
 // handleRekeyAck rotates both CipherStates with the fresh X25519 + ML-KEM
@@ -509,14 +591,15 @@ func (ch *Channel) handleRekeyAck(correlationID uint64, responderPub []byte) {
 	rk := &ch.rekey
 	// CLAIM ownership of the in-flight material under ch.mu by nilling the slot,
 	// not just snapshotting it. runRekeyTimer (separate goroutine) and the
-	// awaitRekeyOutcome ctx.Done arm both call resolveRekey, which re-reads the
-	// SAME *rekeySecrets pointer and zeroes rm.ephemeralSeed / rm.pqShared
-	// outside any lock. If we left the slot populated, an Ack landing at ~the
-	// sessionVerifyTimeout boundary would race our DeriveRekeySecrets read of
-	// rm.ephemeralSeed against resolveRekey's zeroBytes write of it — a torn
-	// X25519 scalar read that derives a key the responder did not, desyncing
-	// the channel. With the slot nilled, resolveRekey finds rekeyMaterial==nil
-	// and skips the zero; we own the wipe here once derivation is done.
+	// awaitRekeyOutcome ctx.Done arm both resolve the rekey, and every
+	// resolution re-reads the SAME *rekeySecrets pointer and zeroes
+	// rm.ephemeralSeed / rm.pqShared outside any lock (see
+	// claimRekeyResolution). If we left the slot populated, an Ack landing at
+	// ~the sessionVerifyTimeout boundary would race our DeriveRekeySecrets read
+	// of rm.ephemeralSeed against that rm.zero() write of it — a torn X25519
+	// scalar read that derives a key the responder did not, desyncing the
+	// channel. With the slot nilled, the claim finds rekeyMaterial==nil and
+	// skips the zero; we own the wipe here once derivation is done.
 	ch.mu.Lock()
 	inFlight := len(rk.rekeyWaiters) > 0 && rk.rekeyReqID == correlationID
 	staleFor := rk.rekeyReqID
@@ -529,8 +612,8 @@ func (ch *Channel) handleRekeyAck(correlationID uint64, responderPub []byte) {
 		rk.rekeyMaterial = nil
 	}
 	ch.mu.Unlock()
-	// We claimed rm by nilling the slot, so resolveRekey (called on every exit
-	// below) finds rekeyMaterial==nil and will NOT zero it — wiping rm is ours.
+	// We claimed rm by nilling the slot, so the resolution on every exit below
+	// finds rekeyMaterial==nil and will NOT zero it — wiping rm is ours.
 	// A defer guarantees it on every path (bad-responder-pub, derivation
 	// failure, success), so the fresh ephemeral seed + ML-KEM shared secret
 	// never linger past the Ack they were generated for.
@@ -547,11 +630,8 @@ func (ch *Channel) handleRekeyAck(correlationID uint64, responderPub []byte) {
 			"channel_id", ch.channelID,
 			"responder_pub_len", len(responderPub),
 		)
-		ch.cancel()
-		ch.resolveRekey(rekeyOutcome{
-			accepted: false,
-			err:      fmt.Errorf("rekey ack missing local material or valid responder ephemeral"),
-		})
+		ch.cancelAndResolveRekeyTerminal(
+			errors.New("rekey ack missing local material or valid responder ephemeral"))
 		return
 	}
 
@@ -563,8 +643,7 @@ func (ch *Channel) handleRekeyAck(correlationID uint64, responderPub []byte) {
 	if err != nil {
 		slog.Error("rekey ack DH derivation failed; closing channel",
 			"channel_id", ch.channelID, "error", err)
-		ch.cancel()
-		ch.resolveRekey(rekeyOutcome{accepted: false, err: err})
+		ch.cancelAndResolveRekeyTerminal(err)
 		return
 	}
 
