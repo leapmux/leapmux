@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,8 +25,42 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 )
 
+// ownedTabPollSpy counts the ownership-poll's point lookups.
+//
+// waitForTabOwnership is a loop over WorkspaceTabIndex().GetOwned, so "did the
+// poll run?" -- the property the mint-ordering test actually cares about -- is
+// a CALL COUNT, observable directly and deterministically. The test used to
+// infer it from wall-clock elapsed time instead, which is a proxy: a request
+// that polls zero times still takes however long the machine takes to serve an
+// HTTP round trip, so the assertion failed under load with nothing wrong.
+//
+// Delegates to the wrapped store, never back through the env's store handle --
+// routing a wrapper through the thing it wraps is how these re-enter or recurse.
+type ownedTabPollSpy struct {
+	store.WorkspaceTabIndexStore
+	calls atomic.Int64
+}
+
+func (s *ownedTabPollSpy) GetOwned(ctx context.Context, p store.GetOwnedTabParams) (*store.WorkspaceTabRow, error) {
+	s.calls.Add(1)
+	return s.WorkspaceTabIndexStore.GetOwned(ctx, p)
+}
+
+// tabIndexSpyStore swaps one accessor and passes everything else straight
+// through, mirroring cleanupSpyStore in cleanup_test.go.
+type tabIndexSpyStore struct {
+	store.Store
+	tabIndex *ownedTabPollSpy
+}
+
+func (s tabIndexSpyStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
+	return s.tabIndex
+}
+
 type delegationEnv struct {
-	store           store.Store
+	store store.Store
+	// ownershipPolls counts GetOwned lookups made through the handler's store.
+	ownershipPolls  *ownedTabPollSpy
 	validator       *auth.TokenValidator
 	cache           *auth.AuthContextRegistry
 	server          *httptest.Server
@@ -55,7 +90,10 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	h := service.NewWorkerDelegationHandler(st, tv, auth.NewCredentialLifecycleEffects(sc, nil, nil))
+	// The handler sees the spy; the test body keeps using `st` directly for
+	// seeding, so setup writes are not counted as polls.
+	polls := &ownedTabPollSpy{WorkspaceTabIndexStore: st.WorkspaceTabIndex()}
+	h := service.NewWorkerDelegationHandler(tabIndexSpyStore{Store: st, tabIndex: polls}, tv, auth.NewCredentialLifecycleEffects(sc, nil, nil))
 	// Tests don't want production-grade backoff; shrink the
 	// AddTab-race propagation window so "tab missing" cases fail fast
 	// while still exercising the polling loop.
@@ -97,6 +135,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 
 	return &delegationEnv{
 		store:           st,
+		ownershipPolls:  polls,
 		validator:       tv,
 		cache:           sc,
 		server:          srv,
@@ -139,9 +178,13 @@ func revokeRequest(t *testing.T, env *delegationEnv, workerAuthToken string, bod
 	return resp
 }
 
-// testMintPropagationTimeout is the tuned ownership-poll window the test env
-// installs, so a test can assert "the poll did not run" against the same value
-// the handler is using rather than a duplicated literal.
+// testMintPropagationTimeout shrinks the AddTab-race propagation window so the
+// cases that DO exercise the polling loop ("tab missing") finish quickly.
+//
+// It is no longer what any assertion compares against. "The poll did not run"
+// is asserted by counting GetOwned calls (see ownedTabPollSpy), so this value
+// only has to be small enough to keep the suite fast -- shrinking it further
+// cannot weaken a test, and lengthening it cannot flake one.
 const testMintPropagationTimeout = 50 * time.Millisecond
 
 func TestWorkerDelegation_Mint_HappyPath(t *testing.T) {
@@ -375,12 +418,10 @@ func TestWorkerDelegation_Mint_RefusesAForeignUserWithoutPolling(t *testing.T) {
 	env := setupDelegation(t)
 	otherUserID := hubtestutil.CreateTestUser(t, env.store, "other-user-no-poll", "p")
 
-	start := time.Now()
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
 		"user_id":           otherUserID,
 		"issued_for_tab_id": "nonexistent-tab",
 	})
-	elapsed := time.Since(start)
 	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusForbidden, resp.StatusCode)
@@ -388,10 +429,15 @@ func TestWorkerDelegation_Mint_RefusesAForeignUserWithoutPolling(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "user is not the worker's registrant",
 		"the registrant check must be the one that refuses, which means it ran first")
-	// The test env tunes the propagation window down to ~50ms, so anything at or
-	// beyond that means the poll ran. Compared against the tuned window rather
-	// than a bare constant so this cannot silently pass if the window shrinks.
-	assert.Less(t, elapsed, testMintPropagationTimeout,
+	// The poll ITSELF, counted -- not the wall-clock time it would have taken.
+	//
+	// This asserted `elapsed < testMintPropagationTimeout` before. That is a
+	// proxy for "the poll did not run", and a load-sensitive one: serving the
+	// HTTP round trip alone can exceed a 50ms budget on a busy machine, so the
+	// test failed with the production ordering perfectly correct. Counting
+	// GetOwned measures the property directly, is exact rather than
+	// approximate, and cannot be perturbed by machine load at all.
+	assert.Zero(t, env.ownershipPolls.calls.Load(),
 		"a foreign user_id must be refused before the ownership poll, not after it")
 }
 
