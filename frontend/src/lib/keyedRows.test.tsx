@@ -1,7 +1,7 @@
 import { render, screen } from '@solidjs/testing-library'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { createKeyedRows, KeyedFor } from './keyedRows'
+import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from './keyedRows'
 
 interface Row { id: string, title: string }
 
@@ -63,6 +63,56 @@ describe('createKeyedRows', () => {
 
       expect(keys()).toEqual(['agent:x', 'file:x'])
       expect(byKey().size, 'a bare id would have collapsed these to one row').toBe(2)
+      dispose()
+    })
+  })
+})
+
+describe('createKeyLookup', () => {
+  it('resolves the CURRENT item for a key after a field change', () => {
+    createRoot((dispose) => {
+      const [items, setItems] = createSignal<Row[]>([{ id: 'a', title: 'A' }])
+      const byKey = createKeyLookup(items, r => r.id)
+
+      expect(byKey().get('a')?.title).toBe('A')
+      setItems([{ id: 'a', title: 'renamed' }])
+      expect(byKey().get('a')?.title).toBe('renamed')
+      dispose()
+    })
+  })
+
+  it('answers undefined for a key its source no longer holds', () => {
+    createRoot((dispose) => {
+      const [items, setItems] = createSignal<Row[]>([{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }])
+      const byKey = createKeyLookup(items, r => r.id)
+
+      expect(byKey().get('b')?.title).toBe('B')
+      setItems([{ id: 'a', title: 'A' }])
+      expect(byKey().get('b')).toBeUndefined()
+      dispose()
+    })
+  })
+
+  /**
+   * The pairing this half exists for: keys taken from a CACHED structure, items
+   * from a LIVE source. A field the cache's own gate ignores must still reach
+   * the lookup -- that is the whole difference from resolving through the cache
+   * (see `WorkspaceTabTree`, where doing the latter froze every row's title).
+   */
+  it('stays live when the key list it is paired with does not move', () => {
+    createRoot((dispose) => {
+      // `cached` stands in for a structure computed upstream and held across
+      // changes the structure's own gate ignores; it is deliberately never
+      // refreshed, which is why the keys come from it and not from the signal.
+      const cached: Row[] = [{ id: 'a', title: 'A' }]
+      const [live, setLive] = createSignal<Row[]>(cached)
+      const keys = createStableKeys(() => cached, r => r.id)
+      const byKey = createKeyLookup(live, r => r.id)
+
+      const firstKeys = keys()
+      setLive([{ id: 'a', title: 'renamed' }])
+      expect(keys(), 'the cached key list is unmoved').toBe(firstKeys)
+      expect(byKey().get('a')?.title, 'the item is still resolved live').toBe('renamed')
       dispose()
     })
   })

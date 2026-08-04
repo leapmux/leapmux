@@ -14,7 +14,7 @@ import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { PREFIX_TAB_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
-import { createKeyedRows, createStableKeys, KeyedFor } from '~/lib/keyedRows'
+import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/lib/keyedRows'
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
@@ -61,6 +61,15 @@ function branchGroupKey(b: BranchGroup): string {
 // across the separator. The leading id keeps every fingerprint unique
 // across tabs regardless of the other fields. Exported for unit tests to
 // pin the field-coverage contract.
+//
+// STRUCTURE ONLY. The fields here are the ones that decide which group a tab
+// lands in, what order it sits in, and what the branch/repo diff badges add up
+// to. Everything a ROW renders -- title, agent provider, terminal status, PTY
+// title, progress -- is deliberately absent, and must never be added: those
+// change at PTY-read and status-push frequency, and rebuilding the whole tree
+// on each one is precisely what this gate exists to prevent. The rows read
+// those fields from the live lookup instead (see `TabLeafList`), so a field
+// missing here is not a field that goes stale.
 export function tabBuildKey(t: Tab): string {
   return [
     t.id,
@@ -77,14 +86,25 @@ export function tabBuildKey(t: Tab): string {
   ].join('\0')
 }
 
-function buildBranchRef(workspaceId: string, b: BranchGroup): BranchRef {
+/**
+ * Snapshot one branch row for the Change / Delete branch dialogs.
+ *
+ * `tabs` is re-resolved through the LIVE lookup rather than handed straight
+ * from `b.tabs`: the branch group is a cached structure (see `tabBuildKey`), so
+ * its own `Tab` objects can predate the last hydration or rename. Both dialogs
+ * freeze what they get at open time -- `DeleteBranchDialog` counts tabs by type
+ * and reads a `workingDir` off one of them -- so the snapshot they freeze had
+ * better be the current one. A key that no longer resolves names a tab closed
+ * since the last rebuild; dropping it is the point, not a loss.
+ */
+function buildBranchRef(workspaceId: string, b: BranchGroup, liveTab: (key: string) => Tab | undefined): BranchRef {
   return {
     workspaceId,
     workerId: b.workerId,
     gitToplevel: b.gitToplevel,
     isWorktree: b.isWorktree,
     branchName: b.branchName,
-    tabs: b.tabs,
+    tabs: b.tabs.map(t => liveTab(tabKey(t))).filter((t): t is Tab => t !== undefined),
   }
 }
 
@@ -109,7 +129,22 @@ const TabLeaf: Component<{
   /* eslint-disable solid/reactivity -- stable identifier for createDraggable */
   const draggable = createDraggable(
     `${SIDEBAR_TAB_PREFIX}${props.workspaceId}:${props.tab.type}:${props.tab.id}`,
-    { title: tabDisplayLabel(props.tab), type: props.tab.type },
+    // `title` is a GETTER, not a snapshot. solid-dnd stores this object by
+    // reference and `TabDragContext`'s overlay renderer reads it when a drag
+    // starts, which can be long after the row mounted -- and the row now
+    // survives every metadata-only change, which is the whole point of the live
+    // lookup. A captured string would show the drag overlay the title the tab
+    // held at mount: "Agent" for one whose real title arrived from hydration a
+    // moment later, while the row beneath the cursor reads correctly.
+    //
+    // `type` stays a plain value: it is part of the draggable's own id above, so
+    // a tab whose type changed would be a different row entirely.
+    {
+      get title() {
+        return tabDisplayLabel(props.tab)
+      },
+      type: props.tab.type,
+    },
   )
   /* eslint-enable solid/reactivity */
 
@@ -227,6 +262,14 @@ interface RowSelectionContextValue {
   canClose: (tab: Tab) => boolean
   isCollapsed: (key: string) => boolean
   toggleCollapsed: (key: string) => void
+  /**
+   * The tab a key names RIGHT NOW, straight off `props.tabs` -- never off the
+   * cached tree. Reactive: reading it inside a row subscribes that row to its
+   * own tab, so a metadata-only change (a rename, a hydrated title/provider, a
+   * terminal status flip) updates the row in place without rebuilding the tree.
+   * Returns undefined for a tab closed since the last rebuild.
+   */
+  liveTab: (key: string) => Tab | undefined
 }
 
 /**
@@ -317,11 +360,26 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
  * when a tab is actually added, removed, or reordered; every other field is read
  * reactively INSIDE the row, where Solid updates props in place. This mirrors
  * what `TileRenderer` and `TerminalView` do for the panes.
+ *
+ * The keys come from `props.tabs` (a bucket of the CACHED tree) and the items
+ * from the LIVE lookup, and the split is the whole point. Order and membership
+ * are decided by fields the tree's fingerprint covers, so taking them from the
+ * cache is correct and is what keeps the rows from reconciling on every status
+ * push. Everything a row RENDERS is not in that fingerprint, so resolving the
+ * item from the cache too -- which is what pairing both halves of
+ * `createKeyedRows` against `props.tabs` did -- froze each row's title, provider
+ * icon, terminal status and progress at whatever they were when the tree last
+ * rebuilt. A tab that reached the sidebar before its worker metadata (a peer
+ * client's tab, a `leapmux remote tab open`, a cold reload, or a hydration reply
+ * that lands after the git fields have already settled) then kept the bare
+ * "Agent" label and the generic bot icon until some unrelated tab forced a
+ * rebuild.
  */
 const TabLeafList: Component<{ tabs: readonly Tab[], depth: number }> = (props) => {
-  const { keys, byKey } = createKeyedRows(() => props.tabs, tabKey)
+  const sel = useRowSelection()
+  const keys = createStableKeys(() => props.tabs, tabKey)
   return (
-    <KeyedFor each={keys()} lookup={key => byKey().get(key)}>
+    <KeyedFor each={keys()} lookup={key => sel.liveTab(key)}>
       {tab => <TabLeafSlot tab={tab()} depth={props.depth} />}
     </KeyedFor>
   )
@@ -384,8 +442,8 @@ const BranchGroupRow: Component<{
           <div class={sidebarActions}>
             <BranchContextMenu
               disabledReason={menuDisabledReason()}
-              onChangeBranch={() => actions.onChangeBranch!(buildBranchRef(sel.workspaceId(), props.branch()))}
-              onDeleteBranch={() => actions.onDeleteBranch!(buildBranchRef(sel.workspaceId(), props.branch()))}
+              onChangeBranch={() => actions.onChangeBranch!(buildBranchRef(sel.workspaceId(), props.branch(), sel.liveTab))}
+              onDeleteBranch={() => actions.onDeleteBranch!(buildBranchRef(sel.workspaceId(), props.branch(), sel.liveTab))}
             />
           </div>
         </Show>
@@ -583,6 +641,10 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   // for diff-stat / branch-name updates). Without it, the `<For>` below
   // would reconcile every row on every push.
   const { keys: groupKeys, byKey: groupByKey } = createKeyedRows(() => tree().groups, g => g.repoKey)
+  // The one live tab lookup every row resolves through. Built from `props.tabs`
+  // rather than from `tree()` so it tracks the fields the tree's fingerprint
+  // deliberately ignores -- see `RowSelectionContextValue.liveTab`.
+  const tabByKey = createKeyLookup(() => props.tabs, tabKey)
   const storageKey = () => `${PREFIX_TAB_TREE}${props.workspaceId}`
 
   // --- Tab rename editing state ---
@@ -643,6 +705,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     canClose,
     isCollapsed,
     toggleCollapsed,
+    liveTab: key => tabByKey().get(key),
   }
   const editing: RowEditingContextValue = {
     editingTabKey,

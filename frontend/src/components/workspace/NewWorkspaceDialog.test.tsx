@@ -179,6 +179,35 @@ describe('newWorkspaceDialog', () => {
     }))
   })
 
+  /**
+   * Metadata BEFORE placement, the order `openTabInFocusedTile` documents and
+   * every other open path follows. Placement is what makes the tab exist for
+   * the projection and it applies synchronously, so patching afterwards renders
+   * the tab untitled and provider-less for at least the microtask the `await`
+   * in between costs. The sidebar tree caches its grouping across
+   * metadata-only changes, so that window is enough to leave the row on the
+   * bare "Agent" label and the generic bot icon until an unrelated tab forces
+   * a rebuild.
+   */
+  it('seeds the metadata before placing the tab', async () => {
+    const order: string[] = []
+    const props = renderDialog()
+    vi.mocked(props.metadata.patch).mockImplementation(() => {
+      order.push('metadata')
+    })
+    vi.mocked(seedTabIntoNewWorkspace).mockImplementation(async () => {
+      order.push('placement')
+      return { rootNodeId: 'root-1', position: 'n' }
+    })
+
+    await submitDialog()
+
+    await waitFor(() => {
+      expect(props.onCreated).toHaveBeenCalledWith(NEW_WORKSPACE_ID)
+    })
+    expect(order).toEqual(['metadata', 'placement'])
+  })
+
   it('reports the workspace even when the worker returns no agent', async () => {
     vi.mocked(workerRpc.openAgent).mockResolvedValue(create(OpenAgentResponseSchema, {}))
     const props = renderDialog()

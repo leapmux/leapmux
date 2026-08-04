@@ -99,6 +99,34 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
 
       if (agentResp.agent) {
         recordProviderUse(provider)
+        // Seed the agent's METADATA first, BEFORE the placement below -- the
+        // same order `openTabInFocusedTile` documents and every other open path
+        // follows. Placement is what makes the tab exist for the projection, and
+        // it applies synchronously; patching afterwards (with an `await` in
+        // between, no less) means the tab renders untitled and provider-less for
+        // at least a microtask. The sidebar tree caches its grouping across
+        // metadata-only changes, so that window used to be enough to leave the
+        // row showing the bare "Agent" label and the generic bot icon until an
+        // unrelated tab forced a rebuild.
+        //
+        // This has to happen here at all because `agentResp.agent` is the only
+        // place this client has the title / provider / git fields; the worker
+        // fan-out would otherwise be the first to supply them, and until it
+        // landed the tab would render as a raw agent id.
+        //
+        // `hydrated: true` for the same reason every other local-open path
+        // sets it: the OpenAgent response IS the worker's answer for this tab.
+        // Without it the tab matches `useTabHydrators`' `!isHydrated` predicate
+        // — which now runs over every workspace in the account, not just the
+        // active one — and a `ListAgents` round-trip fires immediately for an
+        // agent this client just created. That reply is applied raw, with none
+        // of the live handler's in-flight-settings suppression, so a settings
+        // edit made in the window before it lands is silently overwritten.
+        props.metadata.patch(agentResp.agent.id, {
+          ...protoToAgentTabFields(agentResp.agent.workerId, agentResp.agent),
+          hydrated: true,
+        })
+
         // After the worker has spawned the agent, wait for the
         // `WorkspaceCreated` event to populate `WorkspaceContentsRecord
         // .root_node_id` in the speculative state, then submit
@@ -115,30 +143,6 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
           tabType: TabType.AGENT,
           tabId: agentResp.agent.id,
           workerId: wid,
-        })
-
-        // Seed the agent's METADATA only. Placement is already in the CRDT
-        // (`seedTab` emitted it above and pending ops apply synchronously), so
-        // the projection renders the tab as soon as the new workspace is
-        // activated -- there is no snapshot to pre-build and no race with a
-        // `listTabs` fetch to lose.
-        //
-        // The metadata still has to be seeded here because `agentResp.agent` is
-        // the only place this client has the title / provider / git fields; the
-        // worker fan-out would otherwise be the first to supply them, and until
-        // it landed the tab would render as a raw agent id.
-        //
-        // `hydrated: true` for the same reason every other local-open path
-        // sets it: the OpenAgent response IS the worker's answer for this tab.
-        // Without it the tab matches `useTabHydrators`' `!isHydrated` predicate
-        // — which now runs over every workspace in the account, not just the
-        // active one — and a `ListAgents` round-trip fires immediately for an
-        // agent this client just created. That reply is applied raw, with none
-        // of the live handler's in-flight-settings suppression, so a settings
-        // edit made in the window before it lands is silently overwritten.
-        props.metadata.patch(agentResp.agent.id, {
-          ...protoToAgentTabFields(agentResp.agent.workerId, agentResp.agent),
-          hydrated: true,
         })
       }
 

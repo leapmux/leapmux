@@ -32,8 +32,7 @@ export function createKeyedRows<T>(
   items: Accessor<readonly T[]>,
   keyOf: (item: T) => string,
 ): { keys: Accessor<string[]>, byKey: Accessor<Map<string, T>> } {
-  const byKey = createMemo(() => new Map(items().map(item => [keyOf(item), item])))
-  return { keys: createStableKeys(items, keyOf), byKey }
+  return { keys: createStableKeys(items, keyOf), byKey: createKeyLookup(items, keyOf) }
 }
 
 /**
@@ -52,6 +51,31 @@ export function createStableKeys<T>(
   // rule can see the memo it is analysing.
   const keys = createMemo(() => items().map(keyOf), [], { equals: shallowEqualArrays })
   return keys
+}
+
+/**
+ * The lookup half of {@link createKeyedRows}, on its own.
+ *
+ * The mirror of {@link createStableKeys}: for a list whose key ORDER comes from
+ * somewhere else -- a cached grouping, a sorted structure computed upstream --
+ * while the item each key resolves to must stay LIVE. `WorkspaceTabTree` is
+ * exactly that shape: its tree memo is gated on a fingerprint of the fields
+ * that decide grouping and order, so pairing its cached buckets with a lookup
+ * built from those same cached arrays would freeze every field the fingerprint
+ * omits (see that file's `tabBuildKey`). Taking the keys from the structure and
+ * the items from here keeps the caching where it belongs and the rendering
+ * live.
+ *
+ * Deliberately NOT guarded by an `equals`, for the same reason `createKeyedRows`
+ * leaves its `byKey` unguarded: this map IS the row's reactive source, and
+ * rebuilding it is how a changed item reaches the row that renders it.
+ */
+export function createKeyLookup<T>(
+  items: Accessor<readonly T[]>,
+  keyOf: (item: T) => string,
+): Accessor<Map<string, T>> {
+  const byKey = createMemo(() => new Map(items().map(item => [keyOf(item), item])))
+  return byKey
 }
 
 /**

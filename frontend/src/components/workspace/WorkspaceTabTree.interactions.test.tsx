@@ -2,20 +2,43 @@ import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { buildTree, WorkspaceTabTree } from './WorkspaceTabTree'
 
+// Captures the `data` object each row hands solid-dnd, so a test can read it
+// back the way `TabDragContext`'s overlay renderer does.
+const { draggableData } = vi.hoisted(() => ({ draggableData: [] as { title: string }[] }))
+
 vi.mock('@thisbeyond/solid-dnd', () => ({
-  createDraggable: () => () => {},
+  createDraggable: (_id: string, data: { title: string }) => {
+    draggableData.push(data)
+    return () => {}
+  },
 }))
 
 vi.mock('~/components/shell/TabDragContext', () => ({
   SIDEBAR_TAB_PREFIX: 'sidebar-tab:',
 }))
 
-vi.mock('~/components/common/AgentProviderIcon', () => ({
-  AgentProviderIcon: () => null,
-}))
+// Stubbed rather than rendered: the real brand-mark SVGs say nothing a test can
+// read without pinning path data. The stub still reports which provider it was
+// asked for, so the icon's REACTIVITY is assertable -- an agent tab that reached
+// the sidebar before its provider did must pick the icon up, not keep the
+// generic bot fallback. `createRenderEffect` (not a JSX child) because a
+// `vi.mock` factory is hoisted above this module's Solid template constants.
+vi.mock('~/components/common/AgentProviderIcon', async () => {
+  const { createRenderEffect } = await import('solid-js')
+  return {
+    AgentProviderIcon: (props: { provider?: number }) => {
+      const el = document.createElement('span')
+      el.setAttribute('data-testid', 'agent-provider-icon')
+      createRenderEffect(() => el.setAttribute('data-provider', String(props.provider ?? '')))
+      return el
+    },
+  }
+})
 
 function makeTab(type: TabType, id: string, title?: string): Tab {
   // The wide `TabType` parameter is narrowed to the union's literal
@@ -858,6 +881,11 @@ describe('workspaceTabTree interactions', () => {
    * keyed reconciliation preserves the same element when its parent
    * memo returns the same reference, so if buildTree had rerun the
    * branch row's DOM node would be a fresh element.
+   *
+   * Asserted together with the label update it must not cost, because the two
+   * are one property: skipping the rebuild is only correct while the rows still
+   * resolve their tab LIVE. Pinning the short-circuit alone is what let the
+   * leaves render a frozen `Tab` — see the live-row block below.
    */
   it('does not re-reconcile branch rows when only non-tree fields change', async () => {
     const initial: Tab = {
@@ -894,6 +922,8 @@ describe('workspaceTabTree interactions', () => {
     // Same DOM node ⇒ no reconciliation ⇒ buildTree's fingerprint gate
     // skipped the rerun.
     expect(branchRowAfter).toBe(branchRowBefore)
+    // …and the skipped rebuild cost the leaf nothing.
+    expect(screen.getByTestId('tab-tree-leaf').textContent).toContain('Agent renamed')
   })
 
   /**
@@ -962,6 +992,175 @@ describe('workspaceTabTree interactions', () => {
     setTabs([])
     expect(screen.queryAllByTestId('tab-tree-branch-group').length).toBe(0)
     expect(screen.queryAllByTestId('tab-tree-repo-group').length).toBe(0)
+  })
+
+  // ----- Live rows behind the cached tree --------------------------------
+
+  /**
+   * Regression, and the reason the fingerprint short-circuit above needs a
+   * companion here. `buildTree` caches the `Tab` OBJECTS in its branch buckets,
+   * and the leaf rows used to resolve through a lookup built from those same
+   * cached arrays. Every field the fingerprint omits — title, agent provider,
+   * terminal status, PTY title, progress — was therefore frozen at whatever it
+   * held when the tree last rebuilt.
+   *
+   * The user-visible shape: a tab that reaches the sidebar before its worker
+   * metadata (a peer client's tab, a `leapmux remote tab open`, a cold reload,
+   * or a hydration reply landing after a status push already settled the git
+   * fields) rendered as the bare "Agent" label with the generic bot icon, and
+   * stayed that way until an unrelated tab forced a rebuild.
+   *
+   * `gitTab` fixtures throughout: a tab with git fields is the case that goes
+   * wrong, because the fingerprint has already settled before hydration lands.
+   */
+  describe('resolves each row against the live tab list', () => {
+    const bareAgent: Tab = {
+      type: TabType.AGENT,
+      workspaceId: 'ws-1',
+      id: 'a1',
+      tileId: 'tile-1',
+      position: '0|',
+      workerId: 'w-1',
+      gitToplevel: '/repo',
+      gitOriginUrl: 'https://github.com/o/r.git',
+      gitBranch: 'main',
+    } as Tab
+
+    function renderTabs(initial: Tab[]) {
+      const [tabs, setTabs] = createSignal<Tab[]>(initial)
+      render(() => (
+        <WorkspaceTabTree
+          tabs={tabs()}
+          activeTabKey={null}
+          onTabClick={() => {}}
+          workspaceId="ws-1"
+        />
+      ))
+      return setTabs
+    }
+
+    it('picks up a title that arrives after the row was painted', () => {
+      const setTabs = renderTabs([bareAgent])
+      // Pre-condition: this is exactly what the bug looked like.
+      expect(screen.getByTestId('tab-tree-leaf').textContent).toContain('Agent')
+
+      // Hydration lands. Only title/provider move; the git fields the
+      // fingerprint covers are byte-identical, so the tree does NOT rebuild.
+      setTabs([{ ...bareAgent, title: 'Agent Kiwi' } as Tab])
+      expect(screen.getByTestId('tab-tree-leaf').textContent).toContain('Agent Kiwi')
+    })
+
+    it('picks up an agent provider that arrives after the row was painted', () => {
+      const setTabs = renderTabs([bareAgent])
+      // Empty ⇒ TabTypeIcon asked for no provider at all, which is what makes
+      // the real icon fall back to the generic bot.
+      expect(screen.getByTestId('agent-provider-icon').dataset.provider).toBe('')
+
+      setTabs([{ ...bareAgent, agentProvider: AgentProvider.CLAUDE_CODE } as Tab])
+      expect(screen.getByTestId('agent-provider-icon').dataset.provider)
+        .toBe(String(AgentProvider.CLAUDE_CODE))
+    })
+
+    it('picks up a rename', () => {
+      const named = { ...bareAgent, title: 'Agent Kiwi' } as Tab
+      const setTabs = renderTabs([named])
+      expect(screen.getByTestId('tab-tree-leaf').textContent).toContain('Agent Kiwi')
+
+      setTabs([{ ...named, title: 'Renamed' } as Tab])
+      expect(screen.getByTestId('tab-tree-leaf').textContent).toContain('Renamed')
+    })
+
+    it('picks up a terminal status flip', () => {
+      const term = {
+        ...bareAgent,
+        type: TabType.TERMINAL,
+        id: 't1',
+        title: 'zsh',
+        status: TerminalStatus.READY,
+      } as Tab
+      const setTabs = renderTabs([term])
+      expect(screen.getByTestId('tab-tree-leaf').dataset.terminalStatus)
+        .toBe(String(TerminalStatus.READY))
+
+      setTabs([{ ...term, status: TerminalStatus.EXITED } as Tab])
+      expect(screen.getByTestId('tab-tree-leaf').dataset.terminalStatus)
+        .toBe(String(TerminalStatus.EXITED))
+    })
+
+    /**
+     * The row must update IN PLACE. Remounting would be a second bug wearing
+     * the fix's clothes: the leaf can hold the inline rename `<input>`, and a
+     * fresh element drops the focus and the text the user is typing.
+     */
+    it('updates the row without remounting it', () => {
+      const setTabs = renderTabs([bareAgent])
+      const leafBefore = screen.getByTestId('tab-tree-leaf')
+
+      setTabs([{ ...bareAgent, title: 'Agent Kiwi' } as Tab])
+      expect(screen.getByTestId('tab-tree-leaf')).toBe(leafBefore)
+      expect(leafBefore.textContent).toContain('Agent Kiwi')
+    })
+
+    /**
+     * The cached bucket can name a tab the live list has already dropped — a
+     * close is a metadata-invisible change until the next rebuild. The row must
+     * disappear rather than read through `undefined`.
+     */
+    it('drops a row whose tab left the live list', () => {
+      const second = { ...bareAgent, id: 'a2', position: '1|', title: 'Agent Two' } as Tab
+      const setTabs = renderTabs([{ ...bareAgent, title: 'Agent One' } as Tab, second])
+      expect(screen.getAllByTestId('tab-tree-leaf')).toHaveLength(2)
+
+      setTabs([second])
+      const leaves = screen.getAllByTestId('tab-tree-leaf')
+      expect(leaves).toHaveLength(1)
+      expect(leaves[0].textContent).toContain('Agent Two')
+    })
+
+    /**
+     * `TabDragContext` renders the sidebar drag overlay from the `data` object
+     * the row handed solid-dnd, and reads it when the drag STARTS. The row now
+     * survives every metadata-only change, so a captured string would pin the
+     * overlay to the title the tab had when its row mounted.
+     */
+    it('reports the live title to the drag overlay', () => {
+      draggableData.length = 0
+      const setTabs = renderTabs([bareAgent])
+      expect(draggableData).toHaveLength(1)
+      expect(draggableData[0].title).toBe('Agent')
+
+      setTabs([{ ...bareAgent, title: 'Agent Kiwi' } as Tab])
+      expect(draggableData, 'the row must not have remounted').toHaveLength(1)
+      expect(draggableData[0].title).toBe('Agent Kiwi')
+    })
+
+    /**
+     * The branch dialogs freeze what they are handed at open time, so the ref
+     * must carry live tabs too — a stale snapshot would count and close the
+     * wrong set.
+     */
+    it('hands the branch dialogs the live tabs, not the cached ones', async () => {
+      const onDeleteBranch = vi.fn()
+      const [tabs, setTabs] = createSignal<Tab[]>([bareAgent])
+      render(() => (
+        <WorkspaceTabTree
+          tabs={tabs()}
+          activeTabKey={null}
+          onTabClick={() => {}}
+          workspaceId="ws-1"
+          onChangeBranch={() => {}}
+          onDeleteBranch={onDeleteBranch}
+        />
+      ))
+
+      setTabs([{ ...bareAgent, title: 'Agent Kiwi' } as Tab])
+      const branchRow = screen.getByTestId('tab-tree-branch-group')
+      await fireEvent.click(branchRow.querySelector('button') as HTMLButtonElement)
+      await fireEvent.click(screen.getByText('Delete branch...'))
+
+      expect(onDeleteBranch).toHaveBeenCalledTimes(1)
+      expect(onDeleteBranch.mock.calls[0][0].tabs.map((t: Tab) => t.title)).toEqual(['Agent Kiwi'])
+    })
   })
 
   it('keeps colon-overlapping branch groups independent when one is toggled', async () => {
