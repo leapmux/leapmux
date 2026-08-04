@@ -35,8 +35,8 @@ import { appendOpLogSegment, MAX_OPLOG_READ_FRAMES, writeCheckpointAndTruncateOp
 //
 // THE REWRITE IS INCREMENTAL. It used to re-serialize the WHOLE
 // `confirmedState` on every threshold trip — synchronously, on the main thread,
-// every 256 confirmed frames, i.e. mid-drag: 3.4 ms at 400 nodes / 600 tabs and
-// 29.6 ms at 2400 / 4800, to persist ops that touched one or two entities. So
+// every 256 confirmed frames, i.e. mid-drag: 7.1 ms at 400 nodes / 600 tabs and
+// 56.7 ms at 2400 / 4800, to persist ops that touched one or two entities. So
 // the recorder now tracks WHICH entities each confirmed frame touched and
 // rewrites only those chunks (see checkpointChunks.ts for the split). The cost
 // of a routine checkpoint is the delta plus an O(1) header, not the account.

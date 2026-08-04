@@ -29,7 +29,7 @@ import { createLogger } from '~/lib/logger'
 //     record each. The state is sharded rather than stored as one blob so a
 //     rewrite costs the DELTA, not the account: the old design re-ran
 //     `toBinary` over the whole UserCrdtState on the main thread every 256
-//     confirmed frames (3.4 ms at 400 nodes / 600 tabs, 29.6 ms at 2400 /
+//     confirmed frames (7.1 ms at 400 nodes / 600 tabs, 56.7 ms at 2400 /
 //     4800), landing mid-drag, to persist a change to one or two entities.
 //   - `opLog` (one row per SEGMENT since the checkpoint): each row holds the
 //     batch of confirmed WatchUserEvent frames appended in one flush, in apply

@@ -19,8 +19,8 @@ import { opTarget } from './ops'
 // The checkpoint used to be ONE blob: `toBinary(UserCrdtStateSchema,
 // confirmedState)` over the whole account, re-run on the main thread every 256
 // confirmed frames. That cost scales with the ACCOUNT, while the delta that
-// triggered it is 256 ops on one or two entities -- measured at 3.4 ms for 400
-// nodes / 600 tabs and 29.6 ms for 2400 / 4800, landing mid-drag.
+// triggered it is 256 ops on one or two entities -- measured at 7.1 ms for 400
+// nodes / 600 tabs and 56.7 ms for 2400 / 4800, landing mid-drag.
 //
 // So the persisted checkpoint is split:
 //
@@ -29,6 +29,13 @@ import { opTarget } from './ops'
 //     account size and cheap to rewrite on every checkpoint.
 //   - one CHUNK per entity, `(kind, entityId) -> serialized record`. A rewrite
 //     re-serializes only the entities that actually changed.
+//
+// The measured effect is that the AFTER numbers stop tracking account size at
+// all: header alone is 0.004 ms and header + 2 dirty chunks 0.015 ms at EVERY
+// size benchmarked (5/5 through 2400/4800), against 0.111 ms / 56.7 ms for the
+// whole blob over the same range. The full rewrite is still O(account) --
+// 56.7 ms at 2400/4800 -- which is why it is reserved for a bootstrap, where
+// the state was just replaced wholesale anyway.
 //
 // This module owns the split and its inverse, and is the ONLY place that knows
 // which record schema each kind carries. The recorder serializes through it,
