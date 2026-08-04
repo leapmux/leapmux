@@ -50,12 +50,19 @@ func TestStartupCore_ClearPendingResize_DrainsSignal(t *testing.T) {
 	assert.Equal(t, 0, len(ch),
 		"clearPendingResize must drain the buffered signal so a later waiter can't wake on it")
 
-	// A wait after clear should block for roughly the full timeout,
-	// not wake immediately on a stale signal.
+	// A wait after clear must block for its full timeout rather than waking
+	// immediately on a stale signal. `ok` cannot tell those apart -- both return
+	// false -- so the duration is the discriminator, and it is a LOWER bound,
+	// which machine load cannot break: load only ever makes this slower, and the
+	// failure being guarded against is waking EARLY.
+	//
+	// The two outcomes are pushed far apart all the same, so the assertion does
+	// not depend on a 10ms cushion: a drained-signal wake returns in
+	// microseconds, while the timeout path cannot return before 2s.
 	start := time.Now()
-	_, _, ok := r.waitForPendingResize(id, 50*time.Millisecond)
+	_, _, ok := r.waitForPendingResize(id, 2*time.Second)
 	assert.False(t, ok, "no resize stashed, should time out")
-	assert.GreaterOrEqual(t, time.Since(start), 40*time.Millisecond,
+	assert.GreaterOrEqual(t, time.Since(start), time.Second,
 		"wait should block for roughly the full timeout, not wake on a drained signal")
 }
 

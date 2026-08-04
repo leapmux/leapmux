@@ -624,15 +624,22 @@ func TestSubscription_LookupFailedRetryWakesImmediatelyOnCancel(t *testing.T) {
 	// retryCtx.Done() and refund its slot — observable as Attempts()==0 (the slot
 	// was refunded, not spent).
 	time.Sleep(20 * time.Millisecond)
-	start := time.Now()
-	sub.Cancel()
-	elapsed := time.Since(start)
 
-	// Cancel returns promptly (it does not block on the handle's Done for long,
-	// and the retry goroutine bails via retryCtx without waiting on the 30s
-	// timer). Assert it returned in well under the 30s delay.
-	assert.Less(t, elapsed, time.Second,
-		"Cancel must wake the retry promptly, not wait on the 30s timer")
+	// Cancel must wake the retry via retryCtx rather than waiting out the 30s
+	// timer -- asserted as a COMPLETION against a generous deadline, not as a
+	// 1s budget. Both forms catch the same defect (a Cancel that blocks on the
+	// timer takes 30s), but a completion guard cannot be crossed by machine
+	// load and reports the defect rather than the budget.
+	cancelled := make(chan struct{})
+	go func() {
+		defer close(cancelled)
+		sub.Cancel()
+	}()
+	select {
+	case <-cancelled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Cancel blocked on the retry timer instead of waking it via retryCtx")
+	}
 	sub.mu.Lock()
 	attempts := sub.retry.Attempts()
 	sub.mu.Unlock()

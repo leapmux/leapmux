@@ -495,18 +495,21 @@ func TestTunnelHalfCloseReaper_WriteActivityResetsClock(t *testing.T) {
 // reclamation.
 //
 // The idle window here is widened deliberately (vs withShortHalfCloseReaper's 60ms)
-// so the "teardown beat the idle window" timing assertion has headroom: the
-// lifetime watcher fires on context.AfterFunc (scheduler latency) and
-// AssertEventually polls every ~10ms, so a 60ms margin is flake-prone under CI
-// load. 250ms keeps the assertion decisive (the reaper cannot have run: a conn
-// parked at mark time is not idle-reapable for the full window) while leaving
-// comfortable room for scheduler + poll jitter.
+// so the reaper is pushed far out of reach instead of being raced: a conn
+// parked at mark time is not idle-reapable for a full idle window, and at 30s
+// that window cannot elapse during the test. Eviction is then attributable to
+// the lifetime watcher by construction, with no timing assertion to tune.
 func TestTunnelHalfCloseReaper_ChannelTeardownStillReapsImmediately(t *testing.T) {
 	manager := newTunnelManager()
-	// Override to a wider idle window with generous headroom for the timing check.
+	// Put the idle reaper OUT OF REACH for the duration of the test rather than
+	// racing it. At 30s it cannot possibly have run, so "the conn is gone" is
+	// itself proof that the lifetime watcher reclaimed it -- no elapsed-time
+	// assertion, and nothing for machine load to perturb. Timing the teardown
+	// against a 250ms window instead made the proof depend on scheduler latency
+	// and AssertEventually's ~10ms poll both staying small.
 	origIdle, origInterval := halfCloseIdleTimeout, halfCloseSweepInterval
-	halfCloseIdleTimeout = 250 * time.Millisecond
-	halfCloseSweepInterval = 50 * time.Millisecond
+	halfCloseIdleTimeout = 30 * time.Second
+	halfCloseSweepInterval = 30 * time.Second
 	t.Cleanup(func() { halfCloseIdleTimeout, halfCloseSweepInterval = origIdle, origInterval })
 	t.Cleanup(manager.Stop)
 	const connID = "half-closed-teardown"
@@ -514,16 +517,10 @@ func TestTunnelHalfCloseReaper_ChannelTeardownStillReapsImmediately(t *testing.T
 	t.Cleanup(func() { _ = workerConn.Close() })
 
 	require.NotNil(t, manager.get(connID), "precondition: conn parked half-closed")
-	start := time.Now()
 	cancel() // session death
 	testutil.AssertEventually(t, func() bool { return manager.get(connID) == nil },
 		"channel teardown must evict a half-closed conn immediately, not wait for the idle reaper")
 	assert.True(t, tc.closed.Load())
-	// The conn was parked at mark time, so it is not idle-reapable until a full
-	// idle window elapses. Asserting teardown finished well inside that window
-	// proves the lifetime watcher (not the reaper) reclaimed it.
-	assert.Less(t, time.Since(start), halfCloseIdleTimeout,
-		"teardown must reclaim via the lifetime watcher, faster than the idle deadline")
 }
 
 // TestTunnelHalfCloseReaper_ReapsSequentialHalfCloses pins that the sweeper, once

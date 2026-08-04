@@ -173,14 +173,22 @@ func TestConnectWithReconnect_HubRetryDelayCancelledByContext(t *testing.T) {
 		cancel()
 	}()
 
-	start := time.Now()
-	bo := newFastBackoff()
-	client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
-	elapsed := time.Since(start)
-
-	// Should have exited well before the 60-second delay.
-	assert.Less(t, elapsed, 2*time.Second,
-		"should exit promptly on context cancel, not wait for full delay")
+	// Exiting on ctx cancel rather than the 60s reconnect delay, asserted as a
+	// COMPLETION against a generous guard: the failing case blocks for a full
+	// minute, so a guard catches it just as surely as a 2s budget and cannot be
+	// crossed by machine load. The attempt count below is the other half of the
+	// proof -- a run that waited out the delay would have retried.
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		bo := newFastBackoff()
+		client.connectWithReconnect(ctx, "token", mockConnect, bo, 5*time.Millisecond)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(20 * time.Second):
+		t.Fatal("connectWithReconnect ignored the cancelled context and waited on its reconnect delay")
+	}
 	assert.Equal(t, int32(1), attempts.Load(), "expected exactly 1 attempt before cancel")
 }
 

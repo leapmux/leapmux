@@ -1372,11 +1372,26 @@ func TestConnWriteDeadlineInterruptsSendPermitWait(t *testing.T) {
 
 	require.NoError(t, tc.SetWriteDeadline(time.Now().Add(20*time.Millisecond)))
 
-	started := time.Now()
-	n, err := tc.Write([]byte("blocked"))
-	assert.Zero(t, n)
-	assert.ErrorIs(t, err, os.ErrDeadlineExceeded)
-	assert.Less(t, time.Since(started), 250*time.Millisecond)
+	// The deadline firing is proven by the ERROR, not by elapsed time: a Write
+	// that parked forever would never return one. So the only thing left to
+	// guard is a hang, and that is a generous completion timeout rather than a
+	// 250ms budget sitting close to the 20ms deadline it is measuring.
+	type writeResult struct {
+		n   int
+		err error
+	}
+	wrote := make(chan writeResult, 1)
+	go func() {
+		n, err := tc.Write([]byte("blocked"))
+		wrote <- writeResult{n, err}
+	}()
+	select {
+	case got := <-wrote:
+		assert.Zero(t, got.n)
+		assert.ErrorIs(t, got.err, os.ErrDeadlineExceeded)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Write parked past its deadline instead of returning ErrDeadlineExceeded")
+	}
 }
 
 // A write deadline SET AFTER a Write parks on a full send window must wake the
@@ -1475,9 +1490,21 @@ func TestStreamCallbackPreservesOrderWithoutBlockingDelivery(t *testing.T) {
 	stream.deliver(&leapmuxv1.InnerStreamMessage{Payload: []byte("first")})
 	<-firstStarted
 
-	started := time.Now()
-	stream.deliver(&leapmuxv1.InnerStreamMessage{Payload: []byte("second")})
-	assert.Less(t, time.Since(started), 50*time.Millisecond)
+	// "deliver does not block behind the in-flight callback", asserted as a
+	// COMPLETION rather than a 50ms budget. The budget measured the same thing
+	// only as long as the machine was idle; this fails when deliver actually
+	// blocks and is otherwise immune to load, because the timeout is orders of
+	// magnitude above the microseconds a non-blocking enqueue takes.
+	delivered2 := make(chan struct{})
+	go func() {
+		defer close(delivered2)
+		stream.deliver(&leapmuxv1.InnerStreamMessage{Payload: []byte("second")})
+	}()
+	select {
+	case <-delivered2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deliver blocked behind the in-flight callback instead of queueing behind it")
+	}
 	close(releaseFirst)
 	assert.Equal(t, "first", <-delivered)
 	assert.Equal(t, "second", <-delivered)
