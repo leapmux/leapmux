@@ -270,6 +270,30 @@ func (r EntityRef) ToJSON() map[string]any {
 }
 
 // OpTarget extracts the EntityRef an op acts on.
+// HasIdentity reports whether this ref actually names an entity.
+//
+// The SINGLE definition of "is this a real target", shared by the submit-path
+// validator (which rejects an op whose target has none) and by
+// transitionEntryRef (which refuses to decode such an entry). Keeping one rule
+// is what makes the AffectedEntitiesToProto -> transitionEntryRef round-trip
+// total: an identity the encoder can write but the decoder cannot read is a
+// batch that commits fine and then reports itself as a corrupt journal row on
+// every later resume.
+func (r EntityRef) HasIdentity() bool {
+	switch r.Kind {
+	case EntityKindNode:
+		return r.NodeID != ""
+	case EntityKindTab:
+		return r.TabID != ""
+	case EntityKindFloatingWindow:
+		return r.WindowID != ""
+	case EntityKindWorkspaceRoot:
+		return r.WorkspaceID != ""
+	default:
+		return false
+	}
+}
+
 func OpTarget(op *leapmuxv1.CrdtOp) EntityRef {
 	switch body := op.GetBody().(type) {
 	case *leapmuxv1.CrdtOp_SetNodeRegister:

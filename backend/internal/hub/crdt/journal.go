@@ -2,10 +2,43 @@ package crdt
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
+
+// ErrDeltaTooLarge is returned by ListBatchesAfter when the post-cursor tail
+// exceeds the caller's maxOps or maxBytes budget. The receiver should fall
+// back to a full materialized snapshot rather than ship an unbounded delta
+// on resume.
+var ErrDeltaTooLarge = errors.New("crdt: resume delta exceeds budget")
+
+// ErrResumeCorrupt reports that ListBatchesAfter hit a row whose batch_payload
+// or transitions_payload could not be decoded. Like ErrDeltaTooLarge it is a
+// RECOVERABLE verdict, not a connect failure: buildResumeDelta branches on it
+// via errors.Is and re-enters the full-snapshot FALLBACK path. The offending
+// row is also returned in the CorruptRows slice so the caller can log it.
+//
+// The scan stops rather than skipping the row, because a delta that omits one
+// committed batch is indistinguishable on the wire from that batch never having
+// existed — while the frames after it still advance the client's watermark past
+// it, and the resume cursor is strictly-greater, so no later resume re-requests
+// it. One full snapshot is cheap; a permanently diverged client is not.
+var ErrResumeCorrupt = errors.New("crdt: resume journal row corrupt")
+
+// ErrBootJournalCorrupt reports the SAME damage as ErrResumeCorrupt found on the
+// BOOT scan, where the verdict is the opposite: there is no snapshot to fall
+// back to, because the snapshot is what Bootstrap is trying to build.
+//
+// Two sentinels rather than one because the sentinel IS the verdict. Wrapping a
+// boot failure in ErrResumeCorrupt made `errors.Is(err, ErrResumeCorrupt)` true
+// for an error whose whole documented meaning is "degrade to a snapshot" — so
+// the first handler to grow that arm above registry.Get would serve a snapshot
+// built from a state blob missing every op after the bad row, and report a
+// successful connect. Nothing branches on it there today; the mislabel is the
+// hazard, and it was pinned by a passing test.
+var ErrBootJournalCorrupt = errors.New("crdt: boot journal row corrupt")
 
 // Journal is the persistence interface the manager depends on. The
 // concrete implementation lives in the hub service package and binds
@@ -15,6 +48,42 @@ type Journal interface {
 	// batches after compaction_watermark. nil state means "first
 	// boot — no state row yet"; the tail is empty in that case.
 	LoadState(ctx context.Context, userID string) (state *leapmuxv1.UserCrdtState, tail []*leapmuxv1.OpBatch, err error)
+
+	// ListBatchesAfter returns the journal's op batches (with their persisted
+	// per-entity workspace transitions) strictly after the given cursor HLC,
+	// paged forward by HLC tuple. It is the resume counterpart to the tail
+	// LoadState returns at boot: same underlying scan, just bounded by a
+	// client-supplied cursor instead of compaction_watermark. Each ResumeBatch
+	// pairs the batch with its BatchTransitions so buildResumeDelta can replay
+	// the SAME pre/post stable-visibility classification the live broadcast
+	// applies — emitting materialized/removed frames for entities that crossed
+	// the subscriber's visibility boundary during the gap, not just the
+	// current-workspace-filtered raw ops.
+	//
+	// maxOps caps the total op count (across all batches); maxBytes caps the
+	// sum of batch_payload + transitions_payload sizes. Either budget <= 0
+	// disables that ceiling. until, when non-nil, exclusive-caps the scan to
+	// batches whose first-op HLC is <= until (the register-time high-water):
+	// commits that land after registration (HLC > until) are owned by live
+	// broadcast into the just-registered subscriber and must not also appear
+	// in the delta. until nil means unbounded (LoadState / boot).
+	//
+	// If the tail would exceed an enabled ceiling, the scan aborts with
+	// ErrDeltaTooLarge so the caller can fall back to a full snapshot rather
+	// than ship a giant delta. On ErrDeltaTooLarge the returned slice is
+	// incidental (batches decoded before the ceiling was hit) and MUST be
+	// discarded — SubscribeWithACL branches on the sentinel and re-enters the
+	// full-snapshot path.
+	//
+	// A row whose batch_payload or transitions_payload cannot be decoded STOPS
+	// the scan and returns ErrResumeCorrupt, with that row's id + field + cause
+	// in the CorruptRows slice for logging. Like ErrDeltaTooLarge this is a
+	// FALLBACK signal, not a connect failure, and the returned batches MUST be
+	// discarded: shipping the prefix would omit the corrupt batch while later
+	// frames advanced the client past it, permanently. Both payload fields are
+	// treated alike — empty transitions are not a safe default, they make
+	// filterVisibleOps drop every op in the batch.
+	ListBatchesAfter(ctx context.Context, userID string, after, until *leapmuxv1.HLC, maxOps, maxBytes int) (batches []ResumeBatch, corrupt []CorruptRow, err error)
 
 	// CommitBatch atomically writes the batch to user_op_batches, the
 	// dedup row to user_recent_batch_ids, and the index-view diff to
@@ -62,6 +131,37 @@ type CommitBatch struct {
 	Epoch       int64
 	Dedup       DedupEntry
 	IndexDiff   IndexDiff
+	// Transitions is the per-batch AffectedEntities (encoded by
+	// AffectedEntitiesToProto) persisted alongside the OpBatch so a resume can
+	// replay the SAME pre/post stable-visibility classification the live
+	// broadcast applies. Nil is treated as empty (the journal marshals an empty
+	// BatchTransitions), so a caller with no transitions still commits a
+	// NOT NULL row.
+	Transitions *leapmuxv1.BatchTransitions
+}
+
+// ResumeBatch pairs a journal op batch with its persisted per-entity workspace
+// transitions. ListBatchesAfter yields these so buildResumeDelta has both the
+// ops (to filter to the stable-visibility subset) and the transitions (to
+// classify each entity as materialized / stable / removed for this subscriber).
+type ResumeBatch struct {
+	Batch       *leapmuxv1.OpBatch
+	Transitions *leapmuxv1.BatchTransitions
+}
+
+// CorruptRow names a journal row whose batch_payload or transitions_payload
+// could not be decoded. ListBatchesAfter STOPS at such a row and returns it
+// alongside ErrResumeCorrupt, so the caller can log the damage and FALLBACK to
+// a full snapshot. The scan deliberately does NOT continue past it: a delta
+// that omits one committed batch still advances the client's max_hlc past that
+// batch, and the resume cursor is strictly-greater, so the client would never
+// re-request it — a permanent divergence, versus one cheap full snapshot.
+// Field is "batch_payload" or "transitions_payload"; Cause is wrapped via
+// wrapResumeCorrupt (carrying ErrResumeCorrupt).
+type CorruptRow struct {
+	BatchID string
+	Field   string
+	Cause   error
 }
 
 // DedupEntry is the batch-specific half of a user_recent_batch_ids row: the

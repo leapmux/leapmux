@@ -1,7 +1,7 @@
 import type { CloseTileResult, GridAxis, LayoutNodeLocal, SplitOrientation } from './layout.store'
 import type { LayoutOwner } from './layoutOwner'
 import type { CRDTBridge, LocalTreeCache, Projection, RenderedFloatingWindow } from '~/lib/crdt'
-import { createComputed, createEffect, createMemo, createSignal, mapArray, on } from 'solid-js'
+import { createComputed, createEffect, createMemo, createSignal, mapArray, on, onCleanup } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import { renderTreeToLocal, withBridge } from '~/lib/crdt'
 import { sameKeys } from '~/lib/sameKeys'
@@ -47,9 +47,12 @@ export interface FloatingWindowStoreState {
 
 /**
  * Floor for a floating window's `width` and `height`, expressed as a fraction
- * of the parent container. Both the store's `updateGeometry` clamp and the
+ * of the parent container. Both the store's `updateDragResize` clamp and the
  * chrome resize handle reference this so the window can't be dragged below
  * 5% of the viewport in either dimension.
+ *
+ * `updateDragResize` is the ONLY entry point that can set a window's size, so
+ * clamping there covers every path: `updateDragMove` takes no dimensions at all.
  */
 export const MIN_WINDOW_DIMENSION = 0.05
 
@@ -119,6 +122,75 @@ function windowLayoutRoot(rendered: RenderedFloatingWindow, cache: LocalTreeCach
 }
 
 /**
+ * A per-window local overlay: `Map<string, T>` behind a Solid signal, rebuilt
+ * copy-on-write on every write that actually changes something.
+ *
+ * Three of this store's overlays are exactly this shape -- the drag preview,
+ * the debounced-opacity gesture, and per-window focus -- and each used to hand-
+ * write its own updater, six copies in all, two of them byte-identical apart
+ * from the signal name. Each copy also had to re-derive the same two rules by
+ * eye: a write must not mutate the previous Map (the projection memo and
+ * Solid's `<For>` key on its identity), and a removal that removes nothing must
+ * hand back the PREVIOUS reference, because that is the only thing that makes
+ * `setSignal` suppress the notify. Every mutator below obeys both.
+ *
+ * `clearAll` and `retain` exist because a bulk edit expressed as a loop of
+ * per-key `clear` calls rebuilds the whole map -- and re-runs every downstream
+ * projection -- once per key removed.
+ *
+ * This store's private primitive despite being exported: the export exists so
+ * the co-located suite can pin the two rules above directly, rather than
+ * inferring them from three overlays' behaviour. Nothing else imports it.
+ */
+export interface KeyedOverrides<T> {
+  /** `key`'s override, or undefined when it has none. */
+  get: (key: string) => T | undefined
+  /** Install (or replace) `key`'s override. */
+  set: (key: string, value: T) => void
+  /** Drop `key`'s override. No rebuild and no notify when it has none. */
+  clear: (key: string) => void
+  /** Drop every override, in ONE rebuild. */
+  clearAll: () => void
+  /** Keep only the keys `keep` accepts, in ONE rebuild. */
+  retain: (keep: (key: string) => boolean) => void
+  /** The whole map, for consumers that iterate it or read many keys per pass. */
+  snapshot: () => ReadonlyMap<string, T>
+}
+
+export function createKeyedOverrides<T>(): KeyedOverrides<T> {
+  const [overrides, setOverrides] = createSignal<ReadonlyMap<string, T>>(new Map())
+  return {
+    get: key => overrides().get(key),
+    set: (key, value) => setOverrides((prev) => {
+      const next = new Map(prev)
+      next.set(key, value)
+      return next
+    }),
+    clear: key => setOverrides((prev) => {
+      if (!prev.has(key))
+        return prev
+      const next = new Map(prev)
+      next.delete(key)
+      return next
+    }),
+    clearAll: () => setOverrides(prev => prev.size === 0 ? prev : new Map()),
+    retain: keep => setOverrides((prev) => {
+      // Copy lazily, on the first key that actually goes: a sweep that finds
+      // nothing stale must hand back `prev` so no consumer re-derives.
+      let next: Map<string, T> | undefined
+      for (const key of prev.keys()) {
+        if (keep(key))
+          continue
+        next ??= new Map(prev)
+        next.delete(key)
+      }
+      return next ?? prev
+    }),
+    snapshot: overrides,
+  }
+}
+
+/**
  * createFloatingWindowStore — projection-driven floating-window store.
  * Window list + inner trees derive from `project(bridge.speculativeState())
  * [bridge.workspaceId()].floatingWindows`. Z-order is local-only (a
@@ -150,8 +222,188 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
   // Z-order: the array of window ids in render order (last = topmost).
   // Local-only — z-order isn't a CRDT register.
   const [zOrder, setZOrder] = createSignal<string[]>([])
-  // Per-window local focus state.
-  const [focusByWindow, setFocusByWindow] = createSignal<Map<string, string | null>>(new Map())
+  // Per-window local focus state. `null` is a RECORDED "no focused tile",
+  // distinct from an absent entry (which falls back to the window's first leaf).
+  const focusByWindow = createKeyedOverrides<string | null>()
+
+  // Local-only geometry override for the window currently being dragged /
+  // resized. During a drag the container writes the live preview here so the
+  // window renders at the pointer WITHOUT emitting a per-frame CRDT op (peers
+  // see the window jump to its final position on drop, matching the splitter
+  // drag's existing design). `commitDragGeometry` emits the single op on drop
+  // and clears the override; `cancelDragGeometry` clears it without committing
+  // (used when the container unmounts mid-gesture — see its doc).
+  //
+  // KEYED BY WINDOW, like the opacity override below, and for the same reason.
+  // Nothing serializes drags ACROSS windows: each FloatingWindowContainer
+  // constructs its OWN `useWindowPointerDrag` controller, so that controller's
+  // `cancel()` only supersedes a gesture on the SAME window, and the hook
+  // deliberately uses document-level listeners rather than `setPointerCapture`.
+  // Two pointers on two title bars (touch, or a second button) therefore run two
+  // live drags. With a single slot the second `updateDrag*` call replaced the
+  // first, so the first window snapped back to CRDT geometry mid-gesture and its
+  // `commitDragGeometry` returned early on the id mismatch -- discarding the
+  // whole drag with no op and no error path.
+  //
+  // This override still earns its keep alongside `~/lib/crdt/coalesce`, which
+  // merges same-register writes inside the submitter's 16ms flush window: that
+  // gives ~1 op per FLUSH, while the override gives 1 op per GESTURE and, more
+  // importantly, 0 ops during it. Coalescing is the floor for any register that
+  // has no override; this is the ceiling for one that does.
+  // A REAL discriminated union: a move override has no width/height at all.
+  //
+  // The two gestures commit DIFFERENT register sets. A resize legitimately
+  // writes all four; a MOVE must write x/y only. When a move override still
+  // carried width/height, those were the values captured at pointer-down, so a
+  // peer that resized the window mid-drag had its resize overwritten by stale
+  // numbers under a newer HLC -- reverted on every client, permanently. Making
+  // the fields absent rather than present-but-ignored means the projection and
+  // the commit path cannot read them by mistake; `override.width` on a move is
+  // a type error instead of a stale number.
+  type DragOverride
+    = | { kind: 'move', x: number, y: number }
+      | { kind: 'resize', x: number, y: number, width: number, height: number }
+  const dragOverrides = createKeyedOverrides<DragOverride>()
+
+  // Local-only opacity overrides, keyed BY WINDOW. The wheel fires dozens of
+  // times per scroll gesture; writing each tick to the override gives instant
+  // visual feedback, and a trailing debounce emits ONE op when scrolling pauses.
+  // Without this, a single scroll emitted one SetFloatingWindowRegister(opacity)
+  // op per wheel tick that changed the clamped value.
+  //
+  // A MAP, like the drag override above, and for the same reason: nothing
+  // serializes WHEEL events either. They need no pointer capture, every visible
+  // window binds its own title-bar listener, and scrolling window A and then
+  // window B within the debounce window used to clear A's timer and replace A's
+  // override -- so A's op was never emitted and its rendered opacity silently
+  // snapped back. The whole gesture was lost, with no error path.
+  //
+  // ONE record per window holding BOTH the pending value and its timer. They are
+  // written and cleared together at every site, so splitting them across two
+  // maps keyed by the same id made two broken states representable: an override
+  // with no timer (never flushed -- the opacity sticks at a value no op will
+  // ever carry) and a timer with no override (fires and emits nothing). Pairing
+  // them means neither can be constructed.
+  //
+  // `base` is the CRDT-side opacity captured when the gesture STARTED, and it is
+  // what the flush compares against. Re-reading the projection at flush time was
+  // wrong on both teardown paths: Solid's cleanNode disposes `owned` (including
+  // the createComputed that maintains storeState.list) BEFORE running the
+  // owner's cleanups, so the disposal flush saw the override value and its
+  // same-value guard swallowed the op; and on a workspace switch the <For> item
+  // cleanup runs after the window already left the active-workspace slice, so
+  // findWindow returned null and the `!w` guard dropped it. Capturing the
+  // baseline up front makes the flush independent of the projection's lifetime.
+  interface OpacityGesture { value: number, base: number | undefined, timer: ReturnType<typeof setTimeout> }
+  const opacityGestures = createKeyedOverrides<OpacityGesture>()
+  const OPACITY_FLUSH_DELAY_MS = 600
+
+  /**
+   * Emit `id`'s pending debounced-opacity op NOW and clear its timer, or every
+   * window's when `id` is omitted. Idempotent if nothing is pending. Declared
+   * as a free function (rather than only as a store method) so the disposal
+   * hook and the `pagehide` listener below can call it — both are registered
+   * before the store object exists.
+   *
+   * PASS THE ID from a per-window teardown. Unscoped, a container unmounting
+   * for its own reasons flushed whichever window happened to have a gesture in
+   * flight -- so closing window B mid-scroll of window A committed A's
+   * half-finished value and split A's single gesture into two ops. The store's
+   * disposal hook and the unload listener are the legitimate unscoped callers:
+   * there, every window really is going away.
+   */
+  function flushAllOpacity(): void {
+    flushGestures(undefined)
+  }
+
+  function flushOpacity(id: string): void {
+    flushGestures(id)
+  }
+
+  function flushGestures(id: string | undefined): void {
+    const gestures = opacityGestures.snapshot()
+    // Take the victims and drop their entries in ONE map rebuild, BEFORE
+    // emitting. Clearing per victim inside the emit loop rebuilt the whole map
+    // -- re-running every projection consumer -- once per window flushed.
+    const victims: [string, OpacityGesture][] = []
+    if (id === undefined) {
+      victims.push(...gestures)
+      opacityGestures.clearAll()
+    }
+    else {
+      const gesture = gestures.get(id)
+      if (!gesture)
+        return
+      victims.push([id, gesture])
+      opacityGestures.clear(id)
+    }
+    for (const [wid, gesture] of victims) {
+      // A no-op when the timer already fired (this IS its callback).
+      clearTimeout(gesture.timer)
+      // Compare against the gesture's captured baseline, NOT a fresh projection
+      // read: this runs from teardown paths where the projection is already
+      // torn down or no longer carries this window. See OpacityGesture.base.
+      if (gesture.value === gesture.base)
+        continue
+      withBridge(bridge => emitUpdateOpacity(bridge, wid, gesture.value), undefined as void)
+    }
+  }
+
+  // Disposal hook. Two jobs, both of which were previously mis-handled:
+  //
+  //  - FLUSH the pending debounced-opacity op. This block used to only
+  //    clearTimeout, silently DROPPING the op despite a comment claiming it
+  //    flushed. In practice FloatingWindowContainer's own cleanup runs first
+  //    (Solid disposes the <For> item roots before the owner's cleanups), so
+  //    the op survived — but the store must not depend on that ordering.
+  //  - CLEAR any drag override. `useWindowPointerDrag`'s cleanup calls stop(),
+  //    which deliberately fires no onUp, so a container torn down mid-gesture
+  //    left that window's override set forever. The projection reads overrides
+  //    by id, so that window rendered frozen at never-committed geometry AND
+  //    masked incoming CRDT geometry until some later drag on it replaced the
+  //    entry. The whole store is going away here, so every entry goes.
+  onCleanup(() => {
+    flushAllOpacity()
+    dragOverrides.clearAll()
+  })
+
+  // A browser unload runs NO Solid cleanup, so neither hook above fires on a
+  // refresh or a tab close. Before the debounce existed the op was emitted
+  // synchronously and only the submitter's 16ms window was at risk; now a scrub
+  // finished within OPACITY_FLUSH_DELAY_MS of Cmd+R is lost outright -- the op is
+  // never created, so the checkpoint/op-log cannot recover it either.
+  //
+  // `pagehide` rather than `beforeunload`: it fires for bfcache navigations too,
+  // and does not risk the unload-blocking prompt.
+  //
+  // WHAT THIS DOES AND DOES NOT CLOSE. The flush CREATES the op and hands it to
+  // `useOpsSubmitter.enqueue`, which pushes it on the queue and arms a 16 ms
+  // `setTimeout`. On a bfcache navigation that timer survives (the page is
+  // frozen, then resumed) and the op is sent on restore. On a REAL unload --
+  // Cmd+R, tab close, the case this listener was written for -- the timer never
+  // fires and the op is still lost, just one step later than before.
+  //
+  // Getting the rest requires sending from the unload handler itself, which
+  // means a transport that survives it (`fetch(..., {keepalive: true})` or
+  // `navigator.sendBeacon`); `useOpsSubmitter` already exports `flush` for this
+  // and has no production caller. That belongs at the submission layer, not
+  // here: this listener can only rescue the ONE gesture that registered it,
+  // while the drag override (discarded outright by `cancelDragGeometry`) and
+  // every future debounced gesture have the same hole.
+  // https://github.com/leapmux/leapmux/issues/359
+  if (typeof window !== 'undefined') {
+    const flushOnUnload = (): void => {
+      // Two steps, in this order, in ONE handler. The first CREATES the op from
+      // the in-flight debounced gesture; the second SENDS it. Creating it alone
+      // was never enough -- `enqueue` only queues and arms a ~16 ms timer, and
+      // on a real unload that timer never fires -- and splitting the send into
+      // its own listener would make the outcome depend on registration order.
+      flushAllOpacity()
+      withBridge(bridge => bridge.flushNow(), undefined as void)
+    }
+    window.addEventListener('pagehide', flushOnUnload)
+    onCleanup(() => window.removeEventListener('pagehide', flushOnUnload))
+  }
 
   /**
    * This store's OWN `RenderTree` -> `LayoutNodeLocal` conversions, kept out of
@@ -177,7 +429,16 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
     if (!proj || !wsId)
       return []
     const result: FloatingWindowState[] = []
-    const focusMap = focusByWindow()
+    const focusMap = focusByWindow.snapshot()
+    // Local drag/resize preview override: when a drag is in flight, render the
+    // window at the live pointer geometry instead of the CRDT-projected one, so
+    // the drag feels responsive without emitting a per-frame op. Peers see the
+    // final geometry land in one op on drop (matching the splitter drag).
+    const overrides = dragOverrides.snapshot()
+    // Local opacity override: title-bar scrolling writes the live value here so
+    // the window's opacity tracks the wheel instantly; one op is emitted when
+    // scrolling pauses (trailing debounce).
+    const opGestures = opacityGestures.snapshot()
     // Straight off the shared projection: `project()` already resolved every
     // window's geometry and inner tree. It used to be re-derived here from raw
     // state, which walked the whole state again per tick AND was a second
@@ -186,13 +447,20 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
       const layoutRoot = windowLayoutRoot(rendered, windowTrees)
       const fallbackFocus = firstLeafId(layoutRoot) ?? null
       const localFocus = focusMap.get(rendered.windowId)
+      const override = overrides.get(rendered.windowId)
+      // A MOVE override owns x/y only -- exactly the registers commitDragGeometry
+      // emits for it -- so a peer's resize landing mid-drag stays visible
+      // instead of being masked by the pointer-down size until the drop. The
+      // union makes that structural: a move override has no width/height to read.
+      const size = override?.kind === 'resize' ? override : undefined
+      const opOverride = opGestures.get(rendered.windowId)?.value
       result.push({
         id: rendered.windowId,
-        x: rendered.x,
-        y: rendered.y,
-        width: rendered.width,
-        height: rendered.height,
-        opacity: rendered.opacity,
+        x: override ? override.x : rendered.x,
+        y: override ? override.y : rendered.y,
+        width: size ? size.width : rendered.width,
+        height: size ? size.height : rendered.height,
+        opacity: opOverride ?? rendered.opacity,
         layoutRoot,
         focusedTileId: localFocus !== undefined ? localFocus : fallbackFocus,
       })
@@ -221,13 +489,13 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
   }, [])
 
   // Store-backed projection. Solid's `<For>` keys by REFERENCE identity
-  // and the CRDT bridge bumps `pendingVersion` on every mutation —
-  // including high-frequency events like pointermove-driven
-  // `updatePosition` calls during a drag. If we returned `rawProjection`
-  // directly to `<For>`, every drag frame would produce a new array of
-  // fresh objects and `<For>` would unmount + remount every container
-  // (and its inner TilingLayout / TabBar / Terminal subtree). The
-  // result was visibly sluggish drag and resize.
+  // and the CRDT bridge bumps `pendingVersion` on every mutation — and the
+  // drag/resize override signal (`dragOverrides`) flips on every pointermove
+  // during a floating-window drag. If we returned `rawProjection` directly to
+  // `<For>`, every drag frame would produce a new array of fresh objects and
+  // `<For>` would unmount + remount every container (and its inner
+  // TilingLayout / TabBar / Terminal subtree). The result was visibly sluggish
+  // drag and resize.
   //
   // `reconcile` keyed by `id` mutates the existing store entries in place when
   // ids match — same array element ref across frames, but individual fields
@@ -420,22 +688,10 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
       const current = zOrder()
       if (current.some(id => !live.has(id)))
         setZOrder(current.filter(id => live.has(id)))
-      const focusMap = focusByWindow()
-      let stale = false
-      for (const id of focusMap.keys()) {
-        if (!live.has(id)) {
-          stale = true
-          break
-        }
-      }
-      if (stale) {
-        const next = new Map(focusMap)
-        for (const id of focusMap.keys()) {
-          if (!live.has(id))
-            next.delete(id)
-        }
-        setFocusByWindow(next)
-      }
+      // `retain` is itself the "nothing stale" short-circuit: it hands back the
+      // previous Map untouched when every key survives, so a sweep that finds
+      // nothing notifies nobody.
+      focusByWindow.retain(id => live.has(id))
     }),
   )
 
@@ -470,14 +726,9 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
     // window the user never brought to front or focused) hits this
     // common case; without the guards, every empty-window cleanup
     // would re-trigger `projectedWindows` even when nothing changed.
+    // (`focusByWindow.clear` carries its own; only zOrder needs one here.)
     setZOrder(z => z.includes(id) ? z.filter(x => x !== id) : z)
-    setFocusByWindow((m) => {
-      if (!m.has(id))
-        return m
-      const next = new Map(m)
-      next.delete(id)
-      return next
-    })
+    focusByWindow.clear(id)
   }
 
   const splitTile = (windowId: string, tileId: string, direction: SplitOrientation): string | null =>
@@ -584,35 +835,138 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
       }, undefined as void)
     },
 
-    updatePosition(id: string, x: number, y: number) {
+    /**
+     * Write the opacity to the LOCAL override immediately (instant visual
+     * feedback) and arm a trailing debounce that emits ONE CRDT op when the
+     * wheel pauses for OPACITY_FLUSH_DELAY_MS. Each tick re-arms the timer, so
+     * a continuous scroll collapses to a single op regardless of how many
+     * wheel events it produced. Returns whether the clamped value actually
+     * moved — compared against the EFFECTIVE opacity (this window's pending
+     * override if a scroll is in flight, else the CRDT-projected value), so the
+     * short-circuit stays accurate mid-gesture and a wheel parked at the clamp
+     * floor stops re-arming the timer. Used by the title-bar wheel handler —
+     * without this, a single scroll emitted one op per wheel tick.
+     */
+    updateOpacityDebounced(id: string, opacity: number): boolean {
+      const clamped = Math.max(0.2, Math.min(1, opacity))
+      // Read the EFFECTIVE opacity (override if a scroll is in flight, else
+      // CRDT-projected) so the same-value short-circuit is accurate mid-gesture.
+      const current = opacityGestures.get(id)?.value ?? findWindow(id)?.opacity
+      if (current === undefined || current === clamped)
+        return false
+      // Re-arm only THIS window's timer; another window's pending gesture is
+      // untouched.
+      const existing = opacityGestures.get(id)
+      if (existing !== undefined)
+        clearTimeout(existing.timer)
+      // Keep the ORIGINAL CRDT baseline across re-arms: a continuing gesture
+      // must still be compared against where it started, not against its own
+      // previous intermediate value (which would make every flush look like a
+      // change).
+      const base = existing !== undefined ? existing.base : findWindow(id)?.opacity
+      // The debounce fires the SAME scoped `flushOpacity` the per-window teardown
+      // store method call, rather than re-implementing its body here -- a
+      // second copy would drift from its same-value short-circuit. The third
+      // setTimeout argument is passed through as `id`, so the timer flushes
+      // THIS window only.
+      const timer = setTimeout(flushOpacity, OPACITY_FLUSH_DELAY_MS, id)
+      opacityGestures.set(id, { value: clamped, base, timer })
+      return true
+    },
+
+    /**
+     * Flush `id`'s pending debounced-opacity op immediately, or every window's
+     * when `id` is omitted. Used on teardown so a scroll in flight when the
+     * window unmounts isn't lost. See the free function for the per-window
+     * scoping rule callers have to honour.
+     */
+    flushOpacity,
+    flushAllOpacity,
+
+    /**
+     * Begin / continue a drag-MOVE: write the live position into `id`'s local
+     * override WITHOUT emitting a CRDT op. The projection returns this position
+     * for the window so the container renders at the pointer. One op is emitted
+     * on drop via `commitDragGeometry`.
+     *
+     * Takes NO width/height, which is the point: a move commits x/y only, and a
+     * size it never receives is a size it can never write over a peer's
+     * concurrent resize. Overrides are per window, so dragging a second window
+     * does not disturb this one's gesture.
+     */
+    updateDragMove(id: string, x: number, y: number) {
+      dragOverrides.set(id, { kind: 'move', x, y })
+    },
+
+    /**
+     * Begin / continue a drag-RESIZE. Same override-then-commit contract as
+     * `updateDragMove`, but this gesture owns all four registers, so the
+     * override carries the size and the projection renders it.
+     *
+     * Width/height are clamped to MIN_WINDOW_DIMENSION here, at the only entry
+     * point that can set them.
+     */
+    updateDragResize(id: string, x: number, y: number, width: number, height: number) {
+      dragOverrides.set(id, {
+        kind: 'resize',
+        x,
+        y,
+        width: Math.max(width, MIN_WINDOW_DIMENSION),
+        height: Math.max(height, MIN_WINDOW_DIMENSION),
+      })
+    },
+
+    /**
+     * End a drag by emitting ONE CRDT op for the final geometry and clearing
+     * the local override. Idempotent if no drag is in flight (a pointercancel
+     * that already cleared it, or a drop with no movement). Compares against
+     * the CRDT-projected geometry (not the override) so a drag that returned
+     * to its start emits nothing.
+     */
+    commitDragGeometry(id: string) {
+      const override = dragOverrides.get(id)
+      if (!override)
+        return
+      dragOverrides.clear(id)
+      // Read the CRDT-projected geometry to short-circuit a no-op drag.
       withBridge((bridge) => {
         const w = findWindow(id)
-        if (!w || (w.x === x && w.y === y))
+        if (!w)
           return
-        emitUpdatePosition(bridge, id, x, y)
+        if (override.kind === 'move') {
+          // A move touches only x/y. Emitting width/height too would write the
+          // pointer-down snapshot over whatever the register holds NOW, which is
+          // a concurrent peer's resize whenever one landed during the drag.
+          if (w.x === override.x && w.y === override.y)
+            return
+          emitUpdatePosition(bridge, id, override.x, override.y)
+          return
+        }
+        if (w.x === override.x && w.y === override.y && w.width === override.width && w.height === override.height)
+          return
+        // emitUpdateGeometry writes four registers (x, y, width, height) in one
+        // batch; opacity is a separate emitter.
+        emitUpdateGeometry(bridge, id, override.x, override.y, override.width, override.height)
       }, undefined as void)
     },
 
-    updateGeometry(id: string, x: number, y: number, width: number, height: number) {
-      withBridge((bridge) => {
-        const clampedW = Math.max(width, MIN_WINDOW_DIMENSION)
-        const clampedH = Math.max(height, MIN_WINDOW_DIMENSION)
-        const w = findWindow(id)
-        if (!w || (w.x === x && w.y === y && w.width === clampedW && w.height === clampedH))
-          return
-        emitUpdateGeometry(bridge, id, x, y, clampedW, clampedH)
-      }, undefined as void)
-    },
-
-    updateOpacity(id: string, opacity: number): boolean {
-      return withBridge((bridge) => {
-        const clamped = Math.max(0.2, Math.min(1, opacity))
-        const w = findWindow(id)
-        if (!w || w.opacity === clamped)
-          return false
-        emitUpdateOpacity(bridge, id, clamped)
-        return true
-      }, false)
+    /**
+     * Abort an in-flight drag WITHOUT committing: clear the override so the
+     * window snaps back to its CRDT-projected geometry.
+     *
+     * Used when the container UNMOUNTS mid-gesture (a workspace switch or a
+     * peer closing the window while the pointer is down). `useWindowPointerDrag`
+     * responds to unmount by calling stop(), which deliberately fires no onUp,
+     * so nothing else clears the override and the window would otherwise render
+     * frozen at geometry that was never committed.
+     *
+     * NOT used on pointercancel: `windowPointerDrag` routes pointercancel
+     * through the same handleUp as pointerup, so an OS-interrupted drag COMMITS
+     * its partial motion. (That is a deliberate product choice — matching a
+     * clean drop — not an oversight; this doc previously claimed the opposite.)
+     */
+    cancelDragGeometry(id: string) {
+      dragOverrides.clear(id)
     },
 
     /**
@@ -660,15 +1014,11 @@ export function createFloatingWindowStore(opts: CreateFloatingWindowStoreOpts) {
       // one, else the same first-leaf fallback the projection applies — so the
       // no-op check answers the same question for an off-screen window as for
       // an on-screen one.
-      const recorded = focusByWindow().get(windowId)
+      const recorded = focusByWindow.get(windowId)
       const effective = recorded !== undefined ? recorded : firstLeafId(root)
       if (effective === tileId)
         return
-      setFocusByWindow((m) => {
-        const next = new Map(m)
-        next.set(windowId, tileId)
-        return next
-      })
+      focusByWindow.set(windowId, tileId)
     },
 
     splitTile,

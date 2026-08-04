@@ -53,6 +53,43 @@ export const transport = createConnectTransport({
   defaultTimeoutMs: 30_000,
 })
 
+/**
+ * Largest body `unloadTransport` will attempt.
+ *
+ * `keepalive` requests share a 64 KiB budget across ALL in-flight ones, and a
+ * request over it fails outright — so a caller must fall back rather than
+ * discover this during unload, when there is no second chance.
+ */
+export const MAX_KEEPALIVE_BODY_BYTES = 60 * 1024
+
+/**
+ * A transport for requests issued from a `pagehide` handler.
+ *
+ * Identical to `transport` except for `keepalive: true`. That flag is the whole
+ * point: a normal fetch started while the page is unloading is CANCELLED with
+ * it, so an op enqueued at unload never reaches the hub — the browser tears the
+ * request down along with the document. `keepalive` asks the browser to let it
+ * complete after the page is gone.
+ *
+ * A separate transport rather than a flag on the shared one because keepalive
+ * carries a hard 64 KiB budget shared across every in-flight keepalive request.
+ * Making it the default would silently cap ordinary traffic (a materialized
+ * snapshot is routinely larger); confining it to the unload path keeps the cap
+ * where the payload is a handful of ops.
+ *
+ * Everything else — auth via the same credential fetch, the Connect protocol
+ * framing, the error interceptor — is shared, which is why this is a transport
+ * and not a hand-rolled `sendBeacon`: a beacon cannot set headers, so it would
+ * need its own endpoint and its own auth story.
+ */
+export const unloadTransport = createConnectTransport({
+  baseUrl: window.location.origin,
+  fetch: (input, init) => getTransportFetch()(input, { ...init, keepalive: true }),
+  interceptors: [errorInterceptor],
+  // No timeout: the page is going away, so there is nothing left to time out
+  // INTO. The browser bounds the request itself once the document is gone.
+})
+
 // ---------------------------------------------------------------------------
 // Dynamic timeout configuration
 // ---------------------------------------------------------------------------

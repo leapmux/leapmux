@@ -1,10 +1,15 @@
 import type { BatchRejection, OpBatch } from '~/generated/leapmux/v1/user_ops_pb'
 import type { PendingOpsManager } from '~/lib/crdt'
 import { onCleanup } from 'solid-js'
-import { userCRDTClient } from '~/api/clients'
+import { userCRDTClient, userCRDTUnloadClient } from '~/api/clients'
+import { MAX_KEEPALIVE_BODY_BYTES } from '~/api/transport'
 import { showWarnToast } from '~/components/common/Toast'
 import { BatchRejectionReason } from '~/generated/leapmux/v1/user_ops_pb'
+import { coalesceQueuedBatches, supersededParkedBatchIds } from '~/lib/crdt/coalesce'
+import { createLogger } from '~/lib/logger'
 import { createExponentialBackoff } from '~/lib/retry'
+
+const log = createLogger('opsSubmitter')
 
 /**
  * SUBMIT_FLUSH_MS is the aggregator window — every queued batch
@@ -59,6 +64,11 @@ export interface CreateOpsSubmitterOpts {
   /** Optional override for the SubmitOps client (tests). */
   client?: typeof userCRDTClient
   /**
+   * Optional override for the UNLOAD client (tests). Production uses the
+   * keepalive transport; see `flush({ unload: true })`.
+   */
+  unloadClient?: typeof userCRDTClient
+  /**
    * Called to force a teardown + fresh `/ws/userevents` subscription
    * after `epoch_required` / `stale_epoch`. Resolved by the time the
    * WebSocket has been torn down; the next `UserMaterialized` arrives
@@ -67,8 +77,22 @@ export interface CreateOpsSubmitterOpts {
   reconnect?: () => Promise<void>
 }
 
+/**
+ * Rough serialized size of a batch, for the keepalive budget check only.
+ *
+ * Deliberately an ESTIMATE: the budget is a guard rail with ~4 KiB of slack
+ * below the browser's 64 KiB limit, so paying `toBinary` on the unload path to
+ * learn an exact number would cost more than the precision buys.
+ */
+function estimateBatchBytes(batch: OpBatch): number {
+  // Each op carries a handful of ids and a small value; 256 B is comfortably
+  // above the measured ~39 B frame and leaves the estimate conservative.
+  return 64 + batch.ops.length * 256
+}
+
 export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
   const client = opts.client ?? userCRDTClient
+  const unloadClient = opts.unloadClient ?? userCRDTUnloadClient
   let queue: OpBatch[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
   // Per-batch transport-retry counter. Cleared on commit / non-
@@ -85,6 +109,13 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
     multiplier: 2,
     jitterFactor: 0,
   })
+  // Batches PARKED in a retry backoff: out of `queue`, not yet re-sent, and
+  // therefore invisible to coalescing. Tracked so a later flush that supersedes
+  // one can cancel it -- see supersededParkedBatchIds for why a parked batch is
+  // uniquely dangerous (the hub never saw it, so its retry commits with a FRESH
+  // HLC that beats the newer write). Entries are removed when the timer fires,
+  // when the batch reaches a terminal outcome, or when it is cancelled here.
+  const parked = new Map<string, OpBatch>()
   // Per-batch retryable-rejection counter, cleared on commit / give-up.
   const rejectionRetries = new Map<string, number>()
   // Per-batch retryable-rejection backoff. A retryable rejection that needs
@@ -111,27 +142,78 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
       timer = setTimeout(flush, SUBMIT_FLUSH_MS)
   }
 
+  /**
+   * Which client this flush should use.
+   *
+   * Keepalive requests share a 64 KiB budget across all in-flight ones and fail
+   * outright above it, so an oversized unload flush falls back to the ordinary
+   * client. That send will very likely be cancelled with the page -- but a
+   * cancelled request is no worse than the keepalive one the browser would have
+   * refused, and the batch stays queued for the next session either way.
+   */
+  function submitClientFor(unload: boolean, batches: OpBatch[]): typeof client {
+    if (!unload)
+      return client
+    const bytes = batches.reduce((sum, b) => sum + estimateBatchBytes(b), 0)
+    if (bytes > MAX_KEEPALIVE_BODY_BYTES) {
+      log.warn('unload flush exceeds the keepalive budget; sending without it', { bytes })
+      return client
+    }
+    return unloadClient
+  }
+
   function dropTransportRetryCounter(batchId: string): void {
     transportRetries.delete(batchId)
     transportBackoff.reset(batchId)
+    parked.delete(batchId)
   }
 
   function dropRejectionRetryCounter(batchId: string): void {
     rejectionRetries.delete(batchId)
     rejectionBackoff.reset(batchId)
+    parked.delete(batchId)
   }
 
-  // Re-enqueue a batch under the same id+ops for a retry. The pending
-  // manager was already notified about this batch on the original
-  // `enqueue`; calling `pending.submit(batch)` again would dupe the
-  // entry in `pendingBatches`. So we only push onto the wire queue.
+  // Re-enqueue a batch under the same id+ops for a retry. The pending manager
+  // was already notified about this batch on the original `enqueue`; calling
+  // `pending.submit(batch)` again would dupe the entry in `pendingBatches`. So
+  // we only push onto the wire queue.
+  //
+  // Caveat when the retry follows a RECONNECT: if that reconnect fell back to a
+  // full snapshot, `bootstrap()` cleared `pendingBatches` (the snapshot is the
+  // hub's authoritative view and supersedes speculative edits made against the
+  // state it replaced). The optimistic overlay is then gone until the hub's
+  // broadcast echo of the retried batch lands, so the edit visibly reverts and
+  // re-applies. Correctness is preserved -- `consumeRemote` applies the echoed
+  // ops unconditionally -- but `revertPendingBatch` becomes a no-op for such a
+  // batch, since there is no longer a pending entry to revert.
   function rescheduleForWireRetry(batches: OpBatch[]): void {
     queue.push(...batches)
     if (!timer)
       timer = setTimeout(flush, SUBMIT_FLUSH_MS)
   }
 
-  async function flush(): Promise<void> {
+  /**
+   * Park `batch` and arm `backoff` to un-park and re-enqueue it.
+   *
+   * The rejection-retry and transport-retry paths differ ONLY in which backoff
+   * they use, and both must keep `parked` in exact lockstep with the scheduled
+   * timer: `supersededParkedBatchIds` reads that map to cancel a stale retry
+   * whose fresh canonical HLC would otherwise beat a newer write. Two hand-copied
+   * sequences meant that correctness-critical bookkeeping had two homes.
+   *
+   * `schedule` no-ops if this batchId already has a pending retry -- the
+   * existing timer fires and re-enqueues, so no work is lost.
+   */
+  function scheduleParkedRetry(backoff: ReturnType<typeof createExponentialBackoff<string>>, batch: OpBatch): void {
+    parked.set(batch.batchId, batch)
+    backoff.schedule(batch.batchId, () => {
+      parked.delete(batch.batchId)
+      rescheduleForWireRetry([cloneBatch(batch)])
+    })
+  }
+
+  async function flush(flushOpts?: { unload?: boolean }): Promise<void> {
     timer = undefined
     if (queue.length === 0)
       return
@@ -151,10 +233,38 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
       return
     }
     const epoch = pending.state.currentEpoch
-    const batches = queue
+    // Merge same-register writes that piled up in this window. High-frequency
+    // gestures emit the same LWW register repeatedly, and only the last write
+    // can survive the merge anywhere, so the earlier ones are pure wire,
+    // storage and fan-out cost. See coalesceQueuedBatches for the two
+    // structural rules that keep this behaviour-preserving.
+    const { batches, droppedBatchIds, droppedOps } = coalesceQueuedBatches(queue)
     queue = []
+    // A batch that coalesced away entirely is never sent, so no BatchResult
+    // will ever arrive to clear its pending entry. Drop it here or the
+    // optimistic overlay waits on it forever. Reverting is safe precisely
+    // because every op it held was superseded by one still being sent.
+    for (const batchId of droppedBatchIds) {
+      pending.revertPendingBatch(batchId)
+      dropTransportRetryCounter(batchId)
+      dropRejectionRetryCounter(batchId)
+    }
+    if (droppedOps > 0)
+      log.debug('coalesced superseded ops before submit', { droppedOps, droppedBatches: droppedBatchIds.length })
+    // A batch parked in a retry backoff is older than this flush but has not
+    // reached the hub, so its eventual retry would commit with a canonical HLC
+    // NEWER than what we are about to send and win LWW with a stale value.
+    // Cancel any whose every register this flush rewrites.
+    for (const batchId of supersededParkedBatchIds(parked.values(), batches)) {
+      dropTransportRetryCounter(batchId)
+      dropRejectionRetryCounter(batchId)
+      pending.revertPendingBatch(batchId)
+      log.debug('cancelled a parked retry superseded by a newer write', { batchId })
+    }
+    if (batches.length === 0)
+      return
     try {
-      const resp = await client.submitOps({ epoch, batches })
+      const resp = await submitClientFor(flushOpts?.unload === true, batches).submitOps({ epoch, batches })
       let anyCommitted = false
       let needsReconnect = false
       const retryableRejections: { batch: OpBatch, needsEpochRefresh: boolean }[] = []
@@ -193,7 +303,9 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
               // A retryable rejection is NOT a final outcome -- the batch is
               // requeued below, and its optimistic ops stay applied so the edit
               // does not flicker out and back. Reverting here and then committing
-              // on the retry would be the visible bug.
+              // on the retry would be the visible bug. (The one case where the
+              // overlay does not survive is a reconnect that full-snapshots in
+              // between -- see rescheduleForWireRetry.)
               const original = batches.find(b => b.batchId === result.batchId)
               if (original)
                 retryableRejections.push({ batch: original, needsEpochRefresh })
@@ -241,7 +353,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
           continue
         }
         rejectionRetries.set(batch.batchId, attempts)
-        rejectionBackoff.schedule(batch.batchId, () => rescheduleForWireRetry([cloneBatch(batch)]))
+        scheduleParkedRetry(rejectionBackoff, batch)
       }
       // Surface a `leapmux:layout-saved` event when any batch commits,
       // so E2E tests waiting for persistence (e.g. workspace-tab moves)
@@ -284,12 +396,7 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
         continue
       }
       transportRetries.set(batch.batchId, attempts)
-      // Per-batch backoff timer. `schedule` no-ops if this batchId
-      // already has a pending retry — the existing timer will fire
-      // and re-enqueue, no work lost.
-      transportBackoff.schedule(batch.batchId, () => {
-        rescheduleForWireRetry([cloneBatch(batch)])
-      })
+      scheduleParkedRetry(transportBackoff, batch)
     }
   }
 
@@ -298,11 +405,19 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
       clearTimeout(timer)
     transportBackoff.cancelAll()
     rejectionBackoff.cancelAll()
+    parked.clear()
   })
 
   return {
     enqueue,
-    /** Force-flush; useful for tests + page-unload paths. */
+    /**
+     * Force-flush.
+     *
+     * `{ unload: true }` routes the request through the keepalive transport so
+     * it survives the document being torn down. A normal fetch started from a
+     * `pagehide` handler is cancelled with the page, which is why simply
+     * enqueueing at unload was never enough: the 16 ms timer never fires.
+     */
     flush,
   }
 }

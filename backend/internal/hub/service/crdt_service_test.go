@@ -26,11 +26,12 @@ import (
 // crdt_test package's fakeJournal but is kept inline so the service
 // tests don't reach into another package's private symbols.
 type memJournal struct {
-	mu        sync.Mutex
-	state     *leapmuxv1.UserCrdtState
-	batches   []*leapmuxv1.OpBatch
-	dedup     map[string]crdt.RecentBatchRecord
-	commitErr error
+	mu          sync.Mutex
+	state       *leapmuxv1.UserCrdtState
+	batches     []*leapmuxv1.OpBatch
+	transitions []*leapmuxv1.BatchTransitions
+	dedup       map[string]crdt.RecentBatchRecord
+	commitErr   error
 }
 
 func newMemJournal() *memJournal { return &memJournal{dedup: map[string]crdt.RecentBatchRecord{}} }
@@ -45,6 +46,38 @@ func (j *memJournal) LoadState(_ context.Context, _ string) (*leapmuxv1.UserCrdt
 	return state, append([]*leapmuxv1.OpBatch(nil), j.batches...), nil
 }
 
+func (j *memJournal) ListBatchesAfter(_ context.Context, _ string, cursor, until *leapmuxv1.HLC, maxOps, _ int) ([]crdt.ResumeBatch, []crdt.CorruptRow, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := []crdt.ResumeBatch{}
+	ops := 0
+	for i, b := range j.batches {
+		if len(b.GetOps()) == 0 {
+			// The prod journal iterates GetOps() (no [0] index) and the manager
+			// rejects zero-op batches, but a test seeding batches directly must
+			// not panic on the index below.
+			continue
+		}
+		first := b.GetOps()[0].GetCanonicalHlc()
+		if crdt.HLCCmp(first, cursor) <= 0 {
+			continue
+		}
+		if until != nil && crdt.HLCCmp(first, until) > 0 {
+			return out, nil, nil
+		}
+		if maxOps > 0 && ops+len(b.GetOps()) > maxOps {
+			return out, nil, crdt.ErrDeltaTooLarge
+		}
+		ops += len(b.GetOps())
+		var trans *leapmuxv1.BatchTransitions
+		if i < len(j.transitions) {
+			trans = j.transitions[i]
+		}
+		out = append(out, crdt.ResumeBatch{Batch: b, Transitions: trans})
+	}
+	return out, nil, nil
+}
+
 func (j *memJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -52,6 +85,7 @@ func (j *memJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 		return j.commitErr
 	}
 	j.batches = append(j.batches, c.Batch)
+	j.transitions = append(j.transitions, c.Transitions)
 	// The dedup TABLE row is the commit envelope's context plus the batch's own
 	// fields; crdt.CommitBatch states the former once, so reassemble it here
 	// the way the real journal adapter does when it writes the row.

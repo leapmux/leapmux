@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/password"
@@ -159,4 +160,76 @@ func TestRun_StopsRevocationCompactionWhenContextIsCanceled(t *testing.T) {
 	run(ctx, cleanupSpyStore{Store: st, cleanup: spy})
 
 	require.Equal(t, 1, spy.compactionRuns)
+}
+
+// drainUntilEmpty is the shared loop behind both paged sweeps, so its contract
+// is pinned directly rather than only through the two callers: terminate on a
+// pass that deletes nothing, stop on the first error, respect the runaway bound,
+// and report a cancelled context as a PAUSE (total, no error) rather than a
+// failure -- the rows already deleted are committed and the next scheduled
+// sweep picks up the rest.
+func TestDrainUntilEmpty(t *testing.T) {
+	t.Run("drains until a pass deletes nothing", func(t *testing.T) {
+		pages := []int64{1000, 1000, 250, 0}
+		var calls int
+		total, err := drainUntilEmpty(context.Background(), 10, func() (int64, error) {
+			n := pages[calls]
+			calls++
+			return n, nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(2250), total)
+		assert.Equal(t, 4, calls, "must stop on the empty pass, not keep going to maxPasses")
+	})
+
+	t.Run("stops on the first error and keeps what was already deleted", func(t *testing.T) {
+		var calls int
+		total, err := drainUntilEmpty(context.Background(), 10, func() (int64, error) {
+			calls++
+			if calls == 2 {
+				return 7, assert.AnError
+			}
+			return 100, nil
+		})
+		require.ErrorIs(t, err, assert.AnError)
+		assert.Equal(t, int64(107), total, "the failing pass's own deletions still count")
+		assert.Equal(t, 2, calls)
+	})
+
+	t.Run("honours the runaway bound", func(t *testing.T) {
+		var calls int
+		total, err := drainUntilEmpty(context.Background(), 3, func() (int64, error) {
+			calls++
+			return 1000, nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 3, calls)
+		assert.Equal(t, int64(3000), total)
+	})
+
+	t.Run("treats a cancelled context as a pause, not a failure", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		var calls int
+		total, err := drainUntilEmpty(ctx, 10, func() (int64, error) {
+			calls++
+			cancel()
+			return 100, nil
+		})
+		require.NoError(t, err, "shutdown mid-drain must not log as a cleanup failure")
+		assert.Equal(t, int64(100), total)
+		assert.Equal(t, 1, calls, "the cancellation is observed before the next pass")
+	})
+
+	t.Run("never calls the pass when already cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var calls int
+		total, err := drainUntilEmpty(ctx, 10, func() (int64, error) {
+			calls++
+			return 100, nil
+		})
+		require.NoError(t, err)
+		assert.Zero(t, total)
+		assert.Zero(t, calls)
+	})
 }

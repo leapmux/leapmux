@@ -209,6 +209,29 @@ func TestCloneStateForBatch_PreservesMaxHLCViaDeepClone(t *testing.T) {
 		"working.MaxHlc mutation must not affect pre.MaxHlc")
 }
 
+func TestCloneStateForBatch_PreservesWatermarksViaDeepClone(t *testing.T) {
+	// CompactionWatermark and OpRetentionWatermark are advanced by
+	// maybeCompact concurrently with the validator's CloneStateForBatch +
+	// Apply pass. The clone must deep-copy both so a write to the working
+	// copy's watermark (e.g. by a future Apply hook) cannot race a
+	// concurrent compaction writing through to pre's slot.
+	pre := &leapmuxv1.UserCrdtState{
+		UserId:               "user-1",
+		MaxHlc:               hlc(10, 0, "seed"),
+		CompactionWatermark:  hlc(8, 0, "seed"),
+		OpRetentionWatermark: hlc(2, 0, "seed"),
+	}
+	working := crdt.CloneStateForBatch(pre, nil)
+	require.NotNil(t, working.GetCompactionWatermark())
+	require.NotNil(t, working.GetOpRetentionWatermark())
+	working.CompactionWatermark.Physical = 999
+	working.OpRetentionWatermark.Physical = 888
+	assert.Equal(t, int64(8), pre.GetCompactionWatermark().GetPhysical(),
+		"working.CompactionWatermark mutation must not affect pre")
+	assert.Equal(t, int64(2), pre.GetOpRetentionWatermark().GetPhysical(),
+		"working.OpRetentionWatermark mutation must not affect pre")
+}
+
 func TestCloneStateForBatch_TouchedNodeNotInPreIsHarmless(t *testing.T) {
 	// A SetNodeRegister op for a brand-new node id (not yet in pre) is
 	// the common create-node case. CloneStateForBatch should produce a

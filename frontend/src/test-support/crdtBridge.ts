@@ -31,6 +31,16 @@ export interface TestBridgeHandle {
   rootTileId: string
   userId: string
   workspaceId: string
+  /**
+   * One entry per `bridge.flushNow()`, each holding `pendingBatches.length` at
+   * the moment of the call.
+   *
+   * The COUNT AT CALL TIME is the point: a store's unload handler must create
+   * its op and then send it, in that order and in one handler, and a growing
+   * pending list only proves the first half. Recording the count lets a test
+   * pin the ordering without reaching into listener registration.
+   */
+  flushNowCalls: number[]
   /** Manually unwire — ordinarily the test framework's afterEach handles this. */
   dispose: () => void
 }
@@ -88,11 +98,19 @@ export function installTestBridge(opts?: {
   // projection's `registeredRoots` lookup will then find the
   // workspace's root and the projected tree will be a single LEAF.
   seedWorkspace({ pending }, workspaceId, rootTileId)
+  const flushNowCalls: number[] = []
   setCRDTBridge({
     workspaceId: () => workspaceId,
     enqueue: (batch) => {
       pending.submit(batch)
       return batch.batchId
+    },
+    // Recorded, not stubbed: the store's unload handler must both CREATE the
+    // op and SEND it, and only the second half was ever asserted by accident
+    // (a growing pendingBatches proves creation alone). Capturing the pending
+    // count AT CALL TIME is what pins the ORDER within the one handler.
+    flushNow: () => {
+      flushNowCalls.push(pending.state.pendingBatches.length)
     },
     clock: () => clock,
     originClientId: () => ownClient,
@@ -109,6 +127,8 @@ export function installTestBridge(opts?: {
     rootTileId,
     userId,
     workspaceId,
+    /** One entry per `bridge.flushNow()`, holding the pending count at that moment. */
+    flushNowCalls,
     dispose: () => setCRDTBridge(null),
   }
 }

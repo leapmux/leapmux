@@ -75,17 +75,25 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		stopStarted := time.Now()
-		require.NoError(t, inst.Stop())
-		// Stopping is teardown, but how LONG it takes is a real assertion: the
+		// How LONG Stop takes is a real assertion, not teardown hygiene: the
 		// Hub's HTTP drain gives itself 10s and waits on the connection each
 		// worker's Connect stream is riding, so a shutdown path that leaves
 		// that stream to the worker to close spends the whole budget and then
-		// reports the deadline as an error. That failed here as a flake --
-		// only when the Hub reached its drain before the worker reacted -- so
-		// bound the time, not just the error.
-		assert.Less(t, time.Since(stopStarted), soloStopBudget,
-			"solo shutdown must not wait out the hub's drain budget")
+		// reports the deadline as an error.
+		//
+		// Stated as a COMPLETION against soloStopBudget rather than an elapsed
+		// compare after the fact. Identical discrimination -- the failing path
+		// takes the full 10s drain, the passing one milliseconds -- but this
+		// form fails AT the budget with a message naming the drain, instead of
+		// blocking for the whole 10s and then reporting a number.
+		stopped := make(chan error, 1)
+		go func() { stopped <- inst.Stop() }()
+		select {
+		case err := <-stopped:
+			require.NoError(t, err)
+		case <-time.After(soloStopBudget):
+			t.Fatal("solo shutdown waited out the hub's drain budget instead of closing the worker's Connect stream")
+		}
 	})
 
 	hubURL = "http://" + addr

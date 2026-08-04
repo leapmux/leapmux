@@ -234,17 +234,18 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 
 	// user_op_batches.committed_at via its column DEFAULT.
 	require.NoError(t, st.UserOpBatches().Insert(ctx, store.InsertUserOpBatchParams{
-		UserID:       userid.MustNew(user.ID),
-		PhysicalMs:   1,
-		Logical:      1,
-		LastLogical:  1,
-		OriginClient: "client",
-		PrincipalID:  user.ID,
-		BatchID:      "canon-opbatch",
-		BodyHash:     []byte("hash"),
-		BatchPayload: []byte("payload"),
-		OpCount:      1,
-		Epoch:        1,
+		UserID:             userid.MustNew(user.ID),
+		PhysicalMs:         1,
+		Logical:            1,
+		LastLogical:        1,
+		OriginClient:       "client",
+		PrincipalID:        user.ID,
+		BatchID:            "canon-opbatch",
+		BodyHash:           []byte("hash"),
+		BatchPayload:       []byte("payload"),
+		TransitionsPayload: []byte("transitions"),
+		OpCount:            1,
+		Epoch:              1,
 	}))
 
 	// workspace_sections.created_at via its column DEFAULT.

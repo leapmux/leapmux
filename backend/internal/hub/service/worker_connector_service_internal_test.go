@@ -46,6 +46,10 @@ func (j *tabSyncJournal) LoadState(context.Context, string) (*leapmuxv1.UserCrdt
 	return nil, nil, nil
 }
 
+func (j *tabSyncJournal) ListBatchesAfter(context.Context, string, *leapmuxv1.HLC, *leapmuxv1.HLC, int, int) ([]crdt.ResumeBatch, []crdt.CorruptRow, error) {
+	return nil, nil, nil
+}
+
 func (j *tabSyncJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()

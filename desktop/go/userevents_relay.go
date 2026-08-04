@@ -8,13 +8,14 @@ import (
 	"github.com/coder/websocket"
 	"github.com/leapmux/leapmux/channelwire"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
 // dialUserEvents opens the userevents WebSocket. A package var (mirroring
 // App.startSolo and TunnelManager.openCh) so tests can hold a dial open and drive
 // the concurrent-open fence below deterministically, which is otherwise a race no
 // test could pin down.
-var dialUserEvents = func(ctx context.Context, proxy *HubProxy, workspaceIDs []string) (*websocket.Conn, error) {
+var dialUserEvents = func(ctx context.Context, proxy *HubProxy, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) (*websocket.Conn, error) {
 	// Fail closed on a missing WS client (see HubProxy.requireWSClient): a nil
 	// wsClient makes OpenUserEventsWSWithHeader fall back to http.DefaultClient,
 	// which carries neither the cookie jar nor pinRedirectsToOrigin and would
@@ -23,7 +24,7 @@ var dialUserEvents = func(ctx context.Context, proxy *HubProxy, workspaceIDs []s
 		return nil, err
 	}
 	return channelwire.OpenUserEventsWSWithHeader(
-		ctx, proxy.wsClient, proxy.baseURL, proxy.cookieHeader(), workspaceIDs,
+		ctx, proxy.wsClient, proxy.baseURL, proxy.cookieHeader(), workspaceIDs, cursor, epoch,
 	)
 }
 
@@ -66,7 +67,7 @@ type UserEventsRelay struct {
 // teardown cancels the relay context before its read loop can emit
 // an userevents:close. So a stale open abandons itself instead:
 // last open dispatched wins, whatever order the sidecar runs them in.
-func (a *App) OpenUserEventsRelay(requestCtx context.Context, relayID uint64, workspaceIDs []string) error {
+func (a *App) OpenUserEventsRelay(requestCtx context.Context, relayID uint64, workspaceIDs []string, cursor *leapmuxv1.HLC, epoch int64) error {
 	return a.openRelay(requestCtx, relayOpenSpec{
 		// Unlike the channel relay's adopt policy, a stale open here refuses
 		// itself outright -- before the dial (an open that ran entirely late
@@ -80,7 +81,7 @@ func (a *App) OpenUserEventsRelay(requestCtx context.Context, relayID uint64, wo
 		// lock) before we dial again.
 		closePrior: func() { _ = a.closeUserEventsRelay() },
 		dial: func(dialCtx context.Context, proxy *HubProxy) (*websocket.Conn, error) {
-			ws, err := dialUserEvents(dialCtx, proxy, workspaceIDs)
+			ws, err := dialUserEvents(dialCtx, proxy, workspaceIDs, cursor, epoch)
 			if err != nil {
 				return nil, fmt.Errorf("connect to userevents relay: %w", err)
 			}

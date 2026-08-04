@@ -463,19 +463,22 @@ func CloneState(state *leapmuxv1.UserCrdtState) *leapmuxv1.UserCrdtState {
 // state_clone_for_batch_test.go pin this contract so future op
 // additions can't silently regress.
 //
-// Top-level HLC fields (max_hlc, compaction_watermark) are deep-
-// cloned because Apply may bump max_hlc on every op.
+// Top-level HLC fields (max_hlc, compaction_watermark,
+// op_retention_watermark) are deep-cloned because Apply may bump
+// max_hlc on every op and compaction may advance the watermarks
+// concurrently with the validator's Apply pass.
 func CloneStateForBatch(pre *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp) *leapmuxv1.UserCrdtState {
 	if pre == nil {
 		return nil
 	}
 	touched := batchTouchedIDs(batch)
 	out := &leapmuxv1.UserCrdtState{
-		UserId:              pre.GetUserId(),
-		MaxHlc:              HLCClone(pre.GetMaxHlc()),
-		CompactionWatermark: HLCClone(pre.GetCompactionWatermark()),
-		CurrentEpoch:        pre.GetCurrentEpoch(),
-		EpochStartedAt:      pre.GetEpochStartedAt(),
+		UserId:               pre.GetUserId(),
+		MaxHlc:               HLCClone(pre.GetMaxHlc()),
+		CompactionWatermark:  HLCClone(pre.GetCompactionWatermark()),
+		OpRetentionWatermark: HLCClone(pre.GetOpRetentionWatermark()),
+		CurrentEpoch:         pre.GetCurrentEpoch(),
+		EpochStartedAt:       pre.GetEpochStartedAt(),
 	}
 
 	if len(touched.nodes) == 0 {

@@ -248,17 +248,33 @@ CREATE TABLE user_op_batches (
     batch_id      VARCHAR(255) NOT NULL,
     body_hash     BLOB NOT NULL,
     batch_payload LONGBLOB NOT NULL,
+    transitions_payload LONGBLOB NOT NULL,
     op_count      INT NOT NULL CHECK (op_count > 0),
     epoch         BIGINT NOT NULL,
-    committed_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    committed_at  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),  -- operator-facing audit stamp only; NOT a retention predicate (see idx_user_op_batches_physical_ms)
     PRIMARY KEY (user_id, physical_ms, logical, origin_client),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
 CREATE UNIQUE INDEX idx_user_op_batches_dedup ON user_op_batches(user_id, batch_id);
+-- Backs DeleteUserOpBatchesBeforePhysical, the cross-user retention sweep.
+-- The PK leads with user_id, which that query does not bind, so without this
+-- the hourly sweep full-scans every user's rows -- including the final pass
+-- that exists only to prove nothing is left to delete.
+CREATE INDEX idx_user_op_batches_physical_ms ON user_op_batches(physical_ms);
 
 CREATE TABLE user_state (
     user_id           VARCHAR(255) NOT NULL,
     state_payload    LONGBLOB NOT NULL,
+    -- state_payload.compaction_watermark.physical, projected out of the blob so
+    -- SQL can filter on it. One-way derived, exactly like user_op_batches'
+    -- physical_ms/logical over batch_payload: written from the same struct in
+    -- the same statement and rebuildable from the payload alone.
+    --
+    -- It is the only safe upper bound on op-batch deletion. Bootstrap rebuilds
+    -- a user as state_payload + every batch ABOVE this watermark, so a batch at
+    -- or below it is absorbed and a batch above it is the sole surviving copy
+    -- of those ops. The cross-user retention sweep joins on it for that reason.
+    compaction_physical_ms BIGINT NOT NULL DEFAULT 0,
     current_epoch    BIGINT NOT NULL DEFAULT 1,
     epoch_started_at DATETIME(6) NOT NULL,
     updated_at       DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),

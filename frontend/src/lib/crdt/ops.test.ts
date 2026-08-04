@@ -4,6 +4,8 @@ import { HLCClock, hlcCmp } from './hlc'
 import {
   generateId,
   newBatch,
+  opTarget,
+  opTargetKey,
   setFloatingHeight,
   setFloatingRootNodeId,
   setFloatingWidth,
@@ -173,5 +175,41 @@ describe('newBatch', () => {
     const a = newBatch([])
     const b = newBatch([])
     expect(a.batchId).not.toBe(b.batchId)
+  })
+})
+
+// opTarget is the SINGLE op -> entity mapping on the client (mirroring the hub's
+// crdt.OpTarget). It had been copied into the checkpoint dirty-set and the
+// tombstone pin, which then disagreed about what an unrecognized body means --
+// the pin's fail-OPEN reading is what would re-arm the ghost-record bug for any
+// op kind added later. These pin the three-valued contract that makes the two
+// callers degrade in their own safe directions.
+describe('opTarget', () => {
+  const ctx = { originClientId: 'c1', clock: new HLCClock('c1') }
+
+  it('names the entity for every op kind that installs one', () => {
+    expect(opTarget(setNodePosition(ctx, 'n1', 'p'))).toEqual({ case: 'entity', kind: 'node', id: 'n1' })
+    expect(opTarget(tombstoneNode(ctx, 'n1'))).toEqual({ case: 'entity', kind: 'node', id: 'n1' })
+    expect(opTarget(setTabTileId(ctx, TabType.AGENT, 't1', 'tile'))).toEqual({ case: 'entity', kind: 'tab', id: 't1' })
+    expect(opTarget(tombstoneTab(ctx, TabType.AGENT, 't1'))).toEqual({ case: 'entity', kind: 'tab', id: 't1' })
+    expect(opTarget(setFloatingX(ctx, 'w1', 1))).toEqual({ case: 'entity', kind: 'fw', id: 'w1' })
+    expect(opTarget(tombstoneFloatingWindow(ctx, 'w1'))).toEqual({ case: 'entity', kind: 'fw', id: 'w1' })
+  })
+
+  it('reports an empty body as provably targeting nothing', () => {
+    expect(opTarget({ body: { case: undefined } } as never)).toEqual({ case: 'none' })
+  })
+
+  it('reports an unrecognized body as unknown, not as nothing', () => {
+    // The distinction the two consumers turn on: `none` means "safe to ignore",
+    // `unknown` means "this build cannot enumerate what changed".
+    expect(opTarget({ body: { case: 'someOpFromANewerBuild', value: {} } } as never))
+      .toEqual({ case: 'unknown' })
+  })
+
+  it('spells an entity target as the shared kind:id key, and the others as null', () => {
+    expect(opTargetKey({ case: 'entity', kind: 'tab', id: 't1' })).toBe('tab:t1')
+    expect(opTargetKey({ case: 'none' })).toBeNull()
+    expect(opTargetKey({ case: 'unknown' })).toBeNull()
   })
 })

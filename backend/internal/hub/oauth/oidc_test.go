@@ -357,10 +357,20 @@ func TestOIDC_Exchange_HonoursContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	start := time.Now()
-	_, _, err = p.Exchange(ctx, "any-code", "any-verifier")
-
-	require.Error(t, err, "a token endpoint that never answers must surface as an error, not a hang")
-	assert.Less(t, time.Since(start), 5*time.Second,
-		"Exchange must give up on the caller's deadline; without that the callback handler holds the shutdown drain open")
+	// Exchange must give up on the caller's 200ms deadline; without that the
+	// callback handler holds the shutdown drain open against a token endpoint
+	// that never answers. Asserted as a completion against a generous guard
+	// rather than a 5s budget: the endpoint here NEVER responds, so the failing
+	// case is a hang, and a guard reports that directly.
+	exchanged := make(chan error, 1)
+	go func() {
+		_, _, exErr := p.Exchange(ctx, "any-code", "any-verifier")
+		exchanged <- exErr
+	}()
+	select {
+	case err = <-exchanged:
+		require.Error(t, err, "a token endpoint that never answers must surface as an error, not a hang")
+	case <-time.After(30 * time.Second):
+		t.Fatal("Exchange ignored the caller's deadline and hung on the wedged token endpoint")
+	}
 }

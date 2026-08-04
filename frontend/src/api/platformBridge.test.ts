@@ -493,7 +493,36 @@ describe('userevents relay bridge', () => {
 
     expect(calls).toEqual([{
       cmd: 'open_userevents_relay',
-      args: { relayId: 42, workspaceIds: ['ws-1'] },
+      args: { relayId: 42, workspaceIds: ['ws-1'], resumeHlc: null, resumeEpoch: null },
+    }])
+  })
+
+  it('serializes a populated resume cursor as wire HLC + epoch string', async () => {
+    // Pins the populated branch of openUserEventsRelay: resume.hlc must flow
+    // through formatHlcWire (not the raw proto object) and resume.epoch must
+    // be .toString()-ed (Tauri IPC carries no bigint). A regression that
+    // drops the epoch arg, passes the proto object directly, or skips the
+    // wire format would round-trip green through the null-cursor test above
+    // but make the desktop sidecar reject the relay-open on every reconnect.
+    const calls: Array<{ cmd: string, args: unknown }> = []
+    mockIPC((cmd, args) => {
+      calls.push({ cmd, args })
+      return null
+    })
+
+    await platformBridge.openUserEventsRelay(7, ['ws-1'], {
+      hlc: { physical: 1754100000000n, logical: 3n, clientId: 'c-abc' },
+      epoch: 7n,
+    })
+
+    expect(calls).toEqual([{
+      cmd: 'open_userevents_relay',
+      args: {
+        relayId: 7,
+        workspaceIds: ['ws-1'],
+        resumeHlc: '1754100000000.3.c-abc',
+        resumeEpoch: '7',
+      },
     }])
   })
 

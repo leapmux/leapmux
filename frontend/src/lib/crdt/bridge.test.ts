@@ -20,6 +20,7 @@ describe('withBridgeAndState', () => {
     return {
       workspaceId: () => 'ws-1',
       enqueue: batch => batch.batchId,
+      flushNow: () => {},
       clock: () => clock,
       originClientId: () => 'origin-1',
       speculativeState: () => state,
@@ -63,6 +64,7 @@ describe('withBridgeAndState', () => {
     const bridge: CRDTBridge = {
       workspaceId: () => 'ws-2',
       enqueue: batch => batch.batchId,
+      flushNow: () => {},
       clock: () => new HLCClock('client-2'),
       originClientId: () => 'unique-origin-xyz',
       speculativeState: () => create(UserCrdtStateSchema, { userId: 'user-2' }),
@@ -85,6 +87,7 @@ describe('ctxFromBridge', () => {
     return {
       workspaceId: () => 'ws',
       enqueue: batch => batch.batchId,
+      flushNow: () => {},
       clock: () => clock,
       originClientId: () => 'origin',
       speculativeState: () => null,

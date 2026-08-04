@@ -63,6 +63,27 @@ func ValidateBatch(
 		auth = &memoAuthChecker{inner: auth}
 	}
 
+	// 0. Every op must NAME something. Nothing downstream tolerates a target
+	//    with an empty id: OpTarget happily returns EntityRef{Kind: Node,
+	//    NodeID: ""}, the completeness check reports an offending entity id as
+	//    its failure signal (so an empty one reads as "no failure"), and the
+	//    batch then commits and broadcasts normally. The damage surfaces much
+	//    later and far away -- AffectedEntitiesToProto writes the empty identity
+	//    into transitions_payload, transitionEntryRef refuses to decode it,
+	//    MissingTransitionOp therefore reports the op as uncovered, and EVERY
+	//    subsequent resume for that user fails with ErrResumeCorrupt and logs a
+	//    corrupt journal row. One such batch disables delta-resume for the whole
+	//    retention window and makes each reconnect pay the full projection scan
+	//    #267 exists to remove, while blaming storage for an ordinary bad op.
+	//    Rejecting here keeps the encode/decode round-trip total by construction.
+	for _, op := range batch {
+		if !OpTarget(op).HasIdentity() {
+			result.Reason = leapmuxv1.BatchRejectionReason_BATCH_REJECTION_VALUE_DOMAIN
+			result.OffendingOpID = op.GetOpId()
+			return result, nil
+		}
+	}
+
 	// 1. Pre-apply tombstone check. Walking once over `pre` is enough
 	//    because creation-order ops within the batch can't observe
 	//    pre-batch tombstones; the validator's "set on tombstoned

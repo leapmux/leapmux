@@ -21,7 +21,7 @@ func TestSubscriberControllerSnapshotsAreDeeplyImmutable(t *testing.T) {
 	require.Len(t, before, 1)
 
 	c.MutateEach(func(current *Subscriber) {
-		current.Filter.WorkspaceIDs["w2"] = true
+		current.Filter = current.Filter.WithWorkspace("w2")
 	})
 
 	after := c.Snapshot()
@@ -38,7 +38,7 @@ func TestSubscriberControllerAddReturnsImmutableBootstrapFilter(t *testing.T) {
 	bootstrapFilter := c.Add(sub)
 
 	c.MutateEach(func(current *Subscriber) {
-		current.Filter.WorkspaceIDs["w2"] = true
+		current.Filter = current.Filter.WithWorkspace("w2")
 	})
 
 	assert.False(t, bootstrapFilter.IsAllowed("w2"),
@@ -75,9 +75,9 @@ func TestSubscriberControllerConcurrentSnapshotAndFilterMutation(t *testing.T) {
 		for i := range iterations {
 			c.MutateEach(func(current *Subscriber) {
 				if i%2 == 0 {
-					current.Filter.WorkspaceIDs["w2"] = true
+					current.Filter = current.Filter.WithWorkspace("w2")
 				} else {
-					delete(current.Filter.WorkspaceIDs, "w2")
+					current.Filter = current.Filter.WithoutWorkspace("w2")
 				}
 			})
 		}
@@ -102,7 +102,7 @@ func TestSubscriberControllerReusesImmutableClonesForUnchangedSubscribers(t *tes
 	require.NotNil(t, before)
 	c.MutateEach(func(sub *Subscriber) {
 		if sub == changed {
-			sub.Filter.WorkspaceIDs["w3"] = true
+			sub.Filter = sub.Filter.WithWorkspace("w3")
 		}
 	})
 	var after *Subscriber

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createTestFloatingWindowStore } from '~/test-support/tabStores'
 import { FloatingWindowContainer, resolveParentSize, snapPosition } from './FloatingWindowContainer'
@@ -232,5 +233,66 @@ describe('floatingWindowContainer', () => {
     expect(onActivate).toHaveBeenCalledTimes(1)
     // After bringToFront the rendered window must have moved to the end.
     expect(store.state.windows.findIndex(w => w.id === windowId)).toBe(1)
+  })
+})
+
+// Edge-snapping during a MOVE must measure against the window's LIVE size, not
+// the size captured at pointer-down.
+//
+// The store deliberately does NOT mask width/height behind a move override, so
+// a peer's resize landing mid-drag is projected immediately -- that is what
+// makes the drag feel correct. Snapping against a frozen size therefore made
+// the edge test and the rendered window disagree by exactly the size delta: the
+// window snapped to a visibly wrong offset, and `commitDragGeometry` persisted
+// that wrong x to every client.
+describe('move-drag edge snapping', () => {
+  it('snaps against the live width when a peer resizes mid-drag', () => {
+    const store = createTestFloatingWindowStore()
+    const created = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })
+    if (!created)
+      throw new Error('addWindow returned null')
+
+    const moves: Array<{ x: number, y: number }> = []
+    const spyStore = Object.assign(Object.create(store) as typeof store, {
+      updateDragMove: (_id: string, x: number, y: number) => {
+        moves.push({ x, y })
+      },
+    })
+
+    const [width, setWidth] = createSignal(0.2)
+    render(() => (
+      <FloatingWindowContainer
+        windowId={created.windowId}
+        x={0.1}
+        y={0.1}
+        width={width()}
+        height={0.2}
+        opacity={1}
+        zIndex={100}
+        title="Test Window"
+        floatingWindowStore={spyStore}
+        onClose={() => {}}
+      >
+        <div data-testid="window-content">child</div>
+      </FloatingWindowContainer>
+    ))
+
+    const titleBar = screen.getByTestId('floating-window-titlebar')
+    const { parentW } = resolveParentSize(titleBar)
+
+    fireEvent.pointerDown(titleBar, { clientX: 0, clientY: 0 })
+    // The peer's resize lands while the pointer is still down. 0.2 -> 0.5.
+    setWidth(0.5)
+    // Move so the window's LEFT edge sits at 0.505: with the live width its
+    // right edge is 0.005 from the viewport edge -- inside the 15px snap
+    // threshold -- while with the pointer-down width it is 0.2996 away, far
+    // outside it. The two sizes therefore disagree about whether to snap at all.
+    fireEvent.pointerMove(document, { clientX: 0.405 * parentW, clientY: 0 })
+
+    const last = moves.at(-1)
+    expect(last).toBeDefined()
+    // Snapped flush to the edge using the LIVE width. Reading the frozen width
+    // would leave it unsnapped at ~0.505.
+    expect(last!.x).toBeCloseTo(0.5, 6)
   })
 })

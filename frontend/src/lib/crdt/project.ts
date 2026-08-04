@@ -191,27 +191,29 @@ interface CachedWorkspace {
  *
  * Register identity is one-directional, though: an LWW write that stores the
  * SAME value under a newer HLC produces a fresh register object, so the inputs
- * say "changed" when nothing did. That is not a rare shape -- it is what the
- * `BatchCommitted` echo behind EVERY drag frame looks like, so roughly half of
- * all drag ticks are it. So a miss falls through to a second question: the
- * rebuilt object is compared BY VALUE against the previous one, and the previous
- * one is kept when they match (see `rebuildTree`). Inputs decide whether to
- * rebuild; the output decides whether anyone downstream hears about it.
+ * say "changed" when nothing did. That is not a rare shape -- it is what a
+ * `BatchCommitted` echo looks like whenever a local edit's optimistic submit is
+ * confirmed by the hub's canonical version (same value, newer HLC), which
+ * happens on every confirmed mutation. So a miss falls through to a second
+ * question: the rebuilt object is compared BY VALUE against the previous one,
+ * and the previous one is kept when they match (see `rebuildTree`). Inputs
+ * decide whether to rebuild; the output decides whether anyone downstream hears
+ * about it.
  *
  * WHAT it buys, and what it does NOT. The TRAVERSAL is unchanged -- validating a
  * node needs its children's subtrees, so there is nothing to skip, and
  * `seen`-based cycle breaking keeps its exact semantics. For the tree walk the
  * comparison costs about what the allocation it replaces did, so that part of
  * the call is no faster; the value-compare above is a further ~6-10% ON TOP,
- * paid on every tick to make roughly half of them free downstream. The one
+ * paid on every tick to make the no-op-echo ticks free downstream. The one
  * arithmetic win is `sortedTabs`: ordering both tab arrays by id is over half a
  * settled tick at 300 tabs, and identity makes it skippable. Net, on a
  * 10-workspace / 300-tab account, a settled call goes ~0.09ms -> ~0.05ms.
  *
  * What it buys is IDENTITY, and therefore the absence of downstream work. The
  * caller is a memo over an `{ equals: false }` state accessor, so it runs on
- * every CRDT tick -- ~2x the frame rate while a tile is dragged, because each
- * frame's optimistic `submit` is followed by the `BatchCommitted` that triggers
+ * every CRDT tick -- twice per confirmed mutation, because each optimistic
+ * `submit` is followed by the `BatchCommitted` echo that triggers
  * `recomputeSpeculative`. Every one of those used to hand the whole app a fresh
  * graph:
  *
@@ -224,7 +226,7 @@ interface CachedWorkspace {
  *     object, so no projection-derived memo in the app re-runs at all.
  *
  * End to end (same account, sidebar-shaped consumers over every workspace) that
- * is 0.26ms -> 0.11ms per drag frame.
+ * is 0.26ms -> 0.11ms per confirmed-mutation tick.
  *
  * Reuse is expressed as memoize-style methods that take the build thunk, so
  * consulting an entry without writing the next generation's -- which would

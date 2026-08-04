@@ -1014,6 +1014,8 @@ async fn open_userevents_relay(
     shell: State<'_, Arc<DesktopShell>>,
     relay_id: u64,
     workspace_ids: Vec<String>,
+    resume_hlc: Option<String>,
+    resume_epoch: Option<String>,
 ) -> Result<(), String> {
     check_response(
         shell
@@ -1021,6 +1023,8 @@ async fn open_userevents_relay(
                 proto::OpenUserEventsRelayRequest {
                     relay_id,
                     workspace_ids,
+                    resume_hlc,
+                    resume_epoch,
                 },
             ))
             .await?,

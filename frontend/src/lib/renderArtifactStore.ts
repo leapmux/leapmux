@@ -1,3 +1,5 @@
+import type { IdbSchema } from './idb'
+import { createIdbConnection, forEachCursor, isIndexedDbAvailable, requestToPromise, selectSweepVictims } from './idb'
 import { fnv1a32Hex } from './stringDigest'
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,10 @@ export const ARTIFACT_TOUCH_INTERVAL_MS = 60 * 60 * 1000
 export const ARTIFACT_MAX_ENTRIES = 2000
 
 const DB_NAME = 'leapmux-render-cache'
+// A CONSTANT. Schema changes land by editing SCHEMA below, not by bumping this:
+// the scaffold rebuilds any database that does not match the declaration. See
+// ~/lib/idb's header for why recreating rather than migrating is the policy --
+// this store is a cache over artifacts the app can always re-render.
 const DB_VERSION = 1
 const STORE_NAME = 'artifacts'
 const AT_INDEX = 'at'
@@ -88,7 +94,7 @@ interface ArtifactRecord {
 
 /** Whether persistence can work here at all — callers short-circuit synchronously on false. */
 export function isArtifactStoreAvailable(): boolean {
-  return typeof indexedDB !== 'undefined'
+  return isIndexedDbAvailable()
 }
 
 /**
@@ -100,43 +106,26 @@ function artifactKey(ns: string, source: string): string {
   return `${ns}:${fnv1a32Hex(source)}:${source.length.toString(36)}`
 }
 
-let dbPromise: Promise<IDBDatabase> | null = null
+/**
+ * The database's shape, in one place. Builds the store on creation and is
+ * checked against every opened database, which is rebuilt if it does not match
+ * -- see ~/lib/idb's header. `AT_INDEX` carries the sweep's recency ordering,
+ * so a database missing it would throw on first use rather than degrade.
+ */
+const SCHEMA: IdbSchema = {
+  [STORE_NAME]: {
+    keyPath: 'k',
+    indexes: { [AT_INDEX]: 'at' },
+  },
+}
+
+const connection = createIdbConnection(DB_NAME, DB_VERSION, SCHEMA)
+
+const openDb = connection.open
 
 /** Visible for testing: forget the cached connection (e.g. after swapping the IDBFactory). */
 export function _resetArtifactStoreForTest(): void {
-  void dbPromise?.then(db => db.close()).catch(() => {})
-  dbPromise = null
-}
-
-function openDb(): Promise<IDBDatabase> {
-  if (!dbPromise) {
-    dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION)
-      request.onupgradeneeded = () => {
-        const db = request.result
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          const store = db.createObjectStore(STORE_NAME, { keyPath: 'k' })
-          store.createIndex(AT_INDEX, 'at')
-        }
-      }
-      request.onsuccess = () => resolve(request.result)
-      request.onerror = () => reject(request.error ?? new Error('indexedDB open failed'))
-      // Blocked by another tab holding an older connection: degrade to a miss
-      // now; the cached promise is dropped below so a later call retries.
-      request.onblocked = () => reject(new Error('indexedDB open blocked'))
-    })
-    void dbPromise.catch(() => {
-      dbPromise = null
-    })
-  }
-  return dbPromise
-}
-
-function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error ?? new Error('indexedDB request failed'))
-  })
+  connection.reset()
 }
 
 function putRecord(db: IDBDatabase, record: ArtifactRecord): Promise<void> {
@@ -220,32 +209,21 @@ export async function sweepArtifacts(opts: { ttlMs?: number, maxEntries?: number
     const db = await openDb()
     // Key-only cursor over the recency index (ascending = oldest first):
     // collect [primaryKey, at] without materializing values.
-    const entries = await new Promise<Array<{ key: IDBValidKey, at: number }>>((resolve, reject) => {
-      const collected: Array<{ key: IDBValidKey, at: number }> = []
-      const cursorRequest = db.transaction(STORE_NAME, 'readonly')
-        .objectStore(STORE_NAME)
-        .index(AT_INDEX)
-        .openKeyCursor()
-      cursorRequest.onsuccess = () => {
-        const cursor = cursorRequest.result
-        if (!cursor) {
-          resolve(collected)
-          return
-        }
-        collected.push({ key: cursor.primaryKey, at: cursor.key as number })
-        cursor.continue()
-      }
-      cursorRequest.onerror = () => reject(cursorRequest.error ?? new Error('indexedDB cursor failed'))
-    })
-    const expiredCount = entries.filter(e => e.at <= now - ttlMs).length
-    const freshCount = entries.length - expiredCount
-    // entries is at-ascending, so the first `expiredCount + overCap` are the victims.
-    const deleteCount = expiredCount + Math.max(0, freshCount - maxEntries)
-    if (deleteCount === 0)
+    const entries: Array<{ key: IDBValidKey, at: number }> = []
+    await forEachCursor(
+      db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).index(AT_INDEX).openKeyCursor(),
+      cursor => entries.push({ key: cursor.primaryKey, at: cursor.key as number }),
+    )
+    // `entries` is at-ascending (the index cursor's order), which is the
+    // precondition selectSweepVictims is written against. No entry is reserved
+    // here: unlike the checkpoint store, this cache has no "current" row that a
+    // sweep must keep. See ~/lib/idb for the shared TTL + cap arithmetic.
+    const victims = selectSweepVictims(entries, { now, ttlMs, maxEntries })
+    if (victims.length === 0)
       return 0
     const store = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME)
-    await Promise.all(entries.slice(0, deleteCount).map(e => requestToPromise(store.delete(e.key))))
-    return deleteCount
+    await Promise.all(victims.map(e => requestToPromise(store.delete(e.key))))
+    return victims.length
   }
   catch {
     return 0

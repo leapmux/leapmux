@@ -229,12 +229,18 @@ CREATE TABLE user_op_batches (
     batch_id      TEXT NOT NULL,                    -- client-minted; dedup key
     body_hash     BLOB NOT NULL,                    -- SHA-256 of OpBatch with per-op HLC/origin fields stripped
     batch_payload BLOB NOT NULL,                    -- proto-marshalled OpBatch (ops carry per-op canonical_hlc)
+    transitions_payload BLOB NOT NULL,              -- proto-marshalled BatchTransitions (per-entity {pre,post} workspace; resume replays them as visibility-transition frames)
     op_count      INTEGER NOT NULL CHECK (op_count > 0),
     epoch         BIGINT NOT NULL,                  -- the user's epoch at commit time
-    committed_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    committed_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),  -- operator-facing audit stamp only; NOT a retention predicate (see idx_user_op_batches_physical_ms)
     PRIMARY KEY (user_id, physical_ms, logical, origin_client)
 );
 CREATE UNIQUE INDEX idx_user_op_batches_dedup ON user_op_batches(user_id, batch_id);
+-- Backs DeleteUserOpBatchesBeforePhysical, the cross-user retention sweep.
+-- The PK leads with user_id, which that query does not bind, so without this
+-- the hourly sweep full-scans every user's rows -- including the final pass
+-- that exists only to prove nothing is left to delete.
+CREATE INDEX idx_user_op_batches_physical_ms ON user_op_batches(physical_ms);
 
 -- One materialized UserCrdtState blob per user. The manager rewrites this
 -- row only on compaction or lifecycle-outbox processing; per-batch
@@ -243,6 +249,16 @@ CREATE UNIQUE INDEX idx_user_op_batches_dedup ON user_op_batches(user_id, batch_
 CREATE TABLE user_state (
     user_id          TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     state_payload    BLOB NOT NULL,
+    -- state_payload.compaction_watermark.physical, projected out of the blob so
+    -- SQL can filter on it. One-way derived, exactly like user_op_batches'
+    -- physical_ms/logical over batch_payload: written from the same struct in
+    -- the same statement and rebuildable from the payload alone.
+    --
+    -- It is the only safe upper bound on op-batch deletion. Bootstrap rebuilds
+    -- a user as state_payload + every batch ABOVE this watermark, so a batch at
+    -- or below it is absorbed and a batch above it is the sole surviving copy
+    -- of those ops. The cross-user retention sweep joins on it for that reason.
+    compaction_physical_ms BIGINT NOT NULL DEFAULT 0,
     current_epoch    BIGINT NOT NULL DEFAULT 1,
     epoch_started_at DATETIME NOT NULL,
     updated_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))

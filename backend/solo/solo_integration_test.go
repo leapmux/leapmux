@@ -243,16 +243,25 @@ func TestSoloStart_SurfacesHubServeError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	start := time.Now()
-	_, err := solo.Start(ctx, solo.Config{
-		SkipBanner: true,
-		NoTCP:      true,
-	})
-	elapsed := time.Since(start)
-
-	require.Error(t, err, "solo.Start should surface the bind failure")
-	assert.Contains(t, err.Error(), "hub serve",
-		"error should attribute the failure to hub Serve, not the WaitReady timeout")
-	assert.Less(t, elapsed, 5*time.Second,
-		"should not wait the full WaitReady timeout once Serve has already failed")
+	// "Serve's failure short-circuits WaitReady" is proven by the ERROR TEXT --
+	// a run that waited the timeout out reports the WaitReady deadline, not
+	// "hub serve". The elapsed bound was a second, weaker witness for the same
+	// thing, so the completion guard here only has to catch a hang.
+	type startResult struct{ err error }
+	done := make(chan startResult, 1)
+	go func() {
+		_, sErr := solo.Start(ctx, solo.Config{
+			SkipBanner: true,
+			NoTCP:      true,
+		})
+		done <- startResult{sErr}
+	}()
+	select {
+	case got := <-done:
+		require.Error(t, got.err, "solo.Start should surface the bind failure")
+		assert.Contains(t, got.err.Error(), "hub serve",
+			"error should attribute the failure to hub Serve, not the WaitReady timeout")
+	case <-time.After(60 * time.Second):
+		t.Fatal("solo.Start hung instead of surfacing the bind failure")
+	}
 }

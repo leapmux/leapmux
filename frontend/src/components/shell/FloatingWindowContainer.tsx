@@ -124,16 +124,17 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
   // --- Edge snapping ---
 
   // --- Opacity (scroll on titlebar) ---
-  // The wheel can fire ~60×/sec on a free-spinning trackpad. `updateOpacity`
-  // returns whether the clamped value actually changed so we don't bounce
-  // `onGeometryChange` (debounced persist) on every tick once opacity is
-  // pinned at the clamp floor or ceiling.
+  // The wheel can fire dozens of times per scroll gesture on a free-spinning
+  // trackpad. `updateOpacityDebounced` writes the live value to a local
+  // override (instant feedback) and arms a trailing debounce that emits ONE
+  // CRDT op when scrolling pauses — collapsing a whole scroll gesture to a
+  // single op instead of one per wheel tick.
   const handleTitleBarWheel = (e: WheelEvent) => {
     e.preventDefault()
     if (e.deltaY === 0)
       return
     const delta = e.deltaY > 0 ? -0.05 : 0.05
-    const changed = props.floatingWindowStore.updateOpacity(props.windowId, props.opacity + delta)
+    const changed = props.floatingWindowStore.updateOpacityDebounced(props.windowId, props.opacity + delta)
     if (changed)
       props.onGeometryChange?.()
   }
@@ -145,7 +146,39 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     })
   })
 
+  // Flush a pending debounced-opacity op when this container unmounts so a
+  // scroll in flight when the window closes isn't lost.
+  //
+  // Also abort any drag still in flight for THIS window. `useWindowPointerDrag`
+  // reacts to unmount by calling stop(), which deliberately fires no onUp, so
+  // `commitDragGeometry` never runs and the local override would otherwise
+  // outlive the gesture — the projection reads it unconditionally by id, so the
+  // window would render frozen at never-committed geometry (and mask incoming
+  // CRDT geometry) until some later drag replaced the override. Aborting rather
+  // than committing is deliberate: an unmount is not a drop, so the partial
+  // motion should not be persisted.
+  onCleanup(() => {
+    props.floatingWindowStore.flushOpacity(props.windowId)
+    props.floatingWindowStore.cancelDragGeometry(props.windowId)
+  })
+
   // --- Drag ---
+  // The drag writes the live geometry into a LOCAL store override (no CRDT op)
+  // so the window tracks the pointer responsively, then commits ONE op on drop
+  // (commitDragGeometry). Peers see the window jump to its final position on
+  // release instead of gliding frame-by-frame — the same tradeoff the splitter
+  // drag (useTileDragResize) already makes. This cuts a per-drag op storm from
+  // ~60-120 (one per rAF frame) down to 1, which in turn slashes op-log growth,
+  // wire volume, and the BatchCommitted-echo projection churn the per-frame
+  // path produced.
+  //
+  // Both gestures end the same way, so they share one callback rather than two
+  // copies of it.
+  const endDragGesture = () => {
+    props.floatingWindowStore.commitDragGeometry(props.windowId)
+    props.onGeometryChange?.()
+  }
+
   const handleDragStart = (e: PointerEvent) => {
     if ((e.target as HTMLElement).closest('button'))
       return
@@ -167,16 +200,24 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
         const dfy = (me.clientY - startY) / parentH
         const rawX = startFx + dfx
         const rawY = startFy + dfy
+        // Snap against the window's LIVE size, not the pointer-down snapshot.
+        // A move override deliberately does not mask width/height, so the store
+        // keeps projecting a peer's mid-drag resize; snapping against a frozen
+        // size would leave the edge test and the rendered window disagreeing by
+        // exactly the size delta, and commitDragGeometry would then persist that
+        // wrong x/y to every client. props.width/height are live getters off the
+        // reconciled store, so reading them per frame is the whole fix.
         const snapped = snapPosition(rawX, rawY, props.width, props.height, parentW, parentH)
-        props.floatingWindowStore.updatePosition(props.windowId, snapped.x, snapped.y)
+        props.floatingWindowStore.updateDragMove(props.windowId, snapped.x, snapped.y)
       },
-      onUp: () => {
-        props.onGeometryChange?.()
-      },
+      onUp: endDragGesture,
     })
   }
 
   // --- Resize ---
+  // Same override-during-drag + commit-on-drop pattern as the move handler
+  // (see handleDragStart). The resize writes the live geometry into the local
+  // override each frame; commitDragGeometry emits the single op on drop.
   const handleResizeStart = (dir: ResizeDir, e: PointerEvent) => {
     e.preventDefault()
     e.stopPropagation()
@@ -223,9 +264,9 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
           newY = startFy + startFh - newH
         }
 
-        props.floatingWindowStore.updateGeometry(props.windowId, newX, newY, newW, newH)
+        props.floatingWindowStore.updateDragResize(props.windowId, newX, newY, newW, newH)
       },
-      onUp: () => props.onGeometryChange?.(),
+      onUp: endDragGesture,
     })
   }
 
@@ -252,6 +293,7 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
       <div
         ref={titleBarRef}
         class={styles.titleBar}
+        data-testid="floating-window-titlebar"
         onPointerDown={handleDragStart}
       >
         <span class={styles.titleText}>{props.title}</span>

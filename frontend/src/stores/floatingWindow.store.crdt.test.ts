@@ -1,8 +1,8 @@
 import type { TestBridgeHandle } from '~/test-support/crdtBridge'
 import { createEffect, createRoot } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ctxFromBridge, getCRDTBridge, newBatch, renderTreeToLocal, setCRDTBridge, setFloatingWorkspaceId, sharedTrees } from '~/lib/crdt'
-import { createFloatingWindowStore, MIN_WINDOW_DIMENSION } from '~/stores/floatingWindow.store'
+import { createFloatingWindowStore, createKeyedOverrides, MIN_WINDOW_DIMENSION } from '~/stores/floatingWindow.store'
 import { seedWorkspace, withTestBridge } from '~/test-support/crdtBridge'
 import { createTestFloatingWindowStore, projectionMemo } from '~/test-support/tabStores'
 
@@ -86,40 +86,79 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     }, { rootTileId: 'main' })
   })
 
-  it('updatePosition emits a 2-op batch (x + y) and reflects in the projection', () => {
+  // These pin what the DRAG path emits, which is what the UI actually calls.
+  // They used to target `updatePosition` / `updateGeometry` / `updateOpacity` --
+  // immediate setters that this branch's own refactor left with zero production
+  // callers, so the assertions described a path nothing takes.
+  it('a committed MOVE emits a 2-op batch (x + y) and reflects in the projection', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
       const before = harness.pending.state.pendingBatches.length
 
-      store.updatePosition(windowId, 0.5, 0.6)
+      store.updateDragMove(windowId, 0.5, 0.6)
+      store.commitDragGeometry(windowId)
       const lastBatch = harness.pending.state.pendingBatches.at(-1)
       expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+      // x + y ONLY. A move that also wrote width/height would clobber a
+      // concurrent peer resize with the pointer-down snapshot.
       expect(lastBatch?.ops.length).toBe(2)
       expect(store.state.windows[0]!.x).toBeCloseTo(0.5, 6)
       expect(store.state.windows[0]!.y).toBeCloseTo(0.6, 6)
     }, { rootTileId: 'main' })
   })
 
-  it('updatePosition is a no-op when the coordinates haven’t changed', () => {
+  it('a committed MOVE back to the starting position is a no-op', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const { windowId } = store.addWindow({ x: 0.1, y: 0.2, width: 0.3, height: 0.3 })!
       const before = harness.pending.state.pendingBatches.length
 
-      store.updatePosition(windowId, 0.1, 0.2)
+      store.updateDragMove(windowId, 0.1, 0.2)
+      store.commitDragGeometry(windowId)
       expect(harness.pending.state.pendingBatches.length).toBe(before)
     }, { rootTileId: 'main' })
   })
 
-  it('updateGeometry emits a 4-op batch and clamps below MIN_WINDOW_DIMENSION', () => {
+  // The regression this fix exists for: a MOVE must not write width/height at
+  // all. It committed all four fields using the dimensions captured at
+  // pointer-down, so a peer that resized the window while the pointer was down
+  // had its resize overwritten by stale numbers under a NEWER HLC -- reverted on
+  // every client, permanently. Here the peer's resize is simulated by moving the
+  // window's CRDT width away from the drag's captured value.
+  it('a committed MOVE does not emit width/height, so a concurrent resize survives', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!
+
+      // Pointer-down captures 0.3 x 0.3, then a "peer" resizes to 0.5 x 0.5
+      // mid-drag (a resize gesture standing in for the remote op).
+      store.updateDragResize(windowId, 0.1, 0.1, 0.5, 0.5)
+      store.commitDragGeometry(windowId)
+      expect(store.state.windows[0]!.width).toBeCloseTo(0.5, 6)
+
+      const before = harness.pending.state.pendingBatches.length
+      store.updateDragMove(windowId, 0.7, 0.8)
+      store.commitDragGeometry(windowId)
+
+      const lastBatch = harness.pending.state.pendingBatches.at(-1)
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+      expect(lastBatch?.ops.length).toBe(2)
+      expect(store.state.windows[0]!.x).toBeCloseTo(0.7, 6)
+      expect(store.state.windows[0]!.width).toBeCloseTo(0.5, 6)
+      expect(store.state.windows[0]!.height).toBeCloseTo(0.5, 6)
+    }, { rootTileId: 'main' })
+  })
+
+  it('a committed RESIZE emits a 4-op batch and clamps below MIN_WINDOW_DIMENSION', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
       const before = harness.pending.state.pendingBatches.length
 
-      // Pass a width below the floor; store must clamp before emitting.
-      store.updateGeometry(windowId, 0.2, 0.3, 0.001, 0.7)
+      // Pass a width below the floor; the store must clamp before emitting.
+      store.updateDragResize(windowId, 0.2, 0.3, 0.001, 0.7)
+      store.commitDragGeometry(windowId)
       const lastBatch = harness.pending.state.pendingBatches.at(-1)
       expect(harness.pending.state.pendingBatches.length - before).toBe(1)
       expect(lastBatch?.ops.length).toBe(4)
@@ -128,40 +167,178 @@ describe('createFloatingWindowStore (projection-driven)', () => {
     }, { rootTileId: 'main' })
   })
 
-  it('updateOpacity clamps the value into [0.2, 1.0] and emits a single-op batch', () => {
+  it('updateOpacityDebounced clamps the value into [0.2, 1.0] and emits a single-op batch', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const { windowId } = store.addWindow()!
 
       // Start by dropping below 1.0 so the next bump shows the clamp
       // change (default 1.0 == clamp(5) == 1.0, which would no-op).
-      expect(store.updateOpacity(windowId, 0.6)).toBe(true)
+      expect(store.updateOpacityDebounced(windowId, 0.6)).toBe(true)
+      store.flushOpacity(windowId)
       const before = harness.pending.state.pendingBatches.length
 
       // Out-of-range high → clamped to 1.0.
-      const changed = store.updateOpacity(windowId, 5)
-      expect(changed).toBe(true)
+      expect(store.updateOpacityDebounced(windowId, 5)).toBe(true)
+      store.flushOpacity(windowId)
       const lastBatch = harness.pending.state.pendingBatches.at(-1)
       expect(harness.pending.state.pendingBatches.length - before).toBe(1)
       expect(lastBatch?.ops.length).toBe(1)
       expect(store.state.windows[0]!.opacity).toBe(1)
 
       // Out-of-range low (zero / negative) → clamped to 0.2.
-      expect(store.updateOpacity(windowId, -10)).toBe(true)
+      expect(store.updateOpacityDebounced(windowId, -10)).toBe(true)
+      store.flushOpacity(windowId)
       expect(store.state.windows[0]!.opacity).toBe(0.2)
     }, { rootTileId: 'main' })
   })
 
-  it('updateOpacity at the same clamped value is a no-op', () => {
+  it('updateOpacityDebounced at the same clamped value is a no-op', () => {
     withTestBridge((harness) => {
       const store = createTestFloatingWindowStore()
       const { windowId } = store.addWindow()!
       // Window default opacity is 1.0; resetting to 1.0 is a no-op.
       const before = harness.pending.state.pendingBatches.length
-      const changed = store.updateOpacity(windowId, 1)
-      expect(changed).toBe(false)
+      expect(store.updateOpacityDebounced(windowId, 1)).toBe(false)
+      store.flushOpacity(windowId)
       expect(harness.pending.state.pendingBatches.length).toBe(before)
     }, { rootTileId: 'main' })
+  })
+
+  describe('drag-override (commit-on-drop)', () => {
+    // updateDragMove / updateDragResize write the live preview into a LOCAL
+    // override (no CRDT op); commitDragGeometry emits exactly ONE op batch on
+    // drop. This cuts a per-drag op storm from ~60-120 (one per frame) down to 1.
+
+    it('updateDragResize moves the projected window WITHOUT emitting a batch', () => {
+      withTestBridge((harness) => {
+        const store = createTestFloatingWindowStore()
+        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const before = harness.pending.state.pendingBatches.length
+
+        store.updateDragResize(windowId, 0.5, 0.6, 0.4, 0.4)
+        // No CRDT op was emitted — the override is local-only.
+        expect(harness.pending.state.pendingBatches.length).toBe(before)
+        // The projected window reflects the live preview geometry.
+        expect(store.state.windows[0]!.x).toBeCloseTo(0.5, 6)
+        expect(store.state.windows[0]!.y).toBeCloseTo(0.6, 6)
+      }, { rootTileId: 'main' })
+    })
+
+    it('commitDragGeometry emits a single batch on drop and clears the override', () => {
+      withTestBridge((harness) => {
+        const store = createTestFloatingWindowStore()
+        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const before = harness.pending.state.pendingBatches.length
+
+        // A drag: several override updates, then one commit.
+        store.updateDragResize(windowId, 0.2, 0.2, 0.4, 0.4)
+        store.updateDragResize(windowId, 0.3, 0.3, 0.4, 0.4)
+        store.updateDragResize(windowId, 0.4, 0.4, 0.4, 0.4)
+        expect(harness.pending.state.pendingBatches.length).toBe(before)
+
+        store.commitDragGeometry(windowId)
+        // Exactly ONE op batch for the whole drag.
+        expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+        // The geometry persisted at the override's final value.
+        expect(store.state.windows[0]!.x).toBeCloseTo(0.4, 6)
+        expect(store.state.windows[0]!.y).toBeCloseTo(0.4, 6)
+      }, { rootTileId: 'main' })
+    })
+
+    it('commitDragGeometry is a no-op when no drag is in flight (bare click)', () => {
+      withTestBridge((harness) => {
+        const store = createTestFloatingWindowStore()
+        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const before = harness.pending.state.pendingBatches.length
+
+        store.commitDragGeometry(windowId)
+        expect(harness.pending.state.pendingBatches.length).toBe(before)
+      }, { rootTileId: 'main' })
+    })
+
+    it('commitDragGeometry is a no-op when the override matches the CRDT geometry (drag returned to start)', () => {
+      withTestBridge((harness) => {
+        const store = createTestFloatingWindowStore()
+        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const before = harness.pending.state.pendingBatches.length
+
+        // Drag back to the same geometry, then commit — should emit nothing.
+        store.updateDragResize(windowId, 0.1, 0.1, 0.4, 0.4)
+        store.commitDragGeometry(windowId)
+        expect(harness.pending.state.pendingBatches.length).toBe(before)
+      }, { rootTileId: 'main' })
+    })
+
+    it('cancelDragGeometry snaps the projection back to CRDT geometry without committing', () => {
+      withTestBridge((harness) => {
+        const store = createTestFloatingWindowStore()
+        const { windowId } = store.addWindow({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 })!
+        const before = harness.pending.state.pendingBatches.length
+
+        store.updateDragResize(windowId, 0.5, 0.6, 0.4, 0.4)
+        // The override is live.
+        expect(store.state.windows[0]!.x).toBeCloseTo(0.5, 6)
+        // Cancel — no op, snaps back.
+        store.cancelDragGeometry(windowId)
+        expect(harness.pending.state.pendingBatches.length).toBe(before)
+        expect(store.state.windows[0]!.x).toBeCloseTo(0.1, 6)
+        expect(store.state.windows[0]!.y).toBeCloseTo(0.1, 6)
+      }, { rootTileId: 'main' })
+    })
+
+    // Two windows dragged at once must BOTH survive.
+    //
+    // The override used to be a single slot, justified by a comment claiming
+    // `useWindowPointerDrag` serialized drags. It does not: every
+    // FloatingWindowContainer constructs its OWN controller, so `cancel()` only
+    // supersedes a gesture on the same window, and the hook uses document-level
+    // listeners rather than `setPointerCapture`. Two pointers on two title bars
+    // (touch, or a second button) run two live drags. The second
+    // `updateDrag*` then evicted the first, so w1 snapped back to CRDT geometry
+    // mid-gesture and `commitDragGeometry(w1)` returned early on the id
+    // mismatch -- the entire drag discarded, no op, no error path. This case
+    // previously asserted that loss as if it were the intended contract.
+    it('keeps a per-window override so two simultaneous drags both commit', () => {
+      withTestBridge((harness) => {
+        const store = createTestFloatingWindowStore()
+        const w1 = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!.windowId
+        const w2 = store.addWindow({ x: 0.5, y: 0.5, width: 0.3, height: 0.3 })!.windowId
+
+        // Both pointers move before either lifts.
+        store.updateDragResize(w1, 0.2, 0.2, 0.3, 0.3)
+        store.updateDragResize(w2, 0.6, 0.6, 0.3, 0.3)
+
+        // Each window renders at its OWN live override.
+        expect(store.state.windows.find(w => w.id === w1)!.x).toBeCloseTo(0.2, 6)
+        expect(store.state.windows.find(w => w.id === w2)!.x).toBeCloseTo(0.6, 6)
+
+        // And each drop commits its own op batch.
+        const before = harness.pending.state.pendingBatches.length
+        store.commitDragGeometry(w1)
+        expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+        store.commitDragGeometry(w2)
+        expect(harness.pending.state.pendingBatches.length - before).toBe(2)
+        expect(store.state.windows.find(w => w.id === w1)!.x).toBeCloseTo(0.2, 6)
+        expect(store.state.windows.find(w => w.id === w2)!.x).toBeCloseTo(0.6, 6)
+      }, { rootTileId: 'main' })
+    })
+
+    // Cancelling one gesture must not disturb the other's override.
+    it('cancelDragGeometry clears only the named window', () => {
+      withTestBridge((_harness) => {
+        const store = createTestFloatingWindowStore()
+        const w1 = store.addWindow({ x: 0.1, y: 0.1, width: 0.3, height: 0.3 })!.windowId
+        const w2 = store.addWindow({ x: 0.5, y: 0.5, width: 0.3, height: 0.3 })!.windowId
+
+        store.updateDragResize(w1, 0.2, 0.2, 0.3, 0.3)
+        store.updateDragResize(w2, 0.6, 0.6, 0.3, 0.3)
+        store.cancelDragGeometry(w1)
+
+        expect(store.state.windows.find(w => w.id === w1)!.x).toBeCloseTo(0.1, 6)
+        expect(store.state.windows.find(w => w.id === w2)!.x).toBeCloseTo(0.6, 6)
+      }, { rootTileId: 'main' })
+    })
   })
 
   it('bringToFront reorders the projection without emitting a batch (z-order is local)', () => {
@@ -475,12 +652,13 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         await new Promise<void>(queueMicrotask)
         const before = store.getWindowTileIdSet(windowId)
         expect(before).not.toBeNull()
-        // 20-frame scrub mimicking a real drag: 20 updatePosition
-        // calls, each bumping the bridge version signal. None of them
-        // change the window's tile membership.
+        // 20-frame scrub down the path the UI actually takes: each frame
+        // writes the drag override (bumping the bridge version signal), and the
+        // drop commits once. None of them change the window's tile membership.
         for (let i = 0; i < 20; i++) {
-          store.updatePosition(windowId, 0.1 + i * 0.01, 0.1 + i * 0.01)
+          store.updateDragMove(windowId, 0.1 + i * 0.01, 0.1 + i * 0.01)
         }
+        store.commitDragGeometry(windowId)
         await new Promise<void>(queueMicrotask)
         const after = store.getWindowTileIdSet(windowId)
         // Same Set ref across the scrub — the structural equality
@@ -500,8 +678,9 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         // 20-frame resize scrub: width + height change every frame,
         // tile membership doesn't.
         for (let i = 0; i < 20; i++) {
-          store.updateGeometry(windowId, 0.1, 0.1, 0.3 + i * 0.01, 0.3 + i * 0.01)
+          store.updateDragResize(windowId, 0.1, 0.1, 0.3 + i * 0.01, 0.3 + i * 0.01)
         }
+        store.commitDragGeometry(windowId)
         await new Promise<void>(queueMicrotask)
         const after = store.getWindowTileIdSet(windowId)
         expect(after).toBe(before)
@@ -574,7 +753,8 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         // unguarded join the tab view would rebuild every frame. Either way
         // the effect would run 50 times despite no membership / tab change.
         for (let i = 0; i < 50; i++)
-          store.updatePosition(windowId, 0.1 + i * 0.005, 0.1 + i * 0.005)
+          store.updateDragMove(windowId, 0.1 + i * 0.005, 0.1 + i * 0.005)
+        store.commitDragGeometry(windowId)
         await new Promise<void>(queueMicrotask)
 
         expect(effectRuns).toBe(baseline)
@@ -599,9 +779,12 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         // same ref — that's the contract the structural-equality
         // memo relies on for the geometry-hot path.
         for (let i = 0; i < 10; i++) {
-          store.updateGeometry(a.windowId, 0.1, 0.1, 0.2 + i * 0.01, 0.2 + i * 0.01)
-          store.updateGeometry(b.windowId, 0.3, 0.3, 0.2 + i * 0.01, 0.2 + i * 0.01)
-          store.updateGeometry(c.windowId, 0.5, 0.5, 0.2 + i * 0.01, 0.2 + i * 0.01)
+          store.updateDragResize(a.windowId, 0.1, 0.1, 0.2 + i * 0.01, 0.2 + i * 0.01)
+          store.commitDragGeometry(a.windowId)
+          store.updateDragResize(b.windowId, 0.3, 0.3, 0.2 + i * 0.01, 0.2 + i * 0.01)
+          store.commitDragGeometry(b.windowId)
+          store.updateDragResize(c.windowId, 0.5, 0.5, 0.2 + i * 0.01, 0.2 + i * 0.01)
+          store.commitDragGeometry(c.windowId)
         }
         await new Promise<void>(queueMicrotask)
         expect(store.getWindowTileIdSet(a.windowId)).toBe(beforeA)
@@ -663,7 +846,8 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         const baseline = bgRuns
 
         for (let i = 0; i < 10; i++)
-          store.updatePosition(active.windowId, 0.1 + i * 0.01, 0.1 + i * 0.01)
+          store.updateDragMove(active.windowId, 0.1 + i * 0.01, 0.1 + i * 0.01)
+        store.commitDragGeometry(active.windowId)
         await new Promise<void>(queueMicrotask)
 
         expect(bgRuns, 'ten drag frames in another workspace notify this one zero times').toBe(baseline)
@@ -690,7 +874,8 @@ describe('createFloatingWindowStore (projection-driven)', () => {
         await new Promise<void>(queueMicrotask)
         const before = store.state.windows[0]!
         const beforeId = before.id
-        store.updatePosition(created.windowId, 0.3, 0.4)
+        store.updateDragMove(created.windowId, 0.3, 0.4)
+        store.commitDragGeometry(created.windowId)
         await new Promise<void>(queueMicrotask)
         const after = store.state.windows[0]!
         // Same store-proxy ref (proves <For> won't remount).
@@ -897,6 +1082,449 @@ describe('cross-workspace floating tile lookups', () => {
 
       moveWindowToWorkspace(background.windowId, 'ws-active')
       expect(store.state.windows[0]?.focusedTileId).toBe(second)
+    })
+  })
+})
+
+describe('createFloatingWindowStore — debounced opacity (title-bar wheel)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // updateOpacityDebounced writes the live value to a local override (instant
+  // feedback) and arms a trailing debounce that emits ONE op when scrolling
+  // pauses. A whole scroll gesture collapses to a single op instead of one
+  // per wheel tick.
+
+  it('writes the override immediately without emitting a batch', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const { windowId } = store.addWindow()!
+      const before = harness.pending.state.pendingBatches.length
+
+      const changed = store.updateOpacityDebounced(windowId, 0.6)
+      expect(changed).toBe(true)
+      // No CRDT op yet — the override is local-only.
+      expect(harness.pending.state.pendingBatches.length).toBe(before)
+      // The projected opacity reflects the live override immediately.
+      expect(store.state.windows[0]!.opacity).toBeCloseTo(0.6, 6)
+    }, { rootTileId: 'main' })
+  })
+
+  it('emits exactly one op after the quiet period, coalescing a scroll gesture', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const { windowId } = store.addWindow()!
+      const before = harness.pending.state.pendingBatches.length
+
+      // A scroll gesture: many wheel ticks, each advancing the override.
+      store.updateOpacityDebounced(windowId, 0.9)
+      store.updateOpacityDebounced(windowId, 0.8)
+      store.updateOpacityDebounced(windowId, 0.7)
+      store.updateOpacityDebounced(windowId, 0.6)
+      expect(harness.pending.state.pendingBatches.length).toBe(before)
+      expect(store.state.windows[0]!.opacity).toBeCloseTo(0.6, 6)
+
+      // Advance just short of the delay — still no op.
+      vi.advanceTimersByTime(599)
+      expect(harness.pending.state.pendingBatches.length).toBe(before)
+
+      // Cross the delay: exactly ONE op fires with the final value.
+      vi.advanceTimersByTime(1)
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+      expect(store.state.windows[0]!.opacity).toBeCloseTo(0.6, 6)
+    }, { rootTileId: 'main' })
+  })
+
+  // The flush used to re-read the projection to decide whether the value had
+  // changed. That read is unavailable on exactly the paths the flush exists to
+  // serve: at store disposal Solid has already disposed the createComputed that
+  // maintains the projection, and on a workspace switch the window has already
+  // left the active-workspace slice. Both made the guard swallow the op. The
+  // gesture now carries the CRDT baseline it started from.
+  it('still emits when the window is no longer in the projection', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const { windowId } = store.addWindow()!
+
+      store.updateOpacityDebounced(windowId, 0.6)
+      // Move the window to another workspace, so it leaves the projected slice
+      // exactly as it does on a workspace switch mid-gesture.
+      const bridge = getCRDTBridge()!
+      bridge.enqueue(newBatch([setFloatingWorkspaceId(ctxFromBridge(bridge), windowId, 'ws-elsewhere')]))
+      expect(store.state.windows.some(w => w.id === windowId)).toBe(false)
+
+      // Count from AFTER the move, so only the flush's own op is measured.
+      const before = harness.pending.state.pendingBatches.length
+      store.flushOpacity(windowId)
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+    }, { rootTileId: 'main' })
+  })
+
+  it('does not emit when the gesture ends back at its starting value', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const { windowId } = store.addWindow()!
+      const before = harness.pending.state.pendingBatches.length
+
+      // Default opacity is 1.0: scrub away and back.
+      store.updateOpacityDebounced(windowId, 0.6)
+      store.updateOpacityDebounced(windowId, 1)
+      store.flushOpacity(windowId)
+      expect(harness.pending.state.pendingBatches.length).toBe(before)
+    }, { rootTileId: 'main' })
+  })
+
+  it('re-arms the timer on each tick so a continuous scroll stays one op', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const { windowId } = store.addWindow()!
+      const before = harness.pending.state.pendingBatches.length
+
+      // Tick, advance partway, tick again — the timer should reset.
+      store.updateOpacityDebounced(windowId, 0.7)
+      vi.advanceTimersByTime(400)
+      store.updateOpacityDebounced(windowId, 0.6)
+      vi.advanceTimersByTime(400)
+      // 400 + 400 = 800 > 600, but the second tick re-armed at t=400, so the
+      // timer fires at t=1000, not t=600. No op yet at t=800.
+      expect(harness.pending.state.pendingBatches.length).toBe(before)
+
+      // Cross the re-armed delay: one op.
+      vi.advanceTimersByTime(200)
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+    }, { rootTileId: 'main' })
+  })
+
+  // The pending edit is keyed BY WINDOW. It used to be a single global slot,
+  // borrowed from the drag override -- which is safe there only because pointer
+  // capture serializes drags. Wheel events need no capture, every visible window
+  // binds its own title-bar listener, so two windows can have gestures in flight
+  // at once.
+  it('scrolling a second window does not discard the first window\'s pending opacity', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const a = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!
+      const b = store.addWindow({ x: 0.4, y: 0.4, width: 0.2, height: 0.2 })!
+      const before = harness.pending.state.pendingBatches.length
+
+      // Scroll A, then B within the debounce window. A single slot cleared A's
+      // timer and replaced A's override, so A's op was NEVER emitted and its
+      // rendered opacity silently snapped back -- the whole gesture lost, with
+      // no error path.
+      store.updateOpacityDebounced(a.windowId, 0.7)
+      store.updateOpacityDebounced(b.windowId, 0.5)
+
+      vi.advanceTimersByTime(1000)
+
+      expect(harness.pending.state.pendingBatches.length - before).toBe(2)
+      const byId = new Map(store.state.windows.map(w => [w.id, w.opacity]))
+      expect(byId.get(a.windowId)).toBeCloseTo(0.7, 6)
+      expect(byId.get(b.windowId)).toBeCloseTo(0.5, 6)
+    }, { rootTileId: 'main' })
+  })
+
+  it('flushOpacity(id) flushes only that window, leaving another gesture armed', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const a = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!
+      const b = store.addWindow({ x: 0.4, y: 0.4, width: 0.2, height: 0.2 })!
+      const before = harness.pending.state.pendingBatches.length
+
+      store.updateOpacityDebounced(a.windowId, 0.7)
+      store.updateOpacityDebounced(b.windowId, 0.5)
+
+      // B unmounts (closed, or a workspace switch) mid-gesture. Its teardown
+      // must commit ITS value only -- unscoped, it committed whichever window
+      // happened to be pending, splitting A's single gesture into two ops.
+      store.flushOpacity(b.windowId)
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+
+      // A's gesture is still armed and fires on its own schedule.
+      vi.advanceTimersByTime(1000)
+      expect(harness.pending.state.pendingBatches.length - before).toBe(2)
+      const byId = new Map(store.state.windows.map(w => [w.id, w.opacity]))
+      expect(byId.get(a.windowId)).toBeCloseTo(0.7, 6)
+    }, { rootTileId: 'main' })
+  })
+
+  it('same-value tick (pinned at clamp floor) is a no-op and does not re-arm', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      // Drop to 0.2 (the clamp floor) and flush so the CRDT value is 0.2.
+      const { windowId } = store.addWindow()!
+      store.updateOpacityDebounced(windowId, 0.2)
+      store.flushOpacity(windowId)
+      const before = harness.pending.state.pendingBatches.length
+
+      // Scrolling further down clamps to 0.2 again — no change, no re-arm.
+      const changed = store.updateOpacityDebounced(windowId, 0.1)
+      expect(changed).toBe(false)
+      // Advance past the delay: still no op (timer was never armed).
+      vi.advanceTimersByTime(1000)
+      expect(harness.pending.state.pendingBatches.length).toBe(before)
+    }, { rootTileId: 'main' })
+  })
+
+  it('flushOpacity emits the pending op immediately and clears the timer', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const { windowId } = store.addWindow()!
+      const before = harness.pending.state.pendingBatches.length
+
+      store.updateOpacityDebounced(windowId, 0.5)
+      store.flushAllOpacity()
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+      // A second flush is a no-op.
+      store.flushAllOpacity()
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+      // Advancing time does not fire a stale op.
+      vi.advanceTimersByTime(1000)
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+    }, { rootTileId: 'main' })
+  })
+
+  it('an unscoped flush emits one op per window with a real change', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const a = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!
+      const b = store.addWindow({ x: 0.4, y: 0.4, width: 0.2, height: 0.2 })!
+      const c = store.addWindow({ x: 0.7, y: 0.7, width: 0.2, height: 0.2 })!
+      store.updateOpacityDebounced(a.windowId, 0.7)
+      store.updateOpacityDebounced(b.windowId, 0.5)
+      // C's gesture ends back where it started, so it must emit nothing even
+      // though the sweep drops its entry alongside the other two.
+      store.updateOpacityDebounced(c.windowId, 0.4)
+      store.updateOpacityDebounced(c.windowId, 1)
+      const before = harness.pending.state.pendingBatches.length
+
+      // The store's own disposal hook and the pagehide listener take this path:
+      // every window is going away, so every gesture flushes at once.
+      store.flushAllOpacity()
+
+      expect(harness.pending.state.pendingBatches.length - before).toBe(2)
+      const byId = new Map(store.state.windows.map(w => [w.id, w.opacity]))
+      expect(byId.get(a.windowId)).toBeCloseTo(0.7, 6)
+      expect(byId.get(b.windowId)).toBeCloseTo(0.5, 6)
+      expect(byId.get(c.windowId)).toBeCloseTo(1, 6)
+      // Every timer was cleared, so nothing fires late.
+      vi.advanceTimersByTime(1000)
+      expect(harness.pending.state.pendingBatches.length - before).toBe(2)
+    }, { rootTileId: 'main' })
+  })
+
+  // A browser unload runs NO Solid cleanup, so neither disposal hook fires on a
+  // refresh or a tab close. Before the debounce existed the op was emitted
+  // synchronously; without this listener a scrub finished inside the 600ms
+  // window is lost outright, and the op-log cannot recover an op that was never
+  // created.
+  it('flushes on pagehide, which no Solid cleanup covers', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const { windowId } = store.addWindow()!
+      store.updateOpacityDebounced(windowId, 0.6)
+      const before = harness.pending.state.pendingBatches.length
+
+      window.dispatchEvent(new Event('pagehide'))
+
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+      // The timer was cleared with the gesture, so nothing fires late.
+      vi.advanceTimersByTime(1000)
+      expect(harness.pending.state.pendingBatches.length - before).toBe(1)
+    }, { rootTileId: 'main' })
+  })
+
+  // Creating the op is only HALF the job, and the half this test used to stop
+  // at. `bridge.enqueue` pushes onto the submitter's queue and arms a ~16 ms
+  // timer; on a real unload -- Cmd+R, tab close, the case this listener exists
+  // for -- the page is gone before it fires, so the op was created and then
+  // dropped. Only `flushNow` (keepalive transport) actually sends it.
+  //
+  // Both steps must happen in ONE handler, in this order. Splitting the send
+  // into its own `pagehide` listener would make the outcome depend on
+  // registration order, and the runtime mounts BEFORE the stores -- so its
+  // listener would flush an empty queue and then the store would create the op
+  // with nothing left to send it.
+  it('sends on pagehide, not merely enqueues', () => {
+    withTestBridge((harness) => {
+      const store = createTestFloatingWindowStore()
+      const { windowId } = store.addWindow()!
+      store.updateOpacityDebounced(windowId, 0.6)
+      const before = harness.pending.state.pendingBatches.length
+
+      window.dispatchEvent(new Event('pagehide'))
+
+      // The LAST call is this store's: earlier cases in this file create stores
+      // without disposing them, so their listeners are still attached and fire
+      // first (registration order). Theirs have no gesture to flush.
+      expect(harness.flushNowCalls.length).toBeGreaterThan(0)
+      // The count AT FLUSH TIME proves the op was created first: a flush that
+      // ran before the gesture materialized would see the pre-gesture count.
+      expect(harness.flushNowCalls.at(-1)).toBe(before + 1)
+    }, { rootTileId: 'main' })
+  })
+
+  it('removes its pagehide listener when the store is disposed', () => {
+    // Left attached, the listener would keep a disposed store's closure alive
+    // and flush into a torn-down bridge on every later unload.
+    let disposedStore!: ReturnType<typeof createTestFloatingWindowStore>
+    withTestBridge((harness) => {
+      disposedStore = createTestFloatingWindowStore()
+      const { windowId } = disposedStore.addWindow()!
+      disposedStore.updateOpacityDebounced(windowId, 0.6)
+      // Leaving the root disposes the store, whose own cleanup already flushed.
+      expect(harness.pending.state.pendingBatches.length).toBeGreaterThanOrEqual(0)
+    }, { rootTileId: 'main' })
+
+    // No throw, and nothing to flush: the listener is gone with the store.
+    expect(() => window.dispatchEvent(new Event('pagehide'))).not.toThrow()
+  })
+
+  it('drops every gesture in ONE map rebuild when flushed unscoped', () => {
+    withTestBridge((harness) => {
+      // `rawProjection` reads `opts.projection()` exactly once per run, so
+      // counting the reads counts the rebuilds the flush costs.
+      const { projection } = projectionMemo()
+      let projectionReads = 0
+      const store = createFloatingWindowStore({
+        getWorkspaceId: () => harness.workspaceId,
+        projection: () => {
+          projectionReads++
+          return projection()
+        },
+      })
+      const ids = [
+        store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })!.windowId,
+        store.addWindow({ x: 0.4, y: 0.4, width: 0.2, height: 0.2 })!.windowId,
+        store.addWindow({ x: 0.7, y: 0.7, width: 0.2, height: 0.2 })!.windowId,
+      ]
+      // Park every gesture back at its CRDT baseline, so the flush emits NO ops
+      // and the map rebuild is the only thing it can cost.
+      for (const id of ids) {
+        store.updateOpacityDebounced(id, 0.5)
+        store.updateOpacityDebounced(id, 1)
+      }
+      const batchesBefore = harness.pending.state.pendingBatches.length
+
+      projectionReads = 0
+      store.flushAllOpacity()
+
+      expect(harness.pending.state.pendingBatches.length).toBe(batchesBefore)
+      // ONE rebuild for the whole sweep. Clearing per victim inside the emit
+      // loop rebuilt the map -- re-running every downstream projection -- once
+      // per window, so this was 3.
+      expect(projectionReads).toBe(1)
+      expect(store.state.windows.every(w => w.opacity === 1)).toBe(true)
+    }, { rootTileId: 'main' })
+  })
+})
+
+// The store's own keyed-override primitive, behind the drag preview, the
+// debounced-opacity gesture and per-window focus. Two rules are load-bearing
+// and used to be re-derived by hand at six sites: a write must not mutate the
+// previous Map (the projection memo and Solid's `<For>` key on its identity),
+// and a removal that removes nothing must hand back the SAME reference, since
+// that is the only thing that makes Solid's setSignal suppress the notify.
+describe('createKeyedOverrides', () => {
+  it('rebuilds on set, leaving the previous snapshot untouched', () => {
+    createRoot((dispose) => {
+      const overrides = createKeyedOverrides<number>()
+      const empty = overrides.snapshot()
+      overrides.set('a', 1)
+      const afterFirst = overrides.snapshot()
+      expect(afterFirst).not.toBe(empty)
+      // Copy-on-write: the map a consumer already read is never scribbled on.
+      expect(empty.size).toBe(0)
+
+      overrides.set('b', 2)
+      expect(overrides.snapshot()).not.toBe(afterFirst)
+      expect(afterFirst.has('b')).toBe(false)
+      expect([...overrides.snapshot()]).toEqual([['a', 1], ['b', 2]])
+      expect(overrides.get('a')).toBe(1)
+      expect(overrides.get('missing')).toBeUndefined()
+      dispose()
+    })
+  })
+
+  it('clear drops exactly one key, and keeps the reference when there is none', () => {
+    createRoot((dispose) => {
+      const overrides = createKeyedOverrides<number>()
+      overrides.set('a', 1)
+      overrides.set('b', 2)
+      const before = overrides.snapshot()
+
+      overrides.clear('absent')
+      expect(overrides.snapshot()).toBe(before)
+
+      overrides.clear('a')
+      expect(overrides.snapshot()).not.toBe(before)
+      expect([...overrides.snapshot().keys()]).toEqual(['b'])
+      expect(before.has('a')).toBe(true)
+      dispose()
+    })
+  })
+
+  it('clearAll empties in one rebuild and no-ops on an already-empty map', () => {
+    createRoot((dispose) => {
+      const overrides = createKeyedOverrides<number>()
+      overrides.set('a', 1)
+      overrides.set('b', 2)
+      const populated = overrides.snapshot()
+
+      overrides.clearAll()
+      const emptied = overrides.snapshot()
+      expect(emptied.size).toBe(0)
+      expect(emptied).not.toBe(populated)
+      expect(populated.size).toBe(2)
+
+      // A second clearAll must not notify — the disposal hook and the pagehide
+      // listener both reach it with nothing left to drop.
+      overrides.clearAll()
+      expect(overrides.snapshot()).toBe(emptied)
+      dispose()
+    })
+  })
+
+  it('retain drops only rejected keys, and keeps the reference when all survive', () => {
+    createRoot((dispose) => {
+      const overrides = createKeyedOverrides<number>()
+      overrides.set('live-1', 1)
+      overrides.set('dead', 2)
+      overrides.set('live-2', 3)
+      const before = overrides.snapshot()
+
+      // The GC's shape: a sweep that finds nothing stale must hand back the
+      // same map, or every membership change would re-run the projection.
+      overrides.retain(() => true)
+      expect(overrides.snapshot()).toBe(before)
+
+      overrides.retain(key => key !== 'dead')
+      const after = overrides.snapshot()
+      expect(after).not.toBe(before)
+      expect([...after.keys()]).toEqual(['live-1', 'live-2'])
+      expect(before.has('dead')).toBe(true)
+
+      // Rejecting everything empties it in one pass.
+      overrides.retain(() => false)
+      expect(overrides.snapshot().size).toBe(0)
+      dispose()
+    })
+  })
+
+  it('stores null as a value distinct from an absent key', () => {
+    // `focusByWindow` instantiates T as `string | null`: a recorded "no focused
+    // tile" has to stay distinguishable from "never recorded", which falls back
+    // to the window's first leaf.
+    createRoot((dispose) => {
+      const overrides = createKeyedOverrides<string | null>()
+      overrides.set('w1', null)
+      expect(overrides.get('w1')).toBeNull()
+      expect(overrides.snapshot().has('w1')).toBe(true)
+      expect(overrides.get('w2')).toBeUndefined()
+      dispose()
     })
   })
 })

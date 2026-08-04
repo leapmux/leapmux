@@ -116,6 +116,14 @@ message CliInstallSymlinkRequest {
 message OpenUserEventsRelayRequest {
   uint64 relay_id = 1;
   repeated string workspace_ids = 2;
+  // Resume cursor for a reconnecting client: the last-applied canonical HLC
+  // ("<physical>.<logical>.<client_id>") plus the epoch it was seen under. The
+  // sidecar threads these into the /ws/userevents URL so the hub can ship a
+  // ResumeDelta instead of a full snapshot. Both are strings (Tauri IPC +
+  // protobuf-over-sidecar carry no bigint); absent on a first connect, which
+  // the hub treats as a full-snapshot connect.
+  optional string resume_hlc = 3;
+  optional string resume_epoch = 4;
 }
 
 message CloseUserEventsRelayRequest {

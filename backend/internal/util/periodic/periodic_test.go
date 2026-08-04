@@ -105,21 +105,37 @@ func TestStart_SkipFirstRunWaitsForFirstTick(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	const interval = 50 * time.Millisecond
+
 	var calls atomic.Int64
+	// Nanos from `start` to the FIRST invocation, stamped by the task itself.
+	var firstAtNanos atomic.Int64
 	start := time.Now()
-	Start(ctx, Schedule{Interval: 50 * time.Millisecond, SkipFirstRun: true}, func(context.Context) {
+	Start(ctx, Schedule{Interval: interval, SkipFirstRun: true}, func(context.Context) {
 		calls.Add(1)
+		firstAtNanos.CompareAndSwap(0, int64(time.Since(start)))
 	})
 
-	// At ~25ms (well before the first tick at 50ms), the task must not have
+	// At ~half an interval (well before the first tick), the task must not have
 	// run yet — proving the eager invocation was skipped.
-	time.Sleep(25 * time.Millisecond)
+	time.Sleep(interval / 2)
 	assert.Equal(t, int64(0), calls.Load(), "task must not run before the first tick when SkipFirstRun is true")
 
 	// After the first tick, it should fire normally.
 	require.True(t, waitFor(t, 500*time.Millisecond, func() bool { return calls.Load() >= 1 }),
 		"task must fire on the first tick")
-	assert.GreaterOrEqual(t, time.Since(start), 50*time.Millisecond, "first invocation must wait for at least one Interval")
+
+	// Timed at the INVOCATION, not at the observation of it. `time.Since(start)`
+	// after waitFor returns includes that helper's poll latency, so it measured
+	// "when the test noticed" rather than "when the task ran" -- a number that
+	// only ever overstates, and therefore a bound that could pass while the task
+	// fired early. Stamping inside the task removes the poll from the
+	// measurement entirely.
+	//
+	// A LOWER bound, which machine load cannot break: load only delays the tick,
+	// and the failure being guarded against is firing EARLY.
+	assert.GreaterOrEqual(t, time.Duration(firstAtNanos.Load()), interval,
+		"first invocation must wait for at least one Interval")
 }
 
 func TestStart_SkipFirstRunHonorsJitterBeforeFirstTick(t *testing.T) {

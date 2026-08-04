@@ -91,7 +91,7 @@ func (s *HubEventStreamer) watchUser(ctx context.Context, userID userid.UserID, 
 		return fmt.Errorf("delegation bearer: %w", err)
 	}
 
-	ws, err := channelwire.OpenUserEventsWS(ctx, s.HTTPClient, s.ConnectURL, bearer, req.GetWorkspaceIds())
+	ws, err := channelwire.OpenUserEventsWS(ctx, s.HTTPClient, s.ConnectURL, bearer, req.GetWorkspaceIds(), nil, 0)
 	if err != nil {
 		return err
 	}

@@ -144,6 +144,26 @@ function PillGroup<T>(props: {
 // depends on rather than styling.
 export { PillGroup as PillGroupForTest }
 
+/**
+ * The value the terminal-OS-notifications toggle should store, given what it
+ * currently holds.
+ *
+ * Turning it ON asks the OS and stores the answer, so declining leaves the
+ * preference off rather than showing it on with nothing behind it. Turning it
+ * OFF stores false and must NOT prompt -- re-asking for a permission the user
+ * is in the act of switching off is exactly the prompt-fatigue browsers
+ * penalize. Both fall out of the short-circuit.
+ *
+ * Split out of the component because those two branches are the part worth
+ * testing and the component reads its state from context: reaching them through
+ * a render would need the real PreferencesProvider, whose onMount reloads
+ * preferences over the network.
+ */
+export async function nextTerminalOsNotifications(current: boolean): Promise<boolean> {
+  const next = !current
+  return next && await requestOsNotificationPermission()
+}
+
 /** The "inherit the account setting" pill every browser-scoped group leads with. */
 const ACCOUNT_DEFAULT = { value: null, label: 'Use account default' }
 
@@ -307,6 +327,15 @@ export const AccountAppearanceSettings: Component = () => {
     }
   }
 
+  // Declared here rather than inline in the JSX because an async callback
+  // passed straight to a prop is not a tracked scope past its first await --
+  // Solid tracks synchronously, so a signal read after the permission prompt
+  // would resolve outside any reactive context. The decision itself lives in
+  // nextTerminalOsNotifications so the permission branches are testable.
+  const handleTerminalOsNotificationsToggle = async () => {
+    prefs.setTerminalOsNotifications(await nextTerminalOsNotifications(prefs.terminalOsNotifications()))
+  }
+
   return (
     <>
       <div class={styles.section}>
@@ -365,17 +394,7 @@ export const AccountAppearanceSettings: Component = () => {
         <h3>Terminal Notifications</h3>
         <PillToggle
           pressed={prefs.terminalOsNotifications()}
-          onClick={async () => {
-            const next = !prefs.terminalOsNotifications()
-            if (next) {
-              const granted = await requestOsNotificationPermission()
-              if (!granted) {
-                prefs.setTerminalOsNotifications(false)
-                return
-              }
-            }
-            prefs.setTerminalOsNotifications(next)
-          }}
+          onClick={() => void handleTerminalOsNotificationsToggle()}
         >
           OS notifications for terminal alerts
         </PillToggle>

@@ -3,6 +3,7 @@ package crdt_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -43,7 +44,7 @@ func (b *blockingReadChecker) CanAccessWorkspaceForUsers(_ context.Context, _ st
 	return out, nil
 }
 
-// TestSubscribeWithACL_SerializesWithExpand pins the resolve-then-register
+// TestResumeWithACL_SerializesWithExpand pins the resolve-then-register
 // TOCTOU fix: SubscribeWithACL holds subscribeExpandMu across resolve+register,
 // so a concurrent workspace-create expansion for the same user must block behind
 // it. Once the subscriber is registered (with a pre-create filter that does
@@ -51,7 +52,7 @@ func (b *blockingReadChecker) CanAccessWorkspaceForUsers(_ context.Context, _ st
 // serialization the expand could run entirely in the resolve/register gap,
 // miss the not-yet-registered subscriber, and the subscriber would never see
 // the new workspace until reconnect.
-func TestSubscribeWithACL_SerializesWithExpand(t *testing.T) {
+func TestResumeWithACL_SerializesWithExpand(t *testing.T) {
 	mgr, _, _ := runManager(t, "user-1", allowAll{}, 230_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
@@ -67,14 +68,17 @@ func TestSubscribeWithACL_SerializesWithExpand(t *testing.T) {
 	resCh := make(chan subResult, 1)
 	go func() {
 		// The resolve runs while SubscribeWithACL holds subscribeExpandMu;
-		// parking here parks the whole resolve+register under that lock.
-		_, unsub, err := mgr.SubscribeWithACL(subR, func() (map[string]bool, error) {
+		// parking here parks the whole resolve+register under that lock. A nil
+		// cursor exercises the FALLBACK arm, which takes the same lock path as a
+		// full-snapshot subscribe (the legacy SubscribeWithACL path this test
+		// was written against).
+		out, err := mgr.SubscribeWithACL(context.Background(), subR, nil, 0, func() (map[string]bool, error) {
 			close(reached)
 			<-release
 			// Resolved BEFORE w1's create expansion: does not admit w1.
 			return map[string]bool{}, nil
 		})
-		resCh <- subResult{unsub, err}
+		resCh <- subResult{out.Unsub(), err}
 	}()
 	<-reached // subscribe is parked in resolve, holding subscribeExpandMu
 
@@ -137,12 +141,12 @@ func TestExpandSubscribersForWorkspace_SerializesWithSubscribe(t *testing.T) {
 	capS := &captureSubscriber{}
 	subS := &crdt.Subscriber{UserID: "userS", Send: capS.send}
 	go func() {
-		_, unsub, err := mgr.SubscribeWithACL(subS, func() (map[string]bool, error) {
+		out, err := mgr.SubscribeWithACL(context.Background(), subS, nil, 0, func() (map[string]bool, error) {
 			close(resolveStarted)
 			return map[string]bool{"w1": true}, nil
 		})
 		if err == nil {
-			defer unsub()
+			defer out.Unsub()()
 		}
 		close(subDone)
 	}()
@@ -191,12 +195,12 @@ func TestContractSubscribersForWorkspace_SerializesWithSubscribe(t *testing.T) {
 		// Parking in resolve holds subscribeExpandMu across the whole
 		// resolve+register, mirroring a subscriber whose resolve read the
 		// pre-delete ACL.
-		_, unsub, err := mgr.SubscribeWithACL(subS, func() (map[string]bool, error) {
+		out, err := mgr.SubscribeWithACL(context.Background(), subS, nil, 0, func() (map[string]bool, error) {
 			close(reached)
 			<-release
 			return map[string]bool{"w1": true}, nil
 		})
-		resCh <- subResult{unsub, err}
+		resCh <- subResult{out.Unsub(), err}
 	}()
 	<-reached // subscribe parked in resolve, holding subscribeExpandMu
 
@@ -227,20 +231,85 @@ func TestContractSubscribersForWorkspace_SerializesWithSubscribe(t *testing.T) {
 		"the serialized contract must strip w1 from the registered subscriber's filter")
 }
 
-// TestSubscribeWithACL_ResolveErrorLeavesUnregistered verifies a resolve failure
-// is returned WITHOUT registering the subscriber (no unsub handle, no snapshot),
-// so the caller can reject the connection before streaming.
-func TestSubscribeWithACL_ResolveErrorLeavesUnregistered(t *testing.T) {
+// TestResumeWithACL_ResolveErrorLeavesUnregistered verifies a resolve failure
+// is returned WITHOUT registering the subscriber (no delta, no fallback
+// snapshot, no unsub handle), so the caller can reject the connection before
+// streaming.
+func TestResumeWithACL_ResolveErrorLeavesUnregistered(t *testing.T) {
 	mgr, _, _ := runManager(t, "user-1", allowAll{}, 240_000)
 	seedRootInternal(t, mgr, "w1", "root1")
 
 	capR := &captureSubscriber{}
 	subR := &crdt.Subscriber{UserID: "userR", Send: capR.send}
 	wantErr := errors.New("resolve failed")
-	initial, unsub, err := mgr.SubscribeWithACL(subR, func() (map[string]bool, error) {
+	out, err := mgr.SubscribeWithACL(context.Background(), subR, nil, 0, func() (map[string]bool, error) {
 		return nil, wantErr
 	})
 	require.ErrorIs(t, err, wantErr)
-	assert.Nil(t, initial, "no snapshot on a failed resolve")
-	assert.Nil(t, unsub, "no unsub handle on a failed resolve")
+	// A failed resolve never registers, so there is no live handle. Unsub()
+	// returns a no-op (not nil) so a caller that defers it before checking err
+	// is safe; calling it here must not panic.
+	assert.NotPanics(t, func() { out.Unsub()() }, "Unsub on a failed-resolve outcome must be a safe no-op")
+}
+
+// TestSubscribeWithACL_ResumeFilterImmutableNoRaceWithExpand is a concurrency
+// smoke guard: expand/contract REPLACE the whole Filter via WithWorkspace /
+// WithoutWorkspace (never mutate WorkspaceIDs in place), so a plain value copy
+// of SubscriberFilter handed to buildResumeDelta is safe to read while
+// Expand/Contract replace the live Filter under subscribeExpandMu + the
+// controller lock. In-place map mutation would race the resume's IsAllowed
+// reads — a Go runtime fatal "concurrent map read and map write".
+//
+// This test exercises the concurrent path (resume + churn) so a regression that
+// re-introduces in-place filter mutation has a chance to trip the race
+// detector; it is not a deterministic reproducer (the in-memory fake journal's
+// frame-build is fast, so the overlap window is narrow), but it widens the
+// window with a deep tail and many iterations.
+func TestSubscribeWithACL_ResumeFilterImmutableNoRaceWithExpand(t *testing.T) {
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 250_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	seedRootInternal(t, mgr, "w2", "root2")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	// Seed a deep tail of stable-visibility ops on w1 so each resume's frame
+	// build iterates many filter lookups, widening the overlap window.
+	for i := 0; i < 200; i++ {
+		submitNodePositionBatch(t, mgr, fmt.Sprintf("tail-%d", i), "root1", fmt.Sprintf("p%d", i))
+	}
+	cursor := mgr.Materialized(crdt.SubscriberFilter{}).GetMaxHlc()
+	require.NotNil(t, cursor)
+
+	resolveOnlyW1 := func() (map[string]bool, error) { return map[string]bool{"w1": true}, nil }
+
+	// Hammer expand/contract on w2 while repeatedly resuming. The resume reads
+	// an immutable Filter value copy, so live WithWorkspace/WithoutWorkspace
+	// replacements must not race the scan's reads. In-place map mutation would
+	// make `go test -race` report a data race on WorkspaceIDs within a few iterations.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = mgr.ExpandSubscribersForWorkspace(context.Background(), "w2")
+				mgr.ContractSubscribersForWorkspaceForTest("w2")
+			}
+		}
+	}()
+
+	// Many short resumes so the race detector reliably observes the overlap.
+	for i := 0; i < 20; i++ {
+		cap := &captureSubscriber{}
+		sub := &crdt.Subscriber{UserID: "user-1", Send: cap.send}
+		out, err := mgr.SubscribeWithACL(context.Background(), sub, crdt.HLCClone(cursor), epoch, resolveOnlyW1)
+		require.NoError(t, err, "resume must complete cleanly despite concurrent filter mutation")
+		require.NotNil(t, out.Unsub())
+		out.Unsub()()
+	}
+	close(stop)
+	wg.Wait()
 }

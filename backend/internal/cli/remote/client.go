@@ -258,7 +258,7 @@ func (c *Client) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*Us
 		return nil, errors.New("OpenUserEvents is only valid for hub-bound clients; use the agent-spawned hub URL + delegation bearer to subscribe directly")
 	}
 	dialCtx, dialCancel := context.WithCancel(ctx)
-	ws, err := channelwire.OpenUserEventsWS(dialCtx, c.WSClient, c.HubURL, c.Bearer, workspaceIDs)
+	ws, err := channelwire.OpenUserEventsWS(dialCtx, c.WSClient, c.HubURL, c.Bearer, workspaceIDs, nil, 0)
 	if err != nil {
 		dialCancel()
 		return nil, err

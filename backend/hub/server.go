@@ -57,6 +57,39 @@ const handlerGrace = 5 * time.Second
 // should not need its full budget in practice; the constant is the hard ceiling.
 const httpDrainTimeout = 10 * time.Second
 
+// maxConnectRequestBytes bounds every inbound message on the hub's Connect
+// surface. Per MESSAGE, not per stream -- see connect.WithReadMaxBytes, which
+// also documents that "both clients and handlers default to allowing any request
+// size". Without it an authenticated SubmitOps body is buffered whole before the
+// handler ever sees it, and is then applied on that user's SINGLE-WRITER manager
+// goroutine, so one oversized batch serializes every other tab's submits behind
+// its own unmarshal + validate.
+//
+// Sized from crdt.MaxResumeDeltaBytes, the budget a resume may read back out of
+// the journal, rather than from a round number: a batch bigger than that is one
+// whose OWN later resume is guaranteed to blow the budget and force that client
+// onto a full snapshot, so accepting it buys nothing. It is far above any
+// legitimate message on this surface -- the largest are a worker's whole-machine
+// tab inventory (identity fields only) and a relayed ChannelMessage, itself
+// chunk-capped at channelwire.MaxCiphertextForChunk (64 KiB).
+//
+// READS only; responses are deliberately not capped (no WithSendMaxBytes),
+// because GetMaterialized legitimately returns a multi-MB snapshot for a large
+// account.
+const maxConnectRequestBytes = crdt.MaxResumeDeltaBytes
+
+// connectOptions is the option set EVERY Connect handler on the hub mux is
+// registered with. A function rather than an inline literal so the request-size
+// cap is reachable from a test without standing up a whole Server (NewServer
+// needs a live store, listeners and a keystore), and so a future handler cannot
+// be mounted with a hand-rolled option list that quietly omits the cap.
+func connectOptions(interceptors ...connect.Interceptor) connect.Option {
+	return connect.WithOptions(
+		connect.WithInterceptors(interceptors...),
+		connect.WithReadMaxBytes(maxConnectRequestBytes),
+	)
+}
+
 // ServerOption configures optional aspects of a Hub server.
 type ServerOption func(*serverOptions)
 
@@ -200,7 +233,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// lifecycle) extend its already-open channels' expiry, not just its leases
 	// (which the registry owns directly).
 	authContexts.SetChannelExpiryRescheduler(cMgr)
-	connectOpts := connect.WithInterceptors(
+	connectOpts := connectOptions(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
 		auth.NewTimeoutInterceptor(cfg.APITimeout),

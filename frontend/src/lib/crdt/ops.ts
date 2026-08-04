@@ -20,6 +20,85 @@ import { hlcIsZero } from './hlc'
 import { cmpStr } from './project'
 
 /**
+ * The entity kinds an op can target, spelled as the `kind` half of the
+ * `kind:id` keys the checkpoint chunks and the tombstone pin both use.
+ */
+export type OpEntityKind = 'node' | 'tab' | 'fw' | 'ws'
+
+/**
+ * What `opTarget` found. THREE outcomes, not two -- collapsing the last into
+ * the middle is what made the tombstone-pin and the checkpoint dirty-set
+ * disagree about a future op kind:
+ *
+ *  - `entity` -- this op installs into `kind`'s map under `id`.
+ *  - `none`   -- this op provably installs nothing (an empty body; `applyOp`
+ *                falls through its switch).
+ *  - `unknown` -- this build does not recognize the body. Callers MUST degrade
+ *                conservatively in their own direction; see `opTarget`.
+ */
+export type OpTarget
+  = | { case: 'entity', kind: OpEntityKind, id: string }
+    | { case: 'none' }
+    | { case: 'unknown' }
+
+/**
+ * The entity an op targets. The SINGLE source of the op -> entity mapping on
+ * the client, mirroring the hub's `crdt.OpTarget` (`backend/internal/hub/crdt/
+ * op.go`), which likewise lives beside the op definitions rather than with any
+ * one consumer.
+ *
+ * It had been copied into two consumers that then drifted in the dangerous
+ * direction: the checkpoint's dirty-set treated an unrecognized body as "assume
+ * everything changed" (fail-safe), while the tombstone pin treated it as "this
+ * op targets nothing" (fail-OPEN) -- so a newly added op kind would leave its
+ * entity unpinned, `pruneTombstonesAtOrBelow` would drop the shell that is the
+ * only thing suppressing a later write, and `recomputeSpeculative` would
+ * resurrect the entity as a live record. One mapping, and an `unknown` the
+ * callers cannot ignore, is what keeps that from coming back.
+ *
+ * The `default` arm below is a COMPILE-TIME exhaustiveness check: adding a case
+ * to `CrdtOp.body` without adding an arm here is a type error, not a silent
+ * runtime fallthrough. It still returns `unknown` at runtime, because a peer on
+ * a newer build can put a body on the wire that this build genuinely has no arm
+ * for.
+ */
+export function opTarget(op: CrdtOp): OpTarget {
+  const body = op.body
+  switch (body.case) {
+    case 'setNodeRegister':
+      return { case: 'entity', kind: 'node', id: body.value.nodeId }
+    case 'tombstoneNode':
+      return { case: 'entity', kind: 'node', id: body.value.nodeId }
+    case 'setTabRegister':
+      return { case: 'entity', kind: 'tab', id: body.value.tabId }
+    case 'tombstoneTab':
+      return { case: 'entity', kind: 'tab', id: body.value.tabId }
+    case 'setFloatingWindowRegister':
+      return { case: 'entity', kind: 'fw', id: body.value.windowId }
+    case 'tombstoneFloatingWindow':
+      return { case: 'entity', kind: 'fw', id: body.value.windowId }
+    case 'setWorkspaceRootNode':
+      return { case: 'entity', kind: 'ws', id: body.value.workspaceId }
+    case 'setWorkspaceRegister':
+      return { case: 'entity', kind: 'ws', id: body.value.workspaceId }
+    case 'tombstoneWorkspace':
+      return { case: 'entity', kind: 'ws', id: body.value.workspaceId }
+    case undefined:
+      return { case: 'none' }
+    default: {
+      const exhaustive: never = body
+      void exhaustive
+      return { case: 'unknown' }
+    }
+  }
+}
+
+/** `opTarget`'s entity spelled as the shared `kind:id` key. */
+export function opTargetKey(target: OpTarget): string | null {
+  return target.case === 'entity' ? `${target.kind}:${target.id}` : null
+}
+
+/**
  * generateId mints a 48-character alphanumeric nanoid that matches
  * the Go-side `util/id.Generate()` shape. Used for op_id, batch_id,
  * node_id, tab_id, and window_id wherever the frontend needs a fresh
@@ -170,9 +249,19 @@ export function tombstoneFloatingWindow(ctx: OpBuilderCtx, windowId: string): Cr
   })
 }
 
-/** Bundle a list of ops into a fresh OpBatch. */
-export function newBatch(ops: CrdtOp[]): OpBatch {
-  return create(OpBatchSchema, { batchId: generateId(), ops })
+/**
+ * Bundle a list of ops into a fresh OpBatch.
+ *
+ * `batchId` is a test seam; it defaults to a fresh `generateId()` and every
+ * production call site omits it. `batch_id` is the hub's dedup key -- it
+ * matches a SubmitOps echo back to its pending batch here, and keys the
+ * own-echo suppression in the op-log recorder -- so a deterministic id is what
+ * lets a test name the batch it is asserting about. Reusing one is not a silent
+ * merge: the hub rejects a replayed batch_id whose body differs with
+ * BATCH_REJECTION_OP_ID_COLLISION rather than dropping the ops.
+ */
+export function newBatch(ops: CrdtOp[], batchId?: string): OpBatch {
+  return create(OpBatchSchema, { batchId: batchId ?? generateId(), ops })
 }
 
 /**

@@ -717,12 +717,17 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 		return a, nil
 	}
 
+	// Named so the assertion below can be expressed as a fraction of the very
+	// timeout it must not reach, rather than as a literal that drifts if this
+	// one is retuned.
+	const startupTimeout = 30 * time.Second
+
 	start := time.Now()
 	agent, err := startEarlyExit(ctx, Options{
 		AgentID:        "early-exit-test",
 		Options:        map[string]string{OptionIDModel: "test"},
 		WorkingDir:     t.TempDir(),
-		StartupTimeout: 5 * time.Second,
+		StartupTimeout: startupTimeout,
 	}, noopSink{})
 	elapsed := time.Since(start)
 
@@ -732,8 +737,13 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 		"error should include the exit code")
 	assert.Contains(t, err.Error(), "cannot be launched inside another Claude Code session",
 		"error should include the stderr message from the crashed process")
-	assert.Less(t, elapsed, 2*time.Second,
-		"should detect early exit quickly, not wait for the full 5s timeout")
+	// Detection must not wait out the startup timeout. Expressed as a fraction
+	// OF that timeout, so the two outcomes stay far apart by construction: a
+	// crashed process is reaped in milliseconds, and the timeout path cannot
+	// finish under 30s. A free-standing 2s literal against a 5s timeout left
+	// only a 3s margin and would silently narrow if the timeout were lowered.
+	assert.Less(t, elapsed, startupTimeout/3,
+		"should detect early exit quickly, not wait for the full startup timeout")
 }
 
 // TestHelperProcessWithPreamble is a test helper that outputs preamble lines

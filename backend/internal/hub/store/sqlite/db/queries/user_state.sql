@@ -4,16 +4,21 @@ SELECT * FROM user_state WHERE user_id = ?;
 -- name: UpsertUserState :exec
 -- The DO UPDATE reuses the excluded values (SQLiteTime binds the canonical
 -- layout), so both the insert and update paths store the canonical layout.
-INSERT INTO user_state (user_id, state_payload, current_epoch, epoch_started_at, updated_at)
+-- compaction_physical_ms is written from the SAME crdt.UserCrdtState this
+-- statement marshals into state_payload, so the projected column can never
+-- name a watermark the blob does not carry.
+INSERT INTO user_state (user_id, state_payload, compaction_physical_ms, current_epoch, epoch_started_at, updated_at)
 VALUES (
     sqlc.arg(user_id),
     sqlc.arg(state_payload),
+    sqlc.arg(compaction_physical_ms),
     sqlc.arg(current_epoch),
     sqlc.arg(epoch_started_at),
     sqlc.arg(updated_at)
 )
 ON CONFLICT (user_id) DO UPDATE SET
     state_payload    = excluded.state_payload,
+    compaction_physical_ms = excluded.compaction_physical_ms,
     current_epoch    = excluded.current_epoch,
     epoch_started_at = excluded.epoch_started_at,
     updated_at       = excluded.updated_at;

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -414,3 +416,206 @@ func widestInnerRpcEnvelope(t *testing.T, payloadSize int) []byte {
 	require.NoError(t, err)
 	return encoded
 }
+
+// TestUserEventsURL_ResumeParams pins the query-string shape a reconnecting
+// client emits: workspace_ids (when scoped) plus resume_after_hlc +
+// resume_epoch (when a resume cursor is present). With no cursor the URL is
+// byte-identical to the legacy shape, so an older client that never sends one
+// is unaffected.
+func TestUserEventsURL_ResumeParams(t *testing.T) {
+	t.Run("nil cursor emits only workspace_ids", func(t *testing.T) {
+		got := UserEventsURL("https://hub", []string{"w1", "w2"}, nil, 0)
+		assert.Equal(t, "wss://hub/ws/userevents?workspace_ids=w1%2Cw2", got)
+	})
+	// The emit gate must be the DECODER's accept rule, not the weaker all-zero
+	// test. hlcIsZero only rejects {0,0,""}, so a cursor whose physical is 0 but
+	// whose other fields are set used to be written onto the URL -- and
+	// DecodeResumeHLC rejects any physical <= 0 (the shared corpus pins
+	// `{"raw": "0.4.c", "ok": false}`), so the hub answered its own client with a
+	// 400 where the intent was to omit the cursor and take a full snapshot.
+	t.Run("a cursor the decoder would reject is omitted, not sent", func(t *testing.T) {
+		for _, cursor := range []*leapmuxv1.HLC{
+			{Physical: 0, Logical: 4, ClientId: "c"},
+			{Physical: -1, Logical: 0, ClientId: "c"},
+			{Physical: 5, Logical: -1, ClientId: "c"},
+			{Physical: 5, Logical: 0, ClientId: ""},
+		} {
+			got := UserEventsURL("https://hub", nil, cursor, 7)
+			assert.NotContains(t, got, "resume_after_hlc", "cursor %v round-trips to a 400", cursor)
+			assert.NotContains(t, got, "resume_epoch")
+		}
+	})
+	t.Run("cursor appends resume params", func(t *testing.T) {
+		hlc := &leapmuxv1.HLC{Physical: 1754100000000, Logical: 3, ClientId: "c-abc"}
+		got := UserEventsURL("https://hub", nil, hlc, 7)
+		assert.Contains(t, got, "resume_after_hlc=1754100000000.3.c-abc")
+		assert.Contains(t, got, "resume_epoch=7")
+	})
+	t.Run("nil cursor emits no resume params", func(t *testing.T) {
+		got := UserEventsURL("https://hub", nil, nil, 1)
+		assert.NotContains(t, got, "resume_after_hlc")
+		assert.NotContains(t, got, "resume_epoch")
+	})
+}
+
+// TestEncodeDecodeResumeHLC covers the round-trip and the malformed-input
+// rejections that make a bad param degrade to a full-snapshot connect.
+func TestEncodeDecodeResumeHLC(t *testing.T) {
+	t.Run("round trip", func(t *testing.T) {
+		hlc := &leapmuxv1.HLC{Physical: 1754100000000, Logical: 42, ClientId: "c-abc"}
+		assert.Equal(t, "1754100000000.42.c-abc", EncodeResumeHLC(hlc))
+		got := DecodeResumeHLC("1754100000000.42.c-abc")
+		require.NotNil(t, got)
+		assert.Equal(t, hlc.GetPhysical(), got.GetPhysical())
+		assert.Equal(t, hlc.GetLogical(), got.GetLogical())
+		assert.Equal(t, hlc.GetClientId(), got.GetClientId())
+	})
+	cases := []string{
+		"",                                  // empty
+		"123",                               // no dots
+		"123.4",                             // one dot
+		"abc.4.c",                           // non-numeric physical
+		"123.abc.c",                         // non-numeric logical
+		"0.4.c",                             // zero physical (must be > 0)
+		"123.4.",                            // empty client id
+		"123.4." + strings.Repeat("x", 129), // overlong client id
+	}
+	for _, raw := range cases {
+		assert.Nil(t, DecodeResumeHLC(raw), "DecodeResumeHLC(%q) must reject as nil", raw)
+	}
+}
+
+// TestParseResumeCursor pins the shared cursor-validation contract that BOTH
+// the hub (URL query params) and the desktop sidecar (proto fields) delegate
+// to. The sidecar now REJECTS the relay-open RPC on any malformed value
+// (matching the hub's HTTP 400) rather than silently degrading to a full
+// snapshot, so this strictness is load-bearing for surfacing frontend bugs at
+// the first boundary they cross.
+func TestParseResumeCursor(t *testing.T) {
+	t.Run("both empty = first connect", func(t *testing.T) {
+		cursor, epoch, err := ParseResumeCursor("", "")
+		require.NoError(t, err)
+		assert.Nil(t, cursor)
+		assert.Equal(t, int64(0), epoch)
+	})
+	t.Run("well-formed pair decodes", func(t *testing.T) {
+		cursor, epoch, err := ParseResumeCursor("1754100000000.3.c-abc", "7")
+		require.NoError(t, err)
+		require.NotNil(t, cursor)
+		assert.Equal(t, int64(1754100000000), cursor.GetPhysical())
+		assert.Equal(t, int64(3), cursor.GetLogical())
+		assert.Equal(t, "c-abc", cursor.GetClientId())
+		assert.Equal(t, int64(7), epoch)
+	})
+	for _, c := range []struct {
+		name     string
+		hlcRaw   string
+		epochRaw string
+	}{
+		{"malformed hlc", "not-an-hlc", "7"},
+		{"malformed epoch", "1754100000000.3.c-abc", "not-a-number"},
+		{"epoch without hlc", "", "7"},
+		{"hlc without epoch", "1754100000000.3.c-abc", ""},
+		{"negative logical", "100.-5.c", "7"},
+		{"overlong client id", "100.0." + strings.Repeat("x", 129), "7"},
+		// The epoch gets the SAME domain treatment as physical/logical, not just a
+		// parse check. `current_epoch` is `NOT NULL DEFAULT 1` in every dialect and
+		// only increments, so these are values the hub can never hold; without the
+		// check they parse as well-formed and then fail silently at decideResume's
+		// equality test, degrading that client to a full snapshot on every connect
+		// with nothing logged.
+		{"zero epoch", "1754100000000.3.c-abc", "0"},
+		{"negative epoch", "1754100000000.3.c-abc", "-1"},
+		{"plus-signed epoch", "1754100000000.3.c-abc", "+7"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, err := ParseResumeCursor(c.hlcRaw, c.epochRaw)
+			require.Error(t, err, "malformed resume params must surface an error (hub 400 / sidecar reject)")
+		})
+	}
+}
+
+// TestDecodeResumeHLC_CrossLanguageCorpus pins channelwire.DecodeResumeHLC
+// against the shared testdata/hlc_wire_corpus.json fixture that the TypeScript
+// client (frontend/src/lib/crdt/hlc.test.ts) asserts parseHlcWire against too.
+// Both decoders parse the SAME resume-cursor wire format, and the client
+// pre-validates a persisted cursor before sending so a value the hub would 400
+// never leaves the browser (otherwise: non-terminal 1006 close → tight reconnect
+// loop). A rule added/tightened on one side but not the other reddens CI here
+// instead of drifting back into that storm. Mirrors the cross-language pattern
+// TestChannelWireLimitsMatchCrossLanguageFixture established.
+func TestDecodeResumeHLC_CrossLanguageCorpus(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/hlc_wire_corpus.json")
+	require.NoError(t, err, "testdata/hlc_wire_corpus.json must exist; see its _readme")
+	var fixture struct {
+		Cases []struct {
+			Raw      string `json:"raw"`
+			OK       bool   `json:"ok"`
+			Physical string `json:"physical"`
+			Logical  string `json:"logical"`
+			ClientID string `json:"clientId"`
+		} `json:"cases"`
+	}
+	require.NoError(t, json.Unmarshal(data, &fixture), "fixture must be valid JSON")
+
+	for _, c := range fixture.Cases {
+		got := DecodeResumeHLC(c.Raw)
+		if !c.OK {
+			assert.Nil(t, got, "DecodeResumeHLC(%q) must reject (corpus says ok=false)", c.Raw)
+			continue
+		}
+		require.NotNil(t, got, "DecodeResumeHLC(%q) must decode (corpus says ok=true)", c.Raw)
+		wantPhys, _ := strconv.ParseInt(c.Physical, 10, 64)
+		wantLog, _ := strconv.ParseInt(c.Logical, 10, 64)
+		assert.Equal(t, wantPhys, got.GetPhysical(), "DecodeResumeHLC(%q) physical", c.Raw)
+		assert.Equal(t, wantLog, got.GetLogical(), "DecodeResumeHLC(%q) logical", c.Raw)
+		assert.Equal(t, c.ClientID, got.GetClientId(), "DecodeResumeHLC(%q) clientId", c.Raw)
+	}
+}
+
+// TestParseResumeCursorFromQuery pins the strict parsing contract: a first connect
+// (both params absent) yields a nil cursor + no error, a well-formed pair
+// decodes, and any malformed shape (bad HLC, bad epoch, or epoch-without-hlc)
+// returns an error the handler surfaces as HTTP 400. The malformed arms are
+// the load-bearing part — strictness here means a buggy client fails loudly
+// instead of silently degrading to full-snapshot reconnects.
+func TestParseResumeCursorFromQuery(t *testing.T) {
+	t.Run("both absent = first connect", func(t *testing.T) {
+		cursor, epoch, err := ParseResumeCursorFromQuery(url.Values{})
+		require.NoError(t, err)
+		require.Nil(t, cursor)
+		require.Equal(t, int64(0), epoch)
+	})
+	t.Run("well-formed", func(t *testing.T) {
+		q := url.Values{
+			"resume_after_hlc": {"1754100000000.3.c-abc"},
+			"resume_epoch":     {"7"},
+		}
+		cursor, epoch, err := ParseResumeCursorFromQuery(q)
+		require.NoError(t, err)
+		require.NotNil(t, cursor)
+		require.Equal(t, int64(1754100000000), cursor.GetPhysical())
+		require.Equal(t, int64(3), cursor.GetLogical())
+		require.Equal(t, "c-abc", cursor.GetClientId())
+		require.Equal(t, int64(7), epoch)
+	})
+	for _, c := range []struct {
+		name string
+		q    url.Values
+	}{
+		{"malformed hlc", url.Values{"resume_after_hlc": {"not-an-hlc"}}},
+		{"malformed epoch", url.Values{
+			"resume_after_hlc": {"1754100000000.3.c-abc"},
+			"resume_epoch":     {"not-a-number"},
+		}},
+		{"epoch without hlc", url.Values{"resume_epoch": {"7"}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, err := ParseResumeCursorFromQuery(c.q)
+			require.Error(t, err, "malformed resume params must surface an error (→ HTTP 400)")
+		})
+	}
+}
+
+// It lives here rather than in the hub service suite because the function
+// moved to sit beside UserEventsURL, which writes the very keys it reads.

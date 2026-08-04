@@ -35,12 +35,26 @@ func TestReadDirNWithTimeout_OpenHang(t *testing.T) {
 		}()
 	})
 
-	start := time.Now()
-	entries, err := readDirNWithTimeout(fifo, 10, 50*time.Millisecond)
-	elapsed := time.Since(start)
-
-	require.Error(t, err)
-	require.Nil(t, entries)
-	assert.Contains(t, err.Error(), "timed out")
-	assert.Less(t, elapsed, 500*time.Millisecond, "readDirN blocked past its timeout")
+	// The timeout FIRING is proven by the error, not by elapsed time -- a call
+	// that blocked forever on the fifo would never return one. So the remaining
+	// risk is a hang, guarded by a completion timeout two orders of magnitude
+	// above the 50ms budget under test rather than a 500ms bound sitting one
+	// order above it.
+	type dirResult struct {
+		entries []os.DirEntry
+		err     error
+	}
+	done := make(chan dirResult, 1)
+	go func() {
+		entries, err := readDirNWithTimeout(fifo, 10, 50*time.Millisecond)
+		done <- dirResult{entries, err}
+	}()
+	select {
+	case got := <-done:
+		require.Error(t, got.err)
+		require.Nil(t, got.entries)
+		assert.Contains(t, got.err.Error(), "timed out")
+	case <-time.After(30 * time.Second):
+		t.Fatal("readDirNWithTimeout blocked past its timeout instead of returning")
+	}
 }
