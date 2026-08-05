@@ -130,6 +130,20 @@ func (t *fakeTransport) lastUpdate() *leapmuxv1.WatchEventsRequest {
 	return t.handle.updates[len(t.handle.updates)-1]
 }
 
+// updatesOf snapshots every revision tr's current handle has been sent, in
+// order. Retry tests assert on the whole sequence (how many restatements
+// landed, and what each carried), not just the last one.
+func updatesOf(t *testing.T, tr *fakeTransport) []*leapmuxv1.WatchEventsRequest {
+	t.Helper()
+	tr.mu.Lock()
+	h := tr.handle
+	tr.mu.Unlock()
+	require.NotNil(t, h, "transport has no open handle")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]*leapmuxv1.WatchEventsRequest(nil), h.updates...)
+}
+
 // TestSubscription_HappyPath_AdvanceCursorAndCallback verifies one
 // end-to-end pass: a frame arrives, the agent cursor advances, and
 // the user callback fires with the typed event.
@@ -189,8 +203,11 @@ func TestSubscription_TurnEndNotifyDoesNotForward(t *testing.T) {
 
 func protoInt32(v int32) *int32 { return &v }
 
-// fastRetry is a fast LOOKUP_FAILED backoff for tests that need to observe
-// retry/exhaust behavior without waiting on the production 15s cap.
+// fastRetry is a small, jitterless LOOKUP_FAILED budget for tests that drive
+// the ladder to exhaustion: 3 attempts at a deterministic 10ms → 20ms → 30ms.
+// The delays never elapse in real time — every retry test waits on a fakeClock
+// — but keeping them tiny and un-jittered makes the ladder an exact,
+// assertable sequence rather than a fuzzed one.
 func fastRetry() *backoffutil.Retry {
 	r, err := backoffutil.NewRetry(10*time.Millisecond, 30*time.Millisecond, 0, 3)
 	if err != nil {
@@ -199,8 +216,171 @@ func fastRetry() *backoffutil.Retry {
 	return r
 }
 
+// waitTimeout bounds every wait in this file. It is a deadlock guard, not a
+// timing assumption: the events it waits for (a goroutine arming its timer,
+// that goroutine returning, a 1ms timer firing) happen in microseconds, so
+// crossing this bound means the code under test never got there at all.
+const waitTimeout = 10 * time.Second
+
+// fakeTimer is one timer the retry goroutine asked fakeClock for.
+type fakeTimer struct {
+	delay    time.Duration
+	deliver  chan time.Time // buffered(1) so firing never blocks on a bailed retry
+	released bool           // the retry goroutine called its stop func
+}
+
+// fakeClock is a deterministic retryClock. NewTimer records the requested delay
+// and hands back a channel the test fires explicitly, so nothing in the retry
+// path is timed by the wall clock: a test can hold the retry in its
+// armed-but-not-yet-fired window for as long as it likes, and a test asserting
+// that NO retry armed reads armedCount instead of sleeping to find out.
+//
+// Timers fire in arm order, one per fireRetry call, which is also the order a
+// real clock would fire them in (the retry ladder arms at most one at a time).
+type fakeClock struct {
+	mu     sync.Mutex
+	timers []*fakeTimer
+	fired  int           // how many of them fireRetry has fired, in arm order
+	armed  chan struct{} // buffered(1); pinged on every NewTimer
+	freed  chan struct{} // buffered(1); pinged on every stop func call
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{
+		armed: make(chan struct{}, 1),
+		freed: make(chan struct{}, 1),
+	}
+}
+
+func (c *fakeClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
+	tm := &fakeTimer{delay: d, deliver: make(chan time.Time, 1)}
+	c.mu.Lock()
+	c.timers = append(c.timers, tm)
+	c.mu.Unlock()
+	ping(c.armed)
+	return tm.deliver, func() {
+		c.mu.Lock()
+		tm.released = true
+		c.mu.Unlock()
+		ping(c.freed)
+	}
+}
+
+// ping delivers a non-blocking wake-up on a buffered(1) signal channel. A
+// pending signal already covers the waiter's next re-check, so a dropped send
+// loses nothing.
+func ping(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// armedCount reports how many retry timers have been armed so far. Safe to read
+// synchronously for a negative assertion: dispatchUpdateAck decides whether to
+// arm under s.mu before pushFrame returns, so a push that armed nothing leaves
+// this at its prior value for good.
+func (c *fakeClock) armedCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.timers)
+}
+
+// waitArmed blocks until at least n retry timers have been armed. The arming
+// itself happens on the retry goroutine, so a test expecting a retry must wait
+// for it rather than read armedCount directly.
+func (c *fakeClock) waitArmed(t *testing.T, n int) {
+	t.Helper()
+	c.await(t, c.armed, func() (int, bool) { return len(c.timers), len(c.timers) >= n },
+		"armed retry timer(s)", n)
+}
+
+// waitRetrySettled blocks until at least n retry goroutines have finished.
+// armLookupRetry releases its timer on the way out (the deferred stop), whether
+// it fired its Update or bailed, so a released timer means that retry is done
+// and its effects — the committed slot, the restated interest — are visible.
+func (c *fakeClock) waitRetrySettled(t *testing.T, n int) {
+	t.Helper()
+	c.await(t, c.freed, func() (int, bool) {
+		got := 0
+		for _, tm := range c.timers {
+			if tm.released {
+				got++
+			}
+		}
+		return got, got >= n
+	}, "settled retries", n)
+}
+
+// await re-checks want (under c.mu) on every ping of signal until it is
+// satisfied, failing the test if waitTimeout elapses first.
+func (c *fakeClock) await(t *testing.T, signal chan struct{}, want func() (int, bool), what string, n int) {
+	t.Helper()
+	deadline := time.After(waitTimeout)
+	for {
+		c.mu.Lock()
+		got, ok := want()
+		c.mu.Unlock()
+		if ok {
+			return
+		}
+		select {
+		case <-signal:
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d %s; got %d", n, what, got)
+		}
+	}
+}
+
+// fireRetry waits for the next armed retry timer and fires it, returning the
+// delay it was armed with so the caller can assert on the ladder. Each call
+// fires the next timer in arm order.
+func (c *fakeClock) fireRetry(t *testing.T) time.Duration {
+	t.Helper()
+	c.mu.Lock()
+	next := c.fired + 1
+	c.mu.Unlock()
+	c.waitArmed(t, next)
+
+	c.mu.Lock()
+	tm := c.timers[c.fired]
+	c.fired++
+	c.mu.Unlock()
+	// Buffered, so this never blocks even if the retry already bailed via
+	// retryCtx and will never read the delivery.
+	tm.deliver <- time.Time{}
+	return tm.delay
+}
+
+// retryState reads the LOOKUP_FAILED retry's observable state under s.mu — the
+// lock production serializes every retry access through. Reading it right after
+// a pushFrame is race-free in both directions: dispatchUpdateAck arms (or
+// declines to arm) under that same lock before the push returns.
+func retryState(sub *Subscription) (attempts int, inFlight bool) {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	return sub.retry.Attempts(), sub.retryInFlight
+}
+
+// newRetrySub builds a Subscription over tr whose LOOKUP_FAILED retry waits on
+// a fakeClock instead of the wall clock, and registers Cancel for cleanup.
+// Every test that can arm a retry uses it, so no retry in this package is timed
+// by a real timer. Callers that drive the ladder to exhaustion still install
+// fastRetry themselves; the rest keep the production budget, which the fake
+// clock makes free to wait out.
+func newRetrySub(t *testing.T, tr *fakeTransport) (*Subscription, *fakeClock) {
+	t.Helper()
+	clk := newFakeClock()
+	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	// Safe without a lock: the retry goroutine that reads sub.clock cannot exist
+	// until the first Update, which every caller issues after this returns.
+	sub.clock = clk
+	t.Cleanup(sub.Cancel)
+	return sub, clk
+}
+
 // lookupFailedAck builds a WatchEventsResponse carrying a LOOKUP_FAILED
-// rejection for entityID. The three LOOKUP_FAILED tests share this frame shape.
+// rejection for entityID — the frame shape every LOOKUP_FAILED test drives.
 func lookupFailedAck(entityID string) *leapmuxv1.WatchEventsResponse {
 	return &leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
@@ -502,12 +682,47 @@ func TestSubscription_UpdateReopensAfterDone(t *testing.T) {
 	sub.Cancel()
 }
 
-// TestSubscription_LookupFailedAckRetriesLastReq pins that a LOOKUP_FAILED
-// UpdateAck restates the stored lastReq after the short retry delay.
-func TestSubscription_LookupFailedAckRetriesLastReq(t *testing.T) {
+// TestSubscription_DefaultSystemClockDrivesTheRetry is the one retry test that
+// does NOT substitute a fakeClock, and it exists because all the others do:
+// with the seam in place, nothing else exercises the clock NewSubscription
+// actually wires. A regression that left s.clock nil (panic on the first
+// LOOKUP_FAILED) or handed back a timer that never fires (the CLI silently
+// stops recovering from a transient miss) would pass every other test here.
+//
+// It waits on a real 1ms timer, which is safe in the one direction that
+// matters: the assertion is a positive edge — the retry fires and restates —
+// so a loaded machine makes this slower, never wrong.
+func TestSubscription_DefaultSystemClockDrivesTheRetry(t *testing.T) {
 	tr := &fakeTransport{}
 	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
 	t.Cleanup(sub.Cancel)
+	require.IsType(t, systemClock{}, sub.clock,
+		"NewSubscription must wire the real clock, not leave the seam empty")
+
+	// 1ms so the real wait is negligible; the ladder shape is pinned elsewhere.
+	r, err := backoffutil.NewRetry(time.Millisecond, 2*time.Millisecond, 0, 3)
+	require.NoError(t, err)
+	sub.retry = r
+
+	require.NoError(t, sub.Update(context.Background(),
+		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
+	pushLookupFailed(tr, "a-1")
+
+	require.Eventually(t, func() bool {
+		attempts, _ := retryState(sub)
+		return attempts == 1
+	}, waitTimeout, time.Millisecond,
+		"a retry armed on the real clock must fire, commit its slot, and restate")
+	assert.Len(t, updatesOf(t, tr), 1, "the real-clock retry restates the interest once")
+}
+
+// TestSubscription_LookupFailedAckRetriesLastReq pins that a LOOKUP_FAILED
+// UpdateAck restates the stored lastReq when the retry delay elapses, and that
+// the delay it waits out is the production policy's first rung (not some
+// hardcoded constant that could drift from lookupRetryInitial).
+func TestSubscription_LookupFailedAckRetriesLastReq(t *testing.T) {
+	tr := &fakeTransport{}
+	sub, clk := newRetrySub(t, tr) // production budget: the fake clock makes it free
 
 	req := &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
@@ -517,29 +732,20 @@ func TestSubscription_LookupFailedAckRetriesLastReq(t *testing.T) {
 
 	pushLookupFailed(tr, "a-1")
 
-	require.Eventually(t, func() bool {
-		tr.mu.Lock()
-		h := tr.handle
-		tr.mu.Unlock()
-		if h == nil {
-			return false
-		}
-		h.mu.Lock()
-		n := len(h.updates)
-		h.mu.Unlock()
-		return n >= 1
-	}, time.Second, 20*time.Millisecond, "LOOKUP_FAILED ack must restate lastReq via Update")
+	delay := clk.fireRetry(t)
+	lo := time.Duration(float64(lookupRetryInitial) * (1 - lookupRetryJitter))
+	// +1ns: backoffutil's jitter window is inclusive of its upper bound.
+	hi := time.Duration(float64(lookupRetryInitial)*(1+lookupRetryJitter)) + 1
+	assert.GreaterOrEqual(t, delay, lo,
+		"the first retry must wait the production ladder's first rung (±jitter)")
+	assert.LessOrEqual(t, delay, hi,
+		"the first retry must wait the production ladder's first rung (±jitter)")
+	clk.waitRetrySettled(t, 1)
 
-	tr.mu.Lock()
-	h := tr.handle
-	tr.mu.Unlock()
-	require.NotNil(t, h)
-	h.mu.Lock()
-	last := h.updates[len(h.updates)-1]
-	h.mu.Unlock()
-	require.NotNil(t, last)
-	require.Len(t, last.GetAgents(), 1)
-	assert.Equal(t, "a-1", last.GetAgents()[0].GetAgentId())
+	updates := updatesOf(t, tr)
+	require.Len(t, updates, 1, "the retry must restate lastReq exactly once")
+	require.Len(t, updates[0].GetAgents(), 1)
+	assert.Equal(t, "a-1", updates[0].GetAgents()[0].GetAgentId())
 }
 
 // TestSubscription_LookupFailedRetryReadsLatestLastReqAtFireTime pins the
@@ -552,49 +758,42 @@ func TestSubscription_LookupFailedAckRetriesLastReq(t *testing.T) {
 // useWatchEventsStreams fire-time plan read.
 func TestSubscription_LookupFailedRetryReadsLatestLastReqAtFireTime(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
-	sub.retry = fastRetry() // 10-30ms, jitterless
-	t.Cleanup(sub.Cancel)
+	sub, clk := newRetrySub(t, tr)
+	sub.retry = fastRetry()
 
 	// Open with {a-1}; the retry will arm against this interest.
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
 
-	// Arm a retry by pushing a LOOKUP_FAILED ack for a-1.
+	// Arm a retry by pushing a LOOKUP_FAILED ack for a-1, and hold it in its
+	// backoff window: the fake clock fires it only when this test says so, so
+	// the revise below is strictly inside the window.
 	pushLookupFailed(tr, "a-1")
+	clk.waitArmed(t, 1)
 
-	// While the retry is pending (10-30ms window), revise the live stream to add
-	// a-2. The retry must fire against THIS interest, not the arm-time {a-1}.
+	// Revise the live stream to add a-2. The retry must fire against THIS
+	// interest, not the arm-time {a-1}. This lands as the handle's 1st update.
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{
 			{AgentId: "a-1"}, {AgentId: "a-2"},
 		}}))
 
-	// Wait for the retry's restatement to land as a SECOND update on the handle
-	// (the first is the manual revise above). The discriminator: the retry's
-	// restatement is the LAST update, and it must carry BOTH agents. An arm-time
-	// snapshot would restate only {a-1}, so the final update would drop a-2.
-	require.Eventually(t, func() bool {
-		tr.mu.Lock()
-		h := tr.handle
-		tr.mu.Unlock()
-		if h == nil {
-			return false
-		}
-		h.mu.Lock()
-		count := len(h.updates)
-		var ids map[string]bool
-		if count >= 2 {
-			last := h.updates[count-1]
-			ids = make(map[string]bool, len(last.GetAgents()))
-			for _, a := range last.GetAgents() {
-				ids[a.GetAgentId()] = true
-			}
-		}
-		h.mu.Unlock()
-		return count >= 2 && ids["a-1"] && ids["a-2"]
-	}, time.Second, 5*time.Millisecond,
-		"retry's restatement (the 2nd update) must carry the fire-time lastReq (both a-1 and a-2), not the arm-time {a-1}")
+	// Fire the retry: its restatement lands as the handle's 2nd update, and it
+	// must carry BOTH agents. An arm-time snapshot would restate only {a-1},
+	// clobbering the revise and stalling a-2's events. Ordering here is exact
+	// (revise, then retry), so the assertion cannot be satisfied by the revise
+	// itself the way a "last update has both" poll could be.
+	clk.fireRetry(t)
+	clk.waitRetrySettled(t, 1)
+
+	updates := updatesOf(t, tr)
+	require.Len(t, updates, 2, "the revise and the retry's restatement, in that order")
+	var ids []string
+	for _, a := range updates[1].GetAgents() {
+		ids = append(ids, a.GetAgentId())
+	}
+	assert.ElementsMatch(t, []string{"a-1", "a-2"}, ids,
+		"retry's restatement must carry the fire-time lastReq (both a-1 and a-2), not the arm-time {a-1}")
 }
 
 // TestSubscription_LookupFailedRetryWakesImmediatelyOnCancel pins the
@@ -604,32 +803,26 @@ func TestSubscription_LookupFailedRetryReadsLatestLastReqAtFireTime(t *testing.T
 // captured request) stayed alive for up to the 15s cap after shutdown. The
 // goroutine now selects on retryCtx.Done(), which Cancel cancels, so it bails
 // promptly.
+//
+// The fake clock states that directly: its timer NEVER fires, so retryCtx is
+// the only way out. A regression that dropped the select would hang here rather
+// than merely being slow.
 func TestSubscription_LookupFailedRetryWakesImmediatelyOnCancel(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
-	// A long delay so that without the retryCtx select the goroutine would
-	// demonstrably outlive Cancel by a wide margin.
-	r, err := backoffutil.NewRetry(30*time.Second, 60*time.Second, 0, 3)
-	require.NoError(t, err)
-	sub.retry = r
+	sub, clk := newRetrySub(t, tr)
+	sub.retry = fastRetry()
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
 
-	// Arm the retry (30s delay). Without the retryCtx select this goroutine would
-	// sleep for 30s; Cancel must wake it well before that.
+	// Arm the retry and let it park on a timer that will never be fired.
 	pushLookupFailed(tr, "a-1")
+	clk.waitArmed(t, 1)
 
-	// Give the goroutine a moment to arm, then Cancel. The retry must bail via
-	// retryCtx.Done() and refund its slot — observable as Attempts()==0 (the slot
-	// was refunded, not spent).
-	time.Sleep(20 * time.Millisecond)
-
-	// Cancel must wake the retry via retryCtx rather than waiting out the 30s
-	// timer -- asserted as a COMPLETION against a generous deadline, not as a
-	// 1s budget. Both forms catch the same defect (a Cancel that blocks on the
-	// timer takes 30s), but a completion guard cannot be crossed by machine
-	// load and reports the defect rather than the budget.
+	// Cancel must wake the retry via retryCtx -- asserted as a COMPLETION
+	// against a generous deadline, not as a tight budget: a completion guard
+	// cannot be crossed by machine load and reports the defect rather than the
+	// budget.
 	cancelled := make(chan struct{})
 	go func() {
 		defer close(cancelled)
@@ -637,12 +830,14 @@ func TestSubscription_LookupFailedRetryWakesImmediatelyOnCancel(t *testing.T) {
 	}()
 	select {
 	case <-cancelled:
-	case <-time.After(10 * time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("Cancel blocked on the retry timer instead of waking it via retryCtx")
 	}
-	sub.mu.Lock()
-	attempts := sub.retry.Attempts()
-	sub.mu.Unlock()
+
+	// The woken retry must run to completion: refund its peeked slot (never
+	// committed) and release its timer on the way out.
+	clk.waitRetrySettled(t, 1)
+	attempts, _ := retryState(sub)
 	assert.Equal(t, 0, attempts, "a Cancelled retry must refund its consumed slot")
 }
 
@@ -654,9 +849,8 @@ func TestSubscription_LookupFailedRetryWakesImmediatelyOnCancel(t *testing.T) {
 // and a failed send left it advanced past a revision never put on the wire.
 func TestSubscription_ReviseFailureRollsBackInflightUpdateId(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	sub, _ := newRetrySub(t, tr)
 	sub.retry = fastRetry()
-	t.Cleanup(sub.Cancel)
 
 	// Open with {a-1}; this sets inflightUpdateId = 1.
 	require.NoError(t, sub.Update(context.Background(),
@@ -693,9 +887,8 @@ func TestSubscription_ReviseFailureRollsBackInflightUpdateId(t *testing.T) {
 // reconnect.
 func TestSubscription_FreshOpenClearsExhaustionOnceGuard(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	sub, _ := newRetrySub(t, tr)
 	sub.retry = fastRetry()
-	t.Cleanup(sub.Cancel)
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
@@ -771,9 +964,8 @@ func TestSubscription_LookupRetryPolicyMirrorsFrontend(t *testing.T) {
 // LOOKUP_FAILED got ok=false and the CLI stopped retrying for the stream's life.
 func TestSubscription_LookupFailedAckWithNilLastReqDoesNotConsumeBudget(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
-	t.Cleanup(sub.Cancel)
 
 	// Construct a sub with a live handle but no lastReq. Update sets lastReq, so
 	// nil it directly under s.mu to simulate the race window before the first
@@ -789,27 +981,31 @@ func TestSubscription_LookupFailedAckWithNilLastReqDoesNotConsumeBudget(t *testi
 	// A LOOKUP_FAILED ack with no lastReq to restate must be a no-op on the budget.
 	pushLookupFailed(tr, "a-1")
 
-	// Give the (non-)retry a moment to settle, then assert no attempt was consumed.
-	time.Sleep(50 * time.Millisecond)
-	sub.mu.Lock()
-	attempts := sub.retry.Attempts()
-	sub.mu.Unlock()
+	// dispatchUpdateAck decides whether to arm under s.mu before pushFrame
+	// returns, so both reads are final the moment the push does -- no settling
+	// wait to overrun, nothing that can flip later.
+	attempts, inFlight := retryState(sub)
 	assert.Equal(t, 0, attempts, "LOOKUP_FAILED ack with nil lastReq must not consume a retry attempt")
+	assert.False(t, inFlight, "LOOKUP_FAILED ack with nil lastReq must not arm a retry")
+	assert.Equal(t, 0, clk.armedCount(), "no retry timer may be armed with nothing to restate")
 }
 
 // TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel pins the fix for a
 // goroutine-leak / orphaned-subscription bug: the LOOKUP_FAILED retry used
 // context.Background with no Cancel guard, so a retry that woke after Cancel
-// reopened a fresh worker-side stream nobody would ever tear down. Cancel bumps
-// the generation, cancels retryCtx (waking the sleeper), and sets the closed
-// flag so the in-flight retry bails (and Update refuses the re-open) instead of
-// re-opening. It also pins the consume-on-fire budget invariant: a retry whose
-// generation moved mid-wait Rolled back its peeked slot (never committed), so a
-// Cancel does not silently erode the attempt budget.
+// reopened a fresh worker-side stream nobody would ever tear down. This test
+// drives the arm-then-Cancel half of the defense — the retry is still waiting
+// when Cancel runs, so retryCtx wakes it and it bails without ever reaching
+// Update. It also pins the consume-on-fire budget invariant: a retry retired
+// mid-wait Rolled back its peeked slot (never committed), so a Cancel does not
+// silently erode the attempt budget. The other half — a retry whose timer
+// already fired, whose Update the `closed` flag must refuse — is
+// TestSubscription_UpdateAfterCancelReturnsClosed and
+// TestSubscription_LateCancelRetryDoesNotOrphan.
 func TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
-	sub.retry = fastRetry() // fast, jitterless; Cancel below runs synchronously
+	sub, clk := newRetrySub(t, tr)
+	sub.retry = fastRetry()
 
 	req := &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
@@ -818,20 +1014,22 @@ func TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel(t *testing.T) {
 	openedBefore := atomic.LoadInt32(&tr.callsOpened)
 	require.Equal(t, int32(1), openedBefore)
 
-	// Push LOOKUP_FAILED, then Cancel inside the retry delay window.
+	// Push LOOKUP_FAILED, then Cancel strictly inside the retry delay window --
+	// the fake clock's timer cannot fire until this test fires it, so the race
+	// the real clock left open (a 10ms timer beating Cancel on a stalled
+	// machine, re-opening the stream) is gone.
 	pushLookupFailed(tr, "a-1")
-	// Cancel before the 10ms retry fires.
+	clk.waitArmed(t, 1)
 	sub.Cancel()
 
-	// Wait past the first retry delay and assert no re-open landed.
-	time.Sleep(300 * time.Millisecond)
+	// The retry wakes on retryCtx and bails; it releases its timer as it returns,
+	// so a settled retry means every effect it could have had is already visible.
+	clk.waitRetrySettled(t, 1)
 	assert.Equal(t, openedBefore, atomic.LoadInt32(&tr.callsOpened),
 		"LOOKUP_FAILED retry must not re-open a stream after Cancel")
 	// The retry bailed when its gate retired, so it must refund the slot it
 	// consumed -- without this, a Cancel mid-retry would burn budget for nothing.
-	sub.mu.Lock()
-	attempts := sub.retry.Attempts()
-	sub.mu.Unlock()
+	attempts, _ := retryState(sub)
 	assert.Equal(t, 0, attempts, "a retry cancelled mid-wait must refund its attempt slot")
 }
 
@@ -841,55 +1039,47 @@ func TestSubscription_LookupFailedRetryDoesNotReopenAfterCancel(t *testing.T) {
 // The retry must stop after the budget is spent.
 func TestSubscription_LookupFailedRetryBudgetExhausts(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
-	sub.retry = fastRetry() // 3 attempts, 10-30ms, jitterless
-	t.Cleanup(sub.Cancel)
+	sub, clk := newRetrySub(t, tr)
+	sub.retry = fastRetry() // 3 attempts, 10 -> 20 -> 30ms, jitterless
 
 	req := &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-missing"}},
 	}
 	require.NoError(t, sub.Update(context.Background(), req))
 
-	// Simulate a worker that perpetually rejects "a-missing" with LOOKUP_FAILED.
-	// The feedback loop: a retry re-states the plan, the worker rejects again.
-	// We bootstrap the first ack (opening the stream does not call handle.Update,
-	// so lastUpdate() is nil until the first retry lands), then perpetuate.
-	pushLookupFailed(tr, "a-missing") // bootstrap the retry ladder
+	// Simulate a worker that perpetually rejects "a-missing" with LOOKUP_FAILED:
+	// each restatement draws another rejection. Driving the feedback loop one
+	// rung at a time (ack -> fire -> settle) makes both the ladder's delays and
+	// the attempt count exact, instead of inferring them from a polling loop
+	// racing a real 10ms timer.
+	wantLadder := []time.Duration{
+		10 * time.Millisecond, 20 * time.Millisecond, 30 * time.Millisecond, // capped
+	}
+	for i, want := range wantLadder {
+		pushLookupFailed(tr, "a-missing")
+		assert.Equal(t, want, clk.fireRetry(t), "retry %d waits its ladder rung", i+1)
+		clk.waitRetrySettled(t, i+1)
 
-	stop := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				if tr.lastUpdate() != nil {
-					pushLookupFailed(tr, "a-missing")
-				}
-				time.Sleep(2 * time.Millisecond)
-			}
-		}
-	}()
+		attempts, _ := retryState(sub)
+		require.Equal(t, i+1, attempts, "each fired retry consumes exactly one slot")
+	}
 
-	// The budget must exhaust after exactly maxAttempts retries. Read retry state
-	// under s.mu -- the same lock production serializes retry access through.
-	require.Eventually(t, func() bool {
-		sub.mu.Lock()
-		defer sub.mu.Unlock()
-		return sub.retry.Done()
-	}, 500*time.Millisecond, 5*time.Millisecond,
-		"retry budget should exhaust after maxAttempts LOOKUP_FAILED acks")
-	close(stop)
-
-	// Let any in-flight retry settle, then read the final attempt count under s.mu.
-	time.Sleep(50 * time.Millisecond)
 	sub.mu.Lock()
-	attempts := sub.retry.Attempts()
+	done := sub.retry.Done()
 	sub.mu.Unlock()
+	require.True(t, done, "the budget must be spent after maxAttempts retries")
 
+	// The worker keeps rejecting: the ack past exhaustion must arm nothing at
+	// all -- this is where the unbounded ladder used to compound.
+	pushLookupFailed(tr, "a-missing")
+	attempts, inFlight := retryState(sub)
+	assert.Equal(t, len(wantLadder), attempts, "exactly maxAttempts retries consumed")
+	assert.False(t, inFlight, "an ack past exhaustion must not arm a retry")
+	assert.Equal(t, len(wantLadder), clk.armedCount(), "no retry timer may arm past the budget")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened),
 		"LOOKUP_FAILED retries must not re-open the stream (no re-open ladder)")
-	assert.Equal(t, 3, attempts, "exactly maxAttempts retries consumed")
+	assert.Len(t, updatesOf(t, tr), len(wantLadder),
+		"each retry restates the interest on the live stream")
 }
 
 // TestSubscription_FreshOpenResetsRetryBudget pins that a fresh stream open
@@ -933,6 +1123,60 @@ func TestSubscription_FreshOpenResetsRetryBudget(t *testing.T) {
 	assert.False(t, done, "fresh open must reset the LOOKUP_FAILED retry budget")
 }
 
+// TestSubscription_FreshOpenRetiresArmedRetry pins armLookupRetry's generation
+// check: a retry armed against one stream must not restate itself against a
+// stream that was freshly opened while it waited. The fresh open IS the
+// recovery — it restated the interest and reset the budget — so the stale retry
+// rolls back its peeked slot and bails, leaving the new stream untouched.
+//
+// Holding a retry across a fresh open needs the fake clock: with a real timer
+// the ordering (arm, re-open, THEN fire) could not be stated, only hoped for.
+func TestSubscription_FreshOpenRetiresArmedRetry(t *testing.T) {
+	tr := &fakeTransport{}
+	sub, clk := newRetrySub(t, tr)
+	sub.retry = fastRetry()
+
+	req := &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
+	}
+	require.NoError(t, sub.Update(context.Background(), req))
+
+	// Arm a retry against the first stream and hold it in its backoff window.
+	pushLookupFailed(tr, "a-1")
+	clk.waitArmed(t, 1)
+
+	// The stream dies and the caller re-opens it: a fresh open, which bumps the
+	// generation the armed retry captured.
+	tr.mu.Lock()
+	first := tr.handle
+	tr.mu.Unlock()
+	require.NotNil(t, first)
+	first.Cancel()
+	<-first.Done()
+	require.NoError(t, sub.Update(context.Background(), req))
+	require.Equal(t, int32(2), atomic.LoadInt32(&tr.callsOpened))
+
+	// Only now let the stale retry's timer fire.
+	clk.fireRetry(t)
+	clk.waitRetrySettled(t, 1)
+
+	attempts, inFlight := retryState(sub)
+	assert.Equal(t, 0, attempts, "a retry retired by a fresh open must not consume a slot")
+	assert.False(t, inFlight, "the retired retry must clear the in-flight flag")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&tr.callsOpened),
+		"the retired retry must not open a third stream")
+	assert.Empty(t, updatesOf(t, tr), "the retired retry must not restate against the new stream")
+
+	// The cleared in-flight flag means the new stream can still arm its own
+	// retry — the retirement must not wedge the subscription.
+	pushLookupFailed(tr, "a-1")
+	clk.fireRetry(t)
+	clk.waitRetrySettled(t, 2)
+	attempts, _ = retryState(sub)
+	assert.Equal(t, 1, attempts, "the fresh stream's own retry consumes a slot")
+	assert.Len(t, updatesOf(t, tr), 1, "the fresh stream's retry restates its interest")
+}
+
 // TestSubscription_LookupFailedRetryReopenSurvivesGateRetire pins the
 // born-dead-stream regression: a LOOKUP_FAILED retry whose Update takes the
 // fresh-open path must NOT open a stream that immediately dies. The retry re-
@@ -942,9 +1186,8 @@ func TestSubscription_FreshOpenResetsRetryBudget(t *testing.T) {
 // own Update would cancel.
 func TestSubscription_LookupFailedRetryReopenSurvivesGateRetire(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
-	sub.retry = fastRetry() // fast, jitterless
-	t.Cleanup(sub.Cancel)
+	sub, clk := newRetrySub(t, tr)
+	sub.retry = fastRetry()
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
@@ -959,20 +1202,18 @@ func TestSubscription_LookupFailedRetryReopenSurvivesGateRetire(t *testing.T) {
 	first.Cancel()
 	<-first.Done()
 
-	// Push LOOKUP_FAILED so a retry arms. The retry fires after ~10ms and calls
-	// Update, which re-opens (fresh-open). The re-open runs on context.Background
-	// (no gate), so nothing inside Update can cancel the newborn stream.
+	// Push LOOKUP_FAILED so a retry arms, then fire it: it calls Update, which
+	// re-opens (fresh-open). The re-open runs on context.Background (no gate),
+	// so nothing inside Update can cancel the newborn stream.
 	pushLookupFailed(tr, "a-1")
+	clk.fireRetry(t)
 
-	// Wait for the retry's re-open to land.
-	require.Eventually(t, func() bool {
-		return atomic.LoadInt32(&tr.callsOpened) >= 2
-	}, time.Second, 5*time.Millisecond, "LOOKUP_FAILED retry must re-open the stream")
-
-	// Let the retry's Update finish so the assertion observes the post-open
-	// state. (The re-open publishes under s.mu; Cancel/next-Update serialize on
-	// lifecycleMu, so this settle only waits for the in-flight Update.)
-	time.Sleep(50 * time.Millisecond)
+	// The retry releases its timer only after its Update returns, so a settled
+	// retry means the re-open has been published -- no sleep needed to observe
+	// the post-open state.
+	clk.waitRetrySettled(t, 1)
+	require.Equal(t, int32(2), atomic.LoadInt32(&tr.callsOpened),
+		"LOOKUP_FAILED retry must re-open the stream")
 
 	// The re-opened stream must be alive. A generation/WithoutCancel regression
 	// that re-introduced a gate the retry's own Update cancels would close
@@ -1203,8 +1444,8 @@ func TestSubscription_UpdateAfterCancelReturnsClosed(t *testing.T) {
 // cancelled it.
 func TestSubscription_LateCancelRetryDoesNotOrphan(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
-	sub.retry = fastRetry() // fast, jitterless
+	sub, clk := newRetrySub(t, tr)
+	sub.retry = fastRetry()
 
 	require.NoError(t, sub.Update(context.Background(), &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}},
@@ -1230,14 +1471,15 @@ func TestSubscription_LateCancelRetryDoesNotOrphan(t *testing.T) {
 	tr.releaseOpen = releaseOpen
 	tr.mu.Unlock()
 
-	// Arm the retry. It fires after ~10ms, passes the gate check (the gate is
-	// still live), enters Update, and blocks on releaseOpen mid-open.
+	// Arm the retry and fire it. It passes the generation check (the generation
+	// has not moved), enters Update, and blocks on releaseOpen mid-open.
 	pushLookupFailed(tr, "a-1")
+	clk.fireRetry(t)
 
 	// Wait for the retry's re-open to enter OpenWatchEvents.
 	select {
 	case <-openStarted:
-	case <-time.After(time.Second):
+	case <-time.After(waitTimeout):
 		t.Fatal("retry's re-open never entered OpenWatchEvents")
 	}
 
@@ -1309,9 +1551,8 @@ func TestSubscription_UpdateAssignsMonotonicUpdateId(t *testing.T) {
 // processed, matching the frontend.
 func TestSubscription_StaleLookupFailedAckDoesNotConsumeBudget(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
-	t.Cleanup(sub.Cancel)
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
@@ -1330,22 +1571,18 @@ func TestSubscription_StaleLookupFailedAckDoesNotConsumeBudget(t *testing.T) {
 			}},
 		}},
 	})
-	time.Sleep(50 * time.Millisecond)
-	sub.mu.Lock()
-	attempts := sub.retry.Attempts()
-	inFlight := sub.retryInFlight
-	sub.mu.Unlock()
+	attempts, inFlight := retryState(sub)
 	assert.Equal(t, 0, attempts, "a stale ack must not consume the retry budget")
 	assert.False(t, inFlight, "a stale ack must not arm a retry")
+	assert.Equal(t, 0, clk.armedCount(), "a stale ack must not arm a retry timer")
 
 	// A current ack (update_id=0 is always processed, matching the frontend)
 	// for an entity STILL in the interest arms a retry and consumes a slot.
 	pushLookupFailed(tr, "a-2")
-	require.Eventually(t, func() bool {
-		sub.mu.Lock()
-		defer sub.mu.Unlock()
-		return sub.retry.Attempts() >= 1
-	}, time.Second, 5*time.Millisecond, "a current ack for a wanted entity must arm a retry")
+	clk.fireRetry(t)
+	clk.waitRetrySettled(t, 1)
+	attempts, _ = retryState(sub)
+	assert.Equal(t, 1, attempts, "a current ack for a wanted entity must arm a retry")
 }
 
 // TestSubscription_LookupFailedAckForDroppedEntityDoesNotRetry pins the per-
@@ -1357,9 +1594,8 @@ func TestSubscription_StaleLookupFailedAckDoesNotConsumeBudget(t *testing.T) {
 // budget for the whole subscription.
 func TestSubscription_LookupFailedAckForDroppedEntityDoesNotRetry(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
+	sub, clk := newRetrySub(t, tr)
 	sub.retry = fastRetry()
-	t.Cleanup(sub.Cancel)
 
 	// Open with {a-1}, then revise to {a-2} — dropping a-1 from the interest.
 	require.NoError(t, sub.Update(context.Background(),
@@ -1369,21 +1605,17 @@ func TestSubscription_LookupFailedAckForDroppedEntityDoesNotRetry(t *testing.T) 
 
 	// A LOOKUP_FAILED for the dropped a-1 must not arm a retry.
 	pushLookupFailed(tr, "a-1")
-	time.Sleep(50 * time.Millisecond)
-	sub.mu.Lock()
-	attempts := sub.retry.Attempts()
-	inFlight := sub.retryInFlight
-	sub.mu.Unlock()
+	attempts, inFlight := retryState(sub)
 	assert.Equal(t, 0, attempts, "a LOOKUP_FAILED for a dropped entity must not consume a retry slot")
 	assert.False(t, inFlight, "a LOOKUP_FAILED for a dropped entity must not arm a retry")
+	assert.Equal(t, 0, clk.armedCount(), "a LOOKUP_FAILED for a dropped entity must not arm a retry timer")
 
 	// A LOOKUP_FAILED for the still-wanted a-2 DOES arm a retry.
 	pushLookupFailed(tr, "a-2")
-	require.Eventually(t, func() bool {
-		sub.mu.Lock()
-		defer sub.mu.Unlock()
-		return sub.retry.Attempts() >= 1
-	}, time.Second, 5*time.Millisecond, "a LOOKUP_FAILED for a wanted entity must arm a retry")
+	clk.fireRetry(t)
+	clk.waitRetrySettled(t, 1)
+	attempts, _ = retryState(sub)
+	assert.Equal(t, 1, attempts, "a LOOKUP_FAILED for a wanted entity must arm a retry")
 }
 
 // TestSubscription_LookupFailedRetryCoalescesInFlight pins the in-flight retry
@@ -1394,37 +1626,40 @@ func TestSubscription_LookupFailedAckForDroppedEntityDoesNotRetry(t *testing.T) 
 // frontend under a flapping worker.
 func TestSubscription_LookupFailedRetryCoalescesInFlight(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
-	sub.retry = fastRetry() // 3 attempts, 10-30ms, jitterless
-	t.Cleanup(sub.Cancel)
+	sub, clk := newRetrySub(t, tr)
+	sub.retry = fastRetry()
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
 
-	// Push a burst of LOOKUP_FAILED acks while NO retry has fired yet (delays
-	// are 10-30ms; these all land within the first retry's window). Each ack
-	// after the first must coalesce into the single armed retry.
+	// Push a burst of LOOKUP_FAILED acks. The fake clock holds the first retry
+	// in its backoff window for the whole burst, so every ack after it lands
+	// while a retry is armed and must coalesce into that one retry. (With a real
+	// timer this window was 10ms wide and the assertions below raced it.)
 	for i := 0; i < 5; i++ {
 		pushLookupFailed(tr, "a-1")
 	}
 
-	// Within the first retry window (before the 10ms delay elapses), exactly one
-	// retry must be armed. With consume-on-fire, no slot is committed yet (the
-	// retry hasn't fired its Update); the discriminator is that ONE retry is
-	// in-flight and the others were coalesced away.
-	time.Sleep(5 * time.Millisecond)
-	sub.mu.Lock()
-	inFlight := sub.retryInFlight
-	sub.mu.Unlock()
+	// Each ack is dispatched synchronously under s.mu, so the coalescing decision
+	// is already final: exactly one retry in flight. With consume-on-fire no slot
+	// is committed yet (the retry has not fired its Update) -- the discriminator
+	// is that ONE retry is in-flight and the other four were coalesced away.
+	attempts, inFlight := retryState(sub)
 	assert.True(t, inFlight, "a burst of acks must coalesce into one in-flight retry")
+	assert.Equal(t, 0, attempts, "an armed-but-unfired retry must not consume a slot")
+	clk.waitArmed(t, 1)
+	assert.Equal(t, 1, clk.armedCount(),
+		"a burst of acks must arm exactly one retry timer, not one per ack")
 
-	// After the retry fires, exactly one slot must be committed (not 5).
-	require.Eventually(t, func() bool {
-		sub.mu.Lock()
-		defer sub.mu.Unlock()
-		return sub.retry.Attempts() == 1
-	}, time.Second, 5*time.Millisecond,
+	// After the retry fires, exactly one slot is committed (not 5) and the
+	// in-flight flag clears so the next ack can arm again.
+	clk.fireRetry(t)
+	clk.waitRetrySettled(t, 1)
+	attempts, inFlight = retryState(sub)
+	assert.Equal(t, 1, attempts,
 		"a burst of acks must coalesce into one committed retry (one slot consumed, not 5)")
+	assert.False(t, inFlight, "a fired retry must clear the in-flight flag")
+	assert.Len(t, updatesOf(t, tr), 1, "the coalesced retry restates the interest once")
 }
 
 // TestSubscription_BudgetExhaustionLogsOnce pins the once-guard (EFFICIENCY-2):
@@ -1433,9 +1668,8 @@ func TestSubscription_LookupFailedRetryCoalescesInFlight(t *testing.T) {
 // flapping worker would flood the operator's log with a Warn per ack.
 func TestSubscription_BudgetExhaustionLogsOnce(t *testing.T) {
 	tr := &fakeTransport{}
-	sub := NewSubscription(tr, NewAgentCursor(), NewTerminalCursor(), nil, nil, nil)
-	sub.retry = fastRetry() // 3 attempts, jitterless
-	t.Cleanup(sub.Cancel)
+	sub, clk := newRetrySub(t, tr)
+	sub.retry = fastRetry()
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
@@ -1462,14 +1696,16 @@ func TestSubscription_BudgetExhaustionLogsOnce(t *testing.T) {
 	defer slog.SetDefault(prev)
 
 	// Drive several LOOKUP_FAILED acks post-exhaustion. Only the FIRST must log.
+	// Each Warn is emitted on the dispatch goroutine before pushFrame returns,
+	// so the count is final once the loop is.
 	for i := 0; i < 4; i++ {
 		pushLookupFailed(tr, "a-1")
 	}
-	time.Sleep(50 * time.Millisecond)
 
 	count := strings.Count(buf.String(), "LOOKUP_FAILED retry budget exhausted")
 	assert.Equal(t, 1, count,
 		"the budget-exhausted Warn must fire once per cycle, not once per ack")
+	assert.Equal(t, 0, clk.armedCount(), "a spent budget must arm no retry timer")
 }
 
 // TestSubscription_RapidSequentialUpdates pins back-to-back Update behaviour:

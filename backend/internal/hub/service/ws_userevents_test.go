@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,6 +85,92 @@ func newDelegationBearer(t *testing.T, st store.Store, userID string) delegation
 		ExpiresAt:        time.Now().Add(time.Hour),
 	}))
 	return delegationBearer{tv: tv, sessionCache: sessionCache, tokenID: tokenID, secret: secret}
+}
+
+// stallAfterBytes is where a gatedListener connection stops writing: past the
+// WebSocket handshake response (a few hundred bytes) and inside the bootstrap
+// frame that follows it (two orders of magnitude bigger). Anything between the
+// two works; this sits comfortably clear of both, and the frame-size assertion
+// in the park-overflow test states the upper half of that gap as a check rather
+// than a hope.
+const stallAfterBytes = 4 << 10
+
+// gatedListener hands out connections whose first post-handshake write stalls
+// until the test releases it, holding the handler inside writeUserEvent for as
+// long as the test needs.
+//
+// The parking window a park-overflow test must land its burst in ends the
+// instant the bootstrap write returns. Keeping that window open with a multi-MB
+// frame and a client that does not read makes its width a property of the OS's
+// socket buffers: Windows' loopback absorbed the whole frame, so the write
+// returned immediately, the window closed before the burst, and the test failed
+// on Windows CI alone. Stalling the write in-process makes the window explicit
+// and the same on every platform.
+type gatedListener struct {
+	net.Listener
+	stalled     chan struct{} // buffered(1): a write has reached the gate
+	release     chan struct{} // closed by Release to let the stalled write run
+	releaseOnce sync.Once
+}
+
+func newGatedListener(inner net.Listener) *gatedListener {
+	return &gatedListener{
+		Listener: inner,
+		stalled:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+	}
+}
+
+func (l *gatedListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &gatedConn{Conn: conn, gate: l}, nil
+}
+
+// Release opens the gate. Idempotent, so a test can both release it as a step
+// and register it as cleanup — which it must, or a failure before the release
+// leaves the handler stalled and httptest.Server.Close waiting on it forever.
+func (l *gatedListener) Release() {
+	l.releaseOnce.Do(func() { close(l.release) })
+}
+
+// waitStalled blocks until a write reaches the gate.
+func (l *gatedListener) waitStalled(t *testing.T) {
+	t.Helper()
+	select {
+	case <-l.stalled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no write reached the write gate: the handler never got to the bootstrap frame")
+	}
+}
+
+// gatedConn stalls the write that would carry the connection past
+// stallAfterBytes, and every write after it, until the gate opens. The check is
+// on the cumulative total INCLUDING this write, so a bootstrap frame that the
+// WebSocket layer hands over in one call stalls before any of it reaches the
+// socket rather than sailing through on a stale count.
+type gatedConn struct {
+	net.Conn
+	gate    *gatedListener
+	mu      sync.Mutex
+	written int
+}
+
+func (c *gatedConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	c.written += len(p)
+	stall := c.written > stallAfterBytes
+	c.mu.Unlock()
+	if stall {
+		select {
+		case c.gate.stalled <- struct{}{}:
+		default:
+		}
+		<-c.gate.release
+	}
+	return c.Conn.Write(p)
 }
 
 // TestUserEventsHandler_RevokingTheBearerClosesTheSubscription is the surviving
@@ -221,6 +309,144 @@ func TestUserEventsHandler_AFailedSubscribeIsStillCounted(t *testing.T) {
 		"a failed connect must still be counted, or the metric has no denominator for failures")
 }
 
+// parkWindowEnv is a /ws/userevents connection frozen inside the parking
+// window: the handler is stalled at the write gate on its bootstrap frame, the
+// subscriber is registered, and every commit made through it parks.
+//
+// Both halves of the Release verdict -- flush and drop -- need exactly this
+// setup and differ only in how many batches they commit into it, so the setup
+// is one function and each test states just its burst.
+type parkWindowEnv struct {
+	mgr  *crdt.Manager
+	gate *gatedListener
+	conn *websocket.Conn
+	ctx  context.Context
+}
+
+func newParkWindowEnv(t *testing.T) *parkWindowEnv {
+	t.Helper()
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "alice")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "Big")
+
+	bearer := newDelegationBearer(t, st, user.ID)
+
+	// Big enough that the bootstrap frame runs past the listener's write gate,
+	// so the handler stalls on it with the parking window still open. It does
+	// NOT have to be big enough to fill a socket buffer -- the gate, not the OS,
+	// is what holds the window open (see gatedListener).
+	j := newMemJournal()
+	var mgr *crdt.Manager
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		m := crdt.NewManager(want, j, allowAllAuth{}, nil, time.Now)
+		require.NoError(t, m.Bootstrap(ctx))
+		m.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
+			s.Workspaces[workspaceID] = &leapmuxv1.WorkspaceContentsRecord{
+				WorkspaceId: workspaceID, RootNodeId: "root",
+			}
+			s.Nodes["root"] = &leapmuxv1.NodeRecord{
+				NodeId: "root",
+				Kind:   &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+			}
+			// Padded so the bootstrap frame clears stallAfterBytes by a wide
+			// margin. Every field completenessCheck requires must be present, or
+			// a commit is rejected INCOMPLETE_RECORD and nothing is broadcast.
+			pad := strings.Repeat("p", 512)
+			for i := range 200 {
+				tabID := fmt.Sprintf("tab-%05d", i)
+				s.Tabs[tabID] = &leapmuxv1.TabRecord{
+					TabId: tabID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+					TileId:       &leapmuxv1.LWWString{Value: "root"},
+					WorkerId:     &leapmuxv1.LWWString{Value: "wkr"},
+					Position:     &leapmuxv1.LWWString{Value: "p1"},
+					FileDiffBase: &leapmuxv1.LWWString{Value: pad},
+				}
+			}
+		})
+		mgr = m
+		return m, nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	srv := httptest.NewUnstartedServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false).
+		WithTokenValidator(bearer.tv))
+	gate := newGatedListener(srv.Listener)
+	srv.Listener = gate
+	srv.Start()
+	t.Cleanup(srv.Close)
+	// Registered after srv.Close so it runs BEFORE it: a failure that returns
+	// with the gate shut would otherwise leave Close waiting on a stalled write.
+	t.Cleanup(gate.Release)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	hdr := bearer.authHeader()
+	conn, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], &websocket.DialOptions{HTTPHeader: hdr})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
+	conn.SetReadLimit(64 << 20)
+
+	// The handshake is through; the handler is now stalled at the gate on the
+	// bootstrap frame, with the parking window held open for as long as the test
+	// wants it. Nothing here waits on a clock or on a socket buffer.
+	gate.waitStalled(t)
+	require.NotNil(t, mgr, "the registry factory must have run")
+	return &parkWindowEnv{mgr: mgr, gate: gate, conn: conn, ctx: ctx}
+}
+
+// commit submits one batch into the open parking window and reports whether it
+// committed. SubmitInternal broadcasts on the manager goroutine before it
+// answers, so a true return means the batch's frames are already parked.
+func (e *parkWindowEnv) commit(t *testing.T, batchID, position string) bool {
+	t.Helper()
+	res, err := e.mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{{
+			BatchId: batchID,
+			Ops: []*leapmuxv1.CrdtOp{{
+				OpId: "op-" + batchID,
+				Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+					NodeId: "root",
+					Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: position},
+				}},
+			}},
+		}},
+	})
+	return err == nil && len(res) == 1 && res[0].GetCommitted() != nil
+}
+
+// TestUserEventsHandler_ParkedFramesFlushAfterTheBootstrapWrite is the other
+// half of the Release verdict: frames that park during the bootstrap write and
+// FIT in the buffer must be flushed to the client, after the bootstrap frame
+// and before steady-state traffic.
+//
+// It guards the drop arm from over-firing. The overflow test below only asserts
+// that ITS connection dies, so a regression that returned unconditionally --
+// dropping every connection the instant its bootstrap frame is on the wire, and
+// stalling every client that reconnects into a commit -- passes it, and passed
+// every other test in this file too.
+func TestUserEventsHandler_ParkedFramesFlushAfterTheBootstrapWrite(t *testing.T) {
+	env := newParkWindowEnv(t)
+
+	// One batch, far below the 256-slot cap: it parks, and nothing is dropped.
+	require.True(t, env.commit(t, "solo", "z0001"), "the batch must commit, or nothing parks")
+	env.gate.Release()
+
+	payload, err := channelwire.ReadFramedBytes(env.ctx, env.conn)
+	require.NoError(t, err)
+	bootstrap := &leapmuxv1.WatchUserEvent{}
+	require.NoError(t, proto.Unmarshal(payload, bootstrap))
+	require.NotNil(t, bootstrap.GetInitial(), "the bootstrap frame comes first")
+
+	// The parked batch follows it on the same connection -- not dropped, and not
+	// re-ordered ahead of the bootstrap.
+	payload, err = channelwire.ReadFramedBytes(env.ctx, env.conn)
+	require.NoError(t, err, "a park buffer that did not overflow must be flushed, not dropped")
+	parked := &leapmuxv1.WatchUserEvent{}
+	require.NoError(t, proto.Unmarshal(payload, parked))
+	require.Equal(t, "solo", parked.GetBatch().GetBatchId(),
+		"the flushed frame must be the batch that parked during the write")
+}
+
 // TestUserEventsHandler_ParkOverflowDuringTheBootstrapWriteDropsTheConnection
 // covers the last stretch of the parking window: the bootstrap WRITE.
 //
@@ -237,83 +463,16 @@ func TestUserEventsHandler_AFailedSubscribeIsStillCounted(t *testing.T) {
 // above the bootstrap's max_hlc, so the client reconnects with that cursor and
 // delta-resumes exactly what was lost.
 func TestUserEventsHandler_ParkOverflowDuringTheBootstrapWriteDropsTheConnection(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	user := storetest.SeedUser(t, st, "alice")
-	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "Big")
+	env := newParkWindowEnv(t)
 
-	bearer := newDelegationBearer(t, st, user.ID)
-
-	// Big enough that the bootstrap frame takes long enough to write that the
-	// commits below land inside the window.
-	j := newMemJournal()
-	var mgr *crdt.Manager
-	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
-		m := crdt.NewManager(want, j, allowAllAuth{}, nil, time.Now)
-		require.NoError(t, m.Bootstrap(ctx))
-		m.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
-			s.Workspaces[workspaceID] = &leapmuxv1.WorkspaceContentsRecord{
-				WorkspaceId: workspaceID, RootNodeId: "root",
-			}
-			s.Nodes["root"] = &leapmuxv1.NodeRecord{
-				NodeId: "root",
-				Kind:   &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_LEAF},
-			}
-			// Padded so the bootstrap frame is multi-MB and its write is long
-			// enough for the burst below to land inside the parking window.
-			// Every field completenessCheck requires must be present, or the
-			// burst is rejected INCOMPLETE_RECORD and nothing is broadcast.
-			pad := strings.Repeat("p", 512)
-			for i := range 8000 {
-				tabID := fmt.Sprintf("tab-%05d", i)
-				s.Tabs[tabID] = &leapmuxv1.TabRecord{
-					TabId: tabID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
-					TileId:       &leapmuxv1.LWWString{Value: "root"},
-					WorkerId:     &leapmuxv1.LWWString{Value: "wkr"},
-					Position:     &leapmuxv1.LWWString{Value: "p1"},
-					FileDiffBase: &leapmuxv1.LWWString{Value: pad},
-				}
-			}
-		})
-		mgr = m
-		return m, nil
-	}, nil)
-	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
-
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false).
-		WithTokenValidator(bearer.tv))
-	t.Cleanup(srv.Close)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	hdr := bearer.authHeader()
-	conn, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], &websocket.DialOptions{HTTPHeader: hdr})
-	require.NoError(t, err)
-	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
-	conn.SetReadLimit(64 << 20)
-
-	// Do NOT read yet: the handler blocks in writeUserEvent on the multi-MB
-	// bootstrap frame, which holds the parking window open.
-	time.Sleep(500 * time.Millisecond)
-	require.NotNil(t, mgr, "the registry factory must have run")
 	// Overflow the 256-slot park buffer from inside that window.
 	committed := 0
 	for i := range 150 {
-		res, subErr := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
-			Batches: []*leapmuxv1.OpBatch{{
-				BatchId: fmt.Sprintf("burst-%d", i),
-				Ops: []*leapmuxv1.CrdtOp{{
-					OpId: fmt.Sprintf("op-burst-%d", i),
-					Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
-						NodeId: "root",
-						Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: fmt.Sprintf("z%04d", i)},
-					}},
-				}},
-			}},
-		})
-		if subErr == nil && len(res) == 1 && res[0].GetCommitted() != nil {
+		if env.commit(t, fmt.Sprintf("burst-%d", i), fmt.Sprintf("z%04d", i)) {
 			committed++
 		}
 	}
+	ctx, conn, gate := env.ctx, env.conn, env.gate
 	// Each committed batch broadcasts TWO frames -- the batch itself and its
 	// batch_end boundary -- so the park buffer only overflows past
 	// parkedFrameCap/2 commits. Stating the precondition as that arithmetic
@@ -323,9 +482,17 @@ func TestUserEventsHandler_ParkOverflowDuringTheBootstrapWriteDropsTheConnection
 	require.Greater(t, committed*2, service.ParkedFrameCapForTest,
 		"the burst must commit enough batches to overflow the park buffer, or there is nothing to drop")
 
+	// The whole burst is parked -- SubmitInternal broadcasts on the manager
+	// goroutine before it answers, so delivery is done when the loop is. Let the
+	// stalled bootstrap write finish; the handler's queue.Release(), and with it
+	// the drop verdict, comes immediately after that write returns.
+	gate.Release()
+
 	// The bootstrap frame itself still arrives.
 	payload, err := channelwire.ReadFramedBytes(ctx, conn)
 	require.NoError(t, err)
+	require.Greater(t, len(payload), stallAfterBytes,
+		"the bootstrap frame must outrun the write gate, or the handler never stalls inside it")
 	event := &leapmuxv1.WatchUserEvent{}
 	require.NoError(t, proto.Unmarshal(payload, event))
 	require.NotNil(t, event.GetInitial(), "the bootstrap frame is written before the drop is noticed")

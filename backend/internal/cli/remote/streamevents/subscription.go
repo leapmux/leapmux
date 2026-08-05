@@ -95,7 +95,9 @@ type Subscription struct {
 	// whose stream recovered via a fresh-open can still restate against the new
 	// stream. Cancel retires both: it bumps generation (so the goroutine refunds
 	// and bails) AND cancels retryCtx (so the goroutine does not linger for up
-	// to lookupRetryMaxInterval after shutdown). Guarded by lifecycleMu.
+	// to lookupRetryMaxInterval after shutdown). Both fields are set once in
+	// NewSubscription and never reassigned, so they are safe to read from any
+	// goroutine; retryCancel is called only by Cancel, under lifecycleMu.
 	retryCtx    context.Context
 	retryCancel context.CancelFunc
 	// retryExhaustedLogged is the once-guard for the budget-exhausted Warn: it
@@ -116,6 +118,32 @@ type Subscription struct {
 	// single-owner contract. Reset on each fresh open so a transient miss after
 	// a clean reconnect gets a fresh budget.
 	retry *backoffutil.Retry
+	// clock is the time source armLookupRetry waits on. Set once in
+	// NewSubscription (to systemClock) and never reassigned in production, so
+	// the retry goroutine can read it without a lock; the package's tests
+	// substitute a deterministic fake before the first Update.
+	clock retryClock
+}
+
+// retryClock is the time source for the LOOKUP_FAILED retry wait. Production
+// uses systemClock; the subscription tests substitute a fake that fires on
+// demand, so an assertion about the armed-but-not-yet-fired window cannot lose
+// a race to a real timer on a loaded machine, and one about NO retry arming
+// needs no sleep to find out.
+type retryClock interface {
+	// NewTimer starts a timer for d, returning the channel it delivers on and a
+	// stop func that releases it — time.Timer's C/Stop pair without the concrete
+	// type. The caller must call stop exactly once, whether or not it consumed
+	// the delivery.
+	NewTimer(d time.Duration) (<-chan time.Time, func())
+}
+
+// systemClock is the production retryClock: a plain time.NewTimer.
+type systemClock struct{}
+
+func (systemClock) NewTimer(d time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTimer(d)
+	return t.C, func() { t.Stop() }
 }
 
 // LOOKUP_FAILED retry policy. Mirrors the frontend's rejectionBackoff so the
@@ -174,6 +202,7 @@ func NewSubscription(t Transport, agents *AgentCursor, terminals *TerminalCursor
 		retryCtx:      retryCtx,
 		retryCancel:   retryCancel,
 		retry:         retry,
+		clock:         systemClock{},
 	}
 }
 
@@ -502,10 +531,10 @@ func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
 	armed = true
 }
 
-// armLookupRetry sleeps for delay and then restates the latest interest after a
-// transient List*ByIDs miss. It selects on retryCtx so Cancel wakes it
-// immediately instead of lingering for up to lookupRetryMaxInterval after
-// shutdown (a fresh-open does NOT cancel retryCtx — only Cancel does — so a
+// armLookupRetry waits out delay on s.clock and then restates the latest
+// interest after a transient List*ByIDs miss. It selects on retryCtx so Cancel
+// wakes it immediately instead of lingering for up to lookupRetryMaxInterval
+// after shutdown (a fresh-open does NOT cancel retryCtx — only Cancel does — so a
 // retry whose stream recovered via a fresh-open can still restate against the
 // new stream). After the wait it re-checks generation under s.mu: if the stream
 // moved on (Cancel or fresh-open won the race) it Rolls back the peeked slot
@@ -518,10 +547,10 @@ func (s *Subscription) dispatchUpdateAck(ack *leapmuxv1.WatchUpdateAck) {
 // once the Update is dispatched, so a fire that then loses the lifecycleMu race
 // to Cancel still counts as a real attempt.
 func (s *Subscription) armLookupRetry(retryCtx context.Context, delay time.Duration, armGen uint64) {
-	t := time.NewTimer(delay)
-	defer t.Stop()
+	fired, stopTimer := s.clock.NewTimer(delay)
+	defer stopTimer()
 	select {
-	case <-t.C:
+	case <-fired:
 	case <-retryCtx.Done():
 		// Cancel retired the subscription while the timer was pending. Roll back
 		// the peeked slot (no budget consumed) and bail. retryInFlight stays set:

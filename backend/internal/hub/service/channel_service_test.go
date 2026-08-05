@@ -383,7 +383,15 @@ func setupDirectOpenChannelEnv(t *testing.T) *directOpenChannelEnv {
 
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New(0)
-	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return 100 * time.Millisecond })
+	// Generous, because no test on this env asserts the deadline: every one of
+	// them either completes the request from the conn's write callback or fails
+	// before the request is ever issued. A short default is then a wall-clock
+	// race the whole file runs against -- at 100ms, a `-race` run of the package
+	// crossed it often enough to fail an assertion with CodeUnavailable, blaming
+	// the error-code mapping for a timeout. Matches workermgr's own pending
+	// tests. A test that WANTS the deadline should build its own env with a
+	// short one, the way TestOpenChannel_WithMockWorker bounds its context.
+	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return 30 * time.Second })
 	sent := make(chan *leapmuxv1.ConnectResponse, 1)
 	conn := workermgrtest.NewConnWithWrite(t, workerID, func(msg *leapmuxv1.ConnectResponse) error {
 		sent <- msg
