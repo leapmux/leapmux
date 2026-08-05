@@ -253,7 +253,7 @@ var zeroUserIDNonDeciders = map[string]string{
 	"WithUser":                 "stores the principal on a context; the predicates that read it are the deciders",
 	"NewInterceptor":           "constructor; it authenticates requests rather than authorizing a principal it was handed",
 	"NewInterceptorWithTokens": "constructor; same as NewInterceptor",
-	"(*AuthContextRegistry).RegisterAuthenticatedLease": "records a lease for an ALREADY-authenticated principal; it grants nothing",
+	"(*AuthContextRegistry).RegisterAuthenticatedLease": "refuses on a per-user quota keyed on the id, but a zero id could only share the leasesByUser[\"\"] bucket and over-refuse; it never widens reach. Unreachable besides -- every AuthenticateHTTP arm mints through userid.New and refuses a blank",
 	"(*AuthContextRegistry).CurrentSyntheticUser":       "returns the configured solo identity; it answers no question about the caller",
 	"(*AuthContextRegistry).IsAuthContextCurrent":       "compares cache generations, not identities -- a zero id is stale-vs-current, not allowed-vs-denied",
 	"(*AuthContextRegistry).CurrentCredentialExpiry":    "reads a deadline off the credential; identity selects the record, it does not gate it",

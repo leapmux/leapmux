@@ -639,17 +639,17 @@ func TestAuthenticateHTTPRefreshesSyntheticUserGeneration(t *testing.T) {
 func TestAuthenticatedLeaseExactSessionRevocation(t *testing.T) {
 	sc := &AuthContextRegistry{state: &authState{}}
 	revokedCtx, revokedCancel := context.WithCancel(context.Background())
-	revokedRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	revokedRelease, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("session-1"),
 	}, revokedCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	defer revokedRelease()
 
 	otherCtx, otherCancel := context.WithCancel(context.Background())
-	otherRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	otherRelease, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("session-2"),
 	}, otherCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	defer otherRelease()
 
 	sc.Evict("session-1")
@@ -668,17 +668,17 @@ func TestAuthenticatedLeaseExactSessionRevocation(t *testing.T) {
 func TestAuthenticatedLeaseExactBearerRevocation(t *testing.T) {
 	sc := &AuthContextRegistry{state: &authState{}}
 	revokedCtx, revokedCancel := context.WithCancel(context.Background())
-	revokedRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	revokedRelease, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: APICredential("token-1"),
 	}, revokedCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	defer revokedRelease()
 
 	otherCtx, otherCancel := context.WithCancel(context.Background())
-	otherRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	otherRelease, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: APICredential("token-2"),
 	}, otherCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	defer otherRelease()
 
 	sc.EvictBearer(NewBearerRef(BearerKindAPI, "token-1"))
@@ -697,17 +697,17 @@ func TestAuthenticatedLeaseExactBearerRevocation(t *testing.T) {
 func TestAuthenticatedLeaseUserRevocationIsGenerationSelective(t *testing.T) {
 	sc := &AuthContextRegistry{state: &authState{}}
 	oldCtx, oldCancel := context.WithCancel(context.Background())
-	oldRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	oldRelease, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("old"), UserAuthGeneration: 4,
 	}, oldCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	defer oldRelease()
 
 	currentCtx, currentCancel := context.WithCancel(context.Background())
-	currentRelease, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	currentRelease, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("current"), UserAuthGeneration: 5,
 	}, currentCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	defer currentRelease()
 
 	sc.RevokeUserAuthContextAtGeneration("user", 5)
@@ -837,11 +837,11 @@ func TestAuthenticatedLeaseRegistrationRejectsRevokedIdentity(t *testing.T) {
 	sc.Evict("session")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	release, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	release, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("session"), AuthGeneration: 0,
 	}, cancel)
 	defer release()
-	assert.False(t, ok)
+	assert.Equal(t, LeaseRefusedCredential, outcome)
 	select {
 	case <-ctx.Done():
 	case <-time.After(time.Second):
@@ -852,10 +852,10 @@ func TestAuthenticatedLeaseRegistrationRejectsRevokedIdentity(t *testing.T) {
 func TestAuthenticatedLeaseExpiresWithCredential(t *testing.T) {
 	sc := &AuthContextRegistry{state: &authState{}}
 	ctx, cancel := context.WithCancel(context.Background())
-	release, ok := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	release, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("session"), CredentialExpiresAt: DeadlineAt(time.Now().Add(20 * time.Millisecond)),
 	}, cancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	defer release()
 
 	select {

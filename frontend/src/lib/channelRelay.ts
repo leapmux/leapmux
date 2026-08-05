@@ -9,12 +9,15 @@
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */
+import type { FatalCloseInfo } from './wsCloseCodes'
 import type { ChannelMessage } from '~/generated/leapmux/v1/channel_pb'
 import { fromBinary } from '@bufbuild/protobuf'
 import { ChannelMessageSchema } from '~/generated/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { unframeBytes } from './channelFraming'
+import { fatalCloseError } from './fatalCloseMessage'
 import { createLogger } from './logger'
+import { isTerminalCloseCode } from './wsCloseCodes'
 
 const log = createLogger('channel')
 
@@ -50,8 +53,17 @@ export interface ChannelRelayDeps {
    * Tear down every live channel after the current socket closes.
    * `successorDialing` is true when a newer ensureWebSocket owns wsPromise —
    * the coordinator must NOT clear the per-worker open dedup in that case.
+   * `fatal` is set when the close was terminal (see `isTerminalCloseCode`), so
+   * the coordinator can drain with the real reason instead of a generic one.
    */
-  onCloseDrain: (successorDialing: boolean) => void
+  onCloseDrain: (successorDialing: boolean, fatal?: FatalCloseInfo) => void
+  /**
+   * The transport hit a close no redial can recover from — the Hub refused this
+   * connection outright (auth expiry/revocation, or the per-user connection
+   * cap). Fired once per latch so the shell can say which, since every caller
+   * above this layer only ever sees an opaque transport error.
+   */
+  onFatalClose?: (info: FatalCloseInfo) => void
 }
 
 /**
@@ -65,9 +77,23 @@ export class ChannelRelay {
   private dialing: ChannelSocket | null = null
   /** Bumped by closeWebSocket / superseded dials so a stale onOpen cannot install this.ws. */
   private dialGeneration = 0
+  /**
+   * Set once the Hub closes us with a terminal code. Every redial path above
+   * this class is an unbounded retry loop (`workerPrivateEvents`' `while
+   * (!stopped)` and `useWatchEventsStreams`' scheduleReconnect), and none of
+   * them can tell "the network blipped" from "the Hub refused this account
+   * another connection". Latching here is what stops both, because both reach
+   * the socket only through ensureWebSocket.
+   */
+  private fatalClose: FatalCloseInfo | null = null
 
   constructor(deps: ChannelRelayDeps) {
     this.deps = deps
+  }
+
+  /** The terminal close that latched this relay, if any. */
+  fatalCloseInfo(): FatalCloseInfo | null {
+    return this.fatalClose
   }
 
   /** Whether the current socket is OPEN. */
@@ -102,6 +128,14 @@ export class ChannelRelay {
     // Already connected and open.
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       return Promise.resolve()
+    }
+
+    // Refused for a reason redialing cannot change. Fail every caller with the
+    // real reason rather than opening a socket the Hub will close again: the
+    // loops above retry on any error, so dialing here is what turns one refusal
+    // into a permanent ~4/min handshake against the Hub, per worker.
+    if (this.fatalClose) {
+      return Promise.reject(fatalCloseError(this.fatalClose))
     }
 
     // Connection attempt already in progress - deduplicate.
@@ -156,7 +190,7 @@ export class ChannelRelay {
           }
         })
 
-        ws.addEventListener('close', () => {
+        ws.addEventListener('close', (ev: CloseEvent) => {
           // Only the CURRENT socket's close tears the transport down. A stale
           // socket's close fires after readyState already flipped it out of the
           // OPEN fast path above, so a concurrent ensureWebSocket may have
@@ -164,7 +198,7 @@ export class ChannelRelay {
           // on the stale close here would drain the successor's channels, null
           // this.ws, and orphan the still-OPEN successor.
           if (this.ws === ws) {
-            this.handleWebSocketClose()
+            this.handleWebSocketClose(ev)
           }
         })
 
@@ -195,6 +229,11 @@ export class ChannelRelay {
   }
 
   closeWebSocket(): void {
+    // Clearing the terminal-close latch here is safe because this is only ever
+    // reached from closeAll(), i.e. logout or app teardown -- never from a
+    // retry path. Those are exactly the deliberate acts after which a refusal
+    // may no longer apply: signing in as another user, or a fresh session.
+    this.fatalClose = null
     // Invalidate any in-flight CONNECTING dial before closing sockets so its
     // onOpen cannot reinstall this.ws after logout/closeAll (SCAN-1/2/3).
     this.dialGeneration++
@@ -279,8 +318,26 @@ export class ChannelRelay {
     this.deps.onFrame(msg.channelId, msg)
   }
 
-  private handleWebSocketClose(): void {
+  private handleWebSocketClose(ev?: CloseEvent): void {
     this.ws = null
+
+    // Classify BEFORE draining, so the channels fail with the reason the hub
+    // actually gave instead of a generic "channel disconnected" that every
+    // caller above turns into "Failed to open terminal". A close event is
+    // optional only because the Tauri bridge and older test doubles may deliver
+    // a bare close; an unclassifiable close stays recoverable, as it was.
+    let fatal: FatalCloseInfo | undefined
+    if (ev && typeof ev.code === 'number' && isTerminalCloseCode(ev.code)) {
+      fatal = { code: ev.code, reason: ev.reason ?? '' }
+      // Latch before draining: onCloseDrain synchronously re-enters
+      // ensureWebSocket via stream onError handlers, and that dial has to see
+      // the latch or the refusal loop starts again from inside its own drain.
+      const first = this.fatalClose === null
+      this.fatalClose = fatal
+      if (first) {
+        this.deps.onFatalClose?.(fatal)
+      }
+    }
 
     // A successor dial started in the gap between this socket's readyState leaving
     // OPEN and this queued close event firing owns this.wsPromise: the socket that
@@ -292,7 +349,7 @@ export class ChannelRelay {
     // a close whose successor has fully OPENED but not one still DIALING.
     const successorDialing = this.wsPromise !== null
 
-    this.deps.onCloseDrain(successorDialing)
+    this.deps.onCloseDrain(successorDialing, fatal)
 
     // Do NOT null wsPromise after drain when successorDialing was false: a sync
     // re-enter into ensureWebSocket from onCloseDrain (stream onError / state

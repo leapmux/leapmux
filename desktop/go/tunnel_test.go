@@ -126,11 +126,12 @@ func TestTunnelManager_ListAndDelete(t *testing.T) {
 // FOLLOWING a transient failure still delivers. After both are spent, Accept blocks
 // until Close so the loop parks instead of spinning.
 type scriptedListener struct {
-	mu      sync.Mutex
-	results []error
-	conns   []net.Conn
-	calls   int
-	closed  chan struct{}
+	mu        sync.Mutex
+	results   []error
+	conns     []net.Conn
+	calls     int
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func newScriptedListener(results ...error) *scriptedListener {
@@ -161,15 +162,47 @@ func (l *scriptedListener) Accept() (net.Conn, error) {
 	return nil, net.ErrClosed
 }
 
+// Close is idempotent and safe to call CONCURRENTLY, which a select/default
+// check-then-act only looks like: two goroutines can both find the channel open
+// and both close it, panicking with "close of closed channel". That is reachable
+// here -- acceptBeforeIdleDeadline closes the listener from both its
+// idle-deadline and its shutdown arm, and a test's own cleanup races either --
+// so the retry test surfaced it as a load-dependent flake rather than a
+// deterministic failure. Not guarded by mu, because Accept parks on `closed`
+// and would deadlock against a Close that needed the same lock.
 func (l *scriptedListener) Close() error {
-	select {
-	case <-l.closed:
-	default:
-		close(l.closed)
-	}
+	l.closeOnce.Do(func() { close(l.closed) })
 	return nil
 }
 func (l *scriptedListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4zero} }
+
+// TestScriptedListenerCloseIsConcurrencySafe pins the contract socket.go relies
+// on. acceptBeforeIdleDeadline closes the listener from both its idle-deadline
+// and its shutdown arm, and a caller's own cleanup can race either, so Close has
+// to survive concurrent callers -- not merely repeated ones.
+//
+// The distinction is the whole point: a select/default check-then-act IS
+// idempotent when called in sequence and still panics with "close of closed
+// channel" when two goroutines both find the channel open. That is why the bug
+// reached a full-suite run before it was seen, as a load-dependent failure of
+// the retry test rather than of anything that looked like this.
+func TestScriptedListenerCloseIsConcurrencySafe(t *testing.T) {
+	t.Parallel()
+	for range 200 {
+		l := newScriptedListener()
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				assert.NoError(t, l.Close())
+			}()
+		}
+		wg.Wait()
+		assert.ErrorIs(t, func() error { _, err := l.Accept(); return err }(), net.ErrClosed,
+			"a closed listener must keep reporting itself closed")
+	}
+}
 
 func (l *scriptedListener) acceptCalls() int {
 	l.mu.Lock()

@@ -179,6 +179,12 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
+	// handleWatchEvents returns once the request is SUBMITTED; the session
+	// goroutine registers the watch afterwards. Releasing startup before that
+	// lands would broadcast ACTIVE to nobody, and the assertion below would then
+	// spend its whole budget waiting for an event that was never going to
+	// arrive. Wait for the registration, not for a length of time.
+	waitAgentWatchCount(t, svc, agentID, 1)
 
 	release()
 
@@ -335,6 +341,12 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 	}, wWatch)
+	// handleWatchEvents returns once the request is SUBMITTED; the session
+	// goroutine registers the watch afterwards. Releasing startup before that
+	// lands broadcasts ACTIVE to nobody, and the assertion below then spends its
+	// whole budget waiting for an event that was never going to arrive. Wait for
+	// the registration itself, not for a length of time.
+	waitAgentWatchCount(t, svc, agentID, 1)
 
 	release()
 

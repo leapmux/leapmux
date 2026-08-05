@@ -34,6 +34,7 @@ import type { ChannelSessionOpts } from './channelSession'
 import type { Session } from './noise'
 import type { Reassembler } from './reassembler'
 import type { WorkerKeyBundle } from './workerKeyBundle'
+import type { FatalCloseInfo } from './wsCloseCodes'
 import type { ChannelMessage, EncryptionMode, HubControlFrame, InnerRpcResponse, InnerStreamMessage } from '~/generated/leapmux/v1/channel_pb'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
 import {
@@ -47,6 +48,7 @@ import { ChannelRelay } from './channelRelay'
 import { ChannelRpcMux } from './channelRpc'
 import { ChannelSession } from './channelSession'
 import { formatErrorMessage } from './errors'
+import { fatalCloseError } from './fatalCloseMessage'
 import { KeyPinStore } from './keyPinStore'
 import { createLogger } from './logger'
 
@@ -272,6 +274,7 @@ export class ChannelManager {
   private stateListeners = new Set<() => void>()
   private errorListeners = new Set<(workerId: string, error: ChannelError) => void>()
   private hubControlListeners = new Set<(frame: HubControlFrame) => void>()
+  private fatalCloseListeners = new Set<(info: FatalCloseInfo) => void>()
 
   /**
    * Test seam: channel.*.test.ts reaches through `(mgr as any).channels`. The live
@@ -295,7 +298,8 @@ export class ChannelManager {
       wsOpenTimeoutMs: opts?.wsOpenTimeoutMs ?? 10_000,
       onFrame: (channelId, msg) => this.inbound.handleMessage(channelId, msg),
       onHubControl: msg => this.handleHubControl(msg),
-      onCloseDrain: successorDialing => this.handleRelayCloseDrain(successorDialing),
+      onCloseDrain: (successorDialing, fatal) => this.handleRelayCloseDrain(successorDialing, fatal),
+      onFatalClose: info => this.notifyFatalClose(info),
     })
 
     this.session = new ChannelSession({
@@ -367,6 +371,35 @@ export class ChannelManager {
     return () => {
       this.hubControlListeners.delete(cb)
     }
+  }
+
+  /**
+   * The relay hit a close no redial can recover from — the hub refused this
+   * connection (auth expiry/revocation, or the per-user connection cap).
+   *
+   * Distinct from onChannelError, which fires per worker for a recoverable
+   * failure the caller retries: this fires once, means "stop", and is the only
+   * signal carrying WHY. Without it a cap refusal is indistinguishable from a
+   * flaky network, which is what let the app advise a reload that could only
+   * produce another refusal.
+   */
+  onFatalClose(cb: (info: FatalCloseInfo) => void): () => void {
+    this.fatalCloseListeners.add(cb)
+    return () => {
+      this.fatalCloseListeners.delete(cb)
+    }
+  }
+
+  /**
+   * The terminal close the relay has latched, or null while it is dialable.
+   *
+   * For a redial loop deciding whether to arm a timer at all. `onFatalClose`
+   * only helps a caller that was listening at the moment it fired; this answers
+   * the same question at any later point, which is what a loop reached through
+   * some other path (a stream that ended on its own) needs.
+   */
+  fatalCloseInfo(): FatalCloseInfo | null {
+    return this.relay.fatalCloseInfo()
   }
 
   private installWakeListener(): void {
@@ -448,6 +481,12 @@ export class ChannelManager {
     }
   }
 
+  private notifyFatalClose(info: FatalCloseInfo): void {
+    for (const cb of this.fatalCloseListeners) {
+      safeCall(() => cb(info), 'fatal close listener')
+    }
+  }
+
   /**
    * Open an encrypted channel to a Worker.
    * Performs the Noise_NK handshake, key pinning check, connects the shared
@@ -466,6 +505,16 @@ export class ChannelManager {
    * inside ChannelPool.getOrOpenChannel (which already owns the dedup lock).
    */
   private async openChannelUncached(workerId: string): Promise<string> {
+    // Fail before the Hub round-trip, not just before the dial. The open path
+    // is openChannel RPC -> WS dial -> closeChannel rollback, so a latch that
+    // only guarded the dial would still let every retry cost the hub two RPCs.
+    // Both redial loops above (workerPrivateEvents' `while (!stopped)` and
+    // useWatchEventsStreams' scheduleReconnect) retry on any error forever, so
+    // "refused" has to be answered here or it becomes a permanent load.
+    const fatal = this.relay.fatalCloseInfo()
+    if (fatal) {
+      throw fatalCloseError(fatal)
+    }
     return this.open.openUncached(workerId)
   }
 
@@ -842,12 +891,20 @@ export class ChannelManager {
     }
   }
 
-  private handleRelayCloseDrain(successorDialing: boolean): void {
+  private handleRelayCloseDrain(successorDialing: boolean, fatal?: FatalCloseInfo): void {
+    // A terminal close carries a reason the user can act on ("close a tab"),
+    // and this drain error is what reaches them: every caller above wraps it
+    // with showWarnToast, whose fallback copy formatErrorMessage discards in
+    // favour of err.message. Draining with a generic string here is what turned
+    // a connection-cap refusal into "Failed to open terminal".
+    const reason = fatal
+      ? fatalCloseError(fatal)
+      : new ChannelError('transport', 'channel disconnected')
     for (const channelId of [...this.pool.keys()]) {
       const ch = this.pool.get(channelId)
       if (!ch)
         continue
-      this.rpc.drainChannel(ch, new ChannelError('transport', 'channel disconnected'), 'error')
+      this.rpc.drainChannel(ch, reason, 'error')
       ch.state = 'closed'
       this.pool.delete(channelId)
     }

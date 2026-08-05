@@ -402,11 +402,12 @@ func TestBroadcast_WorkspaceTombstone_NoEmptyEntityRemovedFrame(t *testing.T) {
 // TestBroadcast_NilFilter_SeesAllWorkspaces covers the all-workspaces
 // (nil filter) arm: a subscriber whose Filter.WorkspaceIDs is nil must
 // see raw ops across every workspace, exactly like an explicit
-// {w1, w2} filter. This pins the lazily-built shared `allVis` map —
-// broadcastBatch defers its construction to the first nil-filter
-// subscriber seen on a commit, so a regression there (leaving visMap
-// nil, or building the wrong entries) would silently drop
-// cross-workspace ops for every all-workspaces subscriber.
+// {w1, w2} filter. Its verdict comes from IsAllowed's nil-map arm, read
+// per ref by the planner's two visibility probes (see visibilityFor), so
+// a regression there — a pre/post side that stops honouring the nil map —
+// would silently redact cross-workspace ops into
+// EntityMaterialized/EntityRemoved pairs for every all-workspaces
+// subscriber, or drop them outright.
 func TestBroadcast_NilFilter_SeesAllWorkspaces(t *testing.T) {
 	mgr, _, _ := runManager(t, "user-1", allowAll{}, 125_000)
 	seedRootInternal(t, mgr, "w1", "root1")
@@ -451,7 +452,7 @@ func TestBroadcast_NilFilter_SeesAllWorkspaces(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, countOpsInBatches(events),
-		"nil-filter subscriber must receive the raw move op across workspaces via the shared allVis path")
+		"nil-filter subscriber must receive the raw move op across workspaces, since a nil filter admits both")
 	assert.Equal(t, 0, materializedOrRemoved,
 		"nil-filter subscriber sees both workspaces, so no redacted event should be emitted")
 }
@@ -793,4 +794,73 @@ func TestBroadcast_MaterializedPrecedesBatchThatReferencesIt(t *testing.T) {
 	require.GreaterOrEqual(t, batchIdx, 0, "the tab's tile_id op must arrive in a Batch frame")
 	assert.Less(t, matIdx, batchIdx,
 		"a batch's new tile must be materialized BEFORE the batch that anchors a tab to it")
+}
+
+// TestBroadcast_FramesAreMarshaledBeforeTheFanOut pins the property that keeps
+// proto.Marshal off the projection lock.
+//
+// The subscriber queue charges every frame against the shared byte budget as it
+// arrives, and asking a frame's size is what forces its lazy marshal. The
+// manager holds its projection WRITE lock across the whole fan-out -- the lock
+// that gates every SubmitOps, presence update and projection read for this user
+// -- so a frame that arrived unmarshaled would serialize a proto, up to a
+// multi-megabyte batch frame, inside it.
+//
+// Asserting "already marshaled at Send" is the observable form of that: it can
+// only hold if the broadcasting goroutine paid for every frame before it took
+// the lock.
+func TestBroadcast_FramesAreMarshaledBeforeTheFanOut(t *testing.T) {
+	mgr, _, _ := runManager(t, "user-1", allowAll{}, 180_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	seedRootInternal(t, mgr, "w2", "root2")
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+
+	var (
+		mu       sync.Mutex
+		seen     int
+		unwarmed int
+	)
+	record := func(evt *crdt.MarshaledEvent) error {
+		mu.Lock()
+		defer mu.Unlock()
+		seen++
+		if !evt.AlreadyMarshaledForTest() {
+			unwarmed++
+		}
+		return nil
+	}
+
+	// Two masks and a transition, so the fan-out builds every frame kind it can:
+	// a per-mask batch frame, an EntityMaterialized for the subscriber the tab
+	// moves INTO view for, an EntityRemoved for the one it leaves, and the
+	// shared BatchEnd.
+	for _, f := range []crdt.SubscriberFilter{
+		{WorkspaceIDs: map[string]bool{"w1": true}},
+		{WorkspaceIDs: map[string]bool{"w2": true}},
+		{},
+	} {
+		_, un := mgr.Subscribe(&crdt.Subscriber{Filter: f, Send: record})
+		defer un()
+	}
+
+	_, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{addTabBatch(t, "seed", "tA", "root1", "wkr", "p1")},
+	})
+	require.NoError(t, err)
+
+	// Move it across the visibility boundary, which is what produces the
+	// materialized/removed frames rather than a plain op passthrough.
+	_, err = mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "user", OriginClient: "c1",
+		Batches: []*leapmuxv1.OpBatch{moveTabBatch("move", "tA", "root2")},
+	})
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Positive(t, seen, "the fan-out must actually have delivered frames")
+	assert.Zero(t, unwarmed,
+		"every frame must be marshaled before it reaches a subscriber; %d of %d arrived unmarshaled, "+
+			"which means the marshal would happen under the projection lock", unwarmed, seen)
 }

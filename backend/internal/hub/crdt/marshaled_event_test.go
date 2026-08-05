@@ -1,7 +1,9 @@
 package crdt_test
 
 import (
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -80,6 +82,119 @@ func TestMarshaledEvent_ConcurrentBytesIsSafeAndCachesOnce(t *testing.T) {
 		// Same backing buffer for every concurrent caller.
 		assert.Equal(t, &results[0][0], &results[i][0])
 	}
+}
+
+// Size is what a subscriber queue charges its shared byte budget, so it has to
+// cover everything holding the frame keeps alive -- the marshaled buffer AND the
+// proto tree it came from, which stays reachable through Event by design.
+// Counting only the buffer had the pool bounding roughly half what it held.
+func TestMarshaledEvent_SizeCoversTheBufferAndTheTreeItCameFrom(t *testing.T) {
+	me := crdt.NewMarshaledEvent(&leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Batch{
+			Batch: &leapmuxv1.OpBatch{BatchId: strings.Repeat("x", 4096)},
+		},
+	})
+
+	data, err := me.Bytes()
+	require.NoError(t, err)
+	assert.Equal(t, int64(len(data)), me.WireSize(), "the wire size is the buffer alone")
+	assert.Equal(t, int64(len(data))*crdt.ResidentFactor, me.Size())
+	assert.Greater(t, me.Size(), me.WireSize(),
+		"a frame costs strictly more to hold than to send, or the budget is wrong in the one direction it must not be")
+	// Memoized, and memoized to the same number: a size that could change
+	// between charge and refund would drift the budget one frame at a time.
+	assert.Equal(t, int64(len(data))*crdt.ResidentFactor, me.Size())
+}
+
+// Every byte count the Hub's pools traffic in is int64, and the multiply by
+// ResidentFactor is the widest arithmetic on this path. Returning int and
+// letting subscriber_queue widen with int64(evt.Size()) would put the overflow
+// one layer BELOW the conversion -- on a 32-bit build a frame over 1 GiB would
+// wrap to a negative charge and hand the pool an unbounded allowance. The types
+// are what make that mechanically impossible, so pin them.
+func TestMarshaledEvent_ByteCountsAreInt64(t *testing.T) {
+	me := crdt.NewMarshaledEvent(&leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Presence{Presence: &leapmuxv1.PresenceUpdate{WorkspaceId: "w1"}},
+	})
+
+	assert.IsType(t, int64(0), me.Size(), "Size is a byte count, so it is int64 like every budget it feeds")
+	assert.IsType(t, int64(0), me.WireSize())
+	assert.IsType(t, int64(0), me.Retain(), "Retain reports the same byte quantity Size does")
+	assert.IsType(t, int64(0), me.Release())
+}
+
+// The holder count is what lets many queues hold ONE buffer without the pool
+// counting it many times. Retain and Release report the transitions at which
+// the frame's bytes start and stop being resident, and every other call must
+// report zero -- charging a shared frame per holder is the exact mistake that
+// kept /ws/userevents out of the pool in the first place.
+func TestMarshaledEvent_RetainAndReleaseReportOnlyTheResidencyTransitions(t *testing.T) {
+	me := crdt.NewMarshaledEvent(&leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Presence{
+			Presence: &leapmuxv1.PresenceUpdate{WorkspaceId: "w1"},
+		},
+	})
+	size := me.Size()
+	require.Positive(t, size)
+
+	assert.Equal(t, size, me.Retain(), "the first holder makes the buffer resident")
+	assert.Equal(t, int64(0), me.Retain(), "a second holder shares one buffer, and shares its cost")
+	assert.Equal(t, int64(0), me.Retain(), "and so does a third")
+	assert.Equal(t, 3, me.Holders())
+
+	assert.Equal(t, int64(0), me.Release(), "letting go while others hold frees nothing")
+	assert.Equal(t, int64(0), me.Release())
+	assert.Equal(t, size, me.Release(), "the last holder frees the buffer")
+	assert.Equal(t, 0, me.Holders())
+
+	// 1->0->1 is legitimate: the manager may still be fanning the frame out
+	// after every queue so far has drained it, and in that window the buffer
+	// really is resident again. Accounting, not lifetime -- nothing was freed.
+	assert.Equal(t, size, me.Retain(), "a frame taken up again is resident again")
+	assert.Equal(t, size, me.Release())
+}
+
+// A queue that released twice would drive its pool's resident total negative,
+// and a negative total reads as "empty" -- granting every connection an
+// unlimited threshold and silently switching the memory bound off. Failing
+// loudly at the bug beats a budget that quietly stops applying.
+func TestMarshaledEvent_ReleaseWithoutRetainPanics(t *testing.T) {
+	me := crdt.NewMarshaledEvent(&leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Presence{Presence: &leapmuxv1.PresenceUpdate{}},
+	})
+	require.Equal(t, 0, me.Holders())
+	assert.Panics(t, func() { me.Release() })
+}
+
+// Retains run on the broadcasting goroutine while releases run on each
+// subscriber's WS writer, so the count is contended by construction. The
+// invariant that matters is the SUM: across any interleaving, the bytes
+// reported resident must equal the bytes reported freed, or the pool drifts.
+func TestMarshaledEvent_ConcurrentRetainReleaseBalances(t *testing.T) {
+	me := crdt.NewMarshaledEvent(&leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_Initial{Initial: &leapmuxv1.UserMaterialized{UserId: "user-1"}},
+	})
+	size := me.Size()
+	require.Positive(t, size)
+
+	const holders = 64
+	var resident, freed atomic.Int64
+	var wg sync.WaitGroup
+	for range holders {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resident.Add(me.Retain())
+			freed.Add(me.Release())
+		}()
+	}
+	wg.Wait()
+
+	assert.Zero(t, me.Holders())
+	assert.Equal(t, resident.Load(), freed.Load(),
+		"every byte reported resident must be reported freed exactly once")
+	assert.Positive(t, resident.Load(), "the buffer was resident at least once")
+	assert.Zero(t, resident.Load()%size, "residency moves in whole frames")
 }
 
 func TestMarshaledEvent_EventFieldIsAccessibleWithoutMarshal(t *testing.T) {

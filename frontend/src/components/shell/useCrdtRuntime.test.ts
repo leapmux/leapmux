@@ -3,6 +3,7 @@ import { create, toBinary } from '@bufbuild/protobuf'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { channelManager } from '~/api/workerRpc'
 import { UserCrdtStateSchema } from '~/generated/leapmux/v1/user_crdt_pb'
 import { WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
 import { KEY_CLIENT_ID, sessionStorageSet } from '~/lib/browserStorage'
@@ -18,8 +19,9 @@ import {
   SEED_CANDIDATE_MAX_AGE_MS,
   writeCheckpointAndTruncateOpLog,
 } from '~/lib/crdt/checkpointStore'
-
 import { createActiveClientStore } from '~/lib/presence/activeClient'
+
+import { CLOSE_REASON_TOO_MANY_CONNECTIONS } from '~/lib/wsCloseCodes'
 import { createOpLogAppender } from '~/test-support/opLog'
 import { useCrdtRuntime } from './useCrdtRuntime'
 
@@ -35,13 +37,33 @@ const opLog = createOpLogAppender()
 // useUserEvents opens a socket the moment its ready gate flips, which this
 // suite has no business driving -- stub it out and expose the gate so the tests
 // can observe exactly what `hydrated` does.
-const userEventsSpy = vi.hoisted(() => ({ ready: null as null | (() => boolean) }))
+const userEventsSpy = vi.hoisted(() => ({
+  ready: null as null | (() => boolean),
+  // Captured so a test can fire a terminal close and assert WHICH message the
+  // runtime chose. The hook itself already carries the close reason to here;
+  // what is worth pinning is that this end reads it.
+  onFatalClose: null as null | ((info: { code: number, reason: string }) => void),
+}))
 vi.mock('./useUserEvents', () => ({
-  useUserEvents: (opts: { ready?: () => boolean }) => {
+  useUserEvents: (opts: {
+    ready?: () => boolean
+    onFatalClose?: (info: { code: number, reason: string }) => void
+  }) => {
     userEventsSpy.ready = opts.ready ?? (() => true)
+    userEventsSpy.onFatalClose = opts.onFatalClose ?? null
     return { bootstrapped: () => false, clock: () => null, reconnect: () => {}, relayId: () => 0 }
   },
   nextUserEventsRelayId: () => 1,
+}))
+
+// The toast is the only surface a fatal close has; assert the text that reaches
+// it rather than that something was called.
+const toastSpy = vi.hoisted(() => ({ sticky: [] as string[], warn: [] as string[] }))
+vi.mock('~/components/common/Toast', () => ({
+  showStickyWarnToast: (m: string) => { toastSpy.sticky.push(m) },
+  showWarnToast: (m: string) => { toastSpy.warn.push(m) },
+  showInfoToast: () => {},
+  showErrorToast: () => {},
 }))
 
 // The recorder is constructed deep inside the hook and never returned, but WHAT
@@ -869,5 +891,85 @@ describe('useCrdtRuntime sibling seeding', () => {
     finally {
       dispose()
     }
+  })
+})
+
+// The runtime is the only consumer of onFatalClose, and until now it discarded
+// the argument -- every terminal close produced "reload the page", which is the
+// one thing a user refused by the connection cap must not do.
+describe('useCrdtRuntime fatal close', () => {
+  beforeEach(() => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.stubGlobal('IDBKeyRange', IDBKeyRange)
+    sessionStorageSet(KEY_CLIENT_ID, CLIENT)
+    _resetCheckpointStoreForTest()
+    opLog.reset()
+    userEventsSpy.ready = null
+    userEventsSpy.onFatalClose = null
+    toastSpy.sticky = []
+    toastSpy.warn = []
+  })
+
+  afterEach(() => {
+    _resetCheckpointStoreForTest()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('tells a capped user to close a tab, and says it stickily', () => {
+    const { dispose } = mountRuntime(() => 'user-a')
+    expect(userEventsSpy.onFatalClose).not.toBeNull()
+
+    userEventsSpy.onFatalClose!({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS })
+
+    expect(toastSpy.sticky).toHaveLength(1)
+    expect(toastSpy.sticky[0]).toContain('Close another tab')
+    // Sticky, not the 3-second default: nothing retries after a terminal close,
+    // so a message that expired would leave a frozen UI unexplained.
+    expect(toastSpy.warn).toHaveLength(0)
+    dispose()
+  })
+
+  it('keeps the reload advice for a revoked credential', () => {
+    const { dispose } = mountRuntime(() => 'user-a')
+
+    userEventsSpy.onFatalClose!({ code: 1008, reason: 'credential' })
+
+    expect(toastSpy.sticky).toHaveLength(1)
+    expect(toastSpy.sticky[0]).toContain('Reload the page to reconnect')
+    dispose()
+  })
+
+  // A tab holds TWO long-lived sockets and the cap closes whichever asks next,
+  // so one refusal can arrive twice. Two identical sticky toasts cannot be
+  // dismissed by the same click and read as two separate faults.
+  // The hook must NOT dedupe. Suppression that lives here never learns the user
+  // dismissed the toast, so a second refusal after a dismissal would be
+  // announced nowhere at all -- a frozen UI with no explanation, the exact state
+  // the sticky toast exists to prevent. Collapsing two toasts that are LIVE at
+  // once is the toast layer's job, and is pinned in Toast.test.ts.
+  it('announces every refusal, leaving duplicate suppression to the toast', () => {
+    const { dispose } = mountRuntime(() => 'user-a')
+
+    userEventsSpy.onFatalClose!({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS })
+    userEventsSpy.onFatalClose!({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS })
+
+    expect(toastSpy.sticky).toHaveLength(2)
+    dispose()
+  })
+
+  // The channel relay is refused by the SAME hub code path as the user-events
+  // stream. It used to discard the close entirely, so a capped user opening a
+  // terminal got "Failed to open terminal" and no idea what to do.
+  it('surfaces a channel-relay refusal with the same copy', () => {
+    const subscribe = vi.spyOn(channelManager, 'onFatalClose')
+    const { dispose } = mountRuntime(() => 'user-a')
+
+    expect(subscribe).toHaveBeenCalled()
+    subscribe.mock.calls[0]![0]({ code: 1008, reason: CLOSE_REASON_TOO_MANY_CONNECTIONS })
+
+    expect(toastSpy.sticky).toHaveLength(1)
+    expect(toastSpy.sticky[0]).toContain('Close another tab')
+    dispose()
   })
 })

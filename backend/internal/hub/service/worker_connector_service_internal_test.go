@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -158,7 +159,7 @@ func TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant(t *testing.T) {
 
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, nil)
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, nil, sendq.NewMaxBytesPoolForTest())
 
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
@@ -207,7 +208,7 @@ func TestHandleWorkspaceTabsSync_ManagerGetFailureStillResponds(t *testing.T) {
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
 	reg.failFor = userA.ID
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, nil)
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, nil, sendq.NewMaxBytesPoolForTest())
 
 	var sent atomic.Int32
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error {
@@ -241,7 +242,7 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 	seedOwnedTab(t, st, userB.ID, "bob ws", "dup-tab")
 
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), nil)
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), nil, sendq.NewMaxBytesPoolForTest())
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
@@ -287,7 +288,7 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 
 	logs := captureDefaultLogger(t)
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), nil)
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), nil, sendq.NewMaxBytesPoolForTest())
 	sent := 0
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
 		sent++

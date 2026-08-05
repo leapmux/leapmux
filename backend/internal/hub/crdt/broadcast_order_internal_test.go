@@ -94,7 +94,7 @@ func TestOrderedAffectedRefs_CarriesTheTransition(t *testing.T) {
 // subscribers: one that sees ONLY the 65th workspace collapses onto the same
 // mask as one that sees nothing, and a cache keyed on it would hand the first
 // subscriber the second's (empty) filtered batch -- or the reverse. That is why
-// broadcastBatch leaves the cache nil there and batchEventFor keeps a separate
+// prewarmBatch leaves the cache nil there and batchEventFor keeps a separate
 // arm for it.
 //
 // This asserts the aliasing directly, so the arm cannot be "simplified" away on

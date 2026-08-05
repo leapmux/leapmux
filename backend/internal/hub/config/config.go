@@ -13,7 +13,10 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/leapmux/leapmux/channelwire"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
+	"github.com/leapmux/leapmux/internal/metrics"
+	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/util/memlimit"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/validate"
@@ -28,6 +31,127 @@ const (
 
 // Default timeout values (in seconds).
 const (
+	// The Hub's outbound queues are budgeted in THREE pools -- browser channel
+	// relays, worker Connect streams, and user-event subscribers -- rather than
+	// one shared total.
+	//
+	// Sharing would let one class's backlog reclaim memory from another, and the
+	// three failures are not interchangeable. Dropping a channel relay costs a
+	// reconnect plus a Noise re-handshake per channel; dropping a worker takes
+	// every user's channels on that machine with it and has no replay in the
+	// frontend->worker direction; dropping a user-event subscriber costs a
+	// reconnect and a delta resume, and before its bootstrap frame is even on
+	// the wire it costs a snapshot instead of a delta, with no disconnect at
+	// all. A budget is the wrong place to make those compete, so the blast
+	// radius is bounded by construction instead.
+	//
+	// The *QueueMemoryShare constants are the shares of the process's memory
+	// basis each pool auto-sizes to, in QueueMemoryShareDenominator-ths.
+	// Together they come to a quarter of the basis.
+	//
+	// Relay gets the most because it carries the bulk direction -- terminal
+	// output and agent events, one frame per PTY read -- where a Worker stream
+	// carries keystrokes, RPCs and control frames.
+	//
+	// User events gets an equal share to Worker despite carrying the least
+	// traffic, because throughput is not what binds it. Its steady-state frames
+	// are small AND shared -- one buffer charged once however many subscribers
+	// hold it -- but its worst case is the frame that OPENS a connection: an
+	// account's whole visible state, unique per subscriber, up to
+	// channelwire.UserEventsReadLimit and charged crdt.ResidentFactor times that
+	// because the proto tree stays alive beside the marshaled buffer. At a
+	// thirty-second of an 8 GiB basis that was eight such frames in flight, and
+	// the moment they all arrive at once is a Hub restart -- the reconnect storm
+	// this whole mechanism exists for. The shed is still the cheapest in the
+	// Hub, but it is paid by retry backoff, and there is no eviction in that
+	// pool to clear the condition any sooner.
+	//
+	// A numerator over a shared denominator rather than a float divisor: the
+	// arithmetic on a byte count stays exact, and the startup log can name the
+	// share as "4/32" instead of the "1/8" a reciprocal would print for one
+	// class and "1/16" for another. The denominator is 32 rather than 16 because
+	// every slice user events has gained came out of relay's share and left
+	// Worker untouched at the 1/16 it has always had; a coarser denominator
+	// would have forced the two to move together.
+	QueueMemoryShareDenominator = 32
+	RelayQueueMemoryShare       = 4
+	WorkerQueueMemoryShare      = 2
+	UserEventsQueueMemoryShare  = 2
+
+	// MinQueueMembersAtFloor is how many connections a budget must be able to
+	// hold at their full guaranteed working set for the admission rule to mean
+	// anything.
+	//
+	// Below it the pool is structurally degenerate rather than merely small:
+	// floor() clamps up to sendq.DefaultMinFloor, so a budget at or under one
+	// floor pins the threshold at that floor for EVERY occupancy, the dynamic
+	// Capacity-minus-used branch never engages, and total resident becomes
+	// members x floor with nothing bounding it -- the per-connection-times-
+	// unbounded-connections shape these pools exist to remove. A 1 MiB relay
+	// budget did exactly that and passed validation.
+	MinQueueMembersAtFloor = 4
+	// DefaultMaxConnectionsPerUser bounds how many long-lived connections one
+	// user may hold at once -- every /ws/channel and /ws/userevents socket
+	// authenticated as them, wherever it came from.
+	//
+	// The queue pools bound the BYTES each class of connection may hold, but a
+	// pool member is a connection, not a user: a member's guaranteed working set
+	// multiplies by a connection count nothing limits, so "open more tabs" is how
+	// a client reaches memory the pools cannot refuse.
+	//
+	// It bounds ONE USER's contribution, not the pool's member count -- 32 users
+	// holding one socket each reach 32 members without this ever being
+	// consulted. What keeps that solvent is the per-class minimum: the
+	// user-events budget is clamped up to 2 x (UserEventsReadLimit + headroom),
+	// which is 32 MiB + 8 KiB on every basis, against 32 x DefaultMinFloor =
+	// 32 MiB of guaranteed floors. The aggregate signal, for the cases arithmetic
+	// cannot promise, is sendq.Pool's overcommits counter.
+	//
+	// A guard, not a quota: 32 is meant never to be reached by a person. Note it
+	// counts SOCKETS -- an active tab holds two, /ws/userevents plus /ws/channel
+	// once it opens one -- and that a CLI remote session, a worker relaying
+	// user events, and the desktop sidecar all authenticate as the same user. In
+	// solo mode every one of those is the single solo user.
+	DefaultMaxConnectionsPerUser = 32
+	// MinConnectionsPerUser is the smallest cap an operator may configure.
+	//
+	// Below it the setting stops being a cap and becomes an outage. An active
+	// tab holds two sockets, so at two the first tab connects and every other
+	// client the same user runs -- a second tab, the desktop sidecar, a CLI
+	// remote session -- is refused; at one the first tab cannot finish
+	// connecting at all. Four leaves room for a tab plus one other client,
+	// which is the least that can be called working.
+	MinConnectionsPerUser = 4
+	// DefaultMaxWorkersPerUser bounds how many Workers one user may have
+	// registered at once.
+	//
+	// The same missing term as MaxConnectionsPerUser, for the third pool. A
+	// Worker's Connect stream is a member of the worker pool and is guaranteed
+	// the same unrefusable working set, but it takes no lease, so the
+	// connection cap does not see it -- and nothing else bounded the count:
+	// registration keys have a five-minute TTL and no quota, so N keys mint N
+	// Workers, each one a member with a floor the pool may not reclaim.
+	//
+	// Bounded at BOTH ends, because neither alone is the count that matters.
+	// Registration refuses past the cap where an operator can act on the error;
+	// workermgr.Manager refuses past it again where the pool member is actually
+	// created. Registrations alone are not membership: the cap counts rows with
+	// status ACTIVE, while a Connect stream is served for any row that is not
+	// DELETED -- and a DEREGISTERING row keeps its stream, since that stream is
+	// how the Worker is told to stop. So register/deregister cycles grew pool
+	// membership without ever exceeding the cap.
+	//
+	// A guard, not a quota, like its sibling: 64 machines is far past what an
+	// account plausibly runs, and the failure it prevents is the worker pool --
+	// whose eviction is the most expensive of the three, taking every user's
+	// channels on that machine -- being promised more floors than it has bytes.
+	DefaultMaxWorkersPerUser = 64
+	// MaxQueueMemoryBudget caps each auto-sized pool on very large hosts, where
+	// a bigger ceiling is more queue than any client population can fill and
+	// only delays a reclaim that should already have happened. Operators who
+	// genuinely want more set the key.
+	MaxQueueMemoryBudget = 8 << 30 // 8 GiB
+
 	DefaultAPITimeoutSeconds            = 10
 	DefaultAgentStartupTimeoutSeconds   = 300
 	DefaultWorktreeCreateTimeoutSeconds = 60
@@ -35,30 +159,49 @@ const (
 
 // Config holds the hub's runtime configuration.
 type Config struct {
-	Listen                       string        `koanf:"listen"`
-	LocalListen                  string        `koanf:"local_listen"`
-	PublicURL                    string        `koanf:"public_url"`
-	DataDir                      string        `koanf:"data_dir"`
-	DevFrontend                  string        `koanf:"dev_frontend"`
-	LogLevel                     string        `koanf:"log_level"`
-	SignupEnabled                bool          `koanf:"signup_enabled"`
-	EmailVerificationRequired    bool          `koanf:"email_verification_required"`
-	SmtpHost                     string        `koanf:"smtp_host"`
-	SmtpPort                     int           `koanf:"smtp_port"`
-	SmtpUsername                 string        `koanf:"smtp_username"`
-	SmtpPassword                 string        `koanf:"smtp_password"`
-	SmtpFromAddress              string        `koanf:"smtp_from_address"`
-	SmtpTLSMode                  string        `koanf:"smtp_tls_mode"` // See SmtpTLSMode* constants for valid values.
-	APITimeoutSeconds            int           `koanf:"api_timeout_seconds"`
-	AgentStartupTimeoutSeconds   int           `koanf:"agent_startup_timeout_seconds"`
-	WorktreeCreateTimeoutSeconds int           `koanf:"worktree_create_timeout_seconds"`
-	MaxMessageSize               int           `koanf:"max_message_size"`
-	SecureCookies                bool          `koanf:"secure_cookies"`
-	EncryptionKeyPath            string        `koanf:"encryption_key_path"`
-	Storage                      StorageConfig `koanf:"storage"`
-	SoloMode                     bool
-	DevMode                      bool              // Dev mode: non-solo but with auto-bootstrapped admin
-	Extras                       map[string]string // Extra flag values not in the hub Config struct
+	Listen                       string `koanf:"listen"`
+	LocalListen                  string `koanf:"local_listen"`
+	PublicURL                    string `koanf:"public_url"`
+	DataDir                      string `koanf:"data_dir"`
+	DevFrontend                  string `koanf:"dev_frontend"`
+	LogLevel                     string `koanf:"log_level"`
+	SignupEnabled                bool   `koanf:"signup_enabled"`
+	EmailVerificationRequired    bool   `koanf:"email_verification_required"`
+	SmtpHost                     string `koanf:"smtp_host"`
+	SmtpPort                     int    `koanf:"smtp_port"`
+	SmtpUsername                 string `koanf:"smtp_username"`
+	SmtpPassword                 string `koanf:"smtp_password"`
+	SmtpFromAddress              string `koanf:"smtp_from_address"`
+	SmtpTLSMode                  string `koanf:"smtp_tls_mode"` // See SmtpTLSMode* constants for valid values.
+	APITimeoutSeconds            int    `koanf:"api_timeout_seconds"`
+	AgentStartupTimeoutSeconds   int    `koanf:"agent_startup_timeout_seconds"`
+	WorktreeCreateTimeoutSeconds int    `koanf:"worktree_create_timeout_seconds"`
+	MaxMessageSize               int    `koanf:"max_message_size"`
+	// The queue budgets are int64, not int, for the reason sendq.PoolConfig
+	// states about its own Capacity: MaxQueueMemoryBudget is 8 GiB, which does
+	// not fit an int on a 32-bit build. Typed narrower here, an operator's
+	// explicit multi-gigabyte budget would wrap BEFORE the widening conversion
+	// ever saw it -- landing negative (so `configured > 0` is false and the key
+	// is silently ignored) or positive-but-wrong. Widening one end of a value's
+	// journey and not the other is how that goes unnoticed.
+	RelayQueueMemoryBudget      int64 `koanf:"relay_queue_memory_budget"`
+	WorkerQueueMemoryBudget     int64 `koanf:"worker_queue_memory_budget"`
+	UserEventsQueueMemoryBudget int64 `koanf:"userevents_queue_memory_budget"`
+	// MaxConnectionsPerUser is used as read -- there is no resolver, because
+	// unlike the queue budgets its default is a constant rather than something
+	// derived from the machine. That lets the flag default BE the default, which
+	// leaves 0 free to mean exactly one thing: unlimited.
+	MaxConnectionsPerUser int64 `koanf:"max_connections_per_user"`
+	// MaxWorkersPerUser is the same bound for the third pool -- see
+	// DefaultMaxWorkersPerUser -- and is read the same way, with no resolver.
+	MaxWorkersPerUser int64         `koanf:"max_workers_per_user"`
+	SecureCookies     bool          `koanf:"secure_cookies"`
+	EncryptionKeyPath string        `koanf:"encryption_key_path"`
+	Storage           StorageConfig `koanf:"storage"`
+	SoloMode          bool
+	DevMode           bool              // Dev mode: non-solo but with auto-bootstrapped admin
+	Extras            map[string]string // Extra flag values not in the hub Config struct
+
 }
 
 // SMTP TLS mode constants for SmtpTLSMode.
@@ -163,14 +306,357 @@ func (c *Config) WorktreeCreateTimeout() time.Duration {
 	return time.Duration(v) * time.Second
 }
 
+// The Resolve*QueueMemoryBudget accessors return the bytes each outbound queue
+// pool may hold, plus a human-readable account of where the figure came from
+// for the startup log.
+//
+// An explicit key wins outright. Otherwise the budget is derived from `basis`,
+// the process's memory limit, because a byte constant is wrong at both ends of
+// the hardware range: the same default has to be safe in a 512 MiB container
+// and not needlessly stingy on a 256 GiB host. See internal/util/memlimit for
+// the precedence between GOMEMLIMIT, cgroup limits and physical memory.
+//
+// The basis is a PARAMETER, and all three take the same one. Three shares of
+// ONE number is the invariant the x/32 denominator exists to express, and as an
+// accessor each call re-probed -- making it three shares of three independently
+// observed bases, equal only because nothing moved between the reads. A memo
+// made them equal again; a parameter makes re-probing inexpressible, and it
+// keeps a configuration value object from reading /proc at all. The caller
+// probes once (memlimit.Detect) and names the same figure in the startup log
+// beside the budgets that divide it -- which is why QueueMemoryBudget.Source
+// says "basis" rather than rendering it.
+func (c *Config) ResolveRelayQueueMemoryBudget(basis memlimit.Basis) QueueMemoryBudget {
+	return c.relayQueueClass().resolve(basis)
+}
+
+func (c *Config) ResolveWorkerQueueMemoryBudget(basis memlimit.Basis) QueueMemoryBudget {
+	return c.workerQueueClass().resolve(basis)
+}
+
+func (c *Config) ResolveUserEventsQueueMemoryBudget(basis memlimit.Basis) QueueMemoryBudget {
+	return c.userEventsQueueClass().resolve(basis)
+}
+
+// QueueMemoryBudget is one outbound queue pool's resolved sizing, plus a
+// human-readable account of where the figure came from for the startup log.
+//
+// Capacity and MaxFrame travel together because the pool needs both and they
+// answer different questions: Capacity is what every member shares, MaxFrame is
+// what ONE of them must always be able to place. Returning only the total left
+// the second number stranded in this package while the pool was built with
+// sendq's generic defaults -- see PoolConfig.
+type QueueMemoryBudget struct {
+	// Name is the pool's identity at /metrics, and the key this budget is logged
+	// under at startup -- see queueClass.name.
+	Name string
+	// Capacity is the total resident bytes this pool's members may hold.
+	Capacity int64
+	// MaxFrame is the largest single frame this class can produce, measured the
+	// way the pool CHARGES it rather than as a payload size.
+	MaxFrame int64
+	// Reclaim is what this class's pool does under pressure -- see the class.
+	Reclaim sendq.ReclaimPolicy
+	// Source explains the Capacity for the startup log: the figure, whether it
+	// was configured or auto-sized, and for an auto-sized one which share of the
+	// memory basis produced it and whether a clamp moved it.
+	//
+	// It NAMES the basis rather than rendering it, because the basis belongs to
+	// the process and not to any one budget -- the line that carries these
+	// carries the basis once beside them (hub.logQueueMemoryBudgets). Rendering
+	// it here printed the same figure three times per startup, and, on a host
+	// whose cgroup probe failed, the same diagnosis three times inside one log
+	// line.
+	Source string
+}
+
+// PoolConfig renders the budget as the pool's own configuration, so the class's
+// frame size reaches sendq instead of stopping at this package.
+//
+// MaxFloor is raised to one largest frame because that is exactly what
+// sendq.DefaultMaxFloor promises and cannot deliver for a class it was not
+// sized against: the guaranteed working set is what a member may fill when
+// `capacity - used` has gone to nothing, so a floor below one frame means an
+// otherwise-idle member cannot place a single legitimate message once the pool
+// is merely full. With the default 4 MiB floor that refused a 16 MiB
+// /ws/userevents bootstrap outright.
+//
+// MinFloor is deliberately NOT raised to the class's frame. Under crowding the
+// floor is what every member is guaranteed simultaneously, so pinning it at one
+// largest frame would multiply the class's biggest message by an unbounded
+// connection count -- the per-connection-times-connections shape this whole
+// mechanism exists to remove. A crowded pool refusing a large frame is correct
+// load shedding; an idle one refusing it is not.
+//
+// It IS stated rather than left to sendq's zero-value default, because
+// queueClass.minimum sizes every budget to MinQueueMembersAtFloor of this same
+// number. Those two are the reason NewPool's MinFloor > Capacity panic cannot be
+// reached from a config file, and a floor that is named in one of them and
+// implied in the other is a coupling nothing would catch on the way out.
+func (b QueueMemoryBudget) PoolConfig() sendq.PoolConfig {
+	return sendq.PoolConfig{
+		Capacity: b.Capacity,
+		MinFloor: sendq.DefaultMinFloor,
+		MaxFloor: max(sendq.DefaultMaxFloor, b.MaxFrame),
+		Reclaim:  b.Reclaim,
+	}
+}
+
+// queueClass is one pool's identity: the key an operator sets, the share it
+// auto-sizes to, and the largest frame it must be able to carry.
+//
+// One value per class rather than three parallel lists (shares, frame bounds,
+// validation table). The metric label, the config key, the share and the frame
+// bound cannot disagree when they are fields of the same struct, and adding a
+// fourth pool is one constructor instead of edits in four places that a reader
+// has to diff against each other.
+type queueClass struct {
+	// name is the pool's public identity: the value of the `pool` label on
+	// every leapmux_sendq_pool_* series and on leapmux_sendq_giveups_total.
+	// A field rather than a literal at the composition root, so the sentence
+	// above is true -- a renamed class cannot rename the config key and leave
+	// the metric label behind. metrics owns the vocabulary; this carries it.
+	name       string
+	key        string
+	share      int
+	configured int64
+	// reclaim is what this class's pool does under pressure. A field on the
+	// class for the same reason name and share are: the answer belongs to the
+	// class of connection, not to whichever member happens to ask.
+	reclaim sendq.ReclaimPolicy
+	// maxFrame is CHARGED bytes, not payload bytes: what the pool tests is
+	// Config.Size plus Config.FrameOverhead, so a bound that covered only the
+	// payload would still leave the frame unadmittable at any occupancy.
+	maxFrame int64
+}
+
+// queueFrameEnvelopeHeadroom covers what a payload gains on its way to being a
+// charged frame: the protobuf field tags and length varints of the envelopes it
+// travels in. Generous on purpose -- it is compared against budgets measured in
+// tens of megabytes, and under-stating it reinstates the very off-by-overhead
+// this constant exists to close.
+const queueFrameEnvelopeHeadroom = 4 << 10 // 4 KiB
+
+func (c *Config) relayQueueClass() queueClass {
+	return queueClass{
+		name:       metrics.PoolRelay,
+		key:        "relay_queue_memory_budget",
+		share:      RelayQueueMemoryShare,
+		configured: c.RelayQueueMemoryBudget,
+		// A channel relay frame is the ciphertext the browser sent, bounded by
+		// the socket's own read limit.
+		maxFrame: channelwire.WSReadLimit + queueFrameEnvelopeHeadroom + sendq.DefaultFrameOverhead,
+	}
+}
+
+func (c *Config) workerQueueClass() queueClass {
+	return queueClass{
+		name:       metrics.PoolWorker,
+		key:        "worker_queue_memory_budget",
+		share:      WorkerQueueMemoryShare,
+		configured: c.WorkerQueueMemoryBudget,
+		// NOT max_message_size. The Hub never holds a whole application payload
+		// for a worker: it is a relay, and the only large ConnectResponse it
+		// sends is a ChannelMessage carrying ciphertext read off /ws/channel,
+		// whose socket is capped at WSReadLimit (ws_channel_relay.go). The
+		// operator's max_message_size bounds the REASSEMBLED message that the
+		// two endpoints rebuild from those chunks, which no Hub queue ever
+		// materializes -- every other variant (WorkerIdentity, ChannelOpen,
+		// Heartbeat, ReconcileNudge, and an empty WorkerTabInventoryResponse)
+		// is a small control frame.
+		//
+		// Deriving this from max_message_size instead made a 64 MiB setting
+		// demand a 64.25 MiB worker budget and refuse a perfectly workable
+		// smaller one at startup, for a frame that cannot exist.
+		//
+		// Plus the private control allowance: charge tests `size > capacity -
+		// reserve`, so the reserve is headroom the data path never sees.
+		maxFrame: channelwire.WSReadLimit + queueFrameEnvelopeHeadroom +
+			sendq.DefaultFrameOverhead + sendq.DefaultControlReserve,
+	}
+}
+
+func (c *Config) userEventsQueueClass() queueClass {
+	return queueClass{
+		name: metrics.PoolUserEvents,
+		// This class refuses the asker rather than nominating a peer. A
+		// subscriber's own shed is the cheapest outcome in the Hub -- it
+		// reconnects and delta-resumes, and before its opening frame is on the
+		// wire it is not even a disconnect -- where evicting a peer costs a
+		// connection that was keeping up. Stated here so it holds for any member
+		// type this pool ever gains, not just for the one that remembers.
+		reclaim:    sendq.ReclaimRefuseAsker,
+		key:        "userevents_queue_memory_budget",
+		share:      UserEventsQueueMemoryShare,
+		configured: c.UserEventsQueueMemoryBudget,
+		// A bootstrap frame -- a whole filtered account snapshot, or a resume
+		// delta -- is bounded only by what the socket will carry, and a
+		// user-event frame costs crdt.ResidentFactor times its wire size because
+		// the queue holds the proto tree alongside the marshaled buffer. Derived
+		// from crdt's own constant rather than restated, so the budget cannot
+		// drift from what the queue actually charges.
+		maxFrame: (channelwire.UserEventsReadLimit + queueFrameEnvelopeHeadroom) * crdt.ResidentFactor,
+	}
+}
+
+func (c *Config) queueClasses() []queueClass {
+	return []queueClass{c.relayQueueClass(), c.workerQueueClass(), c.userEventsQueueClass()}
+}
+
+// minimum is the smallest budget this class can work at, and it is the SAME
+// number whether the budget was auto-sized or set by hand.
+//
+// One expression, deliberately. Auto-sizing and validation used to clamp to
+// different numbers -- a flat 64 MiB against one guaranteed floor -- while a
+// comment claimed they agreed, so a budget auto-sizing would never produce was
+// nonetheless accepted from the config file.
+//
+// Two things it must clear, and the larger wins:
+//
+//   - One largest frame of its class. Under that, the failure is not
+//     backpressure that clears when load drops; it is that class of connection
+//     never working on this deployment, because a frame bigger than the whole
+//     budget is unfittable at ANY occupancy.
+//   - MinQueueMembersAtFloor guaranteed working sets, so the dynamic branch of
+//     the admission rule actually engages. See MinQueueMembersAtFloor.
+//
+// Note what is NOT here: a flat byte floor. A fixed constant is the thing this
+// whole mechanism replaced, and as an auto-size minimum it undid the shares on
+// exactly the deployment memlimit exists to protect -- on a 512 MiB container
+// the old 64 MiB floor raised two of the three pools and took 208 MiB, 40% of
+// the limit, where the shares ask for 128 MiB. The shares are the design; the
+// minimum's job is only to keep a pool functional, not to second-guess them.
+//
+// The floor term reads sendq.DefaultMinFloor, and QueueMemoryBudget.PoolConfig
+// hands NewPool that same constant. Keeping the two equal is what makes
+// NewPool's MinFloor > Capacity panic unreachable from a config file: this is
+// the check that refuses a budget too small to honour the floor before a pool is
+// ever built with one.
+func (q queueClass) minimum() int64 {
+	return max(q.maxFrame, MinQueueMembersAtFloor*sendq.DefaultMinFloor)
+}
+
+// resolve turns the class into the budget the Hub runs with: the configured
+// value when there is one, otherwise this class's share of the detected basis,
+// clamped into range.
+//
+// The two arms decide only capacity and how it is described. The struct is
+// built ONCE, after them, because name/reclaim/maxFrame are carried over
+// identically either way -- and listing carried-over fields by hand per arm is
+// exactly how int64Default came to be silently dropped in prefixFlags. A sixth
+// field cannot now be added to one arm only.
+//
+// Both arms open with `source=`, so "why is this budget this number?" is
+// answered by one token whichever way it was set. The auto arm says which
+// share of the basis it took and refers to the basis by name -- see
+// QueueMemoryBudget.Source for why it does not render it.
+func (q queueClass) resolve(basis memlimit.Basis) QueueMemoryBudget {
+	var (
+		capacity int64
+		source   string
+	)
+	if q.configured > 0 {
+		capacity = q.configured
+		source = fmt.Sprintf("%s (source=config)", memlimit.HumanBytes(capacity))
+	} else {
+		capacity = basis.Bytes / QueueMemoryShareDenominator * int64(q.share)
+		clamped := ""
+		if minimum := q.minimum(); capacity < minimum {
+			capacity, clamped = minimum, ", clamped up to the minimum"
+		} else if capacity > MaxQueueMemoryBudget {
+			capacity, clamped = MaxQueueMemoryBudget, ", clamped down to the maximum"
+		}
+		source = fmt.Sprintf("%s (source=auto, %d/%d of basis%s)",
+			memlimit.HumanBytes(capacity), q.share, QueueMemoryShareDenominator, clamped)
+	}
+	return QueueMemoryBudget{
+		Name:     q.name,
+		Reclaim:  q.reclaim,
+		Capacity: capacity,
+		MaxFrame: q.maxFrame,
+		Source:   source,
+	}
+}
+
+// flagDef is one CLI flag's definition: how it is spelled, where it lands in
+// the config tree, and what it defaults to.
+//
+// The default is ONE field rather than a pointer per type. It used to be a union
+// of four -- `strDefault, intDefault, int64Default, boolDefault` -- whose "exactly
+// one of these is set" rule lived only in a comment, and every row had to spell
+// the three it did not use as positional `nil`s. Adding the fourth arm for the
+// int64 budgets rewrote 34 untouched rows to widen that padding, which is the
+// cost this shape removes: a fifth kind is now one constructor, not an edit to
+// every existing flag.
+//
+// At package scope because the dispatch below is a method, and Go has no methods
+// on a function-local type.
+type flagDef struct {
+	name     string
+	koanfKey string
+	category string
+	usage    string
+	// value is the flag's default, and its type is the flag's type. Set through
+	// one of the constructors below so it can only ever be a kind register
+	// knows.
+	value any
+}
+
+// The flag constructors. Typed rather than a bare `any` field so the default's
+// type is checked at the call site: `intFlag(..., "8")` does not compile, where
+// a struct literal taking any would have registered a string flag under an int
+// key and only failed at unmarshal.
+//
+// int64 is its own kind rather than reusing int because the queue-memory budgets
+// reach 8 GiB, which an int cannot hold on a 32-bit build -- registering those as
+// flag.Int would put the wrap back at the CLI layer that Config's int64 fields
+// just removed.
+func strFlag(name, koanfKey, category, usage string, def string) flagDef {
+	return flagDef{name: name, koanfKey: koanfKey, category: category, usage: usage, value: def}
+}
+
+func intFlag(name, koanfKey, category, usage string, def int) flagDef {
+	return flagDef{name: name, koanfKey: koanfKey, category: category, usage: usage, value: def}
+}
+
+func int64Flag(name, koanfKey, category, usage string, def int64) flagDef {
+	return flagDef{name: name, koanfKey: koanfKey, category: category, usage: usage, value: def}
+}
+
+func boolFlag(name, koanfKey, category, usage string, def bool) flagDef {
+	return flagDef{name: name, koanfKey: koanfKey, category: category, usage: usage, value: def}
+}
+
+// register defines this flag on fs. The default arm panics rather than skipping:
+// a kind nothing handles used to mean the flag silently vanished from -help and
+// from the defaults map, with no compile or test signal, which is exactly how
+// int64Default came to be dropped in prefixFlags.
+func (fd flagDef) register(fs *flag.FlagSet) {
+	switch v := fd.value.(type) {
+	case string:
+		fs.String(fd.name, v, fd.usage)
+	case int:
+		fs.Int(fd.name, v, fd.usage)
+	case int64:
+		fs.Int64(fd.name, v, fd.usage)
+	case bool:
+		fs.Bool(fd.name, v, fd.usage)
+	default:
+		panic(fmt.Sprintf("config: flag %q has an unsupported default type %T", fd.name, fd.value))
+	}
+}
+
 // ExtraFlagDef defines a string CLI flag that is not part of the hub's own
 // config but should be parsed alongside it (e.g. worker-specific flags in
 // solo mode).
+//
+// String-only by construction: extras land in Config.Extras, a
+// map[string]string read back through k.String, so there is no other kind for
+// StrDefault to be a default FOR.
 type ExtraFlagDef struct {
 	Name       string
 	KoanfKey   string
 	Usage      string
-	StrDefault string // used when the flag is a string
+	StrDefault string
 	// Category groups the flag in the help output; it must be one of
 	// hubFlagCategoryOrder. Empty defaults to "Server options", which is where
 	// the solo/dev launcher's own extras belong.
@@ -222,79 +708,74 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	// Pre-scan for -config flag.
 	configPath := internalconfig.ExtractConfigFlag(args, configFile)
 
-	// All available flags with their definitions.
-	type flagDef struct {
-		name     string
-		koanfKey string
-		category string
-		usage    string
-		// Exactly one of these is set.
-		strDefault  *string
-		intDefault  *int
-		boolDefault *bool
-	}
-
 	// prefixFlags creates flagDefs by prepending a CLI and koanf prefix to
 	// a set of base definitions, replacing "{name}" in usage strings.
 	prefixFlags := func(cliPrefix, koanfPrefix, displayName, category string, base []flagDef) []flagDef {
 		out := make([]flagDef, len(base))
 		for i, f := range base {
-			out[i] = flagDef{
-				name:        cliPrefix + "-" + f.name,
-				koanfKey:    koanfPrefix + "." + f.koanfKey,
-				category:    category,
-				usage:       strings.Replace(f.usage, "{name}", displayName, 1),
-				strDefault:  f.strDefault,
-				intDefault:  f.intDefault,
-				boolDefault: f.boolDefault,
-			}
+			// Copy the whole struct and override only what a prefix changes.
+			// Listing the carried-over fields by hand is how int64Default came
+			// to be silently dropped the moment flagDef grew it: the zero value
+			// is a valid nil, so the flag simply vanished from -help with no
+			// compile or test signal. Whole-struct assignment makes the next
+			// field impossible to forget.
+			out[i] = f
+			out[i].name = cliPrefix + "-" + f.name
+			out[i].koanfKey = koanfPrefix + "." + f.koanfKey
+			out[i].category = category
+			out[i].usage = strings.Replace(f.usage, "{name}", displayName, 1)
 		}
 		return out
 	}
 
 	// Base flag templates for PostgreSQL-compatible and MySQL-compatible backends.
 	postgresBaseFlags := []flagDef{
-		{"dsn", "dsn", "", "{name} connection string", ptrconv.Ptr(""), nil, nil},
-		{"max-conns", "max_conns", "", "{name} maximum open connections", nil, ptrconv.Ptr(25), nil},
-		{"min-conns", "min_conns", "", "{name} minimum pool connections kept alive", nil, ptrconv.Ptr(5), nil},
-		{"conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "", "{name} connection max lifetime in seconds", nil, ptrconv.Ptr(3600), nil},
-		{"max-conn-idle-time-seconds", "max_conn_idle_time_seconds", "", "{name} max idle time per connection in seconds", nil, ptrconv.Ptr(300), nil},
-		{"health-check-period-seconds", "health_check_period_seconds", "", "{name} pool health check period in seconds", nil, ptrconv.Ptr(30), nil},
+		strFlag("dsn", "dsn", "", "{name} connection string", ""),
+		intFlag("max-conns", "max_conns", "", "{name} maximum open connections", 25),
+		intFlag("min-conns", "min_conns", "", "{name} minimum pool connections kept alive", 5),
+		intFlag("conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "", "{name} connection max lifetime in seconds", 3600),
+		intFlag("max-conn-idle-time-seconds", "max_conn_idle_time_seconds", "", "{name} max idle time per connection in seconds", 300),
+		intFlag("health-check-period-seconds", "health_check_period_seconds", "", "{name} pool health check period in seconds", 30),
 	}
 	mysqlBaseFlags := []flagDef{
-		{"dsn", "dsn", "", "{name} connection string", ptrconv.Ptr(""), nil, nil},
-		{"max-conns", "max_conns", "", "{name} maximum open connections", nil, ptrconv.Ptr(25), nil},
-		{"max-idle-conns", "max_idle_conns", "", "{name} maximum idle connections", nil, ptrconv.Ptr(5), nil},
-		{"conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "", "{name} connection max lifetime in seconds", nil, ptrconv.Ptr(3600), nil},
-		{"conn-max-idle-time-seconds", "conn_max_idle_time_seconds", "", "{name} max idle time per connection in seconds", nil, ptrconv.Ptr(300), nil},
+		strFlag("dsn", "dsn", "", "{name} connection string", ""),
+		intFlag("max-conns", "max_conns", "", "{name} maximum open connections", 25),
+		intFlag("max-idle-conns", "max_idle_conns", "", "{name} maximum idle connections", 5),
+		intFlag("conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "", "{name} connection max lifetime in seconds", 3600),
+		intFlag("conn-max-idle-time-seconds", "conn_max_idle_time_seconds", "", "{name} max idle time per connection in seconds", 300),
 	}
 
 	allFlags := []flagDef{
-		{"listen", "listen", "Server options", "TCP listen address (e.g. ':4327' or '127.0.0.1:4327')", ptrconv.Ptr(listen), nil, nil},
-		{"local-listen", "local_listen", "Server options", "local IPC listen URL (unix:<path> or npipe:<name>); platform default used if empty", ptrconv.Ptr(""), nil, nil},
-		{"public-url", "public_url", "Server options", "public base URL when running behind a reverse proxy (e.g. 'https://hub.example.com')", ptrconv.Ptr(""), nil, nil},
-		{"data-dir", "data_dir", "Server options", "data directory", ptrconv.Ptr("."), nil, nil},
-		{"dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ptrconv.Ptr(""), nil, nil},
-		{"log-level", "log_level", "Server options", "log level (debug, info, warn, error)", ptrconv.Ptr(defaultLogLevel), nil, nil},
-		{"signup-enabled", "signup_enabled", "Auth options", "enable user sign-up", nil, nil, ptrconv.Ptr(false)},
-		{"email-verification-required", "email_verification_required", "Auth options", "require email verification on sign-up", nil, nil, ptrconv.Ptr(false)},
-		{"smtp-host", "smtp_host", "SMTP options", "SMTP server host", ptrconv.Ptr(""), nil, nil},
-		{"smtp-port", "smtp_port", "SMTP options", "SMTP server port", nil, ptrconv.Ptr(587), nil},
-		{"smtp-username", "smtp_username", "SMTP options", "SMTP username", ptrconv.Ptr(""), nil, nil},
-		{"smtp-password", "smtp_password", "SMTP options", "SMTP password", ptrconv.Ptr(""), nil, nil},
-		{"smtp-from-address", "smtp_from_address", "SMTP options", "SMTP from address", ptrconv.Ptr(""), nil, nil},
-		{"smtp-tls-mode", "smtp_tls_mode", "SMTP options", "SMTP TLS mode (" + validSmtpTLSModes + ")", ptrconv.Ptr(SmtpTLSModeSTARTTLS), nil, nil},
-		{"api-timeout-seconds", "api_timeout_seconds", "Timeout and limit options", "general API timeout in seconds", nil, ptrconv.Ptr(DefaultAPITimeoutSeconds), nil},
-		{"agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "Timeout and limit options", "agent startup timeout in seconds", nil, ptrconv.Ptr(DefaultAgentStartupTimeoutSeconds), nil},
-		{"worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "Timeout and limit options", "worktree creation timeout in seconds", nil, ptrconv.Ptr(DefaultWorktreeCreateTimeoutSeconds), nil},
-		{"max-message-size", "max_message_size", "Timeout and limit options", "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom", nil, ptrconv.Ptr(0), nil},
+		strFlag("listen", "listen", "Server options", "TCP listen address (e.g. ':4327' or '127.0.0.1:4327')", listen),
+		strFlag("local-listen", "local_listen", "Server options", "local IPC listen URL (unix:<path> or npipe:<name>); platform default used if empty", ""),
+		strFlag("public-url", "public_url", "Server options", "public base URL when running behind a reverse proxy (e.g. 'https://hub.example.com')", ""),
+		strFlag("data-dir", "data_dir", "Server options", "data directory", "."),
+		strFlag("dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ""),
+		strFlag("log-level", "log_level", "Server options", "log level (debug, info, warn, error)", defaultLogLevel),
+		boolFlag("signup-enabled", "signup_enabled", "Auth options", "enable user sign-up", false),
+		boolFlag("email-verification-required", "email_verification_required", "Auth options", "require email verification on sign-up", false),
+		strFlag("smtp-host", "smtp_host", "SMTP options", "SMTP server host", ""),
+		intFlag("smtp-port", "smtp_port", "SMTP options", "SMTP server port", 587),
+		strFlag("smtp-username", "smtp_username", "SMTP options", "SMTP username", ""),
+		strFlag("smtp-password", "smtp_password", "SMTP options", "SMTP password", ""),
+		strFlag("smtp-from-address", "smtp_from_address", "SMTP options", "SMTP from address", ""),
+		strFlag("smtp-tls-mode", "smtp_tls_mode", "SMTP options", "SMTP TLS mode ("+validSmtpTLSModes+")", SmtpTLSModeSTARTTLS),
+		intFlag("api-timeout-seconds", "api_timeout_seconds", "Timeout and limit options", "general API timeout in seconds", DefaultAPITimeoutSeconds),
+		intFlag("agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "Timeout and limit options", "agent startup timeout in seconds", DefaultAgentStartupTimeoutSeconds),
+		intFlag("worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "Timeout and limit options", "worktree creation timeout in seconds", DefaultWorktreeCreateTimeoutSeconds),
+		intFlag("max-message-size", "max_message_size", "Timeout and limit options", "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom", 0),
+		int64Flag("relay-queue-memory-budget", "relay_queue_memory_budget", "Timeout and limit options", "bytes the Hub's browser channel relays may queue between them (0 = auto-size from the process memory limit)", int64(0)),
+		int64Flag("worker-queue-memory-budget", "worker_queue_memory_budget", "Timeout and limit options", "bytes the Hub's Worker connections may queue between them (0 = auto-size from the process memory limit)", int64(0)),
+		int64Flag("userevents-queue-memory-budget", "userevents_queue_memory_budget", "Timeout and limit options", "bytes the Hub's user-event subscribers may hold between them (0 = auto-size from the process memory limit)", int64(0)),
+		int64Flag("max-connections-per-user", "max_connections_per_user", "Timeout and limit options", "concurrent long-lived connections one user may hold (0 = unlimited); an active browser tab holds two", int64(DefaultMaxConnectionsPerUser)),
+		int64Flag("max-workers-per-user", "max_workers_per_user", "Timeout and limit options", "Workers one user may have registered at once (0 = unlimited)", int64(DefaultMaxWorkersPerUser)),
 		// Storage configuration
-		{"storage-type", "storage.type", "Storage common options", "storage backend type (" + validStorageTypes + ")", ptrconv.Ptr(""), nil, nil},
+		strFlag("storage-type", "storage.type", "Storage common options", "storage backend type ("+validStorageTypes+")", ""),
 		// SQLite (default)
-		{"storage-sqlite-path", "storage.sqlite.path", "SQLite storage options", "SQLite database file path (default: {data_dir}/hub.db)", ptrconv.Ptr(""), nil, nil},
-		{"storage-sqlite-max-conns", "storage.sqlite.max_conns", "SQLite storage options", "SQLite maximum open connections", nil, ptrconv.Ptr(sqlitedb.DefaultMaxConns), nil},
-		{"storage-sqlite-cache-size", "storage.sqlite.cache_size", "SQLite storage options", "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB)", nil, ptrconv.Ptr(0), nil},
-		{"storage-sqlite-mmap-size", "storage.sqlite.mmap_size", "SQLite storage options", "SQLite memory-mapped I/O size in bytes (0 = disabled)", nil, ptrconv.Ptr(0), nil},
+		strFlag("storage-sqlite-path", "storage.sqlite.path", "SQLite storage options", "SQLite database file path (default: {data_dir}/hub.db)", ""),
+		intFlag("storage-sqlite-max-conns", "storage.sqlite.max_conns", "SQLite storage options", "SQLite maximum open connections", sqlitedb.DefaultMaxConns),
+		intFlag("storage-sqlite-cache-size", "storage.sqlite.cache_size", "SQLite storage options", "SQLite page cache size (positive = pages, negative = KiB, e.g. -65536 = 64 MiB)", 0),
+		intFlag("storage-sqlite-mmap-size", "storage.sqlite.mmap_size", "SQLite storage options", "SQLite memory-mapped I/O size in bytes (0 = disabled)", 0),
 	}
 	// PostgreSQL and PostgreSQL-compatible backends.
 	allFlags = append(allFlags, prefixFlags("storage-postgres", "storage.postgres", "PostgreSQL", "PostgreSQL storage options", postgresBaseFlags)...)
@@ -321,15 +802,9 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	defaults := make(map[string]interface{}, len(allFlags))
 
 	for _, fd := range allFlags {
-		// Always add to defaults.
-		switch {
-		case fd.strDefault != nil:
-			defaults[fd.koanfKey] = *fd.strDefault
-		case fd.intDefault != nil:
-			defaults[fd.koanfKey] = *fd.intDefault
-		case fd.boolDefault != nil:
-			defaults[fd.koanfKey] = *fd.boolDefault
-		}
+		// Always add to defaults. One assignment, not a four-arm switch: the
+		// value already carries its own type.
+		defaults[fd.koanfKey] = fd.value
 
 		// Register CLI flag only if allowed.
 		if allowedFlags != nil && !allowedFlags[fd.name] {
@@ -337,25 +812,27 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		}
 		fieldMap[fd.name] = fd.koanfKey
 		usageCategories[fd.name] = fd.category
-		switch {
-		case fd.strDefault != nil:
-			fs.String(fd.name, *fd.strDefault, fd.usage)
-		case fd.intDefault != nil:
-			fs.Int(fd.name, *fd.intDefault, fd.usage)
-		case fd.boolDefault != nil:
-			fs.Bool(fd.name, *fd.boolDefault, fd.usage)
-		}
+		fd.register(fs)
 	}
-	// Register extra flags (e.g. worker-specific flags in solo mode).
+	// Register extra flags (e.g. worker-specific flags in solo mode). Same four
+	// statements as the loop above, through the same flagDef, so a change to how
+	// a flag is registered reaches extras too -- hand-rolling the fs.String here
+	// is what let the two drift.
+	//
+	// One deliberate difference: no allowedFlags check. CLIFlags names the subset
+	// of the HUB's own flags a launcher exposes, and an extra is by definition not
+	// in that list, so honouring it here would drop every extra the caller asked
+	// for.
 	for _, ef := range opts.ExtraFlags {
-		fieldMap[ef.Name] = ef.KoanfKey
-		defaults[ef.KoanfKey] = ef.StrDefault
 		category := ef.Category
 		if category == "" {
 			category = "Server options"
 		}
-		usageCategories[ef.Name] = category
-		fs.String(ef.Name, ef.StrDefault, ef.Usage)
+		fd := strFlag(ef.Name, ef.KoanfKey, category, ef.Usage, ef.StrDefault)
+		defaults[fd.koanfKey] = fd.value
+		fieldMap[fd.name] = fd.koanfKey
+		usageCategories[fd.name] = fd.category
+		fd.register(fs)
 	}
 
 	showVersion := fs.Bool("version", false, "print version and exit")
@@ -530,7 +1007,81 @@ func (c *Config) Validate() error {
 	if err := channelwire.ValidateConfiguredMaxMessageSize(c.MaxMessageSize); err != nil {
 		return err
 	}
+	if err := c.validateQueueMemoryBudgets(); err != nil {
+		return err
+	}
+	if err := c.validateMaxWorkersPerUser(); err != nil {
+		return err
+	}
+	if err := c.validateMaxConnectionsPerUser(); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+// validateMaxConnectionsPerUser rejects a cap that would refuse connections a
+// working client has to make.
+//
+// Zero is unlimited and always allowed. A negative is not a smaller cap, it is a
+// value nobody meant, so it fails loudly rather than being silently read as
+// unlimited. Between zero and MinConnectionsPerUser the setting stops bounding
+// abuse and starts breaking the first tab -- see MinConnectionsPerUser for the
+// arithmetic.
+func (c *Config) validateMaxConnectionsPerUser() error {
+	switch {
+	case c.MaxConnectionsPerUser < 0:
+		return fmt.Errorf("max_connections_per_user must not be negative, got %d (0 = unlimited)",
+			c.MaxConnectionsPerUser)
+	case c.MaxConnectionsPerUser == 0:
+		return nil
+	case c.MaxConnectionsPerUser < MinConnectionsPerUser:
+		return fmt.Errorf(
+			"max_connections_per_user must be 0 (unlimited) or at least %d, got %d: "+
+				"an active browser tab holds two connections, so a smaller cap leaves "+
+				"no room for a second tab or for the desktop and CLI clients",
+			MinConnectionsPerUser, c.MaxConnectionsPerUser)
+	}
+	return nil
+}
+
+// validateMaxWorkersPerUser rejects a cap nobody meant. Zero is unlimited; a
+// negative is not a smaller cap, so it fails loudly rather than being read as
+// unlimited. There is no lower bound above one: unlike a browser tab, which
+// needs two connections before it works at all, one Worker is a working
+// deployment.
+func (c *Config) validateMaxWorkersPerUser() error {
+	if c.MaxWorkersPerUser < 0 {
+		return fmt.Errorf("max_workers_per_user must not be negative, got %d (0 = unlimited)",
+			c.MaxWorkersPerUser)
+	}
+	return nil
+}
+
+// validateQueueMemoryBudgets rejects an explicitly configured pool that is too
+// small to do its job.
+//
+// No class derives its frame bound from an operator knob today -- all three
+// size themselves from fixed wire limits, which is the point workerQueueClass
+// argues at length -- so this runs after the other validators for no reason
+// stronger than reading order. A class that ever does read one would need that
+// knob checked first.
+//
+// Catching it here turns "every Worker fences" or "every tab's connect is
+// refused" into a startup error naming the key. Only an explicitly configured
+// value is checked: an auto-sized one clears the bar by construction, because
+// resolve clamps to the very same queueClass.minimum.
+func (c *Config) validateQueueMemoryBudgets() error {
+	for _, q := range c.queueClasses() {
+		if q.configured == 0 {
+			continue
+		}
+		minimum := q.minimum()
+		if q.configured < minimum {
+			return fmt.Errorf("%s must be 0 (auto) or at least %s, got %s", q.key,
+				memlimit.HumanBytes(minimum), memlimit.HumanBytes(q.configured))
+		}
+	}
 	return nil
 }
 

@@ -16,6 +16,8 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+
+	"github.com/leapmux/leapmux/internal/util/panicsafe"
 )
 
 // SendFunc is the signature for sending a ChannelMessage to a frontend client.
@@ -615,11 +617,8 @@ func fanOutTeardown(ids []string, work func(id string)) {
 		go func(id string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("recovered from panic in channel teardown", "channel_id", id, "panic", r)
-				}
-			}()
+			defer panicsafe.RecoverAndLog(nil,
+				"recovered from panic in channel teardown", "channel_id", id)
 			work(id)
 		}(id)
 	}

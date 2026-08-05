@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/sendq"
 )
 
 // Recorder is a mutex-guarded capture of ConnectResponse frames. A drained
@@ -81,11 +82,29 @@ func NewRecordedConn(tb testing.TB, workerID string) (*workermgr.Conn, *Recorder
 // Use when the test needs to park, fail, or otherwise intercept the write.
 // The pump is owned exclusively by the background drain goroutine and is not
 // returned -- a second Drain would panic.
+//
+// Each fixture gets its OWN single-member pool, so a test that fills one Conn's
+// queue cannot change what a sibling test's Conn is admitted -- and so no test
+// depends on the host's memory. Tests that want to exercise shared-pool pressure
+// build the pool themselves and call workermgr.NewConn directly.
+//
+// It comes from NewMaxBytesPoolForTest rather than a bare Capacity, because a
+// pool left on the default floors grants a lone member max(Capacity-used,
+// DefaultMaxFloor), which settles at about half of Capacity. A fixture whose
+// ceiling is half the number it names would let an over-budget test pass while
+// never reaching the branch it claims to exercise.
+//
+// The fixture names no owner. A Manager built by a test is unlimited unless it
+// calls SetMaxWorkersPerUser, so the empty owner these conns share costs nothing
+// -- but a test that DOES set that cap must build its conns with
+// workermgr.NewConn and real owners, or every one of them lands in the same
+// bucket.
 func NewConnWithWrite(tb testing.TB, workerID string, write func(*leapmuxv1.ConnectResponse) error) *workermgr.Conn {
 	tb.Helper()
 	require.NotNil(tb, write)
 	ctx, cancel := context.WithCancel(context.Background())
-	conn, pump := workermgr.NewConn(ctx, cancel, workerID, write, nil)
+	pool := sendq.NewMaxBytesPoolForTest()
+	conn, pump := workermgr.NewConn(ctx, cancel, workerID, "", pool, write, nil)
 	tb.Cleanup(conn.Fence)
 	go drainUntilDone(conn, pump)
 	return conn

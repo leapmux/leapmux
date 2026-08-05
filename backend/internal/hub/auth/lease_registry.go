@@ -2,8 +2,11 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/leapmux/leapmux/channelwire"
 )
 
 type authenticatedLease struct {
@@ -36,20 +39,84 @@ type ChannelExpiryRescheduler interface {
 	RescheduleExpiryByBearer(ref BearerRef, newExpiry CredentialDeadline)
 }
 
+// LeaseOutcome says whether a lease was granted and, when it was not, WHY.
+//
+// A bare bool used to answer this, and the one caller turned every false into
+// "authentication expired or revoked" -- true for the only refusal there was.
+// A connection cap is a second, unrelated reason to say no, and telling a user
+// their credential expired when they simply have too many tabs open is a lie
+// that costs them a re-login they do not need.
+type LeaseOutcome int
+
+const (
+	// LeaseGranted: the lease is registered and the release function is live.
+	LeaseGranted LeaseOutcome = iota
+	// LeaseRefusedCredential: the credential is expired or revoked. The client
+	// has to re-authenticate; retrying the same connection cannot help.
+	LeaseRefusedCredential
+	// LeaseRefusedTooManyConnections: this user already holds MaxConnectionsPerUser
+	// long-lived connections. Nothing is wrong with the credential, and the
+	// condition clears the moment any of them closes.
+	LeaseRefusedTooManyConnections
+)
+
+// Label returns the outcome's stable token. It is BOTH the value of the
+// `reason` label on leapmux_connections_refused_total and the WebSocket close
+// reason the Hub sends when it refuses the connection, so an operator's metric
+// and the client's branch are reading one vocabulary rather than two spellings
+// of it that can disagree.
+//
+// Callers must use this rather than a literal, and every value must stay a valid
+// close reason: RFC 6455 caps one at 123 bytes and coder/websocket enforces that
+// on send, so a descriptive sentence here would not go out at all. The refusal
+// tokens are also client-facing contract -- "close a tab" and "re-authenticate"
+// are opposite advice -- so renaming one is a wire change, not a cosmetic one.
+func (o LeaseOutcome) Label() string {
+	switch o {
+	case LeaseGranted:
+		return "granted"
+	case LeaseRefusedCredential:
+		return "credential"
+	case LeaseRefusedTooManyConnections:
+		// The token channelwire already defines for this close, not a second
+		// copy of the same string: nothing checked that the two agreed, and the
+		// frontend asserts against channelwire's pinned testdata.
+		return channelwire.CloseReasonTooManyConnections
+	default:
+		return "unknown"
+	}
+}
+
+// SetMaxConnectionsPerUser bounds how many long-lived authenticated connections
+// one user may hold at once. Zero (the default) is unlimited. Call once at
+// startup before serving requests.
+//
+// A setter rather than a constructor argument for the same reason
+// SetChannelExpiryRescheduler is one: the two interceptor constructors have
+// twenty call sites between them, and a registry built directly as
+// &AuthContextRegistry{state: &authState{}} -- which most of this package's
+// tests do -- must come out unlimited. The zero value gives that for free.
+func (c *AuthContextRegistry) SetMaxConnectionsPerUser(n int64) {
+	if c == nil || c.state == nil {
+		return
+	}
+	c.state.maxConnectionsPerUser.Store(n)
+}
+
 // RegisterAuthenticatedLease ties a long-lived connection to the concrete
 // credential that authenticated it. Registration and revocation checks share
 // one lock with mark publication, closing the upgrade/revocation race. The
 // returned release function removes the lease without canceling the caller.
-func (c *AuthContextRegistry) RegisterAuthenticatedLease(ctx context.Context, user *UserInfo, cancel context.CancelFunc) (func(), bool) {
+func (c *AuthContextRegistry) RegisterAuthenticatedLease(ctx context.Context, user *UserInfo, cancel context.CancelFunc) (func(), LeaseOutcome) {
 	noop := func() {}
 	if c == nil || c.state == nil {
-		return noop, true
+		return noop, LeaseGranted
 	}
 	if user == nil || cancel == nil {
 		if cancel != nil {
 			cancel()
 		}
-		return noop, false
+		return noop, LeaseRefusedCredential
 	}
 
 	// Resolve the credential's CURRENT deadline OFF the lock first, so a session
@@ -74,7 +141,37 @@ func (c *AuthContextRegistry) RegisterAuthenticatedLease(ctx context.Context, us
 	if !effectiveExpiry.IsCurrent(time.Now()) || !c.isAuthContextCurrentLocked(user) {
 		c.state.revocationMu.Unlock()
 		cancel()
-		return noop, false
+		return noop, LeaseRefusedCredential
+	}
+	// The cap is tested against leasesByUser and committed by addLeaseLocked
+	// inside ONE critical section, which is what makes it a bound rather than a
+	// suggestion: a check taken before the lock would let every connection in a
+	// burst read the same under-cap count and all of them register.
+	//
+	// AFTER the credential guards on purpose. A user at the cap whose session has
+	// also expired is told the credential is the problem, because that is the one
+	// they must act on -- closing tabs would not get them back in.
+	//
+	// The count is taken ONCE, into a local the branch and the log line share. A
+	// second len() is a second observation even under the same lock, so the
+	// number an operator reads has to be the one that actually gated the
+	// decision -- and this is the process-wide lock every connect and every
+	// revocation serializes on, so the map lookup and the user-id formatting it
+	// needs happen once instead of twice. Nested inside the cap check rather than
+	// hoisted above it so an unlimited registry -- the zero value, which every
+	// embedder that never calls the setter gets -- does neither.
+	if maxPerUser := c.state.maxConnectionsPerUser.Load(); maxPerUser > 0 {
+		if held := int64(len(c.state.leasesByUser[user.ID.String()])); held >= maxPerUser {
+			c.state.revocationMu.Unlock()
+			cancel()
+			// Logged where the count and the cap are both in hand, and at Warn
+			// because it is the operator's to act on: either a client is leaking
+			// sockets or the cap is under what this fleet's users legitimately hold.
+			// After the unlock, so a slow log handler cannot hold the auth lock.
+			slog.Warn("refusing connection: user is at its concurrent-connection cap",
+				"user_id", user.ID, "held", held, "limit", maxPerUser)
+			return noop, LeaseRefusedTooManyConnections
+		}
 	}
 	lease := &authenticatedLease{user: *user, cancel: cancel}
 	lease.user.CredentialExpiresAt = effectiveExpiry
@@ -100,7 +197,7 @@ func (c *AuthContextRegistry) RegisterAuthenticatedLease(ctx context.Context, us
 				lease.timer.Stop()
 			}
 		})
-	}, true
+	}, LeaseGranted
 }
 
 // currentCredentialExpiryLocked returns the most permissive teardown deadline

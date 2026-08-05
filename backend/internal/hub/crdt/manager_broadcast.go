@@ -30,15 +30,48 @@ func (m *Manager) snapshotSubs() []*Subscriber {
 // (stable visibility for every subscriber) neither is built at all.
 //
 // Per-subscriber visibility is computed inline from each subscriber's filter
-// (see batchFanout.sendTo) rather than prebuilt into a per-subscriber
+// (see batchFanout.planFor) rather than prebuilt into a per-subscriber
 // map, keeping the hot path free of an O(affected-entities) map allocation per
 // subscriber.
+//
+// The two halves split the way broadcastTo's do: prewarmBatch builds the fan-out
+// and plans -- and marshals -- every frame with m.projection NOT held, and
+// fanOutBatch delivers them under it. The nil arm is this path's one asymmetry
+// with broadcastTo, and it is deliberate: an empty subscriber snapshot is a
+// conclusive answer HERE and only here, so there is nothing to fan out and no
+// pass to run. See prewarmBatch for the interlock that makes it conclusive.
 func (m *Manager) broadcastBatch(batch *leapmuxv1.OpBatch, res ValidationResult) {
-	m.projection.Lock()
-	defer m.projection.Unlock()
+	if fan := m.prewarmBatch(batch, res); fan != nil {
+		m.fanOutBatch(fan)
+	}
+}
+
+// prewarmBatch is broadcastBatch's unlocked half: it builds the fanout that
+// describes this batch and plans -- and MARSHALS -- every frame the currently
+// published subscribers will receive, all with m.projection NOT held. It is the
+// counterpart of broadcastFrame.prewarm on the presence path.
+//
+// Everything it does only builds frames, and none of it holds m.projection:
+// snapshotSubs is a published, replaced-not-mutated slice (see its doc), and the
+// memos it fills are goroutine-local to this call (see batchFanout). What that
+// buys is spelled out at the pre-warm loop below.
+//
+// Returns nil when no subscriber is published, and that nil SKIPS THE LOCKED
+// PASS -- which broadcastTo's pre-check deliberately never does (see
+// broadcastFrame.prewarm). The difference is a second interlock this path has and
+// that one does not. registerLocked does {capture m.state, set the suppress gate
+// from it, Add} under m.mu.RLock, and commitState publishes under m.mu.Lock, so
+// the two are mutually exclusive; commit runs before this broadcast. A
+// registration whose capture won that race published its subscriber BEFORE
+// commitState and so appears in the snapshot below; one that lost it captured the
+// post-commit generation, whose max_hlc is at or above this batch, so
+// suppressedFor skips the batch here and the bootstrap frame carries it instead.
+// Presence has no such gate -- and no bootstrap arm to fall back to -- which is
+// why broadcastTo must take the lock unconditionally.
+func (m *Manager) prewarmBatch(batch *leapmuxv1.OpBatch, res ValidationResult) *batchFanout {
 	subs := m.snapshotSubs()
 	if len(subs) == 0 {
-		return
+		return nil
 	}
 	atHLC := lastBatchHLC(batch)
 
@@ -123,7 +156,7 @@ func (m *Manager) broadcastBatch(batch *leapmuxv1.OpBatch, res ValidationResult)
 	}
 
 	// Ordering + atHLC are subscriber-independent, so pay for them once. atHLC
-	// (the batch's last-op canonical HLC) is hoisted onto the fanout so sendTo /
+	// (the batch's last-op canonical HLC) is hoisted onto the fanout so planFor /
 	// emitCatchUpFrames read f.atHLC instead of recomputing lastBatchHLC once
 	// per subscriber.
 	fan := &batchFanout{
@@ -135,8 +168,51 @@ func (m *Manager) broadcastBatch(batch *leapmuxv1.OpBatch, res ValidationResult)
 		batchEventCache: batchEventCache,
 		materialized:    materialized,
 		removed:         removed,
+		plans:           newBatchPlans(len(subs)),
 	}
+	// Plan -- and marshal -- every frame these subscribers will get, with the
+	// lock NOT held. The subscriber queue charges each frame on the way in and
+	// asking its size forces the marshal, so doing this inside the fan-out
+	// serialized a multi-megabyte batch frame while holding the lock that gates
+	// every SubmitOps, presence update and projection read for this user.
+	//
+	// The pass RECORDS what it planned (batchPlans), so fanOutBatch is a replay
+	// rather than a second run of the planner: the affected-ref walk, its two
+	// visibility probes per ref, the workspace mask and the planner's per-frame
+	// thunks are all paid once per subscriber per broadcast. Caches are
+	// goroutine-local to this call, so filling them here rather than under the
+	// lock changes nothing about their safety.
 	for _, sub := range subs {
+		fan.prewarmFor(sub)
+	}
+	return fan
+}
+
+// fanOutBatch is broadcastBatch's locked pass: it delivers `fan`'s frames to
+// every subscriber the snapshot admits AS OF the lock.
+//
+// Taking m.projection is UNCONDITIONAL here, exactly as fanOutFrame's is -- this
+// pass has no pre-check it may skip the lock on. (Its CALLER may skip the whole
+// pass when nobody was published, which the presence path may not; that
+// asymmetry is argued in prewarmBatch and lives there, not here.) The lock is
+// what orders this fan-out against the register-and-capture-until step (see
+// registerLocked).
+//
+// Re-snapshotting under it is the other half of that ordering: what gets served
+// is the set AS OF the lock, never the slice the pre-warm read. An entry the
+// recording does not cover -- a registration published during the pre-warm, or a
+// clone re-published by MutateEach under it -- is planned here against its
+// current value and pays for its own frames, which is exactly the cost the
+// pre-warm removes for everyone else (see batchFanout.sendTo). Whether such a
+// subscriber ends up with frames or with an empty plan stays the PLANNER's
+// decision; this loop must not carry a second copy of it.
+//
+// `fan` MUST be non-nil: prewarmBatch's nil is the signal to skip this pass, not
+// a value to pass through.
+func (m *Manager) fanOutBatch(fan *batchFanout) {
+	m.projection.Lock()
+	defer m.projection.Unlock()
+	for _, sub := range m.snapshotSubs() {
 		fan.sendTo(sub)
 	}
 }
@@ -166,7 +242,7 @@ func materializeRank(k EntityKind) int {
 // orderedAffectedRefs flattens AffectedEntities into a deterministic slice.
 //
 // Go map iteration is randomized, and frame order is a WIRE CONTRACT here (see
-// batchFanout.sendTo), so the randomization has to be removed rather
+// batchFanout.planFor), so the randomization has to be removed rather
 // than merely tolerated: a cross-workspace move materializes both a node and
 // the tab anchored to it, and delivering the tab first reopens exactly the
 // window this ordering exists to close.
@@ -253,7 +329,7 @@ type subscriberVisibility struct {
 }
 
 // visibilityFor is the SINGLE constructor for a subscriberVisibility verdict
-// from a transition + filter. Both catch-up paths (broadcast's sendTo and
+// from a transition + filter. Both catch-up paths (broadcast's planFor and
 // resume's buildResumeDelta) call it, so the "how pre/post map to visibility"
 // rule lives in one place and cannot drift between the two paths.
 //
@@ -379,7 +455,7 @@ func opVisibleForSubscriber(ref EntityRef, v subscriberVisibility) bool {
 // (!pre && post): the entity ENTERED the subscriber's allowed set this batch,
 // so it is delivered as an EntityMaterialized frame (its full record) rather
 // than the raw move op (which would carry pre-state from a hidden workspace).
-// Shared by batchFanout.sendTo and buildResumeDelta.
+// Shared by batchFanout.planFor and buildResumeDelta.
 func isMaterializedTransition(v subscriberVisibility) bool {
 	return !v.preVisible && v.postVisible
 }
@@ -387,16 +463,30 @@ func isMaterializedTransition(v subscriberVisibility) bool {
 // isRemovedTransition reports the becoming-hidden classification (pre && !post):
 // the entity LEFT the subscriber's allowed set this batch, so it is delivered
 // as an EntityRemoved frame so the client evicts it. Shared by
-// batchFanout.sendTo and buildResumeDelta.
+// batchFanout.planFor and buildResumeDelta.
 func isRemovedTransition(v subscriberVisibility) bool {
 	return v.preVisible && !v.postVisible
 }
 
 // batchFanout holds everything one batch broadcast keeps constant across
 // subscribers, so the per-subscriber send takes only the subscriber. Built once
-// per broadcastBatch; every field is read-only to sendTo except batchEventCache,
-// which memoizes across subscribers by design and is safe because broadcastBatch
-// holds the projection lock for the whole fan-out.
+// per broadcastBatch (by prewarmBatch), and ONE FANOUT DESCRIBES ONE BATCH:
+// atHLC, batchEndEvent, batchEventCache and plans are all that batch's, so a
+// caller must build a fresh fanout per batch rather than re-point an existing one.
+//
+// Every field is read-only to planFor except the memos (batchEventCache,
+// batchEndEvent, plans, and the materialized / removed closures' own maps),
+// which memoize across subscribers and across the two passes by design.
+//
+// NOT guarded by the projection lock, and must not be documented as if it were:
+// the pre-warm pass fills all of them BEFORE fanOutBatch takes m.projection.
+// What makes them safe is ownership -- every one of them is created by a single
+// prewarmBatch call, reachable only through the `fan` it returns and never stored
+// anywhere else, and consumed synchronously by the one broadcastBatch call that
+// owns that fanout. Two concurrent broadcastBatch calls therefore own two private
+// sets. That argument, not the lock, is what a change here must preserve: fanning
+// the pre-warm out across goroutines would be a data race on four maps no lock
+// covers.
 type batchFanout struct {
 	batch           *leapmuxv1.OpBatch
 	res             ValidationResult
@@ -405,11 +495,103 @@ type batchFanout struct {
 	atHLC           *leapmuxv1.HLC
 	batchEventCache map[uint64]*MarshaledEvent
 	// Lazily built once per broadcast; filter-independent, so unlike
-	// batchEventCache it needs no per-mask key. Guarded by the projection lock
-	// broadcastBatch holds for the whole fan-out, same as batchEventCache.
+	// batchEventCache it needs no per-mask key. Owned by the one broadcastBatch
+	// call this fanout was built for, same as batchEventCache.
 	batchEndEvent *MarshaledEvent
 	materialized  func(EntityRef) *MarshaledEvent
 	removed       func(EntityRef) *MarshaledEvent
+	// plans is the per-subscriber frame recording the pre-warm fills and the
+	// send pass replays. Its zero value works; prewarmBatch pre-sizes it
+	// because it knows the fan-out width.
+	plans batchPlans
+}
+
+// batchPlans memoizes, per subscriber, the ordered wire frames one batch's
+// planner selected -- so broadcastBatch's second pass (fanOutBatch) can REPLAY a
+// plan instead of re-running the planner under the projection lock.
+//
+// A MEMO, never a second producer. The only thing that writes a plan is
+// batchFanout.planFor, and it is the same call BOTH passes make; the send pass
+// merely finds the answer already there. A subscriber this map does not cover is
+// planned on the spot rather than skipped, so the recording can save the
+// classification work but can never decide it.
+//
+// KEYED BY THE PUBLISHED CLONE POINTER, which is what turns staleness into a
+// cache miss by construction rather than a check somebody has to remember.
+// SubscriberController publishes an immutable clone per subscriber and reuses
+// that same pointer on every Add / Remove republish, re-cloning ONLY a
+// subscriber whose Filter actually changed (refreshSnapshotLocked / MutateEach);
+// resumeSuppressThrough is assigned before Add, so the clone's copy is immutable
+// too. A pointer that survives from the pre-warm's snapshot to the locked one
+// therefore denotes the same Filter and the same suppression verdict -- the only
+// two inputs the planner reads off a subscriber. One whose filter moved under the
+// pre-warm, or that registered during it, is a DIFFERENT pointer and falls back
+// to the planner with its current value. So the common case hits and the stale
+// case cannot.
+//
+// Frames live in ONE flat buffer with a per-subscriber span, so a fan-out over N
+// subscribers grows one slice instead of allocating N. Everything here dies with
+// the batchFanout that owns it, and it pins nothing extra while it lives: every
+// frame in the buffer is a cross-subscriber MarshaledEvent the fanout's memo
+// caches already hold for the length of the call.
+type batchPlans struct {
+	frames []*MarshaledEvent
+	spans  map[*Subscriber]planSpan
+}
+
+// planSpan locates one subscriber's plan inside batchPlans.frames.
+//
+// A zero-length span is MEANINGFUL and must stay distinguishable from an absent
+// entry: it is a subscriber the planner deliberately emitted nothing for (see
+// suppressedFor), which must send nothing -- not be re-planned, which is what an
+// "empty means unknown" encoding would do.
+type planSpan struct {
+	off int
+	n   int
+}
+
+// newBatchPlans sizes a recording for a fan-out over `subs` subscribers. The
+// ordinary batch emits two frames per subscriber (its ops and the batch end), so
+// that is the buffer's floor; visibility transitions grow it.
+func newBatchPlans(subs int) batchPlans {
+	return batchPlans{
+		frames: make([]*MarshaledEvent, 0, 2*subs),
+		spans:  make(map[*Subscriber]planSpan, subs),
+	}
+}
+
+// lookup returns sub's recorded plan, and whether one was recorded at all. The
+// second result is the load-bearing one: see planSpan.
+func (p *batchPlans) lookup(sub *Subscriber) ([]*MarshaledEvent, bool) {
+	span, planned := p.spans[sub]
+	if !planned {
+		return nil, false
+	}
+	return p.slice(span.off, span.off+span.n), true
+}
+
+// add appends one frame to the plan currently being recorded. Only
+// planCatchUpSink calls it, in the order emitCatchUpFrames drives the sink,
+// which is what makes a plan a faithful recording of the wire order.
+func (p *batchPlans) add(evt *MarshaledEvent) {
+	p.frames = append(p.frames, evt)
+}
+
+// commit closes the plan that began at offset `off` and returns it.
+func (p *batchPlans) commit(sub *Subscriber, off int) []*MarshaledEvent {
+	if p.spans == nil {
+		p.spans = make(map[*Subscriber]planSpan)
+	}
+	end := len(p.frames)
+	p.spans[sub] = planSpan{off: off, n: end - off}
+	return p.slice(off, end)
+}
+
+// slice hands out one plan's window on the shared buffer with its CAPACITY
+// clipped, so a caller that appends to a plan grows a copy instead of
+// overwriting the next subscriber's frames in place.
+func (p *batchPlans) slice(off, end int) []*MarshaledEvent {
+	return p.frames[off:end:end]
 }
 
 // batchEventFor returns this subscriber's batch frame, shared with same-mask
@@ -419,7 +601,7 @@ type batchFanout struct {
 // "simplified" away: subscriberWorkspaceMask packs bit i per key, and in Go a
 // uint64 shift of >= 64 evaluates to 0, so past 64 workspace keys two
 // subscribers whose verdicts differ only above bit 63 collapse onto one mask and
-// would be handed each other's filtered ops. broadcastBatch leaves the cache nil
+// would be handed each other's filtered ops. prewarmBatch leaves the cache nil
 // in that case, which this arm keeps honouring by also skipping the mask.
 func (f *batchFanout) batchEventFor(sub *Subscriber, visible func() *leapmuxv1.OpBatch) *MarshaledEvent {
 	if f.batchEventCache == nil {
@@ -461,39 +643,95 @@ func batchEventFromOps(visible *leapmuxv1.OpBatch) *MarshaledEvent {
 	})
 }
 
-func (f *batchFanout) sendTo(sub *Subscriber) {
-	// FRAME ORDER IS A CONTRACT — owned by emitCatchUpFrames (materialized →
-	// batch → removed). This adapter supplies live-state record lookup and
-	// fans each frame through the MarshaledEvent memoization caches.
-	atHLC := f.atHLC
-	// Resume catch-up ownership: batches at or below the register-time
-	// high-water ship in the ResumeDelta. Skipping them here prevents
-	// dual-delivery when commitState advanced MaxHlc before until was
-	// sampled under the projection hold (see SubscribeWithACL).
-	if sub.resumeSuppressThrough != nil && atHLC != nil && HLCCmp(atHLC, sub.resumeSuppressThrough) <= 0 {
-		return
+// planFor returns the ordered, already-marshaled wire frames this batch produces
+// for one subscriber, running the frame planner and recording the result the
+// first time it is asked.
+//
+// It is the ONE producer of a subscriber's frame selection, and both of
+// broadcastBatch's passes are the same call to it: the pre-warm off the
+// projection lock, the send pass under it. So "the two passes agree" is not a
+// property to be kept in step -- for a subscriber the pre-warm covered, the send
+// pass does not classify anything, it reads back the sequence the single planner
+// run produced. A subscriber the pre-warm missed (registered during it, or
+// re-published with a changed filter) simply plans here instead, which is the
+// work every subscriber did under the lock before the recording existed.
+//
+// The suppression gate lives here rather than at the two call sites for the same
+// reason: a batch the ResumeDelta owns must be neither marshaled by the pre-warm
+// nor sent by the locked pass, and recording an EMPTY plan for it says both at
+// once, in one place.
+func (f *batchFanout) planFor(sub *Subscriber) []*MarshaledEvent {
+	if plan, planned := f.plans.lookup(sub); planned {
+		return plan
 	}
-	emitCatchUpFrames(
-		catchUpBatch{
-			refs:        f.refs,
-			batch:       f.batch,
-			transitions: f.res.AffectedEntities,
-			atHLC:       atHLC,
-		},
-		liveScope(sub.Filter),
-		f.materializedPayload,
-		liveCatchUpSink{fan: f, sub: sub},
-	)
+	off := len(f.plans.frames)
+	if !f.suppressedFor(sub) {
+		emitCatchUpFrames(
+			catchUpBatch{
+				refs:        f.refs,
+				batch:       f.batch,
+				transitions: f.res.AffectedEntities,
+				atHLC:       f.atHLC,
+			},
+			liveScope(sub.Filter),
+			f.materializedPayload,
+			planCatchUpSink{fan: f, sub: sub},
+		)
+	}
+	return f.plans.commit(sub, off)
+}
+
+// prewarmFor plans sub's frames -- and MARSHALS them -- ahead of the projection
+// lock, so the pass that sends them finds a finished plan.
+//
+// The PLAN, not just the marshals, is what the second pass reuses: sendTo
+// replays it instead of re-running the planner, so the walk over this batch's
+// affected refs, its two visibility probes per ref, the subscriber's workspace
+// mask and the planner's per-frame thunks are all paid once per subscriber per
+// broadcast rather than twice. The resume-suppression skip is part of the plan
+// too -- a frame that will not be sent must not be marshaled either.
+func (f *batchFanout) prewarmFor(sub *Subscriber) {
+	f.planFor(sub)
+}
+
+// suppressedFor reports whether this batch is the resume delta's to deliver
+// rather than the live fan-out's. Consulted by planFor alone, so the verdict is
+// reached once per subscriber per broadcast and BOTH passes read it off the same
+// recorded plan -- they cannot disagree about which subscribers see this batch.
+func (f *batchFanout) suppressedFor(sub *Subscriber) bool {
+	// Resume catch-up ownership: batches at or below the register-time
+	// high-water ship in the ResumeDelta. Skipping them prevents dual-delivery
+	// when commitState advanced MaxHlc before until was sampled under the
+	// projection hold (see SubscribeWithACL).
+	return sub.resumeSuppressThrough != nil && f.atHLC != nil &&
+		HLCCmp(f.atHLC, sub.resumeSuppressThrough) <= 0
+}
+
+// sendTo delivers this batch's frames to one live subscriber.
+//
+// FRAME ORDER IS A CONTRACT — owned by emitCatchUpFrames (materialized → batch
+// → removed → end), and a plan is that order, recorded. Sending is a replay, so
+// this pass cannot reorder or reclassify what the planner decided; it is exactly
+// the frames the pre-warm already built and marshaled.
+//
+// A subscriber with no recorded plan -- one that registered while the pre-warm
+// ran, or whose filter was re-published under it -- is planned here against its
+// CURRENT value and served identically, paying its own marshals under the lock
+// as it did before the recording existed.
+func (f *batchFanout) sendTo(sub *Subscriber) {
+	for _, evt := range f.planFor(sub) {
+		_ = sub.Send(evt)
+	}
 }
 
 // materializedPayload unwraps the fanout's memoized EntityMaterialized wrapper
 // into the bare payload emitCatchUpFrames' thunk protocol asks for.
 //
-// A METHOD, not a closure built inside sendTo: it captures nothing beyond the
-// receiver, and sendTo runs once per subscriber per batch on the broadcast
+// A METHOD, not a closure built inside planFor: it captures nothing beyond the
+// receiver, and planFor runs once per subscriber per batch on the broadcast
 // fan-out, so building it there allocated one escaping closure per subscriber
-// per batch -- and liveCatchUpSink never calls it, because every payload it
-// sends is already a cross-subscriber MarshaledEvent (see the sink's own note).
+// per batch -- and planCatchUpSink never calls it, because every payload it
+// records is already a cross-subscriber MarshaledEvent (see the sink's own note).
 // The planner still needs SOMETHING here: it is what keeps one definition of
 // each frame's content shared by both catch-up paths, which is the drift
 // protection catchUpSink's doc exists to explain. Cheap to pass, free to ignore.
@@ -590,24 +828,93 @@ func (m *Manager) broadcastPresence(workspaceID, activeClientID string) {
 	})
 }
 
+// broadcastFrame is the ONE MarshaledEvent a broadcastTo fan-out hands to every
+// subscriber that admits the workspace, built at most once per broadcast so all
+// of them share the same proto bytes.
+//
+// It exists to separate WHEN the frame is marshaled from WHETHER it is needed.
+// The marshal wants to happen before the projection lock (see prewarm), but the
+// pre-check that decides to pay for it reads a snapshot that may be stale, so
+// the locked pass must still be able to mint the frame itself.
+type broadcastFrame struct {
+	evt *leapmuxv1.WatchUserEvent
+	me  *MarshaledEvent
+}
+
+// get returns the frame, wrapping and MARSHALING it on first use.
+// NewMarshaledEvent only wraps the proto; prepare is where the cost is (see its
+// doc). Not safe for concurrent use -- one broadcastTo call owns one frame.
+func (f *broadcastFrame) get() *MarshaledEvent {
+	if f.me == nil {
+		f.me = NewMarshaledEvent(f.evt)
+		prepare(f.me)
+	}
+	return f.me
+}
+
+// prewarm pays the marshal ahead of the projection lock when some subscriber in
+// `subs` admits workspaceID.
+//
+// It is an OPTIMIZATION IN BOTH DIRECTIONS, and neither may become a decision:
+//
+//   - It may skip the marshal, never the LOCK. `subs` is the lock-free snapshot,
+//     and a registration in flight holds m.projection with its subscriber not yet
+//     published -- so "nobody admits this workspace" can be a stale answer that
+//     the very hold this broadcast must serialize behind is about to falsify.
+//     Returning early on it loses the event outright: unlike a batch,
+//     PresenceUpdate has no bootstrap arm and is not replayed by the resume
+//     delta, so there is no second delivery path and the client shows a stale
+//     active client until the next presence change.
+//
+//   - It marshals nothing when no subscriber admits the workspace. The
+//     subscriber set is routinely non-empty with none admitted:
+//     PresenceController.processClear fans one broadcast per workspace a
+//     just-disconnected client held presence in, and that client's own
+//     subscriber is already gone.
+//
+// A subscriber that arrives during the pre-check pays for its own frame under
+// the lock, exactly as broadcastBatch's late arrivals do.
+func (f *broadcastFrame) prewarm(subs []*Subscriber, workspaceID string) {
+	for _, sub := range subs {
+		if sub.Filter.IsAllowed(workspaceID) {
+			f.get()
+			return
+		}
+	}
+}
+
 // broadcastTo sends `evt` to every current subscriber whose Filter
 // admits `workspaceID`. The MarshaledEvent wrapper is built once so
 // every subscriber receives the same proto bytes; subscribers that
-// can't see the workspace are skipped. No-op when there are no
-// subscribers.
+// can't see the workspace are skipped.
 func (m *Manager) broadcastTo(workspaceID string, evt *leapmuxv1.WatchUserEvent) {
+	frame := &broadcastFrame{evt: evt}
+	// Deliberately BEFORE the lock, for the same reason broadcastBatch pre-warms
+	// its fan-out: the subscriber queue forces the marshal when it charges the
+	// frame, and this lock gates every SubmitOps and projection read for the
+	// user. snapshotSubs is safe unlocked (see its doc); what it is NOT is
+	// authoritative about who will be served, which is why this only skips work.
+	frame.prewarm(m.snapshotSubs(), workspaceID)
+	m.fanOutFrame(workspaceID, frame)
+}
+
+// fanOutFrame is broadcastTo's locked pass: it delivers `frame` to every
+// subscriber the snapshot admits AS OF the lock.
+//
+// Taking m.projection is UNCONDITIONAL -- it is what orders this fan-out against
+// the register-and-capture-until step (see registerLocked), so a subscriber that
+// registers while the pre-check runs is either fully published before the
+// snapshot below is read or registers after this fan-out has finished. Skipping
+// the lock on an empty pre-check is what dropped a presence event in the middle
+// of that window.
+func (m *Manager) fanOutFrame(workspaceID string, frame *broadcastFrame) {
 	m.projection.Lock()
 	defer m.projection.Unlock()
-	subs := m.snapshotSubs()
-	if len(subs) == 0 {
-		return
-	}
-	me := NewMarshaledEvent(evt)
-	for _, sub := range subs {
+	for _, sub := range m.snapshotSubs() {
 		if !sub.Filter.IsAllowed(workspaceID) {
 			continue
 		}
-		_ = sub.Send(me)
+		_ = sub.Send(frame.get())
 	}
 }
 

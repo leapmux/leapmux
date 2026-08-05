@@ -15,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/metrics"
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -173,6 +175,23 @@ func (c *gatedConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
+// servedOnce wraps a handler so a test can wait for ServeHTTP to RETURN, which
+// is the only point at which its deferred teardown -- unsubscribe, queue close,
+// pool detach -- has actually run.
+//
+// httptest.Server.Close is not that seam: it waits for outstanding requests, and
+// a hijacked WebSocket connection is not one, so it can return while the handler
+// goroutine is still unwinding. Asserting on the pool right after it read a
+// half-torn-down Hub and failed intermittently.
+func servedOnce(h http.Handler) (http.Handler, <-chan struct{}) {
+	done := make(chan struct{})
+	var once sync.Once
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer once.Do(func() { close(done) })
+		h.ServeHTTP(w, r)
+	}), done
+}
+
 // TestUserEventsHandler_RevokingTheBearerClosesTheSubscription is the surviving
 // half of a test deleted with the workspace scope axis.
 //
@@ -186,6 +205,70 @@ func (c *gatedConn) Write(p []byte) (int, error) {
 // Nothing replaced it: the only other eviction-closes-the-socket test dials
 // `/ws/channel`, a different endpoint, so this file's endpoint had no direct
 // coverage at all.
+// The pool charges an opening frame only once it EXISTS, so the build itself is
+// unbudgeted -- and the answer it gives a connect that arrives too late is
+// retry-later, which sends that client back to build the same full-account
+// snapshot again. Under a reconnect storm, which is the case the budget exists
+// for, the pool's own backpressure became the driver of allocations it could not
+// see: used_bytes sat under Capacity while RSS climbed.
+//
+// So the number of builds in flight is bounded at the connect path, BEFORE the
+// allocation, which is the thing a byte charge structurally cannot do.
+func TestUserEventsHandler_RefusesAConnectWhenEveryBuildSlotIsTaken(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "alice")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "Allowed")
+	bearer := newDelegationBearer(t, st, user.ID)
+
+	j := newMemJournal()
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(want, j, allowAllAuth{}, nil, time.Now)
+		require.NoError(t, mgr.Bootstrap(ctx))
+		mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
+			s.Workspaces[workspaceID] = &leapmuxv1.WorkspaceContentsRecord{
+				WorkspaceId: workspaceID, RootNodeId: "root-allowed",
+			}
+			s.Nodes["root-allowed"] = &leapmuxv1.NodeRecord{NodeId: "root-allowed"}
+		})
+		return mgr, nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	handler := service.NewUserEventsHandler(
+		st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
+		WithTokenValidator(bearer.tv)
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	hdr := bearer.authHeader()
+
+	// Every slot the budget could hold a worst-case snapshot in is already
+	// building one. Stated AS the bound rather than as a number beside it.
+	held, release := handler.FillBootstrapGateForTest()
+	require.Positive(t, held, "a pool must admit at least one concurrent build")
+
+	conn, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], &websocket.DialOptions{HTTPHeader: hdr})
+	require.NoError(t, err, "the upgrade still succeeds -- the refusal is a close, not a failed handshake")
+	_, _, readErr := conn.Read(ctx)
+	assert.Equal(t, websocket.StatusTryAgainLater, websocket.CloseStatus(readErr),
+		"a connect that cannot get a build slot must be told to retry, not served")
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+
+	// ...and the gate is a gate, not a latch: a slot freed by a build that
+	// finished admits the next connect.
+	release()
+	next, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], &websocket.DialOptions{HTTPHeader: hdr})
+	require.NoError(t, err)
+	defer func() { _ = next.Close(websocket.StatusNormalClosure, "") }()
+	payload, err := channelwire.ReadFramedBytes(ctx, next)
+	require.NoError(t, err, "once a slot is free the connect must be served normally")
+	assert.NotEmpty(t, payload)
+}
+
 func TestUserEventsHandler_RevokingTheBearerClosesTheSubscription(t *testing.T) {
 	t.Parallel()
 
@@ -208,7 +291,7 @@ func TestUserEventsHandler_RevokingTheBearerClosesTheSubscription(t *testing.T) 
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -276,7 +359,7 @@ func TestUserEventsHandler_AFailedSubscribeIsStillCounted(t *testing.T) {
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -321,6 +404,17 @@ type parkWindowEnv struct {
 	gate *gatedListener
 	conn *websocket.Conn
 	ctx  context.Context
+	// pool is this handler's private byte budget and served closes when the
+	// handler has finished unwinding -- together they let a test observe what
+	// the subscriber queue holds and what it gives back.
+	pool   *sendq.Pool
+	srv    *httptest.Server
+	served <-chan struct{}
+	// keepaliveTicks is this handler's probe trigger, replacing the interval
+	// ticker. UNBUFFERED, which is the whole point: a send completes only when a
+	// probe loop is parked on the receive, so a test can tell "a probe loop
+	// exists" from "one does not" without waiting on a clock.
+	keepaliveTicks chan time.Time
 }
 
 func newParkWindowEnv(t *testing.T) *parkWindowEnv {
@@ -368,8 +462,16 @@ func newParkWindowEnv(t *testing.T) *parkWindowEnv {
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	srv := httptest.NewUnstartedServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false).
-		WithTokenValidator(bearer.tv))
+	pool := sendq.NewMaxBytesPoolForTest()
+	// Probes are driven by the test rather than by an interval, so no case here
+	// is sized by a duration -- and with nobody sending, no probe ever fires,
+	// which is what keeps the other tests on this env free of the keepalive
+	// entirely.
+	ticks := make(chan time.Time)
+	handler, served := servedOnce(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, pool).
+		WithTokenValidator(bearer.tv).
+		WithForcedKeepaliveProbesForTest(ticks, 10*time.Second))
+	srv := httptest.NewUnstartedServer(handler)
 	gate := newGatedListener(srv.Listener)
 	srv.Listener = gate
 	srv.Start()
@@ -391,7 +493,10 @@ func newParkWindowEnv(t *testing.T) *parkWindowEnv {
 	// wants it. Nothing here waits on a clock or on a socket buffer.
 	gate.waitStalled(t)
 	require.NotNil(t, mgr, "the registry factory must have run")
-	return &parkWindowEnv{mgr: mgr, gate: gate, conn: conn, ctx: ctx}
+	return &parkWindowEnv{
+		mgr: mgr, gate: gate, conn: conn, ctx: ctx,
+		pool: pool, srv: srv, served: served, keepaliveTicks: ticks,
+	}
 }
 
 // commit submits one batch into the open parking window and reports whether it
@@ -484,8 +589,8 @@ func TestUserEventsHandler_ParkOverflowDuringTheBootstrapWriteDropsTheConnection
 
 	// The whole burst is parked -- SubmitInternal broadcasts on the manager
 	// goroutine before it answers, so delivery is done when the loop is. Let the
-	// stalled bootstrap write finish; the handler's queue.Release(), and with it
-	// the drop verdict, comes immediately after that write returns.
+	// stalled bootstrap write finish; the handler's queue.Bootstrapped(), and
+	// with it the drop verdict, comes immediately after that write returns.
 	gate.Release()
 
 	// The bootstrap frame itself still arrives.
@@ -505,6 +610,74 @@ func TestUserEventsHandler_ParkOverflowDuringTheBootstrapWriteDropsTheConnection
 		"a park-buffer overflow during the bootstrap write must drop the connection, not flush over the hole")
 	require.NotErrorIs(t, err, context.DeadlineExceeded,
 		"the socket must be closed, not merely quiet")
+}
+
+// TestUserEventsHandler_DoesNotProbeBeforeAnythingReadsTheSocket pins WHEN the
+// liveness probe may be armed, which is a correctness property rather than a
+// tuning one.
+//
+// coder/websocket processes a pong on the read path, so a probe issued while
+// nothing is reading cannot see its answer: it times out and cancels the
+// connection. This handler reads nothing until after the bootstrap frame is on
+// the wire, and everything before that -- the ACL resolve, the resume scan or
+// baseline walk, the snapshot marshal, and a write bounded only by
+// relayWriteTimeout -- is the pre-bootstrap window. Arming there tore down
+// perfectly healthy connections mid-bootstrap, on exactly the large accounts a
+// reconnect storm hits hardest, and the operator got one Debug line for it.
+//
+// Both halves are asserted by SENDING on the handler's tick channel, which is
+// unbuffered: a send that succeeds proves a probe loop is parked on the
+// receive, and one that cannot proves none is. Nothing here waits on a clock.
+func TestUserEventsHandler_DoesNotProbeBeforeAnythingReadsTheSocket(t *testing.T) {
+	env := newParkWindowEnv(t)
+
+	// The handler is stalled inside the bootstrap write, which is the last and
+	// longest stretch of the window in which nothing reads this socket.
+	select {
+	case env.keepaliveTicks <- time.Now():
+		t.Fatal("a keepalive probe loop was already armed while the handler was still inside the " +
+			"bootstrap write: nothing reads the socket yet, so the probe could not see its pong " +
+			"and would cancel a healthy connection mid-bootstrap")
+	default:
+	}
+
+	require.True(t, env.commit(t, "parked", "z0001"), "the batch must commit, or nothing parks")
+	env.gate.Release()
+
+	payload, err := channelwire.ReadFramedBytes(env.ctx, env.conn)
+	require.NoError(t, err, "the connection must survive the whole pre-bootstrap window")
+	bootstrap := &leapmuxv1.WatchUserEvent{}
+	require.NoError(t, proto.Unmarshal(payload, bootstrap))
+	require.NotNil(t, bootstrap.GetInitial())
+	payload, err = channelwire.ReadFramedBytes(env.ctx, env.conn)
+	require.NoError(t, err)
+	parked := &leapmuxv1.WatchUserEvent{}
+	require.NoError(t, proto.Unmarshal(payload, parked))
+	require.Equal(t, "parked", parked.GetBatch().GetBatchId())
+
+	// Keep the client's read path running so it answers probes, the way a real
+	// browser does. Errors end it: the connection closes at cleanup.
+	go func() {
+		for {
+			if _, err := channelwire.ReadFramedBytes(env.ctx, env.conn); err != nil {
+				return
+			}
+		}
+	}()
+
+	// And now the probe loop IS armed, and its probes are answered. Two ticks,
+	// because the loop only comes back for the second one after the first
+	// Ping RETURNED -- and a Ping that failed would exit the loop, cancel the
+	// connection, and close `served` instead.
+	for i := range 2 {
+		select {
+		case env.keepaliveTicks <- time.Now():
+		case <-env.served:
+			t.Fatalf("the keepalive tore the connection down at probe %d, so its pong was not read", i)
+		case <-env.ctx.Done():
+			t.Fatalf("no probe loop took tick %d: a streaming connection has no liveness probe at all", i)
+		}
+	}
 }
 
 // TestUserEventsHandler_CountsTheSuccessArmsAndTheDuration pins the label pair
@@ -540,7 +713,7 @@ func TestUserEventsHandler_CountsTheSuccessArmsAndTheDuration(t *testing.T) {
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	bearer := newDelegationBearer(t, st, user.ID)
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -604,7 +777,7 @@ func TestUserEventsHandler_CountsAConnectThatNeverReachedSubscribe(t *testing.T)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	bearer := newDelegationBearer(t, st, user.ID)
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -644,7 +817,7 @@ func TestUserEventsHandler_RefusesACursorUnderANarrowedFilter(t *testing.T) {
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	bearer := newDelegationBearer(t, st, user.ID)
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -675,4 +848,284 @@ func TestUserEventsHandler_RefusesACursorUnderANarrowedFilter(t *testing.T) {
 		&websocket.DialOptions{HTTPHeader: bearer.authHeader()})
 	require.NoError(t, err, "a narrowed connect with NO cursor must still be served")
 	_ = conn.Close(websocket.StatusNormalClosure, "")
+}
+
+// TestUserEventsHandler_ParkedFramesAreChargedAndReturned is the end-to-end
+// half of issue #361: not that subscriberQueue accounts correctly in isolation,
+// but that a REAL connection charges the Hub's shared budget for what it is
+// holding and gives every byte back when it goes away.
+//
+// The park window is what makes this observable. Inside it the handler is
+// stalled on the bootstrap write while commits pile up in the queue, so there
+// is a moment where the frames are unambiguously the connection's to account
+// for. Before this change the same moment charged nothing at all: 320 slots
+// were a frame count over payloads nothing at that layer sized.
+func TestUserEventsHandler_ParkedFramesAreChargedAndReturned(t *testing.T) {
+	env := newParkWindowEnv(t)
+	require.Equal(t, int64(1), env.pool.Members(), "the live subscriber must be in the pool")
+
+	// The gate holds the handler INSIDE the bootstrap write, so the frame it is
+	// writing is resident right now -- and charged, which is the whole point of
+	// charging it: N tabs reconnecting at once really is N of these at once, and
+	// nothing else bounds how many tabs reconnect.
+	bootstrapBytes := env.pool.Used()
+	require.Positive(t, bootstrapBytes,
+		"the bootstrap frame must be charged for as long as it is on the wire")
+
+	// Commit into the open window. Each batch's frames park, and parking is
+	// what charges them -- on top of the bootstrap frame, because that is all
+	// one connection's memory.
+	for i := range 20 {
+		require.True(t, env.commit(t, fmt.Sprintf("b%02d", i), fmt.Sprintf("p%02d", i)))
+	}
+	charged := env.pool.Used()
+	require.Greater(t, charged, bootstrapBytes,
+		"parked frames must be charged on top of the bootstrap frame, not instead of it")
+	require.Less(t, charged, env.pool.Capacity(), "and must stay inside the budget")
+
+	// Let the bootstrap write finish; the connection then drains normally.
+	env.gate.Release()
+	payload, err := channelwire.ReadFramedBytes(env.ctx, env.conn)
+	require.NoError(t, err)
+	bootstrap := &leapmuxv1.WatchUserEvent{}
+	require.NoError(t, proto.Unmarshal(payload, bootstrap))
+	require.NotNil(t, bootstrap.GetInitial())
+
+	// Tear the connection down and wait for the handler to finish unwinding, so
+	// the assertion below is about its teardown rather than about timing.
+	require.NoError(t, env.conn.Close(websocket.StatusNormalClosure, ""))
+	<-env.served
+
+	assert.Zero(t, env.pool.Used(),
+		"every byte a connection charged must come back when it ends -- a leak here is permanent, "+
+			"and shrinks the budget every other subscriber draws on")
+	assert.Zero(t, env.pool.Members(), "and the queue must leave the pool")
+}
+
+// TestUserEventsHandler_RefusesTheConnectWhenTheBudgetCannotHoldTheBootstrap
+// pins the answer to a Hub that cannot charge a bootstrap frame at connect time.
+//
+// Serving the connect anyway is what it cannot afford: the bootstrap frame is
+// the largest single thing the connection holds, it is unique to this
+// subscriber so there is no sharing to soften it, and a reconnect storm is
+// precisely when every tab wants one at once. Refusing is available here in a
+// way it is not on /ws/channel -- the socket is already upgraded, so the Hub can
+// close with a code the client reads, rather than failing a handshake the
+// browser cannot read a status out of.
+//
+// WHICH code depends on whether a retry could ever work, and that is the whole
+// point of the split below. A frame larger than the pool's entire capacity is
+// refused at every occupancy, so "retry later" is advice that can only produce
+// the same refusal forever -- the client rebuilds the same oversized snapshot
+// every few seconds while the user watches an app that never loads. A pool that
+// is merely full will drain.
+func TestUserEventsHandler_RefusesTheConnectWhenTheBudgetCannotHoldTheBootstrap(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "alice")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "Allowed")
+	bearer := newDelegationBearer(t, st, user.ID)
+
+	j := newMemJournal()
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(want, j, allowAllAuth{}, nil, time.Now)
+		require.NoError(t, mgr.Bootstrap(ctx))
+		mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
+			s.Workspaces[workspaceID] = &leapmuxv1.WorkspaceContentsRecord{
+				WorkspaceId: workspaceID, RootNodeId: "root-allowed",
+			}
+			s.Nodes["root-allowed"] = &leapmuxv1.NodeRecord{NodeId: "root-allowed"}
+		})
+		return mgr, nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	// The `bound` label is the operator's half of the same split, and it has to
+	// draw the line in the same place as the close code: a permanent refusal
+	// counted as ordinary memory pressure puts a cell on the memory-pressure
+	// dashboard that never clears, next to an occupancy graph that never spikes.
+	dropped := func(bound string) float64 {
+		return testutil.ToFloat64(metrics.UserEventsFramesDroppedTotal.WithLabelValues("bootstrap", bound))
+	}
+
+	for _, tt := range []struct {
+		name       string
+		pool       func() *sendq.Pool
+		wantStatus websocket.StatusCode
+		wantReason string
+		wantBound  string
+		otherBound string
+	}{
+		{
+			// Smaller than any frame this account can produce. Config validation
+			// rejects a pool this small, so this is the runtime shape of an
+			// account whose snapshot outgrew a legitimately-configured budget.
+			name: "a frame larger than the whole pool is terminal, because no retry can work",
+			pool: func() *sendq.Pool {
+				return sendq.NewPool(sendq.PoolConfig{Capacity: 256, MinFloor: 128, MaxFloor: 128})
+			},
+			wantStatus: websocket.StatusPolicyViolation,
+			wantReason: channelwire.CloseReasonSnapshotTooLarge,
+			wantBound:  "capacity",
+			otherBound: "bytes",
+		},
+		{
+			// Room for the frame in principle, but another member is holding it
+			// all. Draining is what fixes this, so the client must retry.
+			name: "a merely-full pool is recoverable, because draining fixes it",
+			pool: func() *sendq.Pool {
+				pool := sendq.NewPool(sendq.PoolConfig{Capacity: 1 << 20, MinFloor: 512, MaxFloor: 512})
+				hog := pool.AttachShared(func(error) bool { return false })
+				require.Equal(t, sendq.Admitted, hog.Admit(1<<20, 1<<20), "the hog must be able to fill the pool")
+				return pool
+			},
+			wantStatus: websocket.StatusTryAgainLater,
+			wantBound:  "bytes",
+			otherBound: "capacity",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := tt.pool()
+			wantBefore, otherBefore := dropped(tt.wantBound), dropped(tt.otherBound)
+			// Whatever the fixture attached to create the condition; the
+			// assertion below is that the REFUSED connect adds nothing to it.
+			baseline := pool.Members()
+			handler, served := servedOnce(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, pool).
+				WithTokenValidator(bearer.tv))
+			srv := httptest.NewServer(handler)
+			t.Cleanup(srv.Close)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):],
+				&websocket.DialOptions{HTTPHeader: bearer.authHeader()})
+			require.NoError(t, err, "the upgrade itself must succeed -- the refusal is a close code, not a failed handshake")
+			defer func() { _ = conn.Close(websocket.StatusInternalError, "") }()
+
+			_, err = channelwire.ReadFramedBytes(ctx, conn)
+			require.Error(t, err, "no bootstrap frame may be sent when it could not be charged")
+			assert.Equal(t, tt.wantStatus, websocket.CloseStatus(err))
+			if tt.wantReason != "" {
+				var closeErr websocket.CloseError
+				require.ErrorAs(t, err, &closeErr)
+				assert.Equal(t, tt.wantReason, closeErr.Reason,
+					"the client branches on this token to tell the user which of the two happened")
+			}
+
+			// And the refused connect left nothing behind: a refusal that
+			// stranded its frame would shrink the budget every retry draws on,
+			// so a storm would make itself permanent.
+			<-served
+			assert.Equal(t, baseline, pool.Members(), "a refused connect must not leave a member attached")
+
+			assert.Equal(t, wantBefore+1, dropped(tt.wantBound),
+				"the refusal must be counted under the bound that names what an operator has to do")
+			assert.Equal(t, otherBefore, dropped(tt.otherBound),
+				"...and not under the other, which calls for the opposite conclusion about occupancy")
+		})
+	}
+}
+
+// The per-user connection cap, end to end: a second connection for the same
+// user is refused with a code and a reason its client can act on.
+//
+// The upgrade SUCCEEDS and the refusal arrives as a close frame, which is the
+// only shape that works here -- a browser cannot read a status out of a failed
+// WebSocket handshake, so refusing before the upgrade would tell the user
+// nothing. And the reason has to be the shared token rather than prose: every
+// other policy-violation close on this socket means "re-authenticate", where
+// this one means "close a tab", and a client that cannot tell them apart gives
+// the opposite advice.
+func TestUserEventsHandler_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	user := storetest.SeedUser(t, st, "alice")
+	workspaceID := storetest.SeedWorkspace(t, st, user.ID, "Allowed")
+	bearer := newDelegationBearer(t, st, user.ID)
+	// One connection per user, so the second dial is the one under test.
+	bearer.sessionCache.SetMaxConnectionsPerUser(1)
+
+	j := newMemJournal()
+	registry := crdt.NewRegistry(func(ctx context.Context, want userid.UserID) (*crdt.Manager, error) {
+		mgr := crdt.NewManager(want, j, allowAllAuth{}, nil, time.Now)
+		require.NoError(t, mgr.Bootstrap(ctx))
+		mgr.SeedStateForTest(func(s *leapmuxv1.UserCrdtState) {
+			s.Workspaces[workspaceID] = &leapmuxv1.WorkspaceContentsRecord{
+				WorkspaceId: workspaceID, RootNodeId: "root-allowed",
+			}
+			s.Nodes["root-allowed"] = &leapmuxv1.NodeRecord{NodeId: "root-allowed"}
+		})
+		return mgr, nil
+	}, nil)
+	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
+
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
+		WithTokenValidator(bearer.tv))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	refusalsBefore := testutil.ToFloat64(
+		metrics.ConnectionsRefusedTotal.WithLabelValues(auth.LeaseRefusedTooManyConnections.Label()))
+	connectsBefore := func() float64 {
+		var none crdt.SubscribeOutcome
+		return testutil.ToFloat64(
+			metrics.UserEventsSubscribeTotal.WithLabelValues(none.Mode().Label(), none.Reason().Label()))
+	}()
+
+	first, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):],
+		&websocket.DialOptions{HTTPHeader: bearer.authHeader()})
+	require.NoError(t, err)
+	defer func() { _ = first.Close(websocket.StatusNormalClosure, "") }()
+	// Drain the bootstrap so the first subscription is genuinely established
+	// before the second dial -- otherwise the cap could be racing the register.
+	_, err = channelwire.ReadFramedBytes(ctx, first)
+	require.NoError(t, err)
+
+	second, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):],
+		&websocket.DialOptions{HTTPHeader: bearer.authHeader()})
+	require.NoError(t, err, "the upgrade must succeed -- the refusal is a close code, not a failed handshake")
+	defer func() { _ = second.Close(websocket.StatusInternalError, "") }()
+
+	_, err = channelwire.ReadFramedBytes(ctx, second)
+	require.Error(t, err, "a refused connection must not receive a bootstrap frame")
+	var closeErr websocket.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, websocket.StatusPolicyViolation, closeErr.Code,
+		"the client must read this as terminal, not retry into the same refusal")
+	assert.Equal(t, channelwire.CloseReasonTooManyConnections, closeErr.Reason,
+		"the reason is what tells the user to close a tab rather than re-authenticate")
+
+	// The connection that was already open is untouched: the NEWEST pays.
+	//
+	// Asserted as "still open" rather than "still delivering": nothing is being
+	// broadcast, so the honest signal is that the read blocks until ITS OWN
+	// deadline instead of returning the close the evicted connection would get.
+	idleCtx, idleCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer idleCancel()
+	_, err = channelwire.ReadFramedBytes(idleCtx, first)
+	assert.ErrorIs(t, err, context.DeadlineExceeded,
+		"an established connection must survive a refused newcomer, not be evicted for it")
+	assert.NotErrorAs(t, err, &closeErr,
+		"and must not have been closed by the hub")
+
+	// At LEAST one more, not exactly one: this counter is process-global and
+	// TestChannelRelay_RefusesBeyondThePerUserConnectionCap drives the same
+	// refusal through the same bind, under the same label. Both are t.Parallel
+	// and `service`/`service_test` compile into ONE binary, so an exact delta is
+	// a race -- and it would fail in the test whose whole purpose is proving the
+	// cap is observable.
+	assert.GreaterOrEqual(t, testutil.ToFloat64(
+		metrics.ConnectionsRefusedTotal.WithLabelValues(auth.LeaseRefusedTooManyConnections.Label())),
+		refusalsBefore+1,
+		"the cap binding must be visible from outside")
+	assert.GreaterOrEqual(t, func() float64 {
+		var none crdt.SubscribeOutcome
+		return testutil.ToFloat64(
+			metrics.UserEventsSubscribeTotal.WithLabelValues(none.Mode().Label(), none.Reason().Label()))
+	}(), connectsBefore+1,
+		"a refused connect is still a connect outcome; the series is a complete partition")
 }

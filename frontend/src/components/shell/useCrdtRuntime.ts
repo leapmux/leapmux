@@ -4,13 +4,16 @@ import type { Projection } from '~/lib/crdt'
 import type { CheckpointRecorder, CheckpointRecorderOptions, HydratedBase } from '~/lib/crdt/checkpointRecorder'
 import type { HydrationPayload, PersistedBase } from '~/lib/crdt/hydrate'
 import type { createActiveClientStore } from '~/lib/presence/activeClient'
+import type { FatalCloseInfo } from '~/lib/wsCloseCodes'
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
-import { showWarnToast } from '~/components/common/Toast'
+import { channelManager } from '~/api/workerRpc'
+import { showStickyWarnToast, showWarnToast } from '~/components/common/Toast'
 import { createProjectionMemo, HLCClock, PendingOpsManager, setCRDTBridge } from '~/lib/crdt'
 import { CHECKPOINT_OP_LOG_THRESHOLD, createCheckpointRecorder } from '~/lib/crdt/checkpointRecorder'
 import { clearCheckpointAndOpLog, clearOwnerCheckpointAndOpLog, OWNER_TOUCH_INTERVAL_MS, sweepAbandonedCheckpoints, touchOwner } from '~/lib/crdt/checkpointStore'
 import { createClientIdentity } from '~/lib/crdt/clientIdentity'
 import { loadHydrationState } from '~/lib/crdt/hydrate'
+import { fatalCloseMessage } from '~/lib/fatalCloseMessage'
 import { createLogger } from '~/lib/logger'
 import { createOpsSubmitter } from './useOpsSubmitter'
 import { useUserEvents } from './useUserEvents'
@@ -547,6 +550,23 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     setHydrated(true)
   }
 
+  // A tab holds TWO long-lived sockets against the hub, and one refusal closes
+  // whichever asks next -- so the same cap can fire twice for one cause.
+  // Collapsing that is the TOAST layer's job (see liveSticky in Toast.tsx), not
+  // this hook's: a latch here would never learn that the user dismissed the
+  // toast, so the next genuinely-new refusal would be announced nowhere and
+  // leave a frozen UI unexplained.
+  const announceFatalClose = (info: FatalCloseInfo) => {
+    // WHICH terminal close decides what to tell the user: a revoked credential
+    // wants a reload, the hub's per-user connection cap wants a tab closed, and
+    // giving the second the first's advice sends them round the loop again.
+    //
+    // Sticky, because nothing recovers this on its own -- neither socket
+    // schedules a retry after a terminal close -- so a toast that vanished in
+    // three seconds would leave a frozen UI with the explanation already gone.
+    showStickyWarnToast(fatalCloseMessage(info))
+  }
+
   // Open the per-user `/ws/userevents` subscription once the user id is
   // known. The hook stays live across workspace switches; per-
   // workspace stores slice the materialized state instead.
@@ -566,13 +586,15 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     // recent action didn't take effect.
       showWarnToast('A pending change was discarded because the affected item left your view.')
     },
-    onFatalClose: () => {
-    // The user-events stream closed with a terminal code (e.g. the session
-    // expired / access was revoked), so useUserEvents stopped retrying rather
-    // than loop. Tell the user to reload instead of silently going stale.
-      showWarnToast('Live updates disconnected. Reload the page to reconnect.')
-    },
+    onFatalClose: announceFatalClose,
   })
+
+  // The channel relay can be refused by the SAME hub code path as the
+  // user-events stream, and a tab holds both sockets. Before this it discarded
+  // the close entirely, so a capped user got "Failed to open terminal" and two
+  // unbounded redial loops kept dialling a connection the hub would refuse
+  // every time.
+  onCleanup(channelManager.onFatalClose(announceFatalClose))
 
   // 16ms aggregator for op submission. Stores call into the CRDT
   // bridge below; the submitter handles the SubmitOps RPC + per-

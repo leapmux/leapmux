@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -70,6 +71,199 @@ func TestEmitCatchUpFrames_LiveSinkDoesNotBuildPayloadsItDiscards(t *testing.T) 
 		"a sink that needs the payload gets it built exactly once")
 	assert.NotNil(t, evaluating.lastBatch, "the evaluated batch thunk must yield the visible ops")
 	assert.Equal(t, "b1", evaluating.lastBatch.GetBatchId())
+}
+
+// TestBatchFanout_PrewarmAndSendSelectTheSameFrames pins the invariant that
+// makes the pre-warm safe to run as a SEPARATE pass over the same subscribers.
+//
+// The two passes must agree exactly. A frame the pre-warm skips but the send
+// pass delivers is a proto.Marshal paid under the projection lock -- the lock
+// that gates every SubmitOps, presence update and projection read for the user,
+// and the entire reason the pre-warm exists. A frame the pre-warm builds but the
+// send pass never delivers is a marshal (and, for EntityMaterialized, a deep
+// clone of live state) paid for nothing.
+//
+// batchFanout.planFor is what makes that structural rather than a promise: both
+// passes are one call to it, and the second finds the first's RECORDING, so the
+// send pass does not classify anything at all for a subscriber the pre-warm
+// covered. This asserts both halves -- that the frames agree, and that the
+// planner ran once rather than twice -- so a future hand-copy that drifts, or a
+// send pass that quietly re-plans, fails here.
+func TestBatchFanout_PrewarmAndSendSelectTheSameFrames(t *testing.T) {
+	// One ref per classification, so the planner exercises every arm:
+	//   n1 stable in w1 -> its op ships inside the batch frame
+	//   n2 crosses INTO w1 -> EntityMaterialized
+	//   n3 crosses OUT of w1 -> EntityRemoved
+	//   n4 crosses into w2, which the subscriber cannot see -> nothing
+	stable := EntityRef{Kind: EntityKindNode, NodeID: "n1"}
+	crossingIn := EntityRef{Kind: EntityKindNode, NodeID: "n2"}
+	crossingOut := EntityRef{Kind: EntityKindNode, NodeID: "n3"}
+	otherWorkspace := EntityRef{Kind: EntityKindNode, NodeID: "n4"}
+	trans := map[EntityRef]EntityWorkspaceTransition{
+		stable:         {Pre: "w1", Post: "w1"},
+		crossingIn:     {Pre: "", Post: "w1"},
+		crossingOut:    {Pre: "w1", Post: ""},
+		otherWorkspace: {Pre: "", Post: "w2"},
+	}
+	atHLC := &leapmuxv1.HLC{Physical: 7, Logical: 0, ClientId: "c"}
+	batch := &leapmuxv1.OpBatch{
+		BatchId: "b1",
+		Ops: []*leapmuxv1.CrdtOp{{
+			OpId:         "op1",
+			CanonicalHlc: atHLC,
+			Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+				NodeId: "n1",
+				Field:  &leapmuxv1.SetNodeRegisterOp_Position{Position: "a0"},
+			}},
+		}},
+	}
+	res := ValidationResult{AffectedEntities: trans}
+
+	// Distinct wrappers per ref, so "was this frame paid for?" is readable off
+	// each one -- the memo caches prewarmBatch builds, reduced to a lookup.
+	materializedEvents := map[EntityRef]*MarshaledEvent{
+		stable:         NewMarshaledEvent(materializedNodeEvent("n1", atHLC)),
+		crossingIn:     NewMarshaledEvent(materializedNodeEvent("n2", atHLC)),
+		otherWorkspace: NewMarshaledEvent(materializedNodeEvent("n4", atHLC)),
+	}
+	removedEvents := map[EntityRef]*MarshaledEvent{
+		crossingOut: NewMarshaledEvent(buildEntityRemovedEvent(crossingOut, atHLC)),
+	}
+	// The two suppliers COUNT their calls. Each one is the planner asking "what
+	// is this ref's frame?", which is work only a planner run does -- so the
+	// counters read out how many times the planner classified this subscriber,
+	// without timing anything. In prewarmBatch these closures are the memoized
+	// materialized/removed caches; here they are the same shape, reduced to a
+	// lookup.
+	var materializedLookups, removedLookups int
+	newFanout := func() *batchFanout {
+		return &batchFanout{
+			batch:           batch,
+			res:             res,
+			wsKeys:          batchWorkspaceKeys(batch, res),
+			refs:            orderedAffectedRefs(trans),
+			atHLC:           atHLC,
+			batchEventCache: map[uint64]*MarshaledEvent{},
+			materialized: func(ref EntityRef) *MarshaledEvent {
+				materializedLookups++
+				return materializedEvents[ref]
+			},
+			removed: func(ref EntityRef) *MarshaledEvent {
+				removedLookups++
+				return removedEvents[ref]
+			},
+		}
+	}
+
+	var sent []*MarshaledEvent
+	sub := &Subscriber{
+		Filter: NewSubscriberFilter(map[string]bool{"w1": true}),
+		Send: func(evt *MarshaledEvent) error {
+			sent = append(sent, evt)
+			return nil
+		},
+	}
+
+	fan := newFanout()
+	fan.prewarmFor(sub)
+	require.Empty(t, sent, "the pre-warm pass builds frames; sending is the other pass's job")
+	assert.True(t, materializedEvents[crossingIn].AlreadyMarshaledForTest(),
+		"the entity entering view is delivered, so its frame must be paid for off the lock")
+	assert.True(t, removedEvents[crossingOut].AlreadyMarshaledForTest(),
+		"so must the entity leaving it")
+	assert.False(t, materializedEvents[stable].AlreadyMarshaledForTest(),
+		"a stably-visible entity ships as a raw op in the batch frame, so cloning and marshaling "+
+			"a materialized record for it is work the send pass would throw away")
+	assert.False(t, materializedEvents[otherWorkspace].AlreadyMarshaledForTest(),
+		"and an entity entering a workspace this subscriber cannot see is not its frame at all")
+	require.Equal(t, 1, materializedLookups, "exactly one ref enters this subscriber's view")
+	require.Equal(t, 1, removedLookups, "and exactly one leaves it")
+
+	fan.sendTo(sub)
+	require.NotEmpty(t, sent, "the send pass must deliver this subscriber's frames")
+	assert.Equal(t, 1, materializedLookups,
+		"the send pass must REPLAY the plan the pre-warm recorded, not classify this subscriber a "+
+			"second time -- re-running the planner under the projection lock is the cost the "+
+			"recording exists to remove")
+	assert.Equal(t, 1, removedLookups, "...for the becoming-hidden refs too")
+	for i, evt := range sent {
+		assert.True(t, evt.AlreadyMarshaledForTest(),
+			"frame %d of %d reached Send unmarshaled: the pre-warm and the send pass disagree "+
+				"about which frames this subscriber gets, so its marshal lands under the projection lock",
+			i, len(sent))
+	}
+	// Wire order is the contract emitCatchUpFrames owns; a replay must preserve
+	// it exactly, so pin the whole sequence rather than only its marshaled-ness.
+	if assert.Len(t, sent, 4, "materialized -> batch -> removed -> end") {
+		assert.Same(t, materializedEvents[crossingIn], sent[0],
+			"and each frame must be the SHARED cross-subscriber wrapper, not a per-subscriber copy")
+		assert.NotNil(t, sent[1].Event.GetBatch())
+		assert.Same(t, removedEvents[crossingOut], sent[2])
+		assert.Same(t, fan.batchEnd(), sent[3])
+	}
+
+	// The suppression gate is part of that agreement: a batch the resume delta
+	// owns is not sent, so it must not be marshaled either. The recording must
+	// carry that verdict rather than lose it -- an EMPTY plan means "send
+	// nothing", and must stay distinguishable from "no plan yet", which would
+	// re-plan the subscriber and resurrect its frames under the lock.
+	newSuppressed := func() (*batchFanout, map[EntityRef]*MarshaledEvent) {
+		fresh := map[EntityRef]*MarshaledEvent{
+			crossingIn: NewMarshaledEvent(materializedNodeEvent("n2", atHLC)),
+		}
+		fan := newFanout()
+		fan.materialized = func(ref EntityRef) *MarshaledEvent { return fresh[ref] }
+		fan.removed = func(EntityRef) *MarshaledEvent { return nil }
+		return fan, fresh
+	}
+	newSuppressedSub := func(sends *int) *Subscriber {
+		return &Subscriber{
+			Filter:                NewSubscriberFilter(map[string]bool{"w1": true}),
+			resumeSuppressThrough: atHLC,
+			Send: func(*MarshaledEvent) error {
+				*sends++
+				return nil
+			},
+		}
+	}
+
+	t.Run("a suppressed subscriber is skipped by both passes", func(t *testing.T) {
+		suppressedFan, fresh := newSuppressed()
+		var suppressedSends int
+		suppressed := newSuppressedSub(&suppressedSends)
+
+		suppressedFan.prewarmFor(suppressed)
+		assert.False(t, fresh[crossingIn].AlreadyMarshaledForTest(),
+			"a batch the ResumeDelta will deliver must not be marshaled by the live pre-warm")
+		suppressedFan.sendTo(suppressed)
+		assert.Zero(t, suppressedSends, "...nor sent by the live pass")
+	})
+
+	t.Run("a suppressed subscriber the pre-warm never saw is skipped too", func(t *testing.T) {
+		// The fallback arm of the same verdict: suppression is decided by the
+		// planner, so a subscriber with no recorded plan must reach the same
+		// answer rather than depending on the recording to enforce it.
+		suppressedFan, fresh := newSuppressed()
+		var suppressedSends int
+
+		suppressedFan.sendTo(newSuppressedSub(&suppressedSends))
+		assert.Zero(t, suppressedSends,
+			"a registration that landed during the pre-warm is still subject to its own suppress gate")
+		assert.False(t, fresh[crossingIn].AlreadyMarshaledForTest())
+	})
+}
+
+// materializedNodeEvent builds a minimal EntityMaterialized frame for a node,
+// standing in for the deep clone of live state broadcastBatch's memo produces.
+func materializedNodeEvent(nodeID string, atHLC *leapmuxv1.HLC) *leapmuxv1.WatchUserEvent {
+	return &leapmuxv1.WatchUserEvent{
+		Event: &leapmuxv1.WatchUserEvent_EntityMaterialized{
+			EntityMaterialized: &leapmuxv1.EntityMaterialized{
+				AtHlc:  atHLC,
+				Entity: &leapmuxv1.EntityMaterialized_Node{Node: &leapmuxv1.NodeRecord{NodeId: nodeID}},
+			},
+		},
+	}
 }
 
 type countingSink struct {

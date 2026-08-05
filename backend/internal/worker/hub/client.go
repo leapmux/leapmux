@@ -20,6 +20,7 @@ import (
 	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -347,11 +348,18 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		ControlReserve: sendq.DefaultControlReserve,
 		FrameOverhead:  sendq.DefaultFrameOverhead,
 		WriteTimeout:   sendq.DefaultWriteTimeout,
-		OnGiveUp: func(err error) {
-			slog.Warn("hub connect stream writer gave up; reconnecting", "error", err)
+		OnGiveUp: func(reason sendq.GiveUpReason, err error) {
+			// Counted like every other sendq writer. The worker serves no
+			// /metrics of its own, but solo runs it in the Hub's process
+			// against the Hub's registry, so this is scrapeable there -- and
+			// an uncounted give-up is indistinguishable from one that never
+			// happened, which is the wrong answer to "why did that reconnect?"
+			metrics.CountSendqGiveUp(metrics.PoolWorkerClient, reason.Label())
+			slog.Warn("hub connect stream writer gave up; reconnecting",
+				"reason", reason.Label(), "error", err)
 			connCancel()
 		},
-		OnDiscard: func(frames, bytes int) {
+		OnDiscard: func(frames int, bytes int64) {
 			slog.Debug("hub connect stream discarded queued frames",
 				"frames", frames, "bytes", bytes)
 		},

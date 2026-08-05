@@ -44,28 +44,34 @@ func TestSendTo_ResumeSuppressThrough(t *testing.T) {
 			return nil
 		},
 	}
-	fan := &batchFanout{
-		batch: batch,
-		res:   res,
-		refs:  orderedAffectedRefs(res.AffectedEntities),
-		atHLC: at,
-		materialized: func(EntityRef) *MarshaledEvent {
-			return nil
-		},
-		removed: func(EntityRef) *MarshaledEvent {
-			return nil
-		},
+	// ONE FANOUT PER BATCH, as prewarmBatch builds it: its atHLC, its shared
+	// batch-end frame, its mask-keyed batch-frame cache and its recorded
+	// per-subscriber plans all describe the batch it was constructed for, so a
+	// fanout re-pointed at a second batch would answer from the first one's
+	// memos. The two batches below therefore get two fanouts.
+	newFanout := func(atHLC *leapmuxv1.HLC) *batchFanout {
+		return &batchFanout{
+			batch: batch,
+			res:   res,
+			refs:  orderedAffectedRefs(res.AffectedEntities),
+			atHLC: atHLC,
+			materialized: func(EntityRef) *MarshaledEvent {
+				return nil
+			},
+			removed: func(EntityRef) *MarshaledEvent {
+				return nil
+			},
+		}
 	}
-	fan.sendTo(sub)
+	newFanout(at).sendTo(sub)
 	assert.Equal(t, int32(0), sends.Load(), "batches at or below resumeSuppressThrough must not be live-sent")
 
 	// A strictly newer batch must still deliver. batchFanout.atHLC is the
-	// subscriber-constant source of truth broadcastBatch hoists once, so the
-	// test mirrors that contract and updates fan.atHLC alongside the batch.
+	// subscriber-constant source of truth prewarmBatch hoists once, so the
+	// test mirrors that contract and stamps the fanout alongside the batch.
 	newer := &leapmuxv1.HLC{Physical: 101, Logical: 0, ClientId: "c"}
 	batch.Ops[0].CanonicalHlc = newer
-	fan.atHLC = newer
-	fan.sendTo(sub)
+	newFanout(newer).sendTo(sub)
 	require.Greater(t, sends.Load(), int32(0), "batches above resumeSuppressThrough must still live-send")
 }
 

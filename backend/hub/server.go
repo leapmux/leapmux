@@ -31,7 +31,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/metrics"
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/memlimit"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/util/errwrap"
@@ -88,6 +90,43 @@ func connectOptions(interceptors ...connect.Interceptor) connect.Option {
 		connect.WithInterceptors(interceptors...),
 		connect.WithReadMaxBytes(maxConnectRequestBytes),
 	)
+}
+
+// logQueueMemoryBudgets writes the startup account of outbound queue memory:
+// the process's memory basis ONCE, each budget that divides it, and -- only
+// when the cgroup probe actually failed -- a warning of its own.
+//
+// Once, because the basis is a property of the process, probed once
+// (config.QueueMemoryBasis), and not of any one budget. It used to be rendered
+// into every budget's Source, so a machine whose cgroup limit could not be read
+// printed that diagnosis three times inside this single line, burying the thing
+// it exists to surface. Each budget still accounts for its own figure: Source
+// names the share it took of the basis logged beside it, or says the operator
+// set it outright.
+//
+// The failure gets a Warn of its own rather than riding the Info line because
+// it is an operational problem, not a fact: a confined host that sized its
+// queues off the HOST's memory has budgeted whatever the ratio between the two
+// is, and the next place that surfaces is the OOM kill. It carries the error
+// and not the figure, which the Info record beside it already states -- the
+// whole point here is that one probe produces one mention. Nothing at all is
+// emitted on a healthy host: CgroupErr is nil both when a cgroup limit WAS the
+// basis and when the probe ran fine and found none, so an unconfined machine
+// gains no new line, and a warning that is always on is not one.
+//
+// Each budget is keyed by its own Name, the string that also labels its
+// /metrics series, so the log and the metric cannot drift apart.
+func logQueueMemoryBudgets(logger *slog.Logger, basis memlimit.Basis, budgets ...config.QueueMemoryBudget) {
+	attrs := make([]any, 0, 2+2*len(budgets))
+	attrs = append(attrs, "basis", basis.Figure())
+	for _, b := range budgets {
+		attrs = append(attrs, b.Name, b.Source)
+	}
+	logger.Info("outbound queue memory budgets", attrs...)
+	if basis.CgroupErr != nil {
+		logger.Warn("cgroup memory limit could not be read; outbound queue budgets may be sized off a figure that does not bind this process",
+			"error", basis.CgroupErr)
+	}
 }
 
 // ServerOption configures optional aspects of a Hub server.
@@ -219,6 +258,50 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// and a composition that forgot to supply one would not compile.
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New(cfg.MaxMessageSize)
+
+	// Outbound queue memory, bounded per CLASS of connection rather than per
+	// connection: a per-connection budget does not compose into a process bound
+	// when nothing limits the connection count.
+	//
+	// Three pools, not one shared total. Within a pool the admission rule
+	// reclaims from the largest holder, and no class may reclaim from another,
+	// because the three failures cost wildly different things: dropping a
+	// channel relay costs a reconnect plus a Noise re-handshake per channel,
+	// dropping a worker takes every user's channels on that machine and has no
+	// replay in the frontend->worker direction, and dropping a user-event
+	// subscriber costs a reconnect and a delta resume. Separate budgets make
+	// that blast radius structural rather than a property of whichever
+	// connection happened to be biggest.
+	// Each pool is built from its class's whole budget, not just the total:
+	// QueueMemoryBudget.PoolConfig carries the class's largest frame through to
+	// sendq as the guaranteed working set, so an otherwise-idle member can
+	// always place one legitimate message. Built with sendq's generic defaults
+	// instead, a merely-full user-events pool refused every 16 MiB bootstrap
+	// against a 4 MiB floor.
+	// newQueuePool is the one place a budget becomes a pool AND gets published,
+	// so a fourth class cannot arrive with its metrics registration forgotten.
+	// The name travels on the budget (see queueClass.name) rather than being
+	// spelled here, which is what keeps the config key, the metric label and the
+	// startup log's key for this pool from drifting apart.
+	newQueuePool := func(budget config.QueueMemoryBudget) *sendq.Pool {
+		pool := sendq.NewPool(budget.PoolConfig())
+		metrics.SetSendqPool(budget.Name, pool)
+		return pool
+	}
+	// Probed ONCE, here, and handed to all three: the three shares divide one
+	// number because there is one number, not because three accessors agreed.
+	queueBasis := memlimit.Detect()
+	relayBudget := cfg.ResolveRelayQueueMemoryBudget(queueBasis)
+	relayQueuePool := newQueuePool(relayBudget)
+
+	workerBudget := cfg.ResolveWorkerQueueMemoryBudget(queueBasis)
+	workerQueuePool := newQueuePool(workerBudget)
+
+	userEventsBudget := cfg.ResolveUserEventsQueueMemoryBudget(queueBasis)
+	userEventsQueuePool := newQueuePool(userEventsBudget)
+
+	logQueueMemoryBudgets(slog.Default(), queueBasis,
+		relayBudget, workerBudget, userEventsBudget)
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	apiTokenPepper := ks.Pepper()
@@ -233,6 +316,16 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// lifecycle) extend its already-open channels' expiry, not just its leases
 	// (which the registry owns directly).
 	authContexts.SetChannelExpiryRescheduler(cMgr)
+	// The count term the queue pools cannot supply themselves: they bound the
+	// bytes one CLASS of connection may hold, and this bounds how many one user
+	// may open, so a member's guaranteed working set stops multiplying by a
+	// number nothing limits.
+	authContexts.SetMaxConnectionsPerUser(cfg.MaxConnectionsPerUser)
+	// Logged like the queue budgets beside it, and for the same reason: the
+	// setter is one unenforced line, so a wiring omission is otherwise invisible
+	// until the day the cap was supposed to hold and did not.
+	slog.Info("per-user connection limit",
+		"max_connections_per_user", cfg.MaxConnectionsPerUser, "unlimited", cfg.MaxConnectionsPerUser == 0)
 	connectOpts := connectOptions(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
@@ -291,7 +384,25 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}, slog.Default())
 	acquired.crdtRegistry = crdtRegistry
 
-	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, crdtRegistry, shutdownCh)
+	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, crdtRegistry, shutdownCh, workerQueuePool)
+	// The worker pool's count term. Its members take no lease, so the per-user
+	// connection cap cannot see them, and nothing else keeps the floors this
+	// pool guarantees from summing without limit.
+	//
+	// One config key, two enforcement points, because one of them cannot do the
+	// job alone. The service caps ACTIVE ROWS, which is the refusal an operator
+	// can act on -- it names the key and happens at registration. The registry
+	// caps LIVE CONNECTIONS, which is the one the pool actually feels: a
+	// deregistering worker keeps its stream (that is how it learns to stop) but
+	// stops counting as a row, so the row cap alone lets register/deregister
+	// cycles add members forever.
+	connectorSvc.SetMaxWorkersPerUser(cfg.MaxWorkersPerUser)
+	wMgr.SetMaxWorkersPerUser(cfg.MaxWorkersPerUser)
+	// Logged like the connection limit above, and for the same reason: two
+	// unenforced setter lines, so a wiring omission is otherwise invisible until
+	// the day the cap was supposed to hold and did not.
+	slog.Info("per-user worker limit",
+		"max_workers_per_user", cfg.MaxWorkersPerUser, "unlimited", cfg.MaxWorkersPerUser <= 0)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)
 	// One delegation-scope cache shared by SubmitOps (resolve) and worker
@@ -311,7 +422,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle(authPath, authHandler)
 
 	// WebSocket endpoint for encrypted channel relay (Frontend <-> Worker).
-	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, authContexts, soloUser, cfg.SecureCookies).
+	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, authContexts, soloUser, cfg.SecureCookies, relayQueuePool).
 		WithTokenValidator(tokenValidator).
 		WithChannelCloseEnqueuer(channelSvc)
 	mux.Handle("/ws/channel", channelRelay)
@@ -358,7 +469,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// UpdatePresence). The WS path bypasses HTTP/1.1 chunked-stream
 	// buffering hazards (some proxies / Tauri's buffered fetch) that
 	// motivated retiring the streaming RPC.
-	userEventsHandler := service.NewUserEventsHandler(st, crdtRegistry, authContexts, soloUser, cfg.SecureCookies).
+	userEventsHandler := service.NewUserEventsHandler(st, crdtRegistry, authContexts, soloUser, cfg.SecureCookies, userEventsQueuePool).
 		WithTokenValidator(tokenValidator)
 	mux.Handle("/ws/userevents", userEventsHandler)
 

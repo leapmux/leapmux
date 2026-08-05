@@ -69,6 +69,32 @@ func waitAgentWatchCount(t *testing.T, svc *Service, agentID string, want int) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+// waitAgentWatchLive / waitTerminalWatchLive are the waitXWatchCount pair for a
+// caller that is NOT the test goroutine: the close-during-startup tests
+// subscribe from inside startAgentFn / startTerminalFn. assert rather than
+// require, because FailNow off the test goroutine is undefined.
+//
+// They are load-bearing rather than defensive. handleWatchEvents returns once
+// the request is SUBMITTED and the session goroutine registers the watch
+// afterwards, so a test that subscribes and then triggers a broadcast can miss
+// it entirely -- and a test whose assertion is "this event must NEVER arrive"
+// would then pass without having observed anything at all.
+func waitAgentWatchLive(t *testing.T, svc *Service, agentID string) {
+	t.Helper()
+	assert.Eventually(t, func() bool {
+		return svc.Watchers.agents.count(agentID) == 1
+	}, time.Second, 10*time.Millisecond,
+		"agent watch never registered; the broadcast assertions cannot mean anything")
+}
+
+func waitTerminalWatchLive(t *testing.T, svc *Service, termID string) {
+	t.Helper()
+	assert.Eventually(t, func() bool {
+		return svc.Watchers.terminals.count(termID) == 1
+	}, time.Second, 10*time.Millisecond,
+		"terminal watch never registered; the broadcast assertions cannot mean anything")
+}
+
 func waitTerminalWatchCount(t *testing.T, svc *Service, termID string, want int) {
 	t.Helper()
 	require.Eventually(t, func() bool {

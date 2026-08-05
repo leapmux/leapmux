@@ -516,7 +516,7 @@ const connAccessor = "ConnForTrustedPath"
 // the cross-tenant liveness oracle. regWaiters is deliberately out of scope: it
 // is keyed by an opaque registration token rather than a worker id and holds no
 // worker state.
-var registryStateFields = map[string]bool{"conns": true, "deregistering": true}
+var registryStateFields = map[string]bool{"conns": true, "deregistering": true, "connsByOwner": true}
 
 // checkRegistryMethodKinds classifies every exported workermgr.Manager method
 // that reaches the live-worker maps and returns the selector names whose call

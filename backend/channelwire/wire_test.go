@@ -30,16 +30,20 @@ func TestChannelWireLimitsMatchCrossLanguageFixture(t *testing.T) {
 	require.NoError(t, err)
 
 	var limits struct {
-		MaxPlaintextPerChunk       int    `json:"maxPlaintextPerChunk"`
-		MaxMessageSize             int    `json:"maxMessageSize"`
-		InnerEnvelopeHeadroom      int    `json:"innerEnvelopeHeadroom"`
-		MaxReassembledMessageSize  int    `json:"maxReassembledMessageSize"`
-		MaxConfigurableMessageSize int    `json:"maxConfigurableMessageSize"`
-		MaxIncompleteChunked       int    `json:"maxIncompleteChunked"`
-		PingMethod                 string `json:"pingMethod"`
-		SessionKeyMaxAgeMs         int64  `json:"sessionKeyMaxAgeMs"`
-		MinRekeyIntervalMs         int64  `json:"minRekeyIntervalMs"`
-		SessionKeyHardCeilingMs    int64  `json:"sessionKeyHardCeilingMs"`
+		MaxPlaintextPerChunk        int    `json:"maxPlaintextPerChunk"`
+		MaxMessageSize              int    `json:"maxMessageSize"`
+		InnerEnvelopeHeadroom       int    `json:"innerEnvelopeHeadroom"`
+		MaxReassembledMessageSize   int    `json:"maxReassembledMessageSize"`
+		MaxConfigurableMessageSize  int    `json:"maxConfigurableMessageSize"`
+		MaxIncompleteChunked        int    `json:"maxIncompleteChunked"`
+		PingMethod                  string `json:"pingMethod"`
+		SessionKeyMaxAgeMs          int64  `json:"sessionKeyMaxAgeMs"`
+		MinRekeyIntervalMs          int64  `json:"minRekeyIntervalMs"`
+		SessionKeyHardCeilingMs     int64  `json:"sessionKeyHardCeilingMs"`
+		CloseReasonTooManyConns     string `json:"closeReasonTooManyConnections"`
+		CloseReasonSnapshotTooLarge string `json:"closeReasonSnapshotTooLarge"`
+		CloseReasonForbidden        string `json:"closeReasonForbidden"`
+		CloseReasonControlFlood     string `json:"closeReasonControlFlood"`
 	}
 	require.NoError(t, json.Unmarshal(data, &limits))
 
@@ -63,6 +67,24 @@ func TestChannelWireLimitsMatchCrossLanguageFixture(t *testing.T) {
 		"MinRekeyInterval must match the cross-language fixture")
 	assert.Equal(t, limits.SessionKeyHardCeilingMs, SessionKeyHardCeiling.Milliseconds(),
 		"SessionKeyHardCeiling must match the cross-language fixture")
+	assert.Equal(t, limits.CloseReasonTooManyConns, CloseReasonTooManyConnections,
+		"CloseReasonTooManyConnections must match the cross-language fixture the browser branches on")
+	assert.Equal(t, limits.CloseReasonSnapshotTooLarge, CloseReasonSnapshotTooLarge,
+		"CloseReasonSnapshotTooLarge must match the cross-language fixture the browser branches on")
+	assert.Equal(t, limits.CloseReasonForbidden, CloseReasonForbidden,
+		"CloseReasonForbidden must match the cross-language fixture the browser branches on")
+	assert.Equal(t, limits.CloseReasonControlFlood, CloseReasonControlFlood,
+		"CloseReasonControlFlood must match the cross-language fixture the browser branches on")
+	// RFC 6455 caps a close reason at 123 bytes and coder/websocket rejects a
+	// longer one on send, so a token that outgrew it would not be a worse
+	// message -- it would be no close frame at all.
+	for _, reason := range []string{
+		CloseReasonTooManyConnections, CloseReasonSnapshotTooLarge,
+		CloseReasonForbidden, CloseReasonControlFlood,
+	} {
+		assert.LessOrEqual(t, len(reason), 123,
+			"a close reason longer than 123 bytes cannot be sent: %q", reason)
+	}
 }
 
 // SendChannelFrames is the one place the two Go senders (the worker's

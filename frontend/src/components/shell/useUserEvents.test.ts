@@ -1369,6 +1369,41 @@ describe('useUserEvents (desktop bridge path)', () => {
     })
   })
 
+  // The recoverable arm, followed through to the re-subscribe. Leaving the
+  // bridge attached is only half of what a non-terminal close owes: the relay
+  // has to be re-opened, or the desktop app sits with live listeners and no
+  // stream behind them. Both transports now run the one handleClose, and this is
+  // the bridge half of the parity with the native 1006 test above.
+  it('re-opens the relay after a recoverable close', async () => {
+    bridge.isTauri = true
+    vi.useFakeTimers()
+    try {
+      await createRoot(async (dispose) => {
+        const [userId] = createSignal('user-1')
+        const onFatalClose = vi.fn()
+        useUserEvents({
+          userId,
+          activeClient: createActiveClientStore(),
+          pending: () => makeFakePending() as never,
+          onFatalClose,
+        })
+        await settleBridge()
+        expect(bridge.openCalls).toBe(1)
+
+        bridge.handlers.get('userevents:close')!({ code: 1006, reason: '' })
+        await vi.advanceTimersByTimeAsync(1_000)
+        await settleBridge()
+
+        expect(bridge.openCalls).toBe(2)
+        expect(onFatalClose).not.toHaveBeenCalled()
+        dispose()
+      })
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
   // A close delivered to a SUPERSEDED attempt must not tear down the generation that
   // replaced it.
   //

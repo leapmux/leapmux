@@ -26,11 +26,13 @@ import (
 // a pointer aliased into a cross-subscriber cache.
 type catchUpSink interface {
 	// Materialized is called for a ref that became visible. em builds the
-	// payload; the live sink calls it only on a memo miss.
+	// payload; the live sink never calls it, since its wrapper for the ref is
+	// memoized across the whole fan-out.
 	Materialized(ref EntityRef, em func() *leapmuxv1.EntityMaterialized)
 	// Batch is called once per batch with a thunk computing this subscriber's
 	// stable-visibility op subset. A nil result means "no visible ops" and the
-	// sink must emit nothing.
+	// sink must emit nothing. The live sink calls it only on a memo miss (its
+	// cache is keyed by visibility mask, not by subscriber).
 	Batch(visible func() *leapmuxv1.OpBatch)
 	// Removed is called for a ref that became hidden.
 	Removed(ref EntityRef, er func() *leapmuxv1.EntityRemoved)
@@ -68,7 +70,7 @@ type catchUpBatch struct {
 // emitCatchUpFrames is the SINGLE per-batch frame planner for both catch-up
 // paths. It applies the shared visibility predicates (visibilityFor /
 // opVisibleForSubscriber / isMaterializedTransition / isRemovedTransition)
-// and emits frames in the wire-contract order batchFanout.sendTo and
+// and emits frames in the wire-contract order batchFanout.planFor and
 // buildResumeDelta must never diverge on.
 //
 // materializedFor supplies the EntityMaterialized payload for a becoming-
@@ -172,50 +174,85 @@ func filterVisibleOps(cb catchUpBatch, scope visibilityScope) *leapmuxv1.OpBatch
 	return &leapmuxv1.OpBatch{BatchId: cb.batch.GetBatchId(), Ops: visibleOps}
 }
 
-// liveCatchUpSink fans emitCatchUpFrames into a live subscriber, reusing the
-// broadcast fanout's MarshaledEvent caches (materialized / removed / batch
-// mask) so the hot path still marshals each payload at most once per ref /
-// visibility mask.
+// planCatchUpSink resolves each planner slot to the broadcast fanout's shared
+// MarshaledEvent for that frame, MARSHALS it, and appends it to the plan being
+// recorded for one subscriber (see batchPlans).
+//
+// It is the ONLY live sink, and that is deliberate. broadcastBatch runs the
+// planner once per subscriber, off the projection lock, and the pass under the
+// lock REPLAYS the recorded plan rather than planning again -- so sending is no
+// longer a sink at all (see batchFanout.sendTo). A second sink resolving "which
+// wire frame does this planner slot produce" alongside this one would be a
+// second source of truth for exactly the sequence being replayed: a frame
+// recorded off one memo and sent off another is a divergence no test of the send
+// path could see, because both would look correct in isolation.
+//
+// It exists so broadcastBatch can pay for the marshals before it takes the
+// projection lock. The subscriber queue charges a frame against the shared byte
+// budget on the way in, and asking its size is what forces the lazy marshal --
+// so with the fan-out inside the lock, a multi-megabyte batch frame was
+// serialized while holding the lock that gates every SubmitOps, presence update
+// and projection read for that user.
 //
 // CONTRACT: the batch frame is memoized per visibility MASK, so the thunk that
-// builds it may come from a different subscriber than the one being sent to.
+// builds it may come from a different subscriber than the one being planned for.
 // That is sound only because two subscribers sharing a mask have identical
 // IsAllowed verdicts over the workspaces this batch touches, and therefore an
 // identical stable-visibility op subset. subscriberWorkspaceMask keys on
-// f.wsKeys (exactly those workspaces) and broadcastBatch disables the cache
+// f.wsKeys (exactly those workspaces) and prewarmBatch disables the cache
 // entirely past 64 of them, where the mask would alias.
-type liveCatchUpSink struct {
+type planCatchUpSink struct {
 	fan *batchFanout
 	sub *Subscriber
 }
 
-// The thunks are ignored on all three methods: every payload this sink sends is
-// a MarshaledEvent memoized across the whole fan-out (per ref for the transition
-// frames, per visibility mask for the batch frame), so it never needs the
-// planner to build one. Dropping the thunk unevaluated IS the optimization.
+// The thunks are ignored on all three frame methods: every payload this sink
+// records is a MarshaledEvent memoized across the whole fan-out (per ref for the
+// transition frames, per visibility mask for the batch frame), so it never needs
+// the planner to build one. Dropping the thunk unevaluated IS the optimization.
 
-func (s liveCatchUpSink) Materialized(ref EntityRef, _ func() *leapmuxv1.EntityMaterialized) {
-	if evt := s.fan.materialized(ref); evt != nil {
-		_ = s.sub.Send(evt)
-	}
+func (s planCatchUpSink) Materialized(ref EntityRef, _ func() *leapmuxv1.EntityMaterialized) {
+	s.record(s.fan.materialized(ref))
 }
 
-func (s liveCatchUpSink) Batch(visible func() *leapmuxv1.OpBatch) {
-	if evt := s.fan.batchEventFor(s.sub, visible); evt != nil {
-		_ = s.sub.Send(evt)
-	}
+func (s planCatchUpSink) Batch(visible func() *leapmuxv1.OpBatch) {
+	s.record(s.fan.batchEventFor(s.sub, visible))
 }
 
-func (s liveCatchUpSink) Removed(ref EntityRef, _ func() *leapmuxv1.EntityRemoved) {
-	if evt := s.fan.removed(ref); evt != nil {
-		_ = s.sub.Send(evt)
-	}
+func (s planCatchUpSink) Removed(ref EntityRef, _ func() *leapmuxv1.EntityRemoved) {
+	s.record(s.fan.removed(ref))
 }
 
-func (s liveCatchUpSink) End(*leapmuxv1.HLC) {
+func (s planCatchUpSink) End(*leapmuxv1.HLC) {
 	// Identical for every subscriber of this batch, so it is built once per
 	// broadcast and shared like the other frames.
-	_ = s.sub.Send(s.fan.batchEnd())
+	s.record(s.fan.batchEnd())
+}
+
+// record drops a slot the fanout has no frame for -- a tombstoned or
+// unsupported-kind ref, or a batch none of whose ops this subscriber may see --
+// and appends the rest to the plan, MARSHALED.
+//
+// The marshal is the point: a plan holds frames the send pass hands straight to
+// Send, and Send's byte charge is what would otherwise force proto.Marshal under
+// the projection lock.
+func (s planCatchUpSink) record(evt *MarshaledEvent) {
+	if evt == nil {
+		return
+	}
+	prepare(evt)
+	s.fan.plans.add(evt)
+}
+
+// prepare forces the frame's marshal, so whoever sends it next finds it
+// memoized. NewMarshaledEvent only WRAPS the proto -- Size/Bytes is where the
+// cost is, and pre-warming the wrapper without it would move nothing off the
+// lock. Shared with broadcastFrame.get, which pays the same cost for the
+// single-frame broadcasts.
+func prepare(evt *MarshaledEvent) {
+	if evt != nil {
+		_ = evt.Size()
+	}
 }
 
 // resumeCatchUpSink ACCUMULATES a ResumeDelta: the ordered WatchUserEvent frame

@@ -7,7 +7,10 @@ declare global {
         placement?: 'top-left' | 'top-center' | 'top-right' | 'bottom-left' | 'bottom-center' | 'bottom-right'
         duration?: number
       }) => void) & {
-        el: (element: HTMLElement, options?: Record<string, unknown>) => void
+        // Returns the node it actually mounted, which is a CLONE of `element`
+        // -- not `element` itself. Callers that need to reach the live toast
+        // (to wire a handler onto it, say) must use the return value.
+        el: (element: HTMLElement, options?: Record<string, unknown>) => HTMLElement | undefined
         clear: (placement?: string) => void
       }
     }
