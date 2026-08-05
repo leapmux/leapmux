@@ -1,4 +1,5 @@
 import type { ChunkKind } from './checkpointChunks'
+import type { CheckpointRead } from './checkpointStore'
 import type { HlcShape } from './hlc'
 import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
 import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
@@ -6,7 +7,13 @@ import { fromBinary } from '@bufbuild/protobuf'
 import { WatchUserEventSchema } from '~/generated/leapmux/v1/user_ops_pb'
 import { createLogger } from '~/lib/logger'
 import { applyChunk, isChunkKind, parseHeader } from './checkpointChunks'
-import { clearOwnerCheckpointAndOpLog, isCheckpointStoreAvailable, readCheckpoint } from './checkpointStore'
+import {
+  adoptCheckpoint,
+  clearOwnerCheckpointAndOpLog,
+  isCheckpointStoreAvailable,
+  listSeedCandidates,
+  readCheckpoint,
+} from './checkpointStore'
 import { inInt64Range } from './hlc'
 
 const log = createLogger('crdtHydrate')
@@ -68,6 +75,37 @@ export interface HydrationPayload {
    */
   truncated: boolean
   /**
+   * The persisted base this payload sits on: a value when it is already durable
+   * under this owner's key, a PROMISE of one while it is still being written,
+   * or null when there is none. Present (eventually) means the recorder may
+   * rewrite INCREMENTALLY against it.
+   *
+   * Already settled on the self-hydration path — the caller read those bytes
+   * back off disk. A promise on the SEED path, where the adoption is left in
+   * flight on purpose so the caller can open its ready gate (and so the
+   * /ws/userevents connect and first render) without waiting out a write of one
+   * row per entity. It resolves null when the adoption did NOT commit: the
+   * state and frames are still usable in memory, so the tab still presents a
+   * cursor and RESUMEs, but the recorder must then be given no base at all. An
+   * incremental rewrite over chunks that are not there writes a header plus a
+   * handful of shards and nothing underneath, which the next cold start
+   * hydrates as a state silently missing almost every record -- with the resume
+   * cursor riding on it. That is the one outcome hydrate's corruption policy
+   * exists to make impossible, reached from the write side.
+   *
+   * NESTED rather than a `basePersisted` boolean beside a flat
+   * `nextOpLogOrdinal`: the two are one fact, and split apart the type could
+   * express "no base on disk, but resume the log at ordinal 7" -- a producer
+   * that cleared the flag and forgot to zero the ordinal. `frames` stays
+   * top-level because it is consumed unconditionally (the in-memory replay
+   * happens whether or not anything was persisted).
+   */
+  persistedBase: PersistedBase | null | Promise<PersistedBase | null>
+}
+
+/** Where the recorder must continue the persisted op-log sequence. */
+export interface PersistedBase {
+  /**
    * Ordinal the next appended op-log segment must carry, so the recorder can
    * continue the persisted sequence instead of restarting at 0 behind segments
    * that already hold 0..N-1 — which the next cold start would read as a hole
@@ -105,7 +143,15 @@ function tryApplyChunk(state: UserCrdtState, kind: ChunkKind, entityId: string, 
 }
 
 /**
- * Wipe this owner's persisted pair and report a cold start.
+ * Wipe this owner's persisted pair.
+ *
+ * It reports NOTHING about what to do next. It used to return `Promise<null>`
+ * and be named `wipeAndFail`, because a wipe WAS the cold-start decision at all
+ * eight call sites that returned its result directly. It no longer is: the sole
+ * caller now falls through to the sibling seed, and a name that still advertises
+ * the old control flow invites the next failure arm to write
+ * `return wipeAndFail(...)` and silently reinstate the unconditional cold start
+ * the seed path exists to remove.
  *
  * OWNER-scoped, not user-scoped, and that is the whole point. Every failure
  * this module detects — an unreadable row, an undecodable blob, a foreign
@@ -118,7 +164,7 @@ function tryApplyChunk(state: UserCrdtState, kind: ChunkKind, entityId: string, 
  * `clearCheckpointAndOpLog` (user-wide) stays for logout / user switch, where
  * spanning every tab is the intent.
  */
-async function wipeAndFail(userId: string, clientId: string): Promise<null> {
+async function wipeOwnCheckpoint(userId: string, clientId: string): Promise<void> {
   // A wipe that did not happen leaves the poison record in place, so the next
   // reload reads it, fails identically, and pays a full projection snapshot --
   // forever, and silently. The wipe is still best-effort (there is nothing
@@ -126,48 +172,100 @@ async function wipeAndFail(userId: string, clientId: string): Promise<null> {
   // own header, and an unobservable failure makes that claim unfalsifiable.
   if (!await clearOwnerCheckpointAndOpLog(userId, clientId))
     log.warn('could not wipe the corrupt checkpoint; the next reload will re-read it', { clientId })
-  return null
 }
 
 /**
- * Load and validate the persisted checkpoint + op-log for `userId`. Returns
- * null when there is nothing usable to hydrate from:
- *   - the store is unavailable (no indexedDB),
- *   - no checkpoint exists,
+ * Load and validate the persisted checkpoint + op-log for `userId`.
+ *
+ * It tries THIS OWNER first, and falls through to a SIBLING owner when this one
+ * has nothing usable -- either because there is no row at all (a genuinely new
+ * tab, the first tab after a browser restart, a re-minted duplicate), or
+ * because this owner's row failed validation:
  *   - the checkpoint header blob fails to deserialize,
  *   - the header names a different tenant,
  *   - the watermark/epoch is missing or out of range,
  *   - an entity chunk names an unknown kind or fails to deserialize.
  *
- * Each of those wipes THIS OWNER's pair (see wipeAndFail) so the next reload
- * isn't poisoned by the same corrupt record, and returns null — routing the
- * caller to the full-snapshot cold-start path.
+ * Each of THOSE wipes THIS OWNER's pair (see wipeOwnCheckpoint) so the next
+ * reload isn't poisoned by the same corrupt record. The wipe and the seed are separate
+ * decisions: the wipe is about our own bad row, the seed about finding a good
+ * one. See seedFromSibling, which never deletes a row it does not own.
+ *
+ * Returns null -- routing the caller to the full-snapshot cold-start path --
+ * only when the store is unavailable, the ids are empty, or no sibling
+ * qualifies either.
  *
  * An undecodable OP-LOG frame is NOT fatal: the returned payload carries the
  * decodable prefix with `truncated: true`, and the caller rewrites the
  * checkpoint to drop the bad tail.
  */
-export async function loadHydrationState(userId: string, clientId: string): Promise<HydrationPayload | null> {
+export async function loadHydrationState(
+  userId: string,
+  clientId: string,
+  opts: HydrationOptions = {},
+): Promise<HydrationPayload | null> {
   if (!isCheckpointStoreAvailable() || !userId || !clientId)
     return null
 
   const read = await readCheckpoint(userId, clientId)
   if (read.status === 'miss')
+    return seedFromSibling(userId, clientId, opts)
+  const payload = validateCheckpoint(userId, read)
+  if (payload)
+    return payload
+  // Our own record is unusable. Wipe it so the next reload is not poisoned by
+  // the same corruption, then try a sibling: recovering from OUR OWN bad
+  // checkpoint is one more case the seed path covers, and it is strictly better
+  // than the full projection snapshot this used to mean.
+  //
+  // Checked HERE too, not only before the seed's adoption: the wipe is the
+  // OTHER write on this path, and the more destructive one. A run that lost the
+  // caller's deadline has already cold-started, bootstrapped, and had its
+  // recorder write a fresh checkpoint under this same owner key with
+  // `base = 'ready'` -- so a late wipe deletes those rows while the recorder
+  // goes on rewriting INCREMENTALLY against chunks that are no longer there,
+  // landing a header plus a handful of shards over nothing. That is this
+  // module's own "partial is the one outcome that must stay impossible",
+  // reached from the write side.
+  if (opts.superseded?.())
     return null
-  if (read.status === 'failed') {
-    // Distinct from a miss on purpose. A checkpoint row that EXISTS but cannot
-    // be read (a structured-clone failure on the stored bytes, a corrupt key
-    // entry) would otherwise survive every reload: each one pays the failed
-    // read, cold-starts, and re-fails identically. Wiping is what makes the
-    // policy in this module's header self-healing rather than a loop.
-    return wipeAndFail(userId, clientId)
-  }
+  await wipeOwnCheckpoint(userId, clientId)
+  return seedFromSibling(userId, clientId, opts)
+}
+
+/**
+ * Validate an already-read checkpoint into a HydrationPayload, or null when the
+ * pair is unusable.
+ *
+ * PURE and side-effect-free: it decides only WHETHER the pair is usable, never
+ * what to do about it. The recovery differs by owner and so cannot live here --
+ * wiping is correct for YOUR OWN row and catastrophic for a sibling's, whose
+ * recorder believes its chunks are on disk and rewrites INCREMENTALLY against
+ * them. Being pure also means one definition of the policy serves both entry
+ * points, which is the whole reason the seed path can be trusted to reject
+ * exactly what the self path rejects.
+ *
+ * Nullable rather than a three-arm 'miss' | 'corrupt' | 'ok' union: no caller
+ * ever distinguished the first two. loadHydrationState has already returned on
+ * a miss before it gets here, and the seed skips the candidate either way -- so
+ * the discriminant was an arm every reader had to check was handled and then
+ * find was not.
+ */
+function validateCheckpoint(userId: string, read: CheckpointRead): HydrationPayload | null {
+  // A 'failed' read is NOT the same as a miss to the CALLER, which wipes on the
+  // former: a checkpoint row that EXISTS but cannot be read (a structured-clone
+  // failure on the stored bytes, a corrupt key entry) would otherwise survive
+  // every reload, each one paying the failed read, cold-starting, and re-failing
+  // identically. Wiping is what makes the policy in this module's header
+  // self-healing rather than a loop. Both are simply "unusable" HERE.
+  if (read.status !== 'ok')
+    return null
   const { checkpoint, chunks, opLogFrames, opLogTruncated } = read
 
   // (1) The checkpoint header blob must deserialize into a UserCrdtState.
   const state = tryFromBinary(parseHeader, checkpoint.headerBytes)
   if (!state) {
-    return wipeAndFail(userId, clientId)
+    return null
   }
 
   // (1b) The blob must name THIS tenant. UserCrdtState carries its own user_id,
@@ -188,7 +286,7 @@ export async function loadHydrationState(userId: string, clientId: string): Prom
   // bootstrap copies `materialized.userId`, and a checkpoint is only ever
   // written once a watermark exists, which requires one of those two.
   if (state.userId !== userId) {
-    return wipeAndFail(userId, clientId)
+    return null
   }
 
   // (2) The watermark and epoch must be present and in-range. An out-of-range
@@ -197,7 +295,7 @@ export async function loadHydrationState(userId: string, clientId: string): Prom
   // record left in the store would re-fail every reload, so wipe it.
   const wm = checkpoint.watermark
   if (!wm || typeof wm.physical !== 'bigint' || typeof wm.logical !== 'bigint' || typeof wm.clientId !== 'string') {
-    return wipeAndFail(userId, clientId)
+    return null
   }
   // RANGE, not just type -- the comment above says "in-range" and the epoch two
   // lines down enforces it, but the watermark used to be type-checked only. An
@@ -207,11 +305,11 @@ export async function loadHydrationState(userId: string, clientId: string): Prom
   // bootstrap (which overwrites the watermark and rewrites the pair), but a
   // wipe here turns one silent degraded connect into zero.
   if (!inInt64Range(wm.physical) || !inInt64Range(wm.logical)) {
-    return wipeAndFail(userId, clientId)
+    return null
   }
   const epoch = checkpoint.currentEpoch
   if (typeof epoch !== 'bigint' || !inInt64Range(epoch)) {
-    return wipeAndFail(userId, clientId)
+    return null
   }
 
   // (2b) Re-assemble the entity maps from the chunks. EVERY chunk must land:
@@ -222,10 +320,10 @@ export async function loadHydrationState(userId: string, clientId: string): Prom
   // all, so it takes the same wipe-and-cold-start arm as a bad header.
   for (const chunk of chunks) {
     if (!isChunkKind(chunk.kind))
-      return wipeAndFail(userId, clientId)
+      return null
     const applied = tryApplyChunk(state, chunk.kind, chunk.entityId, chunk.bytes)
     if (!applied)
-      return wipeAndFail(userId, clientId)
+      return null
   }
 
   // (3) Replay the op-log as far as it decodes. A bad frame invalidates only
@@ -258,5 +356,174 @@ export async function loadHydrationState(userId: string, clientId: string): Prom
     frames.push(frame)
   }
 
-  return { state, frames, watermark: wm, currentEpoch: epoch, truncated, nextOpLogOrdinal: read.opLogNextOrdinal }
+  return {
+    state,
+    frames,
+    watermark: wm,
+    currentEpoch: epoch,
+    truncated,
+    // Present by definition on this path: the caller read these bytes back OUT
+    // of this owner's own rows, so they are on disk under this owner's key.
+    // The seed path overrides it.
+    persistedBase: { nextOpLogOrdinal: read.opLogNextOrdinal },
+  }
+}
+
+/** Options for `loadHydrationState`; every one is a test seam or a guard. */
+export interface HydrationOptions {
+  /**
+   * True once this hydration run has been SUPERSEDED -- its effect re-ran, its
+   * owner was disposed, or the caller's deadline elapsed.
+   *
+   * Checked immediately before the seed's adoption, which is the only WRITE on
+   * this path. useCrdtRuntime races the read against a deadline and, on losing,
+   * cold-starts WITHOUT cancelling the promise behind it -- harmless while this
+   * was a pure read, and fatal the moment it is not. The sequence to prevent:
+   * deadline fires, the tab cold-starts, bootstrap() rewrites the checkpoint,
+   * the recorder begins appending ordinals 0,1,2..., and only THEN the seed's
+   * adoption lands -- replacing the fresh checkpoint with the sibling's older
+   * header and the log with one segment at ordinal 0. Disk then holds a hole
+   * whose replayed batchEnd frames advance the resume cursor straight past it,
+   * and the hub ships only what is strictly after the cursor. Silent, permanent
+   * divergence.
+   */
+  superseded?: () => boolean
+  /**
+   * Test seam: how many candidates to try before giving up.
+   *
+   * Named to match `SeedCandidateOptions.limit`, which it is forwarded to
+   * verbatim one call later -- one knob should not have two names a single hop
+   * apart. (A sibling `now`/`maxAgeMs` pair was declared here too and deleted:
+   * nothing ever set `now`, and `maxAgeMs` was never forwarded at all, so the
+   * age cutoff was unreachable through this entry point. `listSeedCandidates`
+   * takes both directly and is tested through them.)
+   */
+  limit?: number
+}
+
+/**
+ * Seed this tab from a SIBLING tab's persisted checkpoint.
+ *
+ * Checkpoints are per-(user, client) because of a WRITE clobber (see
+ * checkpointStore's header); a READER has no such hazard, so a tab with nothing
+ * usable of its own -- a genuinely new tab, the first tab after a browser
+ * restart, a duplicate whose id was re-minted, or one whose own checkpoint just
+ * failed validation -- may adopt a sibling's base and RESUME instead of paying a
+ * full projection snapshot.
+ *
+ * IT NEVER DELETES ANYTHING. A corrupt candidate is SKIPPED, not wiped, even
+ * one that looks abandoned. Wiping a LIVE sibling is catastrophic in a way the
+ * self path is not: that tab's recorder believes its chunks are on disk and
+ * rewrites INCREMENTALLY against them, so removing them leaves it writing a
+ * header plus a few shards over nothing -- the "partial is the one outcome that
+ * must stay impossible" hazard in this module's header, inflicted on a tab
+ * whose own records were fine. And "abandoned" is not provable here:
+ * OWNER_LIVENESS_WINDOW_MS is a heuristic a frozen or bfcached page fails.
+ * sweepAbandonedCheckpoints already owns reclamation, and one destructive
+ * policy over rows we do not own is enough.
+ */
+async function seedFromSibling(
+  userId: string,
+  clientId: string,
+  opts: HydrationOptions,
+): Promise<HydrationPayload | null> {
+  const candidates = await listSeedCandidates(userId, clientId, { limit: opts.limit })
+  for (const candidate of candidates) {
+    const read = await readCheckpoint(userId, candidate.clientId)
+    // Narrow ONCE, here, so everything below reads the candidate's bytes off a
+    // `read` the type system has already proven to be present.
+    //
+    // The alternative -- re-testing `read.status === 'ok'` at each use with a
+    // fallback -- looked defensive and was the opposite: the fallbacks
+    // (`new Uint8Array()`, `[]`) are unreachable today, and the only behaviour
+    // they COULD ever produce is adopting an empty header with zero chunks
+    // under our own key, which adoptCheckpoint's full-replace write would make
+    // durable. That is precisely "a state silently missing almost every record,
+    // with the resume cursor riding on it" -- the one outcome this module's
+    // header calls impossible.
+    if (read.status !== 'ok')
+      continue
+    const payload = validateCheckpoint(userId, read)
+    if (!payload)
+      continue
+    // Checked HERE, and again inside adoptCheckpoint immediately before its
+    // transaction is created.
+    //
+    // One check would be sufficient IF the adopt transaction were always
+    // CREATED in this same task -- everything that could supersede us
+    // (withTimeout's deadline, Solid's cleanup) runs in a LATER one, and
+    // IndexedDB starts overlapping-scope readwrite transactions in creation
+    // order, so an adoption created here always commits before any write the
+    // resulting cold start issues, and that cold start's full rewrite lands on
+    // top of it rather than interleaving with it.
+    //
+    // But adoptCheckpoint's `await openDb()` is a no-op microtask only while
+    // the cached connection is live. A peer tab's schema-repair
+    // `deleteDatabase()` nulls it (idb.ts's `onversionchange` handler), and the
+    // reopen that follows is a whole task -- which is exactly long enough for
+    // the ordering argument to lapse. So the guard is re-consulted at the point
+    // the transaction is actually created, where it needs no ordering argument
+    // at all.
+    if (opts.superseded?.()) {
+      // Write NOTHING, and tell the caller its recorder has no base on disk.
+      //
+      // The payload is still returned rather than null because it is correct in
+      // memory and costs nothing to hand back. No CURRENT caller observes it --
+      // withTimeout has already resolved null on the deadline path, and
+      // hydrateAndInstall returns at its `cancelled` guard on the other -- so
+      // this is the contract, not a live behaviour: whoever does consume it gets
+      // a usable state with no base, which is exactly what a failed adoption
+      // reports below.
+      return { ...payload, persistedBase: null }
+    }
+    // NOT awaited. The adoption is one IDB `put` per entity, and nothing the
+    // caller does next needs it: the state and frames above are already in
+    // memory, so the ready gate -- and with it the /ws/userevents connect, the
+    // resume cursor and the first render -- can open while this write is still
+    // committing. Only the RECORDER needs the result, and it holds its appends
+    // and rewrites until this settles (see CheckpointRecorderOptions).
+    //
+    // Copy the VALIDATED PREFIX, not everything the read returned.
+    //
+    // `payload.frames` is where validateCheckpoint stopped -- it decodes one raw
+    // frame per entry, in order, and breaks on the first failure -- so
+    // `read.opLogFrames` beyond that length is either undecodable or past the
+    // store's own read ceiling. Copying it would make this owner's row a second
+    // durable copy of the source's corruption, and the one-shot repair the
+    // caller asks for (`rewriteNow` on `truncated`) is issued while the recorder
+    // is still holding for this very adoption.
+    //
+    // Taking the prefix instead makes the adopted pair self-consistent by
+    // construction: the frames on disk are exactly the frames that produced the
+    // watermark in the header beside them, so `opLogCount` matches the row and
+    // the read ceiling is armed against the true length.
+    const adoptedFrames = read.opLogFrames.slice(0, payload.frames.length)
+    // The ordinal comes back FROM the adoption rather than being re-derived
+    // here: it is a fact about the segment layout adoptCheckpoint chose, and a
+    // producer and a consumer that disagree by one mint exactly the hole the
+    // per-owner sequence exists to detect. Nesting it under the base is what
+    // removes the second `adopted &&` guard this expression used to need -- an
+    // ordinal cannot outlive the base it counts.
+    const persistedBase = adoptCheckpoint(
+      userId,
+      clientId,
+      {
+        headerBytes: read.checkpoint.headerBytes,
+        chunks: read.chunks,
+        watermark: payload.watermark,
+        currentEpoch: payload.currentEpoch,
+        opLogFrames: adoptedFrames,
+      },
+      undefined,
+      opts.superseded,
+    ).then((nextOpLogOrdinal) => {
+      log.info('seeded this tab from a sibling checkpoint', {
+        from: candidate.clientId,
+        adopted: nextOpLogOrdinal !== null,
+      })
+      return nextOpLogOrdinal === null ? null : { nextOpLogOrdinal }
+    })
+    return { ...payload, persistedBase }
+  }
+  return null
 }

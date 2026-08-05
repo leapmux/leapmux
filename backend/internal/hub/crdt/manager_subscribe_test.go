@@ -14,6 +14,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // submitNodeBatch commits a SetNodeRegister (parent_id + kind) for `nodeID`
@@ -26,7 +27,7 @@ import (
 // the op survives the resume visibility filter (workspaceForEntity resolves it
 // to an allowed workspace). Used to advance the journal so a resume has a
 // post-cursor tail that is NOT filtered out.
-func submitNodePositionBatch(t *testing.T, mgr *crdt.Manager, batchID, nodeID, position string) {
+func submitNodePositionBatch(t testing.TB, mgr *crdt.Manager, batchID, nodeID, position string) {
 	t.Helper()
 	res, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
 		Batches: []*leapmuxv1.OpBatch{{BatchId: batchID, Ops: []*leapmuxv1.CrdtOp{{
@@ -352,6 +353,8 @@ func TestSubscribeWithACL_TailOverBudget_FallsBack(t *testing.T) {
 	require.NoError(t, err, "an over-budget tail is recoverable, not a connect failure")
 	require.Equal(t, crdt.SubscribeInitial, out.Mode(),
 		"an over-budget tail must FALLBACK to a full snapshot")
+	assert.Equal(t, crdt.SubscribeReasonTailOverBudget, out.Reason(),
+		"and must say so, or the metric cannot tell this apart from a first connect")
 	defer out.Unsub()()
 	require.NotNil(t, out.Initial(), "the FALLBACK arm must carry a materialized snapshot")
 }
@@ -412,6 +415,8 @@ func TestSubscribeWithACL_BuiltDeltaOverFrameCeiling_FallsBack(t *testing.T) {
 	out, cap := resumeOnce(t, mgr, cursor, epoch)
 	require.Equal(t, crdt.SubscribeInitial, out.Mode(),
 		"a delta past the client's frame ceiling must FALLBACK, never ship")
+	assert.Equal(t, crdt.SubscribeReasonDeltaOverFrameCeiling, out.Reason(),
+		"a delta too big for the wire is its own operational story, not a generic fallback")
 	defer out.Unsub()()
 	snap := out.Initial()
 	require.NotNil(t, snap, "the FALLBACK arm must carry a materialized snapshot")
@@ -671,6 +676,8 @@ func TestSubscribeWithACL_CorruptRowFallsBackWithoutLosingOps(t *testing.T) {
 	require.NoError(t, err, "a corrupt row is recoverable: it must not surface a connect error")
 	require.Equal(t, crdt.SubscribeInitial, out.Mode(),
 		"a corrupt row must FALLBACK; shipping the good tail around it would strand the corrupt batch's ops forever")
+	assert.Equal(t, crdt.SubscribeReasonCorruptRow, out.Reason(),
+		"storage damage must be distinguishable in the metric from an ordinary cold connect")
 	defer out.Unsub()()
 
 	// The whole point of falling back: the snapshot carries BOTH post-cursor
@@ -687,7 +694,7 @@ func TestSubscribeWithACL_CorruptRowFallsBackWithoutLosingOps(t *testing.T) {
 // TestSubscribeWithACL_OverBudgetFallbackRegistersExactlyOnce pins the
 // register→undo→re-register churn on the ErrDeltaTooLarge FALLBACK path. After
 // the over-budget tail read, SubscribeWithACL calls unsub() (tearing down the
-// RESUME registration) then subscribeLocked (re-registering via the FALLBACK
+// RESUME registration) then the FALLBACK seam (re-registering via
 // seam). The subscriber must end up registered EXACTLY ONCE: a subsequent
 // broadcast must deliver exactly one frame, not two (double-registration) or
 // zero (the unsub tore down the wrong handle). The over-budget path is driven
@@ -702,7 +709,7 @@ func TestSubscribeWithACL_OverBudgetFallbackRegistersExactlyOnce(t *testing.T) {
 
 	// Force the resume tail read to hit the ErrDeltaTooLarge ceiling so
 	// SubscribeWithACL takes the FALLBACK-reentry path (register → unsub →
-	// subscribeLocked → re-register) rather than the plain RESUME arm.
+	// fallbackOutcome → re-register) rather than the plain RESUME arm.
 	j.listErr = crdt.ErrDeltaTooLarge
 	cap := &captureSubscriber{}
 	sub := &crdt.Subscriber{UserID: "user-1", Send: cap.send}
@@ -823,7 +830,7 @@ func TestSubscribeWithACL_NeitherExpandNorBroadcastStalledDuringScan(t *testing.
 // TestSubscribeOutcome_ZeroValueIsNotAReadyDelta pins the zero-value guard on
 // SubscribeMode.
 //
-// Every error return in SubscribeWithACL / resumeFallback is
+// Every error return in SubscribeWithACL / fallbackOutcome is
 // `SubscribeOutcome{}, err`. While SubscribeDelta was the iota-zero arm, that
 // value read as "delta ready" carrying a nil *ResumeDelta: today's sole caller
 // checks err first, but a second caller -- or a refactor that logs Mode()
@@ -964,6 +971,65 @@ func TestSubscribeWithACL_CompactionDuringScan_StillResumes(t *testing.T) {
 	require.Equal(t, crdt.SubscribeDelta, r.out.Mode(),
 		"a compaction tick during the scan must not invalidate a cursor inside the retention window")
 	require.NotNil(t, r.out.Delta())
+}
+
+// TestSubscribeWithACL_PostScanDriftFallsBackWithItsOwnReason is the behavioural
+// counterpart to the case above: when the drift DOES invalidate the verdict, the
+// connect must fall back AND say so.
+//
+// The re-check at the end of the unlocked scan (buildResumeDelta's decideResume)
+// was the one give-up arm with no behavioural test -- it was referenced only as a
+// key in the String() vocabulary map, which pins spelling and nothing else. That
+// is the same gap that let the sibling park-overflow arm ship the zero reason:
+// with no test driving the arm, a refactor that dropped or mislabelled `reason`
+// publishes reason="invalid" and an operator can no longer tell "compaction
+// raced the scan" from a construction bug.
+//
+// The epoch bump is forced from INSIDE the scan's hold, so the verdict is
+// genuinely computed before the drift and re-computed after it.
+func TestSubscribeWithACL_PostScanDriftFallsBackWithItsOwnReason(t *testing.T) {
+	mgr, j, _ := runManager(t, "user-1", allowAll{}, 230_000)
+	seedRootInternal(t, mgr, "w1", "root1")
+	submitNodePositionBatch(t, mgr, "cursor-batch", "root1", "c0")
+	cursor := mgr.Materialized(crdt.SubscriberFilter{}).GetMaxHlc()
+	require.NotNil(t, cursor)
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+	submitNodePositionBatch(t, mgr, "tail-batch", "root1", "t0")
+
+	listHold := make(chan struct{})
+	listReached := make(chan struct{})
+	j.listHold = listHold
+	j.listReached = listReached
+
+	type res struct {
+		out crdt.SubscribeOutcome
+		err error
+	}
+	resCh := make(chan res, 1)
+	sub := &crdt.Subscriber{UserID: "user-1", Send: (&captureSubscriber{}).send}
+	go func() {
+		out, err := mgr.SubscribeWithACL(context.Background(), sub, crdt.HLCClone(cursor), epoch, resolveAll)
+		resCh <- res{out, err}
+	}()
+
+	<-listReached
+	// Age the epoch past EpochDuration and force the bump, so the post-scan
+	// re-check sees an epoch the client's no longer matches.
+	mgr.SeedStateForTest(func(state *leapmuxv1.UserCrdtState) {
+		state.EpochStartedAt = timestamppb.New(time.UnixMilli(0).Add(-2 * crdt.EpochDuration))
+	})
+	mgr.TickHousekeeping(context.Background())
+	require.Greater(t, mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(), epoch,
+		"the fixture must actually drift the epoch, or this tests nothing")
+	close(listHold)
+
+	r := <-resCh
+	require.NoError(t, r.err)
+	defer r.out.Unsub()()
+	assert.Equal(t, crdt.SubscribeInitial, r.out.Mode(),
+		"a verdict invalidated during the scan must ship a complete snapshot")
+	assert.Equal(t, crdt.SubscribeReasonPostScanDrift, r.out.Reason(),
+		"the fallback must name the drift, not an unlabelled 'invalid'")
 }
 
 // TestDecideResume_WallClockFloorFallsBack pins the floor that makes the
@@ -1118,17 +1184,37 @@ func TestSubscribeWithACL_TransportOverflowDuringScanFallsBack(t *testing.T) {
 	// and FALLBACK is a decision rather than the only option.
 	submitNodePositionBatch(t, mgr, "tail-batch", "root1", "t0")
 
+	// Model the REAL transport: subscriberQueue.Rebaseline clears the overflow
+	// flag along with the frames that set it, and the manager calls it through
+	// OnRebaseline. A fake that stayed permanently overflowed would drive the
+	// park-overflow LADDER -- two retries then the locked rung, three baselines
+	// -- which is a different code path from the one production takes here, and
+	// it would assert SubscribeReasonParkOverflow via a re-derivation inside
+	// fallbackOutcome instead of via the scan arm that actually observed the
+	// drop. That is what let the scan arm ship the zero reason unnoticed.
+	//
+	// With the flag cleared on rebaseline, this exercises production's shape:
+	// ONE snapshot, and the reason must survive from the scan arm.
 	overflowed := true
+	rebaselines := 0
 	sub := &crdt.Subscriber{
 		UserID:     "user-1",
 		Send:       (&captureSubscriber{}).send,
 		Overflowed: func() bool { return overflowed },
+		OnRebaseline: func() {
+			rebaselines++
+			overflowed = false
+		},
 	}
 	out, err := mgr.SubscribeWithACL(context.Background(), sub, crdt.HLCClone(cursor), epoch, resolveAll)
 	require.NoError(t, err)
 	defer out.Unsub()()
 	assert.Equal(t, crdt.SubscribeInitial, out.Mode(),
 		"a transport that dropped a frame mid-scan must get a complete snapshot")
+	assert.Equal(t, crdt.SubscribeReasonParkOverflow, out.Reason(),
+		"the reason must come from the scan arm that saw the drop, not from a ladder retry")
+	assert.Equal(t, 1, rebaselines,
+		"FALLBACK converts the overflow into exactly one snapshot, not a ladder of them")
 	// Not asserting out.Delta() is nil: SubscribeOutcome PANICS on a Delta()
 	// read in any mode but SubscribeDelta, which is the stronger guarantee.
 }

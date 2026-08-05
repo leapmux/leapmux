@@ -69,14 +69,23 @@ import { createLogger } from '~/lib/logger'
 // branch added one, and the sweep now consults it for liveness); it is that
 // neither survives the unguarded `entityRemoved` replay above.
 //
-// A genuinely NEW tab therefore has no checkpoint of its own, sends no resume
-// cursor, and cold-starts with a full snapshot -- which is the last common
-// connect still paying the projection-lock scan #267 exists to remove. The
-// clobber above is a WRITE hazard, so a new tab could safely SEED from a
-// sibling's checkpoint read-only and resume, writing only ever under its own
-// id. Tracked in https://github.com/leapmux/leapmux/issues/358, which also
-// records why #267's other two mitigations were rejected. Measure before
-// building it.
+// A genuinely NEW tab therefore has no checkpoint of its own -- so it would
+// send no resume cursor and cold-start on a full snapshot. The clobber above is
+// a WRITE hazard, and a READER has none, so it instead SEEDS: it picks the
+// freshest sibling owner (listSeedCandidates), reads that owner's pair, and
+// ADOPTS it by copying the already-serialized bytes under its OWN id
+// (adoptCheckpoint). It never writes under, and never deletes, another owner's
+// key -- so the single-writer-per-owner rule the paragraphs above establish is
+// untouched, and the cost is one extra owner row that the sweep reclaims.
+//
+// hydrate.ts owns the policy half (which candidate, and what to do with a
+// corrupt one); this module only enumerates and copies bytes.
+//
+// That covers more than the new tab it was written for: the first tab after a
+// browser RESTART (sessionStorage died, but the dead siblings' rows survive up
+// to CHECKPOINT_TTL_MS), a duplicate tab whose id clientIdentity.ts re-minted,
+// and this tab's OWN checkpoint turning out to be corrupt -- every one of which
+// used to mean a full projection snapshot.
 //
 // The store is a PURE BLOB STORE: it returns raw `Uint8Array` and never
 // deserializes proto here -- a chunk's `kind` and `entityId` are opaque strings
@@ -173,6 +182,40 @@ export const OWNER_LIVENESS_WINDOW_MS = 3 * OWNER_TOUCH_INTERVAL_MS
  */
 export const MAX_OPLOG_READ_FRAMES = 5000
 export const MAX_OPLOG_READ_BYTES = 4 * 1024 * 1024
+
+/**
+ * How stale an owner may be and still be worth SEEDING a new tab from,
+ * mirroring the hub's OpRetentionTTL (24h) exactly as MAX_OPLOG_READ_FRAMES
+ * mirrors MaxResumeDeltaOps.
+ *
+ * A cursor below the hub's retention floor FALLBACKs anyway (decideResume
+ * applies a WALL-CLOCK `now - OpRetentionTTL` floor alongside the stored
+ * watermark, so a dormant account does not retain forever), so adopting an
+ * older pair would pay a read plus a full-chunk copy for a snapshot the hub is
+ * going to send regardless.
+ *
+ * The test is sound only in the SAFE direction, which is the one that matters:
+ * a tab last seen at L cannot have applied ops after L, so `L < now - 24h`
+ * implies its cursor is below the floor. The converse does not hold -- a fresh
+ * `lastSeenAt` on an otherwise dormant account can still FALLBACK -- and costs
+ * one wasted read, which is exactly what a refresh of that same tab already
+ * does today.
+ *
+ * Deliberately much shorter than CHECKPOINT_TTL_MS (14 days): the sweep's job
+ * is reclaiming storage, this one's is "is a resume still possible", and those
+ * are different questions with different right answers.
+ */
+export const SEED_CANDIDATE_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * How many candidates one seed attempt reads before giving up.
+ *
+ * Bounded because each attempt is a full read of a checkpoint plus its chunks,
+ * on the cold-start critical path. A corrupt sibling is rare; three of them in
+ * a row means something is wrong with the device's storage, and one full
+ * snapshot is a better answer than a fourth read.
+ */
+export const SEED_MAX_CANDIDATES = 3
 
 /** On-disk shape of a checkpoint METADATA row (one per (user, client) pair). */
 export interface CheckpointRecord {
@@ -581,44 +624,7 @@ export async function writeCheckpointAndTruncateOpLog(
     const tx = db.transaction([CHECKPOINT_STORE, CHUNK_STORE, OPLOG_STORE], 'readwrite')
     // Registered in the same task that created the transaction, per txToPromise.
     const settled = txToPromise(tx, 'writeCheckpoint')
-    const writes = (async () => {
-      const chunks = tx.objectStore(CHUNK_STORE)
-      const owner: [string, string] = [userId, clientId]
-      if (delta.full) {
-        // AWAITED before the upserts below. A cursor sees writes made in its
-        // own transaction, so a chunk `put` issued while this walk is still
-        // advancing would be deleted again the moment the cursor reached its
-        // key. Awaiting a request of THIS transaction keeps it active across
-        // the microtask checkpoint (see readCheckpoint).
-        await deleteIndexRange(chunks, BY_OWNER_INDEX, IDBKeyRange.only(owner))
-      }
-      for (const chunk of delta.upserts) {
-        chunks.put({
-          userId,
-          clientId,
-          kind: chunk.kind,
-          entityId: chunk.entityId,
-          bytes: chunk.bytes,
-        } satisfies CheckpointChunkRecord)
-      }
-      // Keyed deletes: the owner tuple is part of the primary key, so an
-      // entity that left the state needs no index walk.
-      for (const ref of delta.deletes)
-        chunks.delete([userId, clientId, ref.kind, ref.entityId])
-      tx.objectStore(CHECKPOINT_STORE).put({
-        userId,
-        clientId,
-        headerBytes: delta.headerBytes,
-        watermark,
-        currentEpoch,
-        writtenAt: now,
-        lastSeenAt: now,
-      } satisfies CheckpointRecord)
-      // Truncate only THIS owner's log. The walk's own promise settles when it
-      // has issued every delete; `settled` waits for durability, and a cursor
-      // error aborts the transaction, which rejects it.
-      await deleteIndexRange(tx.objectStore(OPLOG_STORE), BY_OWNER_INDEX, IDBKeyRange.only(owner))
-    })()
+    const writes = writeDeltaInto(tx, userId, clientId, delta, watermark, currentEpoch, now)
     // Both are passed to Promise.all so neither can reject unobserved when the
     // other fails first.
     await Promise.all([writes, settled])
@@ -627,6 +633,284 @@ export async function writeCheckpointAndTruncateOpLog(
   catch {
     log.warn('checkpoint write failed (quota exceeded / private mode); cold reloads will replay the existing op-log')
     return false
+  }
+}
+
+/**
+ * Apply `delta` to `(userId, clientId)`'s checkpoint and truncate its op-log,
+ * within the caller's readwrite transaction.
+ *
+ * Extracted so `writeCheckpointAndTruncateOpLog` and `adoptCheckpoint` cannot
+ * drift on the ORDERING rule below, which is the part that is easy to get
+ * wrong and impossible to notice: both writers do delete-then-upsert against
+ * the same three stores, and only one of them is exercised on the hot path.
+ *
+ * Resolves once every write has been ISSUED; the caller awaits the transaction
+ * for durability.
+ */
+async function writeDeltaInto(
+  tx: IDBTransaction,
+  userId: string,
+  clientId: string,
+  delta: CheckpointDelta,
+  watermark: HlcShape,
+  currentEpoch: bigint,
+  now: number,
+): Promise<void> {
+  const chunks = tx.objectStore(CHUNK_STORE)
+  const owner: [string, string] = [userId, clientId]
+  if (delta.full) {
+    // AWAITED before the upserts below. A cursor sees writes made in its
+    // own transaction, so a chunk `put` issued while this walk is still
+    // advancing would be deleted again the moment the cursor reached its
+    // key. Awaiting a request of THIS transaction keeps it active across
+    // the microtask checkpoint (see readCheckpoint).
+    await deleteIndexRange(chunks, BY_OWNER_INDEX, IDBKeyRange.only(owner))
+  }
+  for (const chunk of delta.upserts) {
+    chunks.put({
+      userId,
+      clientId,
+      kind: chunk.kind,
+      entityId: chunk.entityId,
+      bytes: chunk.bytes,
+    } satisfies CheckpointChunkRecord)
+  }
+  // Keyed deletes: the owner tuple is part of the primary key, so an
+  // entity that left the state needs no index walk.
+  for (const ref of delta.deletes)
+    chunks.delete([userId, clientId, ref.kind, ref.entityId])
+  tx.objectStore(CHECKPOINT_STORE).put({
+    userId,
+    clientId,
+    headerBytes: delta.headerBytes,
+    watermark,
+    currentEpoch,
+    writtenAt: now,
+    lastSeenAt: now,
+  } satisfies CheckpointRecord)
+  // Truncate only THIS owner's log. The walk's own promise settles when it
+  // has issued every delete; the caller's `settled` waits for durability, and a
+  // cursor error aborts the transaction, which rejects it.
+  await deleteIndexRange(tx.objectStore(OPLOG_STORE), BY_OWNER_INDEX, IDBKeyRange.only(owner))
+}
+
+/** One sibling owner as the seed scan sees it: identity plus recency, no payload. */
+export interface SeedCandidate {
+  clientId: string
+  /** `lastSeenAt` — when this owner was last known to be RUNNING. */
+  lastSeenAt: number
+}
+
+/** Options for `listSeedCandidates`; every one is a test seam. */
+export interface SeedCandidateOptions {
+  now?: number
+  maxAgeMs?: number
+  limit?: number
+}
+
+/**
+ * This user's OTHER owners, most-recently-seen FIRST.
+ *
+ * A genuinely new tab has no checkpoint of its own -- the client id lives in
+ * sessionStorage -- so it would send no resume cursor and cold-start on a full
+ * projection snapshot. The WRITE clobber that forces the per-tab key (see this
+ * module's header) is a hazard for WRITERS only, so a new tab may read a
+ * sibling's pair and adopt it. This is how it finds one.
+ *
+ * A key-only DESCENDING walk of byLastSeenAt: the cursor yields
+ * (lastSeenAt, [userId, clientId]) and touches NO value at all, so ranking eight
+ * owners costs zero header bytes. `byUserId` cannot serve this -- its key is the
+ * user alone, so ranking through it would have to read every candidate's VALUE,
+ * which is exactly the header materialization BY_LAST_SEEN_INDEX exists to
+ * avoid.
+ *
+ * `lastSeenAt`, not the checkpoint's watermark, is the ranking key, and not
+ * merely because it is the free one: a LIVE sibling's watermark is pinned at
+ * its last rewrite (once per CHECKPOINT_OP_LOG_THRESHOLD frames) while its
+ * op-log carries it arbitrarily further forward, so the watermark understates
+ * exactly the candidates worth having. Recency of the TAB is the better proxy
+ * for recency of its log.
+ *
+ * Because the walk is globally descending, the age cutoff is a STOP, not a
+ * filter: the first row past it is followed only by older ones, for every
+ * account.
+ *
+ * Excludes `excludeClientId` -- after a wipe that FAILED
+ * (clearOwnerCheckpointAndOpLog can return false), this tab's own poison row is
+ * still there, and picking it as "the sibling" would re-read the corruption the
+ * wipe was trying to escape.
+ *
+ * Best-effort and no-throw, like every operation in this module.
+ */
+export async function listSeedCandidates(
+  userId: string,
+  excludeClientId: string,
+  opts: SeedCandidateOptions = {},
+): Promise<SeedCandidate[]> {
+  if (!isCheckpointStoreAvailable() || !userId)
+    return []
+  const now = opts.now ?? Date.now()
+  const maxAgeMs = opts.maxAgeMs ?? SEED_CANDIDATE_MAX_AGE_MS
+  const limit = opts.limit ?? SEED_MAX_CANDIDATES
+  if (limit <= 0)
+    return []
+  try {
+    const db = await openDb()
+    const tx = db.transaction(CHECKPOINT_STORE, 'readonly')
+    const out: SeedCandidate[] = []
+    await forEachCursorWhile(
+      tx.objectStore(CHECKPOINT_STORE).index(BY_LAST_SEEN_INDEX).openKeyCursor(null, 'prev'),
+      (cursor) => {
+        const lastSeenAt = cursor.key as number
+        const age = now - lastSeenAt
+        // SKIP a row stamped in the FUTURE, and keep walking.
+        //
+        // `lastSeenAt` is wall-clock, so a session that ran while the device
+        // clock was ahead (or one corrected backwards afterwards) leaves rows
+        // dated after `now`. Their age is NEGATIVE, so without this they clear
+        // the cutoff below, sort FIRST in a descending walk, and consume every
+        // one of the `limit` slots -- and if they are also stale, every new tab
+        // in that profile reads three checkpoints, copies one, presents a cursor
+        // the hub refuses, and takes the full snapshot anyway. Seeding would be
+        // silently dead for the profile until the sweep's TTL reclaimed them.
+        //
+        // Skipping, not stopping: they sort ABOVE the usable rows, so stopping
+        // here would discard the very candidates the walk is for.
+        if (age < 0)
+          return true
+        // STOP, not skip: the walk is descending over EVERY account's rows, so
+        // everything after this point is older still.
+        if (age >= maxAgeMs)
+          return false
+        const [rowUser, rowClient] = cursor.primaryKey as [string, string]
+        if (rowUser !== userId || rowClient === excludeClientId)
+          return true
+        out.push({ clientId: rowClient, lastSeenAt })
+        return out.length < limit
+      },
+    )
+    return out
+  }
+  catch {
+    // Best-effort: no candidates just means today's full-snapshot cold start.
+    return []
+  }
+}
+
+/**
+ * One owner's persisted pair as BYTES — the payload of an adoption.
+ *
+ * Every field is opaque here; the caller (hydrate.ts) has already parsed and
+ * validated it, which is what keeps this module a pure blob store.
+ */
+export interface CheckpointSnapshot {
+  headerBytes: Uint8Array
+  chunks: readonly ChunkUpsert[]
+  watermark: HlcShape
+  currentEpoch: bigint
+  /**
+   * Frames to seed the adopting owner's log with, written as ONE segment at
+   * ordinal 0.
+   *
+   * The SOURCE's ordinals are deliberately NOT preserved. The sequence is
+   * per-owner and restarts at 0 after every checkpoint write, so a copy that
+   * inherited them would leave the adopter's log starting at N with 0..N-1
+   * absent -- which readOpLogFrames reads as a HOLE, discarding a log that is
+   * in fact intact.
+   *
+   * Must be the frames the caller actually VALIDATED, not everything the read
+   * returned. A source log that stops decoding part-way is replayed as a strict
+   * prefix, and copying the undecodable remainder would make this owner's row a
+   * second durable copy of the corruption -- one that every later cold start of
+   * THIS tab re-reads, re-truncates at the same frame, and resumes from a
+   * watermark that keeps rewinding.
+   */
+  opLogFrames: readonly Uint8Array[]
+}
+
+/**
+ * Install `snapshot` as `(userId, clientId)`'s checkpoint + op-log, REPLACING
+ * whatever that owner had, in one transaction.
+ *
+ * This is how a new tab adopts a sibling's base: by COPY, not by re-serializing
+ * its own state. Rebuilding instead would run `fullCheckpointDelta` ->
+ * `serializeAllEntities`, one main-thread `toBinary` PER ENTITY (56.7 ms at
+ * 2400 nodes / 4800 tabs), for exactly the same number of IDB puts. The copy
+ * pays the puts and zero proto work.
+ *
+ * REPLACING, not merging, and that is load-bearing: an adoption can run after
+ * this owner's own corrupt checkpoint was wiped, and that wipe can FAIL. An
+ * additive copy over surviving rows would leave a header from one lineage over
+ * an entity set assembled from two -- a state silently missing or gaining
+ * records, with the resume cursor riding on it.
+ *
+ * Returns the ordinal the adopting owner's NEXT appended segment must carry, or
+ * null when the transaction did not commit. The caller must not read a null as
+ * "probably fine": the recorder's incremental rewrites are only sound over
+ * chunks that are actually on disk (see HydrationPayload.persistedBase).
+ *
+ * The ordinal is reported rather than left for the caller to re-derive, because
+ * deriving it means restating THIS function's segment layout ("one segment, at
+ * ordinal 0, and only when there are frames") at a distance. A producer and a
+ * consumer that disagree by one mint exactly the hole the per-owner sequence
+ * exists to detect: a log starting at 1 with 0 absent, which readOpLogFrames
+ * reads as truncated and discards.
+ *
+ * `abort` is consulted once, immediately before the transaction is CREATED,
+ * which is the point the caller's own supersession check cannot reach. That
+ * check runs before this call, and the `await openDb()` below is a no-op
+ * microtask only while the cached connection is live -- a peer tab's
+ * schema-repair `deleteDatabase()` nulls it (see idb.ts's `onversionchange`),
+ * and the reopen that follows is a whole task, long enough for the caller's
+ * deadline to fire, its run to cold-start, and its recorder to begin numbering
+ * a log this replace would then truncate underneath it.
+ */
+export async function adoptCheckpoint(
+  userId: string,
+  clientId: string,
+  snapshot: CheckpointSnapshot,
+  now = Date.now(),
+  abort?: () => boolean,
+): Promise<number | null> {
+  if (!isCheckpointStoreAvailable() || !userId || !clientId)
+    return null
+  try {
+    const db = await openDb()
+    if (abort?.())
+      return null
+    const tx = db.transaction([CHECKPOINT_STORE, CHUNK_STORE, OPLOG_STORE], 'readwrite')
+    const settled = txToPromise(tx, 'adoptCheckpoint')
+    const writes = (async () => {
+      // `full: true` is what makes this a replace: writeDeltaInto clears this
+      // owner's chunk range first, and truncates its op-log last.
+      await writeDeltaInto(
+        tx,
+        userId,
+        clientId,
+        { headerBytes: snapshot.headerBytes, upserts: snapshot.chunks, deletes: [], full: true },
+        snapshot.watermark,
+        snapshot.currentEpoch,
+        now,
+      )
+      // AFTER writeDeltaInto's truncate walk has been awaited -- a cursor sees
+      // writes made in its own transaction, so a segment added first would be
+      // deleted the moment that walk reached it.
+      if (snapshot.opLogFrames.length > 0) {
+        tx.objectStore(OPLOG_STORE).add({
+          userId,
+          clientId,
+          ordinal: 0,
+          framesBytes: [...snapshot.opLogFrames],
+        } satisfies OpLogRecord)
+      }
+    })()
+    await Promise.all([writes, settled])
+    return snapshot.opLogFrames.length > 0 ? 1 : 0
+  }
+  catch {
+    log.warn('checkpoint adoption failed (quota exceeded / private mode); this tab will cold-start its own checkpoint')
+    return null
   }
 }
 
@@ -839,13 +1123,15 @@ export async function sweepAbandonedCheckpoints(
   const maxOwners = opts.maxOwners ?? CHECKPOINT_MAX_OWNERS
   try {
     const db = await openDb()
-    // Key-only walk, UNRANGED. The index key is writtenAt and the primary key
+    // Key-only walk, UNRANGED. The index key is lastSeenAt and the primary key
     // is [userId, clientId], so this reads no header or chunk bytes at all --
-    // and a compound [userId, writtenAt] index, which would let the walk skip
+    // and a compound [userId, lastSeenAt] index, which would let the walk skip
     // other accounts' rows, is deliberately NOT added: those rows are exactly
     // the ones nothing else can reach, so making them cheap to skip would make
     // them permanently unreclaimable. The population this walks is capped at
-    // ~maxOwners per account by this very sweep.
+    // ~maxOwners per account by this very sweep. (listSeedCandidates walks the
+    // same unranged index, filtering to one user in memory, for the same
+    // reason: the population is small and bounded by this sweep.)
     const rows: SweepCandidate[] = []
     const readTx = db.transaction(CHECKPOINT_STORE, 'readonly')
     await forEachCursor(

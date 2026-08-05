@@ -14,8 +14,21 @@ import (
 // in place; returns the number of records pruned across all three
 // kinds.
 //
-// Safety: callers MUST hold the manager mutex (write lock) AND must
-// only invoke this with `watermark <= state.CompactionWatermark`.
+// Safety: callers MUST pass a PRIVATE, UNPUBLISHED state -- a fresh
+// CloneState, never `m.state` -- AND must only invoke this with
+// `watermark <= state.CompactionWatermark`.
+//
+// The private-clone precondition replaced "hold the manager mutex (write
+// lock)", which was correct only while every reader held m.mu.RLock for the
+// whole of its read. It no longer is: a reader may capture the generation
+// pointer and walk it lock-free (materializedFromState), because a PUBLISHED
+// generation is never mutated -- see commitState. Deleting from a published
+// generation would break that for every such reader, and the damage is not
+// confined to the current one: CloneStateForBatch aliases untouched entity maps
+// and nextStateGeneration aliases all four, so a delete here reaches back into
+// every older generation sharing that map. maybeCompact therefore prunes the
+// clone it is about to publish, holding nothing.
+//
 // Pruning is safe under those preconditions because:
 //
 //   - HLC monotonicity: new ops carry canonical HLCs strictly above
@@ -444,6 +457,89 @@ func CloneState(state *leapmuxv1.UserCrdtState) *leapmuxv1.UserCrdtState {
 	return out
 }
 
+// nextStateGeneration returns a new state header whose entity maps ALIAS
+// `s`'s. It is the O(1) copy-on-write publish for a mutation that touches only
+// header fields (the epoch, the watermarks) and no record.
+//
+// It exists because a published generation must never be mutated in place --
+// see commitState's doc for the invariant and who depends on it. Writing
+// `m.state.CurrentEpoch = n` under m.mu.Lock is correct only against readers
+// that hold m.mu.RLock for their whole read; a reader that captures the
+// generation pointer and walks it lock-free (materializedFromState) would race.
+//
+// Aliasing the maps is safe for THIS caller class and only this one: a
+// header-only change writes no entry, so the shared maps are read-only from
+// both generations. A mutation that adds, removes or replaces a record must go
+// through CloneState / CloneStateForBatch instead, which is what every op does.
+func nextStateGeneration(s *leapmuxv1.UserCrdtState) *leapmuxv1.UserCrdtState {
+	if s == nil {
+		return nil
+	}
+	out := newStateHeader(s)
+	out.Nodes = s.GetNodes()
+	out.Tabs = s.GetTabs()
+	out.FloatingWindows = s.GetFloatingWindows()
+	out.Workspaces = s.GetWorkspaces()
+	return out
+}
+
+// nextStateGenerationWithOwnMaps returns a new generation whose four entity
+// maps are the new generation's OWN, holding the same record pointers.
+//
+// It is the publish for a mutation that ADDS OR REMOVES entries but never
+// touches a record's fields -- today that is compaction's tombstone prune, and
+// nothing else. The cost is one pointer copy per entity, against
+// `CloneState`'s protobuf-reflective deep clone of every record: ~7k pointer
+// copies rather than ~60k message allocations on a 2400-node / 4800-tab
+// account, paid on the manager goroutine (compaction shares the select loop
+// with submitCh / internalCh / taskCh, so every queued submit waits it out).
+//
+// Sharing the RECORDS is what makes it cheap and is safe for the same reason
+// CloneStateForBatch's aliasing of untouched records is: nothing mutates a
+// record in place. Copying the MAPS is what makes it correct where
+// nextStateGeneration would not be -- a delete on an aliased map reaches back
+// into every older generation sharing it, including one a lock-free reader
+// (materializedFromState) is walking right now.
+//
+// nil maps stay nil: maps.Clone(nil) is nil, and a caller that only deletes
+// never needs an allocated one.
+func nextStateGenerationWithOwnMaps(s *leapmuxv1.UserCrdtState) *leapmuxv1.UserCrdtState {
+	if s == nil {
+		return nil
+	}
+	out := newStateHeader(s)
+	out.Nodes = maps.Clone(s.GetNodes())
+	out.Tabs = maps.Clone(s.GetTabs())
+	out.FloatingWindows = maps.Clone(s.GetFloatingWindows())
+	out.Workspaces = maps.Clone(s.GetWorkspaces())
+	return out
+}
+
+// newStateHeader returns a fresh generation carrying `src`'s NON-ENTITY fields
+// and no records; the caller supplies the four entity maps, aliased or cloned
+// as its copy semantics require.
+//
+// One home for the header field list because there are two hand-written
+// generation builders (nextStateGeneration and CloneStateForBatch — CloneState
+// uses proto.Clone and tracks new fields automatically). A field added to
+// UserCrdtState had to be remembered in both, and being forgotten in either
+// silently drops it from every commit or every epoch bump, with no test that
+// would notice. Extending this one function is now the whole change.
+//
+// The HLC fields are deep-cloned because a caller may bump max_hlc while
+// compaction advances the watermarks concurrently; EpochStartedAt is a
+// timestamp that is only ever replaced wholesale, never mutated in place.
+func newStateHeader(src *leapmuxv1.UserCrdtState) *leapmuxv1.UserCrdtState {
+	return &leapmuxv1.UserCrdtState{
+		UserId:               src.GetUserId(),
+		MaxHlc:               HLCClone(src.GetMaxHlc()),
+		CompactionWatermark:  HLCClone(src.GetCompactionWatermark()),
+		OpRetentionWatermark: HLCClone(src.GetOpRetentionWatermark()),
+		CurrentEpoch:         src.GetCurrentEpoch(),
+		EpochStartedAt:       src.GetEpochStartedAt(),
+	}
+}
+
 // CloneStateForBatch returns a working copy of `pre` suitable for the
 // validator's Apply pass. The cost scales with the *kinds* of entities
 // the batch touches — not the full state — because Apply only writes
@@ -472,14 +568,7 @@ func CloneStateForBatch(pre *leapmuxv1.UserCrdtState, batch []*leapmuxv1.CrdtOp)
 		return nil
 	}
 	touched := batchTouchedIDs(batch)
-	out := &leapmuxv1.UserCrdtState{
-		UserId:               pre.GetUserId(),
-		MaxHlc:               HLCClone(pre.GetMaxHlc()),
-		CompactionWatermark:  HLCClone(pre.GetCompactionWatermark()),
-		OpRetentionWatermark: HLCClone(pre.GetOpRetentionWatermark()),
-		CurrentEpoch:         pre.GetCurrentEpoch(),
-		EpochStartedAt:       pre.GetEpochStartedAt(),
-	}
+	out := newStateHeader(pre)
 
 	if len(touched.nodes) == 0 {
 		out.Nodes = pre.GetNodes()

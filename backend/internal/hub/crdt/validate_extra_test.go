@@ -388,3 +388,35 @@ func TestValidate_PureDelete_OnlyPreWorkspacePermissionRequired(t *testing.T) {
 	require.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
 		"pure-delete should only require pre-workspace write; got %v at %q", res.Reason, res.OffendingOpID)
 }
+
+// TestValidate_IncompleteRecord_LiveNodeUnderATombstonedParent covers the
+// Rule-15 arm that the workspace-delete race actually reaches.
+//
+// applyLifecycleDelete enumerates a workspace's entities from a captured
+// generation and only then submits, so a node created in that window is
+// tombstoned nowhere: its parent goes, it does not. It has a parent_id and a
+// position, so every OTHER completeness rule passes -- and it is then live and
+// unreachable from any registered root, which compaction never collects
+// (it prunes only tombstoned records) and no later enumeration reaches (the
+// workspace record is gone).
+//
+// The sibling race on TABS was already caught, by tabPlacementCheck's full walk.
+// Rejecting here gives the node race the same mechanism and the same recovery:
+// the batch is rejected, applyLifecycleDelete returns an error, and the outbox
+// row is retried against the newer state.
+func TestValidate_IncompleteRecord_LiveNodeUnderATombstonedParent(t *testing.T) {
+	pre := seedWorkspaceWithRoot("w1", "root1")
+	// The node the delete's enumeration never saw: complete in every other
+	// respect, and parented to a node the same batch is about to tombstone.
+	pre.Nodes["late-child"] = &leapmuxv1.NodeRecord{
+		NodeId:   "late-child",
+		ParentId: "root1",
+		Kind:     &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_LEAF, Hlc: hlcAt(2, 0, "a")},
+		Position: &leapmuxv1.LWWString{Value: "p", Hlc: hlcAt(2, 1, "a")},
+	}
+
+	tombstoneParent := stamped(&leapmuxv1.TombstoneNodeOp{NodeId: "root1"}, hlcAt(10, 0, "a"))
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tombstoneParent}, true, "p1", allowAll{})
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_INCOMPLETE_RECORD, res.Reason,
+		"a live node left under a tombstoned parent is unreachable from every root and must reject")
+}

@@ -781,7 +781,7 @@ describe('pendingOpsManager', () => {
         watermark: create(HLCSchema, { physical: 100n, logical: 0n, clientId: 'hub' }),
         currentEpoch: 5n,
         truncated: false,
-        nextOpLogOrdinal: 0,
+        persistedBase: { nextOpLogOrdinal: 0 },
       }
     }
 
@@ -1315,7 +1315,7 @@ describe('pendingOpsManager', () => {
 
 // Client-side tombstone GC. Delta-resume removed the only one the client ever
 // had: applyOp installs a tombstone SHELL rather than deleting, and
-// materializedLocked omits tombstoned records, so every full-snapshot bootstrap
+// materializedFromState omits tombstoned records, so every full-snapshot bootstrap
 // used to reset confirmedState to a tombstone-free base. A client that keeps
 // resuming never bootstraps, so from that point every closed tab, tile and
 // window stayed in confirmedState -- and in the serialized checkpoint blob --
@@ -1478,7 +1478,7 @@ describe('batch-end boundary', () => {
       watermark: { physical: 1n, logical: 0n, clientId: 'hub' },
       currentEpoch: 1n,
       truncated: false,
-      nextOpLogOrdinal: 0,
+      persistedBase: { nextOpLogOrdinal: 0 },
     })
 
     expect(live.state.resumeWatermark?.physical).toBe(42n)
@@ -1499,7 +1499,7 @@ describe('batch-end boundary', () => {
       watermark: { physical: 7n, logical: 0n, clientId: 'hub' },
       currentEpoch: 1n,
       truncated: false,
-      nextOpLogOrdinal: 0,
+      persistedBase: { nextOpLogOrdinal: 0 },
     })
 
     // A frame naming no boundary must not move the cursor: advancing on one

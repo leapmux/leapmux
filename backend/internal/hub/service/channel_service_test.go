@@ -981,10 +981,18 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 	_, _ = env.worker.Register(conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
+	// The deadline has to clear the OpenChannel round trip below (a worker
+	// registration, a pending ChannelOpen request/response, and a store read)
+	// and still land well inside the one-second Eventually that follows. 50ms
+	// cleared neither reliably: OpenChannel itself returned "authentication
+	// expired" once this package ran under -race, where every one of those steps
+	// is several times slower, and the test then failed at its FIRST require --
+	// reporting a broken expiry path for what was really a stopwatch. 300ms
+	// keeps roughly a 3x margin on both sides.
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
 		ID:                  userid.MustNew(env.user.ID),
 		Username:            env.user.Username,
-		CredentialExpiresAt: auth.DeadlineAt(time.Now().Add(50 * time.Millisecond)),
+		CredentialExpiresAt: auth.DeadlineAt(time.Now().Add(300 * time.Millisecond)),
 	})
 	resp, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,

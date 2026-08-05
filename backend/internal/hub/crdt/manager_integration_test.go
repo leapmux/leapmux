@@ -22,7 +22,10 @@ import (
 // context. The injected `now` advances by 1ms per call so every
 // heartbeat / submit gets a strictly-fresh timestamp; this keeps the
 // presence-leader logic (which requires strict-ahead) deterministic.
-func runManager(t *testing.T, userID string, auth crdt.AuthChecker, nowSeed int64, opts ...crdt.ManagerOption) (*crdt.Manager, *fakeJournal, context.CancelFunc) {
+// Takes testing.TB rather than *testing.T so the benchmarks in
+// manager_subscribe_bench_test.go drive the same harness the tests do; every
+// call below (Helper, Cleanup, require) is satisfied by the interface.
+func runManager(t testing.TB, userID string, auth crdt.AuthChecker, nowSeed int64, opts ...crdt.ManagerOption) (*crdt.Manager, *fakeJournal, context.CancelFunc) {
 	t.Helper()
 	j := newFakeJournal()
 	var (
@@ -66,7 +69,7 @@ func runManager(t *testing.T, userID string, auth crdt.AuthChecker, nowSeed int6
 // same shape as the production applyLifecycleCreate seed. Routing the record
 // seed through SubmitInternal keeps the manager goroutine the sole writer of
 // m.state (no off-goroutine MutateInternal write).
-func seedRootInternal(t *testing.T, mgr *crdt.Manager, workspaceID, rootID string) {
+func seedRootInternal(t testing.TB, mgr *crdt.Manager, workspaceID, rootID string) {
 	t.Helper()
 	setRegister := &leapmuxv1.CrdtOp{
 		OpId: "seed-workspace-register-" + workspaceID,
@@ -257,7 +260,7 @@ func TestManager_SeedStateForTest_RunsOnManagerGoroutine(t *testing.T) {
 	// manager goroutine — serialized with the client submits, never racing them.
 	// The final iteration leaves a sentinel workspace in place (no paired
 	// delete) so the post-condition assertion below is non-tautological: a
-	// buggy seedCh arm that silently dropped fn would leave the sentinel
+	// buggy taskCh arm that silently dropped fn would leave the sentinel
 	// absent, failing the test, instead of the absence-of-churned check
 	// passing whether or not seeds applied.
 	const sentinel = "seed-sentinel"
@@ -293,7 +296,7 @@ func TestManager_SeedStateForTest_RunsOnManagerGoroutine(t *testing.T) {
 }
 
 // TestManager_SeedStateForTest_PreStart covers the pre-Start branch
-// (started=false): SeedStateForTest runs fn directly under m.mu.Lock, mirroring
+// (started=false): SeedStateForTest runs fn on the calling goroutine, against a clone it then publishes, mirroring
 // Bootstrap's no-concurrent-reader assumption. This is the registry-factory
 // shape, where state is seeded before the goroutine launches.
 func TestManager_SeedStateForTest_PreStart(t *testing.T) {

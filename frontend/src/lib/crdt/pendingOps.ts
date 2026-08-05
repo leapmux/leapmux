@@ -187,7 +187,7 @@ export function isStatePopulated(state: {
  * The client mirror of the hub's `PruneTombstonesAtOrBelow`, and it exists
  * because delta-resume removed the only GC the client ever had. `applyOp`
  * installs a tombstone SHELL rather than deleting (so a late op cannot resurrect
- * the record), and `materializedLocked` omits tombstoned records — so every
+ * the record), and `materializedFromState` omits tombstoned records — so every
  * full-snapshot bootstrap used to reset `confirmedState` to a tombstone-free
  * base. A client that keeps resuming never bootstraps, so from that point on
  * every tab, tile and window it ever closed stayed in `confirmedState` forever,

@@ -4,11 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createOpLogAppender } from '~/test-support/opLog'
 import {
   _resetCheckpointStoreForTest,
+  adoptCheckpoint,
   appendOpLogSegment,
   CHECKPOINT_TTL_MS,
   clearCheckpointAndOpLog,
   clearOwnerCheckpointAndOpLog,
   isCheckpointStoreAvailable,
+  listSeedCandidates,
   MAX_OPLOG_READ_BYTES,
   MAX_OPLOG_READ_FRAMES,
   OWNER_LIVENESS_WINDOW_MS,
@@ -811,3 +813,233 @@ async function countChunkRows(): Promise<number> {
   db.close()
   return count
 }
+
+// The seed scan: how a tab with no checkpoint of its own finds a sibling to
+// adopt. Key-only and descending, so ranking costs no header bytes.
+describe('listSeedCandidates', () => {
+  const now = 1_000_000_000
+
+  /** Write `client`'s checkpoint and pin its lastSeenAt. */
+  async function owner(userId: string, clientId: string, lastSeenAt: number) {
+    await writeCheckpointAndTruncateOpLog(userId, clientId, fullDelta(clientId), WM, 1n, lastSeenAt)
+  }
+
+  it('returns this user\'s other owners, most recently seen first', async () => {
+    await owner('u', 'old', now - 3000)
+    await owner('u', 'new', now - 1000)
+    await owner('u', 'mid', now - 2000)
+
+    expect(await listSeedCandidates('u', 'me', { now })).toEqual([
+      { clientId: 'new', lastSeenAt: now - 1000 },
+      { clientId: 'mid', lastSeenAt: now - 2000 },
+      { clientId: 'old', lastSeenAt: now - 3000 },
+    ])
+  })
+
+  // After a wipe that FAILED, this tab's own poison row is still on disk, and
+  // picking it as "the sibling" would re-read the corruption the wipe was
+  // trying to escape.
+  it('excludes the calling client\'s own row', async () => {
+    await owner('u', 'me', now - 1000)
+    await owner('u', 'other', now - 2000)
+
+    expect(await listSeedCandidates('u', 'me', { now })).toEqual([
+      { clientId: 'other', lastSeenAt: now - 2000 },
+    ])
+  })
+
+  it('excludes other users\' owners', async () => {
+    await owner('other-user', 'theirs', now - 1000)
+    await owner('u', 'mine', now - 2000)
+
+    expect(await listSeedCandidates('u', 'me', { now })).toEqual([
+      { clientId: 'mine', lastSeenAt: now - 2000 },
+    ])
+  })
+
+  // Ranking is lastSeenAt, not writtenAt: writtenAt moves only once per
+  // checkpoint rewrite, so a quiet-but-live tab would rank arbitrarily stale.
+  it('ranks by lastSeenAt, not by write order', async () => {
+    await owner('u', 'written-first', now - 5000)
+    await owner('u', 'written-second', now - 4000)
+    // The older-written owner is the one still running.
+    await touchOwner('u', 'written-first', now - 100)
+
+    const got = await listSeedCandidates('u', 'me', { now })
+    expect(got.map(c => c.clientId)).toEqual(['written-first', 'written-second'])
+  })
+
+  // The walk is globally descending, so the cutoff is a STOP: everything past
+  // the first stale row is staler still, for every account.
+  it('stops at the first owner past the age cutoff', async () => {
+    await owner('u', 'fresh', now - 1000)
+    await owner('u', 'ancient', now - 99_999_999)
+
+    expect(await listSeedCandidates('u', 'me', { now, maxAgeMs: 5000 }))
+      .toEqual([{ clientId: 'fresh', lastSeenAt: now - 1000 }])
+  })
+
+  it('stops at a FOREIGN owner past the cutoff too', async () => {
+    await owner('u', 'fresh', now - 1000)
+    await owner('other-user', 'ancient', now - 50_000)
+    // Older than the foreign row, so a per-user filter that merely SKIPPED the
+    // stale foreign row would still reach this one.
+    await owner('u', 'behind-the-wall', now - 60_000)
+
+    expect(await listSeedCandidates('u', 'me', { now, maxAgeMs: 5000 }))
+      .toEqual([{ clientId: 'fresh', lastSeenAt: now - 1000 }])
+  })
+
+  // `lastSeenAt` is wall-clock, so a session that ran while the device clock was
+  // ahead leaves rows dated after `now`. Their age is negative, so they clear
+  // the cutoff, sort FIRST in the descending walk, and would otherwise consume
+  // every slot the limit allows -- leaving the usable siblings unreachable.
+  it('skips owners stamped in the future without giving up the walk', async () => {
+    await owner('u', 'clock-was-ahead', now + 60_000)
+    await owner('u', 'clock-was-way-ahead', now + 120_000)
+    await owner('u', 'usable', now - 1000)
+
+    expect(await listSeedCandidates('u', 'me', { now, limit: 2 }))
+      .toEqual([{ clientId: 'usable', lastSeenAt: now - 1000 }])
+  })
+
+  it('honours the limit, keeping the most recent', async () => {
+    await owner('u', 'a', now - 1000)
+    await owner('u', 'b', now - 2000)
+    await owner('u', 'c', now - 3000)
+
+    const got = await listSeedCandidates('u', 'me', { now, limit: 2 })
+    expect(got.map(c => c.clientId)).toEqual(['a', 'b'])
+  })
+
+  it('returns an empty list when the user has no other owner', async () => {
+    await owner('u', 'me', now - 1000)
+    expect(await listSeedCandidates('u', 'me', { now })).toEqual([])
+  })
+
+  it('returns an empty list when the store is unavailable', async () => {
+    vi.unstubAllGlobals()
+    expect(await listSeedCandidates('u', 'me', { now })).toEqual([])
+  })
+})
+
+// Adoption: installing a validated sibling's BYTES under this owner's key.
+describe('adoptCheckpoint', () => {
+  const snapshotOf = (header: string, entities: Record<string, string>, frames: string[] = []) => ({
+    headerBytes: bytes(header),
+    chunks: chunksOf(entities),
+    watermark: WM,
+    currentEpoch: 7n,
+    opLogFrames: frames.map(bytes),
+  })
+
+  it('installs the header, watermark, epoch and every chunk', async () => {
+    // With no frames the log is left empty, so the next segment is ordinal 0.
+    const nextOrdinal = await adoptCheckpoint('u', 'me', snapshotOf('h', { 'node:n1': 'A', 'tab:t1': 'B' }))
+    expect(nextOrdinal).toBe(0)
+
+    const read = await readOk('u', 'me')
+    expect(text(read.checkpoint.headerBytes)).toBe('h')
+    expect(read.checkpoint.watermark).toEqual(WM)
+    expect(read.checkpoint.currentEpoch).toBe(7n)
+    expect(read.chunks.map(c => text(c.bytes)).sort()).toEqual(['A', 'B'])
+  })
+
+  // The op-log's ordinal is a PER-OWNER sequence that restarts at 0 after every
+  // checkpoint write, so a copy that preserved the source's numbering would
+  // leave this owner's log starting at N with 0..N-1 absent -- a hole.
+  it('seeds the op-log as ONE segment at ordinal 0', async () => {
+    await adoptCheckpoint('u', 'me', snapshotOf('h', {}, ['f1', 'f2', 'f3']))
+
+    const read = await readOk('u', 'me')
+    expect(read.opLogFrames.map(text)).toEqual(['f1', 'f2', 'f3'])
+    expect(read.opLogNextOrdinal).toBe(1)
+  })
+
+  it('reports ordinal 0 when the snapshot carries no frames', async () => {
+    await adoptCheckpoint('u', 'me', snapshotOf('h', {}))
+
+    const read = await readOk('u', 'me')
+    expect(read.opLogFrames).toEqual([])
+    expect(read.opLogNextOrdinal).toBe(0)
+  })
+
+  // A cursor sees writes made in its own transaction, so a segment added before
+  // the truncate walk was awaited would be deleted the moment it reached it.
+  it('adds the seeded segment AFTER truncating what this owner had', async () => {
+    await writeCheckpointAndTruncateOpLog('u', 'me', fullDelta('old'), WM, 1n)
+    await opLog.append('u', 'me', [bytes('stale-1')])
+    await opLog.append('u', 'me', [bytes('stale-2')])
+
+    await adoptCheckpoint('u', 'me', snapshotOf('h', {}, ['fresh']))
+
+    const read = await readOk('u', 'me')
+    expect(read.opLogFrames.map(text)).toEqual(['fresh'])
+  })
+
+  // REPLACE, not merge. An adoption can follow a wipe that FAILED, and an
+  // additive copy would leave one lineage's header over an entity set
+  // assembled from two.
+  it('replaces whatever this owner already had, chunks included', async () => {
+    await writeCheckpointAndTruncateOpLog('u', 'me', fullDelta('old', { 'node:leftover': 'X' }), WM, 1n)
+
+    await adoptCheckpoint('u', 'me', snapshotOf('h', { 'node:n1': 'A' }))
+
+    const read = await readOk('u', 'me')
+    expect(text(read.checkpoint.headerBytes)).toBe('h')
+    expect(read.chunks.map(c => c.entityId)).toEqual(['n1'])
+  })
+
+  it('leaves the source owner untouched', async () => {
+    await writeCheckpointAndTruncateOpLog('u', 'source', fullDelta('src', { 'node:n1': 'A' }), WM, 1n)
+    await opLog.append('u', 'source', [bytes('their-frame')])
+    const before = await readCheckpoint('u', 'source')
+
+    await adoptCheckpoint('u', 'me', snapshotOf('h', { 'node:n2': 'B' }, ['mine']))
+
+    expect(await readCheckpoint('u', 'source')).toEqual(before)
+  })
+
+  it('stamps writtenAt and lastSeenAt at the adoption', async () => {
+    await adoptCheckpoint('u', 'me', snapshotOf('h', {}), 123_456)
+
+    const read = await readOk('u', 'me')
+    expect(read.checkpoint.writtenAt).toBe(123_456)
+    // lastSeenAt must be NOW, not the source's: this row belongs to a live tab,
+    // and the sweep's only liveness signal is this field.
+    expect(read.checkpoint.lastSeenAt).toBe(123_456)
+  })
+
+  it('returns null when the store is unavailable', async () => {
+    vi.unstubAllGlobals()
+    expect(await adoptCheckpoint('u', 'me', snapshotOf('h', {}))).toBeNull()
+  })
+
+  it('returns null for empty ids', async () => {
+    expect(await adoptCheckpoint('', 'me', snapshotOf('h', {}))).toBeNull()
+    expect(await adoptCheckpoint('u', '', snapshotOf('h', {}))).toBeNull()
+  })
+
+  // The ordinal is reported by the writer rather than re-derived by the caller,
+  // so the two cannot disagree by one and mint the very hole the per-owner
+  // sequence exists to detect.
+  it('reports ordinal 1 when it seeded a segment, and 0 when it did not', async () => {
+    expect(await adoptCheckpoint('u', 'with-log', snapshotOf('h', {}, ['f1', 'f2']))).toBe(1)
+    expect(await adoptCheckpoint('u', 'no-log', snapshotOf('h', {}))).toBe(0)
+  })
+
+  // `abort` is the guard the CALLER's own supersession check cannot reach: it
+  // runs before this call, while `await openDb()` can take a whole task if a
+  // peer tab's schema repair dropped the cached connection.
+  it('writes nothing when abort() answers true before the transaction is created', async () => {
+    await adoptCheckpoint('u', 'me', snapshotOf('first', { 'node:n1': 'A' }))
+
+    const refused = await adoptCheckpoint('u', 'me', snapshotOf('second', { 'node:n2': 'B' }), undefined, () => true)
+    expect(refused).toBeNull()
+
+    // The earlier row is untouched -- a replace that never opened its transaction.
+    const read = await readOk('u', 'me')
+    expect(text(read.checkpoint.headerBytes)).toBe('first')
+    expect(read.chunks.map(c => text(c.bytes))).toEqual(['A'])
+  })
+})

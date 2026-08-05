@@ -9,10 +9,24 @@ import { createOpLogAppender } from '~/test-support/opLog'
 import { fullCheckpointDelta, serializeHeader } from './checkpointChunks'
 import {
   _resetCheckpointStoreForTest,
+  adoptCheckpoint,
+  appendOpLogSegment,
   MAX_OPLOG_READ_FRAMES,
+  readCheckpoint,
+  SEED_CANDIDATE_MAX_AGE_MS,
+  touchOwner,
   writeCheckpointAndTruncateOpLog,
 } from './checkpointStore'
 import { loadHydrationState } from './hydrate'
+
+// Partially mocked so ONE case can force the adoption write to fail. Every
+// other export -- and adoptCheckpoint itself, unless a test overrides it --
+// is the real implementation, so the rest of this file still exercises the
+// store rather than a stand-in.
+vi.mock('./checkpointStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./checkpointStore')>()
+  return { ...actual, adoptCheckpoint: vi.fn(actual.adoptCheckpoint) }
+})
 
 const opLog = createOpLogAppender()
 
@@ -88,7 +102,7 @@ describe('loadHydrationState', () => {
   // checkpoint AND op-log. Those tabs then cold-started with the full
   // projection snapshot #267 exists to avoid: the exact cross-tab clobber the
   // (user, client) key was introduced to narrow.
-  it('wipes only the failing tab, leaving a sibling tab hydratable', async () => {
+  it('wipes only the failing tab, leaving the sibling\'s rows intact', async () => {
     // A healthy sibling tab.
     await seed('u', 'tab-good', stateOf('u', 5n))
     await opLog.append('u', 'tab-good', [batchFrame('b-good')])
@@ -100,15 +114,48 @@ describe('loadHydrationState', () => {
       full: true,
     })
 
+    const before = await readCheckpoint('u', 'tab-good')
+    expect(before.status).toBe('ok')
+
+    await loadHydrationState('u', 'tab-bad')
+
+    // Asserted against the STORE, not against a second loadHydrationState call:
+    // since the seed path landed, a load for 'tab-good' would also succeed by
+    // adopting some other owner, so it can no longer distinguish "this tab's
+    // rows survived" from "some rows survived somewhere".
+    expect(await readCheckpoint('u', 'tab-good')).toEqual(before)
+    // And the poison row really is gone from disk, so the next reload of that
+    // tab does not pay another failed parse. (It is not a MISS: having wiped
+    // its own row, the tab went on to adopt the sibling's -- see the seeding
+    // block below. What matters here is that the undecodable header is gone.)
+    const rebuilt = await readCheckpoint('u', 'tab-bad')
+    expect(rebuilt.status).toBe('ok')
+    expect(rebuilt.status === 'ok' && rebuilt.checkpoint.headerBytes)
+      .not
+      .toEqual(new Uint8Array([0xFF, 0xFF, 0xFF]))
+  })
+
+  // The case above cannot see the wipe: with a sibling present, the adoption's
+  // full-replace write leaves 'tab-bad' readable whether or not the wipe ran.
+  // With NO sibling to adopt, the wipe is the only thing that can change what is
+  // on disk -- so this is the case that actually pins it.
+  it('wipes its own corrupt row even when there is no sibling to adopt', async () => {
+    await seedDelta('u', 'tab-bad', {
+      headerBytes: new Uint8Array([0xFF, 0xFF, 0xFF]),
+      upserts: [],
+      deletes: [],
+      full: true,
+    })
+    await opLog.append('u', 'tab-bad', [batchFrame('b-bad')])
+    expect((await readCheckpoint('u', 'tab-bad')).status).toBe('ok')
+
     expect(await loadHydrationState('u', 'tab-bad')).toBeNull()
 
-    const survivor = await loadHydrationState('u', 'tab-good')
-    expect(survivor).not.toBeNull()
-    expect(survivor!.frames).toHaveLength(1)
-    expect(Object.keys(survivor!.state.nodes).sort()).toEqual(['n1', 'n2'])
-    // And the bad row really is gone, so the next reload of that tab is a miss
-    // rather than another failed parse.
-    expect(await loadHydrationState('u', 'tab-bad')).toBeNull()
+    // GONE, not merely unusable. A wipe that silently did nothing would leave
+    // the undecodable header in place, and every later reload would re-pay the
+    // failed parse and cold-start again -- forever, and invisibly. That is what
+    // the module header's "self-heals" claim rests on.
+    expect((await readCheckpoint('u', 'tab-bad')).status).toBe('miss')
   })
 
   it('round-trips a well-formed checkpoint + op-log', async () => {
@@ -372,3 +419,260 @@ async function openDbRaw(): Promise<IDBDatabase> {
     r.onerror = () => reject(r.error)
   })
 }
+
+// Seeding: a tab with nothing usable of its own adopts a SIBLING's pair rather
+// than cold-starting on a full projection snapshot. The write clobber that
+// forces the per-(user, client) key is a hazard for WRITERS; a reader has none.
+describe('loadHydrationState seeding from a sibling', () => {
+  it('seeds from the only sibling when this tab has no checkpoint', async () => {
+    await seed('u', 'tab-old', stateOf('u', 5n))
+    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+
+    const payload = await loadHydrationState('u', 'tab-new')
+
+    expect(payload).not.toBeNull()
+    expect(Object.keys(payload!.state.nodes).sort()).toEqual(['n1', 'n2'])
+    expect(payload!.frames).toHaveLength(1)
+    expect(await payload!.persistedBase).not.toBeNull()
+  })
+
+  it('prefers this tab\'s own checkpoint over a fresher sibling', async () => {
+    await seed('u', CLIENT, stateOf('u', 5n))
+    await seed('u', 'tab-other', stateOf('u', 99n))
+    await touchOwner('u', 'tab-other', Date.now() + 1000)
+
+    const payload = await loadHydrationState('u', CLIENT)
+
+    expect(payload!.state.maxHlc!.physical).toBe(5n)
+  })
+
+  it('copies the sibling\'s header, chunks and op-log under THIS tab\'s owner key', async () => {
+    await seed('u', 'tab-old', stateOf('u', 5n))
+    await opLog.append('u', 'tab-old', [batchFrame('b1'), batchFrame('b2')])
+
+    await loadHydrationState('u', 'tab-new')
+
+    const mine = await readCheckpoint('u', 'tab-new')
+    expect(mine.status).toBe('ok')
+    const theirs = await readCheckpoint('u', 'tab-old')
+    expect(mine.status === 'ok' && theirs.status === 'ok'
+      && mine.checkpoint.headerBytes).toEqual(theirs.status === 'ok' ? theirs.checkpoint.headerBytes : null)
+    expect(mine.status === 'ok' && mine.chunks).toHaveLength(theirs.status === 'ok' ? theirs.chunks.length : -1)
+    expect(mine.status === 'ok' && mine.opLogFrames).toHaveLength(2)
+  })
+
+  it('leaves the sibling\'s rows byte-identical', async () => {
+    await seed('u', 'tab-old', stateOf('u', 5n))
+    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+    const before = await readCheckpoint('u', 'tab-old')
+
+    await loadHydrationState('u', 'tab-new')
+
+    expect(await readCheckpoint('u', 'tab-old')).toEqual(before)
+  })
+
+  // The single easiest way to get the adoption wrong. The op-log's `ordinal` is
+  // PER OWNER and restarts at 0 after every checkpoint write, so inheriting the
+  // source's counter would leave our log starting at N with 0..N-1 absent --
+  // which readOpLogFrames reads as a hole and discards an intact log for.
+  it('numbers the copied log from 0, not from the sibling\'s next ordinal', async () => {
+    await seed('u', 'tab-old', stateOf('u', 5n))
+    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+    await opLog.append('u', 'tab-old', [batchFrame('b2')])
+    await opLog.append('u', 'tab-old', [batchFrame('b3')])
+    // The source is three segments in, so a naive copy would hand us 3.
+    expect((await readCheckpoint('u', 'tab-old')).status === 'ok'
+      && (await readCheckpoint('u', 'tab-old') as { opLogNextOrdinal: number }).opLogNextOrdinal).toBe(3)
+
+    const payload = await loadHydrationState('u', 'tab-new')
+    const settled = await payload!.persistedBase
+    expect(settled?.nextOpLogOrdinal).toBe(1)
+
+    // And appending at that ordinal really does keep the sequence contiguous:
+    // a later cold start reads the whole log, not a prefix ending at a hole.
+    // Direct, not via the opLog helper: this test hand-picks the ordinal, which
+    // is exactly the case that helper's doc reserves for the raw call.
+    await appendOpLogSegment('u', 'tab-new', [batchFrame('b4')], settled!.nextOpLogOrdinal)
+    const next = await loadHydrationState('u', 'tab-new')
+    expect(next!.frames).toHaveLength(4)
+    expect(next!.truncated).toBe(false)
+  })
+
+  it('picks the most recently seen sibling when several exist', async () => {
+    await seed('u', 'tab-a', stateOf('u', 5n))
+    await seed('u', 'tab-b', stateOf('u', 9n))
+    // Recency is lastSeenAt, not the checkpoint's watermark: a live tab's
+    // watermark is pinned at its last rewrite while its op-log runs on ahead.
+    // So tab-a must win despite the LOWER watermark. Age tab-b backwards rather
+    // than stamping tab-a into the future -- a future `lastSeenAt` is a clock
+    // artefact the scan now skips outright, so the shortcut would test the skip
+    // instead of the ranking.
+    await touchOwner('u', 'tab-b', Date.now() - 5000)
+
+    const payload = await loadHydrationState('u', 'tab-new')
+
+    expect(payload!.state.maxHlc!.physical).toBe(5n)
+  })
+
+  it('skips a corrupt sibling and tries the next one', async () => {
+    await seedDelta('u', 'tab-bad', {
+      headerBytes: new Uint8Array([0xFF, 0xFF, 0xFF]),
+      upserts: [],
+      deletes: [],
+      full: true,
+    })
+    await seed('u', 'tab-good', stateOf('u', 5n))
+    // Make the CORRUPT one the freshest, so it is tried first.
+    await touchOwner('u', 'tab-bad', Date.now() + 5000)
+
+    const payload = await loadHydrationState('u', 'tab-new')
+
+    expect(payload).not.toBeNull()
+    expect(Object.keys(payload!.state.nodes).sort()).toEqual(['n1', 'n2'])
+  })
+
+  // The safety property the whole seed path rests on. A sibling's recorder
+  // believes its chunks are on disk and rewrites INCREMENTALLY against them, so
+  // deleting them would leave it writing a header plus a few shards over
+  // nothing -- inflicted on a tab whose own records were fine.
+  it('never deletes a skipped sibling\'s rows', async () => {
+    await seedDelta('u', 'tab-bad', {
+      headerBytes: new Uint8Array([0xFF, 0xFF, 0xFF]),
+      upserts: [],
+      deletes: [],
+      full: true,
+    })
+    const before = await readCheckpoint('u', 'tab-bad')
+    expect(before.status).toBe('ok')
+
+    expect(await loadHydrationState('u', 'tab-new')).toBeNull()
+
+    expect(await readCheckpoint('u', 'tab-bad')).toEqual(before)
+  })
+
+  it('gives up after the candidate cap rather than reading every owner', async () => {
+    for (const id of ['s1', 's2', 's3', 's4']) {
+      await seedDelta('u', id, {
+        headerBytes: new Uint8Array([0xFF, 0xFF, 0xFF]),
+        upserts: [],
+        deletes: [],
+        full: true,
+      })
+    }
+    // A healthy one, but oldest, so it sits past the cap.
+    await seed('u', 'tab-good', stateOf('u', 5n))
+    await touchOwner('u', 'tab-good', Date.now() - 1000)
+
+    expect(await loadHydrationState('u', 'tab-new', { limit: 2 })).toBeNull()
+  })
+
+  it('returns null when there is no sibling at all', async () => {
+    expect(await loadHydrationState('u', 'tab-new')).toBeNull()
+  })
+
+  it('never seeds from another user\'s owner', async () => {
+    await seed('other-user', 'tab-theirs', stateOf('other-user', 5n))
+
+    expect(await loadHydrationState('u', 'tab-new')).toBeNull()
+  })
+
+  it('does not seed from an owner last seen beyond the retention window', async () => {
+    await seed('u', 'tab-ancient', stateOf('u', 5n))
+    await touchOwner('u', 'tab-ancient', Date.now() - SEED_CANDIDATE_MAX_AGE_MS - 1)
+
+    expect(await loadHydrationState('u', 'tab-new')).toBeNull()
+  })
+
+  it('carries a sibling\'s truncated op-log through as truncated', async () => {
+    await seed('u', 'tab-old', stateOf('u', 5n))
+    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+    // A frame that will not decode: the replay stops at it, and the payload is
+    // a strict prefix.
+    await opLog.append('u', 'tab-old', [new Uint8Array([0xFF, 0xFF, 0xFF])])
+
+    const payload = await loadHydrationState('u', 'tab-new')
+
+    expect(payload!.truncated).toBe(true)
+    expect(payload!.frames).toHaveLength(1)
+  })
+
+  // ...and copies ONLY that prefix. Adopting the raw list would make this
+  // owner's row a second durable copy of the sibling's corruption -- one that
+  // every later cold start of THIS tab re-reads and re-truncates at, resuming
+  // from a watermark that keeps rewinding.
+  it('adopts only the frames it validated, never the sibling\'s poison tail', async () => {
+    await seed('u', 'tab-old', stateOf('u', 5n))
+    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+    await opLog.append('u', 'tab-old', [new Uint8Array([0xFF, 0xFF, 0xFF])])
+
+    const payload = await loadHydrationState('u', 'tab-new')
+    expect(await payload!.persistedBase).toEqual({ nextOpLogOrdinal: 1 })
+
+    // Our own row is now self-consistent: what is on disk is exactly what was
+    // replayed, so re-reading it is not truncated at all.
+    const mine = await readCheckpoint('u', 'tab-new')
+    expect(mine.status).toBe('ok')
+    if (mine.status !== 'ok')
+      return
+    expect(mine.opLogFrames).toHaveLength(1)
+    expect(mine.opLogTruncated).toBe(false)
+    // And the sibling's own row still holds both frames, untouched -- the seed
+    // reads it and never writes to it. (The store returns both: it deals in
+    // bytes, and only the DECODE in validateCheckpoint can tell them apart.)
+    const theirs = await readCheckpoint('u', 'tab-old')
+    expect(theirs.status).toBe('ok')
+    if (theirs.status === 'ok')
+      expect(theirs.opLogFrames).toHaveLength(2)
+  })
+
+  // persistedBase is what stops the recorder writing a silently-short
+  // checkpoint: an incremental rewrite is only sound over chunks that really
+  // are on disk.
+  it('reports no persisted base when the adoption write fails, and still returns the state', async () => {
+    await seed('u', 'tab-old', stateOf('u', 5n))
+    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+    vi.mocked(adoptCheckpoint).mockResolvedValueOnce(null)
+
+    const payload = await loadHydrationState('u', 'tab-new')
+
+    expect(payload).not.toBeNull()
+    expect(Object.keys(payload!.state.nodes).sort()).toEqual(['n1', 'n2'])
+    expect(payload!.frames).toHaveLength(1)
+    expect(await payload!.persistedBase).toBeNull()
+  })
+
+  // useCrdtRuntime's deadline resolves null WITHOUT cancelling the read behind
+  // it, so a late adoption would replace a freshly bootstrapped checkpoint with
+  // the sibling's older one while the recorder kept appending its own ordinals.
+  it('writes nothing when the run was superseded before the adoption', async () => {
+    await seed('u', 'tab-old', stateOf('u', 5n))
+
+    const payload = await loadHydrationState('u', 'tab-new', { superseded: () => true })
+
+    expect(await payload!.persistedBase).toBeNull()
+    expect((await readCheckpoint('u', 'tab-new')).status).toBe('miss')
+  })
+
+  // The WIPE is the other write on this path, and the more destructive one: a
+  // superseded run has already cold-started, bootstrapped, and had its recorder
+  // write a fresh checkpoint under this same owner key with a `ready` base, so
+  // a late wipe deletes those rows while the recorder goes on rewriting
+  // INCREMENTALLY against chunks that are no longer there.
+  it('does not wipe its own corrupt row when the run was superseded', async () => {
+    await seedDelta('u', 'tab-new', {
+      headerBytes: new Uint8Array([0xFF, 0xFF, 0xFF]),
+      upserts: [],
+      deletes: [],
+      full: true,
+    })
+    await seed('u', 'tab-old', stateOf('u', 5n))
+
+    expect(await loadHydrationState('u', 'tab-new', { superseded: () => true })).toBeNull()
+
+    // Still there -- untouched, and not seeded over either.
+    const mine = await readCheckpoint('u', 'tab-new')
+    expect(mine.status).toBe('ok')
+    if (mine.status === 'ok')
+      expect([...mine.checkpoint.headerBytes]).toEqual([0xFF, 0xFF, 0xFF])
+  })
+})

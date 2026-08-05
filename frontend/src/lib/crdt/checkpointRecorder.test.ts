@@ -3,7 +3,7 @@ import type { HlcShape } from './hlc'
 import type { PendingOpsManager } from './pendingOps'
 import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
 import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
-import { create, toBinary } from '@bufbuild/protobuf'
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NodeRecordSchema, UserCrdtStateSchema } from '~/generated/leapmux/v1/user_crdt_pb'
@@ -23,7 +23,7 @@ import { pruneTombstonesAtOrBelow } from './pendingOps'
 // a full rewrite and an incremental one leave byte-identical rows behind, so
 // comparing the persisted result cannot tell them apart. The wrapper delegates
 // to the real store, so everything else in this file still exercises real IDB.
-const storeSpy = vi.hoisted(() => ({ deltas: [] as CheckpointDelta[], appends: 0 }))
+const storeSpy = vi.hoisted(() => ({ deltas: [] as CheckpointDelta[], appends: 0, ordinals: [] as number[] }))
 vi.mock('./checkpointStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./checkpointStore')>()
   return {
@@ -42,6 +42,10 @@ vi.mock('./checkpointStore', async (importOriginal) => {
     // persisted result (the rewrite truncates the log either way).
     appendOpLogSegment: (...args: Parameters<typeof actual.appendOpLogSegment>) => {
       storeSpy.appends++
+      // The ORDINAL each segment carries, which is the whole observation for a
+      // base that lands late: it must continue the adopted sequence, not
+      // restart at 0 behind rows the adoption just wrote.
+      storeSpy.ordinals.push(args[3])
       return actual.appendOpLogSegment(...args)
     },
   }
@@ -63,6 +67,7 @@ function keysOf(refs: readonly { kind: string, entityId: string }[]): string[] {
 beforeEach(() => {
   storeSpy.deltas = []
   storeSpy.appends = 0
+  storeSpy.ordinals = []
   vi.stubGlobal('indexedDB', new IDBFactory())
   vi.stubGlobal('IDBKeyRange', IDBKeyRange)
   _resetCheckpointStoreForTest()
@@ -501,6 +506,299 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     expect([...recorder.dirtyKeys].sort()).toEqual(['node:replayed-a', 'node:replayed-b'])
     expect(recorder.needsFullRewrite).toBe(false)
     await recorder.dispose()
+  })
+
+  // A base that is still being WRITTEN (the sibling seed's adoption, which the
+  // caller deliberately leaves in flight so its ready gate can open) puts the
+  // recorder in a third state: it does not yet know whether the chunks under it
+  // are a valid incremental base, and it must not guess in either direction.
+  describe('a base that is still in flight', () => {
+    /** A promise plus its resolver, so a test can decide when the base lands. */
+    function deferredBase() {
+      let settle: (b: { frames: WatchUserEvent[], nextOrdinal: number } | undefined) => void = () => {}
+      let reject: (err: unknown) => void = () => {}
+      const promise = new Promise<{ frames: WatchUserEvent[], nextOrdinal: number } | undefined>((res, rej) => {
+        settle = res
+        reject = rej
+      })
+      return { promise, settle, reject }
+    }
+
+    it('holds appends until the base lands, then writes them at its ordinal', async () => {
+      // The hazard this exists for: appending now would mint ordinal 0 against
+      // a log the adoption is about to truncate and re-seed at ordinal 0, and
+      // the reader's contiguity check silently truncates at a duplicate.
+      const base = deferredBase()
+      const mgr = fakeMgr()
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr,
+        hydratedFrom: base.promise,
+      })
+      putNode(mgr, 'a', 'v1')
+      recorder.record(nodeFrame('b1', 'a'))
+      await settle()
+      expect(storeSpy.appends).toBe(0)
+
+      base.settle({ frames: [], nextOrdinal: 7 })
+      await settle()
+
+      // Released, not dropped -- and at the base's ordinal, not at 0.
+      expect(storeSpy.appends).toBe(1)
+      expect(storeSpy.ordinals).toEqual([7])
+      await recorder.dispose()
+    })
+
+    it('does not lose a frame recorded while it was holding', async () => {
+      // The frames' effects are already in confirmedState and the hub ships
+      // only what is strictly after the cursor, so a dropped one never comes
+      // back. Its ENTITY must be dirty either way.
+      const base = deferredBase()
+      const mgr = fakeMgr()
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr,
+        hydratedFrom: base.promise,
+      })
+      putNode(mgr, 'held', 'v1')
+      recorder.record(nodeFrame('b1', 'held'))
+      await settle()
+      expect([...recorder.dirtyKeys]).toEqual(['node:held'])
+
+      base.settle({ frames: [], nextOrdinal: 0 })
+      await settle()
+      expect(storeSpy.appends).toBe(1)
+      await recorder.dispose()
+    })
+
+    it('holds a rewrite until the base lands', async () => {
+      // A rewrite would serialize a base the adoption is about to replace
+      // wholesale, and its truncate would race the adoption's own.
+      const base = deferredBase()
+      const mgr = fakeMgr()
+      putNode(mgr, 'a', 'v1')
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr,
+        hydratedFrom: base.promise,
+        threshold: 1,
+      })
+      recorder.rewriteNow()
+      await settle()
+      expect(storeSpy.deltas).toHaveLength(0)
+
+      // DEFERRED, not dropped: the base landing re-issues it with no second
+      // rewriteNow() from the caller. hydrateInto's one-shot repair call (fired
+      // when the replayed log was truncated or already over the threshold)
+      // ALWAYS lands inside this hold on the seed path, so a dropped request
+      // meant a seeded tab never performed that repair at all.
+      base.settle(undefined)
+      await settle()
+      expect(storeSpy.deltas).toHaveLength(1)
+      await recorder.dispose()
+    })
+
+    it('does not re-issue a rewrite nobody asked for while it was holding', async () => {
+      // The flip side: the hold must not manufacture a rewrite. Only a request
+      // that was actually refused is owed one.
+      const base = deferredBase()
+      const mgr = fakeMgr()
+      putNode(mgr, 'a', 'v1')
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr,
+        hydratedFrom: base.promise,
+      })
+      base.settle({ frames: [], nextOrdinal: 0 })
+      await settle()
+      expect(storeSpy.deltas).toHaveLength(0)
+      await recorder.dispose()
+    })
+
+    it('drops frames it was holding when a bootstrap supersedes the lineage', async () => {
+      // The hazard: the pending HOLD parks frames instead of appending them, so
+      // unlike every other queue-clearing path they are still sitting there when
+      // onCheckpointReset invalidates the lineage. Once the bootstrap's own
+      // rewrite lands (needsRebase cleared, log truncated), the NEXT recorded
+      // frame would splice those pre-bootstrap bytes onto the fresh log at
+      // ordinal 0 -- and the client replays materialized / removed WHOLESALE,
+      // with no HLC compare, so the next cold start reinstates discarded records.
+      const base = deferredBase()
+      const mgr = fakeMgr()
+      putNode(mgr, 'a', 'v1')
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr,
+        hydratedFrom: base.promise,
+      })
+      recorder.record(nodeFrame('pre-bootstrap', 'a'))
+      await settle()
+      expect(storeSpy.appends).toBe(0)
+
+      recorder.onCheckpointReset()
+      await settle()
+      base.settle(undefined)
+      await settle()
+
+      recorder.record(nodeFrame('post-bootstrap', 'a'))
+      await settle()
+
+      const read = await readCheckpoint(USER, CLIENT)
+      expect(read.status).toBe('ok')
+      if (read.status !== 'ok')
+        return
+      const batchIds = read.opLogFrames
+        .map(b => fromBinary(WatchUserEventSchema, b))
+        .map(f => (f.event.case === 'batch' ? f.event.value.batchId : ''))
+      expect(batchIds).toEqual(['post-bootstrap'])
+      await recorder.dispose()
+    })
+
+    it('releases the hold even when it refuses the base', async () => {
+      // The refusal path returned before flushAppend, and every held flush had
+      // already cleared `appendScheduled` -- so on a tab that went quiet after
+      // its reconnect burst nothing was left to revisit the queue at all.
+      const base = deferredBase()
+      const mgr = fakeMgr()
+      putNode(mgr, 'a', 'v1')
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr,
+        hydratedFrom: base.promise,
+      })
+      recorder.record(nodeFrame('held', 'a'))
+      await settle()
+
+      // Invalidate, so the settle below takes adoptBase's refusal arm...
+      recorder.onCheckpointReset()
+      await settle()
+      base.settle({ frames: [], nextOrdinal: 4 })
+      await settle()
+
+      // ...and nothing is left queued: no later frame can carry it onto disk.
+      recorder.record(nodeFrame('after', 'a'))
+      await settle()
+      const read = await readCheckpoint(USER, CLIENT)
+      expect(read.status).toBe('ok')
+      if (read.status !== 'ok')
+        return
+      expect(read.opLogFrames).toHaveLength(1)
+      // The refused base's ordinal was not adopted either.
+      expect(storeSpy.ordinals).toEqual([0])
+      await recorder.dispose()
+    })
+
+    it('reports a FULL rewrite while it is still waiting', async () => {
+      // Never "incremental against chunks we have not confirmed": until the
+      // adoption commits there may be nothing underneath at all.
+      const base = deferredBase()
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr: fakeMgr(),
+        hydratedFrom: base.promise,
+      })
+      expect(recorder.needsFullRewrite).toBe(true)
+
+      base.settle({ frames: [], nextOrdinal: 0 })
+      await settle()
+      expect(recorder.needsFullRewrite).toBe(false)
+      await recorder.dispose()
+    })
+
+    it('takes a base that resolves undefined as NO base', async () => {
+      // The adoption did not commit, so there are no chunks to be incremental
+      // against -- an incremental rewrite would persist a header plus a few
+      // shards over nothing.
+      const base = deferredBase()
+      const mgr = fakeMgr()
+      putNode(mgr, 'a', 'v1')
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr,
+        hydratedFrom: base.promise,
+        threshold: 1,
+      })
+      base.settle(undefined)
+      await settle()
+      expect(recorder.needsFullRewrite).toBe(true)
+
+      recorder.record(nodeFrame('b1', 'a'))
+      await settle()
+      expect(lastDelta().full).toBe(true)
+      await recorder.dispose()
+    })
+
+    it('takes a REJECTED base as NO base rather than holding forever', async () => {
+      // Staying held would silently stop persisting for the whole session.
+      const base = deferredBase()
+      const mgr = fakeMgr()
+      putNode(mgr, 'a', 'v1')
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr,
+        hydratedFrom: base.promise,
+        threshold: 1,
+      })
+      base.reject(new Error('adopt blew up'))
+      await settle()
+      expect(recorder.needsFullRewrite).toBe(true)
+
+      recorder.record(nodeFrame('b1', 'a'))
+      await settle()
+      expect(lastDelta().full).toBe(true)
+      await recorder.dispose()
+    })
+
+    it('refuses a base that lands after a bootstrap superseded it', async () => {
+      // onCheckpointReset invalidates the lineage; the in-flight adoption
+      // describes the DISCARDED one, so installing it would re-arm incremental
+      // rewrites against chunks the bootstrap already replaced.
+      const base = deferredBase()
+      const mgr = fakeMgr()
+      putNode(mgr, 'a', 'v1')
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr,
+        hydratedFrom: base.promise,
+        threshold: 1,
+      })
+      recorder.onCheckpointReset()
+      await settle()
+
+      base.settle({ frames: [nodeFrame('r1', 'stale')], nextOrdinal: 9 })
+      await settle()
+
+      expect(recorder.dirtyKeys.has('node:stale')).toBe(false)
+      // The bootstrap's own FULL rewrite is what re-establishes the base.
+      expect(lastDelta().full).toBe(true)
+      await recorder.dispose()
+    })
+
+    it('does not install a base after dispose', async () => {
+      const base = deferredBase()
+      const recorder = createCheckpointRecorder({
+        userId: USER,
+        clientId: CLIENT,
+        mgr: fakeMgr(),
+        hydratedFrom: base.promise,
+      })
+      await recorder.dispose()
+      base.settle({ frames: [nodeFrame('r1', 'late')], nextOrdinal: 3 })
+      await settle()
+
+      expect(recorder.dirtyKeys.has('node:late')).toBe(false)
+      expect(storeSpy.appends).toBe(0)
+    })
   })
 
   it('falls back to a FULL rewrite for a structurally malformed frame', async () => {

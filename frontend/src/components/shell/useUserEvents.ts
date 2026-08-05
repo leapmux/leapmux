@@ -141,7 +141,39 @@ export interface ResumeToken {
 export interface UseUserEventsOpts {
   /** Reactive accessor for the user id. Empty disables the connection. */
   userId: () => string
-  /** Reactive accessor for workspace_ids the caller may read; empty array = all. */
+  /**
+   * Reactive accessor for workspace_ids the caller may read; empty array = all.
+   *
+   * NOTHING IN THE APP PASSES THIS, and wiring it needs care. The hub documents
+   * a constraint on `SubscribeWithACL`: a cursor minted under a NARROW filter
+   * and replayed under a WIDER one can miss ops, because the persisted cursor is
+   * per-user, not per-filter. It has no producer today precisely because every
+   * browser subscription resolves to all owned workspaces.
+   *
+   * Since the checkpoint seed landed, cursors are also CROSS-TAB -- a new tab
+   * adopts a sibling's -- so a per-tab workspace filter would let two tabs
+   * disagree about the filter a cursor was minted under, which is exactly the
+   * pairing that constraint warns about.
+   *
+   * A non-empty value here therefore suppresses the resume cursor, so a
+   * narrowed subscription always takes a full snapshot. That closes the URL
+   * half, and only the URL half -- it is NOT the whole invariant, and a producer
+   * cannot be wired on the strength of it alone.
+   *
+   * The half still open is the CHECKPOINT. A narrowed tab's confirmed state
+   * holds only its own workspaces, but the watermark it persists beside them is
+   * the hub's GLOBAL max_hlc (materializedFromState stamps `state.max_hlc` on
+   * every snapshot, filtered or not). A sibling with no filter can adopt that
+   * pair and RESUME on it -- validateCheckpoint checks the tenant and the
+   * ranges, and has no filter to check against -- and the hub then ships only
+   * what is strictly after a cursor that already sits above every entity the
+   * narrowed writer filtered out. Those entities never arrive.
+   *
+   * So wiring a producer needs one of: the mint-time filter carried alongside
+   * the cursor and re-checked by the hub (what SubscribeWithACL's doc calls for),
+   * or a narrowed tab excluded from writing an adoptable checkpoint at all.
+   * Until then this option has no producer on purpose.
+   */
   allowedWorkspaceIds?: () => string[]
   /** Active-client store fed by PresenceUpdate events. */
   activeClient: ActiveClientStore
@@ -354,7 +386,25 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     // state it describes is actually loaded, or the hub's delta would fold onto
     // empty maps.
     const confirmedPopulated = pendingMgr?.isConfirmedPopulated() ?? false
-    const validated = confirmedPopulated ? validateResumeHlc(pendingState?.resumeWatermark) : undefined
+    // A NARROWED subscription presents NO cursor.
+    //
+    // The persisted cursor is per-USER, not per-filter (see the hub's
+    // SubscribeWithACL), and since the checkpoint seed landed it is CROSS-TAB
+    // too -- a new tab adopts a sibling's. So a cursor minted under one filter
+    // and replayed under a wider one can miss ops, and with cross-tab cursors
+    // two tabs need not even agree on what the filter was. Suppressing the
+    // cursor costs one full snapshot and removes the URL half of that pairing.
+    // It is also what both in-tree Go narrowing callers already do: remoteipc's
+    // hub_stream and the remote CLI client each pass their workspace ids with a
+    // nil cursor.
+    //
+    // It is NOT the whole invariant -- a narrowed tab's CHECKPOINT still carries
+    // the hub's global max_hlc over a filtered entity set, and a sibling can
+    // adopt it. See allowedWorkspaceIds' doc for what a producer would also need.
+    const workspaceIds = opts.allowedWorkspaceIds?.() ?? []
+    const validated = confirmedPopulated && workspaceIds.length === 0
+      ? validateResumeHlc(pendingState?.resumeWatermark)
+      : undefined
     const resume: ResumeToken | null
       = pendingState && validated
         ? { hlc: validated, epoch: pendingState.currentEpoch }
@@ -380,7 +430,6 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     // event. Skip this branch when a `buildWsUrl` override is
     // supplied (tests intentionally drive a real WebSocket).
     if (isTauriApp() && !opts.buildWsUrl) {
-      const workspaceIds = opts.allowedWorkspaceIds?.() ?? []
       // One id per attempt, shared by this attempt's open and its close, so the
       // sidecar can tell the two apart from a successor's.
       const relayId = nextUserEventsRelayId()
@@ -458,7 +507,7 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     }
 
     const builder = opts.buildWsUrl ?? defaultBuildWsUrl
-    const url = builder(opts.allowedWorkspaceIds?.() ?? [], resume)
+    const url = builder(workspaceIds, resume)
     let ws: WebSocket
     try {
       ws = new WebSocket(url, ['userevents-relay'])

@@ -369,16 +369,22 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	// deleted (Rule 15 — every live parentless node must be a
 	// registered root).
 	wsID := p.WorkspaceID
-	// Walk the live state under m.mu.RLock — the enumeration is a
-	// single synchronous pass, so the lock is held only for the walk
-	// itself. A bare read of m.state from this (request-handler)
-	// goroutine would race with the manager goroutine's writes under
-	// m.mu.Lock(); cloning via m.State() would allocate a multi-MB copy
-	// of every workspace just to enumerate one.
-	var enumOps []*leapmuxv1.CrdtOp
-	m.WithStateRLock(func(state *leapmuxv1.UserCrdtState) {
-		enumOps = enumerateWorkspaceDeleteOps(state, wsID)
-	})
+	// CAPTURE the published generation, then walk it holding NOTHING.
+	//
+	// The enumeration is O(all the user's entities) — BuildLiveChildrenIndex
+	// ranges every node, and the sweeps under it range every tab and floating
+	// window — and it runs on a request-handler goroutine. Holding m.mu.RLock
+	// across it blocks commitState (which takes m.mu.Lock), i.e. the manager
+	// goroutine: the same stall the FALLBACK baseline was restructured to
+	// remove, on a rarer path.
+	//
+	// The capture is safe for the same reason that one is: a PUBLISHED
+	// generation is never mutated (see commitState), so what escapes is a
+	// stable point-in-time value rather than a live view, and this walk is
+	// strictly read-only over it. A bare read of m.state would still race the
+	// manager's writes; State() would deep-clone every workspace just to
+	// enumerate one.
+	enumOps := enumerateWorkspaceDeleteOps(m.capturedState(), wsID)
 	combined := make([]*leapmuxv1.CrdtOp, 0, len(ops)+len(enumOps)+1)
 	combined = append(combined, ops...)
 	combined = append(combined, enumOps...)
