@@ -216,7 +216,7 @@ type Manager struct {
 	// m.mu (RWMutex) guards m.state only against the RLock readers
 	// (Materialized, currentEpoch, broadcast, WithStateRLock) and the commit
 	// swap (m.state = working). The lone non-production writer is
-	// SeedStateForTest, which also runs on the manager goroutine (via seedCh)
+	// SeedStateForTest, which also runs on the manager goroutine (via taskCh)
 	// so it cannot race those bare reads; see its doc.
 	subscribers *SubscriberController
 	projection  sync.Mutex
@@ -290,6 +290,12 @@ type Manager struct {
 	// fixture.
 	maxResumeDeltaFrameBytes int
 
+	// materialize builds the FALLBACK baseline. Always materializedFromState in
+	// production; WithMaterializerForTest swaps it so a test can hold a baseline
+	// mid-flight and assert nothing is stalled behind it. Set in NewManager, so
+	// it is never nil.
+	materialize BaselineBuilder
+
 	// reconcileNudger, when set, is told which workers hosted a tab a batch
 	// just tombstoned, so each can converge immediately instead of waiting out
 	// its reconciler interval. Nil disables the nudge.
@@ -297,11 +303,15 @@ type Manager struct {
 
 	submitCh   chan submitJob
 	internalCh chan submitJob
-	// seedCh carries SeedStateForTest closures to the manager goroutine, so
-	// test seeds of m.state run on the sole writer (see seedJob). Unbuffered:
-	// SeedStateForTest blocks until the goroutine services the job, giving the
-	// seed a happens-before edge against any later submit's bare reads.
-	seedCh chan seedJob
+	// taskCh carries caller-driven work (SeedStateForTest's seed closure,
+	// TickHousekeeping's forced pass) to the manager goroutine, so both run on
+	// the sole writer (see managerTask). Both PUBLISH new state generations --
+	// the seed's clone, compaction's pruned clone, the epoch bump -- and a
+	// publish from any other goroutine would clobber a commit that landed after
+	// the clone was taken. Unbuffered: the caller blocks until the goroutine
+	// services the task, giving it a happens-before edge against anything it
+	// does next, including a later submit's bare reads.
+	taskCh chan managerTask
 	// startedOnce closes startedChan exactly once, the first time Start runs,
 	// BEFORE the select loop begins servicing jobs. startedChan is the readiness
 	// signal the registry waits on before handing the manager out, so any caller
@@ -449,17 +459,28 @@ type Subscriber struct {
 	RequestedWorkspaceIDs map[string]bool
 	Filter                SubscriberFilter
 	// resumeSuppressThrough, when non-nil, is the register-time MaxHlc
-	// high-water for a RESUME subscribe. Live batch broadcasts whose
-	// last-op HLC is <= this value are skipped for this subscriber: those
-	// batches are owned by the ResumeDelta journal scan, and delivering
-	// them via broadcast as well would dual-deliver the same catch-up
-	// frames. Set atomically with registration under m.projection (see
-	// SubscribeWithACL); left set for the life of the connection (later
-	// commits always have a strictly greater HLC). Presence / lifecycle
-	// frames bypass this gate (they go through broadcastTo, not sendTo).
+	// high-water for this subscription. Live batch broadcasts whose last-op HLC
+	// is <= this value are skipped for this subscriber, because they are
+	// already covered by whatever bootstrap frame the register window chose:
+	//
+	//   - RESUME: the ResumeDelta's journal scan ships everything in
+	//     (cursor, until], so broadcasting those batches too would
+	//     dual-deliver the same catch-up frames.
+	//   - FALLBACK: the baseline is built from the generation whose max_hlc
+	//     THIS value is, so every batch at or below it is already folded into
+	//     the snapshot. Re-delivering one would replay an entity_materialized /
+	//     entity_removed the client applies WHOLESALE onto a newer baseline.
+	//
+	// So the gate is owned by whichever bootstrap established the baseline, not
+	// by the resume path specifically. Set atomically with registration under
+	// m.projection (see registerForResume / registerForFallback); left set for
+	// the life of the connection (later commits always have a strictly greater
+	// HLC). Presence / lifecycle frames bypass it (they go through broadcastTo,
+	// not sendTo).
 	resumeSuppressThrough *leapmuxv1.HLC
 	// Overflowed, when set, reports that the transport could not buffer a frame
-	// while the resume scan was running.
+	// while the bootstrap frame was still being built -- a resume's journal scan
+	// or a fallback's baseline walk, both of which run registered and unlocked.
 	//
 	// The transport used to answer that by tearing the connection down, which
 	// sent the client back with the SAME cursor to rebuild the SAME multi-page
@@ -468,28 +489,32 @@ type Subscriber struct {
 	// trips MaxResumeDeltaOps and FALLBACKs anyway), but every round is a wasted
 	// multi-page journal scan on a hub already under the load that triggered it.
 	// buildResumeDelta consults this instead and converts the overflow into ONE
-	// snapshot.
+	// snapshot; fallbackOutcome consults it to retry its baseline at a newer
+	// generation (see the park-overflow ladder).
 	//
 	// A CALLBACK, like OnRebaseline, rather than a flag on this struct: the
 	// state belongs to the transport's queue, and Subscriber is copied by value
 	// (see cloneSubscriber), which no synchronisation primitive survives.
 	Overflowed func() bool
-	// OnRebaseline, when set, is called at the moment a RESUME registration is
-	// replaced by a FALLBACK one (resumeFallback), while m.projection is held
-	// and BEFORE the materialized baseline is taken.
+	// OnRebaseline, when set, is called at the moment a registration is REPLACED
+	// by a fresh one -- a RESUME that gave up, or a FALLBACK
+	// retrying after its park buffer overflowed -- while m.projection is held
+	// and BEFORE the new baseline's generation is captured.
 	//
 	// It exists because the transport buffers frames it has not written yet.
-	// During the resume scan the subscriber is registered, so live broadcasts
-	// enqueue normally; if the scan then gives up, the snapshot is computed at a
-	// LATER point than those queued frames. Writing them after the snapshot
-	// would apply older entity records on top of newer ones -- and unlike batch
-	// ops, entity_materialized / entity_removed are applied wholesale by the
-	// client with no HLC compare, so nothing corrects it afterwards.
+	// While a bootstrap frame is being built the subscriber is registered, so
+	// live broadcasts enqueue normally; if that attempt is then abandoned, the
+	// replacement baseline is taken at a LATER point than those queued frames.
+	// Writing them after it would apply older entity records on top of newer
+	// ones -- and unlike batch ops, entity_materialized / entity_removed are
+	// applied wholesale by the client with no HLC compare, so nothing corrects
+	// it afterwards.
 	//
 	// Called under m.projection precisely so no broadcast can interleave: every
-	// frame queued before this point is superseded by the snapshot, and every
-	// frame after it is newer than the snapshot. Implementations must not block
-	// or re-enter the manager.
+	// frame queued before this point is superseded by the new baseline, and
+	// every frame after it is newer. Implementations must not block or re-enter
+	// the manager, and must also clear whatever Overflowed reports -- the frames
+	// that flag refers to are exactly the ones just discarded.
 	OnRebaseline func()
 	// Send delivers one event to this subscriber.
 	//
@@ -570,12 +595,21 @@ type submitResponse struct {
 	err     error
 }
 
-// seedJob carries a SeedStateForTest closure through the manager goroutine.
-// Running the seed on that goroutine makes the write mechanically
-// single-writer: it cannot race the goroutine's bare m.state reads in
-// ValidateBatch / DiffProjectionForBatch. done is closed once fn has run.
-type seedJob struct {
-	fn   func(*leapmuxv1.UserCrdtState)
+// managerTask carries caller-driven work onto the manager goroutine, so it runs
+// on the sole writer exactly as the loop's own arms do. Running there is what
+// makes a write mechanically single-writer: it cannot race the goroutine's bare
+// m.state reads in ValidateBatch / DiffProjectionForBatch, and — since both
+// current users PUBLISH a new generation — a publish from the caller's
+// goroutine would silently discard any commit that landed between the clone and
+// the swap.
+//
+// One task type rather than one per caller (a seedJob and a housekeepJob were
+// byte-for-byte the same handshake) so the subtle part — the started/stopped/
+// pre-Start negotiation in runOnManagerGoroutine — has exactly one home. Each
+// task closes over whatever it needs, including the caller's ctx. done is
+// closed once run has returned.
+type managerTask struct {
+	run  func()
 	done chan struct{}
 }
 
@@ -659,6 +693,29 @@ func WithMaxResumeDeltaFrameBytes(n int) ManagerOption {
 	return func(m *Manager) { m.maxResumeDeltaFrameBytes = n }
 }
 
+// BaselineBuilder builds a FALLBACK subscriber's full snapshot from a captured
+// state generation. Named only so WithMaterializerForTest can be spelled as a
+// decorator.
+type BaselineBuilder func(state *leapmuxv1.UserCrdtState, filter SubscriberFilter) *leapmuxv1.UserMaterialized
+
+// WithMaterializerForTest DECORATES the FALLBACK baseline builder.
+//
+// TEST-ONLY. It exists because the property the FALLBACK rework is FOR --
+// "building an O(all-entities) baseline no longer stalls commits, broadcasts,
+// expands or Materialized()" -- can only be asserted while a baseline is
+// actually in flight, and the real builder offers nothing to block on. The
+// RESUME arm's equivalent test blocks inside the fake journal's
+// ListBatchesAfter; there is no journal call on this path, so the seam has to
+// be the builder itself.
+//
+// A DECORATOR rather than a replacement: `decorate` receives the real builder
+// and is expected to call it, so the test blocks around production behaviour
+// instead of standing in for it. That also keeps materializedFromState
+// unexported.
+func WithMaterializerForTest(decorate func(next BaselineBuilder) BaselineBuilder) ManagerOption {
+	return func(m *Manager) { m.materialize = decorate(m.materialize) }
+}
+
 // truncateRunes returns the first n runes of s, never splitting one.
 func truncateRunes(s string, n int) string {
 	if len(s) <= n {
@@ -704,9 +761,10 @@ func NewManager(owner userid.UserID, journal Journal, auth AuthChecker, logger *
 		clearGrace:               PresenceClearGrace,
 		opRetentionTTL:           OpRetentionTTL,
 		maxResumeDeltaFrameBytes: MaxResumeDeltaFrameBytes,
+		materialize:              materializedFromState,
 		submitCh:                 make(chan submitJob, 64),
 		internalCh:               make(chan submitJob, 16),
-		seedCh:                   make(chan seedJob),
+		taskCh:                   make(chan managerTask),
 		startedChan:              make(chan struct{}),
 		stop:                     make(chan struct{}),
 		done:                     make(chan struct{}),
@@ -818,7 +876,7 @@ func (m *Manager) requireOwnState(state *leapmuxv1.UserCrdtState) error {
 func (m *Manager) Start(ctx context.Context) error {
 	// Signal readiness exactly once, before the loop begins servicing jobs.
 	// The registry waits on started() before handing this manager out, so any
-	// caller observing the manager post-Get routes its seed through seedCh (the
+	// caller observing the manager post-Get routes its seed through taskCh (the
 	// sole writer) instead of the pre-Start direct-write branch -- closing the
 	// race the old atomic.Bool left open (Get spawned `go Start()` and returned
 	// before Start had set the flag).
@@ -844,26 +902,25 @@ func (m *Manager) Start(ctx context.Context) error {
 			job.respCh <- m.processSubmit(ctx, job)
 		case job := <-m.internalCh:
 			job.respCh <- m.processSubmit(ctx, job)
-		case job := <-m.seedCh:
-			// SeedStateForTest seed: run on this goroutine (the sole writer).
-			// The race-safety against processSubmit / DiffProjectionForBatch
-			// comes from same-goroutine sequencing (these are select cases on
-			// one loop, so the goroutine is never mid-ValidateBatch while
-			// servicing a seed); m.mu.Lock additionally excludes the
-			// cross-goroutine RLock readers (Materialized, currentEpoch,
-			// broadcast) while the maps change. Deferred unlock + close(done)
-			// so a panicking test seed neither leaves m.mu locked for the RLock
-			// readers nor wedges the caller on <-done; the panic itself still
-			// propagates (crashing the goroutine) so a buggy seed is visible,
-			// but Start's defer close(m.done) runs first so Stop's waiter and
-			// the caller's <-done both release.
+		case task := <-m.taskCh:
+			// A caller-driven pass (SeedStateForTest, TickHousekeeping) run on
+			// this goroutine -- the sole writer. Race-safety against
+			// processSubmit / DiffProjectionForBatch comes from same-goroutine
+			// sequencing (these are select cases on one loop, so the goroutine
+			// is never mid-ValidateBatch while servicing a task);
+			// commitState's swap additionally excludes the cross-goroutine
+			// RLock readers (Materialized, currentEpoch, broadcast) for the
+			// pointer write. A seed runs against a CLONE and is PUBLISHED, so a
+			// published generation stays immutable for the lock-free readers
+			// that captured it. Deferred close(done) so a panicking task does
+			// not wedge the caller on <-done; the panic itself still propagates
+			// (crashing the goroutine) so a buggy task is visible, but Start's
+			// defer close(m.done) runs first so Stop's waiter and the caller's
+			// <-done both release. A seed that panics leaves the live state
+			// untouched, since nothing is published until fn returns.
 			func() {
-				defer func() {
-					m.mu.Unlock()
-					close(job.done)
-				}()
-				m.mu.Lock()
-				job.fn(m.state)
+				defer close(task.done)
+				task.run()
 			}()
 		case <-ticker.C:
 			m.tickHousekeeping(ctx)
@@ -1010,24 +1067,49 @@ func (m *Manager) HeartbeatPresence(ctx context.Context, workspaceID, clientID s
 }
 
 // Materialized returns the public projection filtered to a given
-// allowed-set (used by tests / one-shot callers).
+// allowed-set (used by the GetMaterialized RPC, tests and one-shot callers).
+//
+// Only the generation CAPTURE is under m.mu; the O(all-entities) walk runs
+// lock-free against it. See materializedFromState.
 func (m *Manager) Materialized(filter SubscriberFilter) *leapmuxv1.UserMaterialized {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.materializedLocked(filter)
+	return materializedFromState(m.capturedState(), filter)
 }
 
-func (m *Manager) materializedLocked(filter SubscriberFilter) *leapmuxv1.UserMaterialized {
+// materializedFromState builds the public projection of `state`, filtered to
+// `filter`'s allowed workspaces.
+//
+// IT HOLDS NO MANAGER LOCK, and it does not need one: `state` is a PUBLISHED
+// GENERATION, which is immutable (see commitState). A caller captures the
+// pointer under a brief m.mu.RLock and then pays the O(all-entities) walk with
+// nothing held -- which is the whole point, because that walk used to run under
+// m.projection AND m.mu.RLock, stalling every commit and broadcast for that
+// user for its duration (issue #267).
+//
+// A FREE FUNCTION, not a method, so the type system says so: there is no
+// receiver to reach m.state through, hence no way to accidentally read the LIVE
+// state half-way through a walk of a captured one.
+//
+// The per-record proto.Clone below is NOT redundant with generation
+// immutability, and must stay. Two concurrent connects would otherwise share
+// record pointers, and proto.Marshal / proto.Size write each message's
+// sizeCache non-atomically -- a real data race, detector or no detector. (The
+// resume path DOES alias a record, at buildResumeDelta; that one is safe only
+// because its records come from a per-call proto.Unmarshal and are never shared
+// across subscribers. Do not generalize from it.)
+func materializedFromState(state *leapmuxv1.UserCrdtState, filter SubscriberFilter) *leapmuxv1.UserMaterialized {
 	out := &leapmuxv1.UserMaterialized{
-		UserId:          m.state.GetUserId(),
+		UserId:          state.GetUserId(),
 		Nodes:           map[string]*leapmuxv1.NodeRecord{},
 		Tabs:            map[string]*leapmuxv1.TabRecord{},
 		FloatingWindows: map[string]*leapmuxv1.FloatingWindowRecord{},
 		Workspaces:      map[string]*leapmuxv1.WorkspaceContentsRecord{},
-		MaxHlc:          HLCClone(m.state.GetMaxHlc()),
-		CurrentEpoch:    m.state.GetCurrentEpoch(),
+		// Read from the SAME generation as the entities below, so the snapshot
+		// and the HLC that labels it are a consistent point-in-time pair by
+		// construction rather than by both happening under one lock.
+		MaxHlc:       HLCClone(state.GetMaxHlc()),
+		CurrentEpoch: state.GetCurrentEpoch(),
 	}
-	roots := registeredRoots(m.state)
+	roots := registeredRoots(state)
 	// Build node→workspace once via BFS from each filter-allowed root,
 	// avoiding the per-entry O(depth) walks that nodeWorkspace /
 	// resolveTileWorkspace would otherwise do for every node and every
@@ -1035,9 +1117,9 @@ func (m *Manager) materializedLocked(filter SubscriberFilter) *leapmuxv1.UserMat
 	// preserves nodeWorkspace's existing behaviour where a live node
 	// whose intermediate ancestor is tombstoned still resolves to the
 	// registered-root workspace above it.
-	nodeWS := buildNodeWorkspaceMap(m.state, roots, filter)
+	nodeWS := buildNodeWorkspaceMap(state, roots, filter)
 
-	for wsID, ws := range m.state.GetWorkspaces() {
+	for wsID, ws := range state.GetWorkspaces() {
 		if !filter.IsAllowed(wsID) {
 			continue
 		}
@@ -1046,7 +1128,7 @@ func (m *Manager) materializedLocked(filter SubscriberFilter) *leapmuxv1.UserMat
 			RootNodeId:  ws.GetRootNodeId(),
 		}
 	}
-	for id, n := range m.state.GetNodes() {
+	for id, n := range state.GetNodes() {
 		if !HLCIsZero(n.GetTombstoneAt()) {
 			continue
 		}
@@ -1054,12 +1136,12 @@ func (m *Manager) materializedLocked(filter SubscriberFilter) *leapmuxv1.UserMat
 			out.Nodes[id] = cloneNode(n)
 		}
 	}
-	for id, t := range m.state.GetTabs() {
+	for id, t := range state.GetTabs() {
 		if _, ok := nodeWS[t.GetTileId().GetValue()]; ok {
 			out.Tabs[id] = cloneTab(t)
 		}
 	}
-	for id, fw := range m.state.GetFloatingWindows() {
+	for id, fw := range state.GetFloatingWindows() {
 		ws := fw.GetWorkspaceId().GetValue()
 		if ws != "" && filter.IsAllowed(ws) {
 			out.FloatingWindows[id] = cloneFloatingWindow(fw)
@@ -1440,33 +1522,91 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 // under m.mu.Lock, excluding the RLock readers (Materialized, currentEpoch,
 // broadcast, WithStateRLock) for the duration of the pointer swap. Routing
 // every state replacement through this one method makes the single-writer
-// invariant structurally visible -- the only places that assign m.state are
-// Bootstrap (pre-Start, before the goroutine exists) and commit (on the
-// manager goroutine, after a validated batch). A future debug path that tried
-// to assign m.state directly would have to add a third call site here, which
-// is exactly the review checkpoint the invariant needs.
+// invariant structurally visible -- `m.state = ` appears exactly once in the
+// package, on the line below, and every publisher (Bootstrap, commit,
+// compaction, the epoch bump, housekeeping, SeedStateForTest) reaches it
+// through here. A future debug path that tried to assign m.state directly would
+// have to add a SECOND assignment, which is exactly the review checkpoint the
+// invariant needs -- and, because generations share maps (see below), exactly
+// the change that would break the lock-free readers.
+//
+// A PUBLISHED GENERATION IS NEVER MUTATED. Every state change builds a new
+// generation and swaps it in here: commit via CloneStateForBatch, compaction
+// and the epoch bump via CloneState / nextStateGeneration, SeedStateForTest via
+// CloneState. Nothing writes through the live pointer.
+//
+// That is a load-bearing guarantee, not tidiness. It is what lets a reader
+// capture the generation pointer under a brief RLock and then walk it holding
+// NO lock at all -- which is how a cold /ws/userevents connect builds its
+// O(all-entities) baseline without stalling the commit pipeline (see
+// materializedFromState and registerForFallback), and what manager_audit.go's
+// "once stored in m.state's history it's immutable" already assumes.
+//
+// The subtle half is that generations SHARE maps: CloneStateForBatch aliases
+// the entity map of any kind a batch does not touch, and nextStateGeneration
+// aliases all four. So an in-place `delete` on the current generation mutates
+// older ones too. That is why compaction publishes its pruned clone rather than
+// re-pruning the live state.
 func (m *Manager) commitState(state *leapmuxv1.UserCrdtState) {
 	m.mu.Lock()
 	m.state = state
 	m.mu.Unlock()
 }
 
-// State returns a deep clone of the current state. Used by tests +
-// callers that need to retain the state past the manager's RLock
-// window (e.g. send it across a goroutine boundary). Hot-path readers
-// that just walk the state during one synchronous pass should prefer
-// WithStateRLock to avoid the per-call clone.
-func (m *Manager) State() *leapmuxv1.UserCrdtState {
+// capturedState returns the current published generation.
+//
+// This is THE read for anything that wants to walk the state without holding a
+// lock across the walk: a published generation is never mutated (see
+// commitState), so the returned pointer is a stable point-in-time value rather
+// than a live view. It is O(1) — no clone — and the only lock it takes is the
+// RLock around the pointer read itself.
+//
+// A named operation rather than three hand-spelled copies of
+// `m.mu.RLock(); s := m.state; m.mu.RUnlock()`, which is what capture-the-
+// generation had become. It deliberately does NOT cover a window that captures
+// AND does something else under the same RLock — registerForFallbackLocked's
+// does, and that atomicity is exactly what its no-gap/no-duplicate proof rests
+// on, so it keeps its own explicit lock.
+//
+// The caller MUST NOT mutate what it gets back; one that needs a writable copy
+// takes State(), which deep-clones.
+func (m *Manager) capturedState() *leapmuxv1.UserCrdtState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return CloneState(m.state)
+	return m.state
+}
+
+// State returns a deep clone of the current state.
+//
+// TEST-ONLY: `rg '\.State\(\)' backend/ --glob '!*_test.go'` finds no production
+// caller. Its historical reason for existing — "callers that need to retain the
+// state past the manager's RLock window" — was retired by the generation-
+// immutability invariant: capturedState() retains a generation for free, and
+// what remains here is a genuinely WRITABLE copy, which is what tests take it
+// for. The clone runs outside the lock for the same reason; only the pointer
+// read needs one.
+func (m *Manager) State() *leapmuxv1.UserCrdtState {
+	return CloneState(m.capturedState())
 }
 
 // WithStateRLock runs `fn` against the live in-memory state under
 // m.mu.RLock so the caller avoids a multi-MB CloneState allocation when
 // it only needs a synchronous walk (enumeration, projection,
-// computation). The state pointer MUST NOT escape `fn` — callers that
-// need to hold the state past the call should use State() instead.
+// computation).
+//
+// The pointer MAY escape `fn` — a published generation is immutable, so what
+// escapes is a stable point-in-time value, not a live view (see commitState).
+// The same guarantee is what lets registerForFallback capture the generation
+// under its own m.mu.RLock and then build an O(all-entities) baseline from it
+// holding no lock at all; among this helper's own callers, the immutability
+// suite's captureGeneration is the one that relies on the escape. What must NOT
+// happen is MUTATING the escaped state; a caller that needs a writable copy
+// takes State(), which deep-clones.
+//
+// Note the pointer stops tracking the manager the moment it escapes: a later
+// commit publishes a new generation and the captured one keeps the shape it had.
+// That is the point on the baseline path, and a bug for a caller that wanted
+// "current" — such a caller should re-enter rather than cache.
 func (m *Manager) WithStateRLock(fn func(state *leapmuxv1.UserCrdtState)) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1502,9 +1642,10 @@ func (m *Manager) currentEpoch() int64 {
 	return m.state.GetCurrentEpoch()
 }
 
-// SeedStateForTest runs fn against m.state as the sole writer, so the write
-// cannot race the manager goroutine's bare m.state reads in ValidateBatch /
-// DiffProjectionForBatch. It is a TEST-ONLY seam for seeds that genuinely
+// SeedStateForTest runs fn against a CLONE of m.state as the sole writer and
+// publishes the result, so the write cannot race the manager goroutine's bare
+// m.state reads in ValidateBatch / DiffProjectionForBatch. It is a TEST-ONLY
+// seam for seeds that genuinely
 // cannot be a valid op batch — e.g. bumping CurrentEpoch to exercise a
 // stale-epoch gate (no op writes CurrentEpoch; only maybeAdvanceEpoch does) or
 // constructing a record with hand-picked LWW HLCs that bypass the LWW-merge
@@ -1512,47 +1653,82 @@ func (m *Manager) currentEpoch() int64 {
 // SubmitInternal as a SetWorkspaceRegisterOp, mirroring the production
 // lifecycle create path.
 //
-// Once Start has been called, fn runs ON the manager goroutine (via seedCh)
-// under m.mu.Lock — the same goroutine that owns the bare reads, so there is
+// fn receives a CLONE, not the live generation, and the clone is published via
+// commitState. A published generation is immutable (see commitState), and a
+// seed that edited m.state in place would break that for every reader that
+// captured the pointer — including a cold subscriber building its baseline
+// lock-free. The clone also means a seed that panics part-way leaves the live
+// state untouched instead of half-written.
+//
+// Once Start has been called, fn runs ON the manager goroutine (via taskCh),
+// the same goroutine that owns the bare reads, so there is
 // no cross-goroutine write to race them. The registry waits on started()
 // before handing the manager out, so any caller that observes the manager via
 // Get routes its seed through the goroutine (closing the race an off-goroutine
 // pre-Start write would otherwise open). Before Start has been called (the
 // registry-factory shape, where the seed runs inside the factory closure
-// before Get spawns the goroutine), fn runs directly under m.mu.Lock,
+// before Get spawns the goroutine), fn runs on the calling goroutine,
 // mirroring Bootstrap's no-concurrent-reader assumption.
 //
-// fn MUST NOT call back into Submit / SubmitInternal / SeedStateForTest: those
-// channel sends would be made from the manager goroutine that is supposed to
-// receive on them, deadlocking the sole consumer.
+// fn MUST NOT call back into Submit / SubmitInternal / SeedStateForTest /
+// TickHousekeeping: those channel sends would be made from the manager
+// goroutine that is supposed to receive on them, deadlocking the sole consumer.
+// (TickHousekeeping joined that list when it started routing through taskCh.)
 //
-// After Stop, the goroutine has exited and the seedCh send falls through to
-// <-m.done, so a post-Stop SeedStateForTest returns without running fn (it
-// cannot race, but it also cannot seed) rather than wedging the caller.
+// After Stop, the goroutine has exited and the send falls through to <-m.done,
+// so a post-Stop SeedStateForTest returns without running fn (it cannot race,
+// but it also cannot seed) rather than wedging the caller.
 //
 // Test-only: production state writes flow exclusively through SubmitInternal.
 func (m *Manager) SeedStateForTest(fn func(state *leapmuxv1.UserCrdtState)) {
+	m.runOnManagerGoroutine(func() {
+		next := CloneState(m.state)
+		fn(next)
+		m.commitState(next)
+	})
+}
+
+// runOnManagerGoroutine runs `run` on the manager goroutine and returns once it
+// has completed, so a caller can rely on its effects.
+//
+// This is the one home for the started/stopped/pre-Start negotiation that both
+// caller-driven passes need (SeedStateForTest and TickHousekeeping), rather
+// than a copy each:
+//
+//   - Started: hand the task to the goroutine and wait. The select on m.done
+//     returns if the goroutine has since exited (Stop) instead of wedging the
+//     caller on the unbuffered channel.
+//   - Not started: no manager goroutine exists to race, so run inline (mirrors
+//     Bootstrap). Safe only from the registry-factory shape, where this runs
+//     inside the factory closure before Get spawns Start; a direct caller that
+//     spawned `go Start()` and then reached this branch would race the
+//     goroutine it just launched, because startedChan is closed INSIDE Start --
+//     an open channel does not prove no goroutine exists. Route through the
+//     registry instead.
+//
+// `run` executes on the sole writer, so it may read m.state bare and publish
+// through commitState; it MUST NOT send on submitCh / internalCh / taskCh,
+// which would deadlock the consumer it is running on.
+//
+// The same rule binds the CALLER, and that half is easier to miss: this
+// function is itself a taskCh send, so calling it FROM the manager goroutine
+// deadlocks it permanently -- no commits, no broadcasts, no subscribes for that
+// user, and Stop never returns, because the goroutine is blocked in the send
+// and can never reach the receive. The `<-m.done` escape does not help; that
+// arm only fires once the goroutine has already exited. The ticker arm inside
+// Start is correct precisely because it calls the unexported tickHousekeeping
+// directly rather than coming back through here.
+func (m *Manager) runOnManagerGoroutine(run func()) {
 	select {
 	case <-m.startedChan:
-		// Start has been called: route through the manager goroutine (the sole
-		// writer). The select on m.done returns if the goroutine has since
-		// exited (Stop) instead of wedging the caller on the unbuffered seedCh.
 		done := make(chan struct{})
 		select {
-		case m.seedCh <- seedJob{fn: fn, done: done}:
+		case m.taskCh <- managerTask{run: run, done: done}:
 			<-done
 		case <-m.done:
 		}
 	default:
-		// Start has not been called: no manager goroutine exists to race, so
-		// run fn directly under m.mu (mirrors Bootstrap). Safe only from the
-		// registry-factory shape, where this runs inside the factory closure
-		// before Get spawns Start; a direct caller that spawned `go Start()`
-		// and then reached this branch would race the goroutine it just
-		// launched -- route through the registry instead.
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		fn(m.state)
+		run()
 	}
 }
 

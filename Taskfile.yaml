@@ -709,6 +709,19 @@ tasks:
       - task: lint-backend
       - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -tags integration {{.CLI_ARGS | default "./..."}}
 
+  test-backend-race:
+    desc: Run backend tests under the race detector (defaults to the CRDT + hub service packages)
+    cmds:
+      - task: prepare-backend
+      # The CRDT manager's whole concurrency story -- published generations that
+      # readers walk lock-free, a fallback baseline built off the manager
+      # goroutine, a compaction that prunes a private clone -- is only ASSERTED
+      # by the detector. TestFallbackBaselineRacesCompaction in particular
+      # exists to fail when an in-place prune is reinstated, and without -race
+      # it passes no matter what, so a suite that never runs this target is a
+      # suite where that test proves nothing.
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -race -count=1 {{.CLI_ARGS | default "./internal/hub/crdt/... ./internal/hub/service/..."}}
+
   test-backend-no-docker:
     desc: Run backend tests, excluding Docker-backed storage backends
     cmds:
@@ -737,6 +750,12 @@ tasks:
       - task: prepare-frontend
       - task: lint-frontend
       - cd frontend && bun run test:e2e {{.CLI_ARGS}}
+
+  bench-backend:
+    desc: Run backend benchmarks (defaults to the CRDT package)
+    cmds:
+      - task: prepare-backend
+      - cd backend && go test -run '^$' -bench . -benchmem {{.CLI_ARGS | default "./internal/hub/crdt/"}}
 
   # --- Linting ---
 

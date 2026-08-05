@@ -32,6 +32,12 @@ type memJournal struct {
 	transitions []*leapmuxv1.BatchTransitions
 	dedup       map[string]crdt.RecentBatchRecord
 	commitErr   error
+	// listErr, when set, makes the resume tail read fail hard. Mirrors the
+	// crdt_test fakeJournal's field of the same name; it is what lets a
+	// service-level test drive SubscribeWithACL's ERROR return, which is
+	// otherwise unreachable from here (the ACL resolve filters inaccessible
+	// workspaces rather than rejecting them).
+	listErr error
 }
 
 func newMemJournal() *memJournal { return &memJournal{dedup: map[string]crdt.RecentBatchRecord{}} }
@@ -49,6 +55,9 @@ func (j *memJournal) LoadState(_ context.Context, _ string) (*leapmuxv1.UserCrdt
 func (j *memJournal) ListBatchesAfter(_ context.Context, _ string, cursor, until *leapmuxv1.HLC, maxOps, _ int) ([]crdt.ResumeBatch, []crdt.CorruptRow, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.listErr != nil {
+		return nil, nil, j.listErr
+	}
 	out := []crdt.ResumeBatch{}
 	ops := 0
 	for i, b := range j.batches {

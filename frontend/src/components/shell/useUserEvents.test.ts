@@ -360,6 +360,46 @@ describe('useUserEvents (websocket dispatch)', () => {
     })
   })
 
+  // A NARROWED subscription must present no cursor. The persisted cursor is
+  // per-user, and since the checkpoint seed landed it is cross-tab too, so
+  // replaying one minted under a narrow filter against a wider one can miss ops
+  // -- the hazard SubscribeWithACL documents. Enforcing it here makes the bad
+  // pairing unspellable instead of a comment a future producer of
+  // `allowedWorkspaceIds` has to notice.
+  it('suppresses the resume cursor when the subscription is narrowed by workspace_ids', async () => {
+    await createRoot(async (dispose) => {
+      const [userId] = createSignal('user-narrowed')
+      // Everything the cursor needs is present: populated confirmedState AND a
+      // valid watermark. The ONLY reason it must be withheld is the narrowing.
+      const pending = makeFakePending({
+        populated: true,
+        watermark: { physical: 1754100000000n, logical: 0n, clientId: 'c-w' },
+        epoch: 3n,
+      })
+      let captured: unknown = 'unset'
+      let capturedWorkspaceIds: string[] = []
+      useUserEvents({
+        userId,
+        allowedWorkspaceIds: () => ['w1', 'w2'],
+        activeClient: createActiveClientStore(),
+        pending: () => pending as never,
+        buildWsUrl: (ws, resume) => {
+          captured = resume
+          capturedWorkspaceIds = [...ws]
+          return `ws://test/userevents?w=${ws.join(',')}`
+        },
+      })
+      await flushEffects()
+      expect(captured).toBeNull()
+      // ...and the narrowing itself still reaches the URL. The suppression
+      // reads the SAME accessor value the builder is handed (one read per
+      // connect, not three), so a refactor that decoupled them could silently
+      // drop the filter while this test still saw a null cursor.
+      expect(capturedWorkspaceIds).toEqual(['w1', 'w2'])
+      dispose()
+    })
+  })
+
   it('suppresses the resume cursor when confirmedState is empty even though a watermark exists', async () => {
     // Hydration that found no checkpoint leaves confirmedState empty. Sending a
     // cursor then would make the hub ship a delta the client folds onto empty

@@ -11,9 +11,37 @@ import (
 // TickHousekeeping runs one pass of the dedup-cleanup + epoch-advance
 // + compaction cycle. Identical to what the 60s ticker inside Start
 // triggers; exported so admin tooling and integration tests can force
-// a deterministic pass without waiting on the ticker.
+// a deterministic pass without waiting on the ticker. It returns once the
+// pass has completed, so a caller can assert on its effects.
+//
+// The pass is ROUTED THROUGH the manager goroutine, the same way
+// SeedStateForTest is and for the same reason: both maybeCompact and
+// maybeAdvanceEpoch now PUBLISH a new state generation, and a publish from the
+// caller's goroutine would discard any commit that landed between the clone and
+// the swap. Running inline was tolerable only while the writeback stamped a
+// couple of watermark fields onto whatever generation was live at the time.
+// runOnManagerGoroutine carries the started/stopped/pre-Start negotiation,
+// including why the pre-Start branch is safe only from the registry-factory
+// shape.
+//
+// ctx bounds the JOURNAL WORK, not the wait: it is captured by the closure and
+// consulted by the cleanup/compaction/epoch calls once the goroutine picks the
+// task up. A caller that cancels while the task is still queued (or already
+// running) still blocks until the pass returns. That is deliberate -- the pass
+// publishes a state generation, so abandoning the wait would let the caller
+// proceed against state that is about to change under it -- but it means a
+// deadline'd caller can wait past its deadline if the goroutine is inside a
+// slow submit.
+//
+// After Stop the goroutine has exited and the send falls through to <-m.done,
+// so a post-Stop call returns without running the pass rather than wedging.
+//
+// MUST NOT be called FROM the manager goroutine -- it is a taskCh send, so the
+// goroutine would be waiting on itself. See runOnManagerGoroutine. The 60s
+// ticker inside Start calls the unexported tickHousekeeping instead, for
+// exactly this reason.
 func (m *Manager) TickHousekeeping(ctx context.Context) {
-	m.tickHousekeeping(ctx)
+	m.runOnManagerGoroutine(func() { m.tickHousekeeping(ctx) })
 }
 
 // tickHousekeeping runs dedup-table cleanup, lazy compaction, and
@@ -45,10 +73,14 @@ func (m *Manager) maybeAdvanceEpoch(ctx context.Context) {
 		m.logger.Warn("advance epoch", "err", err)
 		return
 	}
-	m.mu.Lock()
-	m.state.CurrentEpoch = newEpoch
-	m.state.EpochStartedAt = timestamppb.New(m.now())
-	m.mu.Unlock()
+	// PUBLISH a new generation rather than editing the live one: a published
+	// generation is immutable (see commitState), which is what lets a cold
+	// subscriber capture the pointer and build its baseline lock-free. The
+	// entity maps are aliased, so this stays O(1).
+	next := nextStateGeneration(m.state)
+	next.CurrentEpoch = newEpoch
+	next.EpochStartedAt = timestamppb.New(m.now())
+	m.commitState(next)
 }
 
 func (m *Manager) maybeCompact(ctx context.Context) {
@@ -69,9 +101,14 @@ func (m *Manager) maybeCompact(ctx context.Context) {
 		m.mu.RUnlock()
 		return
 	}
-	// Snapshot the in-memory state under the manager mutex so the
-	// compaction walks a stable view.
-	state := CloneState(m.state)
+	// Build the generation this pass will publish. The prune below only ADDS
+	// OR REMOVES map entries -- it never writes a record field -- and the two
+	// watermark stamps are header fields, so copying the maps and sharing the
+	// records is sufficient. A full CloneState here deep-cloned every node, tab,
+	// window and workspace through protobuf reflection on the manager goroutine,
+	// once per tick on any active account, for a pass that then deletes a
+	// handful of entries.
+	state := nextStateGenerationWithOwnMaps(m.state)
 	m.mu.RUnlock()
 
 	// Per-batch dedup rows are already in user_recent_batch_ids when
@@ -130,16 +167,16 @@ func (m *Manager) maybeCompact(ctx context.Context) {
 		m.logger.Warn("compaction", "err", err)
 		return
 	}
-	m.mu.Lock()
-	m.state.CompactionWatermark = HLCClone(state.GetCompactionWatermark())
-	m.state.OpRetentionWatermark = HLCClone(state.GetOpRetentionWatermark())
-	if prunedCount > 0 {
-		// Apply the same prune to the in-memory state under the write
-		// lock so reads after compaction see the pruned shape without
-		// waiting for a journal reload.
-		_ = PruneTombstonesAtOrBelow(m.state, m.state.GetCompactionWatermark())
-	}
-	m.mu.Unlock()
+	// PUBLISH the clone we just persisted, rather than replaying the watermark
+	// writes and the prune onto the live generation. `state` already carries
+	// both watermarks and the pruned shape, and this runs on the manager
+	// goroutine -- the sole writer -- so nothing can have touched m.state
+	// between the CloneState above and here. Publishing is both less code and
+	// the only version that upholds commitState's immutability invariant: the
+	// prune DELETES map entries, and CloneStateForBatch shares untouched maps
+	// across generations, so an in-place prune mutated older generations too --
+	// which a lock-free reader (materializedFromState) would race.
+	m.commitState(state)
 	if prunedCount > 0 {
 		m.logger.Debug("compaction pruned tombstones", "count", prunedCount)
 	}

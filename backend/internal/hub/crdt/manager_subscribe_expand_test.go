@@ -313,3 +313,53 @@ func TestSubscribeWithACL_ResumeFilterImmutableNoRaceWithExpand(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// TestFallbackWithACL_ExpandProceedsDuringBaselineAndStillVisitsUs is the
+// argument for RELEASING subscribeExpandMu before the FALLBACK baseline.
+//
+// The lock is what closes the resolve→register TOCTOU, so it must cover
+// resolve+register -- but not the O(all-entities) baseline that follows, or
+// every cold connect would serialize that user's workspace lifecycle RPCs
+// behind it (and, under a reconnect storm, all of them behind each other).
+//
+// Releasing it is safe because we register FIRST: a concurrent expand
+// therefore SEES the subscriber and widens its filter, and the new workspace's
+// seed batch has an HLC above the captured generation, so it arrives on the
+// live stream. The baseline omitting the new workspace is correct -- it had no
+// pre-existing entities.
+func TestFallbackWithACL_ExpandProceedsDuringBaselineAndStillVisitsUs(t *testing.T) {
+	held, mgr := runHeldBaselineManager(t, 1)
+	seedRootInternal(t, mgr, "w1", "root1")
+
+	cap := &captureSubscriber{}
+	sub := &crdt.Subscriber{UserID: "user-1", Send: cap.send}
+	done := make(chan crdt.SubscribeOutcome, 1)
+	go func() {
+		// Resolves to NOTHING, so only the concurrent expand below can put w1
+		// into this subscriber's filter.
+		out, err := mgr.SubscribeWithACL(context.Background(), sub, nil, 0, func() (map[string]bool, error) {
+			return map[string]bool{}, nil
+		})
+		require.NoError(t, err)
+		done <- out
+	}()
+	held.waitReached(t)
+
+	expandDone := make(chan error, 1)
+	go func() { expandDone <- mgr.ExpandSubscribersForWorkspace(context.Background(), "w1") }()
+	select {
+	case err := <-expandDone:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the expand stalled behind a fallback baseline -- subscribeExpandMu is still held across it")
+	}
+
+	held.unblock()
+	out := <-done
+	defer out.Unsub()()
+
+	assert.True(t, sub.Filter.IsAllowed("w1"),
+		"we registered before the baseline, so the concurrent expand must have visited us")
+	assert.NotContains(t, out.Initial().GetWorkspaces(), "w1",
+		"the baseline is built from the Add-captured filter, which predates the expand")
+}

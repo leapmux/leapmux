@@ -1,8 +1,8 @@
 import type { UserCrdtState } from '~/generated/leapmux/v1/user_crdt_pb'
 import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
 import type { Projection } from '~/lib/crdt'
-import type { CheckpointRecorder, CheckpointRecorderOptions } from '~/lib/crdt/checkpointRecorder'
-import type { HydrationPayload } from '~/lib/crdt/hydrate'
+import type { CheckpointRecorder, CheckpointRecorderOptions, HydratedBase } from '~/lib/crdt/checkpointRecorder'
+import type { HydrationPayload, PersistedBase } from '~/lib/crdt/hydrate'
 import type { createActiveClientStore } from '~/lib/presence/activeClient'
 import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { showWarnToast } from '~/components/common/Toast'
@@ -210,11 +210,18 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
    * Deliberately does NOT reject on timeout: every caller here treats a missing
    * payload as "cold-start", so surfacing the deadline as an error would only
    * route it through a catch that does the same thing.
+   *
+   * `onTimeout` fires when the deadline WINS. It is not decoration: losing the
+   * race does not cancel the promise behind it, and the hydration read now has
+   * a WRITE half (the sibling seed's adoption). Marking the run superseded is
+   * what stops that write landing after the cold start has already rewritten
+   * the checkpoint -- see HydrationOptions.superseded.
    */
-  function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout?: () => void): Promise<T | null> {
     return new Promise<T | null>((resolve) => {
       const timer = setTimeout(() => {
         log.warn('hydration read did not settle; cold-starting', { ms })
+        onTimeout?.()
         resolve(null)
       }, ms)
       promise.then(
@@ -296,6 +303,10 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
     // constructs an empty manager — today's cold-start behavior.
     const hydrateAndInstall = async (): Promise<void> => {
       let payload: HydrationPayload | null = null
+      // Set when the deadline below WINS. Distinct from `cancelled` (which the
+      // effect's own cleanup sets) only in cause; both mean the same thing to
+      // the read: this run's result is no longer wanted, so it must not write.
+      let deadlineMissed = false
       try {
         // RACED against a deadline, not merely try/caught. Every arm that
         // THROWS or REJECTS already lands on the cold-start path -- but a read
@@ -311,8 +322,20 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
         // versionchange in another window), and every in-code path is already
         // closed -- so a timeout is the only remaining defence. Losing the race
         // costs one full snapshot, which is exactly what a cold start does
-        // anyway; the read may still land afterwards and is simply ignored.
-        payload = await withTimeout(loadHydrationState(uid, clientId), HYDRATION_TIMEOUT_MS)
+        // anyway.
+        //
+        // The late read is IGNORED but no longer harmless on its own: seeding
+        // from a sibling WRITES (it adopts that sibling's bytes under our own
+        // owner key), and an adoption landing after this run has cold-started
+        // and begun appending its own op-log ordinals would leave the sibling's
+        // older header over our newer log -- a hole whose replayed batchEnd
+        // frames advance the resume cursor straight past it. `superseded` is
+        // what makes the late read drop its write instead of just its result.
+        payload = await withTimeout(
+          loadHydrationState(uid, clientId, { superseded: () => cancelled || deadlineMissed }),
+          HYDRATION_TIMEOUT_MS,
+          () => { deadlineMissed = true },
+        )
       }
       catch (err) {
         // loadHydrationState is written to never throw. If it ever does, that
@@ -438,19 +461,48 @@ export function useCrdtRuntime(opts: UseCrdtRuntimeOpts): CrdtRuntime {
       void clearOwnerCheckpointAndOpLog(uid, clientId)
       return false
     }
-    // Hand the recorder the frames hydrate() replayed. They are already ON DISK
-    // -- only a checkpoint rewrite truncates the log -- so they seed the frame
-    // counter (starting from 0 would make the threshold measure post-hydration
-    // appends only, and a run of short sessions that each resume via `delta`
-    // grew the persisted log without bound), and they are exactly what moved
-    // the state past the persisted chunks, so they seed the DIRTY SET the next
-    // incremental rewrite works from.
-    installObserverAndManager(mgr, uid, clientId, { frames: payload.frames, nextOrdinal: payload.nextOpLogOrdinal })
+    // Hand the recorder the frames hydrate() replayed -- but ONLY when the base
+    // they sit on is really on disk under this owner's key.
+    //
+    // When it is, they seed the frame counter (starting from 0 would make the
+    // threshold measure post-hydration appends only, and a run of short
+    // sessions that each resume via `delta` grew the persisted log without
+    // bound), and they are exactly what moved the state past the persisted
+    // chunks, so they seed the DIRTY SET the next incremental rewrite works
+    // from.
+    //
+    // When it is NOT -- a sibling seed whose adoption write failed, or one
+    // abandoned because the run was superseded -- the recorder must get NO
+    // base, so its first rewrite is FULL. An incremental one would land a
+    // header plus a handful of shards with nothing underneath, and the next
+    // cold start would hydrate a state silently missing almost every record
+    // with the resume cursor riding on it. The state itself is still correct in
+    // memory, so this tab still resumes; only its persistence restarts.
+    // A promise here is the SEED path deliberately not waiting: its adoption is
+    // still committing, and the recorder holds its appends until it lands
+    // rather than the whole gate holding for it. Mapped, not awaited -- awaiting
+    // would put the wait straight back.
+    //
+    // Written ONCE, as `toBase`, and applied to whichever arm the union turns
+    // out to be: spelling the recorder's base shape separately per arm is how
+    // the two would drift on which fields it carries.
+    const toBase = (settled: PersistedBase | null): HydratedBase | undefined =>
+      settled ? { frames: payload.frames, nextOrdinal: settled.nextOpLogOrdinal } : undefined
+    const base = payload.persistedBase
+    installObserverAndManager(mgr, uid, clientId, base instanceof Promise ? base.then(toBase) : toBase(base))
     // Compact now when the persisted log was truncated, or is already at/over
-    // the threshold. The truncated case is the important one: the poison frame
-    // (or the unreadable/over-cap tail) stays on disk otherwise, so every future
-    // reload replays the same prefix and stops at the same place. Rewriting
-    // pins a fresh checkpoint at the post-replay watermark and drops the log.
+    // the threshold. The truncated case is the important one: whatever cut the
+    // replay short -- an undecodable frame on our own path, or the source's
+    // over-cap tail on the seed path -- leaves the checkpoint pinned further
+    // back than the state we just hydrated, so every future reload replays the
+    // same prefix and stops at the same place. Rewriting pins a fresh
+    // checkpoint at the post-replay watermark and drops the log.
+    //
+    // On the seed path this necessarily lands while the recorder is still
+    // holding for the adoption, so the request is DEFERRED there and re-issued
+    // when the base settles -- see the recorder's `heldRewrite`. It used to be
+    // refused outright, which meant a seeded tab never performed the one repair
+    // this call exists for.
     if (payload.truncated || payload.frames.length >= CHECKPOINT_OP_LOG_THRESHOLD)
       recorder?.rewriteNow()
     return true

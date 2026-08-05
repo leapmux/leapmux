@@ -496,15 +496,37 @@ func completenessCheck(state *leapmuxv1.UserCrdtState, roots rootSet) string {
 		if n.GetKind() == nil {
 			return id
 		}
-		// Non-root nodes must have a parent_id and a position.
+		// Non-root nodes must have a parent_id and a position, and that
+		// parent must itself be LIVE.
 		if n.GetParentId() == "" {
 			// Allowed only when registered as a workspace or
 			// floating-window root.
 			if _, isRoot := roots.roots[id]; !isRoot {
 				return id
 			}
-		} else if n.GetPosition() == nil {
-			return id
+		} else {
+			if n.GetPosition() == nil {
+				return id
+			}
+			// A parent that is tombstoned (or gone entirely) leaves this node
+			// live and unreachable from any registered root -- the same Rule 15
+			// violation the parentless case above rejects, one link down.
+			//
+			// It is not hypothetical. applyLifecycleDelete enumerates a
+			// workspace's entities from a captured generation and only then
+			// submits, so a node created in that window is tombstoned nowhere:
+			// its parent goes, it does not, and nothing ever collects it --
+			// compaction prunes only tombstoned records, and the workspace
+			// record is gone so no later enumeration reaches it. The sibling
+			// race on TABS is already caught here's neighbour
+			// (tabPlacementCheck's full walk rejects a tab over a tombstoned
+			// tile), which is what makes this the right altitude: the two races
+			// then share one mechanism and one recovery -- the batch is
+			// rejected, applyLifecycleDelete returns an error, and the outbox
+			// row is retried against the newer state.
+			if parent, ok := state.GetNodes()[n.GetParentId()]; !ok || !HLCIsZero(parent.GetTombstoneAt()) {
+				return id
+			}
 		}
 		switch n.GetKind().GetValue() {
 		case leapmuxv1.NodeKind_NODE_KIND_SPLIT:

@@ -11,12 +11,24 @@ import { fullCheckpointDelta } from '~/lib/crdt/checkpointChunks'
 import { CHECKPOINT_OP_LOG_THRESHOLD } from '~/lib/crdt/checkpointRecorder'
 import {
   _resetCheckpointStoreForTest,
+  adoptCheckpoint,
+  CHECKPOINT_MAX_OWNERS,
+  CHECKPOINT_TTL_MS,
   readCheckpoint,
+  SEED_CANDIDATE_MAX_AGE_MS,
   writeCheckpointAndTruncateOpLog,
 } from '~/lib/crdt/checkpointStore'
+
 import { createActiveClientStore } from '~/lib/presence/activeClient'
 import { createOpLogAppender } from '~/test-support/opLog'
 import { useCrdtRuntime } from './useCrdtRuntime'
+
+// Partially mocked so ONE case can force the sibling adoption to fail; every
+// other export, adoptCheckpoint included, stays the real implementation.
+vi.mock('~/lib/crdt/checkpointStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/lib/crdt/checkpointStore')>()
+  return { ...actual, adoptCheckpoint: vi.fn(actual.adoptCheckpoint) }
+})
 
 const opLog = createOpLogAppender()
 
@@ -59,12 +71,24 @@ vi.mock('~/lib/crdt/checkpointRecorder', async (importOriginal) => {
   }
 })
 
-const hydrateSpy = vi.hoisted(() => ({ throwOnNextRead: false, hangNextRead: false }))
+const hydrateSpy = vi.hoisted(() => ({
+  throwOnNextRead: false,
+  hangNextRead: false,
+  // The options the runtime actually handed the read, so a test can invoke the
+  // supersession predicate itself. Recorded even on the hang path, which is the
+  // only one that reaches the deadline.
+  lastOpts: undefined as { superseded?: () => boolean } | undefined,
+}))
 vi.mock('~/lib/crdt/hydrate', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/crdt/hydrate')>()
   return {
     ...actual,
-    loadHydrationState: async (userId: string, clientId: string) => {
+    // Signature MIRRORED via Parameters<>, not restated. A hand-written
+    // (userId, clientId) pair silently DROPPED the options argument the moment
+    // loadHydrationState grew one -- which would have disabled the seed's
+    // supersession guard in every test in this file while they all still passed.
+    loadHydrationState: async (...args: Parameters<typeof actual.loadHydrationState>) => {
+      hydrateSpy.lastOpts = args[2]
       if (hydrateSpy.throwOnNextRead) {
         hydrateSpy.throwOnNextRead = false
         throw new Error('hydration read blew up')
@@ -74,7 +98,7 @@ vi.mock('~/lib/crdt/hydrate', async (importOriginal) => {
         // Never settles -- the one shape a try/catch cannot see.
         return new Promise(() => {})
       }
-      return actual.loadHydrationState(userId, clientId)
+      return actual.loadHydrationState(...args)
     },
   }
 })
@@ -91,6 +115,21 @@ async function settle(): Promise<void> {
 }
 
 /**
+ * The supersession predicate the runtime actually handed `loadHydrationState`,
+ * failing loudly if it handed none.
+ *
+ * A function rather than a direct `hydrateSpy.lastOpts` read so the caller gets
+ * the DECLARED type: reading the property in a test body that also assigns to it
+ * lets control-flow analysis narrow it to `undefined`.
+ */
+function handedSupersessionGuard(): () => boolean {
+  const opts = hydrateSpy.lastOpts
+  if (!opts?.superseded)
+    throw new Error('loadHydrationState was called without a supersession guard')
+  return opts.superseded
+}
+
+/**
  * Settle until `until` holds, or give up after a bounded number of turns.
  *
  * Positive assertions ("the gate opened") must poll rather than take a fixed
@@ -102,6 +141,17 @@ async function settle(): Promise<void> {
  */
 async function settleUntil(until: () => boolean): Promise<void> {
   for (let i = 0; i < 200 && !until(); i++)
+    await new Promise(resolve => setTimeout(resolve, 0))
+}
+
+/**
+ * settleUntil for a predicate that must AWAIT (an IDB read, say). Separate
+ * rather than widening settleUntil's type: a sync predicate accidentally passed
+ * to an async-aware loop would be awaited as a non-promise and pass on its
+ * first truthy value, which is the same shape of bug in reverse.
+ */
+async function settleUntilAsync(until: () => Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 200 && !(await until()); i++)
     await new Promise(resolve => setTimeout(resolve, 0))
 }
 
@@ -290,6 +340,54 @@ describe('useCrdtRuntime hydration gate', () => {
     }
   })
 
+  // The WIRING of the supersession guard, which nothing else covers.
+  //
+  // hydrate.test.ts proves the option's own behaviour (superseded() true => no
+  // write). What it cannot see is whether this file ever passes one, or whether
+  // the thing that is supposed to flip it on the deadline is connected: every
+  // other test here runs with cancelled === false and deadlineMissed === false,
+  // so deleting `onTimeout?.()` from withTimeout, dropping its third argument,
+  // or removing `superseded:` from the call left all of them green -- while
+  // reopening the hazard the guard exists for. A late adoption landing after the
+  // cold start has rewritten the checkpoint leaves a hole in the op-log whose
+  // replayed batchEnd frames advance the resume cursor straight past it.
+  it('flips the supersession guard it handed the read once the deadline wins', async () => {
+    vi.useFakeTimers()
+    try {
+      hydrateSpy.hangNextRead = true
+      const { dispose } = mountRuntime(() => 'user-superseded')
+      await vi.advanceTimersByTimeAsync(0)
+
+      const superseded = handedSupersessionGuard()
+      expect(superseded(), 'nothing has superseded the run yet').toBe(false)
+
+      // Past the watchdog deadline: the run is abandoned but NOT cancelled, so
+      // the predicate is the only thing standing between a late seed and a
+      // checkpoint the cold start has already rewritten.
+      await vi.advanceTimersByTimeAsync(10_001)
+      expect(superseded(), 'the deadline must mark the run superseded').toBe(true)
+      dispose()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The other supersession cause: the effect re-running or the owner being
+  // disposed, which must mark the in-flight read superseded even though no
+  // deadline fired.
+  it('flips the supersession guard when the run is disposed mid-read', async () => {
+    hydrateSpy.hangNextRead = true
+    const { dispose } = mountRuntime(() => 'user-disposed')
+    await settle()
+
+    const superseded = handedSupersessionGuard()
+    expect(superseded()).toBe(false)
+
+    dispose()
+    expect(superseded(), 'disposal must mark the run superseded').toBe(true)
+  })
+
   it('keeps the ready gate shut with no user id', async () => {
     const { dispose } = mountRuntime(() => '')
     await settle()
@@ -458,7 +556,9 @@ describe('useCrdtRuntime recorder seeding', () => {
     await settleUntil(() => userEventsSpy.ready!())
 
     const recorder = recorderSpy.instances.at(-1)!
-    expect(recorderSpy.options.at(-1)!.hydratedFrom!.frames).toHaveLength(2)
+    // Awaited because the option is a value on the SELF path and a promise on
+    // the seed path; `await` reads both.
+    expect((await recorderSpy.options.at(-1)!.hydratedFrom)!.frames).toHaveLength(2)
     // Counted, so the threshold measures the WHOLE persisted log, not just
     // post-hydration appends.
     expect(recorder.opLogCount).toBe(2)
@@ -591,5 +691,183 @@ describe('useCrdtRuntime when the hydration chain throws', () => {
     expect(userEventsSpy.ready!()).toBe(true)
     expect(runtime.crdtState()).not.toBeNull()
     dispose()
+  })
+})
+
+// Seeding a NEW tab from a sibling's checkpoint. The runtime's client id is
+// pinned to CLIENT, so a row written under any OTHER id is a sibling's.
+describe('useCrdtRuntime sibling seeding', () => {
+  beforeEach(() => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.stubGlobal('IDBKeyRange', IDBKeyRange)
+    sessionStorageSet(KEY_CLIENT_ID, CLIENT)
+    _resetCheckpointStoreForTest()
+    userEventsSpy.ready = null
+    recorderSpy.options = []
+    recorderSpy.instances = []
+    recorderSpy.failNextConstruction = false
+    hydrateSpy.throwOnNextRead = false
+    hydrateSpy.hangNextRead = false
+  })
+  afterEach(() => {
+    _resetCheckpointStoreForTest()
+    vi.unstubAllGlobals()
+  })
+
+  /** Seed a sibling owner (a client id that is NOT this tab's). */
+  function seedSibling(userId: string, clientId: string, lastSeenAt?: number): Promise<boolean> {
+    return writeCheckpointAndTruncateOpLog(
+      userId,
+      clientId,
+      fullCheckpointDelta(seededState(userId)),
+      WM,
+      1n,
+      lastSeenAt,
+    )
+  }
+
+  it('opens the ready gate with the sibling\'s state when this tab has no checkpoint', async () => {
+    await seedSibling('user-1', 'c-other-tab')
+    const { runtime, dispose } = mountRuntime(() => 'user-1')
+    try {
+      await settleUntil(() => userEventsSpy.ready!())
+      expect(userEventsSpy.ready!()).toBe(true)
+      // Asserting on the STATE, not just the gate: the gate opens on every cold
+      // start too, so it alone cannot tell a seed from a full-snapshot start.
+      expect(runtime.crdtState()!.workspaces['ws-1']).toBeDefined()
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('writes the copy under THIS tab\'s client id and leaves the sibling\'s row', async () => {
+    await seedSibling('user-1', 'c-other-tab')
+    const before = await readCheckpoint('user-1', 'c-other-tab')
+    const { dispose } = mountRuntime(() => 'user-1')
+    try {
+      await settleUntil(() => userEventsSpy.ready!())
+      await settleUntilAsync(async () => (await readCheckpoint('user-1', CLIENT)).status === 'ok')
+
+      expect((await readCheckpoint('user-1', CLIENT)).status).toBe('ok')
+      expect(await readCheckpoint('user-1', 'c-other-tab')).toEqual(before)
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('hands the recorder the seeded base, so its first rewrite is INCREMENTAL', async () => {
+    await seedSibling('user-1', 'c-other-tab')
+    const { dispose } = mountRuntime(() => 'user-1')
+    try {
+      await settleUntil(() => userEventsSpy.ready!())
+      expect(recorderSpy.options.at(-1)!.clientId).toBe(CLIENT)
+
+      // The ready gate does NOT wait for the adoption -- that is the point of
+      // handing the recorder a promise -- so settle until the base lands before
+      // asking what the recorder made of it.
+      await recorderSpy.options.at(-1)!.hydratedFrom
+      await settleUntil(() => !recorderSpy.instances.at(-1)!.needsFullRewrite)
+      expect(recorderSpy.instances.at(-1)!.needsFullRewrite).toBe(false)
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  // THE WIN, pinned: the /ws/userevents connect is gated on `ready`, and `ready`
+  // must not wait out an adoption that writes one row per entity. Before the
+  // recorder learned to hold its own appends, hydrateAndInstall awaited the
+  // whole adopt transaction before opening the gate.
+  it('opens the ready gate while the adoption is still committing', async () => {
+    await seedSibling('user-1', 'c-other-tab')
+    let resolveAdopt: (nextOrdinal: number | null) => void = () => {}
+    vi.mocked(adoptCheckpoint).mockImplementationOnce(
+      () => new Promise<number | null>((resolve) => { resolveAdopt = resolve }),
+    )
+    const { dispose } = mountRuntime(() => 'user-1')
+    try {
+      await settleUntil(() => userEventsSpy.ready!())
+      // Open, with the adoption still in flight.
+      expect(userEventsSpy.ready!()).toBe(true)
+      // ...and the recorder is HOLDING rather than guessing: it has no base yet,
+      // so it must not have decided the chunks are a valid incremental one.
+      expect(recorderSpy.instances.at(-1)!.needsFullRewrite).toBe(true)
+
+      resolveAdopt(1)
+      await settleUntil(() => !recorderSpy.instances.at(-1)!.needsFullRewrite)
+      expect(recorderSpy.instances.at(-1)!.needsFullRewrite).toBe(false)
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  // The write-side half of the corruption policy: an incremental rewrite is
+  // only sound over chunks that are actually on disk.
+  it('gives the recorder NO base when the adoption write did not land', async () => {
+    await seedSibling('user-1', 'c-other-tab')
+    vi.mocked(adoptCheckpoint).mockResolvedValueOnce(null)
+    const { runtime, dispose } = mountRuntime(() => 'user-1')
+    try {
+      await settleUntil(() => userEventsSpy.ready!())
+      // Still hydrated -- the state is correct in memory, so the tab resumes.
+      expect(runtime.crdtState()!.workspaces['ws-1']).toBeDefined()
+      // ...but its persistence restarts from a FULL rewrite.
+      expect(recorderSpy.instances.at(-1)!.needsFullRewrite).toBe(true)
+      // `needsFullRewrite` alone cannot say WHICH: it is `base !== 'ready'`, so
+      // it is equally true while the recorder is still HOLDING -- the sibling
+      // test above asserts exactly that. So pin the discriminating half: the
+      // recorder must be out of the hold and writing. A regression that never
+      // routed the failed adoption into adoptBase would leave it pending
+      // forever -- every append held, nothing persisted for the session -- and
+      // the assertion above would still pass.
+      const recorder = recorderSpy.instances.at(-1)!
+      recorder.rewriteNow()
+      await settleUntilAsync(async () =>
+        (await readCheckpoint('user-1', recorderSpy.options.at(-1)!.clientId)).status === 'ok')
+      const own = await readCheckpoint('user-1', recorderSpy.options.at(-1)!.clientId)
+      expect(own.status).toBe('ok')
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('cold-starts when the only sibling is past the retention window', async () => {
+    await seedSibling('user-1', 'c-other-tab', Date.now() - SEED_CANDIDATE_MAX_AGE_MS - 1)
+    const { runtime, dispose } = mountRuntime(() => 'user-1')
+    try {
+      await settleUntil(() => userEventsSpy.ready!())
+      expect(userEventsSpy.ready!()).toBe(true)
+      // Cold-started: an EMPTY manager, not the sibling's state. (crdtState is
+      // non-null on this path -- the manager exists, it just has nothing in it.)
+      expect(runtime.crdtState()!.workspaces['ws-1']).toBeUndefined()
+      expect(recorderSpy.instances.at(-1)!.needsFullRewrite).toBe(true)
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  // The sweep runs AFTER the adoption, and must not collect the row this tab
+  // just wrote: isLive short-circuits on keepClientId, and `reserved` excludes
+  // it before adding the 1, so it is not double-counted against the cap.
+  it('keeps the freshly seeded row when the post-install sweep runs', async () => {
+    for (let i = 0; i < CHECKPOINT_MAX_OWNERS + 1; i++)
+      await seedSibling('user-1', `c-stale-${i}`, Date.now() - CHECKPOINT_TTL_MS - 1)
+    // One fresh sibling to actually seed from.
+    await seedSibling('user-1', 'c-other-tab')
+
+    const { dispose } = mountRuntime(() => 'user-1')
+    try {
+      await settleUntil(() => userEventsSpy.ready!())
+      await settleUntilAsync(async () => (await readCheckpoint('user-1', CLIENT)).status === 'ok')
+      expect((await readCheckpoint('user-1', CLIENT)).status).toBe('ok')
+    }
+    finally {
+      dispose()
+    }
   })
 })
