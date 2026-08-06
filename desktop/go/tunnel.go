@@ -406,7 +406,12 @@ func (m *TunnelManager) CloseAll() {
 	for _, t := range tunnels {
 		t.close()
 	}
-	slog.Info("all tunnels closed")
+	// Only when there was something to close. CloseAll runs on every disconnect
+	// and every shutdown, so an unconditional line announces a non-event on the
+	// overwhelmingly common path where no tunnel was ever created.
+	if len(tunnels) > 0 {
+		slog.Info("all tunnels closed", "count", len(tunnels))
+	}
 }
 
 // serveSocks5 runs a SOCKS5 server on the tunnel's listener.
@@ -485,7 +490,7 @@ func nextAcceptRetryDelay(current time.Duration) time.Duration {
 // a worse tangle of policy closures. Sharing the timer step alone puts the one subtle
 // bit in one place: the stopped timer (not time.After, which would pin a delay's
 // worth of heap per call when cancel wins -- the ordinary teardown path here, not a
-// rare one; see waitBounded), and advancing the delay only when the wait completed.
+// rare one; see drain.WaitBounded), and advancing the delay only when the wait completed.
 func backoffAfterTemporaryAccept(delay time.Duration, cancel <-chan struct{}) (next time.Duration, cancelled bool) {
 	timer := time.NewTimer(delay)
 	select {

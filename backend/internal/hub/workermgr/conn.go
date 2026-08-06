@@ -273,6 +273,20 @@ func (c *Conn) Fence() {
 	})
 }
 
+// GaveUp reports whether the HUB abandoned this connection's queue -- a write
+// timeout, a blown byte budget, pool pressure -- as opposed to the worker
+// disconnecting on its own.
+//
+// Both end with a closed Done() and make later sends return ErrConnectionClosed,
+// so neither the error value nor the channel can tell them apart. The queue
+// records the cause as it closes (see sendq.Writer.GaveUp), which is early
+// enough for a racing Flush to see it -- the OnGiveUp callback is not.
+// classifyNotifyErr reads this to keep a Hub-side failure from being filed as
+// "the worker had already left".
+func (c *Conn) GaveUp() bool {
+	return c.q.GaveUp()
+}
+
 // EncryptionMode returns the encryption mode cached from the worker's
 // heartbeat. Safe for concurrent use with SetEncryptionMode.
 func (c *Conn) EncryptionMode() leapmuxv1.EncryptionMode {

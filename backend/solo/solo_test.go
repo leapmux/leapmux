@@ -1,15 +1,23 @@
 package solo
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
 // soloLoadOptions builds the options Start would pass, with the config file
@@ -118,17 +126,123 @@ func TestListenIsNonLoopback(t *testing.T) {
 	}
 }
 
+// The literal omits both cancels and both wait groups on purpose: Instance is
+// reachable at its zero value from every shutdown trigger, and a Stop that
+// dereferenced a field Start had not filled in would wedge or panic on the
+// startup failure paths that shut down a half-built instance.
 func TestInstanceStopReturnsHubError(t *testing.T) {
 	wantErr := errors.New("lease release failed")
 	hubDone := make(chan struct{})
 	close(hubDone)
 	inst := &Instance{
-		cancel:  func() {},
 		hubErr:  wantErr,
 		hubDone: hubDone,
 	}
 
 	require.ErrorIs(t, inst.Stop(), wantErr)
+}
+
+// orderLog records a shutdown's steps so their ORDER can be asserted, which is
+// the whole property under test — the Worker's last frames only reach the
+// frontend if the Hub is still up to carry them.
+type orderLog struct {
+	mu    sync.Mutex
+	steps []string
+}
+
+func (o *orderLog) mark(step string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.steps = append(o.steps, step)
+}
+
+func (o *orderLog) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.steps...)
+}
+
+func TestInstanceShutdown_DrainsTheWorkerBeforeStoppingTheHub(t *testing.T) {
+	var order orderLog
+	hubDone := make(chan struct{})
+	close(hubDone)
+
+	workerCancelled := make(chan struct{})
+	inst := &Instance{
+		cancelWorker: func() {
+			order.mark("worker cancelled")
+			close(workerCancelled)
+		},
+		cancelHub: func() { order.mark("hub cancelled") },
+		hubDone:   hubDone,
+	}
+
+	// Stands in for worker.Run: it does not report draining until it has been
+	// cancelled, and its local teardown (the database close) outlives the drain,
+	// exactly as production's does.
+	inst.workerWork.Add()
+	inst.workerDrained.Add()
+	go func() {
+		defer inst.workerWork.Done()
+		<-workerCancelled
+		order.mark("worker drained")
+		inst.workerDrained.Done()
+	}()
+
+	inst.shutdown()
+
+	assert.Equal(t, []string{"worker cancelled", "worker drained", "hub cancelled"}, order.snapshot())
+}
+
+func TestInstanceShutdown_StopsTheHubWhenTheWorkerWillNotDrain(t *testing.T) {
+	orig := workerDrainTimeout
+	workerDrainTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { workerDrainTimeout = orig })
+
+	// Released only in cleanup, so the Worker is still parked when shutdown has
+	// to decide whether to keep waiting for it.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	hubDone := make(chan struct{})
+	close(hubDone)
+	var hubCancelled atomic.Bool
+	inst := &Instance{
+		cancelWorker: func() {},
+		cancelHub:    func() { hubCancelled.Store(true) },
+		hubDone:      hubDone,
+	}
+	inst.workerWork.Add()
+	inst.workerDrained.Add()
+	go func() {
+		defer inst.workerWork.Done()
+		<-release
+	}()
+
+	inst.shutdown()
+
+	assert.True(t, hubCancelled.Load(),
+		"a worker that never reports draining must not keep the hub up past the backstop")
+}
+
+func TestInstanceShutdown_IsIdempotent(t *testing.T) {
+	hubDone := make(chan struct{})
+	close(hubDone)
+	var workerCancels, hubCancels atomic.Int32
+	inst := &Instance{
+		cancelWorker: func() { workerCancels.Add(1) },
+		cancelHub:    func() { hubCancels.Add(1) },
+		hubDone:      hubDone,
+	}
+
+	// Both triggers, twice: Stop, the caller's context and the Hub exiting on
+	// its own all funnel here, and any of them can arrive more than once.
+	inst.shutdown()
+	require.NoError(t, inst.Stop())
+	require.NoError(t, inst.Stop())
+
+	assert.Equal(t, int32(1), workerCancels.Load())
+	assert.Equal(t, int32(1), hubCancels.Load())
 }
 
 // TestDefaultExtraFlagsCarryWorkerScopedKnobs pins that solo's extra flags are the
@@ -184,4 +298,181 @@ func TestParseIntReadsTheStringTypedExtras(t *testing.T) {
 			assert.Equal(t, tt.want, parseInt(tt.in, tt.defaultVal))
 		})
 	}
+}
+
+// stubServeHub swaps the Hub-serving seam for the duration of the test.
+func stubServeHub(t *testing.T, fn func(context.Context, *hub.Server) error) {
+	t.Helper()
+	prev := serveHub
+	serveHub = fn
+	t.Cleanup(func() { serveHub = prev })
+}
+
+// startFailureEnv points Start at a throwaway home with no TCP listener, so it
+// gets all the way to Serve -- which the seam then fails -- instead of dying
+// earlier in hub.NewServer.
+func startFailureEnv(t *testing.T) {
+	t.Helper()
+	locallistentest.SandboxHome(t)
+}
+
+// A Hub that dies WHILE SERVING is surfaced by Start with the "hub serve:"
+// attribution, rather than as the generic WaitReady timeout.
+//
+// The seam is what makes this reachable: hub.NewServer binds both listeners, so
+// the pre-existing version of this test pointed at an unwritable socket path,
+// failed in NewServer, and passed only because "create hub server" happens to
+// contain the substring "hub serve".
+func TestSoloStart_SurfacesAServeTimeFailure(t *testing.T) {
+	startFailureEnv(t)
+	wantErr := errors.New("revocation watcher seed failed")
+	stubServeHub(t, func(context.Context, *hub.Server) error { return wantErr })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	inst, err := Start(ctx, Config{SkipBanner: true, NoTCP: true})
+
+	require.Error(t, err)
+	require.Nil(t, inst)
+	assert.ErrorIs(t, err, wantErr)
+	assert.True(t, strings.HasPrefix(err.Error(), "hub serve:"),
+		"the Serve arm must attribute the failure, not merely mention it; got: "+err.Error())
+}
+
+// A Hub that dies on its way up has exactly ONE reporter: Start, which RETURNS
+// the error. The watcher sees the same hubDone close and must stay quiet, or
+// every failed launch is reported twice.
+func TestSoloStart_DoesNotAlsoLogAServeTimeFailure(t *testing.T) {
+	startFailureEnv(t)
+	stubServeHub(t, func(context.Context, *hub.Server) error {
+		return errors.New("revocation watcher seed failed")
+	})
+
+	// Stderr, not slog.Default(): Start's own logging.Setup installs a fresh
+	// default logger, so a captured handler would be replaced before the line
+	// under test could reach it and this would assert on an empty buffer.
+	var err error
+	out := testutil.CaptureStderr(t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err = Start(ctx, Config{SkipBanner: true, NoTCP: true})
+	})
+
+	require.Error(t, err)
+	assert.NotContains(t, out, "hub error",
+		"the failure Start returns must not also be logged; captured:\n"+out)
+}
+
+// The watcher's OTHER arm: a Hub that dies after Start has handed off. The
+// watcher must run the ordered teardown so the Worker is not left looping
+// against a dead endpoint -- and must still say nothing, because Wait and Stop
+// both hand the error to a caller that waitSolo documents as its single
+// reporter.
+func TestSolo_AHubThatDiesWhileServingTearsTheInstanceDownWithoutReporting(t *testing.T) {
+	startFailureEnv(t)
+
+	wantErr := errors.New("hub died mid-session")
+	serving := make(chan struct{})
+	var killHub atomic.Pointer[context.CancelFunc]
+	stubServeHub(t, func(ctx context.Context, s *hub.Server) error {
+		inner, cancel := context.WithCancel(ctx)
+		killHub.Store(&cancel)
+		close(serving)
+		_ = s.Serve(inner)
+		return wantErr
+	})
+
+	var inst *Instance
+	out := testutil.CaptureStderr(t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		var err error
+		inst, err = Start(ctx, Config{SkipBanner: true, NoTCP: true})
+		require.NoError(t, err, "the Hub must come up before this test can kill it")
+
+		<-serving
+		(*killHub.Load())()
+
+		// Wait returns as hubDone closes, which is also what wakes the watcher,
+		// so join the teardown before reading what it logged.
+		assert.ErrorIs(t, inst.Wait(), wantErr)
+		_ = inst.Stop()
+	})
+
+	assert.NotContains(t, out, "hub error",
+		"Wait/Stop own the report; the watcher must not add a second one; captured:\n"+out)
+}
+
+// The other half of the report gate: an exit somebody ASKED for. Stop hands that
+// error straight back and waitSolo documents itself as its single reporter, so
+// logging it here as well would restore -- at the far end of the lifecycle --
+// exactly the duplicate report startupDone removes for startup.
+func TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop(t *testing.T) {
+	startFailureEnv(t)
+
+	wantErr := errors.New("lease release failed")
+	stubServeHub(t, func(ctx context.Context, s *hub.Server) error {
+		_ = s.Serve(ctx)
+		// The shape of a real teardown cleanup failure: Serve returns non-nil
+		// after an ordinary, requested shutdown.
+		return wantErr
+	})
+
+	var stopErr error
+	out := testutil.CaptureStderr(t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		inst, err := Start(ctx, Config{SkipBanner: true, NoTCP: true})
+		require.NoError(t, err)
+		stopErr = inst.Stop()
+	})
+
+	assert.ErrorIs(t, stopErr, wantErr, "Stop must still hand the error back")
+	assert.NotContains(t, out, "hub error",
+		"an exit Stop asked for must not also be logged; captured:\n"+out)
+}
+
+// The point of the drain signal: the Hub stops as soon as the last frame is
+// away, NOT when the Worker has finished its local teardown. Waiting on the
+// latter held the Hub up for a database close it has no stake in, and reported a
+// slow one as a worker that failed to drain.
+func TestInstanceShutdown_StopsTheHubOnTheDrainNotTheWorkersFullExit(t *testing.T) {
+	orig := workerDrainTimeout
+	workerDrainTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { workerDrainTimeout = orig })
+
+	hubDone := make(chan struct{})
+	close(hubDone)
+	var hubCancelled atomic.Bool
+	workerCancelled := make(chan struct{})
+	inst := &Instance{
+		cancelWorker: func() { close(workerCancelled) },
+		cancelHub:    func() { hubCancelled.Store(true) },
+		hubDone:      hubDone,
+	}
+
+	// Drains promptly, then stays alive far past the backstop -- the shape of a
+	// worker whose database close is slow.
+	teardownDone := make(chan struct{})
+	t.Cleanup(func() { <-teardownDone })
+	releaseTeardown := make(chan struct{})
+	t.Cleanup(func() { close(releaseTeardown) })
+	inst.workerWork.Add()
+	inst.workerDrained.Add()
+	go func() {
+		defer close(teardownDone)
+		defer inst.workerWork.Done()
+		<-workerCancelled
+		inst.workerDrained.Done()
+		<-releaseTeardown
+	}()
+
+	start := time.Now()
+	logs := testutil.CaptureStderr(t, func() { inst.shutdown() })
+
+	assert.True(t, hubCancelled.Load())
+	assert.Less(t, time.Since(start), workerDrainTimeout,
+		"the hub must stop on the drain signal, not wait out the backstop for a teardown it has no stake in")
+	assert.NotContains(t, logs, "did not report draining",
+		"a worker that drained promptly must not be reported as failing to")
 }

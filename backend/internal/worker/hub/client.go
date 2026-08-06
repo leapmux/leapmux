@@ -34,9 +34,6 @@ import (
 // invites a reconnect storm under sustained load, so there is none -- the
 // byte budget alone disconnects a Hub that cannot keep up.
 
-// ErrNotConnected is returned by Send when no Connect stream is active.
-var ErrNotConnected = errors.New("not connected")
-
 // Client manages the connection to the Hub.
 type Client struct {
 	connector  leapmuxv1connect.WorkerConnectorServiceClient
@@ -194,16 +191,47 @@ func (c *Client) TerminalManager() *terminal.Manager {
 // no application-level window of its own, so parking the producer is what makes
 // the upstream source throttle itself. Callers on the shared receive goroutine
 // must use TrySend or TrySendOrReset instead.
+//
+// This is channel.SendFunc, so a send with no live stream returns that
+// interface's sentinel, channel.ErrTransportGone -- which is what lets the
+// layers above tell an ordinary disconnect from a real send failure.
+//
+// A gone transport has TWO doors, and both map to the sentinel. The writer is
+// nil once Connect's teardown defer has cleared it, but for the whole window
+// before that it is still installed and merely CLOSED: sendq's run() closes it
+// via defer the moment connCtx ends, and giveUp closes it on a write timeout or
+// a blown budget. Handlers that snapshotted the writer a moment earlier then get
+// sendq.ErrClosed, which is the same fact ("the connection is gone") wearing the
+// transport's own name -- so it is translated here, at the only layer that knows
+// what a closed writer means, rather than at each log site that has to tell an
+// ordinary disconnect from a fault.
+//
+// ErrOverBudget is deliberately NOT translated: a frame too large to ever fit
+// is a real fault on a live connection, and must keep reporting itself as one.
 func (c *Client) Send(msg *leapmuxv1.ConnectRequest) error {
 	w := c.currentWriter()
 	if w == nil {
-		return ErrNotConnected
+		return channel.ErrTransportGone
 	}
 	if err := w.EnqueueWait(context.Background(), msg); err != nil {
+		if errors.Is(err, sendq.ErrClosed) {
+			return fmt.Errorf("%w: %w", channel.ErrTransportGone, err)
+		}
 		return err
 	}
 	c.markEnqueued()
 	return nil
+}
+
+// sendFailureLevel picks the level for a failed Send: Debug when the connection
+// was on its way out, Warn for a genuine fault. Every reporter of a Send failure
+// asks the channel package the same question, so a new send site cannot quietly
+// reintroduce a per-disconnect alarm.
+func sendFailureLevel(err error) slog.Level {
+	if channel.IsTransportTeardown(err) {
+		return slog.LevelDebug
+	}
+	return slog.LevelWarn
 }
 
 // ShutdownFlushTimeout bounds FlushSends. Generous relative to the work (a
@@ -409,7 +437,7 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 					WorkerTabInventory: tabSync,
 				},
 			}); err != nil {
-				slog.Warn("failed to send workspace tabs sync", "error", err)
+				slog.Log(context.Background(), sendFailureLevel(err), "failed to send workspace tabs sync", "error", err)
 			}
 		}
 	}
@@ -602,7 +630,11 @@ func (c *Client) heartbeatLoop(ctx context.Context) {
 						},
 					},
 				}); err != nil {
-					slog.Warn("heartbeat send failed", "error", err)
+					// Debug when the connection was simply going away: the loop races
+					// its own teardown (select gives no ordering when both ctx.Done
+					// and the tick are ready), so one more heartbeat after the writer
+					// closed is the ORDINARY end of a disconnect, not a fault.
+					slog.Log(context.Background(), sendFailureLevel(err), "heartbeat send failed", "error", err)
 					return
 				}
 			}

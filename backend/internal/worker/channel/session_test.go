@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
+	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1826,6 +1829,95 @@ func TestQueueErrorDoesNotBlockWhenFull(t *testing.T) {
 		t.Fatal("queueError blocked on a full queue")
 	}
 	assert.Len(t, sender.errorSends, errorSendQueueSize, "the queue holds exactly its cap; overflow is dropped")
+}
+
+// TestSendFailureLevel covers the classification that keeps one disconnect from
+// producing one warning per stream that happened to be open when it landed.
+func TestSendFailureLevel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want slog.Level
+	}{
+		{"transport gone", ErrTransportGone, slog.LevelDebug},
+		{"wrapped transport gone", fmt.Errorf("send channel message: %w", ErrTransportGone), slog.LevelDebug},
+		{"send aborted at the gate", channelwire.ErrSendAborted, slog.LevelDebug},
+		{
+			// The channel is healthy and the frame was still lost, so this one
+			// stays a warning -- the whole point of keeping ErrMessageRejected a
+			// separate sentinel is that it is NOT a teardown.
+			name: "message rejected on a live channel",
+			err:  ErrMessageRejected,
+			want: slog.LevelWarn,
+		},
+		{"unclassified failure", errors.New("boom"), slog.LevelWarn},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, sendFailureLevel(tt.err))
+		})
+	}
+}
+
+// TestSendStream_ReportsAGoneTransportAtDebug closes the chain the two tests
+// around it only cover in pieces: the sentinel reaches logSendFailure through
+// a real send, and a disconnect therefore costs a Debug line rather than a
+// warning per stream that was open when it landed.
+//
+// NOT parallel: it swaps the process-global default logger. Go never overlaps
+// a sequential test with a parallel one, so the buffer only sees this test.
+func TestSendStream_ReportsAGoneTransportAtDebug(t *testing.T) {
+	buf := &bytes.Buffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	workerSession, _ := setupTestSessions(t)
+	sender := &boundSender{
+		sender: &channelSender{
+			channelID:      "test-ch",
+			session:        workerSession,
+			sendFn:         func(*leapmuxv1.ConnectRequest) error { return ErrTransportGone },
+			maxReassembled: 1 << 20,
+		},
+		requestID: 10,
+		method:    "WatchEvents",
+	}
+
+	require.Error(t, sender.SendStream(&leapmuxv1.InnerStreamMessage{End: true}))
+
+	out := buf.String()
+	assert.NotContains(t, out, "level=WARN")
+	assert.Contains(t, out, "level=DEBUG")
+	assert.Contains(t, out, "failed to send inner stream message",
+		"the diagnostic itself is kept -- only its level changes")
+	assert.Contains(t, out, "method=WatchEvents",
+		"and it keeps the attributes that make it diagnosable")
+}
+
+// TestSendStream_SurfacesTransportGone pins that the sentinel survives the
+// wrapping sendEncryptedAfter does, which is what sendFailureLevel and
+// service.transportDead both match on.
+func TestSendStream_SurfacesTransportGone(t *testing.T) {
+	t.Parallel()
+
+	workerSession, _ := setupTestSessions(t)
+	cs := &channelSender{
+		channelID:      "test-ch",
+		session:        workerSession,
+		sendFn:         func(*leapmuxv1.ConnectRequest) error { return ErrTransportGone },
+		maxReassembled: 1 << 20,
+	}
+
+	err := cs.sendStream(1, &leapmuxv1.InnerStreamMessage{End: true})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTransportGone)
+	assert.NotErrorIs(t, err, ErrMessageRejected,
+		"a gone transport is not a per-message rejection")
 }
 
 // TestSendEncrypted_OversizedMessageIsRejectedNotFatal pins that the

@@ -1210,3 +1210,44 @@ func TestWriterWriteTimeoutGivesUpUnderHandlerDrain(t *testing.T) {
 	assert.True(t, w.IsClosed(), "give-up must close the queue even while Drain is parked in Write")
 	assert.ErrorIs(t, w.Enqueue(testFrame(2)), ErrClosed)
 }
+
+// GaveUp exists so a caller racing the teardown can tell "the SENDER abandoned
+// this queue" from "the peer went away" -- both of which surface as ErrClosed.
+// The ordering is the contract: the cause must already be readable by the time
+// anything observes the closure, because the OnGiveUp callback fires only after
+// the queue is closed and a Flush racing it would otherwise see a closed writer
+// with no cause attached.
+func TestWriterGaveUpIsReadableBeforeTheClosureIsObservable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Observed from inside the callback: at that point the queue is already
+	// closed, so this is exactly the window a racing caller sees.
+	var gaveUpAtCallback atomic.Bool
+	var w *Writer[*leapmuxv1.ChannelMessage]
+	w = newWriter(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write:         func(context.Context, *leapmuxv1.ChannelMessage) error { return nil },
+		Size:          frameSize,
+		MaxBytes:      testMaxBytes,
+		FrameOverhead: testFrameOverhead,
+		OnGiveUp:      func(GiveUpReason, error) { gaveUpAtCallback.Store(w.GaveUp()) },
+	})
+
+	assert.False(t, w.GaveUp(), "a healthy writer has not given up")
+	w.giveUp(GiveUpWriteError, errors.New("connection reset"))
+
+	assert.True(t, gaveUpAtCallback.Load(),
+		"the cause must be readable by the time the closure is observable")
+	assert.True(t, w.GaveUp())
+	assert.ErrorIs(t, w.Enqueue(testFrame(1)), ErrClosed,
+		"and the closure the caller races is the one GaveUp explains")
+
+	// An ordinary Close is NOT a give-up: conflating them would report every
+	// clean disconnect as the sender's fault.
+	clean := newWriter(ctx, Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error { return nil },
+		Size:  frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+	})
+	clean.Close()
+	assert.False(t, clean.GaveUp(), "a clean Close is not a give-up")
+}

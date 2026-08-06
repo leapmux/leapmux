@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -95,13 +97,6 @@ func TestNotifyShutdownAndFence_CustomRetryDelay(t *testing.T) {
 	assert.Equal(t, int32(30), payload.HubShuttingDown.GetRetryDelaySeconds())
 }
 
-func TestNotifyShutdownAndFence_NoWorkers(t *testing.T) {
-	m := New(DenyAllReach())
-	ctx, cancel := boundedNotifyCtx(t)
-	defer cancel()
-	m.NotifyShutdownAndFence(ctx, 10)
-}
-
 func TestNotifyShutdownAndFence_ContinuesOnSendError(t *testing.T) {
 	m := New(DenyAllReach())
 
@@ -128,11 +123,20 @@ func TestNotifyShutdownAndFence_ContinuesOnSendError(t *testing.T) {
 
 	ctx, cancel := boundedNotifyCtx(t)
 	defer cancel()
-	m.NotifyShutdownAndFence(ctx, 10)
+	logs := testutil.CaptureDefaultLogger(t)
+	got := m.NotifyShutdownAndFence(ctx, 10)
 
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, 2, sendCount, "should attempt to send to all workers even on error")
+	// The Failed bucket and its warning are the ONE operator-facing signal in
+	// this function -- "the Hub could not tell a live worker" -- and a write
+	// error is the way to reach them. Asserted here because a broken transport
+	// fences the conn on its way out, so without the give-up latch this reports
+	// as the worker having left and the warning silently becomes a Debug line.
+	assert.Equal(t, ShutdownNotifyResult{Delivered: 1, Failed: 1, Total: 2}, got)
+	assert.Contains(t, logs.String(), "failed to send shutdown notification to worker")
+	assert.Contains(t, logs.String(), "level=WARN")
 }
 
 func TestNotifyShutdownAndFence_FencesConnectionsAfterDelivering(t *testing.T) {
@@ -443,13 +447,195 @@ func TestNotifyShutdownAndFence_CountsOnlyFramesThatReachedTheWire(t *testing.T)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	m.NotifyShutdownAndFence(ctx, 10)
+	got := m.NotifyShutdownAndFence(ctx, 10)
 	<-started
 
 	// Only the drained conn's write completed inside the budget; the parked
-	// one is still mid-write when Flush times out. NotifySuccess counts
-	// frames that reached the wire — drained succeeded, parked did not.
+	// one is still mid-write when Flush times out. The tally counts frames that
+	// reached the wire — drained succeeded, parked did not.
 	assert.Equal(t, int32(1), wrote.Load(), "only the drained conn's notification reached the wire")
+	// Total is what was ATTEMPTED, so it stays 2 while the parked conn's own
+	// outcome never lands: the deadline arm returns without collecting it.
+	assert.Equal(t, ShutdownNotifyResult{Delivered: 1, Total: 2}, got)
+}
+
+// classifyNotifyErr is where "already gone" is told apart from "could not
+// reach a live worker". Every Hub-side cause converges on the same observable
+// state as a worker leaving -- a closed Done(), ErrConnectionClosed from later
+// sends -- so the table's job is to pin that each one is still reported as the
+// Hub's fault.
+func TestClassifyNotifyErr(t *testing.T) {
+	liveConn := func(t *testing.T) *Conn {
+		t.Helper()
+		conn, _ := newTestConn(t, "live", nil, nil)
+		return conn
+	}
+	fencedConn := func(t *testing.T) *Conn {
+		t.Helper()
+		conn, _ := newTestConn(t, "fenced", nil, nil)
+		conn.Fence()
+		return conn
+	}
+	// The Hub reclaiming a worker whose transport broke: driven through a real
+	// write failure rather than by setting a flag, because the ordering IS the
+	// subject -- the queue must record the cause early enough for the Flush that
+	// races it to see one, and the give-up callback alone fires too late.
+	gaveUpConn := func(t *testing.T) *Conn {
+		t.Helper()
+		conn, pump := newTestConn(t, "gave-up", func(*leapmuxv1.ConnectResponse) error {
+			return fmt.Errorf("connection reset")
+		}, nil)
+		pumpStart(t, pump, conn)
+		require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{}))
+		ctx, cancel := boundedNotifyCtx(t)
+		defer cancel()
+		_ = conn.Flush(ctx)
+		require.True(t, conn.GaveUp(), "fixture must model a queue the Hub gave up on")
+		return conn
+	}
+	expired := func(t *testing.T) context.Context {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx
+	}
+
+	tests := []struct {
+		name string
+		conn func(*testing.T) *Conn
+		// callerCtx is the broadcast's own budget; nil means a live one.
+		callerCtx func(*testing.T) context.Context
+		err       error
+		want      notifyOutcome
+	}{
+		{name: "delivered", conn: liveConn, want: notifyDelivered},
+		{name: "queue closed", conn: liveConn, err: ErrConnectionClosed, want: notifyAlreadyGone},
+		{
+			// The give-up path: same error a departed worker produces, but the
+			// Hub abandoned this queue (write timeout / blown budget / pool
+			// pressure). Filing it as "already gone" would hide the one thing an
+			// operator can act on.
+			name: "hub gave up on the queue",
+			conn: gaveUpConn,
+			err:  ErrConnectionClosed,
+			want: notifyFailed,
+		},
+		{
+			// The deferred FenceAll closes Done() on the deadline path while the
+			// per-conn goroutines are still classifying, so past the caller's
+			// budget Done() is a channel the Hub closed itself.
+			name:      "caller budget expired against a fenced conn",
+			conn:      fencedConn,
+			callerCtx: expired,
+			err:       context.Canceled,
+			want:      notifyFailed,
+		},
+		{
+			// SendControl fences before returning this, so the conn IS done --
+			// and classifying on that alone would report the Hub overrunning its
+			// own control reserve as the worker having left.
+			name: "control saturated on a conn its own refusal fenced",
+			conn: fencedConn,
+			err:  ErrControlSaturated,
+			want: notifyFailed,
+		},
+		{
+			// What Flush surfaces when the worker's stream died mid-notification:
+			// the CONN's context error, indistinguishable by value from the
+			// caller's own budget expiring. Done() is what tells them apart.
+			name: "conn context cancelled",
+			conn: fencedConn,
+			err:  context.Canceled,
+			want: notifyAlreadyGone,
+		},
+		{
+			// Same error value, live conn: the Hub's 2s budget ran out while the
+			// worker was still there to hear it.
+			name: "caller deadline on a live conn",
+			conn: liveConn,
+			err:  context.DeadlineExceeded,
+			want: notifyFailed,
+		},
+		{name: "unclassified error on a live conn", conn: liveConn, err: fmt.Errorf("boom"), want: notifyFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callerCtx := context.Background()
+			if tt.callerCtx != nil {
+				callerCtx = tt.callerCtx(t)
+			}
+			assert.Equal(t, tt.want, classifyNotifyErr(callerCtx, tt.conn(t), tt.err))
+		})
+	}
+}
+
+func TestNotifyShutdownAndFence_ConnGoneMidNotificationIsNotAFailure(t *testing.T) {
+	m := New(DenyAllReach())
+	logs := testutil.CaptureDefaultLogger(t)
+
+	conn, _ := newTestConn(t, "gone", nil, nil)
+	_, _ = m.Register(conn)
+	// No pump, so the queued notification can never drain and Flush has to
+	// escape through the conn's own context -- which is the shape of a worker
+	// that closed its Connect stream while the Hub was mid-broadcast.
+	conn.cancel()
+
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+	got := m.NotifyShutdownAndFence(ctx, 10)
+
+	assert.Equal(t, ShutdownNotifyResult{AlreadyGone: 1, Total: 1}, got,
+		"a worker that left before the Hub could speak is not a delivery failure")
+	assert.NotContains(t, logs.String(), "level=WARN",
+		"an ordinary co-shutdown must not be reported as a fault")
+	assert.Contains(t, logs.String(), "worker disconnected before the shutdown notification",
+		"it is still worth saying at Debug, so a real disappearance stays diagnosable")
+}
+
+func TestNotifyShutdownAndFence_FencedConnIsAlreadyGone(t *testing.T) {
+	m := New(DenyAllReach())
+
+	conn, _ := newTestConn(t, "fenced", nil, nil)
+	_, _ = m.Register(conn)
+	conn.Fence()
+
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+	got := m.NotifyShutdownAndFence(ctx, 10)
+
+	assert.Equal(t, ShutdownNotifyResult{AlreadyGone: 1, Total: 1}, got)
+}
+
+func TestNotifyShutdownAndFence_ReportsMixedOutcomes(t *testing.T) {
+	m := New(DenyAllReach())
+
+	live, livePump := newTestConn(t, "live", nil, nil)
+	pumpStart(t, livePump, live)
+	_, _ = m.Register(live)
+
+	gone, _ := newTestConn(t, "gone", nil, nil)
+	_, _ = m.Register(gone)
+	gone.cancel()
+
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+	got := m.NotifyShutdownAndFence(ctx, 10)
+
+	assert.Equal(t, ShutdownNotifyResult{Delivered: 1, AlreadyGone: 1, Total: 2}, got)
+}
+
+// With an ordered solo teardown the Worker is gone before the Hub starts
+// shutting down, which makes "no workers connected" the NORMAL case -- and a
+// summary of nothing is the sort of line this whole change exists to remove.
+func TestNotifyShutdownAndFence_SaysNothingWhenNoWorkerIsConnected(t *testing.T) {
+	m := New(DenyAllReach())
+	logs := testutil.CaptureDefaultLogger(t)
+
+	ctx, cancel := boundedNotifyCtx(t)
+	defer cancel()
+
+	assert.Equal(t, ShutdownNotifyResult{}, m.NotifyShutdownAndFence(ctx, 10))
+	assert.Empty(t, logs.String())
 }
 
 func TestNotifyShutdownAndFence_FencesAfterTheNotificationDrains(t *testing.T) {

@@ -19,6 +19,8 @@ import (
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 type blockingWriteCloser struct {
@@ -389,12 +391,12 @@ func TestDrainHandlersSharesOneBudgetAcrossBothPhases(t *testing.T) {
 
 	// A handler that ignores sessionCtx entirely: it outlives any budget, so the
 	// drain must be bounded by the budget rather than by the handler.
-	var handlers waitCounter
-	handlers.add()
+	var handlers drain.Counter
+	handlers.Add()
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	go func() {
-		defer handlers.done()
+		defer handlers.Done()
 		<-release
 	}()
 
@@ -412,7 +414,7 @@ func TestDrainHandlersSharesOneBudgetAcrossBothPhases(t *testing.T) {
 // side of the #297 reproducer -- the path the leak was actually reported on
 // (one timed-out handler drain per webview reconnect in dev-socket mode).
 // drain_test.go's TestDrainDoesNotLeakWaiterOnAbandonedStraggler covers the
-// operationGate side; both drains share waitCounter today, but only a per-path
+// operationGate side; both drains share drain.Counter today, but only a per-path
 // test catches a future divergence that reintroduces a spawn-waiter on one
 // side alone.
 func TestDrainHandlersDoesNotLeakWaiterOnAbandonedStraggler(t *testing.T) {
@@ -430,12 +432,12 @@ func TestDrainHandlersDoesNotLeakWaiterOnAbandonedStraggler(t *testing.T) {
 	// A handler that never returns until Cleanup: every drain against it times
 	// out and abandons it, exactly the straggler that leaked one parked waiter
 	// per drain pre-fix.
-	var handlers waitCounter
-	handlers.add()
+	var handlers drain.Counter
+	handlers.Add()
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	go func() {
-		defer handlers.done()
+		defer handlers.Done()
 		<-release
 	}()
 
@@ -1018,7 +1020,7 @@ func TestRPCSessionDrainAbandonsHandlerIgnoringSessionContext(t *testing.T) {
 
 // The post-interrupt drain phase must actually WAIT on the interrupt it just issued.
 //
-// waitBounded only returns false once its timer has fired, so reaching the interrupt
+// drain.WaitBounded only returns false once its timer has fired, so reaching the interrupt
 // on the clean path means the shared budget is spent by construction. Without
 // interruptGrace phase 2 is one non-blocking look at `done` -- which a handler the
 // interrupt just unblocked cannot win in the microseconds it needs to unwind -- so
@@ -1034,11 +1036,11 @@ func TestDrainHandlersJoinsHandlerReleasedByTheInterrupt(t *testing.T) {
 	writer := newBlockingWriteCloser()
 	session := NewRPCSession(app, bytes.NewReader(nil), writer, nil)
 
-	var handlers waitCounter
-	handlers.add()
+	var handlers drain.Counter
+	handlers.Add()
 	var finished atomic.Bool
 	go func() {
-		defer handlers.done()
+		defer handlers.Done()
 		// Blocked writing its response to a peer that stopped reading: exactly the
 		// handler interruptWriter exists to release.
 		session.writeOK(1)

@@ -19,6 +19,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
 // TestNew_DispatchesOnURLScheme verifies the scheme-dispatch branches in
@@ -493,6 +494,47 @@ func TestHandleMessage_WorkerIdentity_SetsIdentityReceivedFlag(t *testing.T) {
 	})
 	assert.True(t, c.identityReceived.Load(),
 		"identityReceived must be set when WorkerIdentity arrives")
+}
+
+// A Client with no live Connect stream must report the sentinel the channel
+// layer classifies on, not an anonymous error: every handler holding an open
+// stream tries one last frame as the connection unwinds, and Send is where that
+// attempt learns there is nothing left to send on.
+func TestClientSendReturnsTransportGoneWhenNotConnected(t *testing.T) {
+	c := &Client{}
+	require.Nil(t, c.currentWriter(), "fixture must model a client that never connected")
+
+	err := c.Send(heartbeatMsg())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, channel.ErrTransportGone)
+}
+
+// TestClientSendReportsAClosedWriterAsTransportGone covers the OTHER door into
+// a gone transport, and the one a disconnect actually walks through: the writer
+// is still installed (Connect's teardown defer clears it only later) but sendq
+// has already closed it. Without the translation this returns a bare
+// sendq.ErrClosed, which sendFailureLevel does not recognise -- so every handler
+// holding an open stream logs a warning on an ordinary reconnect.
+func TestClientSendReportsAClosedWriterAsTransportGone(t *testing.T) {
+	writer := sendq.NewUnstarted(context.Background(), sendq.Config[*leapmuxv1.ConnectRequest]{
+		Write:          func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
+		Size:           func(m *leapmuxv1.ConnectRequest) int { return proto.Size(m) },
+		MaxBytes:       sendq.DefaultMaxBytes,
+		ControlReserve: sendq.DefaultControlReserve,
+		FrameOverhead:  sendq.DefaultFrameOverhead,
+	})
+	writer.Close()
+
+	c := &Client{writer: writer}
+	require.NotNil(t, c.currentWriter(), "fixture must model an INSTALLED writer, not the nil-writer path")
+
+	err := c.Send(heartbeatMsg())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, channel.ErrTransportGone,
+		"a closed writer is the same 'the connection is gone' fact as a nil one")
+	assert.ErrorIs(t, err, sendq.ErrClosed, "the underlying cause stays inspectable")
 }
 
 func heartbeatMsg() *leapmuxv1.ConnectRequest {

@@ -120,16 +120,7 @@ func (a *App) Shutdown() error {
 		} else {
 			slog.Warn("desktop sidecar: transition gate not acquired during shutdown; tearing down without it")
 		}
-		// disconnectLocked tears down relays/tunnels/proxy under the lifecycle
-		// write lock and hands back the solo runtime; stopSolo runs OUTSIDE the
-		// lock so the Hub's full graceful shutdown does not wedge every
-		// SidecarInfo/ProxyHTTP reader behind a write lock.
-		a.lifecycleMu.Lock()
-		soloRuntime := a.disconnectLocked()
-		a.lifecycleMu.Unlock()
-		if soloRuntime != nil {
-			a.shutdownErr = errors.Join(a.shutdownErr, stopSolo(soloRuntime))
-		}
+		a.shutdownErr = errors.Join(a.shutdownErr, a.disconnectAndStopSolo())
 	})
 	return a.shutdownErr
 }
@@ -139,7 +130,7 @@ func (a *App) Shutdown() error {
 // straggler that ignores a.ctx (a non-cancellable editor launch or filesystem
 // scan) is abandoned after the timeout; those operations touch only their own
 // subsystem (the editor registry, OS settings), never the connection state
-// disconnectLocked destroys, so proceeding is safe.
+// disconnectAndStopSolo destroys, so proceeding is safe.
 func (a *App) drainOperations(timeout time.Duration) {
 	a.ops.drain(timeout,
 		"desktop sidecar: operation drain timed out during shutdown; abandoning in-flight operations")
@@ -540,31 +531,106 @@ func (a *App) SwitchMode() (lifecycleOutcome, error) {
 	if err := a.updateConfig(clearDesktopMode); err != nil {
 		return lifecycleOutcome{}, fmt.Errorf("save cleared desktop mode: %w", err)
 	}
-	a.lifecycleMu.RLock()
-	connection := a.connection
-	a.lifecycleMu.RUnlock()
-	if connection != nil {
-		connection.stop()
-	}
-	a.lifecycleMu.Lock()
-	soloRuntime := a.disconnectLocked()
-	a.lifecycleMu.Unlock()
-	stopErr := stopSolo(soloRuntime)
-	if stopErr != nil {
+	if stopErr := a.disconnectAndStopSolo(); stopErr != nil {
 		return lifecycleOutcome{cleanupErrors: []error{fmt.Errorf("stop solo mode: %w", stopErr)}}, nil
 	}
 	return lifecycleOutcome{}, nil
 }
 
-// disconnectLocked tears down the current connection's relays, tunnels, and
-// proxy under the lifecycle write lock and returns the solo runtime so the
-// caller can stop it OUTSIDE the lock. stopSolo blocks for the Hub's full
-// graceful shutdown; holding lifecycleMu across it would wedge every
-// SidecarInfo/ProxyHTTP/SendChannelMessage reader for that window -- the same
-// wedge the start path already releases the lock to avoid. Caller holds
-// lifecycleMu for writing; it is still held on return.
-func (a *App) disconnectLocked() *soloRuntime {
+// disconnectAndStopSolo tears the current connection down in the order the
+// Worker's last frames need, and returns any error stopping the solo runtime.
+//
+// The Worker's shutdown ends with a broadcast the frontend has to receive -- the
+// terminal "[Worker disconnected - Press Enter to restart]" notice -- and that
+// broadcast travels Worker -> Hub -> channel relay -> webview. So the relays
+// cannot be part of the same breath that stops the Hub: closing them first, as
+// this used to, guaranteed the notice was written to a transport that no longer
+// had a far end. Hence three phases rather than two:
+//
+//	A. under the lock: CLAIM the connection and drop IDLE proxy connections
+//	B. outside the lock: stop the solo runtime (Worker drains, then the Hub)
+//	C. under the lock: end the connection's lifetime, close the relays and tunnels
+//
+// B stays outside lifecycleMu because it blocks for the Hub's full graceful
+// shutdown, and holding the write lock across it would wedge every
+// SidecarInfo/ProxyHTTP/SendChannelMessage reader for that window.
+//
+// What makes the ordering real is WHERE the connection context is cancelled, not
+// which function runs first: every relay's lifetime is a child of it, so phase A
+// cancelling it force-closed the very read loop phase B was waiting to let the
+// farewell through. That cancel is phase C's job now, and connectionCtx is
+// detached from a.ctx so Shutdown's own cancel cannot do it early either.
+func (a *App) disconnectAndStopSolo() error {
+	connection, finish := a.beginDisconnect()
+	// Phase C runs on every path out, including a panic in stopSolo: phase A has
+	// already claimed the connection, so nothing else will ever finish it.
+	defer finish()
+
+	var runtime *soloRuntime
+	if connection != nil {
+		runtime = connection.solo
+	}
+	// Not skipped on error: a solo runtime that failed to stop still leaves
+	// relays and tunnels pointing at a Hub that is going away, and callers
+	// (Shutdown, SwitchMode) rely on the connection being gone either way.
+	return stopSolo(runtime)
+}
+
+// beginDisconnect is phase A of the teardown (see disconnectAndStopSolo):
+// everything that must happen BEFORE the Hub stops. It returns the claimed
+// connection and the finisher that runs phase C.
+//
+// Returning the finisher rather than exporting a second *Locked half puts the
+// ordering in the signature, the way acquireLifecycleLock and
+// commitSoloConnection's returned rollback already do here: phase C cannot run
+// first, cannot be skipped, and cannot run without phase A.
+//
+// It deliberately leaves the relays and the tunnels in place -- the Worker's
+// farewell broadcast still has to travel through them.
+func (a *App) beginDisconnect() (*desktopConnection, func()) {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+
 	connection := a.connection
+	// CLAIMED under the same lock that read it. The two-phase teardown this
+	// replaced unlinked it here for the same reason; deferring that to phase C
+	// let a Shutdown which gave up on the transition gate hand a concurrent
+	// SwitchMode's runtime to a second stopSolo, where it parked forever in
+	// Instance.Stop's unbounded Worker join and wedged main's deferred exit.
+	// Unlinking here also keeps SidecarInfo and openRelay reporting "not
+	// connected" for the whole stop window, as they did before the split.
+	a.connection = nil
+	finish := func() { a.finishDisconnect(connection) }
+	if connection == nil {
+		return nil, finish
+	}
+	// Drop idle proxy connections before stopping the Hub so they don't pin
+	// named-pipe handles open across solo.Stop() and block the next ListenPipe.
+	// IDLE is the operative word, and why this belongs in phase A rather than
+	// with the relays: it closes connections nobody is using, so it cannot cut
+	// short the traffic phase B is waiting to let through.
+	if connection.proxy != nil {
+		connection.proxy.client.CloseIdleConnections()
+		if connection.proxy.wsClient != nil {
+			connection.proxy.wsClient.CloseIdleConnections()
+		}
+	}
+	return connection, finish
+}
+
+// finishDisconnect is phase C of the teardown (see disconnectAndStopSolo): the
+// connection's lifetime and its transports, now that the Hub they carried has
+// stopped and there is nothing left to deliver.
+func (a *App) finishDisconnect(connection *desktopConnection) {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+
+	// The connection's lifetime ends HERE. openRelay parents every relay context
+	// on it and coder/websocket force-closes a socket whose context is
+	// cancelled, so cancelling it any earlier retires the read loop that carries
+	// the Worker's "[Worker disconnected - Press Enter to restart]" notice to the
+	// webview -- silently, since readLoop returns without emitting once its
+	// context is done.
 	if connection != nil {
 		connection.stop()
 	}
@@ -572,22 +638,24 @@ func (a *App) disconnectLocked() *soloRuntime {
 	// so no successor relay is installed and the detached read-loop goroutines
 	// self-clean once their force-closed sockets error out. Draining here would
 	// freeze every lifecycle reader for relayDrainTimeout (see wsRelay.detach).
-	_ = a.closeChannelRelay()
-	_ = a.closeUserEventsRelay()
+	_ = closeChannelRelayOn(connection)
+	_ = closeUserEventsRelayOn(connection)
 	a.tunnels.CloseAll()
-	// Drop idle proxy connections before stopping the Hub so they don't pin
-	// named-pipe handles open across solo.Stop() and block the next ListenPipe.
-	if connection != nil && connection.proxy != nil {
-		connection.proxy.client.CloseIdleConnections()
-		if connection.proxy.wsClient != nil {
-			connection.proxy.wsClient.CloseIdleConnections()
-		}
-	}
-	a.connection = nil
-	if connection == nil {
-		return nil
-	}
-	return connection.solo
+}
+
+// newConnectionContext derives a connection's lifetime from the App's. It is the
+// ONE place that decides how the two relate, so the tests that pin the teardown
+// ordering build their fixtures through it rather than restating the rule.
+//
+// DETACHED from a.ctx (values kept, cancellation not). Shutdown cancels a.ctx as
+// its very first act, and every relay's context is a child of this one -- so an
+// attached lifetime force-closed the relays at t=0, before the ordered teardown
+// had stopped anything, and the Worker's farewell had nowhere to land. The
+// connection is ended deliberately instead, by finishDisconnect, once the Hub is
+// down. A Shutdown racing a connect is still caught by the post-start
+// rejectIfShuttingDown re-validation, which rolls the started Hub back.
+func (a *App) newConnectionContext() (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.WithoutCancel(a.ctx))
 }
 
 func connectionHubURL(connection *desktopConnection) string {
@@ -622,7 +690,7 @@ func (a *App) ConnectSolo(ctx context.Context) error {
 		a.lifecycleMu.Unlock()
 		return err
 	}
-	connectionCtx, connectionStop := context.WithCancel(a.ctx)
+	connectionCtx, connectionStop := a.newConnectionContext()
 	stopRequestCancellation := context.AfterFunc(ctx, connectionStop)
 	defer stopRequestCancellation()
 	a.lifecycleMu.Unlock()
@@ -765,7 +833,7 @@ func (a *App) ConnectDistributed(ctx context.Context, hubURL string) error {
 	}); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
-	connectionCtx, connectionStop := context.WithCancel(a.ctx)
+	connectionCtx, connectionStop := a.newConnectionContext()
 	if err := connectionCtx.Err(); err != nil {
 		return a.rollbackDistributed(err, connectionStop)
 	}
@@ -804,7 +872,10 @@ func (a *App) CreateTunnel(requestCtx context.Context, config TunnelConfig) (*Tu
 	}
 	config.HubURL = connection.proxy.baseURL
 	lifetimeCtx := connection.ctx
-	a.lifecycleMu.RUnlock()
+	// The returned unlock, not a bare RUnlock: mixing the two here is what
+	// acquireLifecycleRLock's doc says the helper exists to prevent, and a
+	// future change that wraps the unlock would reach only one of the paths.
+	unlock()
 
 	operationCtx, cancelOperation := ctxutil.WithLinkedCancel(lifetimeCtx, requestCtx)
 	defer cancelOperation()

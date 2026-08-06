@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -983,6 +985,44 @@ func TestReplaySink_KeepsGoingWhenOneMessageIsRejected(t *testing.T) {
 // whether to retire a subscription; the replay sink uses it to decide
 // whether to abandon a catch-up burst. Getting either wrong is silent:
 // too eager deafens a live client, too lax keeps shipping into the void.
+// broadcast reports its OWN line for a send failure that boundSender.SendStream
+// has already logged. When that line was an unconditional Warn, one disconnect
+// cost one WARN per open watcher -- the same per-stream noise the level
+// classification exists to remove, just under different message text.
+//
+// The two halves are asserted together because the fix is not "log less": a
+// transport error on a LIVE connection is still a fault worth warning about,
+// and transportDead answers true for BOTH, which is why the level has to come
+// from the teardown classifier instead.
+func TestBroadcast_ReportsATornDownTransportAtDebugAndARealFaultAtWarn(t *testing.T) {
+	t.Run("teardown", func(t *testing.T) {
+		logs := testutil.CaptureDefaultLogger(t)
+		r := newWatcherRegistry()
+		w := &mockResponseWriter{channelID: "ch-1"}
+		w.failSends(fmt.Errorf("send channel message: %w", channel.ErrTransportGone))
+		r.setWatches("ch-1", []watchEntry{{id: "e-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+
+		r.broadcast("e-1", &leapmuxv1.WatchEventsResponse{}, classContent)
+
+		assert.Contains(t, logs.String(), "broadcast: SendStream failed")
+		assert.NotContains(t, logs.String(), "level=WARN",
+			"a disconnect must not cost one warning per open watcher")
+	})
+
+	t.Run("real fault", func(t *testing.T) {
+		logs := testutil.CaptureDefaultLogger(t)
+		r := newWatcherRegistry()
+		w := &mockResponseWriter{channelID: "ch-1"}
+		w.failSends(fmt.Errorf("write: connection reset"))
+		r.setWatches("ch-1", []watchEntry{{id: "e-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, w)
+
+		r.broadcast("e-1", &leapmuxv1.WatchEventsResponse{}, classContent)
+
+		assert.Contains(t, logs.String(), "level=WARN",
+			"a transport error on a live connection is still a fault")
+	})
+}
+
 func TestTransportDead_ClassifiesEachFailureKind(t *testing.T) {
 	t.Parallel()
 
@@ -991,6 +1031,8 @@ func TestTransportDead_ClassifiesEachFailureKind(t *testing.T) {
 		"a refused message leaves the channel healthy")
 	assert.False(t, transportDead(fmt.Errorf("bad envelope: %w", errEventNotMarshalable)),
 		"an unencodable envelope never reached the transport")
+	assert.True(t, transportDead(fmt.Errorf("send channel message: %w", channel.ErrTransportGone)),
+		"a gone Hub connection is the commonest way a subscription ends")
 	assert.True(t, transportDead(errors.New("stream closed")),
 		"anything else means further sends are pointless")
 }

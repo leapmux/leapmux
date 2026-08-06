@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/util/ctxutil"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 const (
@@ -149,7 +150,7 @@ func drainRelay(done <-chan struct{}) {
 	if done == nil {
 		return
 	}
-	waitBounded(done, relayDrainTimeout, "relay read loop did not drain during close")
+	drain.WaitBounded(done, relayDrainTimeout, "relay read loop did not drain during close")
 }
 
 // emitClose cancels the relay's lifetime, then emits a close event built from
@@ -490,7 +491,15 @@ func (a *App) closeRelayIfOwner(relayID uint64, getRelay func(*desktopConnection
 // only entry a frontend wrapper can reach.
 func (a *App) closeChannelRelay() <-chan struct{} {
 	// Caller holds a.lifecycleMu for writing.
-	connection := a.connection
+	return closeChannelRelayOn(a.connection)
+}
+
+// closeChannelRelayOn is closeChannelRelay against an EXPLICIT connection, for
+// the teardown that has already claimed it out of the App (see beginDisconnect)
+// and so can no longer reach it through a.connection.
+//
+// Caller holds a.lifecycleMu for writing.
+func closeChannelRelayOn(connection *desktopConnection) <-chan struct{} {
 	if connection == nil || connection.relay == nil {
 		return nil
 	}

@@ -896,6 +896,21 @@ func (w *Writer[T]) giveUp(reason GiveUpReason, err error) bool {
 	return bytes > 0
 }
 
+// GaveUp reports whether this writer was torn down because the SENDER abandoned
+// it -- a write timeout, a blown byte budget, pool pressure -- rather than being
+// closed in the ordinary way.
+//
+// It is set under the same lock, and strictly before, the flag that makes
+// Enqueue and Flush start reporting ErrClosed, so anything that observes the
+// closed writer also observes why it closed. That ordering is the point: the
+// OnGiveUp callback fires only AFTER the queue is closed, so a caller racing it
+// would otherwise see the closure with no cause attached.
+func (w *Writer[T]) GaveUp() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.gaveUp
+}
+
 // Wake returns the depth-1 wake channel that fires when a frame is enqueued
 // (or the writer closes). Exactly one goroutine may select on it: a second
 // consumer would steal the coalesced signal that signalNonBlocking depends on.

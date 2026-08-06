@@ -3,6 +3,8 @@ package main
 import (
 	"sync"
 	"time"
+
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // operationGate admits side-effecting operations while the sidecar is live and
@@ -20,7 +22,7 @@ import (
 // owns the flag rather than reading ctx.Err().
 type operationGate struct {
 	mu     sync.Mutex
-	wc     waitCounter
+	wc     drain.Counter
 	closed bool
 }
 
@@ -30,7 +32,7 @@ type operationGate struct {
 // The returned func is safe to call any number of times: it routes through a
 // per-admission sync.Once so a caller that defers done() AND calls it on a
 // manual cleanup path (or any other double-invocation) cannot drive the
-// waitCounter negative and panic the sidecar. sync.Once also makes the
+// counter negative and panic the sidecar. sync.Once also makes the
 // "exactly-once" contract mechanical rather than a caller-discipline rule,
 // matching the loudness sync.Mutex already chooses for unlock-of-unlocked.
 func (g *operationGate) begin() (func(), bool) {
@@ -39,9 +41,9 @@ func (g *operationGate) begin() (func(), bool) {
 	if g.closed {
 		return nil, false
 	}
-	g.wc.add()
+	g.wc.Add()
 	var once sync.Once
-	done := func() { once.Do(g.wc.done) }
+	done := func() { once.Do(g.wc.Done) }
 	return done, true
 }
 
@@ -62,10 +64,10 @@ func (g *operationGate) close(cancel func()) {
 // ignores cancellation -- a non-cancellable editor launch or filesystem scan --
 // is abandoned after the timeout and reclaimed at process exit.
 //
-// waitCounter's no-add-after-sample contract holds here by ordering: the one
+// drain.Counter's no-add-after-sample contract holds here by ordering: the one
 // production caller (App.Shutdown) runs close() before drain, and close flips
 // closed under the same lock begin checks, so once wait samples the counter no
 // operation can be admitted.
 func (g *operationGate) drain(timeout time.Duration, warnMsg string) {
-	g.wc.wait(timeout, warnMsg)
+	g.wc.Wait(timeout, warnMsg)
 }
