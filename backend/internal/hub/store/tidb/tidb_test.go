@@ -11,7 +11,6 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -33,8 +32,8 @@ func TestTiDBStore(t *testing.T) {
 	req := testcontainers.ContainerRequest{
 		Image:        "pingcap/tidb:v8.1.0",
 		ExposedPorts: []string{"4000/tcp"},
-		WaitingFor: wait.ForSQL("4000/tcp", "mysql", func(host string, port string) string {
-			return fmt.Sprintf("root@tcp(%s:%s)/?parseTime=true", host, testutil.PortNumber(port))
+		WaitingFor: storetest.SQLReadyWait("4000/tcp", "mysql", func(host, port string) string {
+			return fmt.Sprintf("root@tcp(%s:%s)/?parseTime=true", host, port)
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

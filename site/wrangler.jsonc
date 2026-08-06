@@ -11,7 +11,7 @@
   // files directly. `directory` is resolved relative to this file (site/), so
   // it points at site/public -- the output of `go tool hugo`.
   "name": "leapmux-site",
-  "compatibility_date": "2026-06-07",
+  "compatibility_date": "2026-08-01",
   "assets": {
     "directory": "./public"
   }

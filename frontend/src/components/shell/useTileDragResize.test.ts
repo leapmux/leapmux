@@ -1,17 +1,14 @@
 import type { PairDragOptions } from '~/components/shell/useTileDragResize'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { startPairRebalanceDrag } from '~/components/shell/useTileDragResize'
 import { MIN_SPLIT_RATIO } from '~/stores/layout.store'
 import {
   dispatchPointerCancel,
   dispatchPointerMove,
   dispatchPointerUp,
-  installPointerEventShim,
   pointerdownEvent,
   stubBoundingRect,
 } from '~/test-support/pointer'
-
-beforeAll(installPointerEventShim)
 
 interface Scaffold {
   container: HTMLDivElement

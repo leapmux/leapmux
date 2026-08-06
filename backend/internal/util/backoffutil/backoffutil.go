@@ -1,6 +1,6 @@
 // Package backoffutil is the one place capped exponential backoff is
 // configured. It owns the doubling/jitter/cap math so callers depend on
-// backoffutil, not on cenkalti/backoff/v6 — the third-party type never crosses
+// backoffutil, not on cenkalti/backoff/v7 — the third-party type never crosses
 // the package boundary.
 //
 // Three loops in this tree retry the same shape — double, cap, reset on

@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -38,8 +37,8 @@ func startMySQLContainer(t *testing.T) string {
 			"MYSQL_USER":          "test",
 			"MYSQL_PASSWORD":      "test",
 		},
-		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port string) string {
-			return fmt.Sprintf("test:test@tcp(%s:%s)/leapmux_test?parseTime=true", host, testutil.PortNumber(port))
+		WaitingFor: storetest.SQLReadyWait("3306/tcp", "mysql", func(host, port string) string {
+			return fmt.Sprintf("test:test@tcp(%s:%s)/leapmux_test?parseTime=true", host, port)
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

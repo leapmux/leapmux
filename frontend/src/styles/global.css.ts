@@ -256,6 +256,36 @@ globalStyle('ot-dropdown hr', {
   margin: 'var(--space-2) 0',
 })
 
+// Menu items are `<button role="menuitem">`, so Oat's base button rule
+// (button.css: `background-color: var(--primary)`, a 1px border, medium radius)
+// applies to them. Through 0.6.x Oat's own `[role="menuitem"]` rule cancelled
+// that with `background: none; border: none; color: var(--foreground)`; 0.7
+// narrowed that rule to layout only (display/width/padding/justify/cursor) and
+// dropped the cancelling half, which rendered every menu item as a solid
+// primary-coloured button.
+//
+// These declarations are ours now rather than something we inherit: a menu item
+// needs them to read as a menu item at all, and leaning on a third-party
+// internal reset is what made a patch-level bump able to restyle every menu in
+// the app. Padding, width and cursor still come from Oat, which kept them.
+globalStyle('[role="menuitem"]', {
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  fontSize: 'var(--text-7)',
+  textAlign: 'start',
+  color: 'var(--foreground)',
+  background: 'none',
+  border: 'none',
+  borderRadius: 'var(--radius-small)',
+})
+
+// Restated because the rule above is unlayered and would otherwise outrank
+// Oat's layered hover (`@layer components`), leaving menu items with no hover
+// affordance at all.
+globalStyle('[role="menuitem"]:is(:hover, :focus)', {
+  background: 'var(--accent)',
+})
+
 // Blockquotes: keep Oat's italic, but lift the color from the faint
 // --muted-foreground to roughly halfway toward body text, so the quote reads
 // clearly without being as loud as normal text.

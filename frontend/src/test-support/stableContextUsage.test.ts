@@ -3,6 +3,8 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
+import { installedCopies } from '~/test-support/installedCopies'
+
 // Guards the two rules `createStableContext` runs on, both of which were
 // documented in a comment and enforced by nothing.
 //
@@ -25,20 +27,6 @@ import { describe, expect, it } from 'vitest'
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
 const helperPath = join(srcRoot, 'lib', 'createStableContext.ts')
-
-/** Every installed copy of `name` under `node_modules`, nested ones included. */
-function installedCopies(name: string, dir = join(frontendRoot, 'node_modules')): string[] {
-  const found: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory())
-      continue
-    if (entry.name === name)
-      found.push(join(dir, entry.name))
-    else if (entry.name === 'node_modules' || entry.name.startsWith('@'))
-      found.push(...installedCopies(name, join(dir, entry.name)))
-  }
-  return found
-}
 
 function collectSourceFiles(dir: string): string[] {
   const found: string[] = []

@@ -52,7 +52,7 @@ jobs:
           - arch: arm64
             runner_suffix: '-arm'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
@@ -69,7 +69,7 @@ jobs:
           fi
 
       - name: Cache APT packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: .apt-cache
           # Hash both workflow files: see ci.yaml for the rationale. Keeping
@@ -118,12 +118,12 @@ jobs:
             gstreamer1.0-pulseaudio
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GOLANG_VERSION }}
           cache-dependency-path: |
@@ -142,7 +142,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
@@ -160,14 +160,14 @@ jobs:
       - name: Cache Tauri downloads
         # See ci.yaml's matching step for why both patch-linuxdeploy.sh and
         # linuxdeploy-wrapper.c are hashed into this cache key.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/tauri
           key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
           restore-keys: tauri-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache awesome-claude-spinners
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: frontend/src/spinners
           key: spinners-${{ env.CACHE_WEEK }}
@@ -179,7 +179,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
         with:
           version: ${{ env.TASK_VERSION }}
           # Authenticate the action's GitHub API calls (listing releases,
@@ -289,7 +289,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
@@ -306,12 +306,12 @@ jobs:
           fi
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GOLANG_VERSION }}
           cache-dependency-path: |
@@ -330,7 +330,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
@@ -346,14 +346,14 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache Tauri downloads
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/Library/Caches/tauri
           key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
           restore-keys: tauri-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Cache awesome-claude-spinners
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: frontend/src/spinners
           key: spinners-${{ env.CACHE_WEEK }}
@@ -370,7 +370,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
         with:
           version: ${{ env.TASK_VERSION }}
           # Authenticate the action's GitHub API calls (listing releases,
@@ -431,7 +431,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
@@ -447,7 +447,7 @@ jobs:
       - name: Setup Node.js
         # create-dmg.sh's generate-dsstore.mjs needs Node + the macos-alias
         # native module rebuilt for this runner.
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -463,7 +463,7 @@ jobs:
         run: cd frontend/node_modules/macos-alias && npx --yes node-gyp rebuild 2>/dev/null || true
 
       - name: Setup Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
         with:
           version: ${{ env.TASK_VERSION }}
           # Authenticate the action's GitHub API calls (listing releases,
@@ -533,7 +533,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
@@ -547,7 +547,7 @@ jobs:
           fi
 
       - name: Setup Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
         with:
           version: ${{ env.TASK_VERSION }}
           # Authenticate the action's GitHub API calls (listing releases,
@@ -609,7 +609,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
@@ -630,12 +630,12 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GOLANG_VERSION }}
           cache-dependency-path: |
@@ -658,14 +658,14 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Cache Tauri downloads
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/AppData/Local/tauri
           key: tauri-${{ runner.os }}-${{ env.CACHE_WEEK }}
           restore-keys: tauri-${{ runner.os }}-
 
       - name: Cache awesome-claude-spinners
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: frontend/src/spinners
           key: spinners-${{ env.CACHE_WEEK }}
@@ -676,7 +676,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache Bun dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('frontend/bun.lock') }}
@@ -694,7 +694,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@v3
         with:
           version: ${{ env.TASK_VERSION }}
           # Authenticate the action's GitHub API calls (listing releases,

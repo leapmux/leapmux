@@ -1,10 +1,9 @@
 package testutil
 
 import (
-	"fmt"
 	"io"
 	"net"
-	"strings"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -59,23 +58,29 @@ func StartWriteThenCloseServer(t *testing.T, data []byte) string {
 	return ln.Addr().String()
 }
 
-// ParseAddr splits an address string into host and port components.
+// ParseAddr splits an address string into host and port components. A
+// bracketed IPv6 host comes back unbracketed ("[::1]:80" -> "::1", 80).
+//
+// Malformed input yields zero values rather than an error: every caller passes
+// an address it just took from a net.Listener, so a failure here means the test
+// is wrong, not that the input needs handling. What ParseAddr must never do is
+// GUESS, which is why the port is parsed strictly.
+//
+// fmt.Sscanf("%d") would not be strict: it stops at the first non-digit and
+// reports success, so "80abc" and the "80/tcp" form a testcontainers mapped
+// port carries both come back as a plausible-looking 80 -- a wrong port that
+// dials something real instead of failing.
 func ParseAddr(addr string) (string, uint32) {
-	host, port, _ := net.SplitHostPort(addr)
-	var p uint32
-	_, _ = fmt.Sscanf(port, "%d", &p)
-	return host, p
-}
-
-// PortNumber extracts the bare numeric port from a testcontainers mapped-port
-// string. Since testcontainers-go v0.42, the wait.ForSQL callback receives the
-// mapped host port in moby's "<num>/<proto>" form (e.g. "32768/tcp") because it
-// invokes the callback with network.Port.String(). The protocol suffix must be
-// stripped before building a DSN; otherwise "/tcp" leaks into the connection
-// string, the DB driver can never connect, and the readiness wait spins until
-// it times out with a misleading "context deadline exceeded" against the Docker
-// socket. A bare port (no slash) is returned unchanged.
-func PortNumber(mappedPort string) string {
-	num, _, _ := strings.Cut(mappedPort, "/")
-	return num
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", 0
+	}
+	// ParseUint returns the clamped maximum (65535) *together with* an error
+	// for an out-of-range port, so the error has to decide the result -- using
+	// the value would silently turn port 70000 into 65535.
+	p, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return host, 0
+	}
+	return host, uint32(p)
 }

@@ -40,7 +40,9 @@ export default defineConfig({
   plugins: [vanillaExtractPlugin(), resolveSolidRefreshVirtual, solid({ hot: false })],
   resolve: {
     alias: {
-      '~': resolve(__dirname, 'src'),
+      // import.meta.dirname, not __dirname: Vite 8.2's native config loader
+      // does not inject the CJS globals and warns that it will stop working.
+      '~': resolve(import.meta.dirname, 'src'),
     },
   },
   test: {

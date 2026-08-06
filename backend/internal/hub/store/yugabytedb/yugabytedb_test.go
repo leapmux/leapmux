@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
@@ -33,8 +32,8 @@ func TestYugabyteDBStore(t *testing.T) {
 		Image:        "yugabytedb/yugabyte:2025.2.2.1-b1",
 		ExposedPorts: []string{"5433/tcp"},
 		Cmd:          []string{"bin/yugabyted", "start", "--daemon=false"},
-		WaitingFor: wait.ForSQL("5433/tcp", "pgx", func(host string, port string) string {
-			return fmt.Sprintf("postgresql://yugabyte@%s:%s/yugabyte?sslmode=disable", host, testutil.PortNumber(port))
+		WaitingFor: storetest.SQLReadyWait("5433/tcp", "pgx", func(host, port string) string {
+			return fmt.Sprintf("postgresql://yugabyte@%s:%s/yugabyte?sslmode=disable", host, port)
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

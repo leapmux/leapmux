@@ -1,12 +1,10 @@
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import process from 'node:process'
-import { fileURLToPath } from 'node:url'
 import { defineConfig } from '@solidjs/start/config'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
 import MagicString from 'magic-string'
 
-const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const require = createRequire(import.meta.url)
 
 // Force the DOM-free build of decode-named-character-reference (a micromark/
@@ -85,7 +83,9 @@ export default defineConfig({
     envPrefix: ['VITE_', 'LEAPMUX_'],
     resolve: {
       alias: {
-        '~': resolve(__dirname, 'src'),
+        // import.meta.dirname, matching vitest.config.ts -- Vite's native config
+        // loader no longer injects the CJS globals.
+        '~': resolve(import.meta.dirname, 'src'),
         // See decodeNamedCharacterReferenceNodeBuild above: keep the markdown
         // worker from importing the document-dependent browser build.
         'decode-named-character-reference': decodeNamedCharacterReferenceNodeBuild,

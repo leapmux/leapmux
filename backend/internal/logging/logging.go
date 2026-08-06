@@ -22,7 +22,7 @@ var Level = new(slog.LevelVar) // default: INFO
 func Setup() {
 	var handler slog.Handler
 	if isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd()) {
-		handler = tint.NewHandler(os.Stderr, &tint.Options{
+		handler = tint.NewTextHandler(os.Stderr, &tint.Options{
 			Level:      Level,
 			TimeFormat: time.TimeOnly,
 		})

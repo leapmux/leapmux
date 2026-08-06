@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
@@ -37,8 +36,8 @@ func startPostgresContainer(t *testing.T) string {
 			"POSTGRES_PASSWORD": "test",
 			"POSTGRES_DB":       "leapmux_test",
 		},
-		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port string) string {
-			return fmt.Sprintf("postgres://test:test@%s:%s/leapmux_test?sslmode=disable", host, testutil.PortNumber(port))
+		WaitingFor: storetest.SQLReadyWait("5432/tcp", "pgx", func(host, port string) string {
+			return fmt.Sprintf("postgres://test:test@%s:%s/leapmux_test?sslmode=disable", host, port)
 		}),
 	}
 	pgContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

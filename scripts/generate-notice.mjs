@@ -22,14 +22,29 @@ const LICENSE_OVERRIDES_GO = join(ROOT, 'scripts/license-overrides/go')
 const LICENSE_OVERRIDES_RUST = join(ROOT, 'scripts/license-overrides/rust')
 const LICENSE_OVERRIDES_JS = join(ROOT, 'scripts/license-overrides/js')
 const LICENSE_EXTRAS = join(ROOT, 'scripts/license-overrides/extra')
-const CARGO_REGISTRY = join(process.env.HOME ?? '', '.cargo/registry/src/index.crates.io-1949cf8c6b5b557f')
-const RUST_SPDX_LICENSE_FILES = {
-  'Apache-2.0': join(CARGO_REGISTRY, 'anyhow-1.0.102/LICENSE-APACHE'),
-  'Apache-2.0 WITH LLVM-exception': join(CARGO_REGISTRY, 'wit-bindgen-0.51.0/LICENSE-Apache-2.0_WITH_LLVM-exception'),
-  'BSD-3-Clause': join(CARGO_REGISTRY, 'zerocopy-0.8.48/LICENSE-BSD'),
-  MIT: join(CARGO_REGISTRY, 'anyhow-1.0.102/LICENSE-MIT'),
-  'MPL-2.0': join(CARGO_REGISTRY, 'option-ext-0.2.0/LICENSE.txt'),
-  Zlib: join(CARGO_REGISTRY, 'bytemuck-1.25.0/LICENSE-ZLIB'),
+// Canonical license texts for crates that declare an SPDX term but ship no
+// license file of their own. Each entry names a crate that *is* in the
+// dependency graph and does ship that term's text; the directory is resolved
+// from `cargo metadata` at run time (see createRustSpdxResolver), so a
+// `cargo update` moves these with the lock instead of stranding a hardcoded
+// version-stamped path.
+//
+// `signature` is a phrase the resolved file must contain. Existence alone is
+// not enough: the BSD-3-Clause entry pointed at zerocopy's LICENSE-BSD for
+// years, which is a *two*-clause text, so every crate that borrowed it
+// reproduced the wrong license in NOTICE and only a human reading it caught
+// on. Checking for a term-specific phrase turns that into a build failure.
+//
+// Pick a source whose copyright line is defensible for the crates that will
+// borrow it -- alloc-no-stdlib is alloc-stdlib's sibling under the same
+// Dropbox BSD-3-Clause grant, so its text is the right one to reproduce.
+export const RUST_SPDX_LICENSE_SOURCES = {
+  'Apache-2.0': { crate: 'anyhow', file: 'LICENSE-APACHE', signature: 'Apache License' },
+  'Apache-2.0 WITH LLVM-exception': { crate: 'rustix', file: 'LICENSE-Apache-2.0_WITH_LLVM-exception', signature: 'LLVM Exception' },
+  'BSD-3-Clause': { crate: 'alloc-no-stdlib', file: 'LICENSE', signature: 'Neither the name' },
+  MIT: { crate: 'anyhow', file: 'LICENSE-MIT', signature: 'Permission is hereby granted' },
+  'MPL-2.0': { crate: 'option-ext', file: 'LICENSE.txt', signature: 'Mozilla Public License' },
+  Zlib: { crate: 'bytemuck', file: 'LICENSE-ZLIB', signature: 'Altered source versions must be plainly marked' },
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +87,7 @@ function findLicenseFile(dir, stopAt) {
 }
 
 /** Normalize license text: strip \r, trim blank lines, remove triple+ backticks. */
-function normalizeLicenseText(text) {
+export function normalizeLicenseText(text) {
   const lines = text.replace(/\r/g, '').split('\n')
   let start = 0
   while (start < lines.length && lines[start].trim() === '') start++
@@ -83,50 +98,165 @@ function normalizeLicenseText(text) {
     .join('\n')
 }
 
-/** Format a JS dependency heading with license name. */
-function jsHeading(dep) {
-  return dep.license ? `${dep.name} ${dep.version} (${dep.license})` : `${dep.name} ${dep.version}`
-}
-
-/** Format a Rust dependency heading with license name. */
-function rustHeading(dep) {
-  return dep.license ? `${dep.name} ${dep.version} (${dep.license})` : `${dep.name} ${dep.version}`
-}
-
-/** Format an extra-entry heading. Version is optional. */
-function extraHeading(dep) {
+/**
+ * Format a dependency heading: "name version (license)", degrading for the
+ * fields an ecosystem does not carry -- Go deps have no `license`, and a
+ * hand-listed extra may have no `version`.
+ *
+ * One formatter for every ecosystem on purpose: the TOC link and the section
+ * heading are built from this same string, so `toAnchor` can never be handed a
+ * heading the body renders differently.
+ */
+export function depHeading(dep) {
   const base = dep.version ? `${dep.name} ${dep.version}` : dep.name
   return dep.license ? `${base} (${dep.license})` : base
 }
 
-function collectRustSpdxTexts(licenseExpression) {
-  if (!licenseExpression) return { texts: [], unsupportedTerms: [] }
-
-  const terms = licenseExpression
-    .replace(/\//g, ' OR ')
-    .split(/\s+(?:OR|AND)\s+/)
-    .map(term => term.replace(/[()]/g, '').trim())
-    .filter(Boolean)
-  const uniqueTerms = [...new Set(terms)]
-  const supportedTerms = []
-  const unsupportedTerms = []
-
-  for (const term of uniqueTerms) {
-    if (term in RUST_SPDX_LICENSE_FILES) {
-      supportedTerms.push(term)
-    } else {
-      unsupportedTerms.push(term)
-    }
+/**
+ * Order two crate versions by semver precedence.
+ *
+ * Not `localeCompare(…, {numeric: true})`, which is collation, not semver: it
+ * ranks "1.0.0-alpha" ABOVE "1.0.0" because the shorter string is a prefix,
+ * and mis-orders "+build" metadata the same way. Picking "the highest" with it
+ * would silently read a license out of a pre-release directory.
+ *
+ * @returns negative, 0, or positive, like a sort comparator
+ */
+export function compareCrateVersions(a, b) {
+  const split = (version) => {
+    const dash = version.indexOf('-')
+    const core = dash === -1 ? version : version.slice(0, dash)
+    const prerelease = dash === -1 ? '' : version.slice(dash + 1)
+    // Build metadata ("0.6.0+11769913") carries no precedence; drop it.
+    const plus = core.indexOf('+')
+    const numbers = (plus === -1 ? core : core.slice(0, plus)).split('.').map(Number)
+    return { numbers, prerelease }
   }
 
-  return {
-    texts: supportedTerms.map(term => normalizeLicenseText(readFileSync(RUST_SPDX_LICENSE_FILES[term], 'utf-8'))),
-    unsupportedTerms,
+  const left = split(a)
+  const right = split(b)
+  for (let i = 0; i < Math.max(left.numbers.length, right.numbers.length); i++) {
+    const delta = (left.numbers[i] ?? 0) - (right.numbers[i] ?? 0)
+    if (delta !== 0) return delta
+  }
+  // Same core version: a release outranks any pre-release of it.
+  if (left.prerelease === right.prerelease) return 0
+  if (left.prerelease === '') return 1
+  if (right.prerelease === '') return -1
+  return left.prerelease < right.prerelease ? -1 : 1
+}
+
+/**
+ * Build a `term -> {text} | {error}` resolver over the crates that
+ * RUST_SPDX_LICENSE_SOURCES names, reading each file at most once.
+ *
+ * Lazy on purpose. Resolving every term up front turns a source crate leaving
+ * the lock into a hard failure even for a term nothing in the graph declares:
+ * `Apache-2.0 WITH LLVM-exception` currently has zero consumers (rustix and
+ * its neighbours all ship their own texts), so an eager pass would abort the
+ * whole run over a license NOTICE was never going to print. Resolving on
+ * demand makes the run fail exactly when NOTICE would otherwise be incomplete.
+ *
+ * @param {Array<{name: string, version: string, manifest_path: string}>} packages
+ */
+export function createRustSpdxResolver(packages) {
+  const sourceCrates = new Set(Object.values(RUST_SPDX_LICENSE_SOURCES).map(source => source.crate))
+
+  /** @type {Map<string, {version: string, dir: string}>} */
+  const crateDirs = new Map()
+  for (const pkg of packages) {
+    if (!sourceCrates.has(pkg.name)) continue
+    // A crate can appear at more than one version; take the highest so the
+    // chosen text never depends on the order `cargo metadata` emits.
+    const previous = crateDirs.get(pkg.name)
+    if (previous && compareCrateVersions(previous.version, pkg.version) >= 0) continue
+    crateDirs.set(pkg.name, { version: pkg.version, dir: dirname(pkg.manifest_path) })
+  }
+
+  const cache = new Map()
+  return function resolveSpdxText(term) {
+    if (!cache.has(term)) cache.set(term, loadSpdxText(term, crateDirs))
+    return cache.get(term)
   }
 }
 
+/** Read and validate one SPDX term's canonical text. @returns {{text: string} | {error: string}} */
+export function loadSpdxText(term, crateDirs) {
+  const { crate, file, signature } = RUST_SPDX_LICENSE_SOURCES[term]
+  const source = crateDirs.get(crate)
+  if (!source) {
+    return {
+      error: `canonical "${term}" text: crate ${crate} is no longer in desktop/rust/Cargo.lock. `
+        + 'Point RUST_SPDX_LICENSE_SOURCES at a crate that is, and that ships this license text.',
+    }
+  }
+
+  const path = join(source.dir, file)
+  if (!existsSync(path)) {
+    return { error: `canonical "${term}" text: ${crate} ${source.version} no longer ships ${file} (looked in ${source.dir}).` }
+  }
+
+  const text = normalizeLicenseText(readFileSync(path, 'utf-8'))
+  if (!text.includes(signature)) {
+    return {
+      error: `canonical "${term}" text: ${crate} ${source.version} ${file} does not read like ${term} `
+        + `(expected to find ${JSON.stringify(signature)}). Re-point the entry -- reproducing it would ship the wrong license.`,
+    }
+  }
+  return { text }
+}
+
+/**
+ * Resolve a crate's SPDX expression to the license text NOTICE should
+ * reproduce, or null when the expression cannot be satisfied.
+ *
+ * Reading the expression happens entirely here, including whether it is a
+ * choice (OR) or a conjunction (AND). Deciding that at the call site instead
+ * split the authority: this function normalizes the slash form (`MIT/Apache-2.0`,
+ * which 29 crates in the graph still use) to OR, while a caller testing the raw
+ * string for " OR " classified the same expression as a conjunction -- so a
+ * slash-form crate with one unregistered term was reported as having no license
+ * at all, even though its other term resolved fine.
+ *
+ * @param {string | null} licenseExpression
+ * @param {(term: string) => {text: string} | {error: string}} resolveSpdxText
+ * @returns {{text: string | null, failures: Array<{term: string, message: string}>}}
+ */
+export function collectRustSpdxTexts(licenseExpression, resolveSpdxText) {
+  if (!licenseExpression) return { text: null, failures: [] }
+
+  const normalized = licenseExpression.replace(/\//g, ' OR ')
+  // "MIT OR Apache-2.0" needs only one term satisfied; anything with an AND
+  // needs all of them.
+  const isChoice = normalized.includes(' OR ') && !normalized.includes(' AND ')
+  const terms = [...new Set(
+    normalized
+      .split(/\s+(?:OR|AND)\s+/)
+      .map(term => term.replace(/[()]/g, '').trim())
+      .filter(Boolean),
+  )]
+
+  const texts = []
+  const failures = []
+  let unregistered = 0
+  for (const term of terms) {
+    if (!(term in RUST_SPDX_LICENSE_SOURCES)) {
+      unregistered++
+      continue
+    }
+    const resolved = resolveSpdxText(term)
+    if (resolved.error) failures.push({ term, message: resolved.error })
+    else texts.push(resolved.text)
+  }
+
+  const satisfied = isChoice
+    ? texts.length > 0
+    : unregistered === 0 && failures.length === 0 && texts.length > 0
+  return { text: satisfied ? texts.join('\n\n-----\n\n') : null, failures }
+}
+
 /** Slugify a heading for use as a markdown anchor. */
-function toAnchor(heading) {
+export function toAnchor(heading) {
   return heading
     .toLowerCase()
     .replace(/[^a-z0-9 _-]/g, '')
@@ -298,11 +428,15 @@ function collectRustDeps() {
     maxBuffer: 32 * 1024 * 1024,
   })
   const metadata = JSON.parse(raw)
+  const resolveSpdxText = createRustSpdxResolver(metadata.packages ?? [])
 
   /** @type {Map<string, {name: string, version: string, license: string | null, licenseText: string}>} */
   const deps = new Map()
-  const warnings = []
   const errors = []
+  // Deduped: one unresolvable term is a table problem, not a per-crate one, so
+  // it is reported once no matter how many crates asked for it. The crates
+  // themselves are still named individually below.
+  const spdxFailures = new Map()
 
   for (const pkg of metadata.packages ?? []) {
     if (pkg.id === metadata.resolve?.root || pkg.source == null) continue
@@ -311,48 +445,58 @@ function collectRustDeps() {
     if (deps.has(key)) continue
 
     const manifestDir = dirname(pkg.manifest_path)
-    let licFile = null
 
-    if (pkg.license_file) {
-      const candidate = join(manifestDir, pkg.license_file)
-      if (existsSync(candidate)) licFile = candidate
-    }
+    // One walk of the manifest directory, reused: findLicenseFile is just
+    // findLicenseFiles(...)[0], so asking for both re-scanned the same
+    // directory for ~490 of the graph's crates.
+    const manifestLicenses = findLicenseFiles(manifestDir, manifestDir)
 
-    if (!licFile) licFile = findLicenseFile(manifestDir, manifestDir)
+    // `license_file` names a file Cargo.toml points at explicitly; no crate in
+    // the current graph sets it, but honour it ahead of discovery when one does.
+    const declared = pkg.license_file ? join(manifestDir, pkg.license_file) : null
 
-    if (!licFile) {
+    /** @type {string[]} */
+    let licenseFiles = []
+    if (declared && existsSync(declared)) licenseFiles = [declared]
+    else if (manifestLicenses.length > 0) licenseFiles = manifestLicenses
+    else {
+      // Nothing on disk: fall back to a hand-curated override directory.
       const overrideDir = join(LICENSE_OVERRIDES_RUST, pkg.name)
       if (existsSync(join(overrideDir, 'expected.json'))) {
-        licFile = findLicenseFile(overrideDir, overrideDir)
+        licenseFiles = findLicenseFiles(overrideDir, overrideDir)
       }
     }
 
     let licenseText = null
-    if (licFile) {
-      const licenseFiles = pkg.license_file ? [licFile] : findLicenseFiles(manifestDir, manifestDir)
-      licenseText = licenseFiles.length > 0
-        ? licenseFiles.map(path => normalizeLicenseText(readFileSync(path, 'utf-8'))).join('\n\n-----\n\n')
-        : normalizeLicenseText(readFileSync(licFile, 'utf-8'))
+    if (licenseFiles.length > 0) {
+      licenseText = licenseFiles.map(path => normalizeLicenseText(readFileSync(path, 'utf-8'))).join('\n\n-----\n\n')
     } else {
-      const { texts, unsupportedTerms } = collectRustSpdxTexts(pkg.license)
-      const hasOnlyOrTerms = (pkg.license ?? '').includes(' OR ') && !(pkg.license ?? '').includes(' AND ')
-      if (unsupportedTerms.length === 0 || (hasOnlyOrTerms && texts.length > 0)) {
-        licenseText = texts.join('\n\n-----\n\n')
-      } else {
-        errors.push(`Rust: ${key} — no license file found in ${manifestDir}`)
+      const { text, failures } = collectRustSpdxTexts(pkg.license, resolveSpdxText)
+      for (const failure of failures) spdxFailures.set(failure.term, failure.message)
+
+      if (text === null) {
+        errors.push(failures.length > 0
+          ? `Rust: ${key} — needs the ${failures.map(f => `"${f.term}"`).join(' + ')} text, which could not be resolved`
+          : `Rust: ${key} — no license file found in ${manifestDir}`)
         continue
       }
+      licenseText = text
     }
 
     deps.set(key, {
       name: pkg.name,
       version: pkg.version,
       license: pkg.license ?? null,
-      licenseText: licenseText ?? '',
+      licenseText,
     })
   }
 
-  return { deps: [...deps.values()].sort((a, b) => a.name.localeCompare(b.name)), warnings, errors }
+  // Appended after the per-crate lines so the run reports every license gap in
+  // one pass: throwing here instead would abort before the JS and extra
+  // collectors ran, and hide the Go errors already gathered.
+  errors.push(...spdxFailures.values())
+
+  return { deps: [...deps.values()].sort((a, b) => a.name.localeCompare(b.name)), warnings: [], errors }
 }
 
 // ---------------------------------------------------------------------------
@@ -543,7 +687,7 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
     lines.push('### Go Dependencies')
     lines.push('')
     for (const dep of goDeps) {
-      const heading = `${dep.name} ${dep.version}`
+      const heading = depHeading(dep)
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
     lines.push('')
@@ -552,7 +696,7 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
     lines.push('### Rust Dependencies')
     lines.push('')
     for (const dep of rustDeps) {
-      const heading = rustHeading(dep)
+      const heading = depHeading(dep)
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
     lines.push('')
@@ -561,7 +705,7 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
     lines.push('### JavaScript Dependencies')
     lines.push('')
     for (const dep of jsDeps) {
-      const heading = jsHeading(dep)
+      const heading = depHeading(dep)
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
     lines.push('')
@@ -570,7 +714,7 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
     lines.push('### Other Third-Party Notices')
     lines.push('')
     for (const dep of extraDeps) {
-      const heading = extraHeading(dep)
+      const heading = depHeading(dep)
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
     lines.push('')
@@ -583,7 +727,7 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
     lines.push('## Go Dependencies')
     lines.push('')
     for (const dep of goDeps) {
-      lines.push(`### ${dep.name} ${dep.version}`)
+      lines.push(`### ${depHeading(dep)}`)
       lines.push('')
       lines.push('```')
       lines.push(dep.licenseText)
@@ -599,7 +743,7 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
     lines.push('## Rust Dependencies')
     lines.push('')
     for (const dep of rustDeps) {
-      lines.push(`### ${rustHeading(dep)}`)
+      lines.push(`### ${depHeading(dep)}`)
       lines.push('')
       lines.push('```')
       lines.push(dep.licenseText)
@@ -615,7 +759,7 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
     lines.push('## JavaScript Dependencies')
     lines.push('')
     for (const dep of jsDeps) {
-      lines.push(`### ${jsHeading(dep)}`)
+      lines.push(`### ${depHeading(dep)}`)
       lines.push('')
       lines.push('```')
       lines.push(dep.licenseText)
@@ -635,7 +779,7 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
     lines.push('separately to make their provenance explicit.')
     lines.push('')
     for (const dep of extraDeps) {
-      lines.push(`### ${extraHeading(dep)}`)
+      lines.push(`### ${depHeading(dep)}`)
       lines.push('')
       if (dep.url) {
         lines.push(`Source: <${dep.url}>`)
@@ -797,4 +941,6 @@ async function generateNotice() {
   console.log(`  (${go.deps.length} Go + ${rust.deps.length} Rust + ${js.deps.length} JS + ${extra.deps.length} extra dependencies)`)
 }
 
-await generateNotice()
+// Importable for tests (generate-notice.test.mjs exercises the pure helpers);
+// only the direct `bun scripts/generate-notice.mjs` invocation touches the tree.
+if (import.meta.main) await generateNotice()

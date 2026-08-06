@@ -1,17 +1,14 @@
 import type { LayoutNodeLocal } from '~/stores/layout.store'
 import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TilingLayout } from '~/components/shell/TilingLayout'
 import {
   dispatchPointerDown,
   dispatchPointerMove,
   dispatchPointerUp,
-  installPointerEventShim,
   stubBoundingRect,
 } from '~/test-support/pointer'
-
-beforeAll(installPointerEventShim)
 
 afterEach(() => {
   document.body.innerHTML = ''

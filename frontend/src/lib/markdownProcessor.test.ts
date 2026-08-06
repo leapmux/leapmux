@@ -6,6 +6,31 @@ import { collectShikiStyles } from '~/lib/shikiStyleClass'
 
 type Processor = Parameters<typeof renderWithPlainFallback>[0]
 
+// Every processor exported here must apply the same hardening tail: the Shiki
+// one feeds the worker + the sync main-thread render, the plain one feeds the
+// streaming placeholder and the Shiki-failure fallback. Hardening one but not
+// the other would leave the vector open on whichever path happened to render
+// the message.
+//
+// Memoized because Shiki is a singleton by design -- the production callers do
+// the same (`editorHighlighter ??= createLazyOnigurumaHighlighter()`). Building
+// one per call constructed a dozen Oniguruma WASM engines per run of this file,
+// none of them disposed, which trips Shiki's own "10 instances have been
+// created" warning.
+let sharedProcessors: Promise<[string, (md: string) => string][]> | null = null
+
+function processors(): Promise<[string, (md: string) => string][]> {
+  sharedProcessors ??= (async () => {
+    const highlighter = await createLazyOnigurumaHighlighter().ensureReady()
+    const shiki = createMarkdownProcessor(highlighter)
+    return [
+      ['createMarkdownProcessor', (md: string) => String(shiki.processSync(md))],
+      ['plainMarkdownProcessor', (md: string) => String(plainMarkdownProcessor.processSync(md))],
+    ]
+  })()
+  return sharedProcessors
+}
+
 describe('renderWithPlainFallback', () => {
   it('returns the processor output when it succeeds', () => {
     const ok = { processSync: (t: string) => `<pre class="shiki">${t}</pre>` } as unknown as Processor
@@ -183,20 +208,6 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
 })
 
 describe('remote-image blocking in both processors', () => {
-  // Every processor exported here must block remote images: the Shiki one feeds the
-  // worker + the sync main-thread render, the plain one feeds the streaming placeholder
-  // and the Shiki-failure fallback. Blocking in one but not the other would leave the
-  // exfil vector open on whichever path happened to render the message.
-  async function processors(): Promise<[string, (md: string) => string][]> {
-    const hl = createLazyOnigurumaHighlighter()
-    const highlighter = await hl.ensureReady()
-    const shiki = createMarkdownProcessor(highlighter)
-    return [
-      ['createMarkdownProcessor', (md: string) => String(shiki.processSync(md))],
-      ['plainMarkdownProcessor', (md: string) => String(plainMarkdownProcessor.processSync(md))],
-    ]
-  }
-
   it('replaces a remote image with the placeholder (never an <img src="https://...">)', async () => {
     for (const [name, render] of await processors()) {
       const html = render('![diagram](https://evil.example/x.png?leak=secret)')
@@ -272,5 +283,69 @@ describe('remote-image blocking in both processors', () => {
     const html = renderWithPlainFallback(throwing, '![diagram](https://evil.example/x.png)')
     expect(html).not.toContain('<img')
     expect(html).toContain(BLOCKED_IMAGE_CHIP_TEXT)
+  })
+})
+
+describe('link hardening in both processors', () => {
+  it('gives an http(s) link target=_blank and the full rel token set', async () => {
+    for (const [name, render] of await processors()) {
+      const html = render('[docs](https://example.com/a?b=c)')
+      expect(html, name).toContain('href="https://example.com/a?b=c"')
+      expect(html, name).toContain('target="_blank"')
+      // hast models a space-separated attribute as an array; this pins the
+      // SERIALIZED form, so a property-information change that reclassified
+      // `rel` as comma-separated ("noopener, noreferrer, nofollow") fails here
+      // rather than shipping a rel browsers parse as one unknown token.
+      expect(html, name).toContain('rel="noopener noreferrer nofollow"')
+      expect(html, name).not.toContain('noopener,')
+    }
+  })
+
+  it('hardens every http(s) link in a document, not just the first', async () => {
+    for (const [name, render] of await processors()) {
+      const html = render('[one](https://a.example) and [two](http://b.example)')
+      expect(html.match(/rel="noopener noreferrer nofollow"/g) ?? [], name).toHaveLength(2)
+    }
+  })
+
+  it('unwraps a non-http(s) link to its text instead of hardening it', async () => {
+    // The else-branch: anything that is not http(s) -- mailto:, tel:, and the
+    // javascript: vector agent-authored markdown could smuggle in -- loses the
+    // anchor entirely rather than becoming a hardened clickable link.
+    for (const [name, render] of await processors()) {
+      for (const href of ['mailto:a@b.example', 'tel:+15551234', 'javascript:alert(1)', '//evil.example/x']) {
+        const html = render(`[label](${href})`)
+        expect(html, `${name}: ${href}`).not.toContain('<a')
+        expect(html, `${name}: ${href}`).not.toContain(href)
+        // Unwrapping keeps the author's own text; it must not delete content.
+        expect(html, `${name}: ${href}`).toContain('label')
+      }
+    }
+  })
+
+  it('hardens a link with empty text instead of dropping it', async () => {
+    // `[](url)` is the degenerate anchor remark still emits: an href with no
+    // children. It takes the hardening branch like any other http(s) link.
+    //
+    // There is deliberately no "anchor with no href" case here: every producer
+    // in this pipeline sets one (remark-rehype for `[text](url)`, GFM
+    // autolinks, and rehypeBlockRemoteImages' placeholder), and raw HTML never
+    // becomes elements, so such a node is unreachable. A test claiming to
+    // cover it would assert nothing.
+    for (const [name, render] of await processors()) {
+      const html = render('[](https://example.com/x)')
+      expect(html, name).toContain('href="https://example.com/x"')
+      expect(html, name).toContain('target="_blank"')
+      expect(html, name).toContain('rel="noopener noreferrer nofollow"')
+      expect(html, name).toContain('></a>')
+    }
+  })
+
+  it('leaves a document with no links untouched', async () => {
+    for (const [name, render] of await processors()) {
+      const html = render('plain text with no link at all')
+      expect(html, name).toContain('plain text with no link at all')
+      expect(html, name).not.toContain('<a')
+    }
   })
 })

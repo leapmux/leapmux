@@ -55,6 +55,19 @@ tasks:
       - task: generate-sqlc
       - task: generate-spinners
 
+  sync-versions:
+    desc: Rewrite documented tool versions from versions.env
+    # Everything that can read versions.env already does (this file's dotenv,
+    # the workflows' $GITHUB_ENV splat, the Dockerfile's ARGs). Prose in
+    # README.md and the docs site, and the `go` directive in each go.mod, have
+    # nowhere to put a variable -- so they are rewritten from it instead, and
+    # `lint-versions` fails the build if one drifts.
+    sources:
+      - versions.env
+      - scripts/sync-versions.mjs
+    cmds:
+      - bun scripts/sync-versions.mjs
+
   generate-proto:
     desc: Generate Protocol Buffer code
     sources:
@@ -691,9 +704,20 @@ tasks:
   test:
     desc: Run all tests
     cmds:
+      - task: test-scripts
       - task: test-frontend
       - task: test-backend
       - task: test-desktop
+
+  test-scripts:
+    desc: Test repository scripts
+    # `bun test` rather than vitest: these are repo-root Bun scripts, outside
+    # frontend/ and its vitest project (whose root is frontend/ and whose
+    # co-location rule covers frontend/src only).
+    sources:
+      - scripts/*.mjs
+    cmds:
+      - bun test scripts/
 
   test-frontend:
     desc: Run frontend tests
@@ -762,10 +786,25 @@ tasks:
   lint:
     desc: Run all linters
     cmds:
+      - task: lint-versions
       - task: lint-proto
       - task: lint-frontend
       - task: lint-backend
       - task: lint-desktop
+
+  lint-versions:
+    desc: Check documented tool versions against versions.env
+    sources:
+      - versions.env
+      - scripts/sync-versions.mjs
+      - README.md
+      - site/content/docs/getting-started/installation.md
+      - go.work
+      - backend/go.mod
+      - desktop/go/go.mod
+      - site/go.mod
+    cmds:
+      - bun scripts/sync-versions.mjs --check
 
   lint-proto:
     desc: Lint Protocol Buffer definitions

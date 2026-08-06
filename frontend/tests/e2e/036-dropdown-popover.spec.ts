@@ -307,3 +307,57 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
       .toBeLessThanOrEqual(DRIFT_TOLERANCE_PX)
   })
 })
+
+test.describe('menu item appearance', () => {
+  /**
+   * Oat styles every `<button>` with a solid `var(--primary)` fill, and menu
+   * items are `<button role="menuitem">`. Through Oat 0.6.x its own
+   * `[role="menuitem"]` rule cancelled that fill; 0.7 narrowed the rule to
+   * layout only and every menu in the app turned into a column of primary
+   * buttons.
+   *
+   * Nothing else catches that: the markup, the roles and the tests all stay
+   * valid, so only a rendered page shows it. Reading the computed style is the
+   * cheapest place to assert the cancellation still happens.
+   */
+  test('menu items render flat, not as primary-filled buttons', async ({ page, authenticatedWorkspace }) => {
+    await page.getByTestId('app-menu-trigger').first().click()
+
+    const item = page.getByRole('menuitem', { name: 'Preferences' })
+    await expect(item).toBeVisible()
+
+    const computed = await item.evaluate((el) => {
+      const style = getComputedStyle(el)
+      const root = getComputedStyle(document.documentElement)
+      return {
+        background: style.backgroundColor,
+        color: style.color,
+        borderWidth: style.borderTopWidth,
+        primary: root.getPropertyValue('--primary').trim(),
+        foreground: root.getPropertyValue('--foreground').trim(),
+      }
+    })
+
+    expect(computed.background, `menu item should have no fill of its own, got ${computed.background}`)
+      .toBe('rgba(0, 0, 0, 0)')
+    expect(computed.borderWidth, `menu item should have no button border, got ${computed.borderWidth}`)
+      .toBe('0px')
+  })
+
+  test('menu items still take Oat\'s hover affordance', async ({ page, authenticatedWorkspace }) => {
+    // The reset above is unlayered, so it outranks Oat's layered `:hover`
+    // rule. Restating the hover is what keeps menu items from going inert.
+    await page.getByTestId('app-menu-trigger').first().click()
+
+    const item = page.getByRole('menuitem', { name: 'Preferences' })
+    await expect(item).toBeVisible()
+    await item.hover()
+
+    // Polled, not read once: Oat's button rule carries
+    // `transition: background-color var(--transition-fast)`, so the fill is
+    // still mid-interpolation for a frame or two after the pointer arrives and
+    // a single read races it.
+    const backgroundColor = () => item.evaluate(el => getComputedStyle(el).backgroundColor)
+    await expect.poll(backgroundColor).not.toBe('rgba(0, 0, 0, 0)')
+  })
+})

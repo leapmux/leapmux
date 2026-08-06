@@ -77,9 +77,12 @@ function rehypeExternalLinks() {
         return
       const href = node.properties?.href
       if (typeof href === 'string' && HTTP_URL_RE.test(href)) {
-        node.properties ??= {}
+        // No `properties ??= {}` guard: reaching here means `properties.href`
+        // already yielded a string, so `properties` is necessarily present.
         node.properties.target = '_blank'
-        node.properties.rel = 'noopener noreferrer nofollow'
+        // `rel` is a space-separated token list, which hast models as an array;
+        // hast-util-to-html joins it back into `rel="noopener noreferrer nofollow"`.
+        node.properties.rel = ['noopener', 'noreferrer', 'nofollow']
       }
       else if (parent && typeof index === 'number') {
         // Non-http(s) link — unwrap: replace <a> with its children

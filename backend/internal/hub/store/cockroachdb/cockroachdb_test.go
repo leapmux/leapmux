@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
@@ -33,8 +32,8 @@ func TestCockroachDBStore(t *testing.T) {
 		Image:        "cockroachdb/cockroach:latest-v24.3",
 		ExposedPorts: []string{"26257/tcp"},
 		Cmd:          []string{"start-single-node", "--insecure"},
-		WaitingFor: wait.ForSQL("26257/tcp", "pgx", func(host string, port string) string {
-			return fmt.Sprintf("postgresql://root@%s:%s/defaultdb?sslmode=disable", host, testutil.PortNumber(port))
+		WaitingFor: storetest.SQLReadyWait("26257/tcp", "pgx", func(host, port string) string {
+			return fmt.Sprintf("postgresql://root@%s:%s/defaultdb?sslmode=disable", host, port)
 		}),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

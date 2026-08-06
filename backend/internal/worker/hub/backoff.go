@@ -13,7 +13,7 @@ const (
 )
 
 // backoff is the subset of *backoffutil.Backoff the hub reconnect loops use.
-// Declared locally so the hub depends on backoffutil, not on cenkalti/backoff/v6.
+// Declared locally so the hub depends on backoffutil, not on cenkalti/backoff/v7.
 type backoff interface {
 	Next() time.Duration
 	Reset()
