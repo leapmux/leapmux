@@ -38,11 +38,12 @@ func (a *App) defaultStartSolo(ctx context.Context) (*soloRuntime, error) {
 	return &soloRuntime{instance: inst, previousLogHandler: prevHandler}, nil
 }
 
-// stopSolo shuts down the in-process Hub and Worker. It is deliberately called
-// OUTSIDE a.lifecycleMu (see disconnectLocked): instance.Stop() blocks on the
-// Hub's full graceful shutdown, so holding the lifecycle write lock across it
-// would wedge every SidecarInfo/ProxyHTTP/SendChannelMessage reader for that
-// window. It mutates only the process-global slog default, not lifecycle state.
+// stopSolo shuts down the in-process Worker and Hub, in that order. It is
+// deliberately called OUTSIDE a.lifecycleMu (see disconnectAndStopSolo):
+// instance.Stop() blocks on the Worker's drain and then the Hub's full graceful
+// shutdown, so holding the lifecycle write lock across it would wedge every
+// SidecarInfo/ProxyHTTP/SendChannelMessage reader for that window. It mutates
+// only the process-global slog default, not lifecycle state.
 func stopSolo(runtime *soloRuntime) error {
 	if runtime == nil {
 		return nil

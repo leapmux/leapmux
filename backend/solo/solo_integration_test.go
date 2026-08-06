@@ -1,14 +1,13 @@
 package solo_test
 
 import (
-	"bytes"
 	"context"
-	"io"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/leapmux/leapmux/internal/util/testutil"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,6 +45,35 @@ func startForTest(t *testing.T, localListen string, extraCfg solo.Config) *solo.
 	require.NoError(t, err, "solo.Start")
 	t.Cleanup(func() { require.NoError(t, inst.Stop()) })
 	return inst
+}
+
+// The Hub and Worker contexts are detached from the one handed to Start, so a
+// cancelled parent reaches them ONLY through the watcher Start installs. Before
+// that detachment this was free (both were children of the caller's context);
+// now it is wiring, and wiring that can be removed without any other test
+// noticing -- every other path reaches teardown through an explicit Stop.
+func TestSoloStart_CancellingTheParentShutsTheInstanceDown(t *testing.T) {
+	locallistentest.SandboxHome(t)
+	t.Setenv(locallisten.EnvLocalListen, uniqueListenURL(t))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	inst, err := solo.Start(ctx, solo.Config{SkipBanner: true, NoTCP: true})
+	require.NoError(t, err, "solo.Start")
+	t.Cleanup(func() { require.NoError(t, inst.Stop()) })
+
+	// Deliberately no Stop: cancelling is the whole trigger under test.
+	cancel()
+
+	exited := make(chan error, 1)
+	go func() { exited <- inst.Wait() }()
+	select {
+	case waitErr := <-exited:
+		assert.NoError(t, waitErr, "a cancelled parent is a clean shutdown, not a failure")
+	case <-time.After(30 * time.Second):
+		// A generous hang-detector, not a performance assertion: a healthy
+		// teardown here is the worker drain plus the hub's ~1s GOAWAY grace.
+		t.Fatal("cancelling the parent context did not shut the instance down")
+	}
 }
 
 // TestSoloStart_RespectsExplicitLocalListen confirms the hub actually binds
@@ -150,47 +178,22 @@ func TestSoloStart_WarnsOnNonLoopbackListen(t *testing.T) {
 			locallistentest.SandboxHome(t)
 			t.Setenv(locallisten.EnvLocalListen, uniqueListenURL(t))
 
-			origStderr := os.Stderr
-			r, w, err := os.Pipe()
-			require.NoError(t, err, "create stderr pipe")
-			defer func() { _ = r.Close() }()
-			os.Stderr = w
+			var inst *solo.Instance
+			var startErr error
+			// Restores stderr before returning, so the assertions below (and any
+			// require/t.Fatal output) reach the real terminal, not the pipe.
+			out := testutil.CaptureStderr(t, func() {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-			// Drain concurrently — a pipe's kernel buffer (typically 64 KiB)
-			// would block once full and stall solo.Start.
-			drained := make(chan string, 1)
-			go func() {
-				var buf bytes.Buffer
-				_, _ = io.Copy(&buf, r)
-				drained <- buf.String()
-			}()
-
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			// Panic insurance: if solo.Start panics, this defer still
-			// restores os.Stderr and closes the pipe so the drainer goroutine
-			// doesn't block forever on io.Copy. On the happy path these run
-			// after the explicit close below; the second w.Close is a no-op.
-			defer func() {
-				os.Stderr = origStderr
-				_ = w.Close()
-			}()
-
-			inst, startErr := solo.Start(ctx, solo.Config{
-				Listen:     tc.listen,
-				SkipBanner: true,
+				inst, startErr = solo.Start(ctx, solo.Config{
+					Listen:     tc.listen,
+					SkipBanner: true,
+				})
 			})
 			if startErr == nil {
 				t.Cleanup(func() { require.NoError(t, inst.Stop()) })
 			}
-
-			// Restore stderr before reading drained so any subsequent
-			// require/t.Fatal output reaches the real terminal, and close w
-			// so the drainer sees EOF.
-			os.Stderr = origStderr
-			_ = w.Close()
-			out := <-drained
 
 			require.NoError(t, startErr, "solo.Start; captured stderr:\n%s", out)
 
@@ -220,15 +223,16 @@ func TestSoloStart_InvalidLocalListenErrors(t *testing.T) {
 		"error should surface the offending flag name")
 }
 
-// TestSoloStart_SurfacesHubServeError confirms that when the hub's Serve
-// goroutine fails before the listener is ready (e.g. a well-formed URL that
-// points at an unwritable location), solo.Start returns the underlying error
-// immediately instead of blocking on the 5-second WaitReady timeout.
+// A local-listen URL whose parent directory does not exist fails at BIND time,
+// inside hub.NewServer, and solo.Start must surface that immediately rather than
+// blocking out the 5-second WaitReady timeout.
 //
-// Regression test for a bug where any Serve-time failure was masked as
-// "wait for hub local listener: ... not ready after 5s", making diagnosis
-// unnecessarily hard.
-func TestSoloStart_SurfacesHubServeError(t *testing.T) {
+// Scoped to the bind failure on purpose. This used to assert `Contains("hub
+// serve")` and claim to cover the Serve-time arm, which it never reached --
+// "create hub server" merely contains that substring. The Serve arm is a
+// different code path with its own coverage in solo_test.go, which drives it
+// through the serveHub seam.
+func TestSoloStart_SurfacesHubBindError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix-socket-specific reproduction")
 	}
@@ -259,9 +263,38 @@ func TestSoloStart_SurfacesHubServeError(t *testing.T) {
 	select {
 	case got := <-done:
 		require.Error(t, got.err, "solo.Start should surface the bind failure")
-		assert.Contains(t, got.err.Error(), "hub serve",
-			"error should attribute the failure to hub Serve, not the WaitReady timeout")
+		assert.Contains(t, got.err.Error(), "create hub server",
+			"error should attribute the failure to server construction, not the WaitReady timeout")
+		assert.NotContains(t, got.err.Error(), "not ready after",
+			"the bind failure must short-circuit WaitReady")
 	case <-time.After(60 * time.Second):
 		t.Fatal("solo.Start hung instead of surfacing the bind failure")
 	}
+}
+
+// A launch that fails before the Instance exists has exactly one reporter:
+// Start, which RETURNS the error. Nothing may log it as well.
+//
+// This covers the pre-Instance half only -- the failure happens inside
+// hub.NewServer, so no watcher has been installed yet. The half where the
+// watcher DOES exist and has to stay quiet is
+// TestSoloStart_DoesNotAlsoLogAServeTimeStartupFailure, which reaches it via the
+// serveHub seam.
+func TestSoloStart_DoesNotAlsoLogANewServerFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix-socket-specific reproduction")
+	}
+	locallistentest.SandboxHome(t)
+	t.Setenv(locallisten.EnvLocalListen, "unix:/nonexistent-parent-dir-for-solo-test/hub.sock")
+
+	var startErr error
+	out := testutil.CaptureStderr(t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, startErr = solo.Start(ctx, solo.Config{SkipBanner: true, NoTCP: true})
+	})
+
+	require.Error(t, startErr, "solo.Start should surface the bind failure")
+	assert.NotContains(t, out, "hub error",
+		"the failure Start returns must not also be logged; captured stderr:\n"+out)
 }

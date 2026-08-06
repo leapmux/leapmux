@@ -30,7 +30,18 @@ import (
 // the subscription is never re-established.
 var ErrMessageRejected = errors.New("channel rejected the message")
 
+// ErrTransportGone is ErrMessageRejected's opposite, and SendFunc's contract for
+// the case where there is no connection left to send on: the Hub stream is down,
+// so no message will succeed until it comes back.
+//
+// It lives here rather than in the hub client because SendFunc is the interface
+// the client implements, and because the classification is only useful to the
+// layers above it -- see sendFailureLevel, which stops a disconnect from
+// producing one warning per stream that was open when it happened.
+var ErrTransportGone = errors.New("channel transport is not connected")
+
 // SendFunc sends a ConnectRequest (containing ChannelMessage) to the Hub.
+// It returns ErrTransportGone when no Connect stream is active.
 type SendFunc func(msg *leapmuxv1.ConnectRequest) error
 
 // TrySendFunc enqueues a ConnectRequest if the connection writer's budget
@@ -913,7 +924,15 @@ func (s *channelSender) drainErrorSends() {
 		case <-life:
 			return
 		case es := <-s.errorSends:
-			_ = s.sendError(es.requestID, es.code, es.message)
+			if err := s.sendError(es.requestID, es.code, es.message); err != nil {
+				// The one send path with no boundSender behind it, so nothing
+				// else would report this. Classified like the others rather
+				// than dropped: a marshal or encrypt failure here is a real
+				// fault, and silence made it indistinguishable from the
+				// disconnect that legitimately eats a queued error response.
+				slog.Log(context.Background(), sendFailureLevel(err), "failed to send queued inner RPC error",
+					"channel_id", s.channelID, "correlation_id", es.requestID, "error", err)
+			}
 		}
 	}
 }
@@ -1029,13 +1048,53 @@ type boundSender struct {
 	method    string
 }
 
+// sendFailureLevel picks the level a failed send is reported at.
+//
+// A send that failed because this session or its connection was being torn down
+// is the EXPECTED outcome of a disconnect, not a fault: every handler holding an
+// open stream when the Hub link drops tries one last frame on the way out (the
+// WatchEvents terminator is the reliable one), and reporting each of those as a
+// warning turns one ordinary reconnect into a burst of alarms proportional to
+// how many streams happened to be open.
+//
+// The two teardown errors are the same event a moment apart. ErrTransportGone
+// means the writer was already gone when the frame reached it;
+// channelwire.ErrSendAborted means the session lifetime was cancelled while the
+// frame was at the gate. Anything else -- a marshal failure, an oversized
+// frame, a transport error on a LIVE connection -- is still a warning, because
+// nothing was tearing down and the frame was lost anyway.
+func sendFailureLevel(err error) slog.Level {
+	if IsTransportTeardown(err) {
+		return slog.LevelDebug
+	}
+	return slog.LevelWarn
+}
+
+// IsTransportTeardown reports whether err means "this send failed because the
+// connection was going away", as opposed to a genuine fault.
+//
+// Exported because the send methods here are NOT the only reporters of these
+// errors: watcherRegistry.broadcast, the tunnel relay loops and the hub client's
+// heartbeat all log their own line for the same failure. A private helper
+// consulted by one of them left the others warning once per watcher, per tunnel
+// and per heartbeat on an ordinary disconnect -- the exact per-stream noise this
+// classification exists to remove, just under different message text.
+//
+// Deliberately NOT the same question as service.transportDead, whose job is
+// "should this subscriber be retired?" and which answers true for a transport
+// error on a LIVE connection too. That case is a real fault and must stay a
+// warning.
+func IsTransportTeardown(err error) bool {
+	return errors.Is(err, ErrTransportGone) || errors.Is(err, channelwire.ErrSendAborted)
+}
+
 // logSendFailure logs a failed send with the channel/correlation/method
 // attributes every boundSender send shares, and returns err unchanged so each
 // method can `return b.logSendFailure(...)` on its error path. Named once here
 // rather than triplicated so the attribute set cannot drift between the three
 // send methods.
 func (b *boundSender) logSendFailure(what string, err error) error {
-	slog.Warn("failed to send "+what,
+	slog.Log(context.Background(), sendFailureLevel(err), "failed to send "+what,
 		"channel_id", b.sender.channelID,
 		"correlation_id", b.requestID,
 		"method", b.method,

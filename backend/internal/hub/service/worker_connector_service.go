@@ -44,7 +44,6 @@ type WorkerConnectorService struct {
 	pending      *workermgr.PendingRequests
 	notifier     *notifier.Notifier
 	crdtRegistry CRDTRegistry
-	shutdownCh   <-chan struct{}
 	// queuePool is the WORKER outbound queue budget every Connect stream's
 	// writer draws from. Deliberately not shared with the frontend relays:
 	// reclaiming can only ever cost a member of the same pool, and dropping a
@@ -79,7 +78,6 @@ func NewWorkerConnectorService(
 	pr *workermgr.PendingRequests,
 	n *notifier.Notifier,
 	registry CRDTRegistry,
-	shutdownCh <-chan struct{},
 	queuePool *sendq.Pool,
 ) *WorkerConnectorService {
 	if queuePool == nil {
@@ -93,7 +91,6 @@ func NewWorkerConnectorService(
 		pending:      pr,
 		notifier:     n,
 		crdtRegistry: registry,
-		shutdownCh:   shutdownCh,
 		queuePool:    queuePool,
 	}
 }
@@ -317,10 +314,10 @@ func (s *WorkerConnectorService) Connect(
 	if replaced {
 		// A new worker process replaced an older connection. The old
 		// connection's Unregister will return false (it's no longer the
-		// current conn), so cleanupWorker won't run from its defer.
+		// current conn), so closeWorkerChannels won't run from its defer.
 		// We must close old channels now so the Frontend detects the
 		// disconnect and opens fresh channels to the new worker.
-		s.cleanupWorker(worker.ID)
+		s.closeWorkerChannels(worker.ID)
 	}
 	ctx = connCtx
 	// Teardown order is deliberate and lives in ONE defer so it cannot drift
@@ -329,13 +326,13 @@ func (s *WorkerConnectorService) Connect(
 	//  2. Drain writes every remaining frame while this handler still owns
 	//     the stream (write-after-finish proof).
 	//  3. Fence closes the queue and cancels Done.
-	//  4. cleanupWorker only if we were still the registered conn.
+	//  4. closeWorkerChannels only if we were still the registered conn.
 	defer func() {
 		removed := s.workerMgr.Unregister(worker.ID, conn)
 		_ = pump.Drain()
 		conn.Fence()
 		if removed {
-			s.cleanupWorker(worker.ID)
+			s.closeWorkerChannels(worker.ID)
 		}
 	}()
 
@@ -788,19 +785,20 @@ func (s *WorkerConnectorService) handleWorkspaceTabsSync(
 	)
 }
 
-// cleanupWorker handles resource cleanup for a disconnected worker.
-func (s *WorkerConnectorService) cleanupWorker(workerID string) {
-	// During hub shutdown, skip all cleanup operations.
-	// The DB is about to be closed and all workers are disconnecting.
-	if s.shutdownCh != nil {
-		select {
-		case <-s.shutdownCh:
-			slog.Info("skipping worker cleanup during hub shutdown", "worker_id", workerID)
-			return
-		default:
-		}
-	}
-
+// closeWorkerChannels unregisters every channel a disconnected worker owned.
+//
+// Named for that one job rather than the general "cleanup" it used to promise:
+// with the DB work gone there is nothing else here, and a hook whose name
+// invites unrelated teardown is how the shutdown special case got in.
+//
+// There is deliberately no shutdown special case. One used to skip this
+// entirely while the Hub was going down, justified by DB work that has since
+// moved out of here -- what is left is in-memory channel bookkeeping and a
+// best-effort close frame, the identical work every ordinary disconnect does.
+// Keeping the skip meant a second teardown path that only ever ran at shutdown,
+// and an INFO line announcing it, usually after the relay disconnect had
+// already closed the very channels it claimed to be skipping.
+func (s *WorkerConnectorService) closeWorkerChannels(workerID string) {
 	// Close all channels associated with this worker.
 	if s.channelMgr != nil {
 		removed := s.channelMgr.UnregisterByWorker(workerID)
@@ -811,6 +809,4 @@ func (s *WorkerConnectorService) cleanupWorker(workerID string) {
 			)
 		}
 	}
-
-	slog.Info("worker disconnected, cleanup complete", "worker_id", workerID)
 }

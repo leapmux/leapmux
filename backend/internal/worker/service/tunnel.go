@@ -970,7 +970,8 @@ func tunnelReadLoop(mgr *tunnelManager, connID string, tc *tunnelConn) {
 					// relay the upload's writes either, so the client's next
 					// writeData fails and surfaces the loss promptly instead of
 					// wedging.
-					slog.Warn("failed to relay target half-close EOF; closing tunnel conn",
+					slog.Log(context.Background(), sendFailureLevel(sendErr),
+						"failed to relay target half-close EOF; closing tunnel conn",
 						"conn_id", connID, "error", sendErr)
 					break
 				}
@@ -989,7 +990,8 @@ func tunnelReadLoop(mgr *tunnelManager, connID string, tc *tunnelConn) {
 				ConnId: connID,
 				Error:  err.Error(),
 			}); sendErr != nil {
-				slog.Warn("failed to relay target read error; closing tunnel conn",
+				slog.Log(context.Background(), sendFailureLevel(sendErr),
+					"failed to relay target read error; closing tunnel conn",
 					"conn_id", connID, "read_error", err, "send_error", sendErr)
 			}
 			break

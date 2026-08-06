@@ -137,7 +137,15 @@ func (a *App) CloseUserEventsRelay(relayID uint64) error {
 // lifecycleMu (nil if none was installed). Mirrors closeChannelRelay.
 func (a *App) closeUserEventsRelay() <-chan struct{} {
 	// Caller holds a.lifecycleMu for writing.
-	connection := a.connection
+	return closeUserEventsRelayOn(a.connection)
+}
+
+// closeUserEventsRelayOn is closeUserEventsRelay against an EXPLICIT connection,
+// for the teardown that has already claimed it out of the App (see
+// beginDisconnect). Mirrors closeChannelRelayOn.
+//
+// Caller holds a.lifecycleMu for writing.
+func closeUserEventsRelayOn(connection *desktopConnection) <-chan struct{} {
 	if connection == nil || connection.userEventsRelay == nil {
 		return nil
 	}

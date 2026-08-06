@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -185,7 +187,10 @@ func makeConfigUnwritable(t *testing.T) {
 }
 
 func installTestConnection(app *App, proxy *HubProxy, solo soloInstance, hubURL string) *desktopConnection {
-	ctx, stop := context.WithCancel(app.ctx)
+	// Through the production helper, not context.WithCancel(app.ctx): how the
+	// connection lifetime relates to the App's IS what the ordering tests below
+	// pin, so restating it here would let a revert pass them.
+	ctx, stop := app.newConnectionContext()
 	connection := &desktopConnection{
 		ctx:    ctx,
 		stop:   stop,
@@ -222,6 +227,199 @@ func (*recordingSoloInstance) LocalListenURL() string { return "" }
 func (s *recordingSoloInstance) Stop() error {
 	s.stops++
 	return nil
+}
+
+// inspectingSoloInstance runs onStop while the solo runtime is stopping, which
+// is the only moment from which the teardown's ORDER is observable.
+type inspectingSoloInstance struct {
+	onStop  func()
+	stopErr error
+}
+
+func (*inspectingSoloInstance) LocalListenURL() string { return "" }
+func (s *inspectingSoloInstance) Stop() error {
+	if s.onStop != nil {
+		s.onStop()
+	}
+	return s.stopErr
+}
+
+// idleTestRelay returns a channel relay on a live WebSocket that never speaks,
+// with its lifetime parented on the connection exactly as openRelay does. A real
+// socket is needed because detach force-closes it; nothing is read from it
+// because these tests are about WHEN it is torn down, not what crossed it.
+//
+// The parent matters more than the socket: a relay built on context.Background()
+// survives any teardown order, so a test using one can only ever observe
+// bookkeeping.
+func idleTestRelay(t *testing.T, parent context.Context) *ChannelRelay {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"channel-relay"}})
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithCancel(parent)
+	t.Cleanup(cancel)
+	wsURL := "ws" + server.URL[len("http"):]
+	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"channel-relay"}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ws.CloseNow() })
+	return &ChannelRelay{wsRelay: wsRelay{
+		ws:     ws,
+		ctx:    ctx,
+		cancel: cancel,
+		done:   make(chan struct{}),
+		emit:   func(*desktoppb.Event) {},
+	}}
+}
+
+// The Worker's shutdown ends with a broadcast that travels Worker -> Hub ->
+// channel relay -> webview, so the relay has to outlive the solo runtime. It
+// used to be closed first, which meant the terminal-disconnect notice was
+// written to a transport with no far end.
+func TestShutdownStopsSoloBeforeClosingTheRelay(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := NewApp("")
+
+	var relayLiveDuringStop atomic.Bool
+	solo := &inspectingSoloInstance{}
+	connection := installTestConnection(app, nil, solo, "")
+	relay := idleTestRelay(t, connection.ctx)
+	connection.relay = relay
+	// The relay's own context, captured directly -- not app.connection.relay
+	// under the lock. The slot being populated says only that phase C has not
+	// run; what the Worker's farewell actually needs is a transport that is
+	// still LIVE, and readLoop exits without emitting the moment this context is
+	// done. Holding the relay directly also means no lock is taken here, so a
+	// regression that puts phase B back under the write lock fails the assertion
+	// instead of deadlocking the suite.
+	solo.onStop = func() { relayLiveDuringStop.Store(relay.ctx.Err() == nil) }
+
+	require.NoError(t, app.Shutdown())
+
+	assert.True(t, relayLiveDuringStop.Load(),
+		"the relay's transport must still be live while the worker drains through it")
+	assert.Error(t, relay.ctx.Err(), "and must be torn down once the hub has stopped")
+	assert.Nil(t, app.connection, "the connection must be gone once the hub has stopped")
+}
+
+func TestSwitchModeStopsSoloBeforeClosingTheRelay(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := NewApp("")
+	t.Cleanup(func() { require.NoError(t, app.Shutdown()) })
+
+	var relayLiveDuringStop atomic.Bool
+	solo := &inspectingSoloInstance{}
+	connection := installTestConnection(app, nil, solo, "")
+	relay := idleTestRelay(t, connection.ctx)
+	connection.relay = relay
+	app.config.Mode = "solo"
+	solo.onStop = func() { relayLiveDuringStop.Store(relay.ctx.Err() == nil) }
+
+	outcome, err := app.SwitchMode()
+	require.NoError(t, err)
+	require.Empty(t, outcome.cleanupErrors)
+
+	assert.True(t, relayLiveDuringStop.Load(),
+		"the relay's transport must still be live while the worker drains through it")
+	assert.Error(t, relay.ctx.Err(), "and must be torn down once the hub has stopped")
+	assert.Nil(t, app.connection)
+}
+
+// Shutdown proceeds WITHOUT the transition gate when a concurrent SwitchMode
+// overruns the drain deadline, so two teardowns can run against one connection.
+// Phase A claims it under the lock that read it, so only the first ever reaches
+// the runtime. When the claim was deferred to phase C instead, the second
+// teardown got the same *soloRuntime and re-entered Instance.Stop -- whose final
+// Worker join is unbounded -- wedging main's deferred exit on exactly the hazard
+// Shutdown's bounded drain exists to avoid.
+//
+// The re-entry is driven from inside phase B (where no lock is held), which is
+// precisely the window the real race opens.
+func TestDisconnectClaimsTheConnectionSoOnlyOneTeardownStopsSolo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := NewApp("")
+
+	var stops, reentries atomic.Int32
+	var nestedErr error
+	solo := &inspectingSoloInstance{}
+	solo.onStop = func() {
+		stops.Add(1)
+		// Bounded so a regression fails the assertion instead of recursing until
+		// the stack blows.
+		if reentries.Add(1) == 1 {
+			nestedErr = app.disconnectAndStopSolo()
+		}
+	}
+	installTestConnection(app, nil, solo, "")
+
+	require.NoError(t, app.disconnectAndStopSolo())
+	require.NoError(t, nestedErr)
+
+	assert.Equal(t, int32(1), stops.Load(),
+		"a second teardown entering during phase B must not stop the same runtime again")
+	assert.Nil(t, app.connection)
+}
+
+// idleClosingTransport records http.Client.CloseIdleConnections reaching the
+// transport. net/http forwards that call to any Transport exposing the method,
+// which is what makes the timing observable at all.
+type idleClosingTransport struct{ onCloseIdle func() }
+
+func (*idleClosingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("idleClosingTransport does not serve requests")
+}
+
+func (t *idleClosingTransport) CloseIdleConnections() { t.onCloseIdle() }
+
+// The mirror image of the relay ordering: idle proxy connections must be
+// dropped BEFORE the Hub stops, or on Windows they pin named-pipe handles
+// across solo.Stop() and the next ListenPipe fails. Splitting the teardown so
+// relays outlive the Hub must not carry this along with them.
+func TestShutdownClosesIdleProxyConnectionsBeforeStoppingSolo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := NewApp("")
+
+	var idleClosed atomic.Bool
+	transport := &idleClosingTransport{onCloseIdle: func() { idleClosed.Store(true) }}
+	proxy := &HubProxy{
+		client:   &http.Client{Transport: transport},
+		wsClient: &http.Client{Transport: transport},
+	}
+
+	var closedBeforeStop atomic.Bool
+	solo := &inspectingSoloInstance{
+		onStop: func() { closedBeforeStop.Store(idleClosed.Load()) },
+	}
+	installTestConnection(app, proxy, solo, "")
+
+	require.NoError(t, app.Shutdown())
+
+	assert.True(t, closedBeforeStop.Load(),
+		"idle proxy connections must be dropped before the hub stops")
+}
+
+// A solo runtime that fails to stop still leaves relays and tunnels pointing at
+// a Hub that is going away, so the second phase is not conditional on the first
+// having succeeded.
+func TestShutdownClosesTheRelayWhenStoppingSoloFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := NewApp("")
+
+	wantErr := errors.New("hub serve failed")
+	connection := installTestConnection(app, nil, &inspectingSoloInstance{stopErr: wantErr}, "")
+	relay := idleTestRelay(t, connection.ctx)
+	connection.relay = relay
+
+	require.ErrorIs(t, app.Shutdown(), wantErr)
+
+	assert.Nil(t, app.connection)
+	assert.Error(t, relay.ctx.Err(), "the relay must be detached even when the hub stop failed")
 }
 
 func TestSwitchModeDoesNotDisconnectWhenConfigSaveFails(t *testing.T) {

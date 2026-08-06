@@ -25,12 +25,40 @@ import (
 	workerconfig "github.com/leapmux/leapmux/internal/worker/config"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/worker"
+
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // workerSetupPollInterval is how often dev mode re-checks whether the first
 // admin user has completed the /setup flow so the auto-registered local
 // worker can come online.
 const workerSetupPollInterval = 2 * time.Second
+
+// workerDrainTimeout bounds how long the ordered shutdown waits for the Worker
+// to finish draining before it stops holding the Hub open for it. See
+// Instance.shutdown for why the Worker goes first at all.
+//
+// Sized against the drain it is waiting on: the Worker's own outbound flush is
+// bounded by hub.ShutdownFlushTimeout (5s), and everything before it --
+// broadcasting the terminal goodbye, stopping the background loops, draining
+// in-flight starts -- is fast on an idle machine and unbounded on a busy one.
+// So this is not a promise the drain fits; it is the point at which a Hub that
+// is trying to exit stops waiting for a Worker that is not coming.
+//
+// A var so tests can shorten it, matching operationDrainTimeout and
+// relayDrainTimeout in the desktop sidecar.
+var workerDrainTimeout = 5 * time.Second
+
+// serveHub runs the Hub. A var so tests can make Serve fail or exit on demand.
+//
+// It has to be a seam because hub.NewServer binds BOTH listeners before Serve is
+// ever called, so no fixture can induce a Serve-TIME failure by occupying an
+// address or pointing at an unwritable path -- every such attempt fails earlier,
+// in NewServer, on a path that never reaches the watcher. Without this, the
+// "the Hub died while serving" arm and the gate that stops a startup failure
+// from being reported twice both had no coverage, and two tests aimed at them
+// were passing on a NewServer failure instead.
+var serveHub = func(ctx context.Context, s *hub.Server) error { return s.Serve(ctx) }
 
 // nonLoopbackListenWarnMsg is the security warning emitted when solo mode
 // binds to a non-loopback address. Solo mode injects a soloUser into the
@@ -68,12 +96,50 @@ type Config struct {
 }
 
 // Instance represents a running solo Hub+Worker pair.
+//
+// The Hub and the Worker get SEPARATE cancellation, and neither is a child of
+// the context handed to Start. That detachment is the whole point: cancelling
+// one context would tear both down at the same instant, and the Worker always
+// won that race -- it closes its Connect stream in a couple of syscalls while
+// the Hub is still working through its own shutdown -- so the Hub's shutdown
+// notification landed on a stream that was already gone and the Worker's
+// goodbye landed on a Hub that had already fenced it. See Instance.shutdown for
+// the order they are cancelled in, and why.
+//
+// The cancels and the worker counter are usable at their zero values, which is
+// what the TESTS need: solo_test.go builds bare &Instance{} literals to drive
+// the teardown ordering without standing a Hub up. Production always goes
+// through Start, which sets both cancels in the same struct literal. (hubDone is
+// the exception -- Wait parks on it, so an Instance that will be waited on has
+// to have one.)
 type Instance struct {
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	listenURL string
-	hubErr    error         // set before hubDone is closed
-	hubDone   chan struct{} // closed when the Hub goroutine exits
+	shutdownOnce sync.Once
+	cancelWorker context.CancelFunc
+	cancelHub    context.CancelFunc
+	// workerWork covers the Worker goroutine, the dev-mode setup poller (which
+	// can launch that goroutine after Start has returned), and Start's own
+	// bring-up. It reports FULL exit, which is what Stop must join: worker.Run
+	// closes the Worker's database as it unwinds.
+	//
+	// A drain.Counter rather than a sync.WaitGroup because shutdown has to wait
+	// with a DEADLINE, and bridging a WaitGroup to a bounded wait needs a
+	// spawned waiter that leaks when the wait is abandoned -- the leak the
+	// sidecar already retired under issue #297.
+	workerWork drain.Counter
+	// workerDrained reports the narrower thing the HUB actually has to outlive:
+	// the goodbye broadcast and the outbound flush, announced by worker.Run's
+	// Drained hook before its local teardown. Waiting on workerWork instead
+	// would hold the Hub up for a database close it has no stake in, and report
+	// a slow one as a worker that "did not finish draining".
+	workerDrained drain.Counter
+	listenURL     string
+	hubErr        error         // set before hubDone is closed
+	hubDone       chan struct{} // closed when the Hub goroutine exits
+	// watcherDone closes when the goroutine that turns a cancelled parent
+	// context (or a Hub that exited on its own) into an ordered teardown has
+	// finished. join waits for it so no report or teardown step can still be in
+	// flight after Stop returns.
+	watcherDone chan struct{}
 }
 
 // LocalListenURL returns the URL at which the Hub is accepting local IPC
@@ -92,12 +158,81 @@ func (i *Instance) Wait() error {
 	return i.hubErr
 }
 
-// Stop gracefully shuts down the Hub and Worker and returns the Hub's terminal
-// error, including failures from shutdown cleanup such as runtime lease release.
+// shutdown runs the ordered teardown exactly once: the Worker drains FIRST,
+// against a Hub that is still serving, and only then does the Hub begin its own
+// graceful shutdown.
+//
+// The order is what makes the Worker's last words deliverable. worker.Run
+// already runs its drain before tearing its own stream down, and that drain
+// broadcasts the terminal "[Worker disconnected - Press Enter to restart]"
+// notice -- documented in Service.Shutdown as the only chance a browser has to
+// learn its terminal died, because the process is about to exit and nothing
+// replays afterwards. Cancelling both at once defeated it from the other side:
+// the Hub fences every worker connection early in its shutdown and stops the
+// auth leases holding the channel relays open, so the notice was written to a
+// transport that had already been torn down.
+//
+// It is idempotent and safe on a zero-value Instance, because it is reached
+// from three directions -- Stop, the caller's context being cancelled, and the
+// Hub exiting on its own -- and any of them can arrive first.
+func (i *Instance) shutdown() {
+	i.shutdownOnce.Do(func() {
+		if i.cancelWorker != nil {
+			i.cancelWorker()
+		}
+		// Waits for the DRAIN, not for the Worker's exit: everything after the
+		// drain is local teardown the Hub has no reason to outlive. The timeout
+		// is a backstop for a Worker that never reports draining at all, not the
+		// mechanism -- an ordinary shutdown returns here as soon as the last
+		// frame is away. Stop still joins the full exit afterwards, unbounded;
+		// see its doc for why the database close is not optional.
+		i.workerDrained.Wait(workerDrainTimeout,
+			"worker did not report draining before the hub shutdown deadline; stopping the hub anyway")
+		if i.cancelHub != nil {
+			i.cancelHub()
+		}
+	})
+}
+
+// Stop gracefully shuts down the Worker and Hub, in that order, and returns the
+// Hub's terminal error, including failures from shutdown cleanup such as runtime
+// lease release.
+//
+// The final Worker wait is deliberately unbounded even though shutdown's is not:
+// worker.Run closes the Worker's database as it unwinds, and returning from Stop
+// with that still in flight would let the next ConnectSolo reopen the same file
+// underneath it. A Worker that overran the drain budget has already cost the Hub
+// nothing further by this point -- the Hub is stopped.
+//
+// It reports EXACTLY the Hub's terminal error. A Worker that failed to drain is
+// logged by shutdown and never joined in: waitSolo documents itself as the single
+// reporter of that error, and widening what Stop returns would make it report
+// something else.
 func (i *Instance) Stop() error {
-	i.cancel()
-	i.wg.Wait()
+	i.join()
 	return i.Wait()
+}
+
+// join runs the ordered teardown and waits out both halves. It is the ONE
+// spelling of the wait set: Stop uses it, and so does every Start failure arm,
+// which used to hand-roll three different subsets of it and stay correct only
+// by accident of which goroutines happened to be running yet.
+//
+// The Worker wait is deliberately unbounded even though shutdown's is not:
+// worker.Run closes the Worker's database as it unwinds, and returning with that
+// still in flight would let the next ConnectSolo reopen the same file underneath
+// it. By this point the Hub is already stopped, so a slow Worker costs it
+// nothing further.
+func (i *Instance) join() {
+	i.shutdown()
+	<-i.hubDone
+	<-i.workerWork.DoneChan()
+	// Last, because the watcher wakes on hubDone: joining it here is what makes
+	// "Stop returned" mean the whole teardown is over, rather than leaving its
+	// report to land on a caller that has already moved on.
+	if i.watcherDone != nil {
+		<-i.watcherDone
+	}
 }
 
 // Start launches a Hub and Worker in-process. It returns an Instance that
@@ -188,25 +323,57 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		return nil, fmt.Errorf("create hub server: %w", err)
 	}
 
-	soloCtx, cancel := context.WithCancel(ctx)
-
+	// Resolved BEFORE the contexts exist, so no failure path has to cancel them:
+	// Instance.shutdown stays the only place either cancel is ever reached.
 	listenURL, err := hubCfg.LocalListenURL()
 	if err != nil {
-		cancel()
 		return nil, fmt.Errorf("resolve local-listen URL: %w", err)
 	}
+
+	// Two sibling contexts, both DETACHED from ctx (values kept, cancellation
+	// not), so cancellation reaches the Hub and the Worker in the order
+	// Instance.shutdown imposes rather than all at once. The watcher goroutine
+	// installed below is what turns a cancelled ctx back into a shutdown; it is
+	// armed before any of this can block, so a caller that cancels during
+	// startup still tears the instance down.
+	detached := context.WithoutCancel(ctx)
+	workerCtx, cancelWorker := context.WithCancel(detached)
+	hubCtx, cancelHub := context.WithCancel(detached)
 	inst := &Instance{
-		cancel:    cancel,
-		listenURL: listenURL,
-		hubDone:   make(chan struct{}),
+		cancelWorker: cancelWorker,
+		cancelHub:    cancelHub,
+		listenURL:    listenURL,
+		hubDone:      make(chan struct{}),
+		watcherDone:  make(chan struct{}),
 	}
 
-	// Start Hub. hubErr/hubDone publish the terminal error to Wait callers.
-	inst.wg.Add(1)
+	// Start Hub. hubErr/hubDone publish the terminal error to Wait callers, and
+	// hubDone is the ONLY "the Hub is finished" signal -- a second one (a wait
+	// group closed just after it) could only ever disagree with it.
 	go func() {
-		defer inst.wg.Done()
-		inst.hubErr = server.Serve(soloCtx)
+		inst.hubErr = serveHub(hubCtx, server)
 		close(inst.hubDone)
+	}()
+
+	// One goroutine, two triggers, one ordered teardown. The caller cancelling
+	// is the ordinary path (SIGINT, the desktop sidecar's own shutdown); the Hub
+	// exiting on its own is the failure path, where the Worker must be torn down
+	// too rather than left looping against a dead endpoint.
+	//
+	// It deliberately REPORTS NOTHING. Every way the Hub can fail already has
+	// exactly one reporter: Start RETURNS a failure on the way up, and once Start
+	// has succeeded the error reaches its caller through Wait and Stop -- which
+	// waitSolo documents itself as the single reporter of. A log here would be a
+	// second one for whichever of those the watcher happened to observe, which
+	// is the duplicate report this shutdown work exists to remove, not a shape
+	// of it to keep.
+	go func() {
+		defer close(inst.watcherDone)
+		select {
+		case <-ctx.Done():
+		case <-inst.hubDone:
+		}
+		inst.shutdown()
 	}()
 
 	// Wait for Hub's local listener (unix socket or named pipe). Race
@@ -214,19 +381,18 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	// is ready, we surface the underlying Serve error (e.g. "bind:
 	// invalid argument") instead of the generic "not ready" timeout.
 	readyCh := make(chan error, 1)
-	go func() { readyCh <- locallisten.WaitReady(soloCtx, listenURL) }()
+	go func() { readyCh <- locallisten.WaitReady(hubCtx, listenURL) }()
 	select {
 	case err := <-readyCh:
 		if err != nil {
-			cancel()
-			inst.wg.Wait()
+			inst.join()
 			if inst.hubErr != nil && !errors.Is(inst.hubErr, context.Canceled) {
 				return nil, fmt.Errorf("hub serve: %w", inst.hubErr)
 			}
 			return nil, fmt.Errorf("wait for hub local listener: %w", err)
 		}
 	case <-inst.hubDone:
-		cancel()
+		inst.join()
 		if inst.hubErr != nil {
 			return nil, fmt.Errorf("hub serve: %w", inst.hubErr)
 		}
@@ -237,36 +403,40 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	// until /setup completes.
 	statePath := filepath.Join(workerDataDir, "state.json")
 	setupWorker := func(ctx context.Context) error {
-		return bringUpLocalWorker(ctx, &inst.wg, server, statePath, workerDataDir, hubCfg, listenURL, modeName)
+		return bringUpLocalWorker(ctx, &inst.workerWork, &inst.workerDrained, server, statePath, workerDataDir, hubCfg, listenURL, modeName)
 	}
-	err = setupWorker(soloCtx)
+	// Hold a Worker-side token ACROSS bring-up. Without it a caller cancelling
+	// during setup lets the watcher's shutdown sample an idle counter, cancel
+	// the Hub, and only then have bringUpLocalWorker launch worker.Run against
+	// an endpoint that is already going down -- Start would still return a
+	// healthy-looking Instance. Holding the token means the counter is never
+	// zero between the last ctx check and the Add that launches the Worker, so
+	// drain.Counter's no-add-after-sample contract holds by construction.
+	inst.workerWork.Add()
+	inst.workerDrained.Add()
+	err = setupWorker(workerCtx)
 	switch {
 	case err == nil:
 		// Worker is up.
 	case errors.Is(err, store.ErrNotFound) && cfg.DevMode:
 		slog.Info("dev mode: deferring worker auto-registration until first admin signs up via /setup")
-		inst.wg.Add(1)
-		go pollForDeferredWorkerSetup(soloCtx, &inst.wg, setupWorker)
+		// Counted with the Worker, not the Hub: it is the thing that brings the
+		// Worker up, so the ordered shutdown has to wait it out before it can
+		// know no Worker is on its way. Added while the bring-up token is still
+		// held, so the counter never dips to zero across the handover.
+		inst.workerWork.Add()
+		inst.workerDrained.Add()
+		go pollForDeferredWorkerSetup(workerCtx, &inst.workerWork, &inst.workerDrained, setupWorker)
 	default:
-		cancel()
-		inst.wg.Wait()
+		inst.workerDrained.Done()
+		inst.workerWork.Done()
+		inst.join()
 		return nil, fmt.Errorf("auto-register worker: %w", err)
 	}
+	inst.workerDrained.Done()
+	inst.workerWork.Done()
 
 	slog.Info("leapmux "+modeName+" listening", "listen", hubCfg.Listen)
-
-	// If the Hub exits unexpectedly, cancel soloCtx so the worker tears down
-	// promptly instead of looping against a dead endpoint.
-	go func() {
-		select {
-		case <-inst.hubDone:
-			if inst.hubErr != nil {
-				slog.Error("hub error", "error", inst.hubErr)
-			}
-			cancel()
-		case <-soloCtx.Done():
-		}
-	}()
 
 	return inst, nil
 }
@@ -286,10 +456,14 @@ type soloState struct {
 
 // pollForDeferredWorkerSetup retries setupWorker on a ticker until it succeeds,
 // the context is cancelled, or a non-ErrNotFound error occurs. Must be invoked
-// as `go pollForDeferredWorkerSetup(...)` with wg.Add(1) already called — this
-// function calls wg.Done on exit.
-func pollForDeferredWorkerSetup(ctx context.Context, wg *sync.WaitGroup, setupWorker func(context.Context) error) {
-	defer wg.Done()
+// as `go pollForDeferredWorkerSetup(...)` with work.Add() and drained.Add()
+// already called — this function releases both on exit.
+func pollForDeferredWorkerSetup(ctx context.Context, work, drained *drain.Counter, setupWorker func(context.Context) error) {
+	defer work.Done()
+	// Released here as well as inside bringUpLocalWorker: until a Worker exists
+	// there is no drain to wait for, and a poller that gives up without ever
+	// starting one must not hold the Hub for the backstop.
+	defer drained.Done()
 	ticker := time.NewTicker(workerSetupPollInterval)
 	defer ticker.Stop()
 	for {
@@ -317,7 +491,7 @@ func pollForDeferredWorkerSetup(ctx context.Context, wg *sync.WaitGroup, setupWo
 // /setup signup completes.
 func bringUpLocalWorker(
 	ctx context.Context,
-	wg *sync.WaitGroup,
+	work, drained *drain.Counter,
 	server *hub.Server,
 	statePath, workerDataDir string,
 	hubCfg *hubconfig.Config,
@@ -365,10 +539,18 @@ func bringUpLocalWorker(
 		"local", listenURL,
 	)
 
-	wg.Add(1)
+	work.Add()
+	drained.Add()
+	// Guarded so the drain signal is released exactly once whether the Worker
+	// reports draining or dies before it ever gets there -- an unreleased token
+	// would make every shutdown pay the full backstop.
+	var drainedOnce sync.Once
+	releaseDrained := func() { drainedOnce.Do(drained.Done) }
 	go func() {
-		defer wg.Done()
+		defer work.Done()
+		defer releaseDrained()
 		if wErr := worker.Run(ctx, worker.RunConfig{
+			Drained:      releaseDrained,
 			HubURL:       listenURL,
 			DataDir:      workerDataDir,
 			AuthToken:    state.AuthToken,

@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -10,10 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
@@ -159,7 +161,7 @@ func TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant(t *testing.T) {
 
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, nil, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest())
 
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
@@ -208,7 +210,7 @@ func TestHandleWorkspaceTabsSync_ManagerGetFailureStillResponds(t *testing.T) {
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
 	reg.failFor = userA.ID
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, nil, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, reg, sendq.NewMaxBytesPoolForTest())
 
 	var sent atomic.Int32
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error {
@@ -242,7 +244,7 @@ func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testin
 	seedOwnedTab(t, st, userB.ID, "bob ws", "dup-tab")
 
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), nil, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest())
 	var mu sync.Mutex
 	var sent []*leapmuxv1.ConnectResponse
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
@@ -286,9 +288,9 @@ func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
 	userA := storetest.SeedUser(t, st, "alice")
 	_ = seedOwnedTab(t, st, userA.ID, "alice ws", "tab-a")
 
-	logs := captureDefaultLogger(t)
+	logs := testutil.CaptureDefaultLogger(t)
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), nil, sendq.NewMaxBytesPoolForTest())
+	svc := NewWorkerConnectorService(st, nil, nil, nil, nil, nil, newRecordingRegistry(t, journal), sendq.NewMaxBytesPoolForTest())
 	sent := 0
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
 		sent++
@@ -326,14 +328,33 @@ func seedOwnedTab(t *testing.T, st store.Store, ownerID, title, tabID string) st
 	return wsID
 }
 
-// captureDefaultLogger redirects slog's default logger into a buffer for the
-// duration of one test. handleWorkspaceTabsSync logs through the package-level
-// slog functions, so this is the only seam onto its diagnostics.
-func captureDefaultLogger(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	buf := &bytes.Buffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return buf
+// closeWorkerChannels used to branch on a shutdown channel and skip everything below
+// it, which meant the Hub had two teardown paths for a disconnecting worker and
+// only ever exercised the second one on the way out. These pin the single path:
+// the channels go, whatever else is happening to the process.
+func TestCloseWorkerChannels_ClosesTheWorkersChannels(t *testing.T) {
+	cMgr := channelmgr.New(0)
+	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest())
+
+	cMgr.RegisterWithAuthInfo("ch1", "w1", "u1", channelmgr.AuthInfo{}, nil)
+	cMgr.RegisterWithAuthInfo("ch2", "w1", "u1", channelmgr.AuthInfo{}, nil)
+	cMgr.RegisterWithAuthInfo("ch-other", "w2", "u1", channelmgr.AuthInfo{}, nil)
+
+	svc.closeWorkerChannels("w1")
+
+	assert.False(t, cMgr.Exists("ch1"))
+	assert.False(t, cMgr.Exists("ch2"))
+	assert.True(t, cMgr.Exists("ch-other"), "another worker's channels are not this worker's to close")
+}
+
+// The channels a relay disconnect already closed are the common case at
+// shutdown, and they must leave no trace: nothing to close means nothing to say.
+func TestCloseWorkerChannels_IsSilentWhenThereIsNothingToClose(t *testing.T) {
+	cMgr := channelmgr.New(0)
+	svc := NewWorkerConnectorService(nil, nil, cMgr, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest())
+	buf := testutil.CaptureDefaultLogger(t)
+
+	svc.closeWorkerChannels("w-with-no-channels")
+
+	assert.Empty(t, buf.String())
 }

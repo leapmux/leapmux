@@ -44,6 +44,18 @@ type RunConfig struct {
 	// workers.registered_by); the Hub's connect-time WorkerIdentity overrides it, and
 	// is the authority. Leave it empty and the Hub still establishes it.
 	RegisteredBy string
+	// Drained, when non-nil, is called once the shutdown that NEEDS A LIVE HUB
+	// has finished -- the goodbye broadcast and the outbound flush -- and before
+	// the purely local teardown (connect loop, database, wake locks) that
+	// follows it.
+	//
+	// It exists for the in-process launchers, which stop the Hub themselves: the
+	// only signal they had was the whole of Run returning, so they either
+	// stopped the Hub while the goodbye was still in flight or padded a
+	// wall-clock guess over work the Hub has no reason to outlive. Called at
+	// most once, on the shutdown path only; a Run that fails before shutdown
+	// never calls it, so callers must not treat it as a required signal.
+	Drained func()
 }
 
 // Run starts the worker and blocks until ctx is cancelled.
@@ -143,6 +155,13 @@ func Run(ctx context.Context, cfg RunConfig) error {
 	go func() {
 		<-ctx.Done()
 		runShutdown()
+		// Announced BEFORE cancelRun, which is the whole point: everything after
+		// this line is local teardown, so a launcher waiting on this can stop
+		// the Hub as soon as the last frame is away instead of outliving a
+		// database close it has no stake in.
+		if cfg.Drained != nil {
+			cfg.Drained()
+		}
 		cancelRun()
 	}()
 

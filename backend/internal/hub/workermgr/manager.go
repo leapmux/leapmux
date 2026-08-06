@@ -428,6 +428,97 @@ func (m *Manager) WaitForRegistrationChange(ctx context.Context, regToken string
 	}
 }
 
+// ShutdownNotifyResult tallies what became of one NotifyShutdownAndFence
+// broadcast. AlreadyGone is deliberately its own bucket rather than folded into
+// Failed: a worker that tore its own connection down a moment before the Hub
+// reached it has nothing left to be told, so counting it as a failure would
+// report a problem on every ordinary co-shutdown. Delivered + AlreadyGone +
+// Failed equals Total only when the deadline did not cut the wait short.
+type ShutdownNotifyResult struct {
+	Delivered   int
+	AlreadyGone int
+	Failed      int
+	Total       int
+}
+
+// record folds one worker's outcome into the tally. It lives next to the struct
+// so the enum and the buckets it feeds cannot drift: adding an outcome is a
+// compile-time visit here rather than a switch somewhere else that silently
+// drops the new case on the floor.
+func (r *ShutdownNotifyResult) record(o notifyOutcome) {
+	switch o {
+	case notifyDelivered:
+		r.Delivered++
+	case notifyAlreadyGone:
+		r.AlreadyGone++
+	case notifyFailed:
+		r.Failed++
+	}
+}
+
+// logAttrs is the tally as slog arguments, shared by the completion line and the
+// deadline line so the two can never report different fields for the same thing.
+func (r *ShutdownNotifyResult) logAttrs() []any {
+	return []any{
+		"delivered", r.Delivered, "already_gone", r.AlreadyGone,
+		"failed", r.Failed, "total", r.Total,
+	}
+}
+
+// notifyOutcome is one worker's result, kept separate from the log line so the
+// classification is a value the caller can assert on rather than log text.
+type notifyOutcome int
+
+const (
+	notifyDelivered notifyOutcome = iota
+	notifyAlreadyGone
+	notifyFailed
+)
+
+// classifyNotifyErr says whether err means "this worker was already gone" or
+// "the Hub could not tell a live worker".
+//
+// Order matters. ErrControlSaturated must be tested FIRST because SendControl
+// fences the conn before returning it (see Conn.SendControl), which closes
+// Done() -- so the conn-is-done check below would otherwise file a control
+// queue the Hub itself overran as a worker that had left on its own. That is
+// exactly backwards: saturation is the one case here that says something is
+// wrong on this side.
+//
+// Every HUB-side cause is therefore tested before any worker-side one, because
+// all of them converge on the same observable state -- a closed Done() and an
+// ErrConnectionClosed from later sends -- and only the side that caused it knows:
+//
+//   - ErrControlSaturated: SendControl fences before returning it.
+//   - Conn.GaveUp: the queue's give-up callback fenced on a write timeout, a
+//     blown budget, or pool pressure. Without this the Hub reclaiming a slow
+//     worker reads as that worker having left.
+//   - ctx.Err(): the caller's own budget expired, and NotifyShutdownAndFence
+//     fences everything on its way out -- so past this point Done() is a channel
+//     the Hub closed itself and says nothing about the worker.
+//
+// Only then does a closed Done() mean what it looks like. It covers the case the
+// error alone cannot name: Flush surfaces the CONN's context error verbatim
+// (sendq.Writer.Flush selects on it), so a worker whose stream died
+// mid-notification reports a bare context.Canceled.
+func classifyNotifyErr(ctx context.Context, conn *Conn, err error) notifyOutcome {
+	switch {
+	case err == nil:
+		return notifyDelivered
+	case errors.Is(err, ErrControlSaturated), conn.GaveUp(), ctx.Err() != nil:
+		return notifyFailed
+	case errors.Is(err, ErrConnectionClosed):
+		return notifyAlreadyGone
+	default:
+		select {
+		case <-conn.Done():
+			return notifyAlreadyGone
+		default:
+			return notifyFailed
+		}
+	}
+}
+
 // NotifyShutdownAndFence tells every connected worker the Hub is going down,
 // then fences them all on the way out -- deadline path included.
 //
@@ -441,12 +532,15 @@ func (m *Manager) WaitForRegistrationChange(ctx context.Context, regToken string
 // correct in production (server.go bounds it) and means every test MUST pass
 // a bounded context. Delivery is best-effort; errors are logged but do not
 // abort the sequence. Fencing is not optional -- see FenceAll.
-func (m *Manager) NotifyShutdownAndFence(ctx context.Context, retryDelaySeconds int32) {
+//
+// The returned tally is the seam tests assert on: the per-worker classification
+// is otherwise observable only through the default logger.
+func (m *Manager) NotifyShutdownAndFence(ctx context.Context, retryDelaySeconds int32) ShutdownNotifyResult {
 	connections := m.snapshotConns()
 
-	// done carries per-worker delivery success so the completion tally reflects
+	// done carries each worker's classified outcome so the tally reflects
 	// notifications that reached the wire, not merely queued.
-	done := make(chan bool, len(connections))
+	done := make(chan notifyOutcome, len(connections))
 	for _, conn := range connections {
 		go func() {
 			err := conn.SendControl(&leapmuxv1.ConnectResponse{
@@ -459,10 +553,19 @@ func (m *Manager) NotifyShutdownAndFence(ctx context.Context, retryDelaySeconds 
 			if err == nil {
 				err = conn.Flush(ctx)
 			}
-			if err != nil {
+			outcome := classifyNotifyErr(ctx, conn, err)
+			switch outcome {
+			case notifyAlreadyGone:
+				// Not a warning: the worker left before the Hub could speak, and
+				// the only thing the notification carries is a reconnect delay
+				// that a departed worker has no use for.
+				slog.Debug("worker disconnected before the shutdown notification",
+					"worker_id", conn.WorkerID, "error", err)
+			case notifyFailed:
 				slog.Warn("failed to send shutdown notification to worker", "worker_id", conn.WorkerID, "error", err)
+			case notifyDelivered:
 			}
-			done <- err == nil
+			done <- outcome
 		}()
 	}
 
@@ -471,20 +574,25 @@ func (m *Manager) NotifyShutdownAndFence(ctx context.Context, retryDelaySeconds 
 	// hold the drain open for the full idle timeout.
 	defer m.FenceAll()
 
-	completed, sent := 0, 0
+	result := ShutdownNotifyResult{Total: len(connections)}
+	completed := 0
 	for completed < len(connections) {
 		select {
-		case ok := <-done:
+		case outcome := <-done:
 			completed++
-			if ok {
-				sent++
-			}
+			result.record(outcome)
 		case <-ctx.Done():
-			slog.Warn("worker shutdown notification deadline reached", "sent", sent, "total", len(connections))
-			return
+			slog.Warn("worker shutdown notification deadline reached", result.logAttrs()...)
+			return result
 		}
 	}
-	slog.Info("sent shutdown notifications to workers", "count", sent, "total", len(connections))
+	// A Hub that reaches shutdown with nothing connected has nothing to report;
+	// an ordered solo teardown makes that the NORMAL case, and "count 0 of 0" is
+	// precisely the non-event this log should not manufacture.
+	if result.Total > 0 {
+		slog.Info("sent shutdown notifications to workers", result.logAttrs()...)
+	}
+	return result
 }
 
 // isFenced reports whether FenceAll has latched the registry closed.

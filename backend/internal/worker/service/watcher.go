@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -186,6 +187,21 @@ func (r *watcherRegistry) retire(entityID string, failed []registration) {
 // errEventNotMarshalable marks an envelope the worker could not encode.
 var errEventNotMarshalable = errors.New("watch event could not be marshalled")
 
+// sendFailureLevel picks the level for a failed send to a channel: Debug when
+// the connection was on its way out, Warn for a genuine fault. Deferring to the
+// channel package keeps ONE answer to "was this just a disconnect?" across every
+// site that reports one -- here, the tunnel relay loops, and the hub client.
+//
+// Not derivable from transportDead: that answers "should this subscriber be
+// retired?" and is true for a transport error on a LIVE connection too, which is
+// a real fault and must stay a warning.
+func sendFailureLevel(err error) slog.Level {
+	if channel.IsTransportTeardown(err) {
+		return slog.LevelDebug
+	}
+	return slog.LevelWarn
+}
+
 // transportDead classifies a stream-send error: only a genuinely dead transport
 // retires a subscription.
 //
@@ -196,6 +212,11 @@ var errEventNotMarshalable = errors.New("watch event could not be marshalled")
 // it is one un-encodable envelope, and retiring over it would lose the message
 // page, status, and control requests behind it. Everything else — a closed
 // channel, a torn-down session, a write to a gone peer — defaults to dead.
+//
+// channel.ErrTransportGone is named rather than left to the default arm: it is
+// the single most common way a live subscription ends, and stating it here
+// keeps the answer a property of this function instead of an accident of what
+// the fallthrough happens to return.
 func transportDead(err error) bool {
 	switch {
 	case err == nil:
@@ -204,6 +225,8 @@ func transportDead(err error) bool {
 		return false
 	case errors.Is(err, errEventNotMarshalable):
 		return false
+	case errors.Is(err, channel.ErrTransportGone):
+		return true
 	default:
 		return true
 	}
@@ -307,7 +330,14 @@ func (r *watcherRegistry) broadcast(entityID string, resp *leapmuxv1.WatchEvents
 				"entity_id", entityID, "channel_id", w.channelID, "error", sendErr)
 			continue
 		}
-		slog.Warn("broadcast: SendStream failed",
+		// Debug when the connection was simply going away. boundSender.SendStream
+		// has already logged this exact failure at the level it deserves; warning
+		// again here made one disconnect cost one WARN per open watcher, which is
+		// the noise the classification exists to remove. A transport error on a
+		// LIVE connection is still a warning -- transportDead is true for that
+		// too, which is why the level comes from channel.IsTransportTeardown and
+		// not from transportDead.
+		slog.Log(context.Background(), sendFailureLevel(sendErr), "broadcast: SendStream failed",
 			"entity_id", entityID, "channel_id", w.channelID, "error", sendErr)
 		dead = append(dead, w)
 	}

@@ -384,7 +384,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}, slog.Default())
 	acquired.crdtRegistry = crdtRegistry
 
-	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, crdtRegistry, shutdownCh, workerQueuePool)
+	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, broadcaster, pendingReqs, notifierSvc, crdtRegistry, workerQueuePool)
 	// The worker pool's count term. Its members take no lease, so the per-user
 	// connection cap cannot see them, and nothing else keeps the floors this
 	// pool guarantees from summing without limit.
