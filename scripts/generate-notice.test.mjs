@@ -12,12 +12,13 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 
 import {
-  RUST_SPDX_LICENSE_SOURCES,
   collectRustSpdxTexts,
   compareCrateVersions,
   createRustSpdxResolver,
   depHeading,
+  headingText,
   normalizeLicenseText,
+  RUST_SPDX_LICENSE_SOURCES,
   toAnchor,
 } from './generate-notice.mjs'
 
@@ -73,12 +74,32 @@ describe('depHeading', () => {
 })
 
 describe('SPDX license sources', () => {
-  it('gives every registered term a crate, file and signature', () => {
+  it('gives every registered term exactly one origin and a signature', () => {
     for (const [term, source] of Object.entries(RUST_SPDX_LICENSE_SOURCES)) {
-      expect(source.crate, `${term} has no source crate`).toBeTruthy()
-      expect(source.file, `${term} has no source file`).toBeTruthy()
+      const borrowed = Boolean(source.crate && source.file)
+      expect(borrowed !== Boolean(source.vendored), `${term} must be either vendored or crate-backed, not both or neither`).toBe(true)
       expect(source.signature, `${term} has no content signature`).toBeTruthy()
     }
+  })
+
+  it('vendors any term whose license body names a copyright holder', () => {
+    // Borrowing a crate's file borrows its copyright line. Zlib opens with one,
+    // so it comes from scripts/license-overrides/spdx/ rather than from
+    // whichever crate happens to be in the graph -- reading the real vendored
+    // file here, with no packages at all, since it needs none.
+    expect(RUST_SPDX_LICENSE_SOURCES.Zlib.vendored).toBeTruthy()
+
+    const resolved = createRustSpdxResolver([])('Zlib')
+    expect(resolved.error, `Zlib: ${resolved.error}`).toBeUndefined()
+    expect(resolved.text).toContain('<copyright holders>')
+    expect(resolved.text, 'a vendored text must not carry another project\'s copyright').not.toContain('Lokathor')
+  })
+
+  it('does not need the graph to resolve a vendored term', () => {
+    // The failure this prevents: making Zlib depend on a crate again would
+    // reintroduce both the borrowed copyright and an abort when that crate
+    // leaves the lock.
+    expect(createRustSpdxResolver([])('Zlib').text).toBeTruthy()
   })
 })
 
@@ -137,26 +158,48 @@ describe('createRustSpdxResolver', () => {
   })
 
   it('reports a term whose source crate stopped shipping the file', () => {
+    // rustix is present, but pointed at a directory without the LLVM file.
     const withoutFile = [...packages, { name: 'rustix', version: '1.1.4', manifest_path: join(root, 'anyhow-1.0.104', 'Cargo.toml') }]
     const resolved = createRustSpdxResolver(withoutFile)('Apache-2.0 WITH LLVM-exception')
-    expect(resolved.error).toContain('no longer ships')
+    expect(resolved.error).toContain('is missing')
   })
 
   it('rejects a file that exists but is not that license', () => {
     // This is the zerocopy regression: LICENSE-BSD existed, so an
     // existence-only check shipped a two-clause text under BSD-3-Clause for
-    // years. The Zlib fixture here is missing its distinctive clause.
-    const resolved = createRustSpdxResolver(packages)('Zlib')
+    // years. This fixture's BSD file is missing the third clause.
+    const twoClause = [...packages.filter(p => p.name !== 'alloc-no-stdlib'), crate('alloc-no-stdlib', '2.0.4', {
+      LICENSE: 'Copyright (c) 2016\nRedistribution and use … are permitted provided that the following two conditions are met.',
+    })]
+    const resolved = createRustSpdxResolver(twoClause)('BSD-3-Clause')
     expect(resolved.text).toBeUndefined()
-    expect(resolved.error).toContain('does not read like Zlib')
+    expect(resolved.error).toContain('does not read like BSD-3-Clause')
   })
 
-  it('does not resolve a term nothing asked for', () => {
-    // Laziness is the point: an absent source crate must not fail the run
-    // unless some crate actually needs that term.
+  it('does not read a term until it is asked for', () => {
+    // Laziness is the point of the design: resolving every registered term up
+    // front turned a source crate leaving the lock into a hard failure even
+    // for a license nothing in the graph declares.
+    //
+    // Observing that a read did NOT happen needs a seam, so build the resolver
+    // while the file is there and remove it before asking. A lazy resolver
+    // reads at first ask and reports the loss; an eager one already holds the
+    // text and cannot tell the difference. Asserting only that some other term
+    // still resolves does not discriminate between the two.
+    const doomed = crate('anyhow', '2.0.0', { 'LICENSE-MIT': 'Permission is hereby granted, free of charge …' })
+    const resolve = createRustSpdxResolver([doomed])
+    rmSync(join(root, 'anyhow-2.0.0', 'LICENSE-MIT'))
+
+    expect(resolve('MIT').text).toBeUndefined()
+    expect(resolve('MIT').error).toContain('is missing')
+  })
+
+  it('does not let an unresolvable term fail a resolvable one', () => {
+    // The pre-fix resolver threw at construction, so one stranded term took
+    // the whole run down. MPL-2.0 is unresolvable in this graph; MIT must be
+    // unaffected either way.
     const resolve = createRustSpdxResolver(packages)
     expect(() => resolve('MIT')).not.toThrow()
-    // MPL-2.0 is unresolvable in this graph, yet asking for MIT is unaffected.
     expect(resolve('MIT').text).toBeTruthy()
   })
 
@@ -168,9 +211,12 @@ describe('createRustSpdxResolver', () => {
 
 describe('collectRustSpdxTexts', () => {
   const resolve = (term) => {
-    if (term === 'MIT') return { text: 'MIT TEXT' }
-    if (term === 'Apache-2.0') return { text: 'APACHE TEXT' }
-    if (term === 'Zlib') return { error: 'zlib is broken' }
+    if (term === 'MIT')
+      return { text: 'MIT TEXT' }
+    if (term === 'Apache-2.0')
+      return { text: 'APACHE TEXT' }
+    if (term === 'Zlib')
+      return { error: 'zlib is broken' }
     return { error: `unknown ${term}` }
   }
 
@@ -227,6 +273,25 @@ describe('collectRustSpdxTexts', () => {
   it('strips parentheses and deduplicates repeated terms', () => {
     expect(collectRustSpdxTexts('(MIT OR MIT)', resolve).text).toBe('MIT TEXT')
   })
+
+  it('keeps a parenthesised choice a choice inside a conjunction', () => {
+    // The icu4x/zerovec shape. Flattening this to three peers made the whole
+    // expression a conjunction, so an unregistered alternative INSIDE the
+    // choice rejected a crate whose licensing is satisfied -- the same defect
+    // the slash-form case above covers, one nesting level down.
+    expect(collectRustSpdxTexts('(MIT OR Unlicense) AND Apache-2.0', resolve).text)
+      .toBe('MIT TEXT\n\n-----\n\nAPACHE TEXT')
+  })
+
+  it('still requires every operand of a conjunction that holds a choice', () => {
+    // The choice half resolving does not excuse the required half: an operand
+    // nothing can render leaves NOTICE genuinely incomplete.
+    expect(collectRustSpdxTexts('(MIT OR Apache-2.0) AND Unlicense', resolve).text).toBeNull()
+  })
+
+  it('rejects a conjunction whose choice half cannot be rendered at all', () => {
+    expect(collectRustSpdxTexts('(Zlib OR Unlicense) AND MIT', resolve).text).toBeNull()
+  })
 })
 
 describe('normalizeLicenseText', () => {
@@ -250,5 +315,38 @@ describe('toAnchor', () => {
 
   it('drops characters a markdown anchor cannot carry', () => {
     expect(toAnchor('golang.org/x/net v0.57.0 (MIT)')).toBe('golangorgxnet-v0570-mit')
+  })
+
+  it('gives each space its own hyphen rather than collapsing a run', () => {
+    // `fnv 1.0.7 (Apache-2.0 / MIT)` is the real case: stripping the slash
+    // leaves two adjacent spaces. Collapsing them to one hyphen produced a
+    // link GitHub could not resolve, because its slugger replaces each space
+    // separately -- so the TOC entry for that crate was dead.
+    expect(toAnchor('fnv 1.0.7 (Apache-2.0 / MIT)')).toBe('fnv-107-apache-20--mit')
+  })
+})
+
+describe('headingText', () => {
+  it('reads a plain text node', () => {
+    expect(headingText({ type: 'element', children: [{ type: 'text', value: 'serde 1.0.229' }] }))
+      .toBe('serde 1.0.229')
+  })
+
+  it('concatenates across nested inline nodes', () => {
+    // A dependency name carrying markdown punctuation is parsed into nested
+    // inline elements. Taking only the first child would slugify a fragment of
+    // the name, and the heading's id would stop matching its own TOC link.
+    expect(headingText({
+      type: 'element',
+      children: [
+        { type: 'text', value: 'a' },
+        { type: 'element', tagName: 'em', children: [{ type: 'text', value: 'b' }] },
+        { type: 'text', value: 'c' },
+      ],
+    })).toBe('abc')
+  })
+
+  it('returns an empty string for an element with no children', () => {
+    expect(headingText({ type: 'element', tagName: 'h3' })).toBe('')
   })
 })

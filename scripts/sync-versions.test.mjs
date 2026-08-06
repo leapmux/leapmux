@@ -4,16 +4,20 @@
 // in place, and its no-match branch is the one thing standing between a
 // reworded doc line and a version claim that silently stops being enforced.
 
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 
-import { CLAIMS, applyClaim, lineAt, major, parseVersions } from './sync-versions.mjs'
+import { applyClaim, CLAIMS, lineAt, major, parseVersions } from './sync-versions.mjs'
 
-const GO_CLAIM = {
-  file: 'README.md',
-  key: 'GOLANG_VERSION',
-  pattern: /^- \*\*Go\*\* (\S+) or later$/gm,
-  render: v => `- **Go** ${v} or later`,
-}
+// The claim that rewrites README.md's Go prerequisite, taken FROM the shipped
+// registry rather than copied. A hand-written twin passes forever against a
+// stale clone of a pattern someone has since loosened -- and loosening this one
+// is exactly how a prose mention starts getting rewritten as if it were the
+// prerequisite bullet.
+const GO_CLAIM = CLAIMS.find(c => c.file === 'README.md' && c.key === 'GOLANG_VERSION')
+
+const ROOT = resolve(import.meta.dirname, '..')
 
 describe('parseVersions', () => {
   it('reads KEY=VALUE lines and skips comments and blanks', () => {
@@ -119,14 +123,61 @@ describe('applyClaim', () => {
     expect(twice.drifts).toHaveLength(0)
   })
 
-  it('does not match a similar line that the pattern excludes', () => {
-    // The anchors matter: a prose mention must not be rewritten as if it were
-    // the prerequisite bullet.
+  it('does not rewrite a prose mention of the same version', () => {
+    // What excludes this one is the `- ` bullet prefix, not the anchors; the
+    // two cases below cover those separately.
     const content = 'We tested with **Go** 1.26.1 or later elsewhere.\n- **Go** 1.26.1 or later\n'
     const { content: rewritten } = applyClaim(GO_CLAIM, content, '1.26.5')
 
     expect(rewritten).toContain('We tested with **Go** 1.26.1 or later elsewhere.')
     expect(rewritten).toContain('- **Go** 1.26.5 or later')
+  })
+
+  it('does not rewrite an indented bullet', () => {
+    // Pins the leading `^`. Without it the bullet of a nested list -- a
+    // sub-point under some other requirement -- would be rewritten as though
+    // it were the top-level prerequisite.
+    const content = '  - **Go** 1.26.1 or later\n- **Go** 1.26.1 or later\n'
+    const { content: rewritten } = applyClaim(GO_CLAIM, content, '1.26.5')
+
+    expect(rewritten).toContain('  - **Go** 1.26.1 or later')
+    expect(rewritten).toContain('\n- **Go** 1.26.5 or later')
+  })
+
+  it('does not rewrite a bullet that continues past the version', () => {
+    // Pins the trailing `$`. Without it the version would be replaced and the
+    // rest of the sentence left dangling after it.
+    const content = '- **Go** 1.26.1 or later (1.27 recommended)\n- **Go** 1.26.1 or later\n'
+    const { content: rewritten } = applyClaim(GO_CLAIM, content, '1.26.5')
+
+    expect(rewritten).toContain('- **Go** 1.26.1 or later (1.27 recommended)')
+    expect(rewritten).toContain('\n- **Go** 1.26.5 or later')
+  })
+
+  it('refuses to write a value its own pattern could not match back', () => {
+    // The corruption path: an empty GOLANG_VERSION renders as a bare `go `,
+    // which would be written into go.work and all three go.mod files and take
+    // every Go command down with `invalid go version ""`. The next run would
+    // then blame the file for a line this tool wrote.
+    expect(() => applyClaim(GO_CLAIM, '- **Go** 1.26.1 or later\n', ''))
+      .toThrow(/would not match back/)
+  })
+
+  it('refuses a value carrying a trailing comment', () => {
+    // Not just the empty case -- anything that fails to round-trip. A
+    // `GOLANG_VERSION=1.26.5 # pinned` typo reaches here as the whole string,
+    // because versions.env has no comment-stripping grammar.
+    const goDirective = CLAIMS.find(c => c.file === 'backend/go.mod')
+
+    expect(() => applyClaim(goDirective, 'module x\n\ngo 1.26.4\n', '1.26.5 # pinned'))
+      .toThrow(/would not match back/)
+  })
+
+  it('names the claim and the offending value when it refuses', () => {
+    // The message has to be actionable without reading the source: which file,
+    // which key, and what the value rendered as.
+    expect(() => applyClaim(GO_CLAIM, '- **Go** 1.26.1 or later\n', ''))
+      .toThrow(/README\.md: GOLANG_VERSION=""/)
   })
 })
 
@@ -150,11 +201,12 @@ describe('CLAIMS registry', () => {
     }
   })
 
-  it('names only keys that versions.env defines', async () => {
-    const { readFileSync } = await import('node:fs')
-    const { dirname, join, resolve } = await import('node:path')
-    const root = resolve(dirname(new URL(import.meta.url).pathname), '..')
-    const versions = parseVersions(readFileSync(join(root, 'versions.env'), 'utf-8'))
+  it('names only keys that versions.env defines', () => {
+    // ROOT comes from import.meta.dirname, not `new URL(...).pathname`: a URL
+    // path keeps percent-encoding (a checkout under "My Repos" becomes
+    // "My%20Repos") and the leading slash of a Windows drive ("/C:/..."), so
+    // the derived path would not exist on either.
+    const versions = parseVersions(readFileSync(join(ROOT, 'versions.env'), 'utf-8'))
 
     for (const claim of CLAIMS) {
       expect(versions.has(claim.key), `versions.env does not define ${claim.key}`).toBe(true)

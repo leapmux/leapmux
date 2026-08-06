@@ -52,141 +52,23 @@ jobs:
           - arch: arm64
             runner_suffix: '-arm'
     steps:
+      # `ref` is not optional here: the `github` context in a called workflow
+      # is the CALLER's, so a bare checkout takes main as of dispatch -- which,
+      # on the release path, is the commit BEFORE `chore: release vX.Y.Z`. The
+      # artifacts would then be built from a different tree than the tag they
+      # ship under, and nothing would error, because version-override supplies
+      # the right VERSION string either way.
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Derive cache epoch
-        run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
-
-      - name: Load tool versions and apply version override
-        env:
-          VERSION_OVERRIDE: ${{ inputs.version }}
-        run: |
-          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
-          if [ -n "$VERSION_OVERRIDE" ]; then
-            echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
-          fi
-
-      - name: Cache APT packages
-        uses: actions/cache@v6
+      - name: Setup build toolchain
+        uses: ./.github/actions/setup-build
         with:
-          path: .apt-cache
-          # Hash both workflow files: see ci.yaml for the rationale. Keeping
-          # the keys identical between the two workflows means push-to-main
-          # populates the cache in ci.yaml's linux job and desktop-artifacts
-          # reads it back here.
-          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('.github/workflows/ci.yaml', '.github/workflows/desktop-artifacts.yaml') }}
-          restore-keys: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-
-
-      - name: Configure APT cache directories
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/.apt-cache/archives/partial"
-          mkdir -p "$GITHUB_WORKSPACE/.apt-cache/lists/partial"
-          sudo rm -f /etc/apt/apt.conf.d/docker-clean
-          cat <<EOF | sudo tee /etc/apt/apt.conf.d/99github-cache
-          Binary::apt::APT::Keep-Downloaded-Packages "true";
-          Dir::Cache::archives "$GITHUB_WORKSPACE/.apt-cache/archives";
-          Dir::State::lists "$GITHUB_WORKSPACE/.apt-cache/lists";
-          EOF
-
-      - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libsoup-3.0-dev \
-            protobuf-compiler \
-            xdg-utils \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-ugly \
-            gstreamer1.0-libav \
-            gstreamer1.0-tools \
-            gstreamer1.0-x \
-            gstreamer1.0-alsa \
-            gstreamer1.0-gl \
-            gstreamer1.0-gtk3 \
-            gstreamer1.0-pulseaudio
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Setup Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: ${{ env.GOLANG_VERSION }}
-          cache-dependency-path: |
-            backend/go.sum
-            desktop/go/go.sum
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          components: clippy
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v6
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Cache Cargo dependencies
-        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key +
-        # save-if.
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/rust
-          shared-key: desktop
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Cache Tauri downloads
-        # See ci.yaml's matching step for why both patch-linuxdeploy.sh and
-        # linuxdeploy-wrapper.c are hashed into this cache key.
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/tauri
-          key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c') }}
-          restore-keys: tauri-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Cache awesome-claude-spinners
-        uses: actions/cache@v6
-        with:
-          path: frontend/src/spinners
-          key: spinners-${{ env.CACHE_WEEK }}
-
-      - name: Setup buf
-        uses: bufbuild/buf-setup-action@v1
-        with:
-          version: ${{ env.BUF_VERSION }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Task
-        uses: arduino/setup-task@v3
-        with:
-          version: ${{ env.TASK_VERSION }}
-          # Authenticate the action's GitHub API calls (listing releases,
-          # downloading assets) so it doesn't hit the 60/hr unauthenticated
-          # rate limit on shared-IP runners — has been failing intermittently
-          # on Windows without it.
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version-override: ${{ inputs.version }}
+          rust-components: clippy
+          rust-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -289,95 +171,19 @@ jobs:
     permissions:
       contents: read
     steps:
+      # See the linux job: a called workflow's default checkout is the
+      # caller's ref, not this workflow's `ref` input.
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Derive cache epoch
-        run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
-
-      - name: Load tool versions and apply version override
-        env:
-          VERSION_OVERRIDE: ${{ inputs.version }}
-        run: |
-          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
-          if [ -n "$VERSION_OVERRIDE" ]; then
-            echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
-          fi
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Setup build toolchain
+        uses: ./.github/actions/setup-build
         with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Setup Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: ${{ env.GOLANG_VERSION }}
-          cache-dependency-path: |
-            backend/go.sum
-            desktop/go/go.sum
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          components: clippy
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v6
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Cache Cargo dependencies
-        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key +
-        # save-if.
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/rust
-          shared-key: desktop
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Cache Tauri downloads
-        uses: actions/cache@v6
-        with:
-          path: ~/Library/Caches/tauri
-          key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}
-          restore-keys: tauri-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Cache awesome-claude-spinners
-        uses: actions/cache@v6
-        with:
-          path: frontend/src/spinners
-          key: spinners-${{ env.CACHE_WEEK }}
-
-      - name: Setup buf
-        uses: bufbuild/buf-setup-action@v1
-        with:
-          version: ${{ env.BUF_VERSION }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Task
-        uses: arduino/setup-task@v3
-        with:
-          version: ${{ env.TASK_VERSION }}
-          # Authenticate the action's GitHub API calls (listing releases,
-          # downloading assets) so it doesn't hit the 60/hr unauthenticated
-          # rate limit on shared-IP runners — has been failing intermittently
-          # on Windows without it.
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version-override: ${{ inputs.version }}
+          rust-components: clippy
+          rust-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -435,14 +241,10 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Load tool versions and apply version override
-        env:
-          VERSION_OVERRIDE: ${{ inputs.version }}
-        run: |
-          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
-          if [ -n "$VERSION_OVERRIDE" ]; then
-            echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
-          fi
+      - name: Load tool versions
+        uses: ./.github/actions/load-versions
+        with:
+          version-override: ${{ inputs.version }}
 
       - name: Setup Node.js
         # create-dmg.sh's generate-dsstore.mjs needs Node + the macos-alias
@@ -537,14 +339,10 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Load tool versions and apply version override
-        env:
-          VERSION_OVERRIDE: ${{ inputs.version }}
-        run: |
-          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
-          if [ -n "$VERSION_OVERRIDE" ]; then
-            echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
-          fi
+      - name: Load tool versions
+        uses: ./.github/actions/load-versions
+        with:
+          version-override: ${{ inputs.version }}
 
       - name: Setup Task
         uses: arduino/setup-task@v3
@@ -609,99 +407,19 @@ jobs:
     permissions:
       contents: read
     steps:
+      # See the linux job: a called workflow's default checkout is the
+      # caller's ref, not this workflow's `ref` input.
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Load tool versions and apply version override
-        # `shell: bash` is mandatory: Windows runners default to pwsh, which
-        # does not understand `grep` or `if [ -n ... ]`.
-        shell: bash
-        env:
-          VERSION_OVERRIDE: ${{ inputs.version }}
-        run: |
-          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
-          if [ -n "$VERSION_OVERRIDE" ]; then
-            echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
-          fi
-          echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
-
-      - name: Setup MSVC dev environment
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
+      - name: Setup build toolchain
+        uses: ./.github/actions/setup-build
         with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Setup Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: ${{ env.GOLANG_VERSION }}
-          cache-dependency-path: |
-            backend/go.sum
-            desktop/go/go.sum
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          components: clippy
-
-      - name: Cache Cargo dependencies
-        # See ci.yaml's linux job for why Swatinem/rust-cache + shared-key +
-        # save-if.
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/rust
-          shared-key: desktop
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Cache Tauri downloads
-        uses: actions/cache@v6
-        with:
-          path: ~/AppData/Local/tauri
-          key: tauri-${{ runner.os }}-${{ env.CACHE_WEEK }}
-          restore-keys: tauri-${{ runner.os }}-
-
-      - name: Cache awesome-claude-spinners
-        uses: actions/cache@v6
-        with:
-          path: frontend/src/spinners
-          key: spinners-${{ env.CACHE_WEEK }}
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v6
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('frontend/bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
-
-      - name: Setup buf
-        uses: bufbuild/buf-setup-action@v1
-        with:
-          version: ${{ env.BUF_VERSION }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Task
-        uses: arduino/setup-task@v3
-        with:
-          version: ${{ env.TASK_VERSION }}
-          # Authenticate the action's GitHub API calls (listing releases,
-          # downloading assets) so it doesn't hit the 60/hr unauthenticated
-          # rate limit on shared-IP runners — has been failing intermittently
-          # on Windows without it.
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version-override: ${{ inputs.version }}
+          rust-components: clippy
+          rust-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build all modules
         # Run under pwsh: Git Bash prepends /usr/bin to PATH, and

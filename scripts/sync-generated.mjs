@@ -46,11 +46,11 @@
 //                   in any argument is replaced with the staging path. Optional:
 //                   omit it to only stage (via --copy) and publish.
 
-import process from 'node:process'
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, copyFileSync } from 'node:fs'
-import { delimiter, dirname, join } from 'node:path'
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { delimiter, dirname, join } from 'node:path'
+import process from 'node:process'
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -83,14 +83,16 @@ for (let i = 0; i < argv.length; i++) {
     case '--copy': {
       const src = argv[++i]
       const dest = argv[++i]
-      if (src == null || dest == null) usage('--copy needs SRC and DEST')
+      if (src == null || dest == null)
+        usage('--copy needs SRC and DEST')
       opts.copies.push({ src, dest })
       break
     }
     case '--out': {
       const src = argv[++i]
       const dest = argv[++i]
-      if (src == null || dest == null) usage('--out needs SRC and DEST')
+      if (src == null || dest == null)
+        usage('--out needs SRC and DEST')
       opts.outs.push({ src, dest })
       break
     }
@@ -103,7 +105,8 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 
-if (opts.outs.length === 0) usage('at least one --out SRC DEST is required')
+if (opts.outs.length === 0)
+  usage('at least one --out SRC DEST is required')
 
 // ---------------------------------------------------------------------------
 // Publish: the `rsync -rc --delete` equivalent
@@ -112,8 +115,10 @@ if (opts.outs.length === 0) usage('at least one --out SRC DEST is required')
 /** True if both paths are files with identical bytes. */
 function sameContent(a, b) {
   const sb = statSync(b, { throwIfNoEntry: false })
-  if (!sb || !sb.isFile()) return false
-  if (statSync(a).size !== sb.size) return false
+  if (!sb || !sb.isFile())
+    return false
+  if (statSync(a).size !== sb.size)
+    return false
   return readFileSync(a).equals(readFileSync(b))
 }
 
@@ -123,7 +128,8 @@ function copyIfChanged(src, dest) {
   if (existing && !existing.isFile()) {
     // Dest is a directory where a file now belongs -- replace it.
     rmSync(dest, { recursive: true, force: true })
-  } else if (existing && sameContent(src, dest)) {
+  }
+  else if (existing && sameContent(src, dest)) {
     return
   }
   copyFileSync(src, dest)
@@ -152,9 +158,11 @@ function syncTree(srcDir, destDir) {
     const dest = join(destDir, entry.name)
     if (entry.isDirectory()) {
       const existing = statSync(dest, { throwIfNoEntry: false })
-      if (existing && !existing.isDirectory()) rmSync(dest, { force: true })
+      if (existing && !existing.isDirectory())
+        rmSync(dest, { force: true })
       syncTree(src, dest)
-    } else if (entry.isFile()) {
+    }
+    else if (entry.isFile()) {
       copyIfChanged(src, dest)
     }
   }
@@ -170,14 +178,16 @@ function syncTree(srcDir, destDir) {
  * A command that already contains a path separator is returned as-is.
  */
 function resolveExecutable(cmd) {
-  if (cmd.includes('/') || cmd.includes('\\')) return cmd
+  if (cmd.includes('/') || cmd.includes('\\'))
+    return cmd
   const exts = process.platform === 'win32'
     ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
     : ['']
   for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
     for (const ext of exts) {
       const candidate = join(dir, cmd + ext)
-      if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate
+      if (statSync(candidate, { throwIfNoEntry: false })?.isFile())
+        return candidate
     }
   }
   return cmd // Fall back and let spawn surface a clear ENOENT.
@@ -214,7 +224,8 @@ try {
     cpSync(src, target, { recursive: true })
   }
 
-  if (opts.generator.length > 0) runGenerator(staging)
+  if (opts.generator.length > 0)
+    runGenerator(staging)
 
   for (const { src, dest } of opts.outs) {
     const source = join(staging, src)
@@ -224,6 +235,7 @@ try {
     }
     syncTree(source, dest)
   }
-} finally {
+}
+finally {
   rmSync(staging, { recursive: true, force: true })
 }

@@ -308,6 +308,32 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
   })
 })
 
+/**
+ * Resolve CSS custom properties to the COMPUTED colour form.
+ *
+ * Reading a token straight off `:root` returns the authored text
+ * (`rgb(34 32 30)`), which never string-matches a computed `rgb(34, 32, 30)`.
+ * Assigning each to a throwaway element and reading it back puts them through
+ * the same conversion the values under test went through.
+ *
+ * Runs inside the page, so it must not close over anything in this file.
+ */
+function resolveColors(names: string[]): Record<string, string> {
+  const probe = document.createElement('div')
+  document.body.append(probe)
+  try {
+    const resolved: Record<string, string> = {}
+    for (const name of names) {
+      probe.style.backgroundColor = `var(${name})`
+      resolved[name] = getComputedStyle(probe).backgroundColor
+    }
+    return resolved
+  }
+  finally {
+    probe.remove()
+  }
+}
+
 test.describe('menu item appearance', () => {
   /**
    * Oat styles every `<button>` with a solid `var(--primary)` fill, and menu
@@ -326,15 +352,13 @@ test.describe('menu item appearance', () => {
     const item = page.getByRole('menuitem', { name: 'Preferences' })
     await expect(item).toBeVisible()
 
+    const tokens = await page.evaluate(resolveColors, ['--foreground', '--primary-foreground'])
     const computed = await item.evaluate((el) => {
       const style = getComputedStyle(el)
-      const root = getComputedStyle(document.documentElement)
       return {
         background: style.backgroundColor,
         color: style.color,
         borderWidth: style.borderTopWidth,
-        primary: root.getPropertyValue('--primary').trim(),
-        foreground: root.getPropertyValue('--foreground').trim(),
       }
     })
 
@@ -342,22 +366,38 @@ test.describe('menu item appearance', () => {
       .toBe('rgba(0, 0, 0, 0)')
     expect(computed.borderWidth, `menu item should have no button border, got ${computed.borderWidth}`)
       .toBe('0px')
+    // The colour half of the cancellation, asserted separately because it fails
+    // separately. Oat's button rule sets `color: var(--primary-foreground)` --
+    // white -- which on a popover painted `var(--background)` is white on
+    // near-white in light theme and near-black on near-black in dark. Checking
+    // only the fill leaves that unreadable state green.
+    expect(computed.color, `menu item should take body text colour, got ${computed.color}`)
+      .toBe(tokens['--foreground'])
+    expect(computed.color).not.toBe(tokens['--primary-foreground'])
   })
 
   test('menu items still take Oat\'s hover affordance', async ({ page, authenticatedWorkspace }) => {
-    // The reset above is unlayered, so it outranks Oat's layered `:hover`
-    // rule. Restating the hover is what keeps menu items from going inert.
+    // The reset lives in its own cascade layer, which outranks Oat's layered
+    // `:hover` rule. Restating the hover is what keeps menu items from going
+    // inert.
     await page.getByTestId('app-menu-trigger').first().click()
 
     const item = page.getByRole('menuitem', { name: 'Preferences' })
     await expect(item).toBeVisible()
     await item.hover()
 
+    // Assert the accent specifically, not merely "some opaque colour". In the
+    // regressed state Oat's button rule fills every item with `var(--primary)`
+    // before the pointer arrives at all, so a `not.toBe('rgba(0, 0, 0, 0)')`
+    // check passes on exactly the breakage the sibling test exists to catch --
+    // and would equally pass on an item with no hover rule.
+    //
     // Polled, not read once: Oat's button rule carries
     // `transition: background-color var(--transition-fast)`, so the fill is
     // still mid-interpolation for a frame or two after the pointer arrives and
     // a single read races it.
+    const accent = await page.evaluate(resolveColors, ['--accent'])
     const backgroundColor = () => item.evaluate(el => getComputedStyle(el).backgroundColor)
-    await expect.poll(backgroundColor).not.toBe('rgba(0, 0, 0, 0)')
+    await expect.poll(backgroundColor).toBe(accent['--accent'])
   })
 })

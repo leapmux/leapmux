@@ -18,8 +18,9 @@
 //
 // Two constructors cover the two shapes: NewBackoff for an unbounded loop that
 // resets on success/activity (the three reconnect loops), and NewRetry for a
-// count-bounded loop that gives up after a fixed attempt budget (v6 dropped
-// MaxElapsedTime, so the budget lives here). NewRetry wraps the same capped,
+// count-bounded loop that gives up after a fixed attempt budget (cenkalti
+// dropped MaxElapsedTime from ExponentialBackOff in v5, so the budget lives
+// here). NewRetry wraps the same capped,
 // jittered exponential NewBackoff produces, and consumes the budget only when
 // an attempt actually fires (Peek + Commit), so a retry that arms but bails
 // before firing never erodes the budget or ratchets the interval.
@@ -155,8 +156,9 @@ func (b *Backoff) advance() {
 
 // Retry is a count-bounded, reset-aware exponential backoff for a single retry
 // loop. It wraps the same capped, jittered exponential NewBackoff produces and
-// adds a per-loop attempt budget, which v6's ExponentialBackOff no longer ships
-// (it dropped MaxElapsedTime). The behavior mirrors the frontend's
+// adds a per-loop attempt budget, which cenkalti's ExponentialBackOff has not
+// carried since v5 dropped MaxElapsedTime from it. The behavior mirrors the
+// frontend's
 // createExponentialBackoff: the doubling sequence advances on the un-jittered
 // base interval, and jitter only fuzzes the value Peek returns.
 //

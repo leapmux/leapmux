@@ -61,10 +61,15 @@ func StartWriteThenCloseServer(t *testing.T, data []byte) string {
 // ParseAddr splits an address string into host and port components. A
 // bracketed IPv6 host comes back unbracketed ("[::1]:80" -> "::1", 80).
 //
-// Malformed input yields zero values rather than an error: every caller passes
+// Malformed input yields a zero PORT rather than an error: every caller passes
 // an address it just took from a net.Listener, so a failure here means the test
 // is wrong, not that the input needs handling. What ParseAddr must never do is
 // GUESS, which is why the port is parsed strictly.
+//
+// A zero port is therefore the only reliable failure signal. The host is
+// best-effort and comes back whenever the split succeeded, so "localhost:http"
+// yields ("localhost", 0) -- and an empty host is a legitimate SUCCESS value
+// anyway, since ":9999" splits to no host at all.
 //
 // fmt.Sscanf("%d") would not be strict: it stops at the first non-digit and
 // reports success, so "80abc" and the "80/tcp" form a testcontainers mapped

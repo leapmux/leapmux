@@ -24,15 +24,28 @@ func TestParseAddr(t *testing.T) {
 		assert.Equal(t, uint32(4328), port)
 	})
 
-	t.Run("handles the wildcard host a :0 listener reports", func(t *testing.T) {
+	t.Run("handles an address with no host", func(t *testing.T) {
+		// An empty host is a legitimate result here, not a failure -- which is
+		// why the zero PORT, not the empty host, is what signals malformed
+		// input in the cases below.
 		host, port := testutil.ParseAddr(":9999")
 		assert.Empty(t, host)
 		assert.Equal(t, uint32(9999), port)
 	})
 
-	// Both errors are deliberately swallowed by ParseAddr, so the contract on
-	// malformed input is "zero values, no panic" -- callers are tests that pass
-	// an address they just got from a listener.
+	t.Run("handles the wildcard host a :0 listener actually reports", func(t *testing.T) {
+		// `net.Listen("tcp", ":0")` reports its address as "[::]:54321" --
+		// bracketed, never a bare leading colon, because a bound listener
+		// always has a non-nil IP.
+		host, port := testutil.ParseAddr("[::]:9999")
+		assert.Equal(t, "::", host)
+		assert.Equal(t, uint32(9999), port)
+	})
+
+	// A malformed port is deliberately swallowed by ParseAddr, so the contract
+	// is "zero port, no panic" -- callers are tests that pass an address they
+	// just got from a listener. The host is best-effort: it survives a port
+	// failure, as the non-numeric case below shows.
 	t.Run("returns zero values for input with no port", func(t *testing.T) {
 		host, port := testutil.ParseAddr("localhost")
 		assert.Empty(t, host)
@@ -41,6 +54,15 @@ func TestParseAddr(t *testing.T) {
 
 	t.Run("returns a zero port for a non-numeric port", func(t *testing.T) {
 		host, port := testutil.ParseAddr("localhost:http")
+		assert.Equal(t, "localhost", host)
+		assert.Equal(t, uint32(0), port)
+	})
+
+	t.Run("returns a zero port for an empty port", func(t *testing.T) {
+		// net.SplitHostPort accepts "host:" without error, so this shape
+		// reaches ParseUint rather than the split's failure path. It is what
+		// net.JoinHostPort produces from an unset port variable.
+		host, port := testutil.ParseAddr("localhost:")
 		assert.Equal(t, "localhost", host)
 		assert.Equal(t, uint32(0), port)
 	})

@@ -10,13 +10,11 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	mysqlstore "github.com/leapmux/leapmux/internal/hub/store/mysql"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 func TestTiDBStore(t *testing.T) {
@@ -24,33 +22,23 @@ func TestTiDBStore(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	testutil.ConfigureDockerHost(t)
-
 	ctx := context.Background()
 
-	// Start a TiDB container.
-	req := testcontainers.ContainerRequest{
-		Image:        "pingcap/tidb:v8.1.0",
-		ExposedPorts: []string{"4000/tcp"},
-		WaitingFor: storetest.SQLReadyWait("4000/tcp", "mysql", func(host, port string) string {
-			return fmt.Sprintf("root@tcp(%s:%s)/?parseTime=true", host, port)
-		}),
+	// Start a TiDB container. TiDB's default root user has no password, and
+	// leapmux_test does not exist until the block below creates it, so both the
+	// readiness probe and the setup connection address the server without one.
+	tidbDSN := func(host, port, database string) string {
+		return fmt.Sprintf("root@tcp(%s:%s)/%s?parseTime=true", host, port, database)
 	}
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
+	host, port := storetest.SQLContainer{
+		Image:    "pingcap/tidb:v8.1.0",
+		Port:     4000,
+		Driver:   "mysql",
+		ReadyDSN: func(host, port string) string { return tidbDSN(host, port, "") },
+	}.Start(t)
 
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "4000")
-	require.NoError(t, err)
-
-	// TiDB's default root user has no password. Create test database and enable FKs.
-	rootDSN := fmt.Sprintf("root@tcp(%s:%s)/?parseTime=true", host, port.Port())
-	rootDB, err := sql.Open("mysql", rootDSN)
+	// Create the test database and enable FKs.
+	rootDB, err := sql.Open("mysql", tidbDSN(host, port, ""))
 	require.NoError(t, err)
 	defer func() { _ = rootDB.Close() }()
 
@@ -75,7 +63,7 @@ func TestTiDBStore(t *testing.T) {
 	require.Contains(t, []string{"ON", "1"}, checkEnabled,
 		"CHECK constraints must be enforced on TiDB, or the shared mysql schema's invariants hold only by application discipline here")
 
-	dsn := fmt.Sprintf("root@tcp(%s:%s)/leapmux_test?parseTime=true", host, port.Port())
+	dsn := tidbDSN(host, port, "leapmux_test")
 
 	// Create ONE store and run migrations once.
 	st, err := mysqlstore.OpenTestable(config.MySQLConfig{DSN: dsn})

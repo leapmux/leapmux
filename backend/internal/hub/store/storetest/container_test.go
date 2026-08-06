@@ -28,16 +28,24 @@ func TestBareNumericPort(t *testing.T) {
 	})
 
 	t.Run("passes the port as a bare number for any protocol", func(t *testing.T) {
-		for _, port := range []string{"5432/tcp", "4000/udp", "26257/tcp"} {
+		// Assert the exact number, not merely the absence of a "/". An
+		// implementation that dropped the port entirely would also produce no
+		// slash -- and it is reachable: moby's Port.Port() returns "" for a
+		// zero-value Port.
+		for exposed, want := range map[string]string{
+			"5432/tcp":  "5432",
+			"4000/udp":  "4000",
+			"26257/tcp": "26257",
+		} {
 			var seen string
 			render := bareNumericPort(func(_, port string) string {
 				seen = port
 				return ""
 			})
 
-			render("host", network.MustParsePort(port))
+			render("host", network.MustParsePort(exposed))
 
-			assert.NotContains(t, seen, "/", "port %q reached the template unstripped", port)
+			assert.Equal(t, want, seen, "port %q reached the template as %q", exposed, seen)
 		}
 	})
 

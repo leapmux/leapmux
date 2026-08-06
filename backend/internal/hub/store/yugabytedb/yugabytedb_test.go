@@ -10,12 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 func TestYugabyteDBStore(t *testing.T) {
@@ -23,41 +21,30 @@ func TestYugabyteDBStore(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	testutil.ConfigureDockerHost(t)
-
 	ctx := context.Background()
 
-	// Start a YugabyteDB container.
-	req := testcontainers.ContainerRequest{
-		Image:        "yugabytedb/yugabyte:2025.2.2.1-b1",
-		ExposedPorts: []string{"5433/tcp"},
-		Cmd:          []string{"bin/yugabyted", "start", "--daemon=false"},
-		WaitingFor: storetest.SQLReadyWait("5433/tcp", "pgx", func(host, port string) string {
-			return fmt.Sprintf("postgresql://yugabyte@%s:%s/yugabyte?sslmode=disable", host, port)
-		}),
+	// Start a YugabyteDB container. The readiness probe dials the bootstrap
+	// yugabyte database; leapmux_test does not exist until the block below
+	// creates it.
+	yugabyteDSN := func(host, port, database string) string {
+		return fmt.Sprintf("postgresql://yugabyte@%s:%s/%s?sslmode=disable", host, port, database)
 	}
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "5433")
-	require.NoError(t, err)
-
-	connStr := fmt.Sprintf("postgresql://yugabyte@%s:%s/yugabyte?sslmode=disable", host, port.Port())
+	host, port := storetest.SQLContainer{
+		Image:    "yugabytedb/yugabyte:2025.2.2.1-b1",
+		Port:     5433,
+		Driver:   "pgx",
+		Cmd:      []string{"bin/yugabyted", "start", "--daemon=false"},
+		ReadyDSN: func(host, port string) string { return yugabyteDSN(host, port, "yugabyte") },
+	}.Start(t)
 
 	// Create the test database.
-	setupPool, err := pgxpool.New(ctx, connStr)
+	setupPool, err := pgxpool.New(ctx, yugabyteDSN(host, port, "yugabyte"))
 	require.NoError(t, err)
 	_, err = setupPool.Exec(ctx, "CREATE DATABASE leapmux_test")
 	require.NoError(t, err)
 	setupPool.Close()
 
-	connStr = fmt.Sprintf("postgresql://yugabyte@%s:%s/leapmux_test?sslmode=disable", host, port.Port())
+	connStr := yugabyteDSN(host, port, "leapmux_test")
 
 	// Create ONE pool and store, run migrations once.
 	pool, err := pgxpool.New(ctx, connStr)

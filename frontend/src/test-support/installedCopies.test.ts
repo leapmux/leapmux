@@ -73,8 +73,36 @@ describe('installedCopies', () => {
 
   it('does not match a package whose name merely ends with the query', () => {
     // `target` alone must not collect `@scope/target` or `not-target`.
-    expect(installedCopies('target', nodeModules).every(d => d.endsWith(`${'node_modules'}/target`))).toBe(true)
+    // `join`, not a literal `/`: the helper builds its paths with join, so a
+    // hard-coded separator makes this fail on Windows for a reason that has
+    // nothing to do with name matching. The length check first, because
+    // `.every()` is vacuously true on an empty array -- without it a helper
+    // that found nothing at all would pass.
+    const copies = installedCopies('target', nodeModules)
+    expect(copies).toHaveLength(2)
+    expect(copies.every(d => d.endsWith(join('node_modules', 'target')))).toBe(true)
+    // A suffix of a real name is not that name: `@scope/target` is installed,
+    // `scope/target` is not.
     expect(installedCopies('scope/target', nodeModules)).toHaveLength(0)
+  })
+
+  it('counts one physical install reached through two symlinks once', () => {
+    // A store layout links the same package directory from several dependents.
+    // Keying by link path would report one install as several and fail a
+    // singleton guard on a duplicate that does not exist.
+    const sharedRoot = mkdtempSync(join(tmpdir(), 'installed-copies-shared-'))
+    try {
+      const links = join(sharedRoot, 'node_modules')
+      mkdirSync(join(links, 'a', 'node_modules'), { recursive: true })
+      mkdirSync(join(links, 'b', 'node_modules'), { recursive: true })
+      symlinkSync(join(nodeModules, 'target'), join(links, 'a', 'node_modules', 'target'), 'dir')
+      symlinkSync(join(nodeModules, 'target'), join(links, 'b', 'node_modules', 'target'), 'dir')
+
+      expect(installedCopies('target', links)).toHaveLength(1)
+    }
+    finally {
+      rmSync(sharedRoot, { recursive: true, force: true })
+    }
   })
 
   it('ignores dot-directories, which hold tool state rather than installs', () => {

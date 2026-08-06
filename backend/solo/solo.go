@@ -350,10 +350,20 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	// Start Hub. hubErr/hubDone publish the terminal error to Wait callers, and
 	// hubDone is the ONLY "the Hub is finished" signal -- a second one (a wait
 	// group closed just after it) could only ever disagree with it.
+	//
+	// serving is a scheduling handshake, not a readiness one: it says the
+	// goroutine has been scheduled and is about to call Serve. Without it, a
+	// Serve that fails immediately could stay entirely unobserved -- on a
+	// single-P run the goroutine need not execute at all before Start finishes,
+	// so Start would return an Instance for a Hub that had already failed and
+	// the caller would only learn of it from Wait.
+	serving := make(chan struct{})
 	go func() {
+		close(serving)
 		inst.hubErr = serveHub(hubCtx, server)
 		close(inst.hubDone)
 	}()
+	<-serving
 
 	// One goroutine, two triggers, one ordered teardown. The caller cancelling
 	// is the ordinary path (SIGINT, the desktop sidecar's own shutdown); the Hub

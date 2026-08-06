@@ -1,9 +1,9 @@
 import { createRequire } from 'node:module'
-import { resolve } from 'node:path'
 import process from 'node:process'
 import { defineConfig } from '@solidjs/start/config'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
 import MagicString from 'magic-string'
+import tsconfigPaths from 'vite-tsconfig-paths'
 
 const require = createRequire(import.meta.url)
 
@@ -25,6 +25,9 @@ export default defineConfig({
   vite: {
     build: { sourcemap: true },
     plugins: [
+      // Supplies the `~` alias from tsconfig.json's `paths`, so it is declared
+      // once for tsc, Vite and vitest rather than three times over.
+      tsconfigPaths(),
       {
         // Workaround: vinxi passes configFile: false to Vite, so
         // @vanilla-extract/vite-plugin falls back to config.inlineConfig
@@ -83,9 +86,6 @@ export default defineConfig({
     envPrefix: ['VITE_', 'LEAPMUX_'],
     resolve: {
       alias: {
-        // import.meta.dirname, matching vitest.config.ts -- Vite's native config
-        // loader no longer injects the CJS globals.
-        '~': resolve(import.meta.dirname, 'src'),
         // See decodeNamedCharacterReferenceNodeBuild above: keep the markdown
         // worker from importing the document-dependent browser build.
         'decode-named-character-reference': decodeNamedCharacterReferenceNodeBuild,

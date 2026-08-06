@@ -127,11 +127,16 @@ if (typeof (HTMLElement.prototype as Partial<PopoverProto>).showPopover !== 'fun
 // jsdom doesn't recognize the :popover-open pseudo-class; intercept
 // matches() to handle it via the data-attribute the stubs above set.
 const originalMatches = HTMLElement.prototype.matches
+// Cast because lib.dom declares `matches` as a set of overloads whose tag-name
+// forms are TYPE PREDICATES (`selectors: K): this is HTMLElementTagNameMap[K]`),
+// and a plain `(selector: string) => boolean` is not assignable to those. The
+// runtime contract is unchanged -- the delegate below preserves it -- so the
+// assertion is about the declaration's shape, not about behaviour.
 HTMLElement.prototype.matches = function matches(this: HTMLElement, selector: string): boolean {
   if (selector === ':popover-open')
     return this.hasAttribute('data-popover-open')
   return originalMatches.call(this, selector)
-}
+} as typeof HTMLElement.prototype.matches
 
 // jsdom doesn't implement the native <dialog> API; provide stubs so
 // components that wrap <dialog> (Dialog, ConfirmDialog, CloseGridDialog)

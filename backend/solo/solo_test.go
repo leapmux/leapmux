@@ -311,9 +311,26 @@ func stubServeHub(t *testing.T, fn func(context.Context, *hub.Server) error) {
 // startFailureEnv points Start at a throwaway home with no TCP listener, so it
 // gets all the way to Serve -- which the seam then fails -- instead of dying
 // earlier in hub.NewServer.
-func startFailureEnv(t *testing.T) {
+//
+// It returns the Config to hand Start. The local-listen override is what makes
+// these tests independent of each other: SandboxHome redirects HOME, which is
+// enough to move the Unix socket under a private directory, but the WINDOWS
+// default is npipe:leapmux-hub-<SID> -- derived from the account, not the home
+// -- so every Hub-starting test in this package bound the same process-global
+// pipe name and the second one to reach it failed hub.NewServer with
+// "Access is denied". That is what makes these three tests fail on Windows CI
+// while passing on a developer's Unix machine.
+func startFailureEnv(t *testing.T) Config {
 	t.Helper()
 	locallistentest.SandboxHome(t)
+	return Config{
+		SkipBanner: true,
+		NoTCP:      true,
+		// local-listen is not in solo's own --help allowlist, so the test has to
+		// widen it to reach the flag.
+		CLIFlags: append(defaultCLIFlags(false), "local-listen"),
+		Args:     []string{"--local-listen=" + locallistentest.UniqueListenURL(t, "leapmux-hub-solo")},
+	}
 }
 
 // A Hub that dies WHILE SERVING is surfaced by Start with the "hub serve:"
@@ -324,13 +341,13 @@ func startFailureEnv(t *testing.T) {
 // failed in NewServer, and passed only because "create hub server" happens to
 // contain the substring "hub serve".
 func TestSoloStart_SurfacesAServeTimeFailure(t *testing.T) {
-	startFailureEnv(t)
+	cfg := startFailureEnv(t)
 	wantErr := errors.New("revocation watcher seed failed")
 	stubServeHub(t, func(context.Context, *hub.Server) error { return wantErr })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	inst, err := Start(ctx, Config{SkipBanner: true, NoTCP: true})
+	inst, err := Start(ctx, cfg)
 
 	require.Error(t, err)
 	require.Nil(t, inst)
@@ -343,7 +360,7 @@ func TestSoloStart_SurfacesAServeTimeFailure(t *testing.T) {
 // the error. The watcher sees the same hubDone close and must stay quiet, or
 // every failed launch is reported twice.
 func TestSoloStart_DoesNotAlsoLogAServeTimeFailure(t *testing.T) {
-	startFailureEnv(t)
+	cfg := startFailureEnv(t)
 	stubServeHub(t, func(context.Context, *hub.Server) error {
 		return errors.New("revocation watcher seed failed")
 	})
@@ -355,7 +372,7 @@ func TestSoloStart_DoesNotAlsoLogAServeTimeFailure(t *testing.T) {
 	out := testutil.CaptureStderr(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err = Start(ctx, Config{SkipBanner: true, NoTCP: true})
+		_, err = Start(ctx, cfg)
 	})
 
 	require.Error(t, err)
@@ -369,7 +386,7 @@ func TestSoloStart_DoesNotAlsoLogAServeTimeFailure(t *testing.T) {
 // both hand the error to a caller that waitSolo documents as its single
 // reporter.
 func TestSolo_AHubThatDiesWhileServingTearsTheInstanceDownWithoutReporting(t *testing.T) {
-	startFailureEnv(t)
+	cfg := startFailureEnv(t)
 
 	wantErr := errors.New("hub died mid-session")
 	serving := make(chan struct{})
@@ -387,7 +404,7 @@ func TestSolo_AHubThatDiesWhileServingTearsTheInstanceDownWithoutReporting(t *te
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		var err error
-		inst, err = Start(ctx, Config{SkipBanner: true, NoTCP: true})
+		inst, err = Start(ctx, cfg)
 		require.NoError(t, err, "the Hub must come up before this test can kill it")
 
 		<-serving
@@ -408,7 +425,7 @@ func TestSolo_AHubThatDiesWhileServingTearsTheInstanceDownWithoutReporting(t *te
 // logging it here as well would restore -- at the far end of the lifecycle --
 // exactly the duplicate report startupDone removes for startup.
 func TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop(t *testing.T) {
-	startFailureEnv(t)
+	cfg := startFailureEnv(t)
 
 	wantErr := errors.New("lease release failed")
 	stubServeHub(t, func(ctx context.Context, s *hub.Server) error {
@@ -422,7 +439,7 @@ func TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop(t *testing.T) {
 	out := testutil.CaptureStderr(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		inst, err := Start(ctx, Config{SkipBanner: true, NoTCP: true})
+		inst, err := Start(ctx, cfg)
 		require.NoError(t, err)
 		stopErr = inst.Stop()
 	})

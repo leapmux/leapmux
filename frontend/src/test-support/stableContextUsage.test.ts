@@ -95,10 +95,14 @@ describe('createStableContext usage', () => {
   it('resolves one shared solid-refresh, not a second nested copy', () => {
     const copies = installedCopies('solid-refresh').map(p => relative(frontendRoot, p))
 
+    // Zero is a different problem from two, and the bump advice does not apply
+    // to it: nothing to align ranges with if the package is not there.
     expect(
       copies,
-      `Bump \`solid-refresh\` in package.json to match vite-plugin-solid's range, `
-      + `so the HMR test and the dev server run the same runtime:\n  ${copies.join('\n  ')}`,
+      copies.length === 0
+        ? 'No `solid-refresh` install found at all -- either it left the dependency tree, or node_modules is not installed.'
+        : `Bump \`solid-refresh\` in package.json to match vite-plugin-solid's range, `
+          + `so the HMR test and the dev server run the same runtime:\n  ${copies.join('\n  ')}`,
     ).toHaveLength(1)
   })
 })

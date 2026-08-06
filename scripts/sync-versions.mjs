@@ -22,9 +22,9 @@
 // Adding a claim: append to CLAIMS below. A claim whose pattern matches nothing
 // is a hard error, not a skip -- see the note on that check.
 
-import process from 'node:process'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
+import process from 'node:process'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const VERSIONS_ENV = join(ROOT, 'versions.env')
@@ -44,8 +44,9 @@ export function major(version) {
  *             drift report can name what the file currently claims. Anchor it
  *             tightly enough that it cannot match something it shouldn't.
  * - `render`  builds the replacement from the versions.env value. Its output
- *             must itself match `pattern`, or the file would never converge --
- *             `--check` verifies exactly that after a rewrite.
+ *             must itself match `pattern`, or the file would never converge.
+ *             `applyClaim` enforces that BEFORE writing anything: see
+ *             `assertRoundTrips`.
  *
  * A `go` directive is a language floor rather than a toolchain pin, but this
  * repo has always moved the two together (all four modules track GOLANG_VERSION
@@ -117,13 +118,14 @@ export const CLAIMS = [
  * makes.
  *
  * @param {string} text contents of versions.env
- * @returns {Map<string, string>}
+ * @returns {Map<string, string>} every KEY=VALUE pair, in file order
  */
 export function parseVersions(text) {
   const versions = new Map()
   for (const [index, line] of text.split('\n').entries()) {
     const trimmed = line.trim()
-    if (trimmed === '' || trimmed.startsWith('#')) continue
+    if (trimmed === '' || trimmed.startsWith('#'))
+      continue
     const eq = trimmed.indexOf('=')
     if (eq <= 0) {
       throw new Error(`versions.env:${index + 1}: not a KEY=VALUE line: ${trimmed}`)
@@ -141,9 +143,36 @@ export function parseVersions(text) {
 export function lineAt(text, index) {
   let line = 1
   for (let i = 0; i < index; i++) {
-    if (text[i] === '\n') line++
+    if (text[i] === '\n')
+      line++
   }
   return line
+}
+
+/**
+ * Fail unless `replacement` is something `claim.pattern` would match back.
+ *
+ * Without this the script happily writes a value that its own pattern cannot
+ * find again. `GOLANG_VERSION=` (a botched bump that leaves the key empty)
+ * renders as a bare `go `, which is written into go.work and all three go.mod
+ * files; every Go command then dies with `invalid go version ""`, and the next
+ * run throws "no line matches the GOLANG_VERSION claim" -- blaming the prose
+ * for a line this tool wrote. The same holds for any value the pattern cannot
+ * round-trip, such as one carrying an inline comment or a space.
+ *
+ * The pattern is `/g` for `matchAll`, so test against a non-global clone;
+ * requiring the match to span the whole replacement also rejects a multi-line
+ * value whose first line happens to match under `/m`.
+ */
+function assertRoundTrips(claim, replacement, want) {
+  const whole = new RegExp(claim.pattern.source, claim.pattern.flags.replace('g', ''))
+  if (whole.exec(replacement)?.[0] !== replacement) {
+    throw new Error(
+      `${claim.file}: ${claim.key}=${JSON.stringify(want)} renders as ${JSON.stringify(replacement)}, `
+      + `which its own claim pattern ${claim.pattern} would not match back. `
+      + 'Fix the value in versions.env, or the claim in scripts/sync-versions.mjs.',
+    )
+  }
 }
 
 /**
@@ -170,10 +199,12 @@ export function applyClaim(claim, content, want) {
     )
   }
 
+  const replacement = claim.render(want)
+  assertRoundTrips(claim, replacement, want)
+
   let rewritten = ''
   let cursor = 0
   for (const match of matches) {
-    const replacement = claim.render(want)
     if (match[0] !== replacement) {
       drifts.push({
         file: claim.file,
@@ -203,22 +234,30 @@ function main(argv) {
     return 2
   }
 
-  const versions = parseVersions(readFileSync(VERSIONS_ENV, 'utf-8'))
-
-  // Group by file so a file carrying several claims is read and written once,
-  // and so each claim sees the previous one's rewrite rather than the original.
-  /** @type {Map<string, typeof CLAIMS>} */
-  const byFile = new Map()
-  for (const claim of CLAIMS) {
-    if (!versions.has(claim.key)) {
-      process.stderr.write(`sync-versions: ${claim.file} claims ${claim.key}, which versions.env does not define\n`)
-      return 1
-    }
-    byFile.set(claim.file, [...(byFile.get(claim.file) ?? []), claim])
-  }
-
   const allDrifts = []
+  let versions
+  // Everything that reads the tree lives in here, versions.env included: its
+  // own "not a KEY=VALUE line" error used to escape past this handler and
+  // surface as a raw Bun stack trace, which is the least helpful shape for the
+  // one file a contributor is most likely to have just hand-edited.
   try {
+    versions = parseVersions(readFileSync(VERSIONS_ENV, 'utf-8'))
+
+    // Group by file so a file carrying several claims is read and written once,
+    // and so each claim sees the previous one's rewrite rather than the original.
+    /** @type {Map<string, typeof CLAIMS>} */
+    const byFile = new Map()
+    for (const claim of CLAIMS) {
+      if (!versions.has(claim.key)) {
+        throw new Error(`${claim.file} claims ${claim.key}, which versions.env does not define`)
+      }
+      byFile.set(claim.file, [...(byFile.get(claim.file) ?? []), claim])
+    }
+
+    // Compute every rewrite before performing any of them. A claim that cannot
+    // round-trip throws, and a tree with a rewritten README beside an untouched
+    // go.mod is worse than one nothing touched.
+    const pending = []
     for (const [file, claims] of byFile) {
       const path = join(ROOT, file)
       const original = readFileSync(path, 'utf-8')
@@ -228,9 +267,15 @@ function main(argv) {
         content = result.content
         allDrifts.push(...result.drifts)
       }
-      if (!check && content !== original) writeFileSync(path, content)
+      if (content !== original)
+        pending.push({ path, content })
     }
-  } catch (error) {
+
+    if (!check) {
+      for (const { path, content } of pending) writeFileSync(path, content)
+    }
+  }
+  catch (error) {
     process.stderr.write(`sync-versions: ${error.message}\n`)
     return 1
   }
@@ -261,4 +306,5 @@ function main(argv) {
 
 // Importable for tests (sync-versions.test.mjs exercises the pure helpers);
 // only the direct `bun scripts/sync-versions.mjs` invocation touches files.
-if (import.meta.main) process.exit(main(process.argv.slice(2)))
+if (import.meta.main)
+  process.exit(main(process.argv.slice(2)))

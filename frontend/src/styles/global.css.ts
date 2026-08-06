@@ -13,7 +13,8 @@
 //   --transition, --transition-fast
 //   --z-{dropdown,modal}
 
-import { globalFontFace, globalStyle } from '@vanilla-extract/css'
+import { globalFontFace, globalLayer, globalStyle } from '@vanilla-extract/css'
+import { darkPalette, lightPalette } from '~/styles/palette'
 import { breakpoints } from '~/styles/tokens'
 
 globalFontFace('Hack NF', {
@@ -125,119 +126,19 @@ globalStyle('input, textarea, select', {
 // LeapMux color scheme overrides (light theme)
 globalStyle(':root', {
   vars: {
-    // Core palette — warm sand base
-    '--background': 'rgb(255 254 252)',
-    '--foreground': 'rgb(34 32 30)',
-    '--card': 'rgb(247 245 242)',
-    '--card-foreground': 'rgb(34 32 30)',
+    ...lightPalette,
 
-    // Primary — teal accent
-    '--primary': 'rgb(13 148 136)',
-    '--primary-foreground': 'rgb(255 255 255)',
-
-    // Secondary — warm sand
-    '--secondary': 'rgb(232 230 225)',
-    '--secondary-foreground': 'rgb(46 43 40)',
-
-    // Muted
-    '--muted': 'rgb(237 235 231)',
-    '--muted-foreground': 'rgb(120 117 111)',
-
-    // Faint — subtler than muted
-    '--faint': 'rgb(242 240 236)',
-    '--faint-foreground': 'rgb(160 157 151)',
-
-    // Accent — soft sage green
-    '--accent': 'rgb(222 235 225)',
-    '--accent-foreground': 'rgb(34 32 30)',
-
-    // Semantic colors
-    '--danger': 'rgb(220 74 68)',
-    '--danger-foreground': 'rgb(255 255 255)',
-    '--success': 'rgb(101 163 13)',
-    '--success-foreground': 'rgb(255 255 255)',
-    '--warning': 'rgb(245 158 11)',
-    '--warning-foreground': 'rgb(34 32 30)',
-
-    // Typography — wire user-configurable fonts into Oat's variables
+    // Typography — wire user-configurable fonts into Oat's variables. Not in
+    // palette.ts: NOTICE.html has no preference store to read from, so it
+    // declares its own literals instead of these indirections.
     '--font-sans': `var(--ui-font-family, system-ui, sans-serif)`,
     '--font-mono': `var(--mono-font-family, "Hack NF", Hack, "SF Mono", Consolas, monospace)`,
-
-    // Borders and interactive
-    '--border': 'rgb(221 217 211)',
-    '--input': 'rgb(213 209 203)',
-    '--ring': 'rgb(13 148 136)',
-
-    // Scrollbar
-    '--scrollbar-thumb': 'rgb(from var(--muted-foreground) r g b / 0.35)',
-    '--scrollbar-thumb-hover': 'rgb(from var(--muted-foreground) r g b / 0.55)',
-    '--scrollbar-track': 'transparent',
-
-    // LeapMux-specific custom variables
-    '--lm-bg-translucent': 'rgba(255, 255, 255, 0.5)',
-    '--lm-danger-subtle': 'rgb(253 235 233)',
-    '--lm-success-subtle': 'rgb(236 247 220)',
-    '--lm-warning-subtle': 'rgb(254 245 221)',
-    '--lm-icon-monochrome': 'rgb(101 99 99)',
   },
 })
 
 // LeapMux color scheme overrides (dark theme)
 globalStyle('[data-theme="dark"]', {
-  vars: {
-    // Core palette — warm charcoal base
-    '--background': 'rgb(26 25 23)',
-    '--foreground': 'rgb(232 230 225)',
-    '--card': 'rgb(42 40 38)',
-    '--card-foreground': 'rgb(232 230 225)',
-
-    // Primary — brighter teal for dark bg
-    '--primary': 'rgb(20 184 166)',
-    '--primary-foreground': 'rgb(12 12 11)',
-
-    // Secondary
-    '--secondary': 'rgb(51 48 45)',
-    '--secondary-foreground': 'rgb(224 221 216)',
-
-    // Muted
-    '--muted': 'rgb(46 43 40)',
-    '--muted-foreground': 'rgb(138 134 128)',
-
-    // Faint — subtler than muted
-    '--faint': 'rgb(36 34 32)',
-    '--faint-foreground': 'rgb(107 104 98)',
-
-    // Accent — soft sage green
-    '--accent': 'rgb(45 62 50)',
-    '--accent-foreground': 'rgb(232 230 225)',
-
-    // Semantic colors
-    '--danger': 'rgb(239 83 80)',
-    '--danger-foreground': 'rgb(255 255 255)',
-    '--success': 'rgb(132 204 22)',
-    '--success-foreground': 'rgb(12 12 11)',
-    '--warning': 'rgb(251 191 36)',
-    '--warning-foreground': 'rgb(26 25 23)',
-
-    // Borders and interactive
-    '--border': 'rgb(61 58 54)',
-    '--input': 'rgb(61 58 54)',
-    '--ring': 'rgb(20 184 166)',
-
-    // Scrollbar
-    '--scrollbar-thumb': 'rgb(from var(--muted-foreground) r g b / 0.35)',
-    '--scrollbar-thumb-hover': 'rgb(from var(--muted-foreground) r g b / 0.55)',
-    '--scrollbar-track': 'transparent',
-
-    // LeapMux-specific custom variables
-    '--lm-bg-translucent': 'rgba(26, 25, 23, 0.5)',
-    '--lm-danger-subtle': 'rgb(50 30 28)',
-    '--lm-success-subtle': 'rgb(28 38 20)',
-    '--lm-warning-subtle': 'rgb(46 40 24)',
-    '--lm-icon-monochrome': 'rgb(190 187 183)',
-    '--lm-opencode-inner': '#4B4646',
-    '--lm-opencode-outer': '#F1ECEC',
-  },
+  vars: darkPalette,
 })
 
 // Override Oat's code/pre background (var(--faint)) with a semi-transparent
@@ -268,22 +169,53 @@ globalStyle('ot-dropdown hr', {
 // needs them to read as a menu item at all, and leaning on a third-party
 // internal reset is what made a patch-level bump able to restyle every menu in
 // the app. Padding, width and cursor still come from Oat, which kept them.
+//
+// They live in a LAYER because Oat's rule did. Oat declares
+// `@layer theme,base,components,animations,utilities` and put `[role=menuitem]`
+// in `components`, so every unlayered vanilla-extract class outranked it no
+// matter what the selectors were. Restating the rule unlayered would have
+// silently changed that: a bare `[role="menuitem"]` is (0,1,0), the same
+// specificity as a VE class, so `dangerMenuItem` and the two `menuItemSelected`
+// classes would have been decided by stylesheet link order alone -- and a
+// chunking change would have flipped "Delete…" back to the default colour and
+// erased the selected-row highlight, with nothing to catch it. Declared here,
+// after Oat's statement, the layer appends past `utilities`: it still beats
+// Oat's `base` button fill, and still loses to every unlayered class by
+// construction. Scoping the selector instead would NOT work -- it raises
+// specificity and would beat those classes outright.
+const menuItem = globalLayer('leapmuxMenuItem')
+
 globalStyle('[role="menuitem"]', {
-  alignItems: 'center',
-  gap: 'var(--space-2)',
-  fontSize: 'var(--text-7)',
-  textAlign: 'start',
-  color: 'var(--foreground)',
-  background: 'none',
-  border: 'none',
-  borderRadius: 'var(--radius-small)',
+  '@layer': {
+    [menuItem]: {
+      alignItems: 'center',
+      gap: 'var(--space-2)',
+      fontSize: 'var(--text-7)',
+      textAlign: 'start',
+      color: 'var(--foreground)',
+      background: 'none',
+      border: 'none',
+      borderRadius: 'var(--radius-small)',
+    },
+  },
 })
 
-// Restated because the rule above is unlayered and would otherwise outrank
-// Oat's layered hover (`@layer components`), leaving menu items with no hover
-// affordance at all.
-globalStyle('[role="menuitem"]:is(:hover, :focus)', {
-  background: 'var(--accent)',
+// Restated because the reset above cancels the background Oat's own hover rule
+// would otherwise sit on top of, and this layer outranks Oat's `components`.
+//
+// `:not(:disabled, [aria-disabled="true"])` mirrors Oat's own
+// `&:hover:not(:disabled)` on buttons. Menus here really do render disabled
+// items -- BranchContextMenu's "Change branch…"/"Delete branch…",
+// FileActionsMenu's download entries while busy, OpenInEditorButton's Refresh
+// -- and Oat's `:disabled` rule sets only `cursor`/`opacity`, never
+// `pointer-events: none`, so without the guard hovering one paints the accent
+// that says "this will activate" on a control that will not.
+globalStyle('[role="menuitem"]:is(:hover, :focus):not(:disabled, [aria-disabled="true"])', {
+  '@layer': {
+    [menuItem]: {
+      background: 'var(--accent)',
+    },
+  },
 })
 
 // Blockquotes: keep Oat's italic, but lift the color from the faint

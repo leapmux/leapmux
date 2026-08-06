@@ -237,7 +237,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [find-msvc-tools 0.1.9 (MIT OR Apache-2.0)](#find-msvc-tools-019-mit-or-apache-20)
 - [fixedbitset 0.5.7 (MIT OR Apache-2.0)](#fixedbitset-057-mit-or-apache-20)
 - [flate2 1.1.9 (MIT OR Apache-2.0)](#flate2-119-mit-or-apache-20)
-- [fnv 1.0.7 (Apache-2.0 / MIT)](#fnv-107-apache-20-mit)
+- [fnv 1.0.7 (Apache-2.0 / MIT)](#fnv-107-apache-20--mit)
 - [foldhash 0.1.5 (Zlib)](#foldhash-015-zlib)
 - [foldhash 0.2.0 (Zlib)](#foldhash-020-zlib)
 - [foreign-types 0.5.0 (MIT/Apache-2.0)](#foreign-types-050-mitapache-20)
@@ -26438,7 +26438,9 @@ SOFTWARE.
 ### dispatch2 0.3.1 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -49730,7 +49732,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-app-kit 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -49951,7 +49955,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-cloud-kit 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -50172,7 +50178,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-core-data 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -50393,7 +50401,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-core-foundation 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -50614,7 +50624,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-core-graphics 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -50835,7 +50847,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-core-image 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -51056,7 +51070,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-core-location 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -51277,7 +51293,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-core-text 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -51526,7 +51544,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-exception-helper 0.1.1 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -51775,7 +51795,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-io-surface 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -51996,7 +52018,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-quartz-core 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -52217,7 +52241,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-ui-kit 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -52438,7 +52464,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-user-notifications 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 
@@ -52659,7 +52687,9 @@ DEALINGS IN THE SOFTWARE.
 ### objc2-web-kit 0.3.2 (Zlib OR Apache-2.0 OR MIT)
 
 ```
-Copyright (c) 2019 Daniel "Lokathor" Gee.
+zlib License
+
+Copyright (c) <year> <copyright holders>
 
 This software is provided 'as-is', without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
 

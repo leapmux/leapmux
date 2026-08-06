@@ -65,7 +65,7 @@
     "source-map-js": "^1.2.1",
     "tinykeys": "^4.0.0",
     "unified": "^11.0.5",
-    "vinxi": "^0.5.11"
+    "vinxi": "0.5.11"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^9.2.0",
@@ -86,6 +86,7 @@
     "typescript": "^6.0.3",
     "vite": "^8.2.0",
     "vite-plugin-solid": "^2.11.14",
+    "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^4.1.10"
   },
   "overrides": {

@@ -7,6 +7,17 @@
 // `@types/*` package -- two structurally distinct declarations of the same type,
 // which `tsc` reports as an unassignable-but-identical-looking mismatch. Tests
 // that care assert `toHaveLength(1)`.
+//
+// SCOPE: this understands a HOISTED node_modules -- what bun's default linker
+// produces, and what this repo has. It does NOT understand a store layout
+// (`node_modules/.pnpm`, `node_modules/.bun`), where the real installs live
+// under a dot-directory this walk skips and a package's dependencies are
+// siblings in the store rather than nested beneath it. Under one of those a
+// non-direct dependency like `@types/hast` reports zero copies rather than its
+// real count, so the guards would fail at zero instead of catching a duplicate.
+// Supporting them means allowlisting the store directories AND rewriting the
+// fixture test that pins `.store/node_modules/target` as uncounted -- worth
+// doing if the repo ever switches linkers, not before.
 
 import { existsSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -98,12 +109,31 @@ let index: Map<string, string[]> | null = null
 
 function indexOf(nodeModules: string): Map<string, string[]> {
   const found = new Map<string, string[]>()
+  // Keyed by real path, so one physical install reached through two symlinks
+  // counts once. `walk`'s own visited set dedupes node_modules DIRECTORIES,
+  // which does not cover this: two dependents can each link the same package
+  // directory without either of their node_modules being the same tree, and a
+  // `toHaveLength(1)` guard would then fail on a duplicate that is one install.
+  const realPaths = new Map<string, Set<string>>()
   walk(nodeModules, (name, dir) => {
-    const dirs = found.get(name)
-    if (dirs)
-      dirs.push(dir)
-    else
+    let real: string
+    try {
+      real = realpathSync(dir)
+    }
+    catch {
+      return // A broken link: not an install.
+    }
+    const seenReal = realPaths.get(name)
+    if (seenReal) {
+      if (seenReal.has(real))
+        return
+      seenReal.add(real)
+      found.get(name)!.push(dir)
+    }
+    else {
+      realPaths.set(name, new Set([real]))
       found.set(name, [dir])
+    }
   }, new Set())
   return found
 }

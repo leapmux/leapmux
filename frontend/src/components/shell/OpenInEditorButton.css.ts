@@ -83,26 +83,14 @@ export const menu = style({
   listStyle: 'none',
 })
 
+// Only what is specific to THIS menu. Everything a menu item needs to look like
+// one -- the reset, the type scale, the hover fill -- now comes from the shared
+// [role="menuitem"] rule in the global stylesheet, and the layout half
+// (display, width, padding, cursor, focus outline) from Oat's own rule. This
+// block used to restate all of it: a private workaround for the Oat coupling
+// that shared rule now owns, and a second copy that could only drift from it.
 export const menuItem = style({
-  width: '100%',
-  padding: 'var(--space-2) var(--space-3)',
-  fontSize: 'var(--text-7)',
-  color: 'var(--foreground)',
-  background: 'none',
-  border: 'none',
-  borderRadius: 'var(--radius-small)',
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
   justifyContent: 'space-between',
-  gap: 'var(--space-2)',
-  textAlign: 'left',
-  selectors: {
-    '&:hover, &:focus': {
-      backgroundColor: 'var(--accent)',
-      outline: 'none',
-    },
-  },
 })
 
 export const menuItemSelected = style({

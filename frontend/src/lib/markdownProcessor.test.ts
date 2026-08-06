@@ -50,6 +50,43 @@ describe('renderWithPlainFallback', () => {
     expect(html).toContain('const x = 1')
     expect(html).not.toContain('class="shiki')
   })
+
+  it('warns in development when it falls back', () => {
+    // This path takes the WHOLE document down to un-highlighted plain, so it
+    // is strictly more severe than the per-block `onError` beside it -- and
+    // that one already dev-warns. Silently swallowing the broader failure left
+    // every message in a conversation degraded with no console trace.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const throwing = {
+        processSync: () => {
+          throw new Error('highlighter disposed')
+        },
+      } as unknown as Processor
+
+      renderWithPlainFallback(throwing, 'hello')
+
+      expect(warn).toHaveBeenCalledOnce()
+      expect(String(warn.mock.calls[0]?.[0])).toContain('falling back to plain')
+    }
+    finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('stays quiet when the processor succeeds', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const ok = { processSync: (t: string) => `<p>${t}</p>` } as unknown as Processor
+
+      renderWithPlainFallback(ok, 'hello')
+
+      expect(warn).not.toHaveBeenCalled()
+    }
+    finally {
+      warn.mockRestore()
+    }
+  })
 })
 
 describe('extractFenceLanguages', () => {
