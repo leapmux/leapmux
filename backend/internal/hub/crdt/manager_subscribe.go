@@ -1030,7 +1030,7 @@ const FallbackLockFreeAttemptsForTest = fallbackLockFreeAttempts
 // already registered and the transport still parking (Release happens only
 // after the bootstrap frame is on the wire), so a slow build racing fast
 // commits can overflow subscriberQueue's parkedFrameCap. That drops a frame,
-// and liveCatchUpSink discards the send error -- so the frame is simply lost.
+// and batchFanout.sendTo discards the send error -- so the frame is simply lost.
 // It cannot happen today only because the old shape held m.projection across
 // the build and stopped broadcasts entirely.
 //
@@ -1196,7 +1196,7 @@ type registration struct {
 // one side of it:
 //
 //   - commitState(B) BEFORE the RLock: B's ops are in reg.state, and
-//     at >= B.hlc. If broadcastBatch(B) lands after the Add, sendTo's
+//     at >= B.hlc. If broadcastBatch(B) lands after the Add, planFor's
 //     resumeSuppressThrough gate drops it. Not delivered twice.
 //   - commitState(B) AFTER the RUnlock: B is not in reg.state, and
 //     broadcastBatch(B) follows commitState(B), which follows the Add and its
@@ -1209,7 +1209,9 @@ type registration struct {
 // sub.resumeSuppressThrough == initial.MaxHlc.
 //
 // It must be assigned BEFORE registerSubscriber, because Add publishes a deep
-// CLONE of the subscriber and sendTo reads the clone.
+// CLONE of the subscriber and the broadcast fan-out reads the clone -- both to
+// evaluate the gate and as the key its per-subscriber frame plan is memoized
+// under (see batchPlans).
 //
 // m.projection is held here not for the baseline but as the REBASELINE FENCE.
 // m.subscribers.Remove takes only the controller mutex while broadcastBatch

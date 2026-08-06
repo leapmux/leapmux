@@ -16,12 +16,16 @@ import (
 	"github.com/leapmux/leapmux/internal/sendq"
 )
 
+// testPool gives one Conn a private byte budget the size a production Hub
+// grants a single connection, so a test that fills its queue does not change
+// what any other test's Conn is admitted. Tests that mean to exercise SHARED
+// pressure build one pool and hand it to several NewConn calls.
 func TestConnSendReturnsWhileWriteParked(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 
-	conn, pump := NewConn(context.Background(), func() {}, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {
 		case <-started:
 		default:
@@ -51,14 +55,14 @@ func TestConnOverBudgetFencesAndCancels(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	conn, _ := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {} // never drain — fill the queue
 	}, nil)
 	t.Cleanup(conn.Fence)
 
 	const chunk = 1 << 20
 	var err error
-	for i := 0; i < (sendq.DefaultMaxBytes/chunk)+4; i++ {
+	for i := 0; i < int(sendq.DefaultMaxBytes/int64(chunk))+4; i++ {
 		err = conn.Send(&leapmuxv1.ConnectResponse{
 			Payload: &leapmuxv1.ConnectResponse_ChannelMessage{
 				ChannelMessage: &leapmuxv1.ChannelMessage{
@@ -81,7 +85,7 @@ func TestConnOverBudgetFencesAndCancels(t *testing.T) {
 
 func TestConnSendControlSucceedsWhenDataCeilingFull(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	conn, _ := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {}
 	}, nil)
 	t.Cleanup(conn.Fence)
@@ -110,7 +114,7 @@ func TestConnSendControlFencesWhenFullySaturated(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	conn, _ := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {}
 	}, nil)
 	t.Cleanup(conn.Fence)
@@ -138,7 +142,7 @@ func TestConnSendControlFencesWhenFullySaturated(t *testing.T) {
 }
 
 func TestConnFlushReturnsImmediatelyWhenIdle(t *testing.T) {
-	conn, _ := NewConn(context.Background(), func() {}, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, _ := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		return nil
 	}, nil)
 	t.Cleanup(conn.Fence)
@@ -150,7 +154,7 @@ func TestConnFlushReturnsImmediatelyWhenIdle(t *testing.T) {
 
 func TestConnDrainWriteErrorFences(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	conn, pump := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		return errors.New("stream reset")
 	}, nil)
 	t.Cleanup(conn.Fence)
@@ -173,7 +177,7 @@ func TestConnFenceIsIdempotent(t *testing.T) {
 	conn, _ := NewConn(ctx, func() {
 		cancels.Add(1)
 		cancel()
-	}, "w1", func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
+	}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
 
 	conn.Fence()
 	conn.Fence()
@@ -183,10 +187,10 @@ func TestConnFenceIsIdempotent(t *testing.T) {
 
 // sizedCiphertext returns a ciphertext whose ConnectResponse charges exactly
 // targetBytes against the sendq budget (proto.Size + sendq.DefaultFrameOverhead).
-func sizedCiphertext(t *testing.T, targetBytes int) []byte {
+func sizedCiphertext(t *testing.T, targetBytes int64) []byte {
 	t.Helper()
-	lo, hi := 0, targetBytes
-	best := -1
+	lo, hi := int64(0), targetBytes
+	best := int64(-1)
 	for lo <= hi {
 		mid := (lo + hi) / 2
 		msg := &leapmuxv1.ConnectResponse{
@@ -194,7 +198,7 @@ func sizedCiphertext(t *testing.T, targetBytes int) []byte {
 				ChannelMessage: &leapmuxv1.ChannelMessage{Ciphertext: make([]byte, mid)},
 			},
 		}
-		charged := proto.Size(msg) + sendq.DefaultFrameOverhead
+		charged := int64(proto.Size(msg)) + sendq.DefaultFrameOverhead
 		if charged <= targetBytes {
 			best = mid
 			lo = mid + 1
@@ -202,13 +206,13 @@ func sizedCiphertext(t *testing.T, targetBytes int) []byte {
 			hi = mid - 1
 		}
 	}
-	require.GreaterOrEqual(t, best, 0)
+	require.GreaterOrEqual(t, best, int64(0))
 	return make([]byte, best)
 }
 
 func TestConnDoneClosesOnFence(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	conn, _ := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
+	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
 	conn.Fence()
 	select {
 	case <-conn.Done():
@@ -219,7 +223,7 @@ func TestConnDoneClosesOnFence(t *testing.T) {
 
 func TestConnDrainAfterFenceWritesNothing(t *testing.T) {
 	var wrote int
-	conn, pump := NewConn(context.Background(), func() {}, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		wrote++
 		return nil
 	}, nil)
@@ -234,7 +238,7 @@ func TestConnFlushWaitsForEveryQueuedFrame(t *testing.T) {
 	var wrote []int
 	gate := make(chan struct{})
 
-	conn, pump := NewConn(context.Background(), func() {}, "w1", func(msg *leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(msg *leapmuxv1.ConnectResponse) error {
 		<-gate
 		mu.Lock()
 		wrote = append(wrote, int(msg.GetChannelMessage().GetCorrelationId()))
@@ -271,7 +275,7 @@ func TestConnFlushWaitsForEveryQueuedFrame(t *testing.T) {
 }
 
 func TestConnEncryptionModeConcurrent(t *testing.T) {
-	conn, _ := NewConn(context.Background(), func() {}, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, _ := NewConn(context.Background(), func() {}, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		return nil
 	}, nil)
 	t.Cleanup(conn.Fence)
@@ -293,7 +297,7 @@ func TestConnEncryptionModeConcurrent(t *testing.T) {
 
 func TestSendPumpDrain_WritePanicDoesNotEscape(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	conn, pump := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		panic("worker stream already finished")
 	}, nil)
 	t.Cleanup(conn.Fence)
@@ -320,7 +324,7 @@ func TestConnSendWaitEnqueuesAndHonoursDeadline(t *testing.T) {
 	defer cancel()
 
 	var wrote atomic.Int32
-	conn, pump := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		wrote.Add(1)
 		return nil
 	}, nil)
@@ -343,7 +347,7 @@ func TestConnSendWaitEnqueuesAndHonoursDeadline(t *testing.T) {
 	// park SendWait on a frame that cannot fit until budget frees.
 	fillCtx, fillCancel := context.WithCancel(context.Background())
 	defer fillCancel()
-	fill, _ := NewConn(fillCtx, fillCancel, "w2", func(*leapmuxv1.ConnectResponse) error {
+	fill, _ := NewConn(fillCtx, fillCancel, "w2", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {}
 	}, nil)
 	t.Cleanup(fill.Fence)
@@ -366,7 +370,7 @@ func TestConnSendWaitEnqueuesAndHonoursDeadline(t *testing.T) {
 
 func TestConnFlushReturnsErrConnectionClosedAfterDiscard(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	conn, _ := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, _ := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		select {}
 	}, nil)
 	t.Cleanup(conn.Fence)
@@ -387,7 +391,7 @@ func TestSendPumpDrainTurnBoundsBatchAndResignals(t *testing.T) {
 	defer cancel()
 
 	var wrote atomic.Int32
-	conn, pump := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		wrote.Add(1)
 		return nil
 	}, nil)
@@ -421,7 +425,7 @@ func TestSendPumpRePanicsConcurrentDrain(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 
-	conn, pump := NewConn(ctx, cancel, "w1", func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
@@ -444,4 +448,16 @@ func channelMsg(id uint64) *leapmuxv1.ConnectResponse {
 			ChannelMessage: &leapmuxv1.ChannelMessage{CorrelationId: id},
 		},
 	}
+}
+
+// TestNewConnRefusesToBuildWithoutABudget pins that a composition which forgot
+// the worker pool fails at wiring time rather than running with an unbounded
+// per-connection queue that nothing would flag until the Hub ran out of memory.
+func TestNewConnRefusesToBuildWithoutABudget(t *testing.T) {
+	t.Parallel()
+
+	assert.PanicsWithValue(t, "workermgr.NewConn: pool is required", func() {
+		NewConn(context.Background(), func() {}, "w1", "u1", nil,
+			func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
+	})
 }

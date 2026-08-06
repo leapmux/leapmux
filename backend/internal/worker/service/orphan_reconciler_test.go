@@ -94,7 +94,7 @@ func TestOrphanReconciler_FileTab_MissingOnHub_Revoked(t *testing.T) {
 
 	// Manually drive a single pass — Run loop semantics are exercised by
 	// the Trigger test below.
-	require.NoError(t, runOnce(ctx, rec))
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
 	rows, err := q.ListAllWorkerFileTabs(ctx)
 	require.NoError(t, err)
@@ -111,7 +111,7 @@ func TestOrphanReconciler_Agent_MissingOnHub_Closed(t *testing.T) {
 	}))
 	setFake("user-1", nil, nil)
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
 	agent, err := q.GetAgentByID(ctx, "ghost-agent")
 	require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestOrphanReconciler_Terminal_MissingOnHub_Closed(t *testing.T) {
 	}))
 	setFake("user-1", nil, nil)
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
 	term, err := q.GetTerminal(ctx, "ghost-term")
 	require.NoError(t, err)
@@ -199,7 +199,7 @@ func TestOrphanReconciler_Agent_MissingOnHub_StopsInMemory(t *testing.T) {
 	}))
 	setFake("user-1", nil, nil)
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
 	agent, err := q.GetAgentByID(ctx, "ghost-agent")
 	require.NoError(t, err)
@@ -223,7 +223,7 @@ func TestOrphanReconciler_Terminal_MissingOnHub_StopsInMemory(t *testing.T) {
 	}))
 	setFake("user-1", nil, nil)
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
 	term, err := q.GetTerminal(ctx, "ghost-term")
 	require.NoError(t, err)
@@ -248,7 +248,7 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 		{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "live-agent"},
 	}, nil)
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
 	agent, err := q.GetAgentByID(ctx, "live-agent")
 	require.NoError(t, err)
@@ -270,7 +270,8 @@ func TestOrphanReconciler_ListError_DoesNotPanic_DoesNotCloseRows(t *testing.T) 
 	}))
 	setFake("user-1", nil, errors.New("hub unavailable"))
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.False(t, runOnce(ctx, rec),
+		"a failed hub leg must report NON-convergence -- that bool is what the retry backoff keys off")
 
 	rows, err := q.ListAllWorkerFileTabs(ctx)
 	require.NoError(t, err)
@@ -364,27 +365,27 @@ func TestOrphanReconciler_RetriesAfterHubListFailure(t *testing.T) {
 	rec.Stop()
 }
 
-// runOnce drives a single reconciliation pass by triggering the
-// reconciler against a bounded context. The reconciler doesn't
-// expose its private `reconcileOnce` method; running through Run
-// with an Interval >> test duration gives us one startup pass.
-func runOnce(ctx context.Context, rec *service.OrphanReconciler) error {
-	passCtx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		rec.Run(passCtx)
-		close(done)
-	}()
-	// Wait until the startup pass has settled, then cancel to exit Run.
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		return errors.New("Run did not exit after cancel")
-	}
-	return nil
+// runOnce drives exactly one reconciliation pass and returns whether it
+// CONVERGED -- the bool the seam exists to expose.
+//
+// It used to swallow that and return a literal nil, which made every
+// `require.NoError(t, runOnce(...))` below unfailable: a regression that made
+// reconcileOnce report false on every pass (a hub list error, a failed local
+// probe, a blank owner scope) left all of them green as long as the specific
+// rows each test inspected happened to line up.
+//
+// It calls the pass directly (through export_test.go) rather than starting Run
+// and cancelling it after a sleep. The sleep was a window sized by the machine
+// instead of by the state it waited for: the pass's DB writes take the same
+// context Run does, so a cancel that landed mid-pass abandoned them, and the
+// test then failed reporting that the reconciler had not closed a stale tab.
+// Under -race with the whole package in parallel, 50 ms stopped being enough.
+//
+// Run's own loop semantics -- the startup pass, ticks, Trigger coalescing and
+// the retry backoff -- are covered by the Trigger and retry tests below, which
+// genuinely are about the loop.
+func runOnce(ctx context.Context, rec *service.OrphanReconciler) bool {
+	return rec.ReconcileOnceForTest(ctx)
 }
 
 // TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner pins the owner axis
@@ -418,7 +419,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID, UserId: "user-b"},
 	}, nil)
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
 	byUser := fileTabsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a")
@@ -459,7 +460,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: sharedTabID, UserId: "user-a"},
 	}, nil)
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
 	byUser := fileTabsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a", "the hub-known owner's row must survive")
@@ -507,7 +508,7 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 		{TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabId: "file-a", UserId: "user-a"},
 	}, nil)
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
 
 	byUser := fileTabsByUser(t, q, ctx)
 	require.Contains(t, byUser, "user-a", "the in-scope owner's listed tab must survive")
@@ -541,7 +542,8 @@ func TestOrphanReconciler_UndeclaredScopeReapsNothing(t *testing.T) {
 	}))
 	setFake("", nil, nil)
 
-	require.NoError(t, runOnce(ctx, rec))
+	require.False(t, runOnce(ctx, rec),
+		"an undeclared owner scope reaps nothing and must not claim to have converged")
 
 	rows, err := q.ListAllWorkerFileTabs(ctx)
 	require.NoError(t, err)

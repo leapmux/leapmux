@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/coder/websocket"
@@ -39,8 +40,21 @@ func newTestAuthContexts(t *testing.T) *auth.AuthContextRegistry {
 func TestWebSocketHandlersRequireAuthContextRegistry(t *testing.T) {
 	t.Parallel()
 
-	assert.Panics(t, func() { NewChannelRelayHandler(nil, newTestRegistry(), nil, nil, nil, false) })
-	assert.Panics(t, func() { NewUserEventsHandler(nil, nil, nil, nil, false) })
+	assert.Panics(t, func() {
+		NewChannelRelayHandler(nil, newTestRegistry(), nil, nil, nil, false, sendq.NewMaxBytesPoolForTest())
+	})
+	assert.Panics(t, func() { NewUserEventsHandler(nil, nil, nil, nil, false, sendq.NewMaxBytesPoolForTest()) })
+}
+
+// TestUserEventsHandlerRequiresQueuePool pins the same gate on the OTHER
+// required dependency. Without a pool the subscriber queues would be the one
+// outbound path in the Hub with no memory bound -- the state issue #361 exists
+// to end -- and it would surface as a slow leak nobody attributes rather than
+// as a startup failure.
+func TestUserEventsHandlerRequiresQueuePool(t *testing.T) {
+	t.Parallel()
+
+	assert.Panics(t, func() { NewUserEventsHandler(nil, nil, newTestAuthContexts(t), nil, false, nil) })
 }
 
 // TestChannelRelayHandlerRequiresWorkerRegistry pins the OTHER dependency the
@@ -52,7 +66,9 @@ func TestWebSocketHandlersRequireAuthContextRegistry(t *testing.T) {
 func TestChannelRelayHandlerRequiresWorkerRegistry(t *testing.T) {
 	t.Parallel()
 
-	assert.Panics(t, func() { NewChannelRelayHandler(nil, nil, nil, newTestAuthContexts(t), nil, false) })
+	assert.Panics(t, func() {
+		NewChannelRelayHandler(nil, nil, nil, newTestAuthContexts(t), nil, false, sendq.NewMaxBytesPoolForTest())
+	})
 }
 
 // newTestRegistry is a real registry with no user-directed reach, for tests
@@ -135,7 +151,7 @@ func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
 func TestChannelRelay_NoCookie_Returns401(t *testing.T) {
 	t.Parallel()
 
-	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, false)
+	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, false, sendq.NewMaxBytesPoolForTest())
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	rec := httptest.NewRecorder()
@@ -161,8 +177,8 @@ func TestWebSocketHandlers_InternalAuthFailureReturnsGeneric500(t *testing.T) {
 	t.Parallel()
 
 	handlers := map[string]http.Handler{
-		"channel relay": NewChannelRelayHandler(httpAuthFailureStore{}, newTestRegistry(), nil, newTestAuthContexts(t), nil, false),
-		"user events":   NewUserEventsHandler(httpAuthFailureStore{}, nil, newTestAuthContexts(t), nil, false),
+		"channel relay": NewChannelRelayHandler(httpAuthFailureStore{}, newTestRegistry(), nil, newTestAuthContexts(t), nil, false, sendq.NewMaxBytesPoolForTest()),
+		"user events":   NewUserEventsHandler(httpAuthFailureStore{}, nil, newTestAuthContexts(t), nil, false, sendq.NewMaxBytesPoolForTest()),
 	}
 	for name, handler := range handlers {
 		t.Run(name, func(t *testing.T) {
@@ -180,7 +196,7 @@ func TestWebSocketHandlers_InternalAuthFailureReturnsGeneric500(t *testing.T) {
 func TestChannelRelay_SubprotocolToken_NotAccepted(t *testing.T) {
 	t.Parallel()
 
-	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, false)
+	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, false, sendq.NewMaxBytesPoolForTest())
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	req.Header.Set("Sec-WebSocket-Protocol", "channel-relay, auth.token.some-token")
@@ -261,7 +277,7 @@ func newBearerRelay(t *testing.T) (*ChannelRelayHandler, store.Store, *auth.Toke
 	hubtestutil.CreateTestAdmin(t, st)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	h := NewChannelRelayHandler(st, newTestRegistry(), nil, newTestAuthContexts(t), nil, false).WithTokenValidator(tv)
+	h := NewChannelRelayHandler(st, newTestRegistry(), nil, newTestAuthContexts(t), nil, false, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv)
 	return h, st, tv
 }
 
@@ -362,7 +378,7 @@ func TestChannelRelay_Bearer_RejectsWhenValidatorNotWired(t *testing.T) {
 	// opt-in for the multi-user-hub.
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	h := NewChannelRelayHandler(st, newTestRegistry(), nil, newTestAuthContexts(t), nil, false)
+	h := NewChannelRelayHandler(st, newTestRegistry(), nil, newTestAuthContexts(t), nil, false, sendq.NewMaxBytesPoolForTest())
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	req.Header.Set("Authorization", "Bearer lmx_anything_anything")
@@ -385,7 +401,7 @@ func TestChannelRelay_Bearer_AcceptsValidToken(t *testing.T) {
 
 	cm := channelmgr.New(0)
 	wm := workermgr.New(workermgr.DenyAllReach())
-	h := NewChannelRelayHandler(st, wm, cm, newTestAuthContexts(t), nil, false).WithTokenValidator(tv)
+	h := NewChannelRelayHandler(st, wm, cm, newTestAuthContexts(t), nil, false, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv)
 
 	bearer := mintAdminAPIToken(t, st, tv)
 
@@ -415,7 +431,7 @@ func TestChannelRelay_BearerRevocationClosesLiveConnection(t *testing.T) {
 
 	cm := channelmgr.New(0)
 	wm := workermgr.New(workermgr.DenyAllReach())
-	handler := NewChannelRelayHandler(st, wm, cm, cache, nil, false).
+	handler := NewChannelRelayHandler(st, wm, cm, cache, nil, false, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(tv)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -494,7 +510,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	})
 	_, _ = wm.Register(wconn)
 
-	srv := httptest.NewServer(NewChannelRelayHandler(st, wm, cm, newTestAuthContexts(t), nil, false).WithTokenValidator(tv))
+	srv := httptest.NewServer(NewChannelRelayHandler(st, wm, cm, newTestAuthContexts(t), nil, false, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv))
 	t.Cleanup(srv.Close)
 
 	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/channel"
@@ -593,4 +609,88 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 			channelmgr.ChannelInfo{ChannelID: "ch", WorkerID: "w1"}, msg("ch"))
 		require.ErrorIs(t, err, errTerminalChannelRelay)
 	})
+}
+
+// The cap covers /ws/channel too. It lives in the shared lease registry, so
+// this endpoint gets it by construction -- which is exactly why it needs a test
+// of its own: the one line here that turns a refusal into a return is the only
+// thing standing between a refused registration and a handler that carries on
+// serving a socket the registry never indexed.
+func TestChannelRelay_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
+	t.Parallel()
+
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+
+	contexts := newTestAuthContexts(t)
+	contexts.SetMaxConnectionsPerUser(1)
+
+	h := NewChannelRelayHandler(st, workermgr.New(workermgr.DenyAllReach()), channelmgr.New(0),
+		contexts, nil, false, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv)
+	bearer := mintAdminAPIToken(t, st, tv)
+
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/channel"
+	hdr := http.Header{}
+	hdr.Set("Authorization", "Bearer "+bearer)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// The account's ONE slot is taken through the registry rather than by
+	// dialling a socket and trusting it to bind first.
+	//
+	// websocket.Dial returns as soon as the server writes the 101 upgrade, which
+	// acceptWS does BEFORE bind reaches the registry's lock -- so "dial A, then
+	// dial B" does not order A's lease ahead of B's. Deschedule A's handler in
+	// that window and B binds first, is granted the only slot, and the socket
+	// the assertions then read from is the healthy one: the read blocks to its
+	// deadline and reports no close status at all. /ws/userevents can order this
+	// because it sends a bootstrap frame a client can wait for; /ws/channel
+	// sends nothing on connect, so there is no such barrier to wait on and the
+	// precondition has to be established directly.
+	admin, err := st.Users().GetByUsername(context.Background(), "admin")
+	require.NoError(t, err)
+	releaseOccupant, outcome := contexts.RegisterAuthenticatedLease(
+		context.Background(),
+		&auth.UserInfo{
+			ID:         userid.MustNew(admin.ID),
+			Credential: auth.SessionCredential("occupant"),
+		},
+		func() {},
+	)
+	require.Equal(t, auth.LeaseGranted, outcome,
+		"precondition: the account holds its one permitted connection")
+	defer releaseOccupant()
+
+	refused, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: hdr})
+	require.NoError(t, err, "the upgrade must succeed -- the refusal is a close code")
+	defer func() { _ = refused.Close(websocket.StatusInternalError, "") }()
+
+	_, _, err = refused.Read(ctx)
+	require.Error(t, err)
+	assert.Equal(t, websocket.StatusPolicyViolation, websocket.CloseStatus(err),
+		"a connection past the cap must be closed, not served")
+
+	var closeErr websocket.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, channelwire.CloseReasonTooManyConnections, closeErr.Reason,
+		"the same token both endpoints send, so one client mapping covers both")
+
+	// ...and the slot is a slot, not a latch: once the occupant lets go, the
+	// next dial is served. Without this the test would still pass if the cap
+	// refused every connection unconditionally.
+	releaseOccupant()
+	admitted, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: hdr})
+	require.NoError(t, err)
+	defer func() { _ = admitted.Close(websocket.StatusNormalClosure, "") }()
+	readCtx, cancelRead := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancelRead()
+	_, _, err = admitted.Read(readCtx)
+	assert.Equal(t, -1, int(websocket.CloseStatus(err)),
+		"a connection within the cap must be served, not closed")
 }

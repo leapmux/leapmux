@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/sendq"
 )
 
 func boundedNotifyCtx(t *testing.T) (context.Context, context.CancelFunc) {
@@ -143,7 +144,7 @@ func TestNotifyShutdownAndFence_FencesConnectionsAfterDelivering(t *testing.T) {
 		conn, pump := NewConn(ctx, func() {
 			cancelled.Add(1)
 			cancel()
-		}, workerID, func(*leapmuxv1.ConnectResponse) error {
+		}, workerID, testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 			assert.Zero(t, cancelled.Load(), "connection fenced before its notification was sent")
 			delivered.Add(1)
 			return nil
@@ -186,7 +187,7 @@ func TestNotifyShutdownAndFence_FencesConnectionsWhenContextExpires(t *testing.T
 	conn, pump := NewConn(ctxConn, func() {
 		cancelled.Store(true)
 		cancelConn()
-	}, "wedged", func(*leapmuxv1.ConnectResponse) error {
+	}, "wedged", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
@@ -254,7 +255,7 @@ func TestFenceAll_DoesNotHoldManagerLockDuringCancel(t *testing.T) {
 		case <-time.After(time.Second):
 			assert.Fail(t, "Register blocked behind FenceAll's registry lock")
 		}
-	}, "fenced", func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
+	}, "fenced", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil)
 	t.Cleanup(conn.Fence)
 	_, _ = m.Register(conn)
 
@@ -272,7 +273,7 @@ func TestRegister_RefusedOnceFenced(t *testing.T) {
 	late, pump := NewConn(ctx, func() {
 		cancelled.Store(true)
 		cancel()
-	}, "late", func(*leapmuxv1.ConnectResponse) error {
+	}, "late", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		writes.Add(1)
 		return nil
 	}, &leapmuxv1.ConnectResponse{
@@ -325,7 +326,7 @@ func TestNotifyShutdownAndFence_DoesNotBlockRegisterWhileAWriteIsParked(t *testi
 	t.Cleanup(func() { close(release) })
 
 	ctxConn, cancelConn := context.WithCancel(context.Background())
-	conn, pump := NewConn(ctxConn, cancelConn, "blocked", func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(ctxConn, cancelConn, "blocked", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
@@ -376,7 +377,7 @@ func TestNotifyShutdownAndFence_ReturnsWhenContextExpires(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	ctxConn, cancelConn := context.WithCancel(context.Background())
-	conn, pump := NewConn(ctxConn, cancelConn, "blocked", func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(ctxConn, cancelConn, "blocked", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil

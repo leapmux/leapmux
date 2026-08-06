@@ -74,29 +74,29 @@ func TestCredentialLifecycleEffectsEventMatrix(t *testing.T) {
 	effects := NewCredentialLifecycleEffects(registry, closer, closer)
 
 	sessionCtx, sessionCancel := context.WithCancel(context.Background())
-	_, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	_, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("session-user"), Credential: SessionCredential("session-1"),
 	}, sessionCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	effects.SessionRevoked("session-1")
 	assert.ErrorIs(t, sessionCtx.Err(), context.Canceled)
 	assert.Equal(t, []string{"session-1"}, closer.sessions)
 
 	bearerCtx, bearerCancel := context.WithCancel(context.Background())
-	_, ok = registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	_, outcome = registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("bearer-user"), Credential: APICredential("api-1"),
 	}, bearerCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	effects.BearerRevoked(BearerKindAPI, "api-1")
 	assert.ErrorIs(t, bearerCtx.Err(), context.Canceled)
 	assert.Equal(t, []BearerRef{{kind: BearerKindAPI, tokenID: "api-1"}}, closer.bearers)
 
 	rotationCtx, rotationCancel := context.WithCancel(context.Background())
 	rotationExpiry := time.Now().Add(30 * time.Minute)
-	rotationRelease, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	rotationRelease, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("rotation-user"), Credential: APICredential("api-rotation"),
 	}, rotationCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	t.Cleanup(rotationRelease)
 	effects.BearerRotatedExtending(BearerKindAPI, "api-rotation", rotationExpiry)
 	assert.NoError(t, rotationCtx.Err(), "rotation must preserve authenticated leases")
@@ -106,15 +106,15 @@ func TestCredentialLifecycleEffectsEventMatrix(t *testing.T) {
 	}}, closer.rescheduledBearers, "rotation must extend the bearer's channel expiry")
 
 	oldCtx, oldCancel := context.WithCancel(context.Background())
-	_, ok = registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	_, outcome = registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("old"), UserAuthGeneration: 4,
 	}, oldCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	currentCtx, currentCancel := context.WithCancel(context.Background())
-	currentRelease, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	currentRelease, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("current"), UserAuthGeneration: 5,
 	}, currentCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	t.Cleanup(currentRelease)
 	effects.UserRevoked("user", 5)
 	assert.ErrorIs(t, oldCtx.Err(), context.Canceled)
@@ -175,17 +175,17 @@ func TestRevokeUserPreservingSessionSparesActingSession(t *testing.T) {
 	effects := NewCredentialLifecycleEffects(registry, closer, closer)
 
 	actingCtx, actingCancel := context.WithCancel(context.Background())
-	actingRelease, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	actingRelease, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("acting"), UserAuthGeneration: 4,
 	}, actingCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	t.Cleanup(actingRelease)
 
 	otherCtx, otherCancel := context.WithCancel(context.Background())
-	_, ok = registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	_, outcome = registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("other"), UserAuthGeneration: 4,
 	}, otherCancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 
 	// One atomic call restamps the acting session, then revokes user-wide.
 	effects.RevokeUserPreservingSession("user", "acting", 5)
@@ -203,10 +203,10 @@ func TestRevokeUserPreservingSessionSparesActingSession(t *testing.T) {
 func TestRenewBearerLeasesSupersedesStaleExpiryTimer(t *testing.T) {
 	registry := &AuthContextRegistry{state: &authState{}}
 	ctx, cancel := context.WithCancel(context.Background())
-	release, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	release, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("u"), Credential: APICredential("api-1"), CredentialExpiresAt: DeadlineAt(time.Now().Add(time.Hour)),
 	}, cancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	t.Cleanup(release)
 
 	ref := NewBearerRef(BearerKindAPI, "api-1")
@@ -246,10 +246,10 @@ func TestRenewBearerLeasesZeroExpiryClearsDeadline(t *testing.T) {
 	registry := &AuthContextRegistry{state: &authState{}}
 	ctx, cancel := context.WithCancel(context.Background())
 	// A finite deadline arms a teardown timer at registration.
-	release, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	release, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("u"), Credential: APICredential("api-1"), CredentialExpiresAt: DeadlineAt(time.Now().Add(time.Hour)),
 	}, cancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	t.Cleanup(release)
 
 	ref := NewBearerRef(BearerKindAPI, "api-1")
@@ -311,10 +311,10 @@ func TestRegisterAuthenticatedLeaseAdoptsRacedSessionSlide(t *testing.T) {
 
 	// ...but the request captured a now-stale connect-time deadline in the past.
 	ctx, cancel := context.WithCancel(context.Background())
-	release, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	release, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("u"), Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(now.Add(-time.Second)),
 	}, cancel)
-	require.True(t, ok, "a lease whose session was slid forward must not be rejected at the stale connect-time deadline")
+	require.Equal(t, LeaseGranted, outcome, "a lease whose session was slid forward must not be rejected at the stale connect-time deadline")
 	t.Cleanup(release)
 	assert.NoError(t, ctx.Err(), "the lease must not be canceled")
 
@@ -347,10 +347,10 @@ func TestRegisterAuthenticatedLeaseFallsBackToDBExpiryOnCacheMiss(t *testing.T) 
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	release, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	release, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("u"), Credential: SessionCredential("sess-1"), CredentialExpiresAt: DeadlineAt(now.Add(-time.Second)),
 	}, cancel)
-	require.True(t, ok, "a lease whose cache row was evicted after a slide must adopt the DB expiry, not be rejected at the stale connect-time deadline")
+	require.Equal(t, LeaseGranted, outcome, "a lease whose cache row was evicted after a slide must adopt the DB expiry, not be rejected at the stale connect-time deadline")
 	t.Cleanup(release)
 	assert.NoError(t, ctx.Err(), "the lease must not be canceled")
 
@@ -376,10 +376,10 @@ func TestRegisterAuthenticatedLeaseAdoptsRacedBearerRotation(t *testing.T) {
 	registry.RecordBearerExpiry(ref, extended)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	release, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	release, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("u"), Credential: APICredential("api-1"), CredentialExpiresAt: DeadlineAt(now.Add(-time.Second)),
 	}, cancel)
-	require.True(t, ok, "a lease whose bearer was rotated-and-extended must not be rejected at the stale deadline")
+	require.Equal(t, LeaseGranted, outcome, "a lease whose bearer was rotated-and-extended must not be rejected at the stale deadline")
 	t.Cleanup(release)
 	assert.NoError(t, ctx.Err(), "the lease must not be canceled")
 
@@ -404,10 +404,10 @@ func TestUserRevokedNonPositiveGenerationFailsSafe(t *testing.T) {
 
 	// A live lease for the user, minted at a positive connect-time generation.
 	ctx, cancel := context.WithCancel(context.Background())
-	release, ok := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+	release, outcome := registry.RegisterAuthenticatedLease(context.Background(), &UserInfo{
 		ID: userid.MustNew("user"), Credential: SessionCredential("s1"), UserAuthGeneration: 3,
 	}, cancel)
-	require.True(t, ok)
+	require.Equal(t, LeaseGranted, outcome)
 	t.Cleanup(release)
 
 	// Generation 0: the committed generation is unknown.

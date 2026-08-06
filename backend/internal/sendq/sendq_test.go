@@ -78,7 +78,7 @@ func TestWriterDisconnectsAClientOverTheByteBudget(t *testing.T) {
 	w := newWriter(ctx, Config[*leapmuxv1.ChannelMessage]{
 		Write: func(context.Context, *leapmuxv1.ChannelMessage) error { return nil },
 		Size:  frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
-		OnGiveUp: func(err error) {
+		OnGiveUp: func(_ GiveUpReason, err error) {
 			cancel()
 			select {
 			case gaveUp <- err:
@@ -307,7 +307,7 @@ func TestWriterGiveUpCancels(t *testing.T) {
 			}
 			return start.Add(2 * testMaxStall)
 		},
-		OnGiveUp: func(error) { close(gaveUp); cancel() },
+		OnGiveUp: func(GiveUpReason, error) { close(gaveUp); cancel() },
 	})
 	defer w.Close()
 
@@ -360,7 +360,7 @@ func TestWriterWriteTimeoutTearsDownAWedgedPeer(t *testing.T) {
 		// production-shaped testWriteTimeout here would only park the test
 		// on the real clock for ten seconds to observe the same give-up.
 		WriteTimeout: testShortWriteTimeout,
-		OnGiveUp:     func(error) { close(gaveUp); cancel() },
+		OnGiveUp:     func(GiveUpReason, error) { close(gaveUp); cancel() },
 	})
 	defer w.Close()
 
@@ -392,7 +392,7 @@ func TestWriterChargesPerFrameOverhead(t *testing.T) {
 	for i := 0; i < frames; i++ {
 		require.NoError(t, w.Enqueue(testFrameOfSize(uint64(i), 0)))
 	}
-	assert.Equal(t, frames*testFrameOverhead, w.QueuedBytes(),
+	assert.Equal(t, int64(frames)*testFrameOverhead, w.QueuedBytes(),
 		"an empty-ciphertext frame must still cost its slot")
 }
 
@@ -403,7 +403,7 @@ func TestWriterOverBudgetTeardownMatchesClose(t *testing.T) {
 	w := newWriter(ctx, Config[*leapmuxv1.ChannelMessage]{
 		Write: func(context.Context, *leapmuxv1.ChannelMessage) error { return nil },
 		Size:  frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
-		OnGiveUp: func(error) { cancel() },
+		OnGiveUp: func(GiveUpReason, error) { cancel() },
 	})
 	err := w.Enqueue(testFrameOfSize(1, testMaxBytes))
 
@@ -427,7 +427,7 @@ func TestWriterTryEnqueueDropsOnFullBudgetWithoutGivingUp(t *testing.T) {
 	w := newWriter(ctx, Config[*leapmuxv1.ChannelMessage]{
 		Write: func(context.Context, *leapmuxv1.ChannelMessage) error { select {} },
 		Size:  frameSize, MaxBytes: 1024, FrameOverhead: 0,
-		OnGiveUp: func(error) { gaveUp.Store(true) },
+		OnGiveUp: func(GiveUpReason, error) { gaveUp.Store(true) },
 	})
 	defer w.Close()
 
@@ -509,7 +509,7 @@ func TestWriterOnDiscard(t *testing.T) {
 	w := newWriter(ctx, Config[*leapmuxv1.ChannelMessage]{
 		Write: func(context.Context, *leapmuxv1.ChannelMessage) error { return nil },
 		Size:  frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
-		OnDiscard: func(frames, bytes int) {
+		OnDiscard: func(frames int, bytes int64) {
 			discardedFrames.Add(int32(frames))
 			discardedBytes.Add(int32(bytes))
 		},
@@ -602,7 +602,7 @@ func TestWriterWriteFailureGivesUp(t *testing.T) {
 	w := New(ctx, Config[*leapmuxv1.ChannelMessage]{
 		Write: func(context.Context, *leapmuxv1.ChannelMessage) error { return boom },
 		Size:  frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
-		OnGiveUp: func(err error) { gaveUp <- err; cancel() },
+		OnGiveUp: func(_ GiveUpReason, err error) { gaveUp <- err; cancel() },
 	})
 	defer w.Close()
 
@@ -675,8 +675,8 @@ func TestWriterGiveUpReportsOnDiscard(t *testing.T) {
 	w := newWriter(ctx, Config[*leapmuxv1.ChannelMessage]{
 		Write: func(context.Context, *leapmuxv1.ChannelMessage) error { return nil },
 		Size:  frameSize, MaxBytes: 1000, FrameOverhead: 0,
-		OnDiscard: func(frames, _ int) { discardedFrames.Add(int32(frames)) },
-		OnGiveUp:  func(error) { gaveUp <- struct{}{} },
+		OnDiscard: func(frames int, _ int64) { discardedFrames.Add(int32(frames)) },
+		OnGiveUp:  func(GiveUpReason, error) { gaveUp <- struct{}{} },
 	})
 	defer w.Close()
 
@@ -1076,6 +1076,107 @@ func TestWriterFlushStaysParkedAcrossMultiFrameDrain(t *testing.T) {
 	assert.Equal(t, int32(2), wrote.Load())
 }
 
+// A panicking Write must leave the write watchdog DISARMED.
+//
+// GiveUpReason is documented as a complete partition of the give-up paths, so a
+// counter labelled by it accounts for every disconnect rather than leaving an
+// unexplained remainder. A timer that survives the unwind breaks that promise.
+// On the goroutine-drained path it was harmless only by defer ordering -- run's
+// recover reaches giveUp first, so the late fire no-ops on the gaveUp guard --
+// but the handler-drained path recovers by calling workermgr's Fence, which
+// Closes the queue WITHOUT setting gaveUp and never calls giveUp. Nothing then
+// stood between the armed timer and a give-up labelled write_timeout, up to
+// WriteTimeout after a connection had already died of a panic -- while the panic
+// itself was counted as nothing.
+//
+// watchdogArmed is the whole guarantee rather than a proxy for it: the AfterFunc
+// gives up only if it wins CompareAndSwap(true, false), so a disarmed flag makes
+// a late fire a no-op however much fuse the timer had left.
+func TestWriterPanickingWriteDisarmsTheWatchdog(t *testing.T) {
+	t.Parallel()
+
+	var gaveUp atomic.Pointer[GiveUpReason]
+	w := NewUnstarted(t.Context(), Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error {
+			panic("transport exploded")
+		},
+		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+		// Deliberately long: the point is that the timer is defused, not that
+		// the test outran it.
+		WriteTimeout: testWriteTimeout,
+		OnGiveUp:     func(r GiveUpReason, _ error) { gaveUp.Store(&r) },
+	})
+
+	require.NoError(t, w.Enqueue(testFrame(1)))
+	assert.Panics(t, func() { _ = w.Drain() },
+		"a transport panic must still unwind to the drain owner")
+
+	// Exactly what SendPump.drain's recover does with it.
+	w.Close()
+	w.mu.Lock()
+	gaveUpFlag := w.gaveUp
+	w.mu.Unlock()
+	require.False(t, gaveUpFlag,
+		"precondition: Fence closes without giving up, so the gaveUp guard is NOT what protects this path")
+
+	assert.False(t, w.watchdogArmed.Load(),
+		"a panicking write must disarm the watchdog on its way out, or it fires a false write_timeout")
+	assert.Nil(t, gaveUp.Load(),
+		"and nothing may be reported for a connection whose give-up nobody performed")
+}
+
+// TestWriterCloseDefusesTheWatchdogOfAnInFlightWrite is the Close counterpart of
+// TestWriterPanickingWriteDisarmsTheWatchdog, and fails for the same reason that
+// one would: the watchdog outlives the teardown and labels it write_timeout.
+//
+// Close cannot interrupt a Write already blocked on peer flow control -- which
+// is exactly why workermgr.FenceAll exists and says so -- so the timer stays
+// armed across the close and fires up to WriteTimeout later. Close sets closed,
+// never gaveUp, so the gaveUp guard does not stop it either. A connection torn
+// down by Fence, by Hub shutdown, or by a worker replacing a wedged predecessor
+// then reported a give-up blaming a slow peer.
+func TestWriterCloseDefusesTheWatchdogOfAnInFlightWrite(t *testing.T) {
+	t.Parallel()
+
+	var gaveUp atomic.Pointer[GiveUpReason]
+	inFlight := make(chan struct{})
+	release := make(chan struct{})
+	w := NewUnstarted(t.Context(), Config[*leapmuxv1.ChannelMessage]{
+		Write: func(context.Context, *leapmuxv1.ChannelMessage) error {
+			close(inFlight)
+			<-release
+			return nil
+		},
+		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
+		WriteTimeout: testShortWriteTimeout,
+		OnGiveUp:     func(r GiveUpReason, _ error) { gaveUp.Store(&r) },
+	})
+	defer close(release)
+
+	require.NoError(t, w.Enqueue(testFrame(1)))
+	drained := make(chan struct{})
+	go func() { defer close(drained); _ = w.Drain() }()
+	<-inFlight
+
+	// Exactly what workermgr's Fence does to a wedged connection.
+	w.Close()
+	w.mu.Lock()
+	gaveUpFlag := w.gaveUp
+	w.mu.Unlock()
+	require.False(t, gaveUpFlag,
+		"precondition: Close closes without giving up, so the gaveUp guard is NOT what protects this path")
+
+	// Wait for the watchdog CALLBACK, not for a duration: the write is still
+	// parked, so writeUnderWatchdog's deferred disarm cannot have run, and only
+	// the AfterFunc can have cleared this flag.
+	require.Eventually(t, func() bool { return !w.watchdogArmed.Load() },
+		5*time.Second, 10*time.Millisecond,
+		"precondition: the watchdog must actually fire, or this test proves nothing")
+
+	assert.Nil(t, gaveUp.Load(),
+		"a watchdog that fires after Close must report nothing: the connection was already torn down for another reason, and write_timeout names the wrong one")
+}
+
 func TestWriterWriteTimeoutGivesUpUnderHandlerDrain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1087,7 +1188,7 @@ func TestWriterWriteTimeoutGivesUpUnderHandlerDrain(t *testing.T) {
 		},
 		Size: frameSize, MaxBytes: testMaxBytes, FrameOverhead: testFrameOverhead,
 		WriteTimeout: testShortWriteTimeout,
-		OnGiveUp: func(err error) {
+		OnGiveUp: func(_ GiveUpReason, err error) {
 			cancel()
 			select {
 			case gaveUp <- err:

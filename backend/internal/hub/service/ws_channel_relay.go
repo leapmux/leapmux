@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/nilcheck"
 )
@@ -34,6 +35,12 @@ type ChannelRelayHandler struct {
 	workerMgr       *workermgr.Manager
 	channelMgr      *channelmgr.Manager
 	closeDispatcher channelCloseEnqueuer
+	// queuePool is the RELAY outbound queue budget every relay connection's
+	// writer draws from. Deliberately not shared with the worker Connect
+	// streams: reclaiming can only ever cost a member of the same pool, so a
+	// backed-up browser tab can only ever cost another browser tab. See
+	// sendq.Pool on membership as a blast radius.
+	queuePool *sendq.Pool
 }
 
 type channelCloseEnqueuer interface {
@@ -50,17 +57,17 @@ func NewChannelRelayHandler(
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
 	secureCookie bool,
+	queuePool *sendq.Pool,
 ) *ChannelRelayHandler {
+	if queuePool == nil {
+		panic("service: NewChannelRelayHandler requires a queue pool")
+	}
 	return &ChannelRelayHandler{
-		wsAuthenticator: wsAuthenticator{
-			store:        st,
-			authLease:    newWebSocketAuthLease(authContexts),
-			soloUser:     soloUser,
-			secureCookie: secureCookie,
-		},
+		wsAuthenticator: newWSAuthenticator(st, authContexts, soloUser, secureCookie),
 		workerMgr:       wMgr,
 		channelMgr:      cMgr,
 		closeDispatcher: newWorkerCloseDispatcher(wMgr),
+		queuePool:       queuePool,
 	}
 }
 
@@ -89,19 +96,15 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Upgrade to WebSocket.
-	wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols: []string{"channel-relay"},
-	})
-	if err != nil {
-		slog.Error("channel relay websocket upgrade failed", "user_id", user.ID, "error", err)
+	wsConn, ok := h.acceptWS(w, r, endpointChannel, "channel-relay", channelwire.WSReadLimit, user)
+	if !ok {
 		return
 	}
 
-	wsConn.SetReadLimit(channelwire.WSReadLimit)
-
-	ctx, cleanupLease, current := h.authLease.bind(r.Context(), user, wsConn)
-	if !current {
+	// bind has already closed the socket with the reason on any refusal, so
+	// there is nothing to report here and nothing acquired to release.
+	ctx, cleanupLease, outcome := h.authLease.bind(r.Context(), user, wsConn)
+	if outcome != auth.LeaseGranted {
 		return
 	}
 	defer cleanupLease()
@@ -122,7 +125,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// discarding the queue strictly after the close frame went out,
 	// which reads as a decision but would be an accident of LIFO
 	// ordering.
-	writer := newRelayWriter(ctx, func(writeCtx context.Context, msg *leapmuxv1.ChannelMessage) error {
+	writer := newRelayWriter(ctx, h.queuePool, func(writeCtx context.Context, msg *leapmuxv1.ChannelMessage) error {
 		return channelwire.WriteChannelMessage(writeCtx, wsConn, msg)
 	}, cancel, user.ID.String(), connID)
 
@@ -162,6 +165,16 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 		_ = wsConn.Close(websocket.StatusNormalClosure, "")
 	}()
+
+	// A half-open peer is otherwise invisible on this socket: every bound here
+	// fires on a write, and the read loop below simply parks. Its lease counts
+	// against the user's cap the whole time.
+	//
+	// Armed HERE, one statement before the loop that reads: a probe's pong is
+	// processed on the read path, so every statement between the two would be a
+	// window in which the probe cannot be answered and the loop would disconnect
+	// a healthy client for it.
+	h.keepalive.startBesideAReadLoop(ctx, wsConn, cancel, endpointChannel, user.ID.String())
 
 	// Read messages from frontend and route to the correct worker.
 	for {

@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -27,6 +28,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/metrics"
+	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
@@ -94,7 +98,14 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
-	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, service.NewHubEventBroadcaster(cMgr), pendingReqs, nil, nil, nil)
+	connectorSvc := service.NewWorkerConnectorService(st, wMgr, cMgr, service.NewHubEventBroadcaster(cMgr), pendingReqs, nil, nil, nil, sendq.NewMaxBytesPoolForTest())
+	// Both halves of max_workers_per_user, wired from one value exactly as
+	// hub/server.go does: the service caps registered ROWS, the registry caps
+	// LIVE CONNECTIONS, and a fixture that wired only the first would let a test
+	// pass against the row cap alone -- which is the bug these two exist to
+	// close between them.
+	connectorSvc.SetMaxWorkersPerUser(cfg.MaxWorkersPerUser)
+	wMgr.SetMaxWorkersPerUser(cfg.MaxWorkersPerUser)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, opts)
 	mux.Handle(connectorPath, connectorHandler)
 
@@ -132,6 +143,36 @@ func (e *regKeyEnv) adminID(t *testing.T) string {
 	admin, err := e.store.Users().GetByUsername(context.Background(), "admin")
 	require.NoError(t, err)
 	return admin.ID
+}
+
+// serveOverUnixSocket binds the env's mux to a unix-socket listener wrapped in
+// h2c and returns an HTTP client that dials it. Both are torn down with the test.
+//
+// Connect is a bidi stream, which httptest's HTTP/1 server (e.server) cannot
+// serve, so every test that opens one needs this instead -- and it is also the
+// real transport `leapmux worker --hub unix:...` uses, so a registration test
+// gets the desktop/solo path for free. `name` only has to be unique within the
+// process: UniqueListenURL keeps the socket path under AF_UNIX's 104-byte
+// sun_path limit, which t.TempDir() blows past on macOS runners.
+func (e *regKeyEnv) serveOverUnixSocket(t *testing.T, name string) *http.Client {
+	t.Helper()
+
+	socketURL := locallistentest.UniqueListenURL(t, name)
+	ln, err := locallisten.Listen(socketURL)
+	require.NoError(t, err)
+	protocols := &http.Protocols{}
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	srv := &http.Server{Handler: e.mux, ReadHeaderTimeout: 5 * time.Second, Protocols: protocols}
+	t.Cleanup(func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(ln) }()
+	require.NoError(t, locallisten.WaitReady(context.Background(), socketURL))
+
+	dial, err := locallisten.Dialer(socketURL)
+	require.NoError(t, err)
+	httpClient := &http.Client{Transport: locallisten.NewLocalH2CTransport(dial)}
+	t.Cleanup(httpClient.CloseIdleConnections)
+	return httpClient
 }
 
 func (e *regKeyEnv) registerWithKey(t *testing.T, key string) (*connect.Response[leapmuxv1.RegisterResponse], error) {
@@ -208,6 +249,94 @@ func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
 	w, err := env.store.Workers().GetByID(context.Background(), regResp.Msg.GetWorkerId())
 	require.NoError(t, err)
 	assert.NotEmpty(t, w.RegisteredBy, "the worker row must record the key creator as its owner")
+}
+
+// The worker pool's count term, end to end.
+//
+// A Worker's Connect stream is a member of the worker pool, guaranteed the same
+// working set the pool may not reclaim -- but it takes no lease, so the per-user
+// CONNECTION cap cannot see it, and registration keys have no quota. Without
+// this bound, N keys mint N members and the floors the worker pool promises sum
+// without limit, on the pool whose eviction costs the most.
+func TestRegister_RefusesBeyondThePerUserWorkerCap(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfigWithSMTP()
+	cfg.MaxWorkersPerUser = 2
+	env := setupRegKeyEnvWithCfg(t, cfg)
+	token := env.login(t, "admin", "admin123")
+
+	register := func(t *testing.T) error {
+		t.Helper()
+		createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
+			authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		require.NoError(t, err)
+		_, err = env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+		return err
+	}
+
+	require.NoError(t, register(t), "the first worker must register")
+	require.NoError(t, register(t), "and so must the second, up to the cap")
+
+	// One cap, two stages, one counter. The `stage` label is what an operator
+	// reads to tell "deregister something" from "an existing stream is still
+	// holding the slot"; the counter itself is the number that answers "is this
+	// cap biting at all", which is why the two stages are not two series.
+	before := workerAdmissionsRefused(metrics.WorkerStageRegister)
+	connectBefore := workerAdmissionsRefused(metrics.WorkerStageConnect)
+
+	err := register(t)
+	require.Error(t, err, "the third must be refused")
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err),
+		"a cap is exhausted resources, not a bad request: the caller did nothing wrong")
+	assert.Contains(t, err.Error(), "max_workers_per_user",
+		"the operator-facing key has to be in the message, or nobody knows what to raise")
+
+	// At LEAST one more, not exactly one: the counter is process-global and
+	// every test in this binary shares it, so an exact delta would be a race
+	// with any other parallel test that trips the same cap.
+	assert.GreaterOrEqual(t, workerAdmissionsRefused(metrics.WorkerStageRegister), before+1,
+		"a refused registration must be visible from outside")
+	assert.Equal(t, connectBefore, workerAdmissionsRefused(metrics.WorkerStageConnect),
+		"...under the stage that actually refused it, not the other one")
+}
+
+// workerAdmissionsRefused reads one stage of leapmux_worker_admissions_refused_total.
+func workerAdmissionsRefused(stage string) float64 {
+	return promtestutil.ToFloat64(metrics.WorkerAdmissionsRefusedTotal.WithLabelValues(stage))
+}
+
+// Deregistering frees a slot, or the cap is a lifetime quota rather than a bound
+// on what is registered at once.
+func TestRegister_WorkerCapCountsOnlyLiveWorkers(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfigWithSMTP()
+	cfg.MaxWorkersPerUser = 1
+	env := setupRegKeyEnvWithCfg(t, cfg)
+	token := env.login(t, "admin", "admin123")
+
+	register := func(t *testing.T) (string, error) {
+		t.Helper()
+		createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
+			authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		require.NoError(t, err)
+		resp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+		if err != nil {
+			return "", err
+		}
+		return resp.Msg.GetWorkerId(), nil
+	}
+
+	first, err := register(t)
+	require.NoError(t, err)
+	_, err = register(t)
+	require.Error(t, err, "at a cap of one, the second must be refused")
+
+	require.NoError(t, env.store.Workers().MarkDeleted(context.Background(), first))
+
+	_, err = register(t)
+	assert.NoError(t, err, "a deregistered worker must give its slot back")
 }
 
 func TestRegister_AtomicConsume_RaceProducesOneWinner(t *testing.T) {
@@ -577,31 +706,9 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 
 	env := setupRegKeyEnv(t)
 
-	// Bind the Connect handlers to a unix-socket listener wrapped in h2c
-	// so the gRPC-over-h2c client used by `leapmux worker --hub unix:...`
-	// can dial it the same way it would the production hub.
-	// UniqueListenURL keeps the socket path under AF_UNIX's 104-byte
-	// sun_path limit, which t.TempDir() blows past on macOS runners.
-	socketURL := locallistentest.UniqueListenURL(t, "hub")
-	ln, err := locallisten.Listen(socketURL)
-	require.NoError(t, err)
-	protocols := &http.Protocols{}
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-	srv := &http.Server{
-		Handler:           env.mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		Protocols:         protocols,
-	}
-	t.Cleanup(func() { _ = srv.Close() })
-	go func() { _ = srv.Serve(ln) }()
-	require.NoError(t, locallisten.WaitReady(context.Background(), socketURL))
-
-	dial, err := locallisten.Dialer(socketURL)
-	require.NoError(t, err)
-	httpClient := &http.Client{Transport: locallisten.NewLocalH2CTransport(dial)}
-	t.Cleanup(httpClient.CloseIdleConnections)
-
+	// The gRPC-over-h2c client used by `leapmux worker --hub unix:...` dials the
+	// hub the same way it would in production.
+	httpClient := env.serveOverUnixSocket(t, "hub")
 	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(httpClient, "http://localhost", connect.WithGRPC())
 	authClient := leapmuxv1connect.NewAuthServiceClient(httpClient, "http://localhost")
 	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(httpClient, "http://localhost")
@@ -679,25 +786,8 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, worker.RegisteredBy)
 
-	// Connect needs gRPC-over-h2c (a bidi stream), which httptest's HTTP/1 server
-	// cannot serve -- mirror the unix-socket harness above.
-	socketURL := locallistentest.UniqueListenURL(t, "hub-identity")
-	ln, err := locallisten.Listen(socketURL)
-	require.NoError(t, err)
-	protocols := &http.Protocols{}
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-	srv := &http.Server{Handler: env.mux, ReadHeaderTimeout: 5 * time.Second, Protocols: protocols}
-	t.Cleanup(func() { _ = srv.Close() })
-	go func() { _ = srv.Serve(ln) }()
-	require.NoError(t, locallisten.WaitReady(context.Background(), socketURL))
-
-	dial, err := locallisten.Dialer(socketURL)
-	require.NoError(t, err)
-	httpClient := &http.Client{Transport: locallisten.NewLocalH2CTransport(dial)}
-	t.Cleanup(httpClient.CloseIdleConnections)
 	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(
-		httpClient, "http://localhost", connect.WithGRPC())
+		env.serveOverUnixSocket(t, "hub-identity"), "http://localhost", connect.WithGRPC())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -742,25 +832,8 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 	worker, err := env.store.Workers().GetByID(context.Background(), regResp.Msg.GetWorkerId())
 	require.NoError(t, err)
 
-	// Connect needs gRPC-over-h2c (a bidi stream), which httptest's HTTP/1
-	// server cannot serve -- mirror the unix-socket harness above.
-	socketURL := locallistentest.UniqueListenURL(t, "hub-fenced")
-	ln, err := locallisten.Listen(socketURL)
-	require.NoError(t, err)
-	protocols := &http.Protocols{}
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-	srv := &http.Server{Handler: env.mux, ReadHeaderTimeout: 5 * time.Second, Protocols: protocols}
-	t.Cleanup(func() { _ = srv.Close() })
-	go func() { _ = srv.Serve(ln) }()
-	require.NoError(t, locallisten.WaitReady(context.Background(), socketURL))
-
-	dial, err := locallisten.Dialer(socketURL)
-	require.NoError(t, err)
-	httpClient := &http.Client{Transport: locallisten.NewLocalH2CTransport(dial)}
-	t.Cleanup(httpClient.CloseIdleConnections)
 	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(
-		httpClient, "http://localhost", connect.WithGRPC())
+		env.serveOverUnixSocket(t, "hub-fenced"), "http://localhost", connect.WithGRPC())
 
 	// The Hub has begun shutting down. The interceptor is NOT installed on this
 	// fixture, which is exactly the window under test: the request is already
@@ -782,4 +855,157 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 	assert.Nil(t, env.wMgr.ConnForTrustedPath(worker.ID),
 		"the refused connection must never be published")
 	require.NoError(t, stream.CloseRequest())
+}
+
+// The regression this cap exists to close, end to end.
+//
+// max_workers_per_user is meant to bound how many of one account's Workers sit in
+// the worker send-queue pool, each holding a floor the pool may not reclaim.
+// Counting ROWS cannot do that. The pool member is created per Connect stream,
+// behind an auth-token lookup that -- correctly -- still admits a DEREGISTERING
+// worker, because that stream is how the worker is told to tear itself down. The
+// row count stops seeing it the moment the row deregisters, and nothing
+// server-side ends the stream: SendDeregister only marks and notifies,
+// MarkDeleted waits for the worker's own ack, and heartbeats defeat the idle
+// timer. So register / deregister / register cycles added a member every time
+// while never once exceeding the cap.
+func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("unix sockets are not available on Windows")
+	}
+
+	cfg := testConfigWithSMTP()
+	cfg.MaxWorkersPerUser = 1
+	env := setupRegKeyEnvWithCfg(t, cfg)
+	token := env.login(t, "admin", "admin123")
+
+	register := func(t *testing.T) *leapmuxv1.RegisterResponse {
+		t.Helper()
+		createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
+			authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+		require.NoError(t, err)
+		resp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+		require.NoError(t, err)
+		return resp.Msg
+	}
+
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(
+		env.serveOverUnixSocket(t, "hub-worker-cap"), "http://localhost", connect.WithGRPC())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// The mode is declared on EVERY heartbeat, as a real worker declares it: the
+	// Hub caches the first one and terminates the stream if a later heartbeat
+	// arrives UNSPECIFIED, so a bare repeat would end this connection for a
+	// reason that has nothing to do with the cap.
+	heartbeat := &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{
+			EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		}},
+	}
+	type workerStream = connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse]
+
+	// openStream starts a Connect stream and returns the Hub's first frame. The
+	// worker speaks first because ConnectRPC only sends headers on the first Send.
+	openStream := func(t *testing.T, authToken string) (*workerStream, *leapmuxv1.ConnectResponse, error) {
+		t.Helper()
+		stream := connectorClient.Connect(ctx)
+		stream.RequestHeader().Set("Authorization", "Bearer "+authToken)
+		require.NoError(t, stream.Send(heartbeat))
+		first, err := stream.Receive()
+		return stream, first, err
+	}
+
+	// awaitHeartbeat reads until the Hub echoes one. A real worker heartbeats
+	// through its own deregistration, and that is what defeats the 10s
+	// receive-idle timer -- the only thing that would otherwise end a
+	// deregistering worker's stream. Waiting for the ECHO rather than just
+	// sending is what makes this a seam instead of a hope: the Hub replies from
+	// the same handler turn that resets the timer, so the test never depends on
+	// how long the steps after it take.
+	awaitHeartbeat := func(t *testing.T, stream *workerStream) {
+		t.Helper()
+		for {
+			frame, err := stream.Receive()
+			require.NoError(t, err)
+			if frame.GetHeartbeat() != nil {
+				return
+			}
+		}
+	}
+
+	first := register(t)
+	firstStream, greeting, err := openStream(t, first.GetAuthToken())
+	require.NoError(t, err)
+	require.NotNil(t, greeting.GetWorkerIdentity(),
+		"the greeting is enqueued before the conn is published, so receiving it proves membership")
+	awaitHeartbeat(t, firstStream)
+
+	live := env.wMgr.ConnForTrustedPath(first.GetWorkerId())
+	require.NotNil(t, live)
+	assert.Equal(t, greeting.GetWorkerIdentity().GetRegisteredBy(), live.Owner(),
+		"the connection must be counted against the account that registered the worker")
+
+	// Deregister it. This is the row transition DeregisterWorker performs, driven
+	// through the store because its notifier round trip is not what is under
+	// test: SendOrQueue parks in SendAndWait until the worker acks or api_timeout
+	// expires, and a bare test stream acks nothing. The row state is what the row
+	// cap reads, and the registry flag is what the RPC sets alongside it.
+	rows, err := env.store.Workers().Deregister(context.Background(), store.DeregisterWorkerParams{
+		ID:           first.GetWorkerId(),
+		RegisteredBy: userid.MustNew(env.adminID(t)),
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+	env.wMgr.MarkDeregistering(first.GetWorkerId())
+
+	deregistered, err := env.store.Workers().GetByIDIncludeDeleted(context.Background(), first.GetWorkerId())
+	require.NoError(t, err)
+	require.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, deregistered.Status)
+
+	// Nothing server-side ends that stream, and the worker's own heartbeats keep
+	// the idle timer from doing it either -- that is the whole hazard.
+	require.NoError(t, firstStream.Send(heartbeat))
+	awaitHeartbeat(t, firstStream)
+	require.NotNil(t, env.wMgr.ConnForTrustedPath(first.GetWorkerId()),
+		"a deregistering worker keeps its connection, and therefore its pool membership")
+
+	// The row cap now sees an account with no ACTIVE workers, so a replacement
+	// registers. That much is intended -- a machine being torn down should not
+	// keep its owner from bringing up its successor -- and it is also exactly why
+	// the row cap cannot be the membership bound.
+	second := register(t)
+
+	// Its CONNECTION is what must be refused, because the first worker is still
+	// holding a member of the pool.
+	//
+	// Counted on the same series as a refused registration, under the stage that
+	// says WHERE it bit -- an operator asking "is this cap biting?" gets one
+	// number, and a refusal here means an existing stream is holding the slot
+	// rather than that a row has to be deregistered.
+	refusalsBefore := workerAdmissionsRefused(metrics.WorkerStageConnect)
+	secondStream, _, err := openStream(t, second.GetAuthToken())
+	require.Error(t, err, "cycling registrations must not grow live worker-pool membership")
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err),
+		"a cap is exhausted resources, not a bad request: the worker's credentials are fine")
+	assert.GreaterOrEqual(t, workerAdmissionsRefused(metrics.WorkerStageConnect), refusalsBefore+1,
+		"a Worker refused at Connect must be counted, under the connect stage")
+	assert.Contains(t, err.Error(), "max_workers_per_user",
+		"the operator-facing key has to be in the message, or nobody knows what to raise")
+	assert.Nil(t, env.wMgr.ConnForTrustedPath(second.GetWorkerId()),
+		"the refused connection must never be published")
+	require.NoError(t, secondStream.CloseRequest())
+
+	// The disconnect -- not the deregistration -- is what gives the slot back.
+	require.NoError(t, firstStream.CloseRequest())
+	testutil.AssertEventually(t, func() bool {
+		return !env.wMgr.OnlineForTrustedPath(first.GetWorkerId())
+	})
+
+	thirdStream, greeting, err := openStream(t, second.GetAuthToken())
+	require.NoError(t, err, "a freed slot must be usable")
+	assert.NotNil(t, greeting.GetWorkerIdentity())
+	require.NoError(t, thirdStream.CloseRequest())
 }

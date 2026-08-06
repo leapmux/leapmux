@@ -2,6 +2,8 @@ package solo
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,6 +11,79 @@ import (
 
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 )
+
+// soloLoadOptions builds the options Start would pass, with the config file
+// pointed at a path that does not exist so a real one on the developer's machine
+// cannot reach the assertions.
+func soloLoadOptions(t *testing.T, devMode bool) hubconfig.LoadOptions {
+	t.Helper()
+	return hubconfig.LoadOptions{
+		CLIFlags:          defaultCLIFlags(devMode),
+		ExtraFlags:        defaultExtraFlags(),
+		DefaultConfigDir:  t.TempDir(),
+		DefaultConfigFile: filepath.Join(t.TempDir(), "absent.yaml"),
+		SoloMode:          !devMode,
+	}
+}
+
+// TestSoloExposesThePerUserCapsOnTheCommandLine pins the two knobs a solo user can
+// actually reach. Solo is the mode where every socket belongs to one identity --
+// an active tab holds two leases, and the desktop app, any CLI `remote` session
+// and every worker's remoteipc watcher draw on the same allowance -- so a user who
+// hits the cap is told to close a tab, advice they cannot act on if --help offers
+// no way to raise it.
+func TestSoloExposesThePerUserCapsOnTheCommandLine(t *testing.T) {
+	t.Parallel()
+
+	assert.Subset(t, defaultCLIFlags(false),
+		[]string{"max-connections-per-user", "max-workers-per-user"})
+
+	cfg, _, err := hubconfig.LoadWithOptions(
+		[]string{"--max-connections-per-user=64", "--max-workers-per-user=8"},
+		soloLoadOptions(t, false))
+	require.NoError(t, err, "solo must accept the per-user caps as CLI flags")
+	assert.Equal(t, int64(64), cfg.MaxConnectionsPerUser)
+	assert.Equal(t, int64(8), cfg.MaxWorkersPerUser)
+}
+
+// TestSoloKeepsTheQueueBudgetsOutOfHelpButReachableInConfig covers the half of the
+// contract that is easy to break by accident: CLIFlags decides only what earns a
+// line in --help, because LoadWithOptions records every flag's default and koanf
+// key BEFORE it consults that list. A budget absent from the CLI must still be
+// settable, or auto-sizing becomes the only option a solo user has.
+func TestSoloKeepsTheQueueBudgetsOutOfHelpButReachableInConfig(t *testing.T) {
+	t.Parallel()
+
+	assert.NotContains(t, defaultCLIFlags(false), "relay-queue-memory-budget",
+		"the budgets auto-size off this machine; they do not belong in solo's --help")
+
+	_, _, err := hubconfig.LoadWithOptions(
+		[]string{"--relay-queue-memory-budget=268435456"}, soloLoadOptions(t, false))
+	require.Error(t, err, "a flag outside the allowlist must not parse")
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path,
+		[]byte("relay_queue_memory_budget: 268435456\n"), 0o600))
+
+	opts := soloLoadOptions(t, false)
+	opts.DefaultConfigFile = path
+	cfg, _, err := hubconfig.LoadWithOptions(nil, opts)
+	require.NoError(t, err)
+	assert.Equal(t, int64(268435456), cfg.RelayQueueMemoryBudget,
+		"the config file must still reach a key the CLI does not expose")
+}
+
+// TestDevModeAddsPublicURL guards the one flag that is dev-only: dev serves a
+// frontend from a different origin, solo does not.
+func TestDevModeAddsPublicURL(t *testing.T) {
+	t.Parallel()
+
+	assert.Contains(t, defaultCLIFlags(true), "public-url")
+	assert.NotContains(t, defaultCLIFlags(false), "public-url")
+	assert.Subset(t, defaultCLIFlags(true),
+		[]string{"max-connections-per-user", "max-workers-per-user"},
+		"dev must not lose the caps when it gains public-url")
+}
 
 func TestListenIsNonLoopback(t *testing.T) {
 	t.Parallel()

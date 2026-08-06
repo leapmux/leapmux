@@ -10,17 +10,12 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	// Queue bounds are sendq.Default* so Hub and worker stay on one definition
-	// (see https://github.com/leapmux/leapmux/issues/313 for the aggregate
-	// cap). A wall-clock stall cutoff on a server-to-server link invites a
-	// reconnect storm under sustained load, so there is none -- the byte
-	// budget alone disconnects a worker that cannot keep up.
-
 	// connDrainMaxFrames / connDrainMaxDuration bound one Connect-select Drain
 	// turn so a large outbound backlog cannot starve receives, idle, or
 	// ctx.Done. The deferred full Drain on teardown still empties the queue.
@@ -47,6 +42,15 @@ type Conn struct {
 	// it is mechanically the first frame written. Register clears it after a
 	// successful enqueue so the live Conn does not retain a second copy.
 	Greeting *leapmuxv1.ConnectResponse
+
+	// owner is the account this worker is registered to (Worker.RegisteredBy).
+	// The Manager keys its per-account live-connection tally on it, which is why
+	// it is fixed at construction and readable but not writable: a caller that
+	// could change it between Register and Unregister would decrement a
+	// different bucket than the one it incremented, and the cap computed from
+	// that tally would drift away from the truth in whichever direction the
+	// change went.
+	owner string
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -108,16 +112,54 @@ func (p *SendPump) drain(lim sendq.DrainLimits) (err error) {
 // -- so there is one source of truth about who the writer is. The returned
 // SendPump is the only way to drain; callers that only need to send receive
 // the *Conn.
+//
+// owner is the account the worker is registered to (Worker.RegisteredBy),
+// taken here rather than at Register because THIS is where the pool member is
+// created: the connection whose owner nobody recorded is exactly the one the
+// per-account cap in Manager.Register cannot count. An empty owner is not
+// rejected -- the registry must still be able to hold a connection whose
+// registrant is unknown -- but every such connection shares one bucket, so an
+// unknown owner cannot be used to escape the cap.
+//
+// The byte budget is the WORKER pool -- shared by every worker connection, and
+// deliberately not with the frontend relays. Within a pool the admission rule
+// reclaims from the largest holder, so one shared budget would let a browser
+// tab's backlog take a worker connection down. The two are not interchangeable:
+// dropping a tab costs a reconnect and a replay from the DB, while dropping a
+// worker discards every user's channels on that machine and this direction has
+// no documented replay at all.
+//
+// The control reserve is narrower still -- per connection, and never subject to
+// the pool's threshold. SendControl treats a refusal as grounds to fence the
+// worker, so a pool full of somebody else's backlog must not be able to reach
+// this connection's guaranteed control allowance.
+//
+// It is a floor, not a ceiling: once the reserve is SPENT, control competes for
+// ordinary pool budget like anything else (see sendq.TryEnqueueControl), so a
+// burst larger than the reserve can still be refused because of other members.
+// That is the deliberate trade -- refusing there while this connection's own
+// data queue sat empty and the pool had room was what turned an absorbable
+// burst into a fleet-wide fence.
+//
+// A wall-clock stall cutoff on a server-to-server link invites a reconnect
+// storm under sustained load, so MaxStall is deliberately unset -- the byte
+// budget alone disconnects a worker that cannot keep up.
 func NewConn(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	workerID string,
+	owner string,
+	pool *sendq.Pool,
 	write func(*leapmuxv1.ConnectResponse) error,
 	greeting *leapmuxv1.ConnectResponse,
 ) (*Conn, *SendPump) {
+	if pool == nil {
+		panic("workermgr.NewConn: pool is required")
+	}
 	c := &Conn{
 		WorkerID: workerID,
 		Greeting: greeting,
+		owner:    owner,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
@@ -128,22 +170,28 @@ func NewConn(
 		Size: func(m *leapmuxv1.ConnectResponse) int {
 			return proto.Size(m)
 		},
-		MaxBytes:       sendq.DefaultMaxBytes,
+		Pool:           pool,
 		ControlReserve: sendq.DefaultControlReserve,
 		FrameOverhead:  sendq.DefaultFrameOverhead,
 		WriteTimeout:   sendq.DefaultWriteTimeout,
-		OnGiveUp: func(err error) {
+		OnGiveUp: func(reason sendq.GiveUpReason, err error) {
+			metrics.CountSendqGiveUp(metrics.PoolWorker, reason.Label())
 			slog.Warn("worker connect stream writer gave up; fencing",
-				"worker_id", workerID, "error", err)
+				"worker_id", workerID, "reason", reason.Label(), "error", err)
 			c.Fence()
 		},
-		OnDiscard: func(frames, bytes int) {
+		OnDiscard: func(frames int, bytes int64) {
 			slog.Debug("worker connect stream discarded queued frames",
 				"worker_id", workerID, "frames", frames, "bytes", bytes)
 		},
 	})
 	return c, &SendPump{c: c}
 }
+
+// Owner returns the account this worker is registered to, as recorded at
+// construction. Read-only by design -- see the owner field. Safe for concurrent
+// use because it never changes.
+func (c *Conn) Owner() string { return c.owner }
 
 // Send enqueues a data-path frame. Over budget gives up, fences the conn, and
 // returns ErrConnectionClosed. Non-blocking: a parked drain write does not

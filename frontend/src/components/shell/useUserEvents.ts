@@ -2,6 +2,7 @@ import type { HLC, UserMaterialized } from '~/generated/leapmux/v1/user_crdt_pb'
 import type { WatchUserEvent } from '~/generated/leapmux/v1/user_ops_pb'
 import type { HLCClock, PendingOpsManager } from '~/lib/crdt'
 import type { ActiveClientStore } from '~/lib/presence/activeClient'
+import type { FatalCloseInfo } from '~/lib/wsCloseCodes'
 import { fromBinary } from '@bufbuild/protobuf'
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { isTauriApp, parseRelayClosePayload, platformBridge } from '~/api/platformBridge'
@@ -13,6 +14,7 @@ import { formatHlcWire, parseHlcWire } from '~/lib/crdt/hlc'
 import { createLogger } from '~/lib/logger'
 import { createPersistedSeq } from '~/lib/persistedSeq'
 import { createExponentialBackoff } from '~/lib/retry'
+import { isTerminalCloseCode } from '~/lib/wsCloseCodes'
 
 const log = createLogger('useUserEvents')
 
@@ -45,23 +47,6 @@ const RECONNECT_MAX_DELAY_MS = 5_000
 // Single-key backoff: the hook drives one connection at a time, so one key is
 // enough to escalate the reconnect delay across attempts and reset it on success.
 const RECONNECT_KEY = 'userevents'
-
-// Close codes on which auto-reconnect is futile: a genuine authorization or
-// protocol failure where retrying in a loop cannot succeed. Every OTHER close --
-// clean (1000/1001), transient (1012/1013), or an abnormal transport drop
-// (1006, no close frame) -- is a reconnect signal, so a network blip never
-// kills the subscription. This is intentionally broader than the backend's
-// channelwire.isRecoverableCloseCode (which drives the CLI's clean-exit, not a
-// long-lived subscription's reconnect): here only a hard terminal close stops
-// the retry loop and is surfaced to the caller.
-const TERMINAL_CLOSE_CODES = new Set<number>([
-  1002, // protocol error
-  1008, // policy violation -- the hub's /ws/userevents "forbidden" / auth expiry
-])
-
-function isTerminalCloseCode(code: number): boolean {
-  return TERMINAL_CLOSE_CODES.has(code)
-}
 
 /**
  * Round-trip a resume watermark through the wire codec and return the PARSED
@@ -217,7 +202,7 @@ export interface UseUserEventsOpts {
    * of looping. Recoverable/transient closes reconnect silently and never fire
    * this.
    */
-  onFatalClose?: (info: { code: number, reason: string }) => void
+  onFatalClose?: (info: FatalCloseInfo) => void
 }
 
 export interface UserEventsHook {
@@ -424,6 +409,39 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
       dispatchEvent(opts, evt, setBootstrapped, setClock)
     }
 
+    // Apply the close policy for one relay close. Shared by the desktop-bridge
+    // and native WebSocket transports for the same reason handleFrame is: the
+    // rule for a terminal code -- stop retrying, release the transport, tell the
+    // caller -- is one policy, and isTerminalCloseCode now spans BOTH endpoints'
+    // close vocabulary, so two hand-copied spellings of it are two places for
+    // that vocabulary to be honoured differently.
+    //
+    // tearDown() is what makes it terminal, and each transport needs it for its
+    // own reason. On the bridge, the platformBridge onEvent listeners and the
+    // Go-side relay persist until explicitly torn down (unlike a native
+    // WebSocket's listeners, which go with the dropped socket ref), so without
+    // it a stale userevents:message listener survives and a later re-subscribe
+    // double-dispatches frames. On the native path, a preceding `error` on this
+    // same socket already armed scheduleReconnect -- it has no way to know a
+    // terminal-coded close is coming -- so without the generation bump and the
+    // reconnectPending clear that tearDown does, that timer fires ~one backoff
+    // later and resubscribes the very connection the fatal close was meant to
+    // stop, reconnecting silently underneath the sticky toast telling the user
+    // the stream is dead.
+    //
+    // Both call sites keep their own staleness guard: what counts as a stale
+    // close differs per transport, and it must be answered before any of this
+    // runs.
+    const handleClose = (code: number, reason: string) => {
+      setBootstrapped(false)
+      if (isTerminalCloseCode(code)) {
+        tearDown()
+        opts.onFatalClose?.({ code, reason })
+        return
+      }
+      scheduleReconnect(userId, generation)
+    }
+
     // Desktop sidecar path: the webview can't open a native WS to
     // the unix-socket hub in solo mode, so the Go sidecar dials
     // `/ws/userevents` for us and forwards each frame as a Tauri
@@ -464,21 +482,8 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
         platformBridge.onEvent('userevents:close', (payload: unknown) => {
           if (isStaleAttempt())
             return
-          setBootstrapped(false)
           const close = parseRelayClosePayload(payload)
-          const code = close.code
-          if (isTerminalCloseCode(code)) {
-            // Terminal close: stop retrying AND release the bridge resources.
-            // Unlike the native WS path -- whose listeners are GC'd once the
-            // socket ref is dropped -- the platformBridge onEvent listeners and
-            // the Go-side relay persist until explicitly torn down, so without
-            // this a stale userevents:message listener survives (and a later
-            // re-subscribe without a reload would double-dispatch frames).
-            tearDown()
-            opts.onFatalClose?.({ code, reason: close.reason })
-            return
-          }
-          scheduleReconnect(userId, generation)
+          handleClose(close.code, close.reason)
         }),
       ])
         .then(([m, c]) => {
@@ -534,21 +539,10 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     ws.addEventListener('close', (ev) => {
       if (socket !== ws || generation !== connectionGeneration)
         return
+      // Drop the socket ref before the shared policy runs: tearDown() closes
+      // whatever `socket` still names, and this one is already closed.
       socket = undefined
-      setBootstrapped(false)
-      if (isTerminalCloseCode(ev.code)) {
-        // Terminal close: stop retrying, mirroring the bridge path's tearDown().
-        // A preceding `error` on this same socket already armed scheduleReconnect
-        // (it has no way to know a terminal-coded close is coming), so without
-        // bumping connectionGeneration and clearing reconnectPending here that
-        // timer fires ~one backoff later and resubscribes the very connection the
-        // fatal close was meant to stop -- reconnecting underneath AppShell's
-        // disconnect banner.
-        tearDown()
-        opts.onFatalClose?.({ code: ev.code, reason: ev.reason })
-        return
-      }
-      scheduleReconnect(userId, generation)
+      handleClose(ev.code, ev.reason)
     })
     ws.addEventListener('error', () => {
       if (socket !== ws || generation !== connectionGeneration)

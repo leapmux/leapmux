@@ -525,7 +525,7 @@ func TestClientSendDoesNotBlockReceiveWhenTransportBlocked(t *testing.T) {
 		Size:          connectReqSize,
 		MaxBytes:      sendq.DefaultMaxBytes,
 		FrameOverhead: sendq.DefaultFrameOverhead,
-		OnGiveUp:      func(error) { cancel() },
+		OnGiveUp:      func(sendq.GiveUpReason, error) { cancel() },
 	})
 	t.Cleanup(func() { c.writer.Close() })
 
@@ -568,7 +568,7 @@ func TestClientWriteFailureCancelsConnection(t *testing.T) {
 		Size:          connectReqSize,
 		MaxBytes:      sendq.DefaultMaxBytes,
 		FrameOverhead: sendq.DefaultFrameOverhead,
-		OnGiveUp: func(error) {
+		OnGiveUp: func(sendq.GiveUpReason, error) {
 			c.cancelConn()
 		},
 	})
@@ -613,9 +613,9 @@ func TestClientTrySendDropsWhenBudgetFull(t *testing.T) {
 			return nil
 		},
 		Size:          connectReqSize,
-		MaxBytes:      fillSize + 10, // room for one QUEUED filler beyond the one in flight
+		MaxBytes:      int64(fillSize) + 10, // room for one QUEUED filler beyond the one in flight
 		FrameOverhead: 0,
-		OnGiveUp:      func(error) { t.Error("TrySend must not give up the connection") },
+		OnGiveUp:      func(sendq.GiveUpReason, error) { t.Error("TrySend must not give up the connection") },
 	})
 	t.Cleanup(func() { c.writer.Close() })
 
@@ -647,8 +647,8 @@ func TestClientTrySendOrResetUsesControlReserve(t *testing.T) {
 		},
 	}
 	fillSize := connectReqSize(filler)
-	dataCeiling := fillSize // one queued filler fills the data budget exactly
-	reserve := fillSize     // one control frame of the same size
+	dataCeiling := int64(fillSize) // one queued filler fills the data budget exactly
+	reserve := int64(fillSize)     // one control frame of the same size
 
 	var cancelled atomic.Bool
 	c := &Client{}

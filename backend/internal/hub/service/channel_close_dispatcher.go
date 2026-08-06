@@ -8,6 +8,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/nilcheck"
+
+	"github.com/leapmux/leapmux/internal/util/panicsafe"
 )
 
 const (
@@ -125,12 +127,8 @@ func (d *workerCloseDispatcher) runWorker() {
 		// recovery can never resume holding the lock; the loop then continues,
 		// keeping this worker and its slot accounting intact.
 		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("recovered from panic in worker-close dispatch",
-						"worker_id", workerID, "panic", r)
-				}
-			}()
+			defer panicsafe.RecoverAndLog(nil,
+				"recovered from panic in worker-close dispatch", "worker_id", workerID)
 			d.deliverWorkerCloses(workerID)
 		}()
 	}

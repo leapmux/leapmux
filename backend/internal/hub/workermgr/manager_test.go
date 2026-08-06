@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -49,13 +50,24 @@ func (r *testRecorder) Messages() []*leapmuxv1.ConnectResponse {
 	return out
 }
 
+// testConnOwner is the account every fixture built by newTestConn belongs to.
+// Tests about the per-account cap name their own owners via newOwnedTestConn;
+// the rest share this one, which keeps them all in a single bucket so a test
+// that DOES set a cap on a shared fixture cannot accidentally read as unlimited.
+const testConnOwner = "u1"
+
 func newTestConn(t *testing.T, workerID string, write func(*leapmuxv1.ConnectResponse) error, greeting *leapmuxv1.ConnectResponse) (*Conn, *SendPump) {
+	t.Helper()
+	return newOwnedTestConn(t, workerID, testConnOwner, write, greeting)
+}
+
+func newOwnedTestConn(t *testing.T, workerID, owner string, write func(*leapmuxv1.ConnectResponse) error, greeting *leapmuxv1.ConnectResponse) (*Conn, *SendPump) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	if write == nil {
 		write = func(*leapmuxv1.ConnectResponse) error { return nil }
 	}
-	conn, pump := NewConn(ctx, cancel, workerID, write, greeting)
+	conn, pump := NewConn(ctx, cancel, workerID, owner, sendq.NewMaxBytesPoolForTest(), write, greeting)
 	t.Cleanup(conn.Fence)
 	return conn, pump
 }

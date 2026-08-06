@@ -7,6 +7,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 )
 
@@ -26,45 +27,16 @@ const (
 	// client working steadily through a large page-refresh replay on a
 	// slow uplink, and its reconnect would replay the same burst and age
 	// out again. Measuring from the last successful write WITHOUT
-	// restarting the clock on idle is the opposite bug: this socket
-	// carries no keepalive, so a tab with no agent or terminal output for
-	// half a minute -- the normal case -- would fail the check on its
-	// very next frame and be torn down while perfectly healthy.
+	// restarting the clock on idle is the opposite bug: a tab with no
+	// agent or terminal output for half a minute -- the normal case --
+	// would fail the check on its very next frame and be torn down while
+	// perfectly healthy. This socket does carry a keepalive, but that is
+	// no help here: ping and pong never reach sendq, so a peer answering
+	// probes all minute long leaves lastProgress exactly where it was.
 	//
-	// What bounds memory is relayMaxQueueBytes below; this bounds
-	// liveness.
+	// What bounds memory is the shared sendq.Pool the writer draws
+	// from; this bounds liveness.
 	relayMaxStall = 30 * time.Second
-
-	// relayMaxQueueBytes caps the queue by payload plus per-frame
-	// overhead, which is what makes an unbounded slot count safe.
-	//
-	// It bounds ONE connection. Nothing bounds how many there are, so the
-	// hub's aggregate worst case is this figure times the number of
-	// simultaneously wedged clients -- and the aggregate is the number an
-	// operator actually sizes against. A shared pool, and the eviction
-	// policy it would need, is tracked in
-	// https://github.com/leapmux/leapmux/issues/313.
-	//
-	// Ingress is not throttled: the hub's per-worker read loop hands
-	// frames over without blocking, and terminal output is one frame per
-	// PTY read with no coalescing. A wedged client therefore accumulates
-	// at the worker's full production rate -- on a fast link that is
-	// hundreds of MB inside the stall window, per connection, and the hub
-	// serves every user. A time bound alone is not a memory bound when
-	// the rate is workload-controlled.
-	relayMaxQueueBytes = 32 * 1024 * 1024
-
-	// relayFrameOverhead is charged per queued frame on top of its
-	// ciphertext, so the budget bounds the SLOT count too.
-	//
-	// Without it a frame carrying little or no ciphertext -- a close
-	// sentinel, a control frame -- is free, and the queue length is
-	// unbounded even though each slot pins a *ChannelMessage and its
-	// channel id. The value is a deliberate over-estimate of that
-	// retained footprint rather than a measurement: it only has to make
-	// "many tiny frames" cost something, and at this size the budget
-	// admits at most relayMaxQueueBytes/relayFrameOverhead slots.
-	relayFrameOverhead = 256
 )
 
 // errRelayWriterClosed is returned by enqueue once the connection is
@@ -101,8 +73,33 @@ var errRelayWriterClosed = errors.New("relay writer closed")
 // an ordered, encrypted stream, and the ciphertext would have to be
 // re-keyed. A client that cannot keep up is disconnected instead --
 // reconnect and replay-from-DB already exist and are the intended
-// recovery -- when it either stalls (relayMaxStall) or backs up past
-// relayMaxQueueBytes.
+// recovery -- when it either stalls (relayMaxStall) or is the biggest
+// holder in a shared byte pool that has run out.
+//
+// The byte budget is the RELAY pool's, not a per-connection constant.
+// Ingress is not throttled -- the hub's per-worker read loop hands frames
+// over without blocking, and terminal output is one frame per PTY read
+// with no coalescing -- so a wedged client accumulates at the worker's
+// full production rate, which on a fast link is hundreds of MB inside
+// the stall window. A per-connection constant bounded that for ONE tab
+// and multiplied by however many tabs the hub was serving; the pool
+// bounds the sum, which is the figure an operator sizes against, and
+// lets a lone backed-up tab use far more than the old constant while the
+// hub is otherwise idle.
+//
+// Far more is worth a number: under the pool's rule a single member on an
+// otherwise-empty pool converges at HALF the capacity, so with the 8 GiB
+// auto-size ceiling one wedged tab can pin ~4 GiB. relayMaxStall does not
+// bound that -- the stall clock restarts on every successful write, so a
+// client completing one write per 10 s window never trips the 30 s check
+// while its backlog grows at the worker's full production rate. What
+// bounds it is the pool: the moment a second connection needs the memory,
+// the threshold halves again and the hog is the one nominated.
+//
+// Worker connections have their own pool. Reclaiming inside this one can
+// therefore only ever cost a browser tab -- which reconnects and replays
+// from the DB -- and never a worker, which would take every user's
+// channels on that machine with it. See sendq.Pool.
 type relayWriter struct {
 	inner *sendq.Writer[*leapmuxv1.ChannelMessage]
 }
@@ -114,6 +111,7 @@ type relayWriter struct {
 // stub.
 func newRelayWriter(
 	ctx context.Context,
+	pool *sendq.Pool,
 	write func(context.Context, *leapmuxv1.ChannelMessage) error,
 	cancel context.CancelFunc,
 	userID, connID string,
@@ -121,20 +119,38 @@ func newRelayWriter(
 	if write == nil {
 		panic("newRelayWriter: write is required")
 	}
+	if pool == nil {
+		panic("newRelayWriter: pool is required")
+	}
 	w := &relayWriter{}
 	w.inner = sendq.New(ctx, sendq.Config[*leapmuxv1.ChannelMessage]{
-		Write:         write,
-		Size:          func(msg *leapmuxv1.ChannelMessage) int { return len(msg.GetCiphertext()) },
-		MaxBytes:      relayMaxQueueBytes,
-		FrameOverhead: relayFrameOverhead,
+		Write: write,
+		Size:  func(msg *leapmuxv1.ChannelMessage) int { return len(msg.GetCiphertext()) },
+		Pool:  pool,
+		// sendq's own constant, not a local copy of the same number. The
+		// per-frame charge bounds the SLOT count as well as the bytes: without
+		// it a frame carrying little or no ciphertext -- a close sentinel, a
+		// control frame -- is free and the queue length is unbounded even though
+		// each slot pins a *ChannelMessage and its channel id. It is a
+		// deliberate over-estimate of that retained footprint rather than a
+		// measurement, which is exactly what sendq documents it as.
+		//
+		// Sharing the constant matters because config derives this class's
+		// largest frame from sendq.DefaultFrameOverhead when it validates that
+		// the budget can carry one: two constants that merely happened to agree
+		// would let a retune here silently under-state that bound, turning a
+		// startup error into every relay connection giving up at runtime.
+		FrameOverhead: sendq.DefaultFrameOverhead,
 		WriteTimeout:  relayWriteTimeout,
 		MaxStall:      relayMaxStall,
-		OnGiveUp: func(err error) {
+		OnGiveUp: func(reason sendq.GiveUpReason, err error) {
+			metrics.CountSendqGiveUp(metrics.PoolRelay, reason.Label())
 			slog.Warn("channel relay dropping connection",
-				"user_id", userID, "conn_id", connID, "error", err)
+				"user_id", userID, "conn_id", connID,
+				"reason", reason.Label(), "error", err)
 			cancel()
 		},
-		OnDiscard: func(frames, _ int) {
+		OnDiscard: func(frames int, _ int64) {
 			if frames > 0 {
 				slog.Debug("channel relay discarded queued frames",
 					"user_id", userID, "conn_id", connID, "count", frames)

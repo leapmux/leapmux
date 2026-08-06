@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -16,6 +17,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/metrics"
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -42,6 +45,26 @@ type WorkerConnectorService struct {
 	notifier     *notifier.Notifier
 	crdtRegistry CRDTRegistry
 	shutdownCh   <-chan struct{}
+	// queuePool is the WORKER outbound queue budget every Connect stream's
+	// writer draws from. Deliberately not shared with the frontend relays:
+	// reclaiming can only ever cost a member of the same pool, and dropping a
+	// worker discards every user's channels on that machine where dropping a
+	// tab costs a reconnect. See sendq.Pool on membership as a blast radius.
+	queuePool *sendq.Pool
+	// maxWorkersPerUser bounds how many ACTIVE worker rows one account may hold,
+	// so a machine is turned away at registration -- where the operator can be
+	// told which key to raise -- rather than at its first Connect. Zero is
+	// unlimited.
+	//
+	// It does NOT bound queuePool membership, and must not be read as if it did:
+	// the pool member is created per Connect stream, behind an auth-token lookup
+	// that admits a DEREGISTERING worker (that stream is how the worker is told
+	// to tear itself down) while ListByUserID no longer counts it. Registering,
+	// deregistering and registering again would therefore add members without
+	// ever exceeding this. The bound on live membership is its twin,
+	// workermgr.Manager.SetMaxWorkersPerUser, which counts in the same critical
+	// section that publishes the connection.
+	maxWorkersPerUser atomic.Int64
 }
 
 // NewWorkerConnectorService creates a new WorkerConnectorService.
@@ -57,7 +80,11 @@ func NewWorkerConnectorService(
 	n *notifier.Notifier,
 	registry CRDTRegistry,
 	shutdownCh <-chan struct{},
+	queuePool *sendq.Pool,
 ) *WorkerConnectorService {
+	if queuePool == nil {
+		panic("service: NewWorkerConnectorService requires a queue pool")
+	}
 	return &WorkerConnectorService{
 		store:        st,
 		workerMgr:    mgr,
@@ -67,7 +94,66 @@ func NewWorkerConnectorService(
 		notifier:     n,
 		crdtRegistry: registry,
 		shutdownCh:   shutdownCh,
+		queuePool:    queuePool,
 	}
+}
+
+// SetMaxWorkersPerUser bounds how many Workers one user may have registered at
+// once; 0 (the zero value) is unlimited. Call once at startup before serving.
+//
+// A setter rather than a tenth positional constructor argument, matching
+// AuthContextRegistry.SetMaxConnectionsPerUser: the services this package builds
+// directly in tests must come out unlimited, which the zero value gives for free.
+//
+// Wire workermgr.Manager.SetMaxWorkersPerUser from the same config value: this
+// one caps the rows, that one caps the live connections, and only the second is
+// a bound on what the worker send queue pool has to honour. See the
+// maxWorkersPerUser field.
+func (s *WorkerConnectorService) SetMaxWorkersPerUser(n int64) {
+	s.maxWorkersPerUser.Store(n)
+}
+
+// refuseIfAtWorkerCap fails the registration when the user already holds as many
+// Workers as max_workers_per_user allows.
+//
+// The registration-time half of the cap, kept because a machine told at
+// `leapmux worker register` time that the account is full is a far better
+// diagnostic than one that registers and then cannot hold a stream. The half
+// that actually bounds pool membership is in workermgr.Manager.Register.
+//
+// Counting by asking for exactly `cap` rows rather than adding a COUNT query to
+// three SQL dialects: the question is only ever "are there at least this many",
+// and a page bounded by the cap answers it exactly, reading at most one row past
+// it (store.FetchLimit adds a probe row to detect a next page).
+//
+// That page is the cost of the cap being a number rather than a counter, and it
+// scales with the CONFIGURED cap rather than with the fleet: an operator who
+// raises max_workers_per_user into the thousands makes every registration read
+// that many rows inside the transaction that consumed the key. Unlimited (0)
+// skips the query entirely.
+func (s *WorkerConnectorService) refuseIfAtWorkerCap(
+	ctx context.Context, tx store.Store, owner userid.UserID,
+) error {
+	limit := s.maxWorkersPerUser.Load()
+	if limit <= 0 {
+		return nil
+	}
+	page, err := tx.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
+		RegisteredBy: owner,
+		PageParams:   store.PageParams{Limit: limit},
+	})
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("count workers: %w", err))
+	}
+	if int64(len(page.Rows)) < limit {
+		return nil
+	}
+	slog.Warn("refusing worker registration: user is at its worker cap",
+		"user_id", owner, "limit", limit)
+	metrics.CountWorkerAdmissionRefused(metrics.WorkerStageRegister)
+	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf(
+		"this account already has %d workers registered, which is the configured maximum "+
+			"(max_workers_per_user); deregister one first", limit))
 }
 
 // Register handles the worker → hub registration RPC.
@@ -116,6 +202,14 @@ func (s *WorkerConnectorService) Register(
 		registrantUID, mintOK := userid.New(registeredBy)
 		if !mintOK {
 			return connect.NewError(connect.CodeInternal, errors.New("registration key has a blank creator"))
+		}
+		// Counted INSIDE the transaction that consumes the key and creates the
+		// row, so two registrations racing cannot both read an under-cap count
+		// and both be admitted. Outside it this would be a suggestion rather
+		// than a bound -- the same reason the connection cap counts under the
+		// lock it already held.
+		if err := s.refuseIfAtWorkerCap(ctx, tx, registrantUID); err != nil {
+			return err
 		}
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:              workerID,
@@ -177,7 +271,7 @@ func (s *WorkerConnectorService) Connect(
 	// the newly connected worker.
 	connCtx, cancelConn := context.WithCancel(ctx)
 	defer cancelConn()
-	conn, pump := workermgr.NewConn(connCtx, cancelConn, worker.ID, stream.Send,
+	conn, pump := workermgr.NewConn(connCtx, cancelConn, worker.ID, worker.RegisteredBy, s.queuePool, stream.Send,
 		// Greet the worker with its own identity. Register enqueues this before
 		// it publishes the conn, so with a single handler drain it is
 		// mechanically the first frame written -- which the worker needs,
@@ -187,7 +281,7 @@ func (s *WorkerConnectorService) Connect(
 		// that ordering impossible to get wrong.
 		//
 		// worker.RegisteredBy is already in hand from the GetByAuthToken above,
-		// so this costs no query.
+		// so neither it nor the owner handed to NewConn costs a query.
 		&leapmuxv1.ConnectResponse{
 			Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{
 				WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: worker.RegisteredBy},
@@ -205,6 +299,18 @@ func (s *WorkerConnectorService) Connect(
 			// is for the operator reading logs and for any proxy or future
 			// client that does distinguish the two.
 			return connect.NewError(connect.CodeUnavailable, err)
+		}
+		if errors.Is(err, workermgr.ErrTooManyWorkers) {
+			// Counted on the same series as a refusal at Register: both are one
+			// account's Worker turned away by max_workers_per_user, and an
+			// operator asking "is this cap biting?" wants one number rather than
+			// two that have to be summed. The `stage` label is what keeps the two
+			// tellable apart within that one number. ResourceExhausted for the
+			// reason Register's refusal is: the credential is fine and the
+			// condition clears when another of this account's connections goes
+			// away.
+			metrics.CountWorkerAdmissionRefused(metrics.WorkerStageConnect)
+			return connect.NewError(connect.CodeResourceExhausted, err)
 		}
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("greet worker: %w", err))
 	}

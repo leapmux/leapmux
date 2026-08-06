@@ -3,7 +3,6 @@ package service_test
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,27 +14,61 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/service"
 )
 
+// subscribeReady registers a bus subscriber and returns once the bus actually
+// HAS it.
+//
+// The seam is the snapshot callback: SnapshotAndSubscribe invokes it
+// immediately after committing the registration under the bus's lock, so a
+// caller that waits for it is waiting on the state that ends the race. Every
+// test here used to sleep 50 ms instead, which is a window sized by a real
+// timer over two goroutine handoffs -- it holds on an idle laptop and misses
+// under a loaded -race run, where the publish lands before the subscriber
+// exists and the test reports a broken bus.
+func subscribeReady(
+	t *testing.T,
+	ctx context.Context,
+	bus *service.PrivateEventsBus,
+	owner string,
+	send func(*leapmuxv1.WorkerPrivateEvent) error,
+) {
+	t.Helper()
+	registered := make(chan struct{})
+	go func() {
+		_ = bus.SnapshotAndSubscribe(ctx, userid.MustNew(owner),
+			func(userid.UserID) []*leapmuxv1.WorkerPrivateEvent {
+				close(registered)
+				return nil
+			}, send)
+	}()
+	select {
+	case <-registered:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("subscriber for %s never registered", owner)
+	}
+}
+
 func TestPrivateEventsBus_PublishesToSubscribersOfSameOwner(t *testing.T) {
 	t.Parallel()
 
 	bus := service.NewPrivateEventsBus()
 	defer bus.Stop()
 
-	var got atomic.Int32
+	got := make(chan *leapmuxv1.WorkerPrivateEvent, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go func() {
-		_ = bus.SnapshotAndSubscribe(ctx, userid.MustNew("user-1"), nil, func(evt *leapmuxv1.WorkerPrivateEvent) error {
-			got.Add(1)
-			return nil
-		})
-	}()
-	// Tiny pause so the subscriber registers before publish.
-	time.Sleep(50 * time.Millisecond)
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		got <- evt
+		return nil
+	})
 	bus.PublishTabRenamed(userid.MustNew("user-1"), "tab-1", leapmuxv1.TabType_TAB_TYPE_AGENT, "new title", "origin-X")
-	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, int32(1), got.Load())
+
+	select {
+	case evt := <-got:
+		assert.Equal(t, "new title", evt.GetTabRenamed().GetTitle())
+	case <-time.After(10 * time.Second):
+		t.Fatal("subscriber did not receive the published event")
+	}
 }
 
 func TestPrivateEventsBus_DoesNotLeakAcrossOwners(t *testing.T) {
@@ -44,21 +77,30 @@ func TestPrivateEventsBus_DoesNotLeakAcrossOwners(t *testing.T) {
 	bus := service.NewPrivateEventsBus()
 	defer bus.Stop()
 
-	var got atomic.Int32
+	got := make(chan *leapmuxv1.WorkerPrivateEvent, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	go func() {
-		_ = bus.SnapshotAndSubscribe(ctx, userid.MustNew("user-1"), nil, func(evt *leapmuxv1.WorkerPrivateEvent) error {
-			got.Add(1)
-			return nil
-		})
-	}()
-	time.Sleep(50 * time.Millisecond)
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		got <- evt
+		return nil
+	})
 
 	// Publish for a different owner — must not reach user-1's subscriber.
-	bus.PublishTabRenamed(userid.MustNew("user-2"), "tab-1", leapmuxv1.TabType_TAB_TYPE_AGENT, "title", "origin")
-	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, int32(0), got.Load())
+	bus.PublishTabRenamed(userid.MustNew("user-2"), "tab-1", leapmuxv1.TabType_TAB_TYPE_AGENT, "leaked", "origin")
+	// Then one for user-1. The bus delivers in order, so this arriving proves
+	// the other was already handled -- and dropped. Sleeping instead made the
+	// negative assertion pass by simply not having waited long enough, which is
+	// the same result a genuinely leaking bus would have produced.
+	bus.PublishTabRenamed(userid.MustNew("user-1"), "tab-2", leapmuxv1.TabType_TAB_TYPE_AGENT, "mine", "origin")
+
+	select {
+	case evt := <-got:
+		assert.Equal(t, "mine", evt.GetTabRenamed().GetTitle(),
+			"the first event this subscriber sees must be its OWN owner's")
+	case <-time.After(10 * time.Second):
+		t.Fatal("subscriber did not receive its own owner's event")
+	}
+	assert.Empty(t, got, "no further event may arrive")
 }
 
 func TestPrivateEventsBus_StopClosesSubscribers(t *testing.T) {
@@ -66,14 +108,23 @@ func TestPrivateEventsBus_StopClosesSubscribers(t *testing.T) {
 
 	bus := service.NewPrivateEventsBus()
 
+	registered := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		_ = bus.SnapshotAndSubscribe(context.Background(), userid.MustNew("user-1"), nil, func(evt *leapmuxv1.WorkerPrivateEvent) error {
-			return nil
-		})
+		_ = bus.SnapshotAndSubscribe(context.Background(), userid.MustNew("user-1"),
+			func(userid.UserID) []*leapmuxv1.WorkerPrivateEvent {
+				close(registered)
+				return nil
+			}, func(evt *leapmuxv1.WorkerPrivateEvent) error {
+				return nil
+			})
 		close(done)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-registered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("subscriber never registered")
+	}
 
 	bus.Stop()
 	select {
@@ -100,19 +151,14 @@ func TestPrivateEventsBus_MultipleSubscribersOnSameOwnerAllReceive(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go func() {
-		_ = bus.SnapshotAndSubscribe(ctx, userid.MustNew("user-1"), nil, func(evt *leapmuxv1.WorkerPrivateEvent) error {
-			got1 <- evt
-			return nil
-		})
-	}()
-	go func() {
-		_ = bus.SnapshotAndSubscribe(ctx, userid.MustNew("user-1"), nil, func(evt *leapmuxv1.WorkerPrivateEvent) error {
-			got2 <- evt
-			return nil
-		})
-	}()
-	time.Sleep(50 * time.Millisecond)
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		got1 <- evt
+		return nil
+	})
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		got2 <- evt
+		return nil
+	})
 
 	bus.PublishTabRenamed(userid.MustNew("user-1"), "tab-1", leapmuxv1.TabType_TAB_TYPE_AGENT, "T", "origin")
 
@@ -147,20 +193,15 @@ func TestPrivateEventsBus_DropsOnSlowConsumer(t *testing.T) {
 	releaseA := make(chan struct{})
 	gotA := make(chan *leapmuxv1.WorkerPrivateEvent, 64)
 	gotB := make(chan *leapmuxv1.WorkerPrivateEvent, 1)
-	go func() {
-		_ = bus.SnapshotAndSubscribe(ctx, userid.MustNew("user-1"), nil, func(evt *leapmuxv1.WorkerPrivateEvent) error {
-			<-releaseA
-			gotA <- evt
-			return nil
-		})
-	}()
-	go func() {
-		_ = bus.SnapshotAndSubscribe(ctx, userid.MustNew("user-1"), nil, func(evt *leapmuxv1.WorkerPrivateEvent) error {
-			gotB <- evt
-			return nil
-		})
-	}()
-	time.Sleep(50 * time.Millisecond)
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		<-releaseA
+		gotA <- evt
+		return nil
+	})
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		gotB <- evt
+		return nil
+	})
 
 	// Push enough events to definitely overflow A's buffer (default
 	// bufSize=32). B keeps up.
@@ -189,16 +230,13 @@ func TestPrivateEventsBus_EventCarriesOriginClientId(t *testing.T) {
 	defer cancel()
 
 	done := make(chan struct{})
-	go func() {
-		_ = bus.SnapshotAndSubscribe(ctx, userid.MustNew("user-1"), nil, func(evt *leapmuxv1.WorkerPrivateEvent) error {
-			tr := evt.GetTabRenamed()
-			require.NotNil(t, tr, "expected TabRenamed event")
-			observedOrigin = tr.GetOriginClientId()
-			close(done)
-			return nil
-		})
-	}()
-	time.Sleep(50 * time.Millisecond)
+	subscribeReady(t, ctx, bus, "user-1", func(evt *leapmuxv1.WorkerPrivateEvent) error {
+		tr := evt.GetTabRenamed()
+		require.NotNil(t, tr, "expected TabRenamed event")
+		observedOrigin = tr.GetOriginClientId()
+		close(done)
+		return nil
+	})
 
 	bus.PublishTabRenamed(userid.MustNew("user-1"), "tab-1", leapmuxv1.TabType_TAB_TYPE_TERMINAL, "T", "session-42")
 	select {

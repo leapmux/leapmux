@@ -17,6 +17,12 @@ import {
   MAX_INCOMPLETE_CHUNKED,
   maxReassembledMessageSize,
 } from './reassembler'
+import {
+  CLOSE_REASON_CONTROL_FLOOD,
+  CLOSE_REASON_FORBIDDEN,
+  CLOSE_REASON_SNAPSHOT_TOO_LARGE,
+  CLOSE_REASON_TOO_MANY_CONNECTIONS,
+} from './wsCloseCodes'
 
 describe('channel-wire protocol limits', () => {
   // The Go implementation (backend/channelwire/wire.go) asserts the SAME fixture
@@ -42,6 +48,10 @@ describe('channel-wire protocol limits', () => {
     sessionKeyMaxAgeMs: number
     minRekeyIntervalMs: number
     sessionKeyHardCeilingMs: number
+    closeReasonTooManyConnections: string
+    closeReasonSnapshotTooLarge: string
+    closeReasonForbidden: string
+    closeReasonControlFlood: string
   }
 
   it('match the cross-language fixture the Go side also asserts', () => {
@@ -56,5 +66,13 @@ describe('channel-wire protocol limits', () => {
     expect(SESSION_KEY_MAX_AGE_MS).toBe(limits.sessionKeyMaxAgeMs)
     expect(MIN_REKEY_INTERVAL_MS).toBe(limits.minRekeyIntervalMs)
     expect(SESSION_KEY_HARD_CEILING_MS).toBe(limits.sessionKeyHardCeilingMs)
+    // Not a size but a token the client BRANCHES on: every other
+    // policy-violation close means "re-authenticate" and this one means "close a
+    // tab", so a drift here does not fail loudly — it silently gives the user
+    // the opposite advice.
+    expect(CLOSE_REASON_TOO_MANY_CONNECTIONS).toBe(limits.closeReasonTooManyConnections)
+    expect(CLOSE_REASON_SNAPSHOT_TOO_LARGE).toBe(limits.closeReasonSnapshotTooLarge)
+    expect(CLOSE_REASON_FORBIDDEN).toBe(limits.closeReasonForbidden)
+    expect(CLOSE_REASON_CONTROL_FLOOD).toBe(limits.closeReasonControlFlood)
   })
 })

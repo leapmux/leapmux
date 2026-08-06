@@ -63,6 +63,11 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: opts.AgentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
 			}, wWatch)
+			// The subscription lands on the session goroutine, after dispatch
+			// returns. Without this wait the CloseAgent below could broadcast to
+			// nobody, and the "ACTIVE never arrived" assertion at the end would
+			// pass having observed nothing.
+			waitAgentWatchLive(t, svc, opts.AgentID)
 
 			// Drive CloseAgent synchronously. dispatch returns only
 			// after the full handler runs, so when control comes back
@@ -353,6 +358,10 @@ func TestCloseTerminal_DuringStartup_SuppressesReadyAndCleansUp(t *testing.T) {
 			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 				Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: opts.ID}},
 			}, wWatch)
+			// See the agent-side test: the subscription is asynchronous, and a
+			// "READY never arrived" assertion over an unregistered watcher is
+			// vacuous.
+			waitTerminalWatchLive(t, svc, opts.ID)
 
 			wClose := newTestWriter()
 			dispatch(d, "CloseTerminal", &leapmuxv1.CloseTerminalRequest{

@@ -13,9 +13,14 @@ vi.mock('~/components/common/Toast', () => ({
 
 vi.mock('~/api/workerRpc', () => ({
   watchEventsViaChannel: vi.fn(),
+  // scheduleReconnect asks the relay whether it has latched a terminal close,
+  // so that a caller with no error in hand (onEnd) still parks. Null here is
+  // "dialable", which is what every case below assumes.
+  channelManager: { fatalCloseInfo: vi.fn(() => null) },
 }))
 
-const { watchEventsViaChannel } = await import('~/api/workerRpc')
+const { channelManager, watchEventsViaChannel } = await import('~/api/workerRpc')
+const { showWarnToast } = await import('~/components/common/Toast')
 const { useWatchEventsStreams } = await import('./useWatchEventsStreams')
 
 interface FakeHandle {
@@ -56,6 +61,9 @@ describe('useWatchEventsStreams', () => {
     handles = []
     disposeRoot?.()
     disposeRoot = undefined
+    // Module mocks are shared across the file; without this a toast raised by an
+    // earlier test would satisfy a later test's call assertion.
+    vi.mocked(showWarnToast).mockClear()
     vi.mocked(watchEventsViaChannel).mockReset()
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
       const h = makeHandle()
@@ -147,6 +155,75 @@ describe('useWatchEventsStreams', () => {
     await flush()
     expect(online).toContain(false)
     expect(vi.mocked(watchEventsViaChannel).mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  // A fatal close must still run the offline transition. Its only reader is
+  // useWorkspaceConnection's cleanup effect -- READY terminals to DISCONNECTED,
+  // ACTIVE agents back to INACTIVE, streaming text cleared -- and after a fatal
+  // close nothing will ever reconnect and finish a half-streamed message. The
+  // TOAST is the only thing suppressed: the relay has latched, so
+  // "reconnecting..." would be a lie and the shell's sticky toast already names
+  // the real cause.
+  it('a fatal relay close marks the worker offline without a reconnecting toast', async () => {
+    const online: boolean[] = []
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      { onWorkerOnline: (_w, o) => online.push(o) },
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    handles[0]!._error(new ChannelError('transport', 'too many places', 0, true))
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(online).toContain(false)
+    expect(showWarnToast).not.toHaveBeenCalled()
+  })
+
+  // An ordinary transport loss keeps its toast -- the suppression above must be
+  // scoped to the fatal case, not to transport errors at large.
+  it('a recoverable transport error still toasts', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    handles[0]!._error(new ChannelError('transport', 'lost'))
+    await flush()
+    expect(showWarnToast).toHaveBeenCalledTimes(1)
+  })
+
+  // Once ChannelRelay latches, every later dial rejects with the same error
+  // before it reaches the network -- so a reconnect timer here is a wakeup every
+  // 30s for the life of the page that can never succeed.
+  it('a fatal stream error arms no reconnect timer', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
+    handles[0]!._error(new ChannelError('transport', 'too many places', 0, true))
+    await vi.advanceTimersByTimeAsync(120_000)
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
+  })
+
+  // The closed cycle: a latched relay throws out of the open itself, so the
+  // catch arm is the one that used to re-arm the timer that produced the next
+  // identical throw.
+  it('a fatal open failure does not retry forever', async () => {
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      throw new ChannelError('transport', 'too many places', 0, true)
+    })
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(120_000)
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
   })
 
   it('plan changes enqueue synchronously without awaiting channel open', async () => {
@@ -382,6 +459,29 @@ describe('useWatchEventsStreams', () => {
     await flush()
     expect(online).not.toContain(false)
     expect(vi.mocked(watchEventsViaChannel).mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  // A stream that ends on its own has no error to hand scheduleReconnect, so a
+  // guard reading only that argument let onEnd arm a timer the fatal latch never
+  // saw. The timer then woke 30s later purely to have openChannelUncached throw
+  // the refusal that was already latched when it was armed.
+  it('does not arm a reconnect when the relay has latched, even with no error to pass', async () => {
+    const { harness } = mount(
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+    )
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    const opensBeforeLatch = vi.mocked(watchEventsViaChannel).mock.calls.length
+
+    // The relay latches, then a worker-side end races the terminal close.
+    vi.mocked(channelManager.fatalCloseInfo).mockReturnValue(
+      { code: 1008, reason: 'too_many_connections' } as never,
+    )
+    handles[0]!._end()
+    await vi.advanceTimersByTimeAsync(60_000)
+    await flush()
+
+    expect(vi.mocked(watchEventsViaChannel).mock.calls.length).toBe(opensBeforeLatch)
   })
 
   it('resets LOOKUP_FAILED retry budget after a settled updateAck', async () => {

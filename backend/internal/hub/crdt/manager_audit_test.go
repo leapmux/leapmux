@@ -361,6 +361,177 @@ func TestManager_AuditLookupTimeoutDoesNotWedgeStop(t *testing.T) {
 	}
 }
 
+// panickingWorkerAuthChecker panics inside CanUseWorker -- the DB-backed lookup
+// the post-commit orphan audit makes, on a goroutine nobody joins on except
+// Stop(). CanAccessWorkspace stays healthy so the batch itself commits.
+type panickingWorkerAuthChecker struct{}
+
+func (panickingWorkerAuthChecker) CanAccessWorkspace(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+func (panickingWorkerAuthChecker) CanUseWorker(context.Context, string, string) (bool, error) {
+	panic("simulated workers-table lookup panic")
+}
+
+// TestManager_AuditPanicDoesNotCrashTheHub pins the blast radius of a panicking
+// orphan audit.
+//
+// The audit runs on a background goroutine, so an unrecovered panic there is not
+// the failure of one Submit -- Go tears the whole PROCESS down, taking every
+// other user's CRDT manager, every worker link and every open connection with
+// it, to lose one log breadcrumb about one tombstoned tab. It must be reported
+// and absorbed instead, with the WaitGroup Stop() drains still released.
+func TestManager_AuditPanicDoesNotCrashTheHub(t *testing.T) {
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	j := newFakeJournal()
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, panickingWorkerAuthChecker{},
+		logger, newIncrementingClock(1_000))
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	seedRootInternal(t, mgr, "ws-1", "root-1")
+	// Two tabs: one to panic the audit on, one to prove the manager is still
+	// serving afterwards. Seeded INTERNALLY, which skips the worker-ref
+	// validation that would otherwise reach the panicking checker on the manager
+	// goroutine -- a panic there is a different bug from the one under test.
+	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{
+			addTabBatch(t, "seed-a", "tab-a", "root-1", "w-host", "p1"),
+			addTabBatch(t, "seed-b", "tab-b", "root-1", "w-host", "p2"),
+		},
+	})
+	require.NoError(t, err)
+
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+	results, err := mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: []*leapmuxv1.OpBatch{{
+			BatchId: "ts-batch",
+			Ops: []*leapmuxv1.CrdtOp{
+				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+				}}},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, results[0].GetCommitted(), "the tombstone must commit: %v", results[0])
+
+	// Reaching this line at all is half the assertion: without the recover the
+	// audit goroutine unwinds and Go kills the test binary here, which is
+	// precisely the Hub-wide outage the recover exists to prevent.
+	mgr.WaitForAudits()
+
+	rec := findLogRecord(t, buf, "recovered from a panicking orphan tab audit")
+	require.NotNil(t, rec, "the recovered panic must leave an operator-visible breadcrumb")
+	assert.Equal(t, "ERROR", rec["level"])
+	assert.Equal(t, "user-1", rec["user_id"])
+	assert.Equal(t, "ts-batch", rec["batch_id"], "the log must name the operation that panicked")
+	assert.Equal(t, "alice", rec["principal"])
+	assert.Contains(t, rec["panic"], "simulated workers-table lookup panic")
+
+	// And the manager is still serving: the panic cost one audit, not the hub.
+	// A second tombstone panics the audit again, so this also pins that repeated
+	// faults keep being absorbed rather than accumulating.
+	results, err = mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: []*leapmuxv1.OpBatch{{
+			BatchId: "ts-after-panic",
+			Ops: []*leapmuxv1.CrdtOp{
+				{OpId: "ts-b", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b",
+				}}},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, results[0].GetCommitted(), "submits must keep committing after a recovered audit panic")
+	mgr.WaitForAudits()
+}
+
+// panickingNudger panics on every nudge, standing in for a fault anywhere under
+// NudgeReconcile -- a surface that has GROWN: it now takes workermgr's registry
+// lock and may fence a connection whose control frame was refused.
+type panickingNudger struct{}
+
+func (panickingNudger) NudgeReconcile(string) {
+	panic("simulated worker registry panic")
+}
+
+// TestManager_NudgePanicDoesNotCrashTheHub is the audit test's sibling for the
+// reconcile nudge, which is dispatched on its own untracked-by-Stop goroutine
+// for exactly the same reason and had exactly the same blast radius.
+func TestManager_NudgePanicDoesNotCrashTheHub(t *testing.T) {
+	buf := &bytes.Buffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	j := newFakeJournal()
+	mgr := crdt.NewManager(userid.MustNew("user-1"), j, orphanTabAuthChecker{},
+		logger, newIncrementingClock(1_000), crdt.WithReconcileNudger(panickingNudger{}))
+	require.NoError(t, mgr.Bootstrap(context.Background()))
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = mgr.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		mgr.Stop()
+	})
+
+	seedRootInternal(t, mgr, "ws-1", "root-1")
+	_, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{
+			addTabBatch(t, "seed-a", "tab-a", "root-1", "w-host", "p1"),
+			addTabBatch(t, "seed-b", "tab-b", "root-1", "w-host", "p2"),
+		},
+	})
+	require.NoError(t, err)
+
+	// INTERNAL, the shape a workspace delete takes: it nudges but does not audit,
+	// so the only background goroutine in play is the nudge.
+	results, err := mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{{
+			BatchId: "internal-ts",
+			Ops: []*leapmuxv1.CrdtOp{
+				{OpId: "ts-a", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a",
+				}}},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, results[0].GetCommitted(), "the internal tombstone must commit: %v", results[0])
+	mgr.WaitForNudges()
+
+	rec := findLogRecord(t, buf, "recovered from a panicking reconcile nudge")
+	require.NotNil(t, rec, "the recovered panic must leave an operator-visible breadcrumb")
+	assert.Equal(t, "ERROR", rec["level"])
+	assert.Equal(t, "user-1", rec["user_id"])
+	assert.Equal(t, []any{"w-host"}, rec["workers"], "the log must name the workers the nudge was for")
+	assert.Contains(t, rec["panic"], "simulated worker registry panic")
+
+	// And the manager is still serving: the panic cost one nudge, not the hub.
+	epoch := mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch()
+	results, err = mgr.Submit(context.Background(), crdt.SubmitInput{
+		Epoch: epoch, PrincipalID: "alice", OriginClient: "cli-alice",
+		Batches: []*leapmuxv1.OpBatch{{
+			BatchId: "ts-after-panic",
+			Ops: []*leapmuxv1.CrdtOp{
+				{OpId: "ts-b", Body: &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: &leapmuxv1.TombstoneTabOp{
+					TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-b",
+				}}},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	assert.NotNil(t, results[0].GetCommitted(), "submits must keep committing after a recovered nudge panic")
+	mgr.WaitForAudits()
+	mgr.WaitForNudges()
+}
+
 // recordingNudger captures every NudgeReconcile call.
 type recordingNudger struct {
 	mu    sync.Mutex

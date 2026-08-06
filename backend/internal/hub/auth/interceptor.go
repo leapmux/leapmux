@@ -132,6 +132,14 @@ type authState struct {
 	// (set once at startup; nil until wired). Kept off revocationMu so a
 	// session touch does not hold the auth lock across the channel-manager lock.
 	channelRescheduler atomic.Pointer[ChannelExpiryRescheduler]
+
+	// maxConnectionsPerUser bounds the long-lived connections one user may hold
+	// at once; zero is unlimited. Atomic rather than revocationMu-guarded because
+	// it is written once at startup and read on every registration -- taking the
+	// lock to read a constant would put startup configuration on the hot path.
+	// The READ still happens under revocationMu, alongside the count it is
+	// compared against; see RegisterAuthenticatedLease.
+	maxConnectionsPerUser atomic.Int64
 }
 
 func cloneUserInfoWithGeneration(u *UserInfo, gen uint64) *UserInfo {

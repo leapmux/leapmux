@@ -278,10 +278,10 @@ func TestWatcher_APITokenRotationEvictsRemoteCacheWithoutClosingChannels(t *test
 	require.NoError(t, authenticateAPIBearer(context.Background(), localClient, oldBearer))
 	require.NoError(t, authenticateAPIBearer(context.Background(), remoteClient, oldBearer))
 	leaseCtx, cancelLease := context.WithCancel(context.Background())
-	leaseRelease, current := remoteCache.RegisterAuthenticatedLease(context.Background(), &auth.UserInfo{
+	leaseRelease, outcome := remoteCache.RegisterAuthenticatedLease(context.Background(), &auth.UserInfo{
 		ID: userid.MustNew(env.userID), Credential: auth.APICredential(tokenID),
 	}, cancelLease)
-	require.True(t, current)
+	require.Equal(t, auth.LeaseGranted, outcome)
 	t.Cleanup(leaseRelease)
 
 	newExpiresAt := time.Now().Add(time.Hour)
@@ -736,6 +736,22 @@ func (leaseLostRevocationEvents) RenewHubRuntimeLease(context.Context, store.Ren
 	return false, nil
 }
 
+// leaseLossTestDuration is the lease this test grants itself.
+//
+// It must clear a store round trip by an order of magnitude, NOT merely be
+// short enough to make the test quick. SeedCursor checks whether acquiring the
+// lease outlasted the whole lease budget and fails with ErrLeaseLost if it did
+// -- a correct diagnosis, and one that a 20 ms lease provokes for real whenever
+// a loaded machine makes the acquiring SQLite write take longer than that. The
+// test then fails at the seed, before it has exercised anything it is about.
+//
+// The renewal heartbeat ticks at a quarter of this and renews past the
+// half-life, so the self-fence still lands in a few hundred milliseconds. That
+// is the trade: promptness is derived from the lease duration, so the duration
+// cannot be shrunk for speed without re-coupling the test to how fast the disk
+// happens to be.
+const leaseLossTestDuration = 500 * time.Millisecond
+
 // Losing the lease (a renewal that advances no row) must self-fence the Hub.
 // The lease-renewal heartbeat runs independently of event processing, so the
 // self-fence fires even when the processing interval is far longer than the
@@ -747,19 +763,22 @@ func TestWatcher_LeaseLossIsFatal(t *testing.T) {
 		events: leaseLostRevocationEvents{RevocationEventStore: env.st.RevocationEvents()},
 	}
 	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithLeaseDuration(20*time.Millisecond),
+		revocationwatcher.WithLeaseDuration(leaseLossTestDuration),
 		revocationwatcher.WithInterval(time.Hour),
 	)
-	require.NoError(t, w.SeedCursor(context.Background()))
+	require.NoError(t, w.SeedCursor(context.Background()),
+		"seeding must not blow its own lease budget -- see leaseLossTestDuration")
 	t.Cleanup(func() { _ = w.Close(context.Background()) })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	w.StartLoop(ctx)
 
+	// Ample: the renewal is due at the half-life, so this waits ten renewal
+	// cycles before calling it a failure rather than racing the first one.
 	select {
 	case err := <-w.Errors():
 		require.ErrorIs(t, err, revocationwatcher.ErrLeaseLost)
-	case <-time.After(time.Second):
+	case <-time.After(10 * leaseLossTestDuration):
 		t.Fatal("watcher did not self-fence after losing its lease")
 	}
 }

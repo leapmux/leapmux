@@ -3,7 +3,7 @@ import type { WatchEventsHandle } from '~/api/workerRpc'
 import type { WatchEventsResponse, WatchRejection } from '~/generated/leapmux/v1/workspace_pb'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup } from 'solid-js'
-import { watchEventsViaChannel } from '~/api/workerRpc'
+import { channelManager, watchEventsViaChannel } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { WatchMode } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
@@ -135,8 +135,30 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     return false
   }
 
+  /** The socket died, as opposed to the request failing on its merits. */
+  function isTransportError(err: unknown): boolean {
+    return err instanceof ChannelError && err.source === 'transport'
+  }
+
+  /** A refusal no redial can clear -- the relay has latched (see ChannelRelay). */
+  function isFatalTransportError(err: unknown): boolean {
+    return err instanceof ChannelError && err.fatal
+  }
+
   function reportTransportLoss(workerId: string, err: unknown): void {
-    showWarnToast('Connection to worker lost, reconnecting\u2026', err)
+    // Suppress only the TOAST for a fatal refusal: the relay latches this
+    // state, so "reconnecting..." would be a lie, and the shell already shows a
+    // sticky toast naming the real cause (the hub refused US another
+    // connection, which says nothing about the worker).
+    if (!isFatalTransportError(err))
+      showWarnToast('Connection to worker lost, reconnecting\u2026', err)
+    // Offline is reported either way, because it is not a health verdict about
+    // the worker -- nothing renders it as one. Its only reader is the cleanup
+    // effect in useWorkspaceConnection, which patches this worker's READY
+    // terminals to DISCONNECTED, drops its ACTIVE agents back to INACTIVE, and
+    // clears their streaming text. Skipping that for a fatal close left a
+    // half-streamed assistant message rendered as in-flight forever, with
+    // nothing left that would ever reconnect and finish it.
     opts.onWorkerOnline(workerId, false)
   }
 
@@ -248,26 +270,24 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
       handle.onError((err) => {
         if (s.closed)
           return
-        const isTransport = err instanceof ChannelError && err.source === 'transport'
-        if (isTransport)
+        if (isTransportError(err))
           reportTransportLoss(workerId, err)
         else
           log.warn('[watchEvents] stream error, retrying:', err)
         // Do not reset backoff on application errors — let it climb.
         resetForReconnect(s)
-        scheduleReconnect(workerId)
+        scheduleReconnect(workerId, err)
       })
 
       opts.onWorkerOnline(workerId, true)
     }
     catch (err) {
       log.debug('failed to open watch stream; will retry', { workerId, err })
-      const isTransport = err instanceof ChannelError && err.source === 'transport'
-      if (isTransport)
+      if (isTransportError(err))
         reportTransportLoss(workerId, err)
       s.inflightPlan = null
       s.inflightKey = ''
-      scheduleReconnect(workerId)
+      scheduleReconnect(workerId, err)
     }
     finally {
       s.opening = false
@@ -299,9 +319,34 @@ export function useWatchEventsStreams(opts: UseWatchEventsStreamsOpts): {
     }
   }
 
-  function scheduleReconnect(workerId: string): void {
+  /**
+   * Arm the next reopen for `workerId`, unless the failure that closed the
+   * stream is one no reopen can clear.
+   *
+   * `err` is that failure, when there was one — a clean `onEnd` passes none. A
+   * fatal ChannelError means ChannelRelay has latched: `ensureWebSocket`
+   * rejects every later dial with the same error BEFORE it touches the network,
+   * so the retry cycle closes on itself — timer fires, drain reopens, the dial
+   * throws the same error, and this arms the timer again. `reconnectBackoff`
+   * passes no `maxAttempts`, so that never ends; it is one live timer per
+   * worker, forever, and it is the exact case retry.ts's `maxAttempts` doc
+   * names. Park the worker instead: no handle and no armed timer.
+   *
+   * Parking is not a latch of its own. A later genuine interest change still
+   * drains once through openStream, which is where a relay that recovered (a
+   * fresh login clears ChannelRelay's latch) picks back up — one rejected
+   * promise if it has not, rather than a wakeup every 30s.
+   */
+  function scheduleReconnect(workerId: string, err?: unknown): void {
     const s = streams.get(workerId)
     if (!s || s.closed)
+      return
+    // Ask the relay as well as this caller's error. onEnd has none to pass -- a
+    // worker-side end can race the terminal close -- and a timer armed there
+    // would wake 30s later only for openChannelUncached to throw the same
+    // latched refusal. Asking the latch covers every caller, including the ones
+    // that have no error in hand.
+    if (isFatalTransportError(err) || channelManager.fatalCloseInfo())
       return
     if (!s.pendingPlan) {
       const current = opts.plans().get(workerId)

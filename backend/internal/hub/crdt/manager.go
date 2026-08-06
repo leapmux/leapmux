@@ -13,7 +13,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
-	"google.golang.org/protobuf/proto"
+
+	"github.com/leapmux/leapmux/internal/util/panicsafe"
 )
 
 const (
@@ -347,10 +348,10 @@ type Manager struct {
 	auditWG sync.WaitGroup
 
 	// nudgeWG tracks the background reconcile-nudge goroutines. Stop()
-	// deliberately does NOT wait on it: a nudge reaches a worker's Connect
-	// stream through Conn.Send, an uninterruptible blocking HTTP/2 write, so
-	// draining it would let one stalled worker hang the whole manager's
-	// shutdown. Only WaitForNudges (tests) waits, which is safe because a test
+	// deliberately does NOT wait on it: a nudge is best-effort -- losing one on
+	// shutdown costs only the delay until the worker's next reconcile tick --
+	// so draining it would give shutdown one more thing to wait on and salvage
+	// nothing. Only WaitForNudges (tests) waits, which is safe because a test
 	// nudger returns promptly.
 	nudgeWG sync.WaitGroup
 }
@@ -545,43 +546,6 @@ func subscriberMaySeeWorkspace(sub *Subscriber, workspaceID string) bool {
 // it as a fatal signal that cancels the per-subscriber context and
 // drops the connection.
 var ErrSubscriberSlow = errors.New("crdt: subscriber send buffer full")
-
-// MarshaledEvent wraps a `*leapmuxv1.WatchUserEvent` with a lazy
-// proto.Marshal cache. Multiple subscribers share the same
-// `*MarshaledEvent` for events the manager broadcasts to all of them;
-// the first writer that calls `Bytes()` pays the marshal cost and
-// subsequent writers reuse the cached buffer.
-//
-// The wrapper is intentionally minimal: callers that only need to
-// inspect the proto can read `evt.Event` directly. Callers writing
-// to a wire should call `evt.Bytes()`.
-type MarshaledEvent struct {
-	// Event is the underlying proto. Read-only for consumers; the
-	// manager constructs it before any Send call sees the wrapper.
-	Event *leapmuxv1.WatchUserEvent
-
-	once  sync.Once
-	bytes []byte
-	err   error
-}
-
-// NewMarshaledEvent wraps `evt` for delivery. The proto pointer is
-// captured by reference; do not mutate `evt` after constructing the
-// wrapper.
-func NewMarshaledEvent(evt *leapmuxv1.WatchUserEvent) *MarshaledEvent {
-	return &MarshaledEvent{Event: evt}
-}
-
-// Bytes returns the binary-marshaled representation of the wrapped
-// event. The first caller across all subscribers pays the marshal
-// cost; subsequent callers receive the cached buffer (and the cached
-// error, if marshal failed).
-func (e *MarshaledEvent) Bytes() ([]byte, error) {
-	e.once.Do(func() {
-		e.bytes, e.err = proto.Marshal(e.Event)
-	})
-	return e.bytes, e.err
-}
 
 // submitJob carries one SubmitOps request through the goroutine.
 type submitJob struct {
@@ -1342,6 +1306,19 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 			m.auditWG.Add(1)
 			go func() {
 				defer m.auditWG.Done()
+				// Recovered for the same reason sendq.Writer.run and
+				// workermgr.SendPump.drain recover their transports: this
+				// goroutine is owned by the Hub process, not by the submit that
+				// spawned it, so a panic in the audit's DB lookup or its log
+				// formatting would take down every user's CRDT manager, every
+				// worker link and every open connection -- to salvage one log
+				// breadcrumb about one tombstoned tab. Losing the breadcrumb is
+				// the smaller failure, so it is reported and the process
+				// continues. auditWG.Done stays deferred FIRST, so Stop() is
+				// released either way.
+				defer panicsafe.RecoverAndLog(m.logger,
+					"crdt: recovered from a panicking orphan tab audit",
+					"batch_id", batch.GetBatchId(), "principal", in.PrincipalID)
 				m.auditOrphanTabTombstones(in, batch, res, workerIDs)
 			}()
 		}
@@ -1360,13 +1337,15 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 		// worker's hourly tick -- exactly the gap the nudge exists to close, since
 		// the frontend's own per-worker CleanupWorkspace RPC is fire-and-forget.
 		//
-		// Dispatched on a goroutine because NudgeReconcile reaches a worker's
-		// Connect stream: Conn.Send holds a per-connection mutex across an HTTP/2
-		// write with no send queue and no server WriteTimeout, so a worker whose
-		// stream has stalled on TCP backpressure (asleep laptop, saturated uplink)
-		// would block this goroutine -- the ONE goroutine that serialises every
-		// CRDT submit for this user. Every later tab open/move/close, on any
-		// worker, would queue behind it. Mirrors the audit's rationale above.
+		// Dispatched on a goroutine because this is the ONE goroutine that
+		// serialises every CRDT submit for this user: every later tab
+		// open/move/close, on any worker, queues behind whatever runs here.
+		// The send itself is cheap now -- NudgeReconcile reaches the worker
+		// through Conn.SendControl, which enqueues into a bounded sendq and
+		// does no network I/O -- but the path still takes workermgr's registry
+		// lock and, on a refused control frame, fences the connection. Keeping
+		// all of that off the submit path costs one goroutine. Mirrors the
+		// audit's rationale above.
 		if m.reconcileNudger != nil {
 			seen := make(map[string]struct{}, len(workerIDs))
 			targets := make([]string, 0, len(workerIDs))
@@ -1383,18 +1362,29 @@ func (m *Manager) processBatch(ctx context.Context, in SubmitInput, batch *leapm
 			if len(targets) > 0 {
 				nudger := m.reconcileNudger
 				// Deliberately NOT tracked by auditWG, unlike the audit above.
-				// auditWG is drained by Stop(), and the audit's DB lookup is
-				// bounded by OrphanAuditLookupTimeout so that drain terminates.
-				// Conn.Send has no such bound and is not ctx-aware -- it is a
-				// blocking HTTP/2 write under a per-connection mutex -- so
-				// enrolling it would trade a goroutine that unblocks when the
-				// stalled stream is torn down for a Stop() that hangs on it.
-				// A nudge is best-effort: losing one on shutdown costs only the
-				// delay until the worker's next reconcile tick. nudgeWG exists so
-				// tests can await delivery deterministically; Stop() skips it.
+				// auditWG is drained by Stop() because the audit has something to
+				// salvage -- its log breadcrumb -- and its DB lookup is bounded by
+				// OrphanAuditLookupTimeout so that drain terminates. A nudge has
+				// neither: it is best-effort, and losing one on shutdown costs only
+				// the delay until the worker's next reconcile tick, so making
+				// Stop() wait on it would buy nothing. nudgeWG exists so tests can
+				// await delivery deterministically; Stop() skips it.
 				m.nudgeWG.Add(1)
 				go func() {
 					defer m.nudgeWG.Done()
+					// Recovered like the audit above, and for a surface that has
+					// grown rather than shrunk: NudgeReconcile now takes
+					// workermgr's registry lock and may fence a connection whose
+					// control frame was refused. A panic anywhere under there is
+					// one worker's problem, and letting it unwind out of an
+					// unowned goroutine would crash the Hub for every user. The
+					// remaining nudges in `targets` go with it -- the loop is
+					// abandoned, not resumed -- which costs each of those workers
+					// only the delay until its next reconcile tick, exactly what
+					// an offline worker already pays.
+					defer panicsafe.RecoverAndLog(m.logger,
+						"crdt: recovered from a panicking reconcile nudge",
+						"workers", targets)
 					for _, workerID := range targets {
 						nudger.NudgeReconcile(workerID)
 					}

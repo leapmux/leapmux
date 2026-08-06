@@ -540,6 +540,59 @@ func ReadChannelMessage(ctx context.Context, ws *websocket.Conn) (*leapmuxv1.Cha
 // the two limits answer different questions and are free to diverge.
 const UserEventsReadLimit = 16 * 1024 * 1024
 
+// CloseReasonTooManyConnections is the WebSocket close REASON the Hub sends,
+// alongside a policy-violation status, when a user is already holding as many
+// long-lived connections as max_connections_per_user allows.
+//
+// A stable token rather than prose because a client has to branch on it: every
+// other policy-violation close means "re-authenticate", and this one means
+// "close a tab" -- opposite advice, so a client that cannot tell them apart
+// gives the wrong one. Pinned in testdata/channelwire_limits.json, which both
+// this package's test and the frontend's assert against, so the two languages
+// cannot drift.
+//
+// Short on purpose: RFC 6455 caps a close reason at 123 bytes and
+// coder/websocket enforces that on the send side, so a descriptive sentence
+// here would fail to send at all.
+const CloseReasonTooManyConnections = "too_many_connections"
+
+// CloseReasonSnapshotTooLarge is the WebSocket close REASON the Hub sends when a
+// /ws/userevents subscriber's opening snapshot is larger than the whole
+// user-events queue budget.
+//
+// Distinct from a transient shortage, and that distinction is the entire point:
+// a frame bigger than the pool's capacity is refused at EVERY occupancy, so the
+// retry-later answer a temporarily-full pool deserves produces a client that
+// rebuilds the same oversized snapshot forever while the user watches an app
+// that never loads. Only an operator can fix it -- by raising
+// userevents_queue_memory_budget -- so the close is terminal and says so.
+//
+// Pinned in testdata/channelwire_limits.json like its sibling above.
+const CloseReasonSnapshotTooLarge = "snapshot_too_large"
+
+// CloseReasonForbidden is the WebSocket close REASON the Hub sends when the
+// authenticated user may not have what they asked for -- an ACL check that said
+// no, not a credential that expired.
+//
+// Its own token because the advice differs from every other policy violation on
+// this socket: re-authenticating does not grant a permission, and reloading
+// asks for the same thing again. A client that saw only the 1008 told the user
+// to reload, which is the one action guaranteed not to help.
+//
+// Pinned in testdata/channelwire_limits.json like its siblings above.
+const CloseReasonForbidden = "forbidden"
+
+// CloseReasonControlFlood is the WebSocket close REASON the Hub sends when a
+// peer keeps sending control frames past what its allowance can absorb.
+//
+// A misbehaving or misconfigured client rather than a user error, and the
+// distinction matters to whoever reads it: nothing about the account, the
+// workspace or the credential is wrong, so advice aimed at any of those sends
+// the user looking in the wrong place.
+//
+// Pinned in testdata/channelwire_limits.json like its siblings above.
+const CloseReasonControlFlood = "too_many_control_frames"
+
 // OpenUserEventsWS dials /ws/userevents on `hubURL` with the supplied
 // bearer + workspace scope and returns the resulting WebSocket. Used
 // by the worker's WatchUser relay, the CLI's hub-bound client, and the desktop

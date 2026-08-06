@@ -184,7 +184,8 @@ describe('channelRelay', () => {
 
     // Current socket close drains.
     sock1.close()
-    expect(onCloseDrain).toHaveBeenCalledWith(false)
+    // Second arg is the terminal-close info: undefined for an ordinary close.
+    expect(onCloseDrain).toHaveBeenCalledWith(false, undefined)
 
     // Re-open with a successor, then fire a stale close from sock1 — must not drain again.
     onCloseDrain.mockClear()
@@ -221,7 +222,7 @@ describe('channelRelay', () => {
     expect(sock2.readyState).toBe(0) // CONNECTING
 
     sock1.emit('close', {})
-    expect(onCloseDrain).toHaveBeenCalledWith(true)
+    expect(onCloseDrain).toHaveBeenCalledWith(true, undefined)
 
     // Successor dial must still complete; a further ensure dedups onto it.
     const open3 = relay.ensureWebSocket()
@@ -368,5 +369,97 @@ describe('channelRelay', () => {
     relay.closeWebSocket()
     expect(relay.isOpen()).toBe(false)
     expect(() => relay.send(new Uint8Array([1]))).toThrow(ChannelError)
+  })
+
+  // The hub refuses BOTH long-lived sockets through the same code path, but
+  // only /ws/userevents had a client that read the reason. A channel socket
+  // refused at the per-user cap used to surface as "channel disconnected" while
+  // two unbounded loops above kept redialling into the same refusal.
+  describe('terminal close', () => {
+    function latchedRelay() {
+      const sockets: FakeSocket[] = []
+      const onCloseDrain = vi.fn()
+      const onFatalClose = vi.fn()
+      const relay = new ChannelRelay({
+        createWebSocket: () => {
+          const s = new FakeSocket()
+          sockets.push(s)
+          return s
+        },
+        wsOpenTimeoutMs: 5_000,
+        onFrame: () => {},
+        onHubControl: () => {},
+        onCloseDrain,
+        onFatalClose,
+      })
+      return { relay, sockets, onCloseDrain, onFatalClose }
+    }
+
+    it('latches on 1008, reports the reason, and refuses to redial', async () => {
+      const { relay, sockets, onCloseDrain, onFatalClose } = latchedRelay()
+      const open = relay.ensureWebSocket()
+      sockets[0]!.open()
+      await open
+
+      sockets[0]!.readyState = 3
+      sockets[0]!.emit('close', { code: 1008, reason: 'too_many_connections' })
+
+      expect(onFatalClose).toHaveBeenCalledWith({ code: 1008, reason: 'too_many_connections' })
+      // The drain gets the reason too, because that error is what reaches the
+      // user through every "Failed to open ..." toast above.
+      expect(onCloseDrain).toHaveBeenCalledWith(false, { code: 1008, reason: 'too_many_connections' })
+
+      // Redialing cannot change a refusal, and the loops above retry on any
+      // error -- so a second dial must not even be attempted.
+      await expect(relay.ensureWebSocket()).rejects.toThrow(/too many places/i)
+      expect(sockets).toHaveLength(1)
+    })
+
+    it('reports a fatal close once, however many sockets it closes', async () => {
+      const { relay, sockets, onFatalClose } = latchedRelay()
+      const open = relay.ensureWebSocket()
+      sockets[0]!.open()
+      await open
+
+      sockets[0]!.readyState = 3
+      sockets[0]!.emit('close', { code: 1008, reason: 'too_many_connections' })
+      sockets[0]!.emit('close', { code: 1008, reason: 'too_many_connections' })
+
+      expect(onFatalClose).toHaveBeenCalledTimes(1)
+    })
+
+    it('leaves an ordinary close recoverable', async () => {
+      const { relay, sockets, onCloseDrain, onFatalClose } = latchedRelay()
+      const open = relay.ensureWebSocket()
+      sockets[0]!.open()
+      await open
+
+      // 1006 is an abnormal transport drop -- a network blip, not a refusal.
+      sockets[0]!.readyState = 3
+      sockets[0]!.emit('close', { code: 1006, reason: '' })
+
+      expect(onFatalClose).not.toHaveBeenCalled()
+      expect(onCloseDrain).toHaveBeenCalledWith(false, undefined)
+
+      const redial = relay.ensureWebSocket()
+      sockets[1]!.open()
+      await expect(redial).resolves.toBeUndefined()
+    })
+
+    it('clears the latch on an explicit teardown, so a new sign-in can dial', async () => {
+      const { relay, sockets } = latchedRelay()
+      const open = relay.ensureWebSocket()
+      sockets[0]!.open()
+      await open
+      sockets[0]!.readyState = 3
+      sockets[0]!.emit('close', { code: 1008, reason: 'too_many_connections' })
+      await expect(relay.ensureWebSocket()).rejects.toThrow(ChannelError)
+
+      relay.closeWebSocket()
+
+      const redial = relay.ensureWebSocket()
+      sockets[sockets.length - 1]!.open()
+      await expect(redial).resolves.toBeUndefined()
+    })
   })
 })

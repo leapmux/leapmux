@@ -48,6 +48,21 @@ function gitResp(overrides: Partial<GetGitInfoResponse> = {}): GetGitInfoRespons
 beforeEach(() => {
   vi.clearAllMocks()
   getGitInfo.mockReset()
+  // A default that models the RPC contract, because mockReset leaves none and a
+  // bare vi.fn resolves to undefined -- which getGitInfo never does.
+  //
+  // The generic on the mock is a compile-time claim only, so nothing catches
+  // that at the call site: the probe resolved undefined, applySuccess read a
+  // field off it, and createGuardedFetch logged "applySuccess threw". That log
+  // exists to make a real caller bug visible, so firing it on a fixture gap
+  // trains a reader to scroll past the one line that matters -- and it left
+  // three cases asserting behaviour under an input production cannot produce.
+  //
+  // Every probe is covered, not just the first: a test that only spells out one
+  // response still probes again whenever the dialog re-runs (a remap switching
+  // the path to the canonical repoRoot is exactly that). Cases that care about a
+  // specific payload keep overriding with mockResolvedValueOnce.
+  getGitInfo.mockResolvedValue(gitResp())
 })
 
 describe('useWorkerDialog', () => {

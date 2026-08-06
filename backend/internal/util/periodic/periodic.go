@@ -6,9 +6,10 @@ package periodic
 
 import (
 	"context"
-	"log/slog"
 	"math/rand/v2"
 	"time"
+
+	"github.com/leapmux/leapmux/internal/util/panicsafe"
 )
 
 // Schedule defines the cadence of a periodic background task.
@@ -49,11 +50,7 @@ func Start(ctx context.Context, schedule Schedule, task func(context.Context)) {
 			if !waitJitter(ctx, schedule.Jitter) {
 				return
 			}
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("periodic.Start: task panic recovered", "panic", r)
-				}
-			}()
+			defer panicsafe.RecoverAndLog(nil, "periodic.Start: task panic recovered")
 			task(ctx)
 		}
 

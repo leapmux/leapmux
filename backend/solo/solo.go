@@ -132,10 +132,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 
 	cliFlags := cfg.CLIFlags
 	if cliFlags == nil {
-		cliFlags = []string{"listen", "data-dir", "dev-frontend", "storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size", "api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds", "log-level", "use-login-shell"}
-		if cfg.DevMode {
-			cliFlags = append(cliFlags, "public-url")
-		}
+		cliFlags = defaultCLIFlags(cfg.DevMode)
 	}
 
 	extraFlags := cfg.ExtraFlags
@@ -619,6 +616,36 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 		{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap claude invocation in user's login shell", StrDefault: "true"},
 		{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", Usage: "maximum in-flight chunked sequences per channel for the embedded worker (default 4)", StrDefault: "0", Category: "Timeout and limit options"},
 	}
+}
+
+// defaultCLIFlags names the subset of the HUB's own flags a solo or dev launcher
+// puts on the command line. The rest of the hub's table is still reachable in
+// these modes -- LoadWithOptions records every flag's default and koanf key
+// before it consults this list, so the config file and LEAPMUX_HUB_* env vars
+// see the whole surface. This list only decides what earns a line in --help.
+//
+// max-connections-per-user and max-workers-per-user are here because solo is the
+// mode where they actually bind. Every socket belongs to the one local user: an
+// active tab holds two leases, and the desktop app, any CLI `remote` session and
+// every worker's remoteipc watcher draw on the same allowance, so the default of
+// 32 is well under 16 tabs. A user who hits it is told to close a tab, which is
+// the one piece of advice a --help with no such flag cannot act on.
+//
+// The three queue budgets are deliberately NOT here. They auto-size off this
+// machine's memory limit, which is almost always the right answer on a laptop,
+// and a config file still reaches them for the rare case it is not.
+func defaultCLIFlags(devMode bool) []string {
+	flags := []string{
+		"listen", "data-dir", "dev-frontend",
+		"storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size",
+		"api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds",
+		"log-level", "use-login-shell",
+		"max-connections-per-user", "max-workers-per-user",
+	}
+	if devMode {
+		flags = append(flags, "public-url")
+	}
+	return flags
 }
 
 // parseInt parses a string as an int, returning defaultVal if the string is

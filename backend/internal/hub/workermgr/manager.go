@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -20,16 +21,40 @@ import (
 // the Hub is going away -- so callers should map it to a retryable status.
 var ErrRegistryFenced = errors.New("worker registry fenced: hub is shutting down")
 
+// ErrTooManyWorkers is returned by Register when publishing the connection
+// would put more of one account's Workers in the registry -- and therefore in
+// the worker send queue pool -- than max_workers_per_user allows. Nothing is
+// wrong with the worker or its credentials, and the condition clears the moment
+// any of that account's other connections goes away, so callers should map it
+// to an exhausted-resource status rather than an authentication failure.
+var ErrTooManyWorkers = errors.New("worker connection refused: account is at its live worker limit")
+
 // Manager tracks connected workers. Thread-safe.
 type Manager struct {
 	mu            sync.RWMutex
 	conns         map[string]*Conn // workerID -> Conn
 	deregistering map[string]bool  // workerID -> true if deregistering
+	// connsByOwner counts the live connections each account holds, so the
+	// per-account cap can be tested in the SAME critical section that publishes
+	// to conns -- see Register.
+	//
+	// Not a second source of truth: it is derived from conns, flows one way
+	// (Register and Unregister are its only writers, both under mu), and would
+	// be rebuilt exactly by walking conns. An emptied bucket is deleted rather
+	// than left at zero, so the index cannot grow one entry per account the Hub
+	// has ever seen.
+	connsByOwner map[string]int // owner -> live connection count
 	// fenced latches true the first time every connection is fenced, and never
 	// clears: a Manager whose Hub is shutting down must not accept a worker
 	// again. Guarded by mu so Register's check and FenceAll's snapshot cannot
 	// interleave -- see Register.
 	fenced bool
+	// maxWorkersPerUser bounds how many live connections one account may hold.
+	// Zero (the default) and any negative value are unlimited. Atomic rather
+	// than mu-guarded so the startup setter needs no knowledge of the registry's
+	// locking; the load that matters happens under mu, with the tally it is
+	// compared against. See SetMaxWorkersPerUser.
+	maxWorkersPerUser atomic.Int64
 
 	regMu      sync.Mutex
 	regWaiters map[string]chan struct{} // regToken -> notify channel
@@ -138,10 +163,33 @@ func New(a ReachAuthorizer) *Manager {
 	}
 	return &Manager{
 		conns:         make(map[string]*Conn),
+		connsByOwner:  make(map[string]int),
 		deregistering: make(map[string]bool),
 		regWaiters:    make(map[string]chan struct{}),
 		reachAuth:     a,
 	}
+}
+
+// SetMaxWorkersPerUser bounds how many LIVE worker connections one account may
+// hold at once. Zero (the default) is unlimited, and so is a negative value.
+// Call once at startup before serving requests.
+//
+// A setter rather than a constructor argument, mirroring
+// auth.AuthContextRegistry.SetMaxConnectionsPerUser: New has call sites all over
+// this repo's tests, and a registry built by one of them must come out
+// unlimited, which the zero value gives for free.
+//
+// This is the bound on POOL MEMBERSHIP, and it is not redundant with its twin
+// WorkerConnectorService.SetMaxWorkersPerUser, which bounds how many registered
+// worker ROWS an account may hold. A row cap cannot bound membership on its own:
+// a DEREGISTERING row keeps its Connect stream -- that stream is how the worker
+// is told to tear itself down -- while no longer counting against the row cap,
+// so register/deregister/register cycles would grow the worker pool without ever
+// exceeding it. The row cap stays because it refuses at registration time, where
+// the operator can be told which key to raise; this one is what the pool's
+// per-member floors are actually multiplied by.
+func (m *Manager) SetMaxWorkersPerUser(n int64) {
+	m.maxWorkersPerUser.Store(n)
 }
 
 // Register adds a worker connection, replacing any existing one, and reports
@@ -156,6 +204,11 @@ func New(a ReachAuthorizer) *Manager {
 // machine-scoped handler gates on it. Handing it to Register rather than
 // sending it from the caller is what makes that ordering impossible to get
 // wrong.
+//
+// A connection that would take its account past max_workers_per_user is
+// refused with ErrTooManyWorkers, fenced, and NOT published -- see
+// SetMaxWorkersPerUser for why the bound lives here, on live membership, and
+// not only on the registered rows.
 //
 // A greeting that cannot be enqueued (fenced / closed queue) is returned and
 // the conn is NOT published. A stream that cannot carry its greeting on the
@@ -194,6 +247,47 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 		return false, ErrRegistryFenced
 	}
 	replaced := m.conns[c.WorkerID]
+	// addsMember is false exactly when this connection takes over a slot the
+	// same account already holds. A reconnecting Worker replaces its own
+	// connection (see the fence below) rather than adding one, so counting it
+	// again would refuse a Worker that is already inside the bound -- and
+	// permanently, because its predecessor's handler only lets go once this one
+	// has taken over.
+	//
+	// The owner comparison, rather than a bare `replaced == nil`, keeps the
+	// tally correct by construction if a worker id ever reappears under a
+	// different registrant: the slot moves between buckets instead of being
+	// counted in one and released from the other.
+	addsMember := replaced == nil || replaced.owner != c.owner
+	if addsMember {
+		// Tested against connsByOwner and committed by the map write below
+		// inside ONE critical section, which is what makes this a bound rather
+		// than a suggestion: a check taken before the lock would let every
+		// connection in a reconnect burst read the same under-cap count and all
+		// of them publish. Same reason the per-user connection cap counts under
+		// the lock it already held.
+		held := int64(m.connsByOwner[c.owner])
+		if limit := m.maxWorkersPerUser.Load(); limit > 0 && held >= limit {
+			m.mu.Unlock()
+			// Fenced for the reason the fenced path above fences: a refused
+			// Register returns before the handler installs its teardown defer,
+			// so nothing else closes the queue the greeting was already
+			// enqueued onto.
+			c.Fence()
+			// After the unlock, so a slow log handler cannot hold the registry
+			// lock, and at Warn because it is the operator's to act on: either
+			// an account is leaking Connect streams or the cap is under what its
+			// machines legitimately hold.
+			slog.Warn("refusing worker connection: account is at its live worker cap",
+				"user_id", c.owner, "worker_id", c.WorkerID, "held", held, "limit", limit)
+			return false, fmt.Errorf("%w: %d live workers is the configured maximum "+
+				"(max_workers_per_user); disconnect or deregister one first", ErrTooManyWorkers, limit)
+		}
+		m.connsByOwner[c.owner]++
+		if replaced != nil {
+			m.releaseOwnerLocked(replaced.owner)
+		}
+	}
 	m.conns[c.WorkerID] = c
 	if replaced == nil {
 		metrics.ActiveWorkers.Inc()
@@ -219,15 +313,46 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 // closes the window where SendControl could return nil and then be discarded
 // by Close. See WorkerConnectorService.Connect.
 func (m *Manager) Unregister(workerID string, conn *Conn) bool {
+	// A nil conn is refused up front because it MATCHES: reading an absent key
+	// out of conns yields nil too, so `m.conns[workerID] == conn` would be true
+	// for a worker that was never registered, and the body would then report
+	// success, decrement the live-worker gauge, and release a slot for a
+	// connection that never existed.
+	if conn == nil {
+		return false
+	}
 	m.mu.Lock()
 	removed := false
 	if m.conns[workerID] == conn {
 		delete(m.conns, workerID)
+		// Released here and nowhere else: the predicate above is what makes the
+		// tally survive replacement. A superseded connection's deferred cleanup
+		// reaches this method too, and releasing unconditionally would give its
+		// account back a slot the replacement still occupies -- which is the cap
+		// leaking one slot per reconnect.
+		m.releaseOwnerLocked(conn.owner)
 		metrics.ActiveWorkers.Dec()
 		removed = true
 	}
 	m.mu.Unlock()
 	return removed
+}
+
+// releaseOwnerLocked drops one live connection from owner's tally, deleting the
+// bucket once it empties so connsByOwner holds only accounts that currently have
+// a connection. Caller holds m.mu.
+//
+// A count that has already reached zero is left deleted rather than driven
+// negative: a negative bucket would silently hand that account extra slots, and
+// the failure it would come from (an unbalanced release) is a bug to notice, not
+// one to compensate for.
+func (m *Manager) releaseOwnerLocked(owner string) {
+	remaining := m.connsByOwner[owner] - 1
+	if remaining <= 0 {
+		delete(m.connsByOwner, owner)
+		return
+	}
+	m.connsByOwner[owner] = remaining
 }
 
 // ConnForTrustedPath returns a worker connection by ID for a caller whose
