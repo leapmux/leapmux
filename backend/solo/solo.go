@@ -54,42 +54,44 @@ var workerSetupPollInterval = 2 * time.Second
 // relayDrainTimeout in the desktop sidecar.
 var workerDrainTimeout = 5 * time.Second
 
-// serveHub runs the Hub. A var so tests can make Serve fail or exit on demand.
+// deps are the two collaborators Start would otherwise reach for directly. They
+// are PER-CALL rather than package vars so a test's substitute cannot outlive its
+// own test: the previous package-var seams were written by t.Cleanup while a
+// leaked Start goroutine could still be reading them, which is a data race the
+// tests had to avoid by discipline alone -- and which silently forbade
+// t.Parallel() on every test that stubs one.
 //
-// It has to be a seam because hub.NewServer binds BOTH listeners before Serve is
-// ever called, so no fixture can induce a Serve-TIME failure by occupying an
-// address or pointing at an unwritable path -- every such attempt fails earlier,
-// in NewServer, on a path that never reaches the watcher. Without this, the
-// "the Hub died while serving" arm and the gate that stops a startup failure
-// from being reported twice both had no coverage, and two tests aimed at them
-// were passing on a NewServer failure instead.
-var serveHub = func(ctx context.Context, s *hub.Server) error { return s.Serve(ctx) }
+// Both have to be seams at all because no fixture reaches their failure modes
+// from outside:
+//
+//   - serveHub: hub.NewServer binds BOTH listeners before Serve is ever called,
+//     so no fixture can induce a Serve-TIME failure by occupying an address or
+//     pointing at an unwritable path -- every such attempt fails earlier, in
+//     NewServer, on a path that never reaches the watcher. Without it, the "the
+//     Hub died while serving" arm and the gate that stops a startup failure being
+//     reported twice had no coverage, and two tests aimed at them were passing on
+//     a NewServer failure instead.
+//   - bringUpWorker: every real way to fail bring-up -- no admin user yet, an
+//     unreadable state file, a store error -- fails AT ONCE, at the first
+//     statement that touches the database or the disk, so nothing can hold Start
+//     inside the bring-up window long enough for the startup to end there.
+//
+// defaultDeps names the real implementations, and both stay directly callable,
+// which is what keeps the seams honest: several tests drive Start straight
+// through them, and TestSoloStart_TearsDownARealWorkerLaunchedJustBeforeTheHubDied
+// WRAPS bringUpLocalWorker rather than replacing it, so the token accounting under
+// the gate is exercised against the Worker goroutine production actually launches.
+type deps struct {
+	serveHub      func(ctx context.Context, s *hub.Server) error
+	bringUpWorker func(ctx context.Context, p workerBringUp) error
+}
 
-// bringUpWorker brings the local Worker up. A var so a test can park bring-up
-// mid-flight and kill the Hub underneath it.
-//
-// It has to be a seam for the same reason serveHub does: nothing reaches the case
-// from outside. Every real way to fail bring-up -- no admin user yet, an
-// unreadable state file, a store error -- fails AT ONCE, at the first statement
-// that touches the database or the disk, so no fixture can hold Start inside the
-// bring-up window long enough for the Hub to die there. Without this, the gate
-// that keeps a dead Hub from being blamed on the Worker, and the one that stops
-// Start returning a healthy Instance for a Hub that already exited, both had no
-// coverage at all.
-//
-// A package var rather than an Instance field because Start constructs the
-// Instance itself: at the point a test would have to inject, there is nothing to
-// inject into. Config is not the place either -- it is exported API, and a test
-// seam does not belong in the surface a caller configures.
-//
-// bringUpLocalWorker stays directly callable, which is what keeps the seam honest:
-// TestSolo_AHubThatDiesWhileServingTearsTheInstanceDownWithoutReporting and
-// TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop drive Start straight through
-// the real implementation, and
-// TestSoloStart_TearsDownARealWorkerLaunchedJustBeforeTheHubDied wraps it rather
-// than replacing it, so the token accounting under the gate is exercised against
-// the Worker goroutine production actually launches.
-var bringUpWorker = bringUpLocalWorker
+func defaultDeps() deps {
+	return deps{
+		serveHub:      func(ctx context.Context, s *hub.Server) error { return s.Serve(ctx) },
+		bringUpWorker: bringUpLocalWorker,
+	}
+}
 
 // nonLoopbackListenWarnMsg is the security warning emitted when solo mode
 // binds to a non-loopback address. Solo mode injects a soloUser into the
@@ -432,6 +434,10 @@ func soloLoadOptions(cfg Config) (hubconfig.LoadOptions, string) {
 }
 
 func Start(ctx context.Context, cfg Config) (*Instance, error) {
+	return start(ctx, cfg, defaultDeps())
+}
+
+func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	logging.Setup()
 
 	// The side effects below stay HERE, in this order: the banner is printed
@@ -514,7 +520,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	serving := make(chan struct{})
 	go func() {
 		close(serving)
-		inst.hubErr = serveHub(hubCtx, server)
+		inst.hubErr = d.serveHub(hubCtx, server)
 		close(inst.hubDone)
 	}()
 	<-serving
@@ -581,7 +587,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	// until /setup completes.
 	statePath := filepath.Join(workerDataDir, "state.json")
 	setupWorker := func(ctx context.Context) error {
-		return bringUpWorker(ctx, workerBringUp{
+		return d.bringUpWorker(ctx, workerBringUp{
 			work:          &inst.workerWork,
 			drained:       &inst.workerDrained,
 			server:        server,
