@@ -278,7 +278,7 @@ func TestSoloStart_SurfacesHubBindError(t *testing.T) {
 // This covers the pre-Instance half only -- the failure happens inside
 // hub.NewServer, so no watcher has been installed yet. The half where the
 // watcher DOES exist and has to stay quiet is
-// TestSoloStart_DoesNotAlsoLogAServeTimeStartupFailure, which reaches it via the
+// TestSoloStart_DoesNotAlsoLogAServeTimeFailure, which reaches it via the
 // serveHub seam.
 func TestSoloStart_DoesNotAlsoLogANewServerFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {

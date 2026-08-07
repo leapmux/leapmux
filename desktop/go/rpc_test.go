@@ -293,6 +293,7 @@ type slowFailingSoloInstance struct {
 }
 
 func (slowFailingSoloInstance) LocalListenURL() string { return "" }
+func (slowFailingSoloInstance) Wait() error            { return nil }
 func (s slowFailingSoloInstance) Stop() error {
 	time.Sleep(s.delay)
 	return s.err

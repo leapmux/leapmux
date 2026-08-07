@@ -2,10 +2,12 @@ package solo
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,11 +19,13 @@ import (
 
 // fakeRegistrar stands in for *hub.Server, recording what the loader asked of it.
 type fakeRegistrar struct {
-	owner      string
-	ownerErr   error
-	adminID    string
-	registered int
-	newWorker  hub.WorkerCredentials
+	owner       string
+	ownerErr    error
+	adminID     string
+	adminErr    error
+	registerErr error
+	registered  int
+	newWorker   hub.WorkerCredentials
 }
 
 func (f *fakeRegistrar) GetWorkerOwner(context.Context, string) (string, error) {
@@ -29,11 +33,14 @@ func (f *fakeRegistrar) GetWorkerOwner(context.Context, string) (string, error) 
 }
 
 func (f *fakeRegistrar) GetAdminUser(context.Context) (string, error) {
-	return f.adminID, nil
+	return f.adminID, f.adminErr
 }
 
 func (f *fakeRegistrar) RegisterWorker(context.Context, string) (*hub.WorkerCredentials, error) {
 	f.registered++
+	if f.registerErr != nil {
+		return nil, f.registerErr
+	}
 	c := f.newWorker
 	return &c, nil
 }
@@ -209,4 +216,89 @@ func TestPersistState_RoundTripsAndLeavesNoTempRemnants(t *testing.T) {
 	tmpRemnants, err := filepath.Glob(filepath.Join(dir, ".worker-state-*.tmp"))
 	require.NoError(t, err)
 	assert.Empty(t, tmpRemnants, "a successful atomic write must not leave temp files behind")
+}
+
+// The deferral arm's discriminator. "No admin has completed /setup yet" is the ONE
+// condition dev mode waits on, and it reaches the switch as errNoAdminYet -- so a
+// store.ErrNotFound from anywhere ELSE under bring-up must NOT wear that sentinel,
+// or a real registration failure becomes a launch that reports success and polls
+// forever against a Worker that is never coming.
+func TestLoadOrCreateWorkerState_OnlyTheMissingAdminIsDeferrable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	t.Run("a missing admin is deferrable", func(t *testing.T) {
+		t.Parallel()
+		reg := &fakeRegistrar{adminErr: store.ErrNotFound}
+		_, err := loadOrCreateWorkerState(t.Context(), reg, filepath.Join(t.TempDir(), "state.json"), t.TempDir())
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errNoAdminYet, "dev mode waits for /setup on exactly this")
+		assert.ErrorIs(t, err, store.ErrNotFound, "the underlying cause stays reachable")
+	})
+
+	t.Run("a not-found from registration is not", func(t *testing.T) {
+		t.Parallel()
+		reg := &fakeRegistrar{adminID: "u1", registerErr: store.ErrNotFound}
+		_, err := loadOrCreateWorkerState(t.Context(), reg, filepath.Join(t.TempDir(), "state.json"), t.TempDir())
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, errNoAdminYet,
+			"the admin existed; a not-found here is a real failure, not something to wait out")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
+	t.Run("a non-not-found admin lookup failure is not", func(t *testing.T) {
+		t.Parallel()
+		boom := errors.New("database is locked")
+		reg := &fakeRegistrar{adminErr: boom}
+		_, err := loadOrCreateWorkerState(t.Context(), reg, filepath.Join(dir, "locked.json"), t.TempDir())
+		require.Error(t, err)
+		assert.ErrorIs(t, err, boom)
+		assert.NotErrorIs(t, err, errNoAdminYet)
+	})
+}
+
+// An unreadable state file must be MOVED aside, not copied. A copy leaves it
+// exactly where the next load reads it, and dev mode's poller re-enters that path
+// every tick until somebody completes /setup -- re-logging the orphaning and
+// writing a fresh sidecar each time, without bound.
+func TestPreserveCorruptState_MovesTheFileAsideSoTheNextLoadCannotSeeIt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	require.NoError(t, os.WriteFile(path, []byte("{ this is not json"), 0o600))
+
+	preserveCorruptState(path, []byte("{ this is not json"))
+
+	_, err := os.Stat(path)
+	assert.ErrorIs(t, err, os.ErrNotExist,
+		"the corrupt file must not be left where the next load will read it again")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	var sidecars int
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".corrupt-") {
+			sidecars++
+			data, readErr := os.ReadFile(filepath.Join(dir, e.Name()))
+			require.NoError(t, readErr)
+			assert.Equal(t, "{ this is not json", string(data), "the bytes must survive for forensics")
+		}
+	}
+	assert.Equal(t, 1, sidecars)
+}
+
+// decode64 replaced a mustDecode64 that swallowed the error and never panicked
+// despite its name, so a mangled key reached RestoreCompositeKeypair as truncated
+// bytes and failed every launch with an opaque parse error.
+func TestDecode64NamesTheFieldThatFailed(t *testing.T) {
+	t.Parallel()
+
+	got, err := decode64("mlkem_private_key", base64.StdEncoding.EncodeToString([]byte("hello")))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), got)
+
+	_, err = decode64("mlkem_private_key", "not!valid!base64")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mlkem_private_key",
+		"an operator has to be told WHICH field is unreadable")
 }

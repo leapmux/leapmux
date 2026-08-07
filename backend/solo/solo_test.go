@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,23 +19,67 @@ import (
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
-	"github.com/leapmux/leapmux/util/drain"
 )
 
-// soloLoadOptions builds the options Start would pass, with the config file
-// pointed at a path that does not exist so a real one on the developer's machine
-// cannot reach the assertions.
-func soloLoadOptions(t *testing.T, devMode bool) hubconfig.LoadOptions {
+// testLoadOptions builds the options Start would pass, through the PRODUCTION
+// derivation, with the config file pointed at a path that does not exist so a real
+// one on the developer's machine cannot reach the assertions.
+//
+// It delegates rather than restating the option construction: a hand-rolled copy
+// is what let the CLI's flag list drift out from under these very assertions.
+func testLoadOptions(t *testing.T, devMode bool) hubconfig.LoadOptions {
 	t.Helper()
-	return hubconfig.LoadOptions{
-		CLIFlags:          defaultCLIFlags(devMode),
-		ExtraFlags:        defaultExtraFlags(),
-		DefaultConfigDir:  t.TempDir(),
-		DefaultConfigFile: filepath.Join(t.TempDir(), "absent.yaml"),
-		SoloMode:          !devMode,
-	}
+	opts, _ := soloLoadOptions(Config{
+		DevMode:    devMode,
+		ConfigDir:  t.TempDir(),
+		ConfigFile: filepath.Join(t.TempDir(), "absent.yaml"),
+	})
+	return opts
+}
+
+// soloLoadOptions is the single source of truth for what `leapmux solo` and
+// `leapmux dev` default to. It became one because the CLI carried a second copy
+// that drifted until --max-connections-per-user stopped parsing; a table test is
+// what makes the next drift a red build instead of a support question.
+func TestSoloLoadOptionsDerivesEachModesDefaults(t *testing.T) {
+	t.Parallel()
+
+	solo, soloMode := soloLoadOptions(Config{})
+	assert.Equal(t, "solo", soloMode)
+	assert.Equal(t, "127.0.0.1:4327", solo.DefaultListen, "solo binds loopback only")
+	assert.Equal(t, "~/.config/leapmux/solo", solo.DefaultConfigDir)
+	assert.Equal(t, "~/.config/leapmux/solo/solo.yaml", solo.DefaultConfigFile)
+	assert.Equal(t, "leapmux solo", solo.FlagSetName)
+	assert.True(t, solo.SoloMode, "solo mode injects the soloUser; dev does not")
+
+	dev, devMode := soloLoadOptions(Config{DevMode: true})
+	assert.Equal(t, "dev", devMode)
+	assert.Equal(t, ":4327", dev.DefaultListen, "dev serves a frontend from another origin")
+	assert.Equal(t, "~/.config/leapmux/dev/dev.yaml", dev.DefaultConfigFile)
+	assert.False(t, dev.SoloMode)
+
+	// The lists the CLI used to duplicate. Asserting them HERE is what makes the
+	// binary and the library provably the same, now that runSolo passes neither.
+	assert.Equal(t, defaultCLIFlags(false), solo.CLIFlags)
+	assert.Equal(t, defaultCLIFlags(true), dev.CLIFlags)
+	assert.Equal(t, defaultExtraFlags(), solo.ExtraFlags)
+
+	// An explicit Config still wins over every derived default.
+	custom, _ := soloLoadOptions(Config{
+		Listen:     "0.0.0.0:9999",
+		ConfigDir:  "/tmp/cd",
+		ConfigFile: "/tmp/cf.yaml",
+		CLIFlags:   []string{"listen"},
+		ExtraFlags: []hubconfig.ExtraFlagDef{},
+	})
+	assert.Equal(t, "0.0.0.0:9999", custom.DefaultListen)
+	assert.Equal(t, "/tmp/cd", custom.DefaultConfigDir)
+	assert.Equal(t, "/tmp/cf.yaml", custom.DefaultConfigFile)
+	assert.Equal(t, []string{"listen"}, custom.CLIFlags)
+	assert.Empty(t, custom.ExtraFlags, "an explicit empty list is not 'unset'")
 }
 
 // TestSoloExposesThePerUserCapsOnTheCommandLine pins the two knobs a solo user can
@@ -51,7 +96,7 @@ func TestSoloExposesThePerUserCapsOnTheCommandLine(t *testing.T) {
 
 	cfg, _, err := hubconfig.LoadWithOptions(
 		[]string{"--max-connections-per-user=64", "--max-workers-per-user=8"},
-		soloLoadOptions(t, false))
+		testLoadOptions(t, false))
 	require.NoError(t, err, "solo must accept the per-user caps as CLI flags")
 	assert.Equal(t, int64(64), cfg.MaxConnectionsPerUser)
 	assert.Equal(t, int64(8), cfg.MaxWorkersPerUser)
@@ -69,14 +114,14 @@ func TestSoloKeepsTheQueueBudgetsOutOfHelpButReachableInConfig(t *testing.T) {
 		"the budgets auto-size off this machine; they do not belong in solo's --help")
 
 	_, _, err := hubconfig.LoadWithOptions(
-		[]string{"--relay-queue-memory-budget=268435456"}, soloLoadOptions(t, false))
+		[]string{"--relay-queue-memory-budget=268435456"}, testLoadOptions(t, false))
 	require.Error(t, err, "a flag outside the allowlist must not parse")
 
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(path,
 		[]byte("relay_queue_memory_budget: 268435456\n"), 0o600))
 
-	opts := soloLoadOptions(t, false)
+	opts := testLoadOptions(t, false)
 	opts.DefaultConfigFile = path
 	cfg, _, err := hubconfig.LoadWithOptions(nil, opts)
 	require.NoError(t, err)
@@ -228,6 +273,42 @@ func TestInstanceShutdown_StopsTheHubWhenTheWorkerWillNotDrain(t *testing.T) {
 		"a worker that never reports draining must not keep the hub up past the backstop")
 }
 
+// The backstop warning can fire with NO Worker in existence: Start holds a
+// workerDrained token across bring-up, and the dev-mode poller holds one for its
+// whole life, both covering a window in which no worker.Run has been launched.
+// Naming the Worker there sends the reader hunting a goroutine never created.
+func TestInstanceShutdown_DoesNotBlameAWorkerThatNeverExisted(t *testing.T) {
+	orig := workerDrainTimeout
+	workerDrainTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { workerDrainTimeout = orig })
+
+	hubDone := make(chan struct{})
+	close(hubDone)
+	inst := &Instance{
+		cancelWorker: func() {},
+		cancelHub:    func() {},
+		hubDone:      hubDone,
+	}
+	// Exactly the token Start carries across setupWorker -- and nothing else, so
+	// the backstop expires with no Worker goroutine to attribute it to.
+	inst.workerDrained.Add()
+
+	// logging.Setup INSIDE the capture: it binds a fresh handler to os.Stderr at
+	// call time, and the package-init default still points at the real one, so a
+	// capture without it reads empty -- and every assertion on it passes
+	// vacuously.
+	logs := testutil.CaptureStderr(t, func() {
+		logging.Setup()
+		inst.shutdown()
+	})
+
+	assert.Contains(t, logs, "did not finish before the hub shutdown deadline",
+		"the backstop must still report that it gave up")
+	assert.NotContains(t, logs, "worker did not report draining",
+		"no Worker exists here; blaming one sends the reader after a goroutine "+
+			"that was never launched; captured:\n"+logs)
+}
+
 func TestInstanceShutdown_IsIdempotent(t *testing.T) {
 	hubDone := make(chan struct{})
 	close(hubDone)
@@ -310,6 +391,45 @@ func TestParseIntReadsTheStringTypedExtras(t *testing.T) {
 // reaches this budget has already failed.
 const soloTestTimeout = 60 * time.Second
 
+// serveFailsImmediately stubs serveHub with a Serve that returns serveErr at once
+// -- but still RUNS s.Serve, against an already-cancelled context, so it unwinds
+// and releases what NewServer acquired.
+//
+// Returning without calling Serve at all is the obvious spelling and the wrong
+// one: hub.NewServer has already bound both listeners, opened the store and
+// loaded the keystore, and hub.Server exposes no Close, so only Serve's unwind
+// gives them back. Every such test leaked an open SQLite pool and a bound socket
+// or pipe handle for the life of the test binary, which on Windows also defeats
+// the sandbox temp-dir cleanup.
+func serveFailsImmediately(t *testing.T, serveErr error) {
+	t.Helper()
+	var releasing atomic.Bool
+	released := make(chan struct{})
+	stubServeHub(t, func(ctx context.Context, s *hub.Server) error {
+		dead, cancel := context.WithCancel(ctx)
+		cancel()
+		// On the SIDE, so this stub still returns at once: the tests that use it
+		// need hubDone closed before Start reaches its readiness verdict, and
+		// Serve's unwind is not instant.
+		releasing.Store(true)
+		go func() {
+			defer close(released)
+			_ = s.Serve(dead)
+		}()
+		return serveErr
+	})
+	t.Cleanup(func() {
+		if !releasing.Load() {
+			return // Serve was never reached; nothing was acquired past NewServer.
+		}
+		select {
+		case <-released:
+		case <-time.After(soloTestTimeout):
+			t.Error("the hub never finished releasing its listeners and store")
+		}
+	})
+}
+
 // stubServeHub swaps the Hub-serving seam for the duration of the test.
 func stubServeHub(t *testing.T, fn func(context.Context, *hub.Server) error) {
 	t.Helper()
@@ -318,16 +438,13 @@ func stubServeHub(t *testing.T, fn func(context.Context, *hub.Server) error) {
 	t.Cleanup(func() { serveHub = prev })
 }
 
-// stubWorkerBringUp swaps the Worker bring-up seam, absorbing the seven
-// production-wiring parameters so each test states only what it does with the
-// context and what it reports.
+// stubWorkerBringUp swaps the Worker bring-up seam, discarding the production
+// wiring so each test states only what it does with the context and what it
+// reports.
 func stubWorkerBringUp(t *testing.T, fn func(context.Context) error) {
 	t.Helper()
 	prev := bringUpWorker
-	bringUpWorker = func(ctx context.Context, _, _ *drain.Counter, _ *hub.Server,
-		_, _ string, _ *hubconfig.Config, _, _ string) error {
-		return fn(ctx)
-	}
+	bringUpWorker = func(ctx context.Context, _ workerBringUp) error { return fn(ctx) }
 	t.Cleanup(func() { bringUpWorker = prev })
 }
 
@@ -339,11 +456,18 @@ func stubWorkerBringUp(t *testing.T, fn func(context.Context) error) {
 // afterwards. A stub that failed immediately could not distinguish "the gate saw
 // a dead Hub" from "the gate was never reached".
 //
+// It FAILS THE TEST if Serve returned before kill() -- pinning serveErr would
+// otherwise hide a Hub that never served behind exactly the error the test
+// expects, which is the trap serveHub exists to close (see its doc: two tests
+// once passed on a NewServer failure instead). A cleanup-time check rather than
+// an inline one, because Serve returns on its own goroutine.
+//
 // kill is idempotent and never blocks, and t.Cleanup calls it, so a failed
 // assertion cannot leave a Hub serving behind the test.
 func serveUntilKilled(t *testing.T, serveErr error) (kill func()) {
 	t.Helper()
 	killed := make(chan struct{})
+	var servedEarly atomic.Pointer[error]
 	stubServeHub(t, func(ctx context.Context, s *hub.Server) error {
 		inner, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -355,30 +479,84 @@ func serveUntilKilled(t *testing.T, serveErr error) (kill func()) {
 				// Serve stopped on its own (or the Hub was cancelled); nothing to do.
 			}
 		}()
-		_ = s.Serve(inner)
+		realErr := s.Serve(inner)
+		select {
+		case <-killed:
+		default:
+			// ctx is hubCtx: once it is cancelled somebody legitimately asked the
+			// Hub to stop (Stop, or a failure arm's join), which ends Serve just as
+			// kill() would. Only a Serve that returned while nobody had asked means
+			// the Hub was never really up.
+			//
+			// Records rather than fails: t.Error/t.Fatal from a non-test goroutine
+			// is not safe, and this one is Start's Hub goroutine.
+			if ctx.Err() == nil {
+				servedEarly.Store(&realErr)
+			}
+		}
 		return serveErr
 	})
 	var once sync.Once
 	kill = func() { once.Do(func() { close(killed) }) }
-	t.Cleanup(kill)
+	t.Cleanup(func() {
+		kill()
+		if early := servedEarly.Load(); early != nil {
+			t.Errorf("the hub stopped serving before the test killed it, so this test "+
+				"proved nothing about a Hub that was up; Serve returned: %v", *early)
+		}
+	})
 	return kill
 }
 
-// awaitBringUp blocks until Start has entered the bring-up seam.
+// startWhileHubDies runs Start in a goroutine, waits until it has entered the
+// bring-up seam, then ends the Hub with endHub and returns what Start reported.
 //
-// Its two failure arms are diagnostics, not assertions: done closing first means
-// Start ran the REAL bring-up (the seam is not wired), and the budget expiring
-// means Start never got there at all. Both would otherwise present as a test that
-// hangs until the package deadline.
-func awaitBringUp(t *testing.T, entered, done <-chan struct{}) {
+// It owns the goroutine so no caller can leak one. That matters more than the
+// deduplication: a leaked Start keeps reading the serveHub/bringUpWorker package
+// vars, which stubServeHub's and stubWorkerBringUp's cleanups WRITE at teardown,
+// and -- since none of these tests are parallel -- it can still be running when
+// the next test re-stubs them. Under -race that surfaces as a data race on the
+// globals, masking whatever regression was actually being diagnosed. So even the
+// two diagnostic arms below join before failing.
+//
+// Those arms are diagnostics, not assertions: done closing first means Start ran
+// the REAL bring-up (the seam is not wired), and the budget expiring means Start
+// never got there at all. Both would otherwise present as a test that hangs until
+// the package deadline.
+func startWhileHubDies(t *testing.T, cfg Config, entered <-chan struct{}, endHub func()) (*Instance, error) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+	t.Cleanup(cancel)
+	return startUntilTornDown(t, ctx, cfg, entered, endHub)
+}
+
+// startUntilTornDown is startWhileHubDies with the caller's context under the
+// test's control, for the OTHER way a startup ends: the caller cancelling.
+func startUntilTornDown(t *testing.T, ctx context.Context, cfg Config, entered <-chan struct{}, tearDown func()) (*Instance, error) {
+	t.Helper()
+	var inst *Instance
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		inst, err = Start(ctx, cfg)
+	}()
+
 	select {
 	case <-entered:
 	case <-done:
 		t.Fatal("Start finished without reaching bring-up (is the seam wired?)")
 	case <-time.After(soloTestTimeout):
+		// tearDown unblocks a Start parked anywhere past the Hub goroutine, so the
+		// join below terminates instead of hanging out the package deadline.
+		tearDown()
+		<-done
 		t.Fatal("Start never reached bring-up")
 	}
+
+	tearDown()
+	<-done
+	return inst, err
 }
 
 // startFailureEnv points Start at a throwaway home with no TCP listener, so it
@@ -395,27 +573,25 @@ func awaitBringUp(t *testing.T, entered, done <-chan struct{}) {
 // while passing on a developer's Unix machine.
 func startFailureEnv(t *testing.T) Config {
 	t.Helper()
+	return soloStartEnv(t, false)
+}
+
+// soloStartEnv builds that environment for either mode. devMode is where the
+// deferral arm lives: dev uses real password auth rather than solo's injected
+// soloUser, so on a fresh install there is no admin for the Worker to register
+// under until somebody completes /setup.
+func soloStartEnv(t *testing.T, devMode bool) Config {
+	t.Helper()
 	locallistentest.SandboxHome(t)
 	return Config{
 		SkipBanner: true,
 		NoTCP:      true,
+		DevMode:    devMode,
 		// local-listen is not in solo's own --help allowlist, so the test has to
 		// widen it to reach the flag.
-		CLIFlags: append(defaultCLIFlags(false), "local-listen"),
+		CLIFlags: append(defaultCLIFlags(devMode), "local-listen"),
 		Args:     []string{"--local-listen=" + locallistentest.UniqueListenURL(t, "leapmux-hub-solo")},
 	}
-}
-
-// devStartFailureEnv is startFailureEnv in DEV mode, which is where the
-// deferral arm lives: dev uses real password auth rather than solo's injected
-// soloUser, so on a fresh install there is no admin for the Worker to register
-// under until somebody completes /setup.
-func devStartFailureEnv(t *testing.T) Config {
-	t.Helper()
-	cfg := startFailureEnv(t)
-	cfg.DevMode = true
-	cfg.CLIFlags = append(defaultCLIFlags(true), "local-listen")
-	return cfg
 }
 
 // A Hub that dies WHILE SERVING is surfaced by Start with the "hub serve:"
@@ -428,17 +604,18 @@ func devStartFailureEnv(t *testing.T) Config {
 func TestSoloStart_SurfacesAServeTimeFailure(t *testing.T) {
 	cfg := startFailureEnv(t)
 	wantErr := errors.New("revocation watcher seed failed")
-	stubServeHub(t, func(context.Context, *hub.Server) error { return wantErr })
+	serveFailsImmediately(t, wantErr)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 	defer cancel()
 	inst, err := Start(ctx, cfg)
 
 	require.Error(t, err)
 	require.Nil(t, inst)
 	assert.ErrorIs(t, err, wantErr)
-	assert.True(t, strings.HasPrefix(err.Error(), "hub serve:"),
-		"the Serve arm must attribute the failure, not merely mention it; got: "+err.Error())
+	assert.True(t, strings.HasPrefix(err.Error(), "hub serve exited "),
+		"the Serve arm must attribute the failure and name the stage that saw it, "+
+			"not merely mention it; got: "+err.Error())
 }
 
 // A Hub that dies on its way up has exactly ONE reporter: Start, which RETURNS
@@ -446,16 +623,14 @@ func TestSoloStart_SurfacesAServeTimeFailure(t *testing.T) {
 // every failed launch is reported twice.
 func TestSoloStart_DoesNotAlsoLogAServeTimeFailure(t *testing.T) {
 	cfg := startFailureEnv(t)
-	stubServeHub(t, func(context.Context, *hub.Server) error {
-		return errors.New("revocation watcher seed failed")
-	})
+	serveFailsImmediately(t, errors.New("revocation watcher seed failed"))
 
 	// Stderr, not slog.Default(): Start's own logging.Setup installs a fresh
 	// default logger, so a captured handler would be replaced before the line
 	// under test could reach it and this would assert on an empty buffer.
 	var err error
 	out := testutil.CaptureStderr(t, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 		defer cancel()
 		_, err = Start(ctx, cfg)
 	})
@@ -486,7 +661,7 @@ func TestSolo_AHubThatDiesWhileServingTearsTheInstanceDownWithoutReporting(t *te
 
 	var inst *Instance
 	out := testutil.CaptureStderr(t, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 		defer cancel()
 		var err error
 		inst, err = Start(ctx, cfg)
@@ -522,7 +697,7 @@ func TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop(t *testing.T) {
 
 	var stopErr error
 	out := testutil.CaptureStderr(t, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
 		defer cancel()
 		inst, err := Start(ctx, cfg)
 		require.NoError(t, err)
@@ -534,7 +709,7 @@ func TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop(t *testing.T) {
 		"an exit Stop asked for must not also be logged; captured:\n"+out)
 }
 
-// hubFailure is the ONE predicate Start asks at every stage boundary, so an
+// startupFailure is the ONE predicate Start asks at every stage boundary, so an
 // exited Hub outranks whatever that stage happened to observe. The property
 // under test is TOTALITY: once hubDone is closed it never returns nil. The
 // readiness select leans on that -- its hubDone arm carries no error of its own
@@ -560,7 +735,7 @@ func TestHubFailure_AnExitedHubOutranksWhateverTheStageSaw(t *testing.T) {
 	tests := []struct {
 		name string
 		// The literals are bare on purpose, like TestInstanceStopReturnsHubError's:
-		// hubFailure must be safe on the zero-value Instance every shutdown trigger
+		// startupFailure must be safe on the zero-value Instance every shutdown trigger
 		// can reach.
 		inst    *Instance
 		ctx     context.Context
@@ -588,7 +763,7 @@ func TestHubFailure_AnExitedHubOutranksWhateverTheStageSaw(t *testing.T) {
 			name:   "an exited hub reports its own error",
 			inst:   &Instance{hubDone: closedChan(), hubErr: hubErr},
 			ctx:    context.Background(),
-			want:   "hub serve: revocation watcher seed failed",
+			want:   "hub serve exited while the worker was starting: revocation watcher seed failed",
 			wantIs: hubErr,
 		},
 		{
@@ -608,16 +783,28 @@ func TestHubFailure_AnExitedHubOutranksWhateverTheStageSaw(t *testing.T) {
 			want:   "hub shut down while the worker was starting: context canceled",
 			wantIs: context.Canceled,
 		},
+		{
+			// The OTHER watcher trigger, and the half that used to be unreachable:
+			// the caller cancelled, the watcher already cancelled workerCtx, and the
+			// Hub is still serving because shutdown parks in workerDrained.Wait
+			// before it ever reaches cancelHub. Answering nil here is what let the
+			// Worker be blamed for the caller's Ctrl-C.
+			name:   "a cancelled caller is reported even while the hub still serves",
+			inst:   &Instance{hubDone: make(chan struct{})},
+			ctx:    cancelledCtx,
+			want:   "solo startup cancelled while the worker was starting: context canceled",
+			wantIs: context.Canceled,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := tt.inst.hubFailure(tt.ctx, "while the worker was starting")
+			got := tt.inst.startupFailure(tt.ctx, "while the worker was starting")
 			if tt.wantNil {
 				assert.NoError(t, got)
 				return
 			}
-			require.Error(t, got, "hubFailure must be total once hubDone is closed")
+			require.Error(t, got, "startupFailure must be total once hubDone is closed")
 			assert.Equal(t, tt.want, got.Error())
 			if tt.wantIs != nil {
 				assert.ErrorIs(t, got, tt.wantIs)
@@ -640,7 +827,7 @@ func TestHubFailure_AnExitedHubOutranksWhateverTheStageSaw(t *testing.T) {
 func TestSoloStart_DoesNotBringTheWorkerUpAgainstAHubThatAlreadyExited(t *testing.T) {
 	cfg := startFailureEnv(t)
 	wantErr := errors.New("revocation watcher seed failed")
-	stubServeHub(t, func(context.Context, *hub.Server) error { return wantErr })
+	serveFailsImmediately(t, wantErr)
 
 	var broughtUp atomic.Bool
 	stubWorkerBringUp(t, func(context.Context) error {
@@ -679,25 +866,13 @@ func TestSoloStart_AHubThatDiesDuringBringUpIsNotBlamedOnTheWorker(t *testing.T)
 		return fmt.Errorf("create worker: %w", ctx.Err())
 	})
 
-	var inst *Instance
-	var err error
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
-		defer cancel()
-		inst, err = Start(ctx, cfg)
-	}()
-
-	awaitBringUp(t, entered, done)
-	kill()
-	<-done
+	inst, err := startWhileHubDies(t, cfg, entered, kill)
 
 	require.Error(t, err)
 	require.Nil(t, inst)
 	assert.ErrorIs(t, err, wantErr)
-	assert.True(t, strings.HasPrefix(err.Error(), "hub serve:"),
-		"the Hub's death must be attributed to the Hub; got: "+err.Error())
+	assert.True(t, strings.HasPrefix(err.Error(), "hub serve exited while the worker was starting:"),
+		"the Hub's death must be attributed to the Hub, at the stage that saw it; got: "+err.Error())
 	assert.NotContains(t, err.Error(), "auto-register worker",
 		"the Worker only failed because the Hub did; got: "+err.Error())
 }
@@ -733,25 +908,13 @@ func TestSoloStart_DoesNotReturnAnInstanceForAHubThatDiedDuringBringUp(t *testin
 				return nil
 			})
 
-			var inst *Instance
-			var err error
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
-				defer cancel()
-				inst, err = Start(ctx, cfg)
-			}()
-
-			awaitBringUp(t, entered, done)
-			kill()
-			<-done
+			inst, err := startWhileHubDies(t, cfg, entered, kill)
 
 			require.Error(t, err, "a dead Hub must not be reported as a successful launch")
 			require.Nil(t, inst)
 			if tt.serveErr != nil {
 				assert.ErrorIs(t, err, tt.serveErr)
-				assert.True(t, strings.HasPrefix(err.Error(), "hub serve:"),
+				assert.True(t, strings.HasPrefix(err.Error(), "hub serve exited while the worker was starting:"),
 					"got: "+err.Error())
 			} else {
 				assert.Equal(t, "hub serve exited while the worker was starting", err.Error())
@@ -760,19 +923,72 @@ func TestSoloStart_DoesNotReturnAnInstanceForAHubThatDiedDuringBringUp(t *testin
 	}
 }
 
+// A Serve cancelled while it is still STARTING is an exit somebody asked for.
+// hub.NewServer binds both listeners before Serve runs, so a caller's readiness
+// probe succeeds -- and its Stop can land -- while Serve is still seeding the
+// revocation cursor. Reporting that seed failure made `leapmux hub` and `leapmux
+// solo` exit non-zero on an ordinary Ctrl-C during startup, and the sqlite
+// spelling of it ("interrupted (9)") wraps no context error, so no downstream
+// errors.Is filter could have caught it either.
+//
+// solo is where this lives because it is the only package that stands a real
+// hub.Server up.
+func TestHubServe_ACancelDuringItsOwnStartupIsACleanExit(t *testing.T) {
+	cfg := startFailureEnv(t)
+
+	served := make(chan error, 1)
+	stubServeHub(t, func(ctx context.Context, s *hub.Server) error {
+		// Already cancelled, so Serve fails inside SeedCursor deterministically
+		// rather than racing it. The real Serve still unwinds there, releasing
+		// what NewServer acquired.
+		dead, cancel := context.WithCancel(ctx)
+		cancel()
+		err := s.Serve(dead)
+		served <- err
+		return err
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+	defer cancel()
+	inst, _ := Start(ctx, cfg)
+	// Whether Start notices is deliberately NOT asserted: a clean exit is exactly
+	// what its gates cannot distinguish from a Hub still coming up, and Serve's
+	// unwind can outlast the whole launch. Start's own doc says as much -- the
+	// gates close the wide windows, not every window. The property under test is
+	// the Hub's, one layer down.
+	if inst != nil {
+		t.Cleanup(func() { _ = inst.Stop() })
+	}
+
+	select {
+	case serveErr := <-served:
+		assert.NoError(t, serveErr,
+			"a Serve cancelled during its own startup must report a clean exit, not a "+
+				"seed failure the user's Ctrl-C caused")
+	case <-time.After(soloTestTimeout):
+		t.Fatal("the hub goroutine never reported")
+	}
+}
+
 // The deferral arm, which had no coverage at all before the bring-up seam
 // existed: in dev mode a missing admin is what /setup is for, so the launch must
 // SUCCEED and leave a poller behind rather than fail.
 func TestSoloStart_DevModeDefersWorkerRegistrationUntilAnAdminExists(t *testing.T) {
-	cfg := devStartFailureEnv(t)
-	// A real Serve, but with its terminal error pinned to nil. With bring-up
-	// stubbed, Start returns fast enough that Stop's cancel can land inside the
-	// Hub's OWN startup -- seeding the revocation cursor, which surfaces as a
-	// SQLite "interrupted" -- and that race has nothing to do with the arm under
-	// test. Pinning it keeps the Stop assertion below about token accounting.
-	serveUntilKilled(t, nil)
+	cfg := soloStartEnv(t, true)
+	// A real Serve, whose terminal error is a SENTINEL rather than nil: Stop must
+	// hand back exactly the Hub's error, and pinning it to nil would make the
+	// assertion below hold no matter what Stop did. It also keeps the Hub's own
+	// startup out of the result -- with bring-up stubbed, Start returns fast
+	// enough that Stop's cancel can land inside SeedCursor and surface as a SQLite
+	// "interrupted", a race that has nothing to do with the arm under test.
+	wantStopErr := errors.New("lease release failed")
+	serveUntilKilled(t, wantStopErr)
 	// Re-entrant: the poller calls this again on every tick.
-	stubWorkerBringUp(t, func(context.Context) error { return store.ErrNotFound })
+	var bringUps atomic.Int32
+	stubWorkerBringUp(t, func(context.Context) error {
+		bringUps.Add(1)
+		return errNoAdminYet
+	})
 
 	var inst *Instance
 	var err error
@@ -781,16 +997,29 @@ func TestSoloStart_DevModeDefersWorkerRegistrationUntilAnAdminExists(t *testing.
 		defer cancel()
 		inst, err = Start(ctx, cfg)
 	})
+	// Unconditional, and BEFORE the requires below: workerCtx is detached from the
+	// caller's, so nothing but Stop ever cancels the poller. A require that fired
+	// first would leave it ticking against a deleted temp dir for the rest of the
+	// run, racing every later test's stub.
+	t.Cleanup(func() {
+		if inst != nil {
+			_ = inst.Stop()
+		}
+	})
 
 	require.NoError(t, err, "a missing admin defers the Worker; it does not fail the launch; captured:\n"+out)
 	require.NotNil(t, inst)
 	assert.Contains(t, out, "deferring worker auto-registration",
 		"the deferral is the user-visible half of this arm; captured:\n"+out)
-	// Stop is the token-accounting assertion: the deferral hands a second worker
-	// token pair to the poller while Start still holds its own, and an imbalance
-	// on either side either wedges the teardown or trips drain.Counter's
+	assert.Equal(t, int32(1), bringUps.Load(),
+		"the launch itself attempts bring-up exactly once; the retries are the poller's")
+
+	// Stop is also the token-accounting assertion: the deferral hands a second
+	// worker token pair to the poller while Start still holds its own, and an
+	// imbalance on either side either wedges the teardown or trips drain.Counter's
 	// negative-counter panic.
-	assert.NoError(t, inst.Stop())
+	assert.ErrorIs(t, inst.Stop(), wantStopErr,
+		"Stop must hand back exactly the Hub's terminal error")
 }
 
 // The gate sits BEFORE the switch, so it covers the deferral arm too. Without
@@ -798,7 +1027,7 @@ func TestSoloStart_DevModeDefersWorkerRegistrationUntilAnAdminExists(t *testing.
 // healthy Instance AND leave a poller ticking every 2s against a Hub that is
 // already gone.
 func TestSoloStart_DoesNotDeferWorkerSetupOntoAHubThatDied(t *testing.T) {
-	cfg := devStartFailureEnv(t)
+	cfg := soloStartEnv(t, true)
 	wantErr := errors.New("revocation watcher seed failed")
 	kill := serveUntilKilled(t, wantErr)
 
@@ -807,30 +1036,186 @@ func TestSoloStart_DoesNotDeferWorkerSetupOntoAHubThatDied(t *testing.T) {
 		close(entered)
 		<-ctx.Done()
 		// The arm that would defer, if the gate let it get that far.
-		return store.ErrNotFound
+		return errNoAdminYet
 	})
 
 	var inst *Instance
 	var err error
-	done := make(chan struct{})
 	out := testutil.CaptureStderr(t, func() {
-		go func() {
-			defer close(done)
-			ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
-			defer cancel()
-			inst, err = Start(ctx, cfg)
-		}()
-		awaitBringUp(t, entered, done)
-		kill()
-		<-done
+		inst, err = startWhileHubDies(t, cfg, entered, kill)
 	})
 
 	require.Error(t, err)
 	require.Nil(t, inst)
 	assert.ErrorIs(t, err, wantErr)
-	assert.True(t, strings.HasPrefix(err.Error(), "hub serve:"), "got: "+err.Error())
+	assert.True(t, strings.HasPrefix(err.Error(), "hub serve exited while the worker was starting:"),
+		"got: "+err.Error())
 	assert.NotContains(t, out, "deferring worker auto-registration",
 		"a Hub that is gone has nothing to defer to; captured:\n"+out)
+}
+
+// The OTHER half of the same misattribution, and the one the first fix missed: a
+// caller who cancels during bring-up. The watcher cancels workerCtx on EITHER
+// trigger, so bring-up reports "context canceled" either way -- but on this path
+// the Hub is still serving, because shutdown cancels the Worker and then parks in
+// workerDrained.Wait behind the token Start holds across bring-up, so cancelHub
+// has not run and hubDone is still open. A gate that asked only about hubDone
+// answered nil here and let the switch blame the Worker for a Ctrl-C.
+func TestSoloStart_ACallerCancelDuringBringUpIsNotBlamedOnTheWorker(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	// A real, LIVE Hub for the whole test: the point is that the Hub is healthy
+	// and the startup still has to end.
+	serveUntilKilled(t, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+	t.Cleanup(cancel)
+
+	entered := make(chan struct{})
+	stubWorkerBringUp(t, func(bringUpCtx context.Context) error {
+		close(entered)
+		// Returns only once the watcher has cancelled workerCtx in response to the
+		// caller's cancel -- the exact shape bringUpLocalWorker produces when a
+		// store call is interrupted mid-registration.
+		<-bringUpCtx.Done()
+		return fmt.Errorf("create worker: %w", bringUpCtx.Err())
+	})
+
+	inst, err := startUntilTornDown(t, ctx, cfg, entered, cancel)
+
+	require.Error(t, err)
+	require.Nil(t, inst)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotContains(t, err.Error(), "auto-register worker",
+		"the Worker only failed because the caller cancelled; got: "+err.Error())
+	assert.Contains(t, err.Error(), "solo startup cancelled",
+		"a cancelled startup must say so; got: "+err.Error())
+}
+
+// A genuine cleanup failure during the teardown Start itself triggers has no other
+// reporter: Start returns a nil Instance, so Wait and Stop are unreachable and the
+// watcher is deliberately silent. It has to ride out with the cause.
+func TestSoloStart_ReportsACleanupFailureFromTheTeardownItTriggered(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	// The shape of a real teardown cleanup failure: Serve returns non-nil after an
+	// ordinary, requested shutdown -- here the one failStartup's join asks for.
+	leaseErr := errors.New("release runtime lease failed")
+	serveUntilKilled(t, leaseErr)
+
+	bringUpErr := errors.New("generate composite keypair: no entropy")
+	stubWorkerBringUp(t, func(context.Context) error { return bringUpErr })
+
+	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+	defer cancel()
+	inst, err := Start(ctx, cfg)
+
+	require.Error(t, err)
+	require.Nil(t, inst)
+	assert.ErrorIs(t, err, bringUpErr, "the Worker's failure is still the cause")
+	assert.ErrorIs(t, err, leaseErr,
+		"the cleanup failure has no other reporter once Start returns a nil Instance")
+}
+
+// The cancellation the teardown itself issues must NOT be reported. failStartup's
+// join is what cancels the Hub, so a Serve still working through its own startup
+// comes back with that very cancel -- blaming the Hub for obeying us, and burying
+// the Worker's real failure under it.
+func TestSoloStart_DoesNotReportTheCancellationItsOwnTeardownCaused(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	// No serveHub stub: the REAL Serve, whose startup (seeding the revocation
+	// cursor) is still in flight when the join cancels it, and which therefore
+	// returns a context.Canceled-rooted error on a perfectly ordinary teardown.
+	bringUpErr := errors.New("generate composite keypair: no entropy")
+	stubWorkerBringUp(t, func(context.Context) error { return bringUpErr })
+
+	ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+	defer cancel()
+	inst, err := Start(ctx, cfg)
+
+	require.Error(t, err)
+	require.Nil(t, inst)
+	assert.ErrorIs(t, err, bringUpErr)
+	assert.NotContains(t, err.Error(), "hub serve",
+		"the Hub was still serving until our own join stopped it; got: "+err.Error())
+}
+
+// The deferral poller is the one place the stage gates cannot reach: it outlives
+// Start. When the teardown cancels it mid-setup, the error it gets back is the
+// shutdown wearing the Worker's wrapper -- and logging it would make the poller a
+// SECOND reporter of a shutdown Stop already reports, which is exactly what the
+// watcher stays silent to avoid.
+func TestSoloStart_TheDeferredPollerStaysQuietWhenTheTeardownCancelsIt(t *testing.T) {
+	cfg := soloStartEnv(t, true)
+	serveUntilKilled(t, nil)
+
+	// First call defers (no admin yet); every later call is the poller's, and it
+	// parks until the teardown cancels it -- the window the guard covers.
+	var calls atomic.Int32
+	stubWorkerBringUp(t, func(ctx context.Context) error {
+		if calls.Add(1) == 1 {
+			return errNoAdminYet
+		}
+		<-ctx.Done()
+		return fmt.Errorf("look up saved worker owner: %w", ctx.Err())
+	})
+
+	orig := workerSetupPollInterval
+	workerSetupPollInterval = time.Millisecond
+	t.Cleanup(func() { workerSetupPollInterval = orig })
+
+	var inst *Instance
+	var err error
+	out := testutil.CaptureStderr(t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
+		defer cancel()
+		inst, err = Start(ctx, cfg)
+		require.NoError(t, err)
+		require.NotNil(t, inst)
+		// Wait for the poller to be parked inside setupWorker, so Stop's cancel
+		// lands mid-call rather than on the ticker select -- an explicit signal,
+		// not a sleep.
+		for calls.Load() < 2 {
+			runtime.Gosched()
+		}
+		_ = inst.Stop()
+	})
+
+	assert.NotContains(t, out, "deferred worker setup failed",
+		"a poller the teardown cancelled must not report it as a Worker failure; captured:\n"+out)
+}
+
+// The gate can fire when bring-up SUCCEEDED, and the real bringUpLocalWorker adds
+// a SECOND token pair and launches worker.Run on that path. Everything else here
+// stubs bring-up, so nothing else proves the release accounting survives a real
+// Worker under the gate -- a leak would wedge join forever, a double release would
+// panic the counter.
+func TestSoloStart_TearsDownARealWorkerLaunchedJustBeforeTheHubDied(t *testing.T) {
+	cfg := soloStartEnv(t, false)
+	wantErr := errors.New("revocation watcher seed failed")
+	kill := serveUntilKilled(t, wantErr)
+
+	entered := make(chan struct{})
+	prev := bringUpWorker
+	bringUpWorker = func(ctx context.Context, p workerBringUp) error {
+		// The REAL implementation, so the Worker goroutine and its own token pair
+		// exist; then hold Start inside the window until the Hub is gone.
+		if err := prev(ctx, p); err != nil {
+			return err
+		}
+		close(entered)
+		<-ctx.Done()
+		return nil
+	}
+	t.Cleanup(func() { bringUpWorker = prev })
+
+	inst, err := startWhileHubDies(t, cfg, entered, kill)
+
+	// Reaching here at all is half the assertion: failStartup's join waits out the
+	// real worker.Run unwind, so a mislaid token would hang the test rather than
+	// fail it.
+	require.Error(t, err)
+	require.Nil(t, inst)
+	assert.ErrorIs(t, err, wantErr)
+	assert.NotContains(t, err.Error(), "auto-register worker", "got: "+err.Error())
 }
 
 // The over-reach guard on the gate above, and the first coverage of the switch's
@@ -849,9 +1234,12 @@ func TestSoloStart_AWorkerBringUpFailureIsStillTheWorkers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// No serveHub stub: the Hub is real and still serving, which is the
-			// whole point -- the gate must not claim a failure that is not its own.
+			// A real Serve that keeps serving, with its terminal error pinned: the
+			// gate must not claim a failure that is not its own, and leaving the
+			// Hub's own error unpinned would let a spontaneous startup failure in
+			// this window flip the assertion below into a false red.
 			cfg := startFailureEnv(t)
+			serveUntilKilled(t, nil)
 			stubWorkerBringUp(t, func(context.Context) error { return tt.bringUpErr })
 
 			ctx, cancel := context.WithTimeout(context.Background(), soloTestTimeout)
@@ -905,11 +1293,16 @@ func TestInstanceShutdown_StopsTheHubOnTheDrainNotTheWorkersFullExit(t *testing.
 	}()
 
 	start := time.Now()
-	logs := testutil.CaptureStderr(t, func() { inst.shutdown() })
+	// logging.Setup inside the capture, or the handler still points at the real
+	// stderr and the NotContains below holds no matter what shutdown logs.
+	logs := testutil.CaptureStderr(t, func() {
+		logging.Setup()
+		inst.shutdown()
+	})
 
 	assert.True(t, hubCancelled.Load())
 	assert.Less(t, time.Since(start), workerDrainTimeout,
 		"the hub must stop on the drain signal, not wait out the backstop for a teardown it has no stake in")
-	assert.NotContains(t, logs, "did not report draining",
+	assert.NotContains(t, logs, "did not finish before the hub shutdown deadline",
 		"a worker that drained promptly must not be reported as failing to")
 }

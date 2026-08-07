@@ -674,8 +674,22 @@ func (s *Server) Serve(ctx context.Context) error {
 		watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
 		watcherCloseErr := s.revocationWatcher.Close(watcherCloseCtx)
 		cancelWatcherClose()
+		// A cancel landing here is an exit somebody ASKED for, not a failure to
+		// report. NewServer binds BOTH listeners before Serve runs, so a caller's
+		// connect-and-close readiness probe succeeds -- and its Stop can arrive --
+		// while this seed is still in flight. Reporting it made `leapmux hub` and
+		// `leapmux solo` exit NON-ZERO on an ordinary Ctrl-C during startup,
+		// printing "seed revocation watcher: ... context canceled" -- or, when the
+		// store aborted first, modernc sqlite's "interrupted (9)", which wraps no
+		// context error and so slips through every errors.Is(err, context.Canceled)
+		// filter downstream. The teardown below still runs, and a genuine failure
+		// in it is still reported.
+		primary := fmt.Errorf("seed revocation watcher: %w", err)
+		if serveCtx.Err() != nil {
+			primary = nil
+		}
 		return serverTeardownErrors{
-			primary:       fmt.Errorf("seed revocation watcher: %w", err),
+			primary:       primary,
 			tcpListener:   closeServerListener(tcpLn),
 			localListener: closeServerListener(localLn),
 			httpClose:     s.server.Close(),

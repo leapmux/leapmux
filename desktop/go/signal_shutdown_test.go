@@ -18,6 +18,7 @@ type failingSoloInstance struct {
 }
 
 func (f failingSoloInstance) LocalListenURL() string { return "" }
+func (f failingSoloInstance) Wait() error            { return f.err }
 func (f failingSoloInstance) Stop() error            { return f.err }
 
 func TestAppShutdownReturnsSoloError(t *testing.T) {
@@ -53,6 +54,7 @@ type blockingSoloInstance struct {
 }
 
 func (b blockingSoloInstance) LocalListenURL() string { return "" }
+func (b blockingSoloInstance) Wait() error            { return nil }
 func (b blockingSoloInstance) Stop() error {
 	close(b.entered)
 	<-b.release
