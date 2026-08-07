@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { makeInspectResp } from '~/test-support/gitBranchFixtures'
 import { DeleteBranchDialog, worktreeRemovalToast } from './DeleteBranchDialog'
 
 vi.mock('~/api/workerRpc', () => ({
@@ -19,72 +20,6 @@ vi.mock('~/components/common/Toast', () => ({
   showWarnToast: vi.fn(),
   showErrorToast: vi.fn(),
 }))
-
-function makeBranches(names: string[]): GitBranchEntry[] {
-  return names.map(name => ({
-    $typeName: 'leapmux.v1.GitBranchEntry',
-    name,
-    isRemote: false,
-  } as GitBranchEntry))
-}
-
-function makeInspectResp(overrides: Partial<InspectBranchDeletionResponse> & Partial<{
-  diffAdded: number
-  diffDeleted: number
-  diffUntracked: number
-  unpushedCommitCount: number
-  hasUncommittedChanges: boolean
-  upstreamExists: boolean
-  remoteBranchMissing: boolean
-  originExists: boolean
-  canPush: boolean
-  /** Convenience: pass branch names; converted to GitBranchEntry rows. */
-  branchNames: string[]
-}> = {}): InspectBranchDeletionResponse {
-  const {
-    diffAdded = 0,
-    diffDeleted = 0,
-    diffUntracked = 0,
-    unpushedCommitCount = 0,
-    hasUncommittedChanges = false,
-    upstreamExists = true,
-    remoteBranchMissing = false,
-    originExists = true,
-    canPush = false,
-    gitState,
-    branchNames,
-    branches,
-    ...rest
-  } = overrides
-  // Default non-worktree responses include a picker list (the doomed
-  // branch is in there too — the dialog filters it out). The worktree
-  // path leaves `branches` empty to mirror the worker's contract.
-  const isWorktree = rest.isWorktree ?? false
-  const defaultBranches: GitBranchEntry[] = isWorktree ? [] : makeBranches(['main', 'doomed'])
-  return {
-    $typeName: 'leapmux.v1.InspectBranchDeletionResponse',
-    isWorktree,
-    worktreePath: '',
-    // Worktree responses thread the DB row id so the dialog can tell a
-    // tracked worktree from an untracked one; non-worktree leaves it empty.
-    worktreeId: isWorktree ? 'wt-1' : '',
-    branchName: 'doomed',
-    branches: branches ?? (branchNames ? makeBranches(branchNames) : defaultBranches),
-    gitState: gitState ?? ({
-      $typeName: 'leapmux.v1.BranchGitState',
-      diffAdded,
-      diffDeleted,
-      diffUntracked,
-      unpushedCommitCount,
-      hasUncommittedChanges,
-      upstreamExists,
-      remoteBranchMissing,
-      originExists,
-      canPush,
-    } as InspectBranchDeletionResponse['gitState']),
-    ...rest,
-  } as InspectBranchDeletionResponse
-}
 
 function makeAgentTab(id: string): Tab {
   return {
@@ -190,6 +125,31 @@ describe('deleteBranchDialog', () => {
     expect(closeWorktreeTabs).toHaveBeenCalledWith(tabs)
     await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
     expect(showInfoToast).toHaveBeenCalledWith('Worktree removed')
+  })
+
+  it('worktree variant: toasts the outcome BEFORE onClose', async () => {
+    // Both handlers close LAST — do the work, notify, toast, then close.
+    // The worktree path used to close in the middle of its sequence, which
+    // left the file with two opposite orders while a comment below declared
+    // one of them load-bearing. Nothing in the file may do work after the
+    // close, because the close disposes the subtree that owns this dialog.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
+      makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
+    )
+    const calls: string[] = []
+    vi.mocked(showInfoToast).mockImplementation(() => {
+      calls.push('toast')
+    })
+    const onClose = vi.fn(() => {
+      calls.push('onClose')
+    })
+    renderDialog({ closeWorktreeTabs: makeCloseWorktreeTabs({ removed: true }), onClose })
+    await waitFor(() => expect(screen.getByText(/Worktree:/)).toBeInTheDocument())
+
+    await clickDelete()
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(calls).toEqual(['toast', 'onClose'])
   })
 
   it('worktree variant closes a FILE-only group through closeWorktreeTabs', async () => {
@@ -355,6 +315,50 @@ describe('deleteBranchDialog', () => {
     // on the new branch — unlike the worktree path, it must NOT close any
     // tab. Pins the worktree-vs-branch behavioral split from the branch side.
     expect(closeWorktreeTabs).not.toHaveBeenCalled()
+  })
+
+  it('non-worktree variant: notifies onBranchChanged BEFORE onClose', async () => {
+    // The order changes the behavior; it is not cosmetic. `onClose` tears
+    // down the subtree that owns this dialog in AppShellDialogs. A parent
+    // callback that runs after the close can read disposed state, and Solid
+    // answers such a read with a thrown string. The close ran first, so it
+    // swallowed the sidebar stamp and the git-status refresh. The deleted
+    // branch's label stayed on screen until a reload.
+    //
+    // The dialog's own try/catch — not this order — is what keeps a
+    // callback throw out of `run`'s "Delete failed" banner.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    const calls: string[] = []
+    const onBranchChanged = vi.fn(() => {
+      calls.push('onBranchChanged')
+    })
+    const onClose = vi.fn(() => {
+      calls.push('onClose')
+    })
+    renderDialog({ onBranchChanged, onClose })
+    await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
+    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'main' } })
+
+    await clickDelete()
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+    expect(calls).toEqual(['onBranchChanged', 'onClose'])
+  })
+
+  it('non-worktree variant: closes even when no onBranchChanged is supplied', async () => {
+    // `onBranchChanged` is optional, and the close now runs AFTER it. An
+    // absent callback must therefore still reach `props.onClose()`. The
+    // optional call must not drop the close.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    const props = renderDialog({ onBranchChanged: undefined })
+    await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
+    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'main' } })
+
+    await clickDelete()
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
+    expect(showInfoToast).toHaveBeenCalledWith('Branch deleted')
+    expect(showWarnToast).not.toHaveBeenCalled()
   })
 
   it('non-worktree variant: stamps the local name when switching to a remote-tracking ref', async () => {
@@ -721,6 +725,30 @@ describe('deleteBranchDialog', () => {
     expect(closeWorktreeTabs).not.toHaveBeenCalled()
   })
 
+  it('disables Cancel while DeleteBranch is in flight', async () => {
+    // The Dialog `busy` flag gates Escape, the backdrop click, and the X
+    // button, but it never reaches a custom footer button. Without an
+    // explicit `disabled` the user can dismiss the dialog mid-delete: the
+    // RPC keeps running, and a failure then calls setError on a disposed
+    // dialog, so the user sees no error at all for a delete that did not
+    // happen. DialogFormFooter's own Cancel carries the same gate.
+    vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
+    // Never resolves: holds the dialog in its submitting state.
+    vi.mocked(workerRpc.deleteBranch).mockReturnValue(new Promise<DeleteBranchResponse>(() => {}))
+    const props = renderDialog()
+    await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
+    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'main' } })
+
+    await clickDelete()
+    await waitFor(() => expect(workerRpc.deleteBranch).toHaveBeenCalledTimes(1))
+
+    const cancel = screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement
+    expect(cancel.disabled).toBe(true)
+    fireEvent.click(cancel)
+    expect(props.onClose).not.toHaveBeenCalled()
+  })
+
   it('renders affected-tab counts based on the tabs prop', async () => {
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
@@ -865,9 +893,9 @@ describe('deleteBranchDialog', () => {
   it('non-worktree variant: a throwing onBranchChanged does not masquerade as a delete failure', async () => {
     // The delete succeeded on the worker; onBranchChanged only stamps the
     // sidebar label. A throw from it must NOT propagate into the dialog's
-    // error sink and show "Delete failed" for an op that worked — success
-    // is committed (toast + onClose) before the isolated stamp, and the
-    // stamp failure surfaces as its own warn toast. (S11)
+    // error sink and show "Delete failed" for a delete that worked. The
+    // try/catch around the stamp is what guarantees that, and the stamp
+    // failure surfaces as its own warn toast. (S11)
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     const onBranchChanged = vi.fn(() => {
       throw new Error('stamp boom')

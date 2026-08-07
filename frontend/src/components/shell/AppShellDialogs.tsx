@@ -293,17 +293,30 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-      <Show when={props.dialogs.changeBranch.value()}>
+      {/* `keyed` hands the children function the payload itself, not an
+          accessor. A non-keyed <Show> hands over an accessor that throws
+          "Stale read from <Show>" on every read after the condition goes
+          falsy — which `onClose` does. A callback that fires in the same
+          turn as the close, or after it, would then throw and not run. The
+          throw silently drops the sidebar refresh that the callback exists
+          to trigger. With `keyed` no accessor exists, so no callback can
+          read disposed state. `keyed` also re-runs the children function on
+          every payload identity change, so a replacing `open()` re-points
+          the dialog at the new repo. `lastTabConfirm` above stays non-keyed
+          because it is the only dialog that calls createDialogState's
+          `update`, and `keyed` would remount its native <dialog> on every
+          in-place refresh. */}
+      <Show when={props.dialogs.changeBranch.value()} keyed>
         {state => (
           <ChangeBranchDialog
-            workerId={state().workerId}
-            gitToplevel={state().gitToplevel}
-            workspaceId={state().workspaceId}
-            branchName={state().branchName}
-            isWorktree={state().isWorktree}
+            workerId={state.workerId}
+            gitToplevel={state.gitToplevel}
+            workspaceId={state.workspaceId}
+            branchName={state.branchName}
+            isWorktree={state.isWorktree}
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}
-            onBranchChanged={newBranch => props.onBranchChanged?.(state().workerId, state().gitToplevel, newBranch)}
+            onBranchChanged={newBranch => props.onBranchChanged?.(state.workerId, state.gitToplevel, newBranch)}
             // Local-UI tab insertion only applies when the dialog's
             // target workspace IS the active one — addAgentTabToFocusedTile
             // and addTerminalTabToFocusedTile place the tab on the ACTIVE
@@ -315,11 +328,11 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             // immediate local UI write is needed (and the user isn't
             // looking at that workspace's tile to feel the latency).
             onAgentCreated={(agent) => {
-              if (state().workspaceId === props.activeWorkspace()?.id)
+              if (state.workspaceId === props.activeWorkspace()?.id)
                 addAgentTabToFocusedTile(agent)
             }}
             onTerminalCreated={(terminalId, workerId, workingDir, title) => {
-              if (state().workspaceId === props.activeWorkspace()?.id)
+              if (state.workspaceId === props.activeWorkspace()?.id)
                 addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title)
             }}
             onClose={() => props.dialogs.changeBranch.close()}
@@ -327,15 +340,16 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-      <Show when={props.dialogs.deleteBranch.value()}>
+      {/* `keyed` for the same reason as the ChangeBranch dialog above. */}
+      <Show when={props.dialogs.deleteBranch.value()} keyed>
         {state => (
           <DeleteBranchDialog
-            workerId={state().workerId}
-            gitToplevel={state().gitToplevel}
-            branchName={state().branchName}
-            tabs={state().tabs}
+            workerId={state.workerId}
+            gitToplevel={state.gitToplevel}
+            branchName={state.branchName}
+            tabs={state.tabs}
             closeWorktreeTabs={props.tabOps.closeWorktreeTabs}
-            onBranchChanged={newBranch => props.onBranchChanged?.(state().workerId, state().gitToplevel, newBranch)}
+            onBranchChanged={newBranch => props.onBranchChanged?.(state.workerId, state.gitToplevel, newBranch)}
             onClose={() => props.dialogs.deleteBranch.close()}
           />
         )}
