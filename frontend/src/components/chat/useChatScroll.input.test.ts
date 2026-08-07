@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -432,7 +432,7 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
     let rowOffset = rowOffset0
     const [version, setVersion] = createSignal(0)
     const virt: ChatScrollVirtualizer = {
-      ...measurementDeferralNoOps(),
+      ...virtualizerNoOps(),
       totalHeight: () => {
         version()
         return total
@@ -514,7 +514,7 @@ describe('usechatscroll down-jump on a small scroll-down', () => {
           // -- isolating the follow path.
           const [total, setTotal] = createSignal(1000)
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},

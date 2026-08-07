@@ -177,6 +177,37 @@ export interface MeasurementCommitInfo {
   commitSeq: number
 }
 
+/**
+ * Every height commit of ONE geometry flush, totalled. It is what makes the companion
+ * `lastMeasurement` readable, because a flush is rarely one commit.
+ *
+ * The hidden premeasure pipeline reads a whole band's rects,
+ * then commits them inside a single `batch()` (see chatHiddenPremeasure's shared frame), so
+ * the consumer's effect runs ONCE for N commits while `lastMeasurement` keeps only the LAST
+ * of them. A drift WARN carrying `delta: 0` and a 74px residual is that gap, not a
+ * contradiction: the final row of the batch happened to measure exactly at its estimate.
+ */
+export interface MeasurementBatchInfo {
+  /** Commits in this flush. 0 when the geometry moved with no commit at all (a prepend/trim). */
+  readonly commits: number
+  /** Signed sum of every commit's own `delta`. */
+  readonly deltaSum: number
+  /**
+   * How far the whole offset map actually moved. This is NOT `deltaSum`, because a commit
+   * also feeds the per-kind median, and a median that steps re-prices every still-unmeasured
+   * row of that kind in the window. So the map can move while `deltaSum` is 0.
+   *
+   * The gap between the two is that re-pricing PLUS anything else that moved the map in the
+   * same flush: a list mutation (prepend, append, trim), a height-cache eviction that reverts
+   * a row to its estimate, or a stale-key prune. Read it beside `commits`: `commits: 0` with
+   * a non-zero delta means no measurement caused the move at all.
+   */
+  readonly totalHeightDelta: number
+}
+
+/** The zero batch: no flush sampled yet, or a flush that carried no commit and moved nothing. */
+export const EMPTY_MEASUREMENT_BATCH: MeasurementBatchInfo = { commits: 0, deltaSum: 0, totalHeightDelta: 0 }
+
 export interface UseChatVirtualizerOptions {
   /** Reactive list of rows to virtualize, in display order. */
   items: Accessor<VirtualItem[]>
@@ -289,6 +320,13 @@ export interface UseChatVirtualizerResult {
   estimateHeight: Accessor<number>
   /** Diagnostic: the most recent geometry-changing height commit, for drift-WARN attribution. */
   lastMeasurement: () => MeasurementCommitInfo | undefined
+  /**
+   * Diagnostic: the commits accumulated since the previous call, and reset. Call ONCE per
+   * geometry flush, from the effect that reacts to it and BEFORE anything reads the new
+   * geometry -- that call boundary is what makes the totals mean "this flush" (see
+   * MeasurementBatchInfo). A caller that never calls it just leaves the totals accumulating.
+   */
+  takeMeasurementBatch: () => MeasurementBatchInfo
   /**
    * Compute (without committing) the visible slice for a given scroll position.
    * `lead` extends the overscan in its `dir` (the fling direction) so a fast
@@ -519,6 +557,12 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // Non-reactive -- read at WARN time, never a render input.
   let lastMeasurement: MeasurementCommitInfo | undefined
   let measurementCommitSeq = 0
+  // Diagnostic-only: the commits since the last takeMeasurementBatch, and the total height at
+  // that call. `undefined` until the first call, so the first flush reports a 0 delta instead
+  // of the whole initial content height.
+  let batchCommits = 0
+  let batchDeltaSum = 0
+  let batchBaseTotalHeight: number | undefined
   // Per-kind median of measured heights. An unmeasured row uses the median for its OWN
   // kind (falling back to the global median, then the seed) until visible or hidden DOM
   // measurement commits its real height -- see createPerKindHeightEstimate.
@@ -876,6 +920,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // Record the commit that is about to move the offset map, so a re-pin drift the
     // resulting totalHeight change triggers can name its cause (see MeasurementCommitInfo).
     measurementCommitSeq += 1
+    // One binding for both readers below: lastMeasurement reports this commit's own delta and
+    // the batch sums it, so a later clamp or rounding on one must not miss the other.
+    const delta = height - assumedHeight
     lastMeasurement = {
       id,
       kind,
@@ -883,9 +930,13 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       firstMeasure: isFirst,
       assumedHeight,
       newHeight: height,
-      delta: height - assumedHeight,
+      delta,
       commitSeq: measurementCommitSeq,
     }
+    // Total this commit into the current flush's batch as well: a batched premeasure
+    // overwrites lastMeasurement per row, so only these survive the whole batch.
+    batchCommits += 1
+    batchDeltaSum += delta
     return true
   }
   const commitMeasuredHeight = (
@@ -993,6 +1044,29 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     return committed
   }
 
+  // Close the flush: report the commits that accumulated since the previous call, plus how
+  // far the offset map actually moved across them, then reset. `totalHeight()` reads the
+  // memo, so the caller must be untracked (useChatScroll's re-pin effect uses `on(...)`,
+  // whose body runs untracked) or it would subscribe to geometry it only means to sample.
+  const takeMeasurementBatch = (): MeasurementBatchInfo => {
+    const total = totalHeight()
+    const base = batchBaseTotalHeight
+    batchBaseTotalHeight = total
+    const commits = batchCommits
+    const deltaSum = batchDeltaSum
+    batchCommits = 0
+    batchDeltaSum = 0
+    // The FIRST call is a seeding call, not a flush report. Every counter above it belongs to
+    // the initial mount pass, which no flush boundary separates: the consumer's effect is
+    // `defer: true`, so it never runs at creation, and the row-height persistence load primes
+    // whole pages of heights before it. Reporting those as one flush produced a payload that
+    // contradicted itself -- `commits: 140` beside `totalHeightDelta: 0`, because only the
+    // height baseline was seeded lazily. Report the zero batch and start clean.
+    if (base === undefined)
+      return EMPTY_MEASUREMENT_BATCH
+    return { commits, deltaSum, totalHeightDelta: total - base }
+  }
+
   return {
     range,
     geometryVersion: geomVersion,
@@ -1009,6 +1083,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     heightDebugOfId,
     estimateHeight,
     lastMeasurement: () => lastMeasurement,
+    takeMeasurementBatch,
     computeRange,
     updateViewport,
     measure,

@@ -41,10 +41,16 @@ export const UNEXPLAINED_JUMP_MIN_PX = 32
  */
 export const VISIBLE_ANCHOR_JUMP_PX = 8
 /**
- * Detector C floor: a re-pin that leaves the anchored row displaced on-screen instead of
- * correcting it (an ABSORBED slow-scroll correction -- see useChatScroll's onAnchorDrift)
- * shifts content with no scroll event, so Detector B can't see it. Below this the shift
- * is imperceptible; at or above it the reader notices content move.
+ * Detector C floor, applied to the CUMULATIVE absorbed shift since the last WARN. A re-pin
+ * that leaves the anchored row displaced instead of correcting it (an ABSORBED slow-scroll
+ * correction -- see useChatScroll's onAnchorDrift) shifts content with no scroll event, so
+ * Detector B can't see it, and the engine re-anchors at the displaced position, so each
+ * absorb keeps its displacement and the next one adds to it.
+ *
+ * The sum is what the reader perceives, so the sum is what this gates. Testing it per event
+ * instead reports nothing at all whenever the engine's absorb cap sits below this number
+ * (it is 8px today), while the content still moves a whole screen, one imperceptible step at
+ * a time.
  */
 export const ANCHOR_DRIFT_WARN_PX = 16
 /**
@@ -208,16 +214,25 @@ export interface UnexplainedJumpInfo {
 export interface ScrollDiagnosticsDeps {
   /** WARN-payload DOM snapshot; undefined when the list isn't mounted. Sampled lazily per WARN. */
   domSnapshot: () => Record<string, unknown> | undefined
-  /** The virtualizer's last geometry commit, correlated into the drift / jump payloads. */
+  /** The virtualizer's last geometry commit, correlated into every detector's payload. */
   lastMeasurement: () => unknown
+  /**
+   * The whole flush's commit totals, beside lastMeasurement. A batched premeasure commits a
+   * band at once and keeps only the LAST commit in lastMeasurement, so its `delta` routinely
+   * fails to account for the residual (the reported drifts carried `delta: 0` against a 74px
+   * shift). See MeasurementBatchInfo.
+   *
+   * The caller must stamp the totals with an `ageMs`, because two of the three detectors can
+   * fire outside a geometry flush and would otherwise print an unrelated older flush as this
+   * event's cause. See useChatScroll's measurementBatchPayload.
+   */
+  measurementBatch: () => unknown
   /** The programmatic-guard marker trail, for the Detector B payload. */
   debugMarkers: () => unknown
   /** Whether older history still exists past the loaded TOP edge (Detector A: was the clamp avoidable?). */
   hasOlderMessages: () => boolean
   /** Whether newer history still exists past the loaded BOTTOM edge (Detector A). */
   hasNewerMessages: () => boolean
-  /** Whether the velocity tracker currently reports an active fling (Detector C skips those frames). */
-  isActivelyFlinging: () => boolean
 }
 
 export interface ScrollDiagnostics {
@@ -248,11 +263,24 @@ export function createScrollDiagnostics(deps: ScrollDiagnosticsDeps): ScrollDiag
   // zero epoch (a monotonic clock starts near 0 at page load).
   let lastUnexplainedJumpAt = Number.NEGATIVE_INFINITY
   let unexplainedJumpsSuppressed = 0
-  // Detector C rate-limit bookkeeping (FIXED window from the last emitted WARN, see
-  // ANCHOR_DRIFT_REWARN_MS): the count and signed residual sum of the shifts absorbed since.
+  // Detector C bookkeeping: the count and signed sum of every shift absorbed since the last
+  // emitted WARN. This is the QUANTITY the detector tests, not a by-product of the rate limit
+  // (see emitAnchorDrift), plus the fixed re-warn window (ANCHOR_DRIFT_REWARN_MS).
   let lastAnchorDriftWarnAt = Number.NEGATIVE_INFINITY
-  let anchorDriftWarnsSuppressed = 0
-  let anchorDriftSuppressedPxSum = 0
+  let absorbsSinceLastWarn = 0
+  let absorbedPxSinceLastWarn = 0
+
+  // What every WARN owes about the geometry underneath it: which commit moved the offset map
+  // last, what the whole flush totalled (a batched premeasure commits a band at once, so one
+  // commit rarely explains the residual), and the DOM at WARN time. Built in ONE place so the
+  // next correlation field is added once rather than three times -- adding `batch` had to
+  // touch all three payloads, and the clamp payload had been missing both fields until then.
+  // A thunk, so every emitter's early returns still run before any snapshot is taken.
+  const causationContext = () => ({
+    measurement: deps.lastMeasurement(),
+    batch: deps.measurementBatch(),
+    dom: deps.domSnapshot(),
+  })
 
   // Detector A: a keep-position re-pin clamped against a scroll boundary, so the
   // anchored row jumped by the clamp amount. WARN only when the shift is visible AND
@@ -268,47 +296,51 @@ export function createScrollDiagnostics(deps: ScrollDiagnosticsDeps): ScrollDiag
       scrollLog.warn('anchor re-pin clamped at a loaded edge -- anchored row jumped', {
         ...info,
         clampedAt: info.clampPx > 0 ? 'top' : 'bottom',
-        dom: deps.domSnapshot(),
+        ...causationContext(),
       })
     }
   }
 
-  // Detector C (outcome-based): the re-pin left the anchored row displaced by
-  // residualPx instead of correcting it -- a content shift that produces NO scroll
-  // event, so Detector B can't see it. Only an ABSORBED shift is reported: it is a
-  // permanent, user-visible displacement. A 'deferred-fling' shift is transient by
-  // construction -- the engine defers only under a live (or cold-seed presumed) fling
-  // and the fling-settle re-anchors it once momentum stops. Surface absorbed shifts above
-  // the visible floor, skip the fast-fling frames (isActivelyFlinging -- the shift blends
-  // into momentum there), and rate-limit the rest (see ANCHOR_DRIFT_REWARN_MS): what
-  // survives is an aggregate of the shifts the reader perceives while scrolling slowly or
-  // just after stopping.
+  // Detector C (outcome-based): the re-pin left the anchored row displaced instead of
+  // correcting it -- a content shift that produces NO scroll event, so Detector B can't see
+  // it. Only an ABSORBED shift is reported. It is permanent: the engine re-anchors AT the
+  // displaced position, so the displacement stays and the next absorb adds to it.
+  //
+  // The tested quantity is therefore the RUNNING SUM since the last WARN, not one event. A
+  // per-event floor missed the real harm and, once the engine's absorb cap dropped under this
+  // floor, missed every absorb: no single shift can reach 16px when the cap is 8, so the
+  // detector fell permanently silent while content still moved. Forty 6px absorbs move the
+  // content a quarter of a screen, and each one alone is imperceptible.
+  //
+  // A 'deferred-fling' shift is NOT reported here, but not because it is transient: the
+  // fling-settle drops the accumulated correction and re-anchors, so that shift is permanent
+  // too. It is excluded because the reader watched the viewport coast to that position under
+  // their own gesture, which is the one case where landing at the shifted position is what
+  // they expect. Only the drop-with-no-gesture case is an anomaly.
   const emitAnchorDrift = (info: AnchorDriftInfo, now: number): void => {
-    if (info.reason !== 'absorbed'
-      || Math.abs(info.residualPx) < ANCHOR_DRIFT_WARN_PX
-      || deps.isActivelyFlinging()) {
+    if (info.reason !== 'absorbed')
       return
-    }
-    if (now - lastAnchorDriftWarnAt <= ANCHOR_DRIFT_REWARN_MS) {
-      anchorDriftWarnsSuppressed += 1
-      anchorDriftSuppressedPxSum += info.residualPx
+    absorbsSinceLastWarn += 1
+    absorbedPxSinceLastWarn += info.residualPx
+    // No fast-fling skip here, because an absorbed shift can never BE a fast-fling frame: the
+    // engine produces 'absorbed' only when isFling() is false, which requires a fresh sample
+    // BELOW the fling threshold -- the exact complement of isActivelyFlinging(). A guard on it
+    // would read as protection and suppress nothing.
+    if (Math.abs(absorbedPxSinceLastWarn) < ANCHOR_DRIFT_WARN_PX)
       return
-    }
+    if (now - lastAnchorDriftWarnAt <= ANCHOR_DRIFT_REWARN_MS)
+      return
     lastAnchorDriftWarnAt = now
     scrollLog.warn('anchored content drifted without correction', {
       ...info,
-      // Absorbed shifts rate-limited away since the previous WARN (count + signed sum),
-      // so the aggregate drift is still visible in the emitted stream.
-      suppressedSinceLastWarn: anchorDriftWarnsSuppressed,
-      suppressedResidualPxSum: Math.round(anchorDriftSuppressedPxSum),
-      // The measurement that moved the geometry this re-pin absorbed: firstMeasure + delta
-      // tell whether it was an estimate->real correction or a re-measure, and whether this
-      // single commit's delta accounts for residualPx or a batch did.
-      measurement: deps.lastMeasurement(),
-      dom: deps.domSnapshot(),
+      // The accumulated shift this WARN reports, and how many absorbs built it (this one
+      // included). `residualPx` above is only the single absorb that crossed the floor.
+      driftPxSinceLastWarn: Math.round(absorbedPxSinceLastWarn),
+      absorbsSinceLastWarn,
+      ...causationContext(),
     })
-    anchorDriftWarnsSuppressed = 0
-    anchorDriftSuppressedPxSum = 0
+    absorbsSinceLastWarn = 0
+    absorbedPxSinceLastWarn = 0
   }
 
   // Detector B: warn on an unexplained teleport between two consecutive scroll events (the
@@ -337,9 +369,8 @@ export function createScrollDiagnostics(deps: ScrollDiagnosticsDeps): ScrollDiag
       wasActivelyFlinging: info.wasActivelyFlinging,
       // Unexplained events burst-suppressed since the previous emitted WARN.
       suppressedSinceLastWarn: unexplainedJumpsSuppressed,
-      measurement: deps.lastMeasurement(),
       markers: deps.debugMarkers(),
-      dom: deps.domSnapshot(),
+      ...causationContext(),
     })
     unexplainedJumpsSuppressed = 0
   }

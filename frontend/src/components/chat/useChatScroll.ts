@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import type { UseChatVirtualizerResult, ViewportLead } from './useChatVirtualizer'
+import type { MeasurementBatchInfo, UseChatVirtualizerResult, ViewportLead } from './useChatVirtualizer'
 import type { AgentChatMessage, AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from 'solid-js'
@@ -20,6 +20,7 @@ import { createStickyBottom } from './chatScrollSticky'
 import { createScrollVelocity } from './chatScrollVelocity'
 import { createViewportRestore } from './chatScrollViewportRestore'
 import { createChatSeek } from './chatSeek'
+import { EMPTY_MEASUREMENT_BATCH } from './useChatVirtualizer'
 
 /** Saved/queried scroll position — anchored to a message, see SavedViewportScroll. */
 export type ChatScrollState = SavedViewportScroll
@@ -40,7 +41,7 @@ export type ChatScrollVirtualizer = Pick<
   UseChatVirtualizerResult,
   'totalHeight' | 'updateViewport' | 'anchorAt' | 'scrollTopForAnchor' | 'scrollTopNearAnchor' | 'geometryVersion'
   | 'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements' | 'lastMeasurement' | 'hasMeasuredHeight'
-  | 'setFastScrollActive'
+  | 'setFastScrollActive' | 'takeMeasurementBatch'
 >
 
 /**
@@ -117,12 +118,13 @@ if (import.meta.hot) {
  * Scroll speed (px/ms) at or above which a wheel/trackpad scroll counts as an
  * inertial FLING whose momentum a scrollTop write would cancel -- so the geometry
  * re-pin defers a small correction into flingSettle instead of writing it. Below
- * it the scroll is a slow DELIBERATE gesture: medium estimate corrections are
- * absorbed by re-anchoring to the live viewport, while large structural shifts
- * still write immediately. A fling fires events tens of px apart every ~16ms
- * (well above 1 px/ms); a deliberate scroll creeps a few px per event.
- * Unknown/idle velocity is treated as a fling (defer), so the prior always-defer
- * behavior holds until a slow cadence is established.
+ * it the scroll is a slow DELIBERATE gesture. The re-pin then absorbs a correction
+ * only when it is imperceptible AND arrives inside the scroll handler (see
+ * SMALL_USER_SCROLL_REPIN_ABSORB_PX); every larger correction writes immediately.
+ * A fling fires events tens of px apart every ~16ms (well above 1 px/ms); a
+ * deliberate scroll creeps a few px per event. The tracker reports an unknown or
+ * idle velocity as a fling (defer), so the prior always-defer behavior holds until
+ * the tracker measures a slow cadence.
  */
 const FLING_VELOCITY_THRESHOLD_PX_PER_MS = 1
 /**
@@ -523,6 +525,23 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   let lastNativeKeyScrollAt = Number.NEGATIVE_INFINITY
   const hasRecentKeyboardScroll = () => monotonicNow() - lastNativeKeyScrollAt <= KEYBOARD_SCROLL_GRACE_MS
 
+  // The height commits of the geometry flush that the re-pin effect below reacts to (see
+  // MeasurementBatchInfo). The effect samples it, and a WARN reads it here: `lastMeasurement`
+  // alone names only the final row of a batched premeasure, so a drift it cannot explain
+  // reads as "the geometry moved for no reason".
+  //
+  // Only that effect refreshes it, and two callers reach a WARN without passing through it:
+  // Detector B fires from handleScroll (a scroll event carries no flush of its own), and
+  // applyDeferredRepinOnCancel / the viewport restore re-pin directly. Each would print an
+  // older flush as this event's cause, so every payload carries `ageMs` beside the totals.
+  // A batch that is hundreds of ms old did not cause the event you are reading.
+  let measurementBatch: MeasurementBatchInfo = EMPTY_MEASUREMENT_BATCH
+  let measurementBatchAt = Number.NEGATIVE_INFINITY
+  const measurementBatchPayload = () => ({
+    ...measurementBatch,
+    ageMs: measurementBatchAt === Number.NEGATIVE_INFINITY ? null : Math.round(monotonicNow() - measurementBatchAt),
+  })
+
   const scrollDomDebugSnapshot = () => {
     const el = messageListRef
     if (!el)
@@ -548,10 +567,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   const diagnostics = createScrollDiagnostics({
     domSnapshot: scrollDomDebugSnapshot,
     lastMeasurement: () => virt.lastMeasurement(),
+    measurementBatch: measurementBatchPayload,
     debugMarkers: () => progGuard.debugMarkers(),
     hasOlderMessages: () => !!opts.hasOlderMessages?.(),
     hasNewerMessages: () => !!opts.hasNewerMessages?.(),
-    isActivelyFlinging: () => scrollVelocity.isActivelyFlinging(),
   })
 
   // True only while a USER scroll event is refreshing newly revealed rows (inside
@@ -664,8 +683,24 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     writeScrollTop: writeScrollTopProgrammatically,
     velocity: {
       isFling: () => scrollVelocity.isFling(),
-      isActivelyFlinging: () => scrollVelocity.isActivelyFlinging() && hasRecentMomentumInput(),
-      hasRecentMomentumInput,
+      // The engine asks ONE question here: would a scrollTop write cancel INERTIA? Two facts
+      // answer it, and neither alone does.
+      //
+      // isCoasting, not isActivelyFlinging: momentum decays continuously, so a speed test
+      // reports "stopped" for the last few hundred ms of a coast that still visibly moves,
+      // and the engine then wrote into it. The tracker latches the coast on a measured fling
+      // and clears it when the motion stops, so the whole coast is covered, tail included.
+      //
+      // AND no direct manipulation: a fast finger or scrollbar drag measures like a coast and
+      // carries no inertia, so a write during one costs nothing. It must not defer either --
+      // handleScroll schedules the fling-settle for momentum scrolls only, so a correction
+      // deferred by a drag has nothing to apply it, ever.
+      //
+      // NOT hasRecentMomentumInput(). That 750ms grace stands in for both facts and is wrong
+      // about both: it lapses mid-coast (the OS drives a coast with bare scroll events), and
+      // it is false for a whole drag (markMomentumInput fires on a wheel event and on
+      // touch-END only), so it kept drags out of the deferral only by accident.
+      isActivelyFlinging: () => scrollVelocity.isCoasting() && !isScrollInputActive(),
     },
     flingSettle: () => flingSettle,
     isUserScrolling: () => userScrolling,
@@ -1346,6 +1381,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // `defer:true` so the first render doesn't re-pin before anything has been
   // measured.
   createEffect(on([() => virt.totalHeight(), () => virt.geometryVersion()], () => {
+    // Close the measurement batch FIRST: every commit of this flush already landed, and
+    // nothing below read the new geometry yet, so these totals describe exactly the geometry
+    // change the re-pin is about to compensate. `on(...)` runs this body untracked, so the
+    // totalHeight read inside takeMeasurementBatch adds no dependency.
+    measurementBatch = virt.takeMeasurementBatch()
+    measurementBatchAt = monotonicNow()
     // Correct scrollTop synchronously (same paint as the row transforms — no
     // wiggle), but defer the slice recompute to the next frame so mounting rows
     // never re-enters the in-progress ResizeObserver delivery (no RO loop).
@@ -1968,8 +2009,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       onScroll: handleScroll,
       onWheel: (event) => {
         releaseRowTopHold()
-        if (!event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0)
+        if (!event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0) {
           markMomentumInput()
+          // The user drives this increment, so the scroll it produces is not inertia however
+          // fast it measures. Clear the coast latch, or one brisk wheel notch over the fling
+          // threshold would mark a coast that never happens and defer corrections through the
+          // rest of a deliberate scroll. A real coast re-latches from its own samples, because
+          // the OS drives it with bare scroll events and sends no further wheel input.
+          scrollVelocity.noteUserInput()
+        }
         handleWheel(event)
       },
       onKeyDown: (event) => {

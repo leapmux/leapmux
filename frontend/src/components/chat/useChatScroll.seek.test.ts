@@ -5,7 +5,7 @@ import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, measurementDeferralNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -16,7 +16,7 @@ function mkMsgs(seqs: number[]): AgentChatMessage[] {
 /** A virtualizer stub that resolves an anchor to `Number(seq) * 200` scrollTop. */
 function seekVirt(): ChatScrollVirtualizer {
   return {
-    ...measurementDeferralNoOps(),
+    ...virtualizerNoOps(),
     totalHeight: () => 5000,
     geometryVersion: () => 0,
     updateViewport: () => {},

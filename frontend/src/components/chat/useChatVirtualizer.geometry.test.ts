@@ -5,7 +5,7 @@ import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 import { HEIGHT_CACHE_MAX, sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
 import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.testkit'
 
-describe('usechatvirtualizer geometry', () => {
+describe('useChatVirtualizer geometry', () => {
   it('computes estimate-only offsets and total height', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(5))
@@ -249,6 +249,135 @@ describe('usechatvirtualizer geometry', () => {
       })
       // commitSeq advances, so two consecutive drift WARNs reveal commits between them.
       expect(reMeasure?.commitSeq ?? 0).toBeGreaterThan(seqAfterFirst)
+      dispose()
+    })
+  })
+
+  it('totals a whole flush of commits, which the last commit alone cannot explain', () => {
+    createRoot((dispose) => {
+      // Three unmeasured tool_result rows plus one that will be committed. The per-kind
+      // median re-prices the unmeasured ones, so committing a row AT the current estimate
+      // (delta 0 -- the shape the reported drift WARNs carried) can still move the map.
+      const items: VirtualItem[] = [
+        { id: 'a', hasSpanLines: false, kind: 'tool_result' },
+        { id: 'b', hasSpanLines: false, kind: 'tool_result' },
+        { id: 'c', hasSpanLines: false, kind: 'tool_result' },
+        { id: 'd', hasSpanLines: false, kind: 'tool_result' },
+      ]
+      const [list] = createSignal(items)
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 0,
+        gapLargePx: 0,
+      })
+      // Seed the baseline: the first call reports a 0 delta rather than the whole height.
+      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 0 })
+      expect(virt.totalHeight()).toBe(400) // 4 x the 100 seed
+
+      // One flush, two commits. 'a' at 40 drops the tool_result median to 40, which re-prices
+      // b/c/d; 'd' then commits AT that median, so its own delta is 0.
+      virt.measure('a', 40)
+      virt.measure('d', 40)
+      expect(virt.lastMeasurement()).toMatchObject({ id: 'd', delta: 0 })
+      expect(virt.totalHeight()).toBe(160) // 4 x 40
+
+      const batch = virt.takeMeasurementBatch()
+      expect(batch.commits).toBe(2)
+      expect(batch.deltaSum).toBe(-60) // only 'a' moved its own row: (40 - 100) + (40 - 40)
+      // The map moved 240px, four times what the commits' own deltas account for -- the rest
+      // is the median re-pricing b and c. This is what the last commit cannot report.
+      expect(batch.totalHeightDelta).toBe(-240)
+
+      // Taking the batch RESETS it, so the next flush starts clean.
+      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 0 })
+      dispose()
+    })
+  })
+
+  it('counts only the commits that reached the offset map, never a rejected one', () => {
+    createRoot((dispose) => {
+      const items: VirtualItem[] = [{ id: 'a', hasSpanLines: false, heightKey: 'k1' }]
+      const [list] = createSignal(items)
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 0,
+        gapLargePx: 0,
+      })
+      virt.takeMeasurementBatch() // seed the baseline
+
+      // Each of these is refused BEFORE the commit lands, so none may inflate the totals --
+      // a count that drifts from the real commits makes the WARN attribution a lie.
+      expect(virt.measure('a', 0)).toBe(false) // non-positive: would poison the offset map
+      expect(virt.measure('a', Number.NaN)).toBe(false) // NaN
+      expect(virt.measure('a', Number.POSITIVE_INFINITY)).toBe(false) // Infinity
+      expect(virt.primeHeight('a', 250, 'stale-key')).toBe(false) // heightKey mismatch
+      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 0 })
+
+      expect(virt.measure('a', 250)).toBe(true)
+      // A re-measure inside the epsilon changes no offset, so it is not a commit either.
+      expect(virt.measure('a', 250.2)).toBe(false)
+      expect(virt.takeMeasurementBatch()).toEqual({ commits: 1, deltaSum: 150, totalHeightDelta: 150 })
+      dispose()
+    })
+  })
+
+  it('reports the FIRST take as an empty batch, not as the startup pass', () => {
+    createRoot((dispose) => {
+      const items: VirtualItem[] = [
+        { id: 'a', hasSpanLines: false, kind: 'tool_result' },
+        { id: 'b', hasSpanLines: false, kind: 'tool_result' },
+      ]
+      const [list] = createSignal(items)
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 0,
+        gapLargePx: 0,
+      })
+
+      // Commits that land before anyone takes a batch belong to the initial mount pass -- the
+      // row-height persistence primes whole pages of heights, and the consuming effect is
+      // `defer: true`, so it never runs at creation to separate them. No flush boundary exists
+      // to attribute them to.
+      virt.measure('a', 40)
+      virt.measure('b', 40)
+      expect(virt.totalHeight()).toBe(80)
+
+      // Reporting them as one flush produced a payload that contradicted itself: a real commit
+      // count against a zero map movement, because only the height baseline was seeded lazily.
+      // All three fields must agree that nothing was measured yet.
+      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 0 })
+
+      // And the seeding call must not swallow the NEXT flush, which is a real one.
+      virt.measure('a', 90)
+      expect(virt.takeMeasurementBatch()).toEqual({ commits: 1, deltaSum: 50, totalHeightDelta: 50 })
+      dispose()
+    })
+  })
+
+  it('reports zero commits when the geometry moved without one (a prepend)', () => {
+    createRoot((dispose) => {
+      const [list, setList] = createSignal<VirtualItem[]>([{ id: 'b', hasSpanLines: false }])
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 0,
+        estimateHeight: 100,
+        gapSmallPx: 0,
+        gapLargePx: 0,
+      })
+      virt.takeMeasurementBatch() // seed the baseline
+      expect(virt.totalHeight()).toBe(100)
+
+      // A prepend moves the offset map with no height commit at all. `commits: 0` beside a
+      // non-zero totalHeightDelta is what tells a drift WARN that no measurement caused it.
+      setList([{ id: 'a', hasSpanLines: false }, { id: 'b', hasSpanLines: false }])
+      expect(virt.totalHeight()).toBe(200)
+      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 100 })
       dispose()
     })
   })
@@ -515,7 +644,7 @@ describe('usechatvirtualizer geometry', () => {
     })
   })
 
-  describe('heightdebugofid (raw-json debug surface)', () => {
+  describe('heightDebugOfId (raw-json debug surface)', () => {
     it('returns measured undefined before the row is measured', () => {
       createRoot((dispose) => {
         const { virt } = setup(plainItems(2))
@@ -555,7 +684,7 @@ describe('usechatvirtualizer geometry', () => {
   })
 })
 
-describe('samevirtualitems geometry equality', () => {
+describe('sameVirtualItems geometry equality', () => {
   const base: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1', seq: 1n, kind: 'user_text' }
 
   it('is true for arrays equal on the geometry fields', () => {
@@ -585,7 +714,7 @@ describe('samevirtualitems geometry equality', () => {
   })
 })
 
-describe('primeheights bulk hydration and snapshotheights', () => {
+describe('primeHeights bulk hydration and snapshotheights', () => {
   it('commits a whole batch with ONE geometryVersion bump', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(4))
