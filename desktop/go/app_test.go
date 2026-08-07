@@ -224,6 +224,7 @@ type recordingSoloInstance struct {
 }
 
 func (*recordingSoloInstance) LocalListenURL() string { return "" }
+func (*recordingSoloInstance) Wait() error            { return nil }
 func (s *recordingSoloInstance) Stop() error {
 	s.stops++
 	return nil
@@ -237,6 +238,7 @@ type inspectingSoloInstance struct {
 }
 
 func (*inspectingSoloInstance) LocalListenURL() string { return "" }
+func (*inspectingSoloInstance) Wait() error            { return nil }
 func (s *inspectingSoloInstance) Stop() error {
 	if s.onStop != nil {
 		s.onStop()

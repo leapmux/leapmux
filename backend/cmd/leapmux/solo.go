@@ -8,7 +8,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/solo"
 	"github.com/leapmux/leapmux/util/version"
 )
@@ -21,48 +20,20 @@ func runSolo(args []string, soloMode bool) error {
 		}
 	}
 
-	modeName := "solo"
-	defaultListen := "127.0.0.1:4327"
-	if !soloMode {
-		modeName = "dev"
-		defaultListen = ":4327"
-	}
-	configDir := "~/.config/leapmux/" + modeName
-	configFile := configDir + "/" + modeName + ".yaml"
-
-	cliFlags := []string{
-		"listen", "data-dir", "dev-frontend",
-		"storage-sqlite-max-conns",
-		"api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds",
-		"log-level", "use-login-shell",
-	}
-	if !soloMode {
-		cliFlags = append(cliFlags, "public-url")
-	}
-	// Worker-scoped knobs for the embedded worker; see solo.defaultExtraFlags for
-	// why max-incomplete-chunked is an extra rather than a hub flag. These mirror
-	// solo.defaultExtraFlags (the desktop-oriented default) so a `leapmux solo`/
-	// `leapmux dev` invocation exposes the same worker knobs the desktop launcher
-	// does -- without this, --use-login-shell=false is parsed by neither list and
-	// is silently dropped on the floor (the worker keeps wrapping claude in the
-	// login shell against the explicit flag).
-	extraFlags := []hubconfig.ExtraFlagDef{
-		{Name: "encryption-mode", KoanfKey: "encryption_mode", Usage: "encryption mode (classic, post-quantum)", StrDefault: "post-quantum"},
-		{Name: "use-login-shell", KoanfKey: "use_login_shell", Usage: "wrap claude invocation in user's login shell", StrDefault: "true"},
-		{Name: "max-incomplete-chunked", KoanfKey: "max_incomplete_chunked", Usage: "maximum in-flight chunked sequences per channel for the embedded worker (default 4)", StrDefault: "0", Category: "Timeout and limit options"},
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Everything but Args and DevMode is left unset, so solo.Start derives it from
+	// DevMode: the listen address, the config dir and file, the CLI flag allowlist
+	// and the worker-scoped extra flags. This file used to spell all of it out, and
+	// the flag lists DRIFTED -- defaultCLIFlags gained max-connections-per-user,
+	// max-workers-per-user and the two sqlite sizing knobs, the copy here did not,
+	// and `leapmux solo --max-connections-per-user=64` answered "flag provided but
+	// not defined" while solo's own test asserted the flag was exposed. One source
+	// of truth, in the package whose comments explain why each default is what it is.
 	inst, err := solo.Start(ctx, solo.Config{
-		Listen:     defaultListen,
-		ConfigDir:  configDir,
-		ConfigFile: configFile,
-		Args:       args,
-		CLIFlags:   cliFlags,
-		ExtraFlags: extraFlags,
-		DevMode:    !soloMode,
+		Args:    args,
+		DevMode: !soloMode,
 	})
 	if err != nil {
 		return err
