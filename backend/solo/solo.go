@@ -60,6 +60,28 @@ var workerDrainTimeout = 5 * time.Second
 // were passing on a NewServer failure instead.
 var serveHub = func(ctx context.Context, s *hub.Server) error { return s.Serve(ctx) }
 
+// bringUpWorker brings the local Worker up. A var so a test can park bring-up
+// mid-flight and kill the Hub underneath it.
+//
+// It has to be a seam for the same reason serveHub does: nothing reaches the case
+// from outside. Every real way to fail bring-up -- no admin user yet, an
+// unreadable state file, a store error -- fails AT ONCE, at the first statement
+// that touches the database or the disk, so no fixture can hold Start inside the
+// bring-up window long enough for the Hub to die there. Without this, the gate
+// that keeps a dead Hub from being blamed on the Worker, and the one that stops
+// Start returning a healthy Instance for a Hub that already exited, both had no
+// coverage at all.
+//
+// A package var rather than an Instance field because Start constructs the
+// Instance itself: at the point a test would have to inject, there is nothing to
+// inject into.
+//
+// bringUpLocalWorker stays directly callable, and
+// TestSolo_AHubThatDiesWhileServingTearsTheInstanceDownWithoutReporting and
+// TestSolo_AStopRequestedHubErrorIsReportedOnlyByStop drive Start through the
+// real implementation, so the seam cannot drift away from what production does.
+var bringUpWorker = bringUpLocalWorker
+
 // nonLoopbackListenWarnMsg is the security warning emitted when solo mode
 // binds to a non-loopback address. Solo mode injects a soloUser into the
 // auth interceptor (see hub.NewServer and auth.NewInterceptor), so every
@@ -235,8 +257,55 @@ func (i *Instance) join() {
 	}
 }
 
+// hubFailure reports the startup error to attribute to a Hub that has already
+// exited, or nil if it was still serving when asked. stage names the startup
+// window, for the case where the Hub exited without an error of its own.
+//
+// It exists because "has the Hub already exited?" has to be asked at the STAGE
+// BOUNDARIES of startup, not inside the arms of a select or a switch: hub.NewServer
+// binds both listeners before Serve is ever called, so a bare connect-and-close
+// readiness probe succeeds against a Hub whose Serve has already returned an error,
+// and every arm that asked the question separately answered it differently.
+//
+// It is TOTAL once hubDone is closed: it never returns nil for an exited Hub. The
+// readiness select relies on that, so its hubDone arm can decide only to stop
+// waiting and carry no error of its own.
+//
+// Reading hubErr after observing hubDone needs no further synchronisation: the Hub
+// goroutine assigns it before closing hubDone. A nil hubDone reads as "still
+// serving", which keeps this usable on a half-built Instance for the same reason
+// shutdown and join are.
+//
+// This is a SAMPLE, not a guarantee: a Hub that exits a moment later still yields a
+// healthy Instance, which is Wait's job to report. It closes the wide windows, not
+// every window.
+func (i *Instance) hubFailure(ctx context.Context, stage string) error {
+	select {
+	case <-i.hubDone:
+	default:
+		return nil
+	}
+	// hubErr first, deliberately: a genuine teardown failure (lease release, store
+	// close) that coincides with a cancel is more information than context.Canceled,
+	// and %w keeps errors.Is(err, context.Canceled) working for a caller that wants
+	// to tell the two apart.
+	if i.hubErr != nil {
+		return fmt.Errorf("hub serve: %w", i.hubErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("hub shut down %s: %w", stage, err)
+	}
+	return fmt.Errorf("hub serve exited %s", stage)
+}
+
 // Start launches a Hub and Worker in-process. It returns an Instance that
 // can stop the services and report their terminal cleanup error.
+//
+// A nil error means the Hub had not exited by the time Start returned -- not that
+// it is still alive. Nothing can promise the latter: the Hub can fail one
+// instruction after the return. Once Start has succeeded, Wait and Stop are the
+// reporters of a Hub that dies; see the watcher goroutine below for why they are
+// the only ones.
 func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	logging.Setup()
 
@@ -386,34 +455,47 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		inst.shutdown()
 	}()
 
-	// Wait for Hub's local listener (unix socket or named pipe). Race
-	// against inst.hubDone so that if Serve returns before the listener
-	// is ready, we surface the underlying Serve error (e.g. "bind:
-	// invalid argument") instead of the generic "not ready" timeout.
+	// Wait for Hub's local listener (unix socket or named pipe). The hubDone arm
+	// is what keeps a Hub that failed instantly from paying out WaitReady's whole
+	// 5s budget: hub.NewServer has already bound both listeners, so the probe
+	// CONNECTS to a Hub whose Serve has returned and the wait would otherwise
+	// succeed on a corpse.
+	//
+	// The select is a pure wait -- the same division waitSolo draws: both arms
+	// choose WHEN to stop, never WHAT to report. That matters because both can be
+	// ready at once for exactly the reason above, and Go picks between ready arms
+	// arbitrarily; putting the verdict AFTER the select is what makes the pick
+	// irrelevant. readyCh is buffered so the abandoned probe, which only cancelHub
+	// inside join unblocks, cannot leak on its send.
+	//
+	// The verdict is hubFailure alone, with no "unless hubErr is context.Canceled"
+	// carve-out. That guard dated from when hubCtx was a child of ctx and a parent
+	// cancel hit Serve instantly; hubCtx is detached now, so hubErr can only be
+	// context.Canceled in a microsecond window -- and when the guard did fire it
+	// returned a nil Instance, making hubErr permanently unreachable and discarding
+	// any non-ctx cause joined into it.
 	readyCh := make(chan error, 1)
 	go func() { readyCh <- locallisten.WaitReady(hubCtx, listenURL) }()
+	var readyErr error
 	select {
-	case err := <-readyCh:
-		if err != nil {
-			inst.join()
-			if inst.hubErr != nil && !errors.Is(inst.hubErr, context.Canceled) {
-				return nil, fmt.Errorf("hub serve: %w", inst.hubErr)
-			}
-			return nil, fmt.Errorf("wait for hub local listener: %w", err)
-		}
+	case readyErr = <-readyCh:
 	case <-inst.hubDone:
+		// No error of its own: hubFailure is total once hubDone is closed.
+	}
+	if hubErr := inst.hubFailure(ctx, "before the listener became ready"); hubErr != nil {
 		inst.join()
-		if inst.hubErr != nil {
-			return nil, fmt.Errorf("hub serve: %w", inst.hubErr)
-		}
-		return nil, errors.New("hub serve exited before listener became ready")
+		return nil, hubErr
+	}
+	if readyErr != nil {
+		inst.join()
+		return nil, fmt.Errorf("wait for hub local listener: %w", readyErr)
 	}
 
 	// In dev mode the first admin may not exist yet; defer worker bringup
 	// until /setup completes.
 	statePath := filepath.Join(workerDataDir, "state.json")
 	setupWorker := func(ctx context.Context) error {
-		return bringUpLocalWorker(ctx, &inst.workerWork, &inst.workerDrained, server, statePath, workerDataDir, hubCfg, listenURL, modeName)
+		return bringUpWorker(ctx, &inst.workerWork, &inst.workerDrained, server, statePath, workerDataDir, hubCfg, listenURL, modeName)
 	}
 	// Hold a Worker-side token ACROSS bring-up. Without it a caller cancelling
 	// during setup lets the watcher's shutdown sample an idle counter, cancel
@@ -425,6 +507,35 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 	inst.workerWork.Add()
 	inst.workerDrained.Add()
 	err = setupWorker(workerCtx)
+
+	// One spelling of "give the bring-up tokens back and tear the half-built
+	// instance down", for the same reason join is one spelling of the wait set.
+	// The Done()s have to precede join, or join's workerWork.DoneChan() never
+	// closes and the teardown parks forever on tokens only this frame holds.
+	failBringUp := func(cause error) (*Instance, error) {
+		inst.workerDrained.Done()
+		inst.workerWork.Done()
+		inst.join()
+		return nil, cause
+	}
+
+	// Bring-up is the only slow statement between the readiness verdict and the
+	// return: SQLite, state-file I/O, and on a first launch ML-KEM + SLH-DSA
+	// keygen. So it is the window in which a Serve failure most plausibly lands,
+	// and the one place a Hub that died would otherwise be reported as the
+	// Worker's fault -- the watcher cancels workerCtx, so bring-up comes back
+	// saying "context canceled" -- or, when bring-up happened to succeed anyway,
+	// not reported at all.
+	//
+	// Before the switch, so it covers all three arms, the dev-mode deferral
+	// included: a poller must not be launched against a Hub that is already gone.
+	// What remains after it is a go statement, two counter releases and a log
+	// line -- no wait -- so a Hub dying past this point is indistinguishable from
+	// one dying an instruction after Start returns, which Wait and Stop report.
+	if hubErr := inst.hubFailure(ctx, "while the worker was starting"); hubErr != nil {
+		return failBringUp(hubErr)
+	}
+
 	switch {
 	case err == nil:
 		// Worker is up.
@@ -438,10 +549,7 @@ func Start(ctx context.Context, cfg Config) (*Instance, error) {
 		inst.workerDrained.Add()
 		go pollForDeferredWorkerSetup(workerCtx, &inst.workerWork, &inst.workerDrained, setupWorker)
 	default:
-		inst.workerDrained.Done()
-		inst.workerWork.Done()
-		inst.join()
-		return nil, fmt.Errorf("auto-register worker: %w", err)
+		return failBringUp(fmt.Errorf("auto-register worker: %w", err))
 	}
 	inst.workerDrained.Done()
 	inst.workerWork.Done()
