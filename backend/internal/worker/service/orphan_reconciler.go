@@ -58,6 +58,12 @@ type OrphanReconciler struct {
 	// reconcileWorktrees removes it, so a transient zero-live window during
 	// startup or worktree reuse is never mistaken for a strand.
 	prevOrphanWorktrees map[string]time.Time
+	// prevOrphanTabs maps a reconcilable tab to when it FIRST looked absent from
+	// the hub's owned-tab list. A tab must stay absent for tabGrace before any
+	// arm tears it down. See orphanTabGrace for what that window bounds.
+	prevOrphanTabs map[ownedTabKey]time.Time
+	// tabGrace is orphanTabGrace unless a caller overrode it.
+	tabGrace time.Duration
 }
 
 // OrphanReconcilerOptions configures NewOrphanReconciler.
@@ -70,6 +76,13 @@ type OrphanReconcilerOptions struct {
 	Interval time.Duration
 	Now      func() time.Time
 	Logger   *slog.Logger
+	// TabGrace overrides orphanTabGrace, the delay between a tab first looking
+	// absent from the hub and an arm tearing it down. Zero selects the default.
+	// A negative value disables the grace, which only a test that drives the
+	// real Run loop in real time should choose -- production must keep the
+	// window, because it is what stops a nudge-driven pass from preempting the
+	// close RPC that is still in flight.
+	TabGrace time.Duration
 	// ReapWorktree, when set, enables the orphan-worktree GC pass: it is
 	// invoked for each worktree confirmed orphaned across two consecutive
 	// reconcile passes. Wire it to (*Service).ReapOrphanWorktree.
@@ -109,6 +122,9 @@ func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn fu
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.TabGrace == 0 {
+		opts.TabGrace = orphanTabGrace
+	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
@@ -133,6 +149,8 @@ func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn fu
 		reapWorktree:        opts.ReapWorktree,
 		closeTab:            opts.CloseTab,
 		prevOrphanWorktrees: make(map[string]time.Time),
+		prevOrphanTabs:      make(map[ownedTabKey]time.Time),
+		tabGrace:            opts.TabGrace,
 	}
 }
 
@@ -143,6 +161,25 @@ func NewOrphanReconciler(queries *db.Queries, files *FileTabPathStore, listFn fu
 // magnitude, deliberately: over-waiting costs a directory a later pass reclaims,
 // while under-waiting destroys a live tab's worktree.
 const orphanWorktreeGrace = 2 * time.Minute
+
+// orphanTabGrace is how long a locally open tab must stay absent from the hub's
+// owned-tab list before an arm tears it down.
+//
+// It bounds the window that a client's OWN close opens. The client emits the
+// CRDT TombstoneTab first and sends the close RPC second, on a different
+// transport, and the hub nudges this worker the moment it applies that
+// tombstone. So a nudge-driven pass can see the absence while the close that
+// carries the user's WorktreeAction is still in flight. A reap in that window
+// runs the KEEP-shaped convergence teardown, which drops the tab's
+// worktree_tabs link; the real REMOVE close then finds no link, degrades to
+// KEEP, and leaves the worktree on disk with nothing left to reclaim it -- a
+// zero-link worktree is excluded from ListOrphanCandidateWorktrees forever.
+//
+// The measured window is 2-6 ms in a single-process `leapmux dev`, so this is
+// generous by three orders of magnitude, deliberately: over-waiting delays a
+// teardown that a later pass performs anyway, while under-waiting silently
+// downgrades every online worktree-removing close.
+const orphanTabGrace = 10 * time.Second
 
 // Trigger schedules an immediate reconciliation pass. Non-blocking;
 // duplicate triggers coalesce.
@@ -309,10 +346,45 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// side ever needed one), so their rows can be attributed to no owner and
 	// excluded from no scope; the only scope check available to them is the
 	// mint gate above.
-	r.reconcileFileTabs(ctx, hubByKey, owner)
-	r.reconcileAgents(ctx, hubByKey)
-	r.reconcileTerminals(ctx, hubByKey)
+	now := r.now()
+	next := make(map[ownedTabKey]time.Time)
+	r.reconcileFileTabs(ctx, hubByKey, owner, now, next)
+	r.reconcileAgents(ctx, hubByKey, now, next)
+	r.reconcileTerminals(ctx, hubByKey, now, next)
+	// Assigned ONLY here, on the path where all three arms ran. Every early
+	// return above learned nothing about absence, so overwriting the map there
+	// would restart each tab's clock and defeat the grace.
+	r.prevOrphanTabs = next
+	if len(next) > 0 {
+		// A deferred reap is unfinished business, not convergence. Report it so
+		// Run re-arms its retry backoff and a later pass performs the teardown,
+		// instead of leaving it to the hourly tick.
+		converged = false
+	}
 	return converged
+}
+
+// reapDue records that k looked absent on this pass, and reports whether it
+// looked absent for longer than orphanTabGrace.
+//
+// A key the hub lists again simply never reaches here, so it drops out of
+// `next` and its clock restarts on the following absence. That is what makes a
+// transient absence -- the close-RPC race that orphanTabGrace exists for -- cost
+// one deferred pass rather than a destructive teardown.
+func (r *OrphanReconciler) reapDue(k ownedTabKey, now time.Time, next map[ownedTabKey]time.Time) bool {
+	if r.tabGrace < 0 {
+		return true
+	}
+	firstSeen, seen := r.prevOrphanTabs[k]
+	if !seen {
+		next[k] = now
+		return false
+	}
+	if now.Sub(firstSeen) < r.tabGrace {
+		next[k] = firstSeen
+		return false
+	}
+	return true
 }
 
 // hasAnyLocalRows reports whether at least one of the three reconciled local
@@ -423,7 +495,7 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 // and stating that at the destructive line is what keeps a future reader from
 // widening the read and silently widening the reap with it. Pinned by
 // TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner.
-func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, owner userid.UserID) {
+func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, owner userid.UserID, now time.Time, next map[ownedTabKey]time.Time) {
 	rows, err := r.queries.ListAllWorkerFileTabs(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list worker_file_tabs", "err", err)
@@ -455,6 +527,11 @@ func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[o
 			if !owner.Matches(row.UserID) {
 				continue
 			}
+			// Grace comes AFTER the owner check, so a row belonging to another
+			// owner never enters the map and never starts a clock.
+			if !r.reapDue(k, now, next) {
+				continue
+			}
 			// Route through the SAME teardown the AGENT and TERMINAL arms use,
 			// with the keep-the-link policy.
 			//
@@ -476,7 +553,7 @@ func (r *OrphanReconciler) reconcileFileTabs(ctx context.Context, hubByKey map[o
 
 // reconcileAgents iterates every locally-known agent and absorbs the
 // hub's view: hub-absent -> stop the subprocess and close the row locally.
-func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab) {
+func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, now time.Time, next map[ownedTabKey]time.Time) {
 	// OPEN rows only. A closed row has already been torn down, so comparing it
 	// against the hub's live list only re-ran the full teardown -- cancelAndClear,
 	// StopAgent, ClearAgentRuntimeState, the registered cleanups -- and re-logged
@@ -497,6 +574,12 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 	for _, agentID := range rows {
 		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, "")
 		if _, ok := hubByKey[k]; !ok {
+			// Absent, but not yet for long enough. The client's own close
+			// tombstones the tab before its RPC lands, so an immediate reap
+			// here would drop the worktree link that close is about to use.
+			if !r.reapDue(k, now, next) {
+				continue
+			}
 			// Unlike the file-tab loop this absence is NOT owner-checked --
 			// see the note in reconcileOnce: there is no owner to check it
 			// against on either side of this comparison (the key normalizes to
@@ -527,7 +610,7 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 }
 
 // reconcileTerminals does the same for terminals.
-func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab) {
+func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.OwnedTab, now time.Time, next map[ownedTabKey]time.Time) {
 	// OPEN rows only, for the same reasons as reconcileAgents.
 	rows, err := r.queries.ListAllOpenTerminalIDs(ctx)
 	if err != nil {
@@ -537,6 +620,11 @@ func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[
 	for _, row := range rows {
 		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, row, "")
 		if _, ok := hubByKey[k]; !ok {
+			// Same grace as reconcileAgents: a close RPC still in flight must
+			// not lose its worktree link to this pass.
+			if !r.reapDue(k, now, next) {
+				continue
+			}
 			// Owner-blind for the same reason as reconcileAgents.
 			// Symmetric to reconcileAgents: SQLite close + send a
 			// stop signal to the in-memory terminal manager so the

@@ -1135,14 +1135,13 @@ export const AppShell: Component = () => {
 
       <AppShellDialogs
         dialogs={dialogs}
-        onBranchChanged={(workerId, gitToplevel, newBranch) => handleBranchChanged(
+        onBranchChanged={(repo, newBranch) => handleBranchChanged(
           {
             target: tabStampTarget(tabView, tabMetadata),
             gitFileStatusStore,
             getCurrentTabContext,
           },
-          workerId,
-          gitToplevel,
+          repo,
           newBranch,
         )}
         activeWorkspace={activeWorkspace}

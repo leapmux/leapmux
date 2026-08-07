@@ -20,8 +20,28 @@ import { isTerminalTab } from './tab.types'
 type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][number]
 
 /**
- * Repository-identity equality for matching a (workerId, repoToplevel)
- * pair against a Tab-shaped value. Used by:
+ * The identity of one repository checkout on one worker.
+ *
+ * The two fields travel together through the whole branch flow — the sidebar
+ * row that opens a dialog, the dialog's payload, `onBranchChanged`,
+ * `handleBranchChanged`, `stampBranchOnTabs` and `isSameRepo`. As two
+ * adjacent same-typed strings they were transposable at every hop, and a
+ * transposition compiles and then matches nothing, so the branch stamp
+ * silently reaches zero tabs. One parameter makes that mistake
+ * unrepresentable.
+ */
+export interface RepoRef {
+  workerId: string
+  /**
+   * `git rev-parse --show-toplevel`. For a main repo this is the repo root;
+   * for a linked worktree it is the worktree root. Matches `Tab.gitToplevel`.
+   */
+  gitToplevel: string
+}
+
+/**
+ * Repository-identity equality for matching a {@link RepoRef} against a
+ * Tab-shaped value. Used by:
  *  - AppShell's branch-changed routing to decide whether to refresh the
  *    gitFileStatusStore singleton (only when the changed repo is the
  *    active tab's repo).
@@ -43,12 +63,11 @@ type ProtoTerminal = Awaited<ReturnType<typeof listTerminals>>['terminals'][numb
  */
 export function isSameRepo(
   tabLike: { workerId?: string, gitToplevel?: string } | null | undefined,
-  workerId: string,
-  repoToplevel: string,
+  repo: RepoRef,
 ): boolean {
-  if (!tabLike || !workerId || !repoToplevel)
+  if (!tabLike || !repo.workerId || !repo.gitToplevel)
     return false
-  return (tabLike.workerId ?? '') === workerId && (tabLike.gitToplevel ?? '') === repoToplevel
+  return (tabLike.workerId ?? '') === repo.workerId && (tabLike.gitToplevel ?? '') === repo.gitToplevel
 }
 
 /**

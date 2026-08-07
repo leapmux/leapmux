@@ -72,7 +72,7 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
       makeAgentTab('other', { workerId: 'w2', gitToplevel: '/other' }),
     ])
 
-    expect(stampBranchOnTabs(stamp, 'w1', '/repo', 'B')).toBe(true)
+    expect(stampBranchOnTabs(stamp, { workerId: 'w1', gitToplevel: '/repo' }, 'B')).toBe(true)
 
     expect(branchOf(state, 'a1')).toBe('B')
     expect(branchOf(state, 'a2')).toBe('B')
@@ -95,7 +95,7 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
       },
     }
 
-    expect(stampBranchOnTabs(counting, 'w1', '/repo', 'A')).toBe(false)
+    expect(stampBranchOnTabs(counting, { workerId: 'w1', gitToplevel: '/repo' }, 'A')).toBe(false)
     expect(updates).toBe(0)
     expect(branchOf(state, 'a1')).toBe('A')
   })
@@ -113,7 +113,7 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
       expect(tree().groups[0].branches[0].tabs.map(t => t.id).toSorted()).toEqual(['a1', 'a2'])
 
       // Switch both tabs to branch "B" the same way AppShell does.
-      stampBranchOnTabs(stamp, 'w1', '/repo', 'B')
+      stampBranchOnTabs(stamp, { workerId: 'w1', gitToplevel: '/repo' }, 'B')
 
       // The memo must have re-run and produced a single group with the
       // new branch label.
@@ -138,7 +138,7 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
       makeAgentTab('a2', { gitToplevel: undefined, gitOriginUrl: 'https://github.com/o/r2.git' }),
     ])
 
-    expect(stampBranchOnTabs(stamp, 'w1', '', 'B')).toBe(false)
+    expect(stampBranchOnTabs(stamp, { workerId: 'w1', gitToplevel: '' }, 'B')).toBe(false)
     expect(branchOf(state, 'a1')).toBe('A')
     expect(branchOf(state, 'a2')).toBe('A')
   })
@@ -152,7 +152,7 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
       makeAgentTab('a2', { workerId: 'w1', gitToplevel: '/repo' }),
     ])
 
-    expect(stampBranchOnTabs(stamp, '', '/repo', 'B')).toBe(false)
+    expect(stampBranchOnTabs(stamp, { workerId: '', gitToplevel: '/repo' }, 'B')).toBe(false)
     expect(branchOf(state, 'a1')).toBe('A')
     expect(branchOf(state, 'a2')).toBe('A')
   })
@@ -165,7 +165,7 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
       makeAgentTab('a2', { workspaceId: 'ws-2', tileId: 'tile-2' }),
     ])
 
-    stampBranchOnTabs(stamp, 'w1', '/repo', 'B')
+    stampBranchOnTabs(stamp, { workerId: 'w1', gitToplevel: '/repo' }, 'B')
 
     expect(branchOf(state, 'a1')).toBe('B')
     expect(branchOf(state, 'a2')).toBe('B')
@@ -181,7 +181,7 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
       makeAgentTab('a2'),
     ])
 
-    stampBranchOnTabs(stamp, 'w1', '/repo', 'B')
+    stampBranchOnTabs(stamp, { workerId: 'w1', gitToplevel: '/repo' }, 'B')
 
     expect(state.tabs.map(t => [tabKey(t), t.gitBranch])).toEqual([
       [tabKey(state.tabs[0]), 'B'],

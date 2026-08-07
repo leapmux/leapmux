@@ -5,28 +5,28 @@ import type { useAgentOperations } from './useAgentOperations'
 import type { useTabOperations } from './useTabOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import type { DialogState, ToggleDialogState } from '~/hooks/createDialogState'
+import type { DialogState, ToggleDialogState, UpdatableDialogState } from '~/hooks/createDialogState'
 import type { KeyPinDecision } from '~/lib/keyPinStore'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { createSectionStore } from '~/stores/section.store'
+import type { RepoRef } from '~/stores/tab.helpers'
 import type { Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { Show } from 'solid-js'
-import { sectionClient } from '~/api/clients'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { KeyPinMismatchDialog } from '~/components/common/KeyPinMismatchDialog'
 import { ChangeBranchDialog } from '~/components/workspace/ChangeBranchDialog'
 import { DeleteBranchDialog } from '~/components/workspace/DeleteBranchDialog'
 import { NewWorkspaceDialog } from '~/components/workspace/NewWorkspaceDialog'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { mid } from '~/lib/lexorank'
 import { openedTerminalMetadata, protoToAgentTabFields } from '~/stores/tab.helpers'
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
+import { placeWorkspaceInSection } from './placeWorkspaceInSection'
 
 export interface KeyPinConfirmState {
   workerId: string
@@ -35,14 +35,7 @@ export interface KeyPinConfirmState {
   resolve: (decision: KeyPinDecision) => void
 }
 
-export interface ChangeBranchState {
-  workerId: string
-  /**
-   * `git rev-parse --show-toplevel` of the branch group's working dir.
-   * For a main repo this is the repo root; for a linked worktree it's
-   * the worktree root. Matches `Tab.gitToplevel`.
-   */
-  gitToplevel: string
+export interface ChangeBranchState extends RepoRef {
   workspaceId: string
   /**
    * Current branch label on the row that opened the dialog. Threaded so
@@ -63,10 +56,7 @@ export interface ChangeBranchState {
   isWorktree: boolean
 }
 
-export interface DeleteBranchState {
-  workerId: string
-  /** See ChangeBranchState.gitToplevel. */
-  gitToplevel: string
+export interface DeleteBranchState extends RepoRef {
   /**
    * Current branch label, threaded so the dialog can seed its path-info
    * snapshot and skip the mount-time getGitInfo probe. `null` when the
@@ -106,7 +96,9 @@ export interface AppShellDialogStates {
   newWorkspace: DialogState<NewWorkspacePayload>
   confirmDeleteWs: DialogState<WorkspaceConfirmPayload>
   confirmArchiveWs: DialogState<WorkspaceConfirmPayload>
-  lastTabConfirm: DialogState<LastTabConfirmState>
+  // The only updatable one: LastTabCloseDialog patches its own payload after
+  // a status refresh. That capability is what keeps its <Show> non-keyed.
+  lastTabConfirm: UpdatableDialogState<LastTabConfirmState>
   keyPinConfirm: DialogState<KeyPinConfirmState>
   changeBranch: DialogState<ChangeBranchState>
   deleteBranch: DialogState<DeleteBranchState>
@@ -121,7 +113,7 @@ interface AppShellDialogsProps {
    * label and, if that repo is the active tab's repo, refreshes the
    * gitFileStatusStore so diff stats track the new HEAD.
    */
-  onBranchChanged?: (workerId: string, gitToplevel: string, newBranch: string) => void
+  onBranchChanged?: (repo: RepoRef, newBranch: string) => void
   activeWorkspace: () => { id: string } | null
   getCurrentTabContext: () => TabContext
   agentOps: ReturnType<typeof useAgentOperations>
@@ -192,37 +184,36 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         />
       </Show>
 
-      <Show when={props.dialogs.newWorkspace.value()}>
+      {/* Every payload dialog below renders under a KEYED <Show>, and that is
+          load-bearing rather than stylistic. A non-keyed <Show> hands the
+          children function an accessor that throws "Stale read from <Show>"
+          on any read after the condition goes falsy — which every `close`
+          below does. Each of these dialogs reads its payload from inside a
+          callback that fires next to that close, so the accessor form leaves
+          them correct only by statement order. `keyed` hands over the payload
+          itself, so there is nothing left to go stale. It also re-runs the
+          children on a payload identity change, so a replacing `open()`
+          re-points the dialog instead of freezing on the first payload.
+
+          `lastTabConfirm` is the ONE exception and stays non-keyed: it is the
+          only dialog whose payload is patched in place, and `keyed` would
+          remount its native <dialog> on every refresh. The type system
+          enforces that split — `update` lives on UpdatableDialogState, which
+          only that dialog is declared with. */}
+      <Show when={props.dialogs.newWorkspace.value()} keyed>
         {payload => (
           <NewWorkspaceDialog
             metadata={props.metadata}
-            preselectedWorkerId={payload().preselectedWorkerId}
+            preselectedWorkerId={payload.preselectedWorkerId}
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}
             onCreated={(workspaceId) => {
-              const targetSectionId = payload().targetSectionId ?? null
               props.dialogs.newWorkspace.close()
-              const refreshWorkspaces = props.loadWorkspaces
-              if (targetSectionId) {
-                // Append past the section's existing items so the new
-                // workspace gets a unique lexorank rather than colliding
-                // with whichever item already sits at lexorank.first()
-                // ("n"). A hardcoded 'N' position would land every new
-                // workspace at the same rank, and the SQL planner would
-                // then shuffle the tied rows on every page refresh.
-                const lastItem = props.sectionStore.getItemsForSection(targetSectionId).at(-1)
-                const position = lastItem ? mid(lastItem.position, '') : mid('', '')
-                sectionClient.moveWorkspace({
-                  workspaceId,
-                  sectionId: targetSectionId,
-                  position,
-                }).catch(() => {}).finally(() => {
-                  refreshWorkspaces()
-                })
-              }
-              else {
-                refreshWorkspaces()
-              }
+              placeWorkspaceInSection(
+                { sectionStore: props.sectionStore, loadWorkspaces: props.loadWorkspaces },
+                workspaceId,
+                payload.targetSectionId ?? null,
+              )
               props.onSelectWorkspace(workspaceId)
             }}
             onClose={() => props.dialogs.newWorkspace.close()}
@@ -230,18 +221,18 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-      <Show when={props.dialogs.confirmDeleteWs.value()}>
+      <Show when={props.dialogs.confirmDeleteWs.value()} keyed>
         {state => (
           <ConfirmDialog
             title="Delete workspace"
             confirmLabel="Delete"
             danger
             onConfirm={() => {
-              state().resolve(true)
+              state.resolve(true)
               props.dialogs.confirmDeleteWs.close()
             }}
             onCancel={() => {
-              state().resolve(false)
+              state.resolve(false)
               props.dialogs.confirmDeleteWs.close()
             }}
           >
@@ -250,17 +241,17 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-      <Show when={props.dialogs.confirmArchiveWs.value()}>
+      <Show when={props.dialogs.confirmArchiveWs.value()} keyed>
         {state => (
           <ConfirmDialog
             title="Archive workspace"
             confirmLabel="Archive"
             onConfirm={() => {
-              state().resolve(true)
+              state.resolve(true)
               props.dialogs.confirmArchiveWs.close()
             }}
             onCancel={() => {
-              state().resolve(false)
+              state.resolve(false)
               props.dialogs.confirmArchiveWs.close()
             }}
           >
@@ -269,6 +260,9 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
+      {/* NOT keyed — see the block comment above. This is the only dialog
+          that patches its payload in place, and keyed would remount it on
+          every in-place refresh. */}
       <Show when={props.dialogs.lastTabConfirm.value()}>
         {confirm => (
           <LastTabCloseDialog
@@ -279,31 +273,31 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-      <Show when={props.dialogs.keyPinConfirm.value()}>
+      <Show when={props.dialogs.keyPinConfirm.value()} keyed>
         {state => (
           <KeyPinMismatchDialog
-            workerId={state().workerId}
-            expectedFingerprint={state().expectedFingerprint}
-            actualFingerprint={state().actualFingerprint}
+            workerId={state.workerId}
+            expectedFingerprint={state.expectedFingerprint}
+            actualFingerprint={state.actualFingerprint}
             resolve={(decision) => {
-              state().resolve(decision)
+              state.resolve(decision)
               props.dialogs.keyPinConfirm.close()
             }}
           />
         )}
       </Show>
 
-      <Show when={props.dialogs.changeBranch.value()}>
+      <Show when={props.dialogs.changeBranch.value()} keyed>
         {state => (
           <ChangeBranchDialog
-            workerId={state().workerId}
-            gitToplevel={state().gitToplevel}
-            workspaceId={state().workspaceId}
-            branchName={state().branchName}
-            isWorktree={state().isWorktree}
+            workerId={state.workerId}
+            gitToplevel={state.gitToplevel}
+            workspaceId={state.workspaceId}
+            branchName={state.branchName}
+            isWorktree={state.isWorktree}
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}
-            onBranchChanged={newBranch => props.onBranchChanged?.(state().workerId, state().gitToplevel, newBranch)}
+            onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
             // Local-UI tab insertion only applies when the dialog's
             // target workspace IS the active one — addAgentTabToFocusedTile
             // and addTerminalTabToFocusedTile place the tab on the ACTIVE
@@ -315,11 +309,11 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             // immediate local UI write is needed (and the user isn't
             // looking at that workspace's tile to feel the latency).
             onAgentCreated={(agent) => {
-              if (state().workspaceId === props.activeWorkspace()?.id)
+              if (state.workspaceId === props.activeWorkspace()?.id)
                 addAgentTabToFocusedTile(agent)
             }}
             onTerminalCreated={(terminalId, workerId, workingDir, title) => {
-              if (state().workspaceId === props.activeWorkspace()?.id)
+              if (state.workspaceId === props.activeWorkspace()?.id)
                 addTerminalTabToFocusedTile(terminalId, workerId, workingDir, title)
             }}
             onClose={() => props.dialogs.changeBranch.close()}
@@ -327,15 +321,15 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         )}
       </Show>
 
-      <Show when={props.dialogs.deleteBranch.value()}>
+      <Show when={props.dialogs.deleteBranch.value()} keyed>
         {state => (
           <DeleteBranchDialog
-            workerId={state().workerId}
-            gitToplevel={state().gitToplevel}
-            branchName={state().branchName}
-            tabs={state().tabs}
+            workerId={state.workerId}
+            gitToplevel={state.gitToplevel}
+            branchName={state.branchName}
+            tabs={state.tabs}
             closeWorktreeTabs={props.tabOps.closeWorktreeTabs}
-            onBranchChanged={newBranch => props.onBranchChanged?.(state().workerId, state().gitToplevel, newBranch)}
+            onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
             onClose={() => props.dialogs.deleteBranch.close()}
           />
         )}

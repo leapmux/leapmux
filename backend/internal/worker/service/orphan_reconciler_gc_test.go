@@ -257,8 +257,11 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
 	}
+	// TabGrace -1: this test asserts WHAT the teardown does, not when it is due.
+	// TestReconcileTabs_* below covers the grace itself.
 	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
 		CloseTab: svc.CloseTabForReconcile,
+		TabGrace: -1,
 	})
 	rec.reconcileOnce(ctx)
 
@@ -376,4 +379,136 @@ func TestReconcileOnce_LocalProbeFailureIsNotConvergence(t *testing.T) {
 
 	assert.False(t, rec.reconcileOnce(ctx),
 		"a pass whose local probes all errored has NOT converged and must be retried")
+}
+
+// The tab arms carry the same shape of elapsed-time grace as the worktree GC
+// above, for a sharper reason: a client tombstones its tab over the CRDT
+// transport BEFORE it sends the close RPC over the channel, and the hub nudges
+// this worker the moment it applies that tombstone. A pass that reaps on the
+// first absence therefore preempts the user's own close -- and because the
+// convergence teardown drops the tab's worktree_tabs link, the REMOVE that
+// close carries then finds no link and degrades to KEEP. The worktree survives
+// with zero links, which excludes it from ListOrphanCandidateWorktrees forever.
+
+// TestReconcileTabs_DefersTheReapUntilTheGraceElapses pins that one pass is not
+// enough to tear a tab down, and that a later pass past the window still does.
+func TestReconcileTabs_DefersTheReapUntilTheGraceElapses(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	q := svc.Queries
+	ctx := context.Background()
+
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "racing-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	// The hub already applied the client's TombstoneTab, so its owned-tab list
+	// no longer names this agent. That is exactly what the nudge delivers.
+	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
+	}
+	clock := time.Now()
+	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+		CloseTab: svc.CloseTabForReconcile,
+		Now:      func() time.Time { return clock },
+		TabGrace: 10 * time.Second,
+	})
+
+	assert.False(t, rec.reconcileOnce(ctx),
+		"a deferred reap is outstanding work, so the pass has NOT converged")
+	row, err := q.GetAgentByID(ctx, "racing-agent")
+	require.NoError(t, err)
+	require.False(t, row.ClosedAt.Valid,
+		"the first pass must not preempt the close RPC that is still in flight")
+
+	clock = clock.Add(11 * time.Second)
+	assert.True(t, rec.reconcileOnce(ctx), "the reap is due, so this pass converges")
+	row, err = q.GetAgentByID(ctx, "racing-agent")
+	require.NoError(t, err)
+	assert.True(t, row.ClosedAt.Valid, "a tab absent past the grace is still reaped")
+}
+
+// TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain pins that the
+// grace measures CONTINUOUS absence. A tab the hub names again has to serve a
+// fresh window, so a flapping list can never accumulate its way to a reap.
+func TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	q := svc.Queries
+	ctx := context.Background()
+
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "flapping-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	present := false
+	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+		resp := &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}
+		if present {
+			resp.Tabs = []*leapmuxv1.OwnedTab{{
+				TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "flapping-agent",
+			}}
+		}
+		return resp, nil
+	}
+	clock := time.Now()
+	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+		CloseTab: svc.CloseTabForReconcile,
+		Now:      func() time.Time { return clock },
+		TabGrace: 10 * time.Second,
+	})
+
+	rec.reconcileOnce(ctx) // absent: starts the clock
+	present = true
+	clock = clock.Add(6 * time.Second)
+	rec.reconcileOnce(ctx) // present: drops out of the map
+	present = false
+	clock = clock.Add(6 * time.Second)
+	rec.reconcileOnce(ctx) // absent again: 12s total elapsed, but only 0s continuous
+
+	row, err := q.GetAgentByID(ctx, "flapping-agent")
+	require.NoError(t, err)
+	assert.False(t, row.ClosedAt.Valid,
+		"the clock restarts on every reappearance, so accumulated absence must not reap")
+}
+
+// TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass is the
+// regression for the production failure: an in-flight CloseAgent(REMOVE) whose
+// CRDT tombstone already reached the hub must still find its worktree link.
+func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	q := svc.Queries
+	ctx := context.Background()
+
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{
+		ID: "wt-racing", WorktreePath: "/r/racing", RepoRoot: "/r", BranchName: "doomed",
+	})
+	require.NoError(t, cwErr)
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "racing-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	svc.registerTabForWorktree("wt-racing", leapmuxv1.TabType_TAB_TYPE_AGENT, "racing-agent")
+
+	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
+		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
+	}
+	clock := time.Now()
+	rec := NewOrphanReconciler(q, svc.FileTabPaths, listFn, OrphanReconcilerOptions{
+		CloseTab: svc.CloseTabForReconcile,
+		Now:      func() time.Time { return clock },
+		TabGrace: 10 * time.Second,
+	})
+
+	rec.reconcileOnce(ctx)
+
+	// The link survives, so the REMOVE that follows can still ref-count to zero
+	// and reclaim the worktree. Without the grace this count is 0, the close
+	// degrades to KEEP, and the directory is stranded with no link to make it a
+	// GC candidate.
+	remaining, err := q.CountWorktreeTabs(ctx, "wt-racing")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), remaining,
+		"a racing pass must not drop the worktree link the in-flight REMOVE needs")
 }

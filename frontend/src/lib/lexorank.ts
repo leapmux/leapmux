@@ -34,6 +34,20 @@ export function mid(a: string, b: string): string {
 }
 
 /**
+ * Returns a LexoRank position that appends past every item in `items`.
+ *
+ * `mid(last, '')` and `mid('', '')` already cover the tail and the
+ * empty-list cases, so this is the two-line fold three workspace call sites
+ * each wrote out. A hardcoded position would collide instead: every append
+ * would land on the same rank, and the SQL planner would then shuffle the
+ * tied rows on each page refresh.
+ */
+export function appendPosition(items: readonly { position: string }[]): string {
+  const lastItem = items.at(-1)
+  return lastItem ? mid(lastItem.position, '') : mid('', '')
+}
+
+/**
  * Returns a LexoRank position for inserting a new item at index `insertIdx`
  * within an ordered list of items that each carry an optional `position`.
  * Reads the previous and next neighbours' positions and folds them through

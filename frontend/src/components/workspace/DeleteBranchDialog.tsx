@@ -230,13 +230,13 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
       // soft-delete once the LAST referencing tab closes, serializing
       // concurrent closes per worktree so there is no double-remove.
       const outcome = await props.closeWorktreeTabs(props.tabs)
-      props.onClose()
       // Toast the REAL outcome. worktreeRemovalToast owns the precedence
       // (ground truth over the stale inspect-time worktreeId snapshot);
       // null means stay silent because a FAILED close already warned.
       const message = worktreeRemovalToast(outcome, Boolean(i.worktreeId))
       if (message)
         showInfoToast(message)
+      props.onClose()
     })
   }
 
@@ -255,23 +255,34 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
         branchToDelete: i.branchName,
         switchToBranch: target,
       })
-      // The delete succeeded on the worker. Surface success and close
-      // BEFORE the stamp so a throw from onBranchChanged can't propagate
-      // into `run`'s catch and masquerade as a "Delete failed" — leaving
-      // the user staring at a failure banner for an op that worked.
+      // The delete succeeded on the worker. Surface success first, so the
+      // user sees it even if the stamp below warns.
       showInfoToast('Branch deleted')
-      props.onClose()
       // deleteBranchInDir routes through checkoutBranchInDir, which resolves
       // a remote ref like 'origin/foo' to the local branch 'foo' before
       // deleting. Stamp the local name so the sidebar label matches HEAD.
-      // ChangeBranchDialog stamps via the same helper. Isolated because
-      // the stamp is cosmetic (sidebar label) and must not undo success.
+      // ChangeBranchDialog stamps via the same helper. The try/catch
+      // isolates the stamp, because the stamp is cosmetic (the sidebar
+      // label) and must not undo the success. The try/catch — NOT the call
+      // order — keeps a throw here out of `run`'s catch. `run`'s catch
+      // shows a "Delete failed" banner, which is incorrect for a delete
+      // that worked.
+      //
+      // Both handlers here close LAST: do the work, notify the parent,
+      // toast, then `props.onClose()`. onClose disposes the subtree that
+      // owns this dialog, so anything after it runs against a disposed
+      // owner. AppShellDialogs renders this dialog under a keyed <Show>,
+      // which hands its children the payload itself, so its callbacks hold
+      // no accessor to go stale. This order keeps every other parent safe
+      // also. An earlier close-first order swallowed the stamp, and the
+      // sidebar kept the deleted branch's label until a page reload.
       try {
         props.onBranchChanged?.(resolveStampedBranch(target, i.branches))
       }
       catch (err) {
         showWarnToast('Branch deleted, but failed to update the sidebar label', err)
       }
+      props.onClose()
     })
   }
 
@@ -297,7 +308,13 @@ export const DeleteBranchDialog: Component<DeleteBranchDialogProps> = (props) =>
       compact
       footer={(
         <>
-          <button type="button" class="outline" onClick={() => props.onClose()}>
+          {/* `disabled` while submitting, to match DialogFormFooter's own
+              Cancel. The Dialog `busy` flag gates only Escape, the backdrop
+              click, and the X button; it never reaches a custom footer
+              button, which calls `props.onClose()` directly. Without this
+              gate the user can dismiss the dialog while DeleteBranch is in
+              flight, and a failure then has nowhere to render. */}
+          <button type="button" class="outline" disabled={submitting.loading()} onClick={() => props.onClose()}>
             Cancel
           </button>
           {/* The `pushWorkingDir` gate covers the edge where no tab in the

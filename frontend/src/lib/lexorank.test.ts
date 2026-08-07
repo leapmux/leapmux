@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { after, first, mid, positionAtInsertIdx } from '~/lib/lexorank'
+import { after, appendPosition, first, mid, positionAtInsertIdx } from '~/lib/lexorank'
 
 describe('lexorank', () => {
   describe('first', () => {
@@ -123,5 +123,27 @@ describe('lexorank', () => {
       expect(headResult < 'n').toBe(true)
       expect(headResult.length).toBeGreaterThan(0)
     })
+  })
+})
+
+describe('appendPosition', () => {
+  it('sorts after the last item', () => {
+    expect(appendPosition([{ position: 'n' }, { position: 'u' }]) > 'u').toBe(true)
+  })
+
+  it('returns the first rank for an empty list', () => {
+    expect(appendPosition([])).toBe(first())
+  })
+
+  it('keeps producing distinct ranks when appended repeatedly', () => {
+    // The collision this replaced: three call sites each computed the append
+    // rank by hand, and a hardcoded constant would have landed every new item
+    // on the same position, leaving the SQL planner to shuffle the tied rows.
+    const items: { position: string }[] = []
+    for (let i = 0; i < 8; i++)
+      items.push({ position: appendPosition(items) })
+    const ranks = items.map(i => i.position)
+    expect(new Set(ranks).size).toBe(ranks.length)
+    expect([...ranks].sort()).toEqual(ranks)
   })
 })

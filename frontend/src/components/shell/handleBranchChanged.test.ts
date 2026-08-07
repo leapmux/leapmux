@@ -70,8 +70,7 @@ describe('handleBranchChanged', () => {
 
     handleBranchChanged(
       { target, gitFileStatusStore: fakeGitStore({}), getCurrentTabContext: () => ({} as never) },
-      'w1',
-      '/repo',
+      { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )
 
@@ -94,8 +93,7 @@ describe('handleBranchChanged', () => {
 
     handleBranchChanged(
       { target, gitFileStatusStore: store, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/repo' } as never) },
-      'w1',
-      '/repo',
+      { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )
     await flush()
@@ -128,8 +126,7 @@ describe('handleBranchChanged', () => {
 
     expect(() => handleBranchChanged(
       { target, gitFileStatusStore: store, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/repo' } as never) },
-      'w1',
-      '/repo',
+      { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )).not.toThrow()
     await flush()
@@ -145,8 +142,7 @@ describe('handleBranchChanged', () => {
     handleBranchChanged(
       // The user is looking at a DIFFERENT repo.
       { target, gitFileStatusStore: store, getCurrentTabContext: () => ({ workerId: 'w1', gitToplevel: '/elsewhere' } as never) },
-      'w1',
-      '/repo',
+      { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )
     await flush()
@@ -164,8 +160,7 @@ describe('handleBranchChanged', () => {
 
     handleBranchChanged(
       { target, gitFileStatusStore: fakeGitStore({}), getCurrentTabContext: () => ({} as never) },
-      'w1',
-      '',
+      { workerId: 'w1', gitToplevel: '' },
       'feature',
     )
     await flush()
@@ -179,8 +174,7 @@ describe('handleBranchChanged', () => {
 
     expect(() => handleBranchChanged(
       { target, gitFileStatusStore: fakeGitStore({}), getCurrentTabContext: () => ({} as never) },
-      'w1',
-      '/repo',
+      { workerId: 'w1', gitToplevel: '/repo' },
       'feature',
     )).not.toThrow()
     await flush()
