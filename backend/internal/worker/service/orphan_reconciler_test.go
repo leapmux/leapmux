@@ -64,6 +64,13 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 	if opts.CloseTab == nil {
 		opts.CloseTab = teardown.closeTab
 	}
+	// These tests assert WHAT a reap does, not WHEN it is due, and they drive
+	// single passes on a real clock. Disable the grace so each one still reaps
+	// in one pass. The grace itself has its own tests, which drive a fake clock
+	// across the window: see TestReconcileTabs_* in orphan_reconciler_gc_test.go.
+	if opts.TabGrace == 0 {
+		opts.TabGrace = -1
+	}
 	rec := service.NewOrphanReconciler(q, files, listFn, opts)
 	setFake := func(ownerUserID string, tabs []*leapmuxv1.OwnedTab, err error) {
 		fakeMu.Lock()
