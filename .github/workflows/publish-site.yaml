@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: cloudflare-publish
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history so Hugo's enableGitInfo derives accurate per-file
           # last-modified dates. A shallow clone dates every page with the
@@ -48,7 +48,7 @@ jobs:
       - name: Load tool versions
         run: grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GOLANG_VERSION }}
           cache-dependency-path: site/go.sum

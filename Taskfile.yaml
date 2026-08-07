@@ -55,6 +55,22 @@ tasks:
       - task: generate-sqlc
       - task: generate-spinners
 
+  sync-versions:
+    desc: Rewrite documented tool versions from versions.env
+    # Everything that can read versions.env already does (this file's dotenv,
+    # the workflows' $GITHUB_ENV splat, the Dockerfile's ARGs). Prose in
+    # README.md and the docs site, and the `go` directive in each go.mod, have
+    # nowhere to put a variable -- so they are rewritten from it instead, and
+    # `lint-versions` fails the build if one drifts.
+    #
+    # Deliberately NOT fingerprinted. This is the remediation `lint-versions`
+    # prints, and it rewrites files that are not its own sources: with
+    # `sources:` and no `generates:`, hand-editing a claim site left the target
+    # "up to date", so the one command that fixes the drift refused to run
+    # while lint stayed red. It is a bun script over six small files.
+    cmds:
+      - bun scripts/sync-versions.mjs
+
   generate-proto:
     desc: Generate Protocol Buffer code
     sources:
@@ -691,9 +707,23 @@ tasks:
   test:
     desc: Run all tests
     cmds:
+      - task: test-scripts
       - task: test-frontend
       - task: test-backend
       - task: test-desktop
+
+  test-scripts:
+    desc: Test repository scripts
+    # `bun test` rather than vitest: these are repo-root Bun scripts, outside
+    # frontend/ and its vitest project (whose root is frontend/ and whose
+    # co-location rule covers frontend/src only).
+    #
+    # Deliberately NOT fingerprinted. The suites read beyond scripts/*.mjs --
+    # versions.env, and scripts/license-overrides/spdx/ through the real
+    # vendored path -- so a `sources:` list narrow enough to be worth having
+    # would go stale and skip the run that mattered. It takes ~40 ms.
+    cmds:
+      - bun test scripts/
 
   test-frontend:
     desc: Run frontend tests
@@ -740,6 +770,9 @@ tasks:
   test-no-docker:
     desc: Run all tests except Docker-backed storage backends
     cmds:
+      # Docker is the only thing this target drops. test-scripts needs none,
+      # and leaving it out meant three of the four CI test jobs never ran it.
+      - task: test-scripts
       - task: test-frontend
       - task: test-backend-no-docker
       - task: test-desktop
@@ -762,10 +795,41 @@ tasks:
   lint:
     desc: Run all linters
     cmds:
+      - task: lint-versions
+      - task: lint-scripts
       - task: lint-proto
       - task: lint-frontend
       - task: lint-backend
       - task: lint-desktop
+
+  lint-scripts:
+    desc: Lint the repository build scripts
+    # These were unlinted until now: the only eslint config lives in frontend/,
+    # and `eslint .` runs with cwd=frontend, so scripts/ came back as "outside
+    # of base path". eslint.config.mjs at the root fixes that, resolving the
+    # shared @antfu config out of frontend/node_modules rather than duplicating
+    # the toolchain in a root package.json the repo does not otherwise need.
+    deps: [prepare-frontend]
+    sources:
+      - scripts/*.mjs
+      - eslint.config.mjs
+      - frontend/eslint.config.ts
+    cmds:
+      - ./frontend/node_modules/.bin/eslint scripts/
+
+  lint-versions:
+    desc: Check documented tool versions against versions.env
+    sources:
+      - versions.env
+      - scripts/sync-versions.mjs
+      - README.md
+      - site/content/docs/getting-started/installation.md
+      - go.work
+      - backend/go.mod
+      - desktop/go/go.mod
+      - site/go.mod
+    cmds:
+      - bun scripts/sync-versions.mjs --check
 
   lint-proto:
     desc: Lint Protocol Buffer definitions
@@ -979,10 +1043,26 @@ tasks:
 
   generate-notice:
     desc: Generate third-party license notice
-    deps: [prepare-frontend]
+    # prepare-backend, not just prepare-frontend: collectGoDeps runs
+    # `go list -deps -test ./...`, which has to LOAD every package in the
+    # module, and two generated trees it needs are gitignored -- the sqlc
+    # output under internal/hub/store/*/generated/ and the embed package under
+    # internal/hub/generated/frontend/, whose //go:embed of public/ fails when
+    # the directory is absent. In a tree that has built before, both are
+    # already there and this looks redundant; in a clean checkout the run dies
+    # with "no required module provides package .../generated/db".
+    #
+    # prepare-backend pulls in a frontend build, which is why the NOTICE gate
+    # is worth its path filter: this is not a check to run on every push.
+    deps: [prepare-backend]
     sources:
       - scripts/generate-notice.mjs
       - scripts/license-overrides/**/*
+      # go.work decides which modules the generator walks: it reads the
+      # `use (...)` list and runs `go list -m -json all` workspace-wide, so
+      # adding or dropping a member changes the licenses NOTICE describes.
+      - go.work
+      - go.work.sum
       - backend/go.mod
       - backend/go.sum
       - desktop/go/go.mod

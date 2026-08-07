@@ -2,7 +2,6 @@ import { createRoot } from 'solid-js'
 import { afterEach, beforeEach } from 'vitest'
 import { setCRDTBridge } from './src/lib/crdt'
 import { installTestBridge } from './src/test-support/crdtBridge'
-import { installPointerEventShim } from './src/test-support/pointer'
 import '@testing-library/jest-dom/vitest'
 
 // Install a default CRDT bridge before every test so the projection-
@@ -44,11 +43,6 @@ afterEach(() => {
   }
   setCRDTBridge(null)
 })
-
-// jsdom (29.x) does not implement PointerEvent; install a MouseEvent-based
-// shim globally so any `fireEvent.pointer*` / `new PointerEvent(...)` call
-// works without per-suite setup.
-installPointerEventShim()
 
 // Node.js 25+ exposes a broken localStorage/sessionStorage stub on globalThis
 // (bare object with no Storage methods). Vitest's jsdom environment uses
@@ -133,11 +127,16 @@ if (typeof (HTMLElement.prototype as Partial<PopoverProto>).showPopover !== 'fun
 // jsdom doesn't recognize the :popover-open pseudo-class; intercept
 // matches() to handle it via the data-attribute the stubs above set.
 const originalMatches = HTMLElement.prototype.matches
+// Cast because lib.dom declares `matches` as a set of overloads whose tag-name
+// forms are TYPE PREDICATES (`selectors: K): this is HTMLElementTagNameMap[K]`),
+// and a plain `(selector: string) => boolean` is not assignable to those. The
+// runtime contract is unchanged -- the delegate below preserves it -- so the
+// assertion is about the declaration's shape, not about behaviour.
 HTMLElement.prototype.matches = function matches(this: HTMLElement, selector: string): boolean {
   if (selector === ':popover-open')
     return this.hasAttribute('data-popover-open')
   return originalMatches.call(this, selector)
-}
+} as typeof HTMLElement.prototype.matches
 
 // jsdom doesn't implement the native <dialog> API; provide stubs so
 // components that wrap <dialog> (Dialog, ConfirmDialog, CloseGridDialog)

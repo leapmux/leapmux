@@ -10,13 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 func TestCockroachDBStore(t *testing.T) {
@@ -24,41 +21,29 @@ func TestCockroachDBStore(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	testutil.ConfigureDockerHost(t)
-
 	ctx := context.Background()
 
-	// Start a CockroachDB single-node container.
-	req := testcontainers.ContainerRequest{
-		Image:        "cockroachdb/cockroach:latest-v24.3",
-		ExposedPorts: []string{"26257/tcp"},
-		Cmd:          []string{"start-single-node", "--insecure"},
-		WaitingFor: wait.ForSQL("26257/tcp", "pgx", func(host string, port string) string {
-			return fmt.Sprintf("postgresql://root@%s:%s/defaultdb?sslmode=disable", host, testutil.PortNumber(port))
-		}),
+	// Start a CockroachDB single-node container. The readiness probe dials
+	// defaultdb; leapmux_test does not exist until the block below creates it.
+	rootDSN := func(host, port, database string) string {
+		return fmt.Sprintf("postgresql://root@%s:%s/%s?sslmode=disable", host, port, database)
 	}
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
-
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "26257")
-	require.NoError(t, err)
-
-	connStr := fmt.Sprintf("postgresql://root@%s:%s/defaultdb?sslmode=disable", host, port.Port())
+	host, port := storetest.SQLContainer{
+		Image:    "cockroachdb/cockroach:latest-v24.3",
+		Port:     26257,
+		Driver:   "pgx",
+		Cmd:      []string{"start-single-node", "--insecure"},
+		ReadyDSN: func(host, port string) string { return rootDSN(host, port, "defaultdb") },
+	}.Start(t)
 
 	// Create the test database.
-	setupPool, err := pgxpool.New(ctx, connStr)
+	setupPool, err := pgxpool.New(ctx, rootDSN(host, port, "defaultdb"))
 	require.NoError(t, err)
 	_, err = setupPool.Exec(ctx, "CREATE DATABASE IF NOT EXISTS leapmux_test")
 	require.NoError(t, err)
 	setupPool.Close()
 
-	connStr = fmt.Sprintf("postgresql://root@%s:%s/leapmux_test?sslmode=disable", host, port.Port())
+	connStr := rootDSN(host, port, "leapmux_test")
 
 	// Create ONE pool and store, run migrations once.
 	pool, err := pgxpool.New(ctx, connStr)

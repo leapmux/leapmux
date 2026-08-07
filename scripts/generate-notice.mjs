@@ -10,10 +10,10 @@
 //   - JavaScript runtime dependencies (frontend/node_modules)
 //   - Manually vendored assets/code listed under scripts/license-overrides/extra/
 
-import process from 'node:process'
 import { execSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import process from 'node:process'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const FRONTEND = join(ROOT, 'frontend')
@@ -22,14 +22,44 @@ const LICENSE_OVERRIDES_GO = join(ROOT, 'scripts/license-overrides/go')
 const LICENSE_OVERRIDES_RUST = join(ROOT, 'scripts/license-overrides/rust')
 const LICENSE_OVERRIDES_JS = join(ROOT, 'scripts/license-overrides/js')
 const LICENSE_EXTRAS = join(ROOT, 'scripts/license-overrides/extra')
-const CARGO_REGISTRY = join(process.env.HOME ?? '', '.cargo/registry/src/index.crates.io-1949cf8c6b5b557f')
-const RUST_SPDX_LICENSE_FILES = {
-  'Apache-2.0': join(CARGO_REGISTRY, 'anyhow-1.0.102/LICENSE-APACHE'),
-  'Apache-2.0 WITH LLVM-exception': join(CARGO_REGISTRY, 'wit-bindgen-0.51.0/LICENSE-Apache-2.0_WITH_LLVM-exception'),
-  'BSD-3-Clause': join(CARGO_REGISTRY, 'zerocopy-0.8.48/LICENSE-BSD'),
-  MIT: join(CARGO_REGISTRY, 'anyhow-1.0.102/LICENSE-MIT'),
-  'MPL-2.0': join(CARGO_REGISTRY, 'option-ext-0.2.0/LICENSE.txt'),
-  Zlib: join(CARGO_REGISTRY, 'bytemuck-1.25.0/LICENSE-ZLIB'),
+const LICENSE_OVERRIDES_SPDX = join(ROOT, 'scripts/license-overrides/spdx')
+// Canonical license texts for crates that declare an SPDX term but ship no
+// license file of their own.
+//
+// Two shapes, and which one an entry takes is a question about the license's
+// COPYRIGHT LINE, not about convenience:
+//
+//   { vendored }      read scripts/license-overrides/spdx/<file>. Use this
+//                     when the license body embeds a copyright holder, because
+//                     borrowing a crate's file also borrows its holder. Zlib
+//                     opens with one, and reproducing bytemuck's
+//                     `Copyright (c) 2019 Daniel "Lokathor" Gee.` under
+//                     dispatch2, tinyvec and fourteen objc2-* crates credited
+//                     all of them to an unrelated project. The vendored text
+//                     keeps SPDX's own `<year> <copyright holders>` placeholder
+//                     instead of naming the wrong party.
+//
+//   { crate, file }   borrow the text from a crate in the graph, resolved from
+//                     `cargo metadata` at run time so a `cargo update` moves it
+//                     with the lock instead of stranding a version-stamped
+//                     path. Fine for MIT, Apache-2.0 and MPL-2.0, whose bodies
+//                     carry no holder at all -- anyhow's LICENSE-MIT opens at
+//                     "Permission is hereby granted". BSD-3-Clause borrows from
+//                     alloc-no-stdlib, whose holder IS defensible for its only
+//                     consumer: alloc-stdlib, its sibling under the same
+//                     Dropbox grant.
+//
+// `signature` is a phrase the resolved text must contain, either way. Existence
+// alone is not enough: the BSD-3-Clause entry pointed at zerocopy's LICENSE-BSD
+// for years, which is a *two*-clause text, so every crate that borrowed it
+// reproduced the wrong license and only a human reading NOTICE caught on.
+export const RUST_SPDX_LICENSE_SOURCES = {
+  'Apache-2.0': { crate: 'anyhow', file: 'LICENSE-APACHE', signature: 'Apache License' },
+  'Apache-2.0 WITH LLVM-exception': { crate: 'rustix', file: 'LICENSE-Apache-2.0_WITH_LLVM-exception', signature: 'LLVM Exception' },
+  'BSD-3-Clause': { crate: 'alloc-no-stdlib', file: 'LICENSE', signature: 'Neither the name' },
+  'MIT': { crate: 'anyhow', file: 'LICENSE-MIT', signature: 'Permission is hereby granted' },
+  'MPL-2.0': { crate: 'option-ext', file: 'LICENSE.txt', signature: 'Mozilla Public License' },
+  'Zlib': { vendored: 'Zlib.txt', signature: 'Altered source versions must be plainly marked' },
 }
 
 // ---------------------------------------------------------------------------
@@ -37,7 +67,7 @@ const RUST_SPDX_LICENSE_FILES = {
 // ---------------------------------------------------------------------------
 
 /** Names (case-insensitive) that indicate a license file. */
-const LICENSE_NAMES_RE = /^(licen[cs]e|copying|notice|unlicense)([-_. ].+)?$/i
+const LICENSE_NAMES_RE = /^(?:licen[cs]e|copying|notice|unlicense)(?:[-_. ].+)?$/i
 
 /**
  * Find license files in `dir`, optionally walking up parent directories
@@ -54,10 +84,13 @@ function findLicenseFiles(dir, stopAt) {
           matches.push(join(current, entry.name))
         }
       }
-      if (matches.length > 0) return matches.sort()
-    } catch { /* directory may not exist or be readable */ }
+      if (matches.length > 0)
+        return matches.sort()
+    }
+    catch { /* directory may not exist or be readable */ }
     const parent = dirname(current)
-    if (parent === current) break
+    if (parent === current)
+      break
     current = parent
   }
   return []
@@ -72,7 +105,7 @@ function findLicenseFile(dir, stopAt) {
 }
 
 /** Normalize license text: strip \r, trim blank lines, remove triple+ backticks. */
-function normalizeLicenseText(text) {
+export function normalizeLicenseText(text) {
   const lines = text.replace(/\r/g, '').split('\n')
   let start = 0
   while (start < lines.length && lines[start].trim() === '') start++
@@ -83,54 +116,239 @@ function normalizeLicenseText(text) {
     .join('\n')
 }
 
-/** Format a JS dependency heading with license name. */
-function jsHeading(dep) {
-  return dep.license ? `${dep.name} ${dep.version} (${dep.license})` : `${dep.name} ${dep.version}`
-}
-
-/** Format a Rust dependency heading with license name. */
-function rustHeading(dep) {
-  return dep.license ? `${dep.name} ${dep.version} (${dep.license})` : `${dep.name} ${dep.version}`
-}
-
-/** Format an extra-entry heading. Version is optional. */
-function extraHeading(dep) {
+/**
+ * Format a dependency heading: "name version (license)", degrading for the
+ * fields an ecosystem does not carry -- Go deps have no `license`, and a
+ * hand-listed extra may have no `version`.
+ *
+ * One formatter for every ecosystem on purpose: the TOC link and the section
+ * heading are built from this same string, so `toAnchor` can never be handed a
+ * heading the body renders differently.
+ */
+export function depHeading(dep) {
   const base = dep.version ? `${dep.name} ${dep.version}` : dep.name
   return dep.license ? `${base} (${dep.license})` : base
 }
 
-function collectRustSpdxTexts(licenseExpression) {
-  if (!licenseExpression) return { texts: [], unsupportedTerms: [] }
-
-  const terms = licenseExpression
-    .replace(/\//g, ' OR ')
-    .split(/\s+(?:OR|AND)\s+/)
-    .map(term => term.replace(/[()]/g, '').trim())
-    .filter(Boolean)
-  const uniqueTerms = [...new Set(terms)]
-  const supportedTerms = []
-  const unsupportedTerms = []
-
-  for (const term of uniqueTerms) {
-    if (term in RUST_SPDX_LICENSE_FILES) {
-      supportedTerms.push(term)
-    } else {
-      unsupportedTerms.push(term)
-    }
+/**
+ * Order two crate versions by semver precedence.
+ *
+ * Not `localeCompare(…, {numeric: true})`, which is collation, not semver: it
+ * ranks "1.0.0-alpha" ABOVE "1.0.0" because the shorter string is a prefix,
+ * and mis-orders "+build" metadata the same way. Picking "the highest" with it
+ * would silently read a license out of a pre-release directory.
+ *
+ * @returns negative, 0, or positive, like a sort comparator
+ */
+export function compareCrateVersions(a, b) {
+  const split = (version) => {
+    const dash = version.indexOf('-')
+    const core = dash === -1 ? version : version.slice(0, dash)
+    const prerelease = dash === -1 ? '' : version.slice(dash + 1)
+    // Build metadata ("0.6.0+11769913") carries no precedence; drop it.
+    const plus = core.indexOf('+')
+    const numbers = (plus === -1 ? core : core.slice(0, plus)).split('.').map(Number)
+    return { numbers, prerelease }
   }
 
-  return {
-    texts: supportedTerms.map(term => normalizeLicenseText(readFileSync(RUST_SPDX_LICENSE_FILES[term], 'utf-8'))),
-    unsupportedTerms,
+  const left = split(a)
+  const right = split(b)
+  for (let i = 0; i < Math.max(left.numbers.length, right.numbers.length); i++) {
+    const delta = (left.numbers[i] ?? 0) - (right.numbers[i] ?? 0)
+    if (delta !== 0)
+      return delta
+  }
+  // Same core version: a release outranks any pre-release of it.
+  if (left.prerelease === right.prerelease)
+    return 0
+  if (left.prerelease === '')
+    return 1
+  if (right.prerelease === '')
+    return -1
+  return left.prerelease < right.prerelease ? -1 : 1
+}
+
+/**
+ * Build a `term -> {text} | {error}` resolver over the crates that
+ * RUST_SPDX_LICENSE_SOURCES names, reading each file at most once.
+ *
+ * Lazy on purpose. Resolving every term up front turns a source crate leaving
+ * the lock into a hard failure even for a term nothing in the graph declares:
+ * `Apache-2.0 WITH LLVM-exception` currently has zero consumers (rustix and
+ * its neighbours all ship their own texts), so an eager pass would abort the
+ * whole run over a license NOTICE was never going to print. Resolving on
+ * demand makes the run fail exactly when NOTICE would otherwise be incomplete.
+ *
+ * @param {Array<{name: string, version: string, manifest_path: string}>} packages
+ */
+export function createRustSpdxResolver(packages) {
+  const sourceCrates = new Set(
+    Object.values(RUST_SPDX_LICENSE_SOURCES).filter(source => source.crate).map(source => source.crate),
+  )
+
+  /** @type {Map<string, {version: string, dir: string}>} */
+  const crateDirs = new Map()
+  for (const pkg of packages) {
+    if (!sourceCrates.has(pkg.name))
+      continue
+    // A crate can appear at more than one version; take the highest so the
+    // chosen text never depends on the order `cargo metadata` emits.
+    const previous = crateDirs.get(pkg.name)
+    if (previous && compareCrateVersions(previous.version, pkg.version) >= 0)
+      continue
+    crateDirs.set(pkg.name, { version: pkg.version, dir: dirname(pkg.manifest_path) })
+  }
+
+  const cache = new Map()
+  return function resolveSpdxText(term) {
+    if (!cache.has(term))
+      cache.set(term, loadSpdxText(term, crateDirs))
+    return cache.get(term)
   }
 }
 
-/** Slugify a heading for use as a markdown anchor. */
-function toAnchor(heading) {
+/** Read and validate one SPDX term's canonical text. @returns {{text: string} | {error: string}} */
+export function loadSpdxText(term, crateDirs) {
+  const { crate, file, vendored, signature } = RUST_SPDX_LICENSE_SOURCES[term]
+
+  let path
+  let origin
+  if (vendored) {
+    path = join(LICENSE_OVERRIDES_SPDX, vendored)
+    origin = `scripts/license-overrides/spdx/${vendored}`
+  }
+  else {
+    const source = crateDirs.get(crate)
+    if (!source) {
+      return {
+        error: `canonical "${term}" text: crate ${crate} is no longer in desktop/rust/Cargo.lock. `
+          + 'Point RUST_SPDX_LICENSE_SOURCES at a crate that is, and that ships this license text.',
+      }
+    }
+    path = join(source.dir, file)
+    origin = `${crate} ${source.version} ${file}`
+  }
+
+  if (!existsSync(path)) {
+    return { error: `canonical "${term}" text: ${origin} is missing (looked in ${path}).` }
+  }
+
+  const text = normalizeLicenseText(readFileSync(path, 'utf-8'))
+  if (!text.includes(signature)) {
+    return {
+      error: `canonical "${term}" text: ${origin} does not read like ${term} `
+        + `(expected to find ${JSON.stringify(signature)}). Re-point the entry -- reproducing it would ship the wrong license.`,
+    }
+  }
+  return { text }
+}
+
+/**
+ * Resolve a crate's SPDX expression to the license text NOTICE should
+ * reproduce, or null when the expression cannot be satisfied.
+ *
+ * Reading the expression happens entirely here, including whether it is a
+ * choice (OR) or a conjunction (AND). Deciding that at the call site instead
+ * split the authority: this function normalizes the slash form (`MIT/Apache-2.0`,
+ * which 29 crates in the graph still use) to OR, while a caller testing the raw
+ * string for " OR " classified the same expression as a conjunction -- so a
+ * slash-form crate with one unregistered term was reported as having no license
+ * at all, even though its other term resolved fine.
+ *
+ * @param {string | null} licenseExpression
+ * @param {(term: string) => {text: string} | {error: string}} resolveSpdxText
+ * @returns {{text: string | null, failures: Array<{term: string, message: string}>}} the
+ *   license text to reproduce (null when the expression cannot be satisfied),
+ *   plus one entry per term whose canonical text could not be read
+ */
+export function collectRustSpdxTexts(licenseExpression, resolveSpdxText) {
+  if (!licenseExpression)
+    return { text: null, failures: [] }
+
+  const normalized = licenseExpression.replace(/\//g, ' OR ')
+  const failures = []
+  const texts = []
+  const seen = new Set()
+
+  // Split on AND first, so a parenthesised group stays ONE operand. Classifying
+  // the whole expression with `includes(' OR ') && !includes(' AND ')` and then
+  // splitting on both operators flattened `(MIT OR Apache-2.0) AND Unicode-3.0`
+  // into three peers and demanded all three -- so a crate whose choice half
+  // resolved fine was still reported as having no license at all, the same
+  // failure the slash-form normalization above exists to prevent, one nesting
+  // level down.
+  //
+  // Every operand must be satisfied. Within one, any single term satisfies it,
+  // but every term that RESOLVES is still reproduced: a dual-licensed crate
+  // grants the reader the choice, so NOTICE shows the alternatives rather than
+  // silently electing one on their behalf.
+  for (const operand of normalized.split(/\s+AND\s+/)) {
+    const terms = [...new Set(
+      operand
+        .split(/\s+OR\s+/)
+        .map(term => term.replace(/[()]/g, '').trim())
+        .filter(Boolean),
+    )]
+
+    let resolvedHere = 0
+    let unregistered = 0
+    for (const term of terms) {
+      if (!(term in RUST_SPDX_LICENSE_SOURCES)) {
+        unregistered++
+        continue
+      }
+      const resolved = resolveSpdxText(term)
+      if (resolved.error) {
+        failures.push({ term, message: resolved.error })
+        continue
+      }
+      resolvedHere++
+      if (!seen.has(term)) {
+        seen.add(term)
+        texts.push(resolved.text)
+      }
+    }
+
+    // A lone term is a requirement, so failing to render it leaves NOTICE
+    // genuinely incomplete. Inside a real choice, an unrenderable alternative
+    // costs nothing as long as another one rendered.
+    const satisfied = terms.length > 1
+      ? resolvedHere > 0
+      : resolvedHere > 0 && unregistered === 0
+    if (!satisfied)
+      return { text: null, failures }
+  }
+
+  return { text: texts.length > 0 ? texts.join('\n\n-----\n\n') : null, failures }
+}
+
+/**
+ * Slugify a heading for use as a markdown anchor.
+ *
+ * Each space becomes its own `-`, rather than a run of whitespace collapsing
+ * to one. That is what GitHub's slugger does, and a heading like
+ * `fnv 1.0.7 (Apache-2.0 / MIT)` -- whose stripped ` / ` leaves two adjacent
+ * spaces -- is the case where collapsing produced a link GitHub could not
+ * resolve.
+ */
+export function toAnchor(heading) {
   return heading
     .toLowerCase()
     .replace(/[^a-z0-9 _-]/g, '')
-    .replace(/\s+/g, '-')
+    .replace(/ /g, '-')
+}
+
+/**
+ * The plain text of a hast element, concatenated across descendants.
+ *
+ * A heading is normally one text node, but a dependency name carrying markdown
+ * punctuation can be parsed into nested inline nodes, and taking only the first
+ * child would silently slugify a fragment of the name.
+ */
+export function headingText(node) {
+  if (node.type === 'text')
+    return node.value
+  return (node.children ?? []).map(headingText).join('')
 }
 
 // ---------------------------------------------------------------------------
@@ -152,16 +370,24 @@ function parseGoListJson(raw) {
   for (let i = 0; i < raw.length; i++) {
     const c = raw[i]
     if (inStr) {
-      if (esc) esc = false
-      else if (c === '\\') esc = true
-      else if (c === '"') inStr = false
+      if (esc)
+        esc = false
+      else if (c === '\\')
+        esc = true
+      else if (c === '"')
+        inStr = false
       continue
     }
-    if (c === '"') { inStr = true; continue }
+    if (c === '"') {
+      inStr = true
+      continue
+    }
     if (c === '{') {
-      if (depth === 0) start = i
+      if (depth === 0)
+        start = i
       depth++
-    } else if (c === '}') {
+    }
+    else if (c === '}') {
       depth--
       if (depth === 0 && start >= 0) {
         objs.push(JSON.parse(raw.slice(start, i + 1)))
@@ -215,7 +441,8 @@ function collectGoRuntimeModuleKeys() {
       })
       for (const pkg of parseGoListJson(raw)) {
         const m = pkg.Module
-        if (m && !m.Main) keys.add(`${m.Path}@${m.Version}`)
+        if (m && !m.Main)
+          keys.add(`${m.Path}@${m.Version}`)
       }
     }
   }
@@ -243,15 +470,18 @@ function collectGoDeps() {
   const goModCache = execSync('go env GOMODCACHE', { cwd: ROOT, encoding: 'utf-8' }).trim()
 
   for (const mod of modules) {
-    if (mod.Main) continue
+    if (mod.Main)
+      continue
     const key = `${mod.Path}@${mod.Version}`
-    if (deps.has(key)) continue
-    if (!runtimeKeys.has(key)) continue // skip tool-only deps
+    if (deps.has(key))
+      continue
+    if (!runtimeKeys.has(key))
+      continue // skip tool-only deps
 
     let dir = mod.Dir
     if (!dir) {
       // Fallback: construct the expected cache path.
-      dir = join(goModCache, mod.Path + '@' + mod.Version)
+      dir = join(goModCache, `${mod.Path}@${mod.Version}`)
       if (!existsSync(dir)) {
         warnings.push(`Go: ${key} — no Dir and cache miss`)
         continue
@@ -298,61 +528,82 @@ function collectRustDeps() {
     maxBuffer: 32 * 1024 * 1024,
   })
   const metadata = JSON.parse(raw)
+  const resolveSpdxText = createRustSpdxResolver(metadata.packages ?? [])
 
   /** @type {Map<string, {name: string, version: string, license: string | null, licenseText: string}>} */
   const deps = new Map()
-  const warnings = []
   const errors = []
+  // Deduped: one unresolvable term is a table problem, not a per-crate one, so
+  // it is reported once no matter how many crates asked for it. The crates
+  // themselves are still named individually below.
+  const spdxFailures = new Map()
 
   for (const pkg of metadata.packages ?? []) {
-    if (pkg.id === metadata.resolve?.root || pkg.source == null) continue
+    if (pkg.id === metadata.resolve?.root || pkg.source == null)
+      continue
 
     const key = `${pkg.name}@${pkg.version}`
-    if (deps.has(key)) continue
+    if (deps.has(key))
+      continue
 
     const manifestDir = dirname(pkg.manifest_path)
-    let licFile = null
 
-    if (pkg.license_file) {
-      const candidate = join(manifestDir, pkg.license_file)
-      if (existsSync(candidate)) licFile = candidate
+    // One walk of the manifest directory, reused: findLicenseFile is just
+    // findLicenseFiles(...)[0], so asking for both re-scanned the same
+    // directory for ~490 of the graph's crates.
+    const manifestLicenses = findLicenseFiles(manifestDir, manifestDir)
+
+    // `license_file` names a file Cargo.toml points at explicitly; no crate in
+    // the current graph sets it, but honour it ahead of discovery when one does.
+    const declared = pkg.license_file ? join(manifestDir, pkg.license_file) : null
+
+    /** @type {string[]} */
+    let licenseFiles = []
+    if (declared && existsSync(declared)) {
+      licenseFiles = [declared]
     }
-
-    if (!licFile) licFile = findLicenseFile(manifestDir, manifestDir)
-
-    if (!licFile) {
+    else if (manifestLicenses.length > 0) {
+      licenseFiles = manifestLicenses
+    }
+    else {
+      // Nothing on disk: fall back to a hand-curated override directory.
       const overrideDir = join(LICENSE_OVERRIDES_RUST, pkg.name)
       if (existsSync(join(overrideDir, 'expected.json'))) {
-        licFile = findLicenseFile(overrideDir, overrideDir)
+        licenseFiles = findLicenseFiles(overrideDir, overrideDir)
       }
     }
 
     let licenseText = null
-    if (licFile) {
-      const licenseFiles = pkg.license_file ? [licFile] : findLicenseFiles(manifestDir, manifestDir)
-      licenseText = licenseFiles.length > 0
-        ? licenseFiles.map(path => normalizeLicenseText(readFileSync(path, 'utf-8'))).join('\n\n-----\n\n')
-        : normalizeLicenseText(readFileSync(licFile, 'utf-8'))
-    } else {
-      const { texts, unsupportedTerms } = collectRustSpdxTexts(pkg.license)
-      const hasOnlyOrTerms = (pkg.license ?? '').includes(' OR ') && !(pkg.license ?? '').includes(' AND ')
-      if (unsupportedTerms.length === 0 || (hasOnlyOrTerms && texts.length > 0)) {
-        licenseText = texts.join('\n\n-----\n\n')
-      } else {
-        errors.push(`Rust: ${key} — no license file found in ${manifestDir}`)
+    if (licenseFiles.length > 0) {
+      licenseText = licenseFiles.map(path => normalizeLicenseText(readFileSync(path, 'utf-8'))).join('\n\n-----\n\n')
+    }
+    else {
+      const { text, failures } = collectRustSpdxTexts(pkg.license, resolveSpdxText)
+      for (const failure of failures) spdxFailures.set(failure.term, failure.message)
+
+      if (text === null) {
+        errors.push(failures.length > 0
+          ? `Rust: ${key} — needs the ${failures.map(f => `"${f.term}"`).join(' + ')} text, which could not be resolved`
+          : `Rust: ${key} — no license file found in ${manifestDir}`)
         continue
       }
+      licenseText = text
     }
 
     deps.set(key, {
       name: pkg.name,
       version: pkg.version,
       license: pkg.license ?? null,
-      licenseText: licenseText ?? '',
+      licenseText,
     })
   }
 
-  return { deps: [...deps.values()].sort((a, b) => a.name.localeCompare(b.name)), warnings, errors }
+  // Appended after the per-crate lines so the run reports every license gap in
+  // one pass: throwing here instead would abort before the JS and extra
+  // collectors ran, and hide the Go errors already gathered.
+  errors.push(...spdxFailures.values())
+
+  return { deps: [...deps.values()].sort((a, b) => a.name.localeCompare(b.name)), warnings: [], errors }
 }
 
 // ---------------------------------------------------------------------------
@@ -380,28 +631,34 @@ function collectJsDeps() {
   const packages = []
 
   for (const entry of readdirSync(nodeModules)) {
-    if (entry.startsWith('.')) continue
+    if (entry.startsWith('.'))
+      continue
     const full = join(nodeModules, entry)
     if (entry.startsWith('@')) {
       // Scoped package — enumerate children.
       try {
         for (const child of readdirSync(full)) {
-          if (child.startsWith('.')) continue
+          if (child.startsWith('.'))
+            continue
           packages.push({ pkgDir: join(full, child), pkgName: `${entry}/${child}` })
         }
-      } catch { /* ignore */ }
-    } else {
+      }
+      catch { /* ignore */ }
+    }
+    else {
       packages.push({ pkgDir: full, pkgName: entry })
     }
   }
 
   for (const { pkgDir, pkgName } of packages) {
-    if (!runtimeDeps.has(pkgName)) continue
+    if (!runtimeDeps.has(pkgName))
+      continue
 
     let meta
     try {
       meta = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf-8'))
-    } catch {
+    }
+    catch {
       continue
     }
 
@@ -415,7 +672,8 @@ function collectJsDeps() {
       if (existsSync(join(overrideDir, 'expected.json'))) {
         warnings.push(`JS: ${pkgName}@${version} — upstream now ships a LICENSE file; override in scripts/license-overrides/js/${pkgName}/ can be removed`)
       }
-    } else {
+    }
+    else {
       // No license file — check overrides.
       const overrideDir = join(LICENSE_OVERRIDES_JS, pkgName)
       const expectedPath = join(overrideDir, 'expected.json')
@@ -476,7 +734,8 @@ function collectExtraDeps() {
   }
 
   for (const entry of readdirSync(LICENSE_EXTRAS, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue
+    if (!entry.isDirectory() || entry.name.startsWith('.'))
+      continue
     const dir = join(LICENSE_EXTRAS, entry.name)
     const metaPath = join(dir, 'metadata.json')
 
@@ -488,7 +747,8 @@ function collectExtraDeps() {
     let meta
     try {
       meta = JSON.parse(readFileSync(metaPath, 'utf-8'))
-    } catch (err) {
+    }
+    catch (err) {
       errors.push(`Extra: ${entry.name} — invalid metadata.json: ${err.message}`)
       continue
     }
@@ -536,107 +796,51 @@ function buildMarkdown(goDeps, rustDeps, jsDeps, extraDeps) {
   lines.push('For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/leapmux/blob/main/NOTICE.md).')
   lines.push('')
 
+  // One list drives both the table of contents and the body, so a section can
+  // never be linked without being rendered (or rendered without being linked).
+  // `preamble` is what kept the "Other" section from fitting the shape before.
+  const sections = [
+    { title: 'Go Dependencies', deps: goDeps },
+    { title: 'Rust Dependencies', deps: rustDeps },
+    { title: 'JavaScript Dependencies', deps: jsDeps },
+    {
+      title: 'Other Third-Party Notices',
+      deps: extraDeps,
+      preamble: [
+        'The following items are not tracked by any package manager — their',
+        'sources were copied or adapted into this repository. They are listed',
+        'separately to make their provenance explicit.',
+      ],
+    },
+  ].filter(section => section.deps.length > 0)
+
   // Table of contents
   lines.push('## Table of Contents')
   lines.push('')
-  if (goDeps.length > 0) {
-    lines.push('### Go Dependencies')
+  for (const { title, deps } of sections) {
+    lines.push(`### ${title}`)
     lines.push('')
-    for (const dep of goDeps) {
-      const heading = `${dep.name} ${dep.version}`
-      lines.push(`- [${heading}](#${toAnchor(heading)})`)
-    }
-    lines.push('')
-  }
-  if (rustDeps.length > 0) {
-    lines.push('### Rust Dependencies')
-    lines.push('')
-    for (const dep of rustDeps) {
-      const heading = rustHeading(dep)
-      lines.push(`- [${heading}](#${toAnchor(heading)})`)
-    }
-    lines.push('')
-  }
-  if (jsDeps.length > 0) {
-    lines.push('### JavaScript Dependencies')
-    lines.push('')
-    for (const dep of jsDeps) {
-      const heading = jsHeading(dep)
-      lines.push(`- [${heading}](#${toAnchor(heading)})`)
-    }
-    lines.push('')
-  }
-  if (extraDeps.length > 0) {
-    lines.push('### Other Third-Party Notices')
-    lines.push('')
-    for (const dep of extraDeps) {
-      const heading = extraHeading(dep)
+    for (const dep of deps) {
+      const heading = depHeading(dep)
       lines.push(`- [${heading}](#${toAnchor(heading)})`)
     }
     lines.push('')
   }
 
-  // Go dependencies
-  if (goDeps.length > 0) {
+  for (const { title, deps, preamble } of sections) {
     lines.push('---')
     lines.push('')
-    lines.push('## Go Dependencies')
+    lines.push(`## ${title}`)
     lines.push('')
-    for (const dep of goDeps) {
-      lines.push(`### ${dep.name} ${dep.version}`)
-      lines.push('')
-      lines.push('```')
-      lines.push(dep.licenseText)
-      lines.push('```')
+    if (preamble) {
+      lines.push(...preamble)
       lines.push('')
     }
-  }
-
-  // Rust dependencies
-  if (rustDeps.length > 0) {
-    lines.push('---')
-    lines.push('')
-    lines.push('## Rust Dependencies')
-    lines.push('')
-    for (const dep of rustDeps) {
-      lines.push(`### ${rustHeading(dep)}`)
+    for (const dep of deps) {
+      lines.push(`### ${depHeading(dep)}`)
       lines.push('')
-      lines.push('```')
-      lines.push(dep.licenseText)
-      lines.push('```')
-      lines.push('')
-    }
-  }
-
-  // JavaScript dependencies
-  if (jsDeps.length > 0) {
-    lines.push('---')
-    lines.push('')
-    lines.push('## JavaScript Dependencies')
-    lines.push('')
-    for (const dep of jsDeps) {
-      lines.push(`### ${jsHeading(dep)}`)
-      lines.push('')
-      lines.push('```')
-      lines.push(dep.licenseText)
-      lines.push('```')
-      lines.push('')
-    }
-  }
-
-  // Other third-party notices (vendored / manually listed)
-  if (extraDeps.length > 0) {
-    lines.push('---')
-    lines.push('')
-    lines.push('## Other Third-Party Notices')
-    lines.push('')
-    lines.push('The following items are not tracked by any package manager — their')
-    lines.push('sources were copied or adapted into this repository. They are listed')
-    lines.push('separately to make their provenance explicit.')
-    lines.push('')
-    for (const dep of extraDeps) {
-      lines.push(`### ${extraHeading(dep)}`)
-      lines.push('')
+      // Only the hand-listed entries carry provenance; the package managers
+      // supply neither field, so this is inert for the other three sections.
       if (dep.url) {
         lines.push(`Source: <${dep.url}>`)
         lines.push('')
@@ -667,11 +871,30 @@ async function buildHtml(markdown) {
   const { default: remarkRehype } = await import(join(FRONTEND, 'node_modules/remark-rehype/index.js'))
   const { default: rehypeStringify } = await import(join(FRONTEND, 'node_modules/rehype-stringify/index.js'))
 
+  // Give every heading the id its own table-of-contents link points at.
+  // Without this the HTML carried ~700 `href="#..."` links and not one `id`,
+  // so every entry in the contents of the in-product licence page was dead.
+  // NOTICE.md looks fine on GitHub only because GitHub injects the ids itself.
+  //
+  // Deliberately toAnchor rather than rehype-slug: the link half of the pair
+  // is already generated from toAnchor, so deriving the id from anything else
+  // would be a second slug authority that could disagree with it -- which is
+  // exactly the bug, in a subtler form.
+  const rehypeHeadingIds = () => (tree) => {
+    for (const node of tree.children ?? []) {
+      if (node.type !== 'element' || !/^h[1-6]$/.test(node.tagName))
+        continue
+      node.properties ??= {}
+      node.properties.id = toAnchor(headingText(node))
+    }
+  }
+
   const bodyHtml = String(
     await unified()
       .use(remarkParse)
       .use(remarkGfm)
       .use(remarkRehype)
+      .use(rehypeHeadingIds)
       .use(rehypeStringify)
       .process(markdown),
   )
@@ -679,27 +902,24 @@ async function buildHtml(markdown) {
   // Read Oat CSS to inline.
   const oatCss = readFileSync(join(FRONTEND, 'node_modules/@knadh/oat/oat.min.css'), 'utf-8')
 
-  // LeapMux theme overrides (extracted from frontend/src/styles/global.css.ts).
+  // LeapMux theme overrides, taken FROM the app's palette rather than retyped.
+  // These used to be 34 hand-copied literals under a comment claiming they were
+  // "extracted from global.css.ts" -- 33 still matched and one had already
+  // drifted, which is what a second copy of a palette does over time.
+  // palette.ts is plain data with no imports precisely so this script can read
+  // it under bun, where there is no Vite to compile a .css.ts module.
+  const { lightPalette, darkPalette } = await import(join(FRONTEND, 'src/styles/palette.ts'))
+  const declarations = (palette, indent) =>
+    Object.entries(palette).map(([name, value]) => `${indent}${name}: ${value};`).join('\n')
+
+  // Fonts and color-scheme are this page's own. The app resolves its fonts
+  // through `var(--ui-font-family, ...)`, and a standalone HTML file has no
+  // preference store behind that indirection; it also follows the OS via a
+  // media query rather than the app's [data-theme] attribute.
   const themeCss = `
 /* LeapMux light theme */
 :root {
-  --background: rgb(253 252 250);
-  --foreground: rgb(34 32 30);
-  --card: rgb(247 245 242);
-  --card-foreground: rgb(34 32 30);
-  --primary: rgb(13 148 136);
-  --primary-foreground: rgb(255 255 255);
-  --secondary: rgb(232 230 225);
-  --secondary-foreground: rgb(46 43 40);
-  --muted: rgb(237 235 231);
-  --muted-foreground: rgb(120 117 111);
-  --faint: rgb(242 240 236);
-  --faint-foreground: rgb(160 157 151);
-  --accent: rgb(222 235 225);
-  --accent-foreground: rgb(34 32 30);
-  --border: rgb(221 217 211);
-  --input: rgb(213 209 203);
-  --ring: rgb(13 148 136);
+${declarations(lightPalette, '  ')}
   --font-sans: system-ui, sans-serif;
   --font-mono: "SF Mono", Consolas, monospace;
 }
@@ -707,23 +927,7 @@ async function buildHtml(markdown) {
 /* LeapMux dark theme */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: rgb(26 25 23);
-    --foreground: rgb(232 230 225);
-    --card: rgb(42 40 38);
-    --card-foreground: rgb(232 230 225);
-    --primary: rgb(20 184 166);
-    --primary-foreground: rgb(12 12 11);
-    --secondary: rgb(51 48 45);
-    --secondary-foreground: rgb(224 221 216);
-    --muted: rgb(46 43 40);
-    --muted-foreground: rgb(138 134 128);
-    --faint: rgb(36 34 32);
-    --faint-foreground: rgb(107 104 98);
-    --accent: rgb(45 62 50);
-    --accent-foreground: rgb(232 230 225);
-    --border: rgb(61 58 54);
-    --input: rgb(61 58 54);
-    --ring: rgb(20 184 166);
+${declarations(darkPalette, '    ')}
     color-scheme: dark;
   }
 }
@@ -797,4 +1001,7 @@ async function generateNotice() {
   console.log(`  (${go.deps.length} Go + ${rust.deps.length} Rust + ${js.deps.length} JS + ${extra.deps.length} extra dependencies)`)
 }
 
-await generateNotice()
+// Importable for tests (generate-notice.test.mjs exercises the pure helpers);
+// only the direct `bun scripts/generate-notice.mjs` invocation touches the tree.
+if (import.meta.main)
+  await generateNotice()

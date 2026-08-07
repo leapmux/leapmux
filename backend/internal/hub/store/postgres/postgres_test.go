@@ -12,13 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // startPostgresContainer boots a disposable PostgreSQL 17 container and
@@ -26,34 +23,23 @@ import (
 // live schema assertions.
 func startPostgresContainer(t *testing.T) string {
 	t.Helper()
-	testutil.ConfigureDockerHost(t)
 
-	ctx := context.Background()
-	req := testcontainers.ContainerRequest{
-		Image:        "postgres:17-alpine",
-		ExposedPorts: []string{"5432/tcp"},
+	dsn := func(host, port string) string {
+		return fmt.Sprintf("postgres://test:test@%s:%s/leapmux_test?sslmode=disable", host, port)
+	}
+	host, port := storetest.SQLContainer{
+		Image:  "postgres:17-alpine",
+		Port:   5432,
+		Driver: "pgx",
 		Env: map[string]string{
 			"POSTGRES_USER":     "test",
 			"POSTGRES_PASSWORD": "test",
 			"POSTGRES_DB":       "leapmux_test",
 		},
-		WaitingFor: wait.ForSQL("5432/tcp", "pgx", func(host string, port string) string {
-			return fmt.Sprintf("postgres://test:test@%s:%s/leapmux_test?sslmode=disable", host, testutil.PortNumber(port))
-		}),
-	}
-	pgContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = pgContainer.Terminate(ctx) })
+		ReadyDSN: dsn,
+	}.Start(t)
 
-	host, err := pgContainer.Host(ctx)
-	require.NoError(t, err)
-	port, err := pgContainer.MappedPort(ctx, "5432")
-	require.NoError(t, err)
-
-	return "postgres://test:test@" + host + ":" + port.Port() + "/leapmux_test?sslmode=disable"
+	return dsn(host, port)
 }
 
 func TestPostgresStore(t *testing.T) {

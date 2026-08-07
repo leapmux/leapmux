@@ -75,7 +75,7 @@ The rest of this README is for people building LeapMux from source or hacking on
 
 Before you begin, ensure you have the following installed:
 
-- **Go** 1.26.1 or later
+- **Go** 1.26.5 or later
 - **Node.js** 24 or later
 - **Bun** (latest version) - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)
@@ -235,6 +235,7 @@ task lint
 
 Run specific linters:
 ```bash
+task lint-versions   # Check documented tool versions against versions.env
 task lint-proto      # Lint Protocol Buffer definitions
 task lint-backend    # Lint Go code (hub + worker)
 task lint-frontend   # Lint frontend code (TypeScript typecheck + ESLint)
@@ -336,6 +337,26 @@ task docker-build-alpine PLATFORM=linux/amd64 TAG=leapmux:dev
 ```
 
 The image uses a multi-stage build (buf, Bun, Go). Tool and base image versions are centralized in `versions.env` at the repository root.
+
+### Tool versions
+
+`versions.env` is the single source of truth for every toolchain and base-image
+version. `Taskfile.yaml` loads it via `dotenv:`, the CI workflows splat it into
+`$GITHUB_ENV`, and `docker/Dockerfile` takes it as build ARGs — those consumers
+read it directly and need nothing further.
+
+Prose (this README, the docs site) and the `go` directive in each `go.mod` have
+nowhere to put a variable, so they are generated from it instead:
+
+```bash
+task sync-versions   # rewrite those copies from versions.env
+task lint-versions   # fail if one has drifted (runs as part of task lint)
+```
+
+After editing `versions.env`, run `task sync-versions`. Adding a new place that
+states a version means adding a claim to `CLAIMS` in
+`scripts/sync-versions.mjs`; a claim whose pattern stops matching is a hard
+error, so a reworded line fails the build rather than silently going stale.
 
 ### Documentation site
 

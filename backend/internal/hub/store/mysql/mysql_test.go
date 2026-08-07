@@ -12,49 +12,35 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	mysqlstore "github.com/leapmux/leapmux/internal/hub/store/mysql"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // startMySQLContainer boots a disposable MySQL 8 container and returns its
 // DSN. Shared by the store conformance suite and the live schema assertions.
 func startMySQLContainer(t *testing.T) string {
 	t.Helper()
-	testutil.ConfigureDockerHost(t)
 
-	ctx := context.Background()
-	req := testcontainers.ContainerRequest{
-		Image:        "mysql:8",
-		ExposedPorts: []string{"3306/tcp"},
+	dsn := func(host, port string) string {
+		return fmt.Sprintf("test:test@tcp(%s:%s)/leapmux_test?parseTime=true", host, port)
+	}
+	host, port := storetest.SQLContainer{
+		Image:  "mysql:8",
+		Port:   3306,
+		Driver: "mysql",
 		Env: map[string]string{
 			"MYSQL_ROOT_PASSWORD": "test",
 			"MYSQL_DATABASE":      "leapmux_test",
 			"MYSQL_USER":          "test",
 			"MYSQL_PASSWORD":      "test",
 		},
-		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port string) string {
-			return fmt.Sprintf("test:test@tcp(%s:%s)/leapmux_test?parseTime=true", host, testutil.PortNumber(port))
-		}),
-	}
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Terminate(ctx) })
+		ReadyDSN: dsn,
+	}.Start(t)
 
-	host, err := container.Host(ctx)
-	require.NoError(t, err)
-	port, err := container.MappedPort(ctx, "3306")
-	require.NoError(t, err)
-
-	return fmt.Sprintf("test:test@tcp(%s:%s)/leapmux_test?parseTime=true", host, port.Port())
+	return dsn(host, port)
 }
 
 func TestMySQLStore(t *testing.T) {

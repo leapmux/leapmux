@@ -77,9 +77,12 @@ function rehypeExternalLinks() {
         return
       const href = node.properties?.href
       if (typeof href === 'string' && HTTP_URL_RE.test(href)) {
-        node.properties ??= {}
+        // No `properties ??= {}` guard: reaching here means `properties.href`
+        // already yielded a string, so `properties` is necessarily present.
         node.properties.target = '_blank'
-        node.properties.rel = 'noopener noreferrer nofollow'
+        // `rel` is a space-separated token list, which hast models as an array;
+        // hast-util-to-html joins it back into `rel="noopener noreferrer nofollow"`.
+        node.properties.rel = ['noopener', 'noreferrer', 'nofollow']
       }
       else if (parent && typeof index === 'number') {
         // Non-http(s) link — unwrap: replace <a> with its children
@@ -159,10 +162,17 @@ export const plainMarkdownProcessor = withHardeningTail(
 
 /**
  * Render `text` through `processor` (highlighted), degrading to the plain
- * (un-highlighted) processor when Shiki throws on a grammar (e.g. an unsupported
- * lookbehind in Safari's regex engine). Single-sources the "on Shiki failure, fall
- * back to plain" rule that BOTH the main-thread synchronous path and the worker
- * apply, so the two can't drift on what counts as a fallback.
+ * (un-highlighted) processor when the highlighted pipeline throws. Single-sources
+ * the "on failure, fall back to plain" rule that BOTH the main-thread synchronous
+ * path and the worker apply, so the two can't drift on what counts as a fallback.
+ *
+ * This is the WIDER net of the two error paths, not the narrower one. A grammar
+ * that throws at tokenize time -- the Safari regex-engine case -- is raised
+ * inside `codeToHast` and caught by `onError` above, which leaves the rest of the
+ * document highlighted. What reaches here is everything else: a disposed or
+ * mismatched highlighter, `getLoadedLanguages()` failing before the transformer's
+ * own try, or any remark/rehype plugin in the chain. Those take the WHOLE
+ * document down to plain, so they warn at least as loudly as the per-block case.
  */
 export function renderWithPlainFallback(
   processor: ReturnType<typeof createMarkdownProcessor>,
@@ -171,7 +181,9 @@ export function renderWithPlainFallback(
   try {
     return String(processor.processSync(text))
   }
-  catch {
+  catch (error) {
+    if (import.meta.env.DEV)
+      console.warn('[markdownProcessor] highlighted render failed; falling back to plain:', error)
     return String(plainMarkdownProcessor.processSync(text))
   }
 }

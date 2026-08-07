@@ -1,0 +1,79 @@
+name: NOTICE
+
+# NOTICE.md and NOTICE.html are committed artifacts that no build target
+# produces -- README documents regenerating them as a manual step after a
+# dependency change. That makes them the one thing in the tree that can go
+# stale silently, and they are a legal artifact: a dependency added, removed or
+# relicensed without a regenerate ships a notice that no longer matches what we
+# distribute.
+#
+# The path filter is the whole design. Licenses can only change when a manifest
+# or the generator does, so this runs on exactly those changes rather than on
+# every push -- it costs a `cargo fetch`, a `go mod download` and a `bun
+# install`, which is minutes, and paying that on a docs-only commit would buy
+# nothing.
+#
+# Two things the filter must cover that are easy to miss. `go.work` is a real
+# input, not just a workspace convenience: generate-notice reads its `use (...)`
+# list and runs `go list -m -json all` workspace-wide, so adding or dropping a
+# member changes the module set NOTICE describes. And NOTICE.md/NOTICE.html
+# themselves are here, because a filter listing only inputs lets a PR hand-edit
+# the very artifact the gate protects and match nothing.
+on:
+  push:
+    branches: [main]
+    paths: &notice-inputs
+      - 'go.work'
+      - 'go.work.sum'
+      - '**/go.mod'
+      - '**/go.sum'
+      - 'desktop/rust/Cargo.toml'
+      - 'desktop/rust/Cargo.lock'
+      - 'frontend/package.json'
+      - 'frontend/bun.lock'
+      - 'scripts/generate-notice.mjs'
+      - 'scripts/license-overrides/**'
+      - 'Taskfile.yaml'
+      - 'NOTICE.md'
+      - 'NOTICE.html'
+      - '.github/workflows/notice.yaml'
+      - '.github/actions/setup-build/action.yaml'
+  # Commits reach main outside a PR (an admin push, a merge landed with checks
+  # bypassed), and a gate that only runs on pull_request would never see them.
+  pull_request:
+    branches: [main]
+    paths: *notice-inputs
+
+concurrency:
+  group: notice-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup build toolchain
+        uses: ./.github/actions/setup-build
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # This job reads dependency metadata and compiles nothing, so it
+          # skips the Tauri system packages, the linuxdeploy download cache and
+          # the ~1.3 GB Rust target cache. It still needs Go, Rust, Bun, buf
+          # and Task: `task generate-notice` depends on prepare-frontend, which
+          # runs `buf generate`, the spinner clone and `bun install`.
+          compile: 'false'
+          rust-save-if: 'false'
+
+      - name: Regenerate NOTICE
+        run: task generate-notice
+
+      - name: Fail if NOTICE is stale
+        run: |
+          if ! git diff --exit-code --stat NOTICE.md NOTICE.html; then
+            echo
+            echo "NOTICE.md/NOTICE.html do not match the current dependencies."
+            echo "Run \`task generate-notice\` and commit the result."
+            exit 1
+          fi

@@ -3,6 +3,8 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
+import { installedCopies } from '~/test-support/installedCopies'
+
 // Guards the two rules `createStableContext` runs on, both of which were
 // documented in a comment and enforced by nothing.
 //
@@ -25,20 +27,6 @@ import { describe, expect, it } from 'vitest'
 const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const srcRoot = join(frontendRoot, 'src')
 const helperPath = join(srcRoot, 'lib', 'createStableContext.ts')
-
-/** Every installed copy of `name` under `node_modules`, nested ones included. */
-function installedCopies(name: string, dir = join(frontendRoot, 'node_modules')): string[] {
-  const found: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory())
-      continue
-    if (entry.name === name)
-      found.push(join(dir, entry.name))
-    else if (entry.name === 'node_modules' || entry.name.startsWith('@'))
-      found.push(...installedCopies(name, join(dir, entry.name)))
-  }
-  return found
-}
 
 function collectSourceFiles(dir: string): string[] {
   const found: string[] = []
@@ -107,10 +95,14 @@ describe('createStableContext usage', () => {
   it('resolves one shared solid-refresh, not a second nested copy', () => {
     const copies = installedCopies('solid-refresh').map(p => relative(frontendRoot, p))
 
+    // Zero is a different problem from two, and the bump advice does not apply
+    // to it: nothing to align ranges with if the package is not there.
     expect(
       copies,
-      `Bump \`solid-refresh\` in package.json to match vite-plugin-solid's range, `
-      + `so the HMR test and the dev server run the same runtime:\n  ${copies.join('\n  ')}`,
+      copies.length === 0
+        ? 'No `solid-refresh` install found at all -- either it left the dependency tree, or node_modules is not installed.'
+        : `Bump \`solid-refresh\` in package.json to match vite-plugin-solid's range, `
+          + `so the HMR test and the dev server run the same runtime:\n  ${copies.join('\n  ')}`,
     ).toHaveLength(1)
   })
 })

@@ -1,20 +1,12 @@
-// Shared pointer-event test helpers. jsdom (29.x) does not implement
-// PointerEvent; tests that drive drag interactions install a MouseEvent
-// subclass tagged with `pointerId` so `instanceof PointerEvent` works
-// and the helpers' pointer-id filter behaves naturally.
-
-class FakePointerEvent extends MouseEvent {
-  pointerId: number
-  constructor(type: string, init: MouseEventInit & { pointerId?: number } = {}) {
-    super(type, init)
-    this.pointerId = init.pointerId ?? 1
-  }
-}
-
-export function installPointerEventShim() {
-  if (typeof globalThis.PointerEvent === 'undefined')
-    globalThis.PointerEvent = FakePointerEvent as unknown as typeof PointerEvent
-}
+// Shared pointer-event test helpers. jsdom 30 implements PointerEvent natively
+// (constructor, `pointerId`, and `instanceof MouseEvent`), so these build real
+// events rather than shimming a MouseEvent subclass the way they had to under
+// jsdom 29.
+//
+// Every helper defaults `pointerId` to 1 rather than leaving it 0: the drag
+// hooks latch the id from `pointerdown` and ignore later events that don't
+// match, so a test that omits it still exercises that filter instead of
+// accidentally relying on a falsy id.
 
 export function stubBoundingRect(el: HTMLElement, width: number, height: number) {
   el.getBoundingClientRect = () => ({

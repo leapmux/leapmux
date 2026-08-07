@@ -1,0 +1,34 @@
+name: Load tool versions
+description: >
+  Splat versions.env into $GITHUB_ENV so later steps can read GOLANG_VERSION,
+  NODE_VERSION, TASK_VERSION and friends as `env.*`, optionally overriding
+  VERSION for a tagged release build.
+
+# Split out of setup-build rather than duplicated into it. Two macOS signing
+# jobs need exactly this and nothing else -- they run codesign and notarytool,
+# not a compiler -- so taking the whole setup-build action would have them
+# restore the 1.3 GB shared Rust cache and install Go, protoc and buf for
+# nothing. Before this, they carried their own copy of the five lines below,
+# which meant a change to how versions.env is parsed had to be made in three
+# places and would have been missed in two.
+inputs:
+  version-override:
+    description: >
+      Value to write over VERSION from versions.env. Used by the release path,
+      which builds a tagged version rather than the checked-in dev default.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Load tool versions
+      # `shell: bash` on every OS so one script serves Windows too.
+      shell: bash
+      env:
+        VERSION_OVERRIDE: ${{ inputs.version-override }}
+      run: |
+        grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+        if [ -n "$VERSION_OVERRIDE" ]; then
+          echo "VERSION=$VERSION_OVERRIDE" >> "$GITHUB_ENV"
+        fi
