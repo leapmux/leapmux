@@ -5,6 +5,7 @@ import { createSignal } from 'solid-js'
 import { afterEach, beforeAll, vi } from 'vitest'
 import { installControllableResizeObserver } from '~/test-support/resizeObserverStub'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
+import { EMPTY_MEASUREMENT_BATCH } from './useChatVirtualizer'
 
 /**
  * Shared test kit for the useChatScroll suites. The suite was split out of a
@@ -13,16 +14,20 @@ import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop }
  */
 
 /**
- * The measurement-deferral half of the virtualizer surface, defaulted to no-ops.
- * ChatScrollVirtualizer requires these members (an optional surface let a caller
- * silently disable the fling deferral machinery); the stubs spread this so each
- * builder stays focused on the geometry it fakes. Tests that exercise the deferral
- * or the row-top hold release override the members they assert on.
+ * Every member of the virtualizer surface that the geometry builders below do NOT supply,
+ * defaulted to no-ops. ChatScrollVirtualizer requires all of them (an optional surface let a
+ * caller silently disable the fling deferral machinery); the stubs spread this so each
+ * builder stays focused on the geometry it fakes. Tests that exercise the deferral, the
+ * measurement diagnostics, or the row-top hold release override the members they assert on.
+ *
+ * Derived by SUBTRACTION from ChatScrollVirtualizer, not by re-listing the members. A hand
+ * written second list drifts silently: it is why one new virtualizer member had to be typed
+ * into the Pick in useChatScroll.ts AND into this file. With the Omit, a new member widens
+ * this type on its own and fails to compile in exactly one place -- the literal below.
  */
-export function measurementDeferralNoOps(): Pick<
+export function virtualizerNoOps(): Omit<
   ChatScrollVirtualizer,
-  'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements' | 'lastMeasurement' | 'hasMeasuredHeight'
-  | 'setFastScrollActive'
+  'totalHeight' | 'geometryVersion' | 'updateViewport' | 'anchorAt' | 'scrollTopNearAnchor' | 'scrollTopForAnchor'
 > {
   return {
     setVisibleMeasurementDeferral: () => {},
@@ -30,6 +35,7 @@ export function measurementDeferralNoOps(): Pick<
     hasDeferredMeasurements: () => false,
     flushDeferredMeasurements: () => false,
     lastMeasurement: () => undefined,
+    takeMeasurementBatch: () => EMPTY_MEASUREMENT_BATCH,
     hasMeasuredHeight: () => false,
   }
 }
@@ -48,7 +54,7 @@ export function makeStubVirtualizer(): ChatScrollVirtualizer {
     anchorAt: () => null,
     scrollTopNearAnchor: () => null,
     scrollTopForAnchor: () => null,
-    ...measurementDeferralNoOps(),
+    ...virtualizerNoOps(),
   }
 }
 
@@ -89,9 +95,60 @@ export function makeGrowableVirtualizer() {
     anchorAt: () => null,
     scrollTopNearAnchor: () => null,
     scrollTopForAnchor: () => null,
-    ...measurementDeferralNoOps(),
+    ...virtualizerNoOps(),
   }
   return { virt, setTotal }
+}
+
+/** The viewport line the shifting stub's anchored row is captured on. */
+export const SHIFT_ANCHOR_OFFSET = 290
+
+/**
+ * Virtualizer stub for the re-pin decision tests: one row above the anchor grows by `shift`
+ * on the next updateViewport after `arm()`, so a single scroll event delivers an
+ * already-committed geometry change of a known size. The anchored row sits at
+ * SHIFT_ANCHOR_OFFSET, and the total height moves with it, which is what drives the re-pin
+ * effect. A negative `shift` models a row that measured SHORTER than its estimate.
+ *
+ * `reanchorWhenShifted` covers the case where the shift also changes which row sits at the
+ * viewport midpoint: anchorAt then returns a different id, so a re-pin that re-anchors
+ * resolves the NEW row and the old anchor's displacement is gone. Tests that assert on
+ * re-anchoring need it; tests that assert the anchored row is held do not.
+ */
+export function makeShiftingVirtualizer(shift: number, opts: { reanchorWhenShifted?: boolean } = {}) {
+  let armed = false
+  let shifted = false
+  const [version, setVersion] = createSignal(0)
+  const virt: ChatScrollVirtualizer = {
+    ...virtualizerNoOps(),
+    totalHeight: () => {
+      version()
+      return shifted ? 8000 + shift : 8000
+    },
+    geometryVersion: version,
+    updateViewport: () => {
+      if (armed && !shifted) {
+        shifted = true
+        setVersion(v => v + 1)
+      }
+    },
+    anchorAt: scrollTop => (opts.reanchorWhenShifted && shifted
+      ? { id: 'tall-row', offsetWithinRow: scrollTop }
+      // The wrong anchor (one captured against the shifted map) resolves back to the
+      // un-corrected scrollTop below, which is the visible jump those tests assert on.
+      : { id: 'anchored-row', offsetWithinRow: scrollTop - SHIFT_ANCHOR_OFFSET }),
+    scrollTopNearAnchor: () => null,
+    scrollTopForAnchor: a => (a.id === 'anchored-row'
+      ? (shifted ? SHIFT_ANCHOR_OFFSET + shift : SHIFT_ANCHOR_OFFSET) + a.offsetWithinRow
+      : a.offsetWithinRow),
+  }
+  return {
+    virt,
+    /** Let the NEXT updateViewport commit the shift. */
+    arm: () => {
+      armed = true
+    },
+  }
 }
 
 /**
@@ -172,7 +229,7 @@ export function makeRowVirtualizer(initialHeights: number[]) {
     anchorAt: (y: number): ScrollAnchor | null => anchorAtOffset(geometry(), y),
     scrollTopNearAnchor: (anchor: ScrollAnchor): number | null => resolveNearestAnchorScrollTop(geometry(), anchor),
     scrollTopForAnchor: (anchor: ScrollAnchor): number | null => resolveAnchorScrollTop(geometry(), anchor),
-    ...measurementDeferralNoOps(),
+    ...virtualizerNoOps(),
   }
   const setRowHeight = (idx: number, h: number) => {
     setHeights((prev) => {

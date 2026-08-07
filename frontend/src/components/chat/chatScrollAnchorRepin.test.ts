@@ -20,7 +20,6 @@ function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeig
   const velocity = {
     isFling: vi.fn(() => false),
     isActivelyFlinging: vi.fn(() => false),
-    hasRecentMomentumInput: vi.fn(() => false),
   }
   const virt = {
     anchorAt: vi.fn((top: number): ScrollAnchor | null => anchorAt(`top@${top}`)),
@@ -61,7 +60,7 @@ function setup(geometry: { scrollTop?: number, clientHeight?: number, scrollHeig
   }
 }
 
-describe('createanchorrepin state machine', () => {
+describe('createAnchorRepin state machine', () => {
   it('starts following the tail with no anchor', () => {
     const { repin } = setup()
     expect(repin.isFollowing()).toBe(true)
@@ -255,7 +254,7 @@ describe('createanchorrepin state machine', () => {
   })
 })
 
-describe('createanchorrepin edge-aware capture', () => {
+describe('createAnchorRepin edge-aware capture', () => {
   // captureViewportAnchor pins the NEARER edge's row when at an edge, else the midpoint, so a
   // far-side row growing past its estimate can't drift the pin off that edge. anchorAt returns
   // `top@<offset>`, so the captured anchor id reveals which viewport line (scrollTop + ratio*ch)
@@ -292,7 +291,7 @@ describe('createanchorrepin edge-aware capture', () => {
   })
 })
 
-describe('createanchorrepin row-top hold', () => {
+describe('createAnchorRepin row-top hold', () => {
   it('captureRowTopAnchor arms the hold; releaseRowTopHold downgrades it but KEEPS the anchor', () => {
     const { repin, el, virt } = setup({ clientHeight: 500 })
     el.scrollTop = 100
@@ -353,7 +352,7 @@ describe('createanchorrepin row-top hold', () => {
   })
 })
 
-describe('createanchorrepin repintoanchor decision', () => {
+describe('createAnchorRepin repinToAnchor decision', () => {
   it('does nothing while following the tail (no anchor to pin)', () => {
     const { repin, writes, virt } = setup()
     repin.repinToAnchor()
@@ -434,17 +433,16 @@ describe('createanchorrepin repintoanchor decision', () => {
     expect(flingSettle.accumulate).toHaveBeenCalledWith(-82)
   })
 
-  it('writes a small correction once momentum has stopped, even within the input-grace window', () => {
+  it('writes a small correction once momentum stops', () => {
     // The post-fling SETTLE: momentum is no longer moving the viewport (isActivelyFlinging
-    // false), but the 750ms momentum-input grace still holds and the velocity sample has
-    // gone stale (isFling's idle default -> true). A look-ahead premeasure lands here and
-    // shrinks content above the anchor. Because the viewport is STATIONARY, a scrollTop
-    // write cancels no momentum -- so correct it immediately (an off-screen, invisible
-    // shift) rather than deferring it into drift that accumulates across the settle burst
-    // (the observed run of deferred-fling WARNs climbing to ~176px at a fixed scrollTop).
+    // false) and the velocity sample has gone stale (isFling's idle default -> true). A
+    // look-ahead premeasure lands here and shrinks content above the anchor. Because the
+    // viewport is STATIONARY, a scrollTop write cancels no momentum -- so correct it
+    // immediately (an off-screen, invisible shift) rather than deferring it into drift that
+    // accumulates across the settle burst (the observed run of deferred-fling WARNs climbing
+    // to ~176px at a fixed scrollTop).
     const { repin, el, writes, virt, velocity, flingSettle } = setup({ clientHeight: 733, scrollHeight: 6000 })
     velocity.isActivelyFlinging.mockReturnValue(false)
-    velocity.hasRecentMomentumInput.mockReturnValue(true)
     velocity.isFling.mockReturnValue(true)
     el.scrollTop = 4606
     repin.setAnchor(anchorAt('m1')) // captured at the live position -> viewport stationary
@@ -456,26 +454,12 @@ describe('createanchorrepin repintoanchor decision', () => {
     expect(flingSettle.accumulate).not.toHaveBeenCalled()
   })
 
-  it('does not write a momentum-tail correction after the scroll handler returns', () => {
-    const { repin, el, writes, virt, velocity, flingSettle } = setup({ clientHeight: 733 })
-    velocity.hasRecentMomentumInput.mockReturnValue(true)
-    el.scrollTop = 2677
-    repin.setAnchor(anchorAt('m1'))
-    virt.scrollTopForAnchor.mockReturnValue(2651) // low-velocity momentum tail measurement
-
-    repin.repinToAnchor()
-
-    expect(writes).toEqual([])
-    expect(repin.currentAnchor()).toEqual(anchorAt('top@3043.5'))
-    expect(flingSettle.reset).toHaveBeenCalled()
-  })
-
-  it('re-anchors instead of writing a small correction during a slow user scroll', () => {
+  it('re-anchors instead of writing an imperceptible correction during a slow user scroll', () => {
     const { repin, el, writes, virt, flingSettle, setUserScrolling } = setup()
     setUserScrolling(true)
     el.scrollTop = 100
     repin.setAnchor(anchorAt('m1')) // captured at scrollTop 100
-    virt.scrollTopForAnchor.mockReturnValue(116) // a small measurement correction above the anchor
+    virt.scrollTopForAnchor.mockReturnValue(107) // 7px: under the absorb cap
 
     repin.repinToAnchor()
 
@@ -484,17 +468,49 @@ describe('createanchorrepin repintoanchor decision', () => {
     expect(flingSettle.reset).toHaveBeenCalled()
   })
 
-  it('re-anchors instead of writing a medium estimate correction during a slow native scroll', () => {
+  it('writes a correction AT the absorb cap during a slow user scroll', () => {
+    // The bound is STRICT, and this pins that. VISIBLE_ANCHOR_JUMP_PX is also 8, and its own
+    // doc calls a shift of exactly 8px the point where the row visibly jumps -- so absorbing
+    // one permanently is exactly what the cap exists to prevent. An off-by-one here is
+    // invisible in review and permanent on screen.
+    const { repin, el, writes, virt, setUserScrolling } = setup()
+    setUserScrolling(true)
+    el.scrollTop = 100
+    repin.setAnchor(anchorAt('m1'))
+    virt.scrollTopForAnchor.mockReturnValue(108) // 8px: AT the cap
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([108])
+    expect(repin.currentAnchor()).toEqual(anchorAt('m1')) // corrected, so the pin is kept
+  })
+
+  it('writes a correction over the absorb cap during a slow user scroll', () => {
+    const { repin, el, writes, virt, setUserScrolling } = setup()
+    setUserScrolling(true)
+    el.scrollTop = 100
+    repin.setAnchor(anchorAt('m1'))
+    virt.scrollTopForAnchor.mockReturnValue(109) // 9px
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([109])
+    expect(repin.currentAnchor()).toEqual(anchorAt('m1')) // corrected, so the pin is kept
+  })
+
+  it('writes a medium estimate correction during a slow native scroll', () => {
+    // A tool row measuring 78px shorter than its estimate, above the anchor -- the magnitude
+    // the drift WARNs reported. Absorbing it left the whole 78px on screen as a jump.
     const { repin, el, writes, virt, flingSettle, setUserScrolling } = setup({ clientHeight: 733, scrollHeight: 6000 })
     setUserScrolling(true)
     el.scrollTop = 4397
     repin.setAnchor(anchorAt('m1')) // captured at the live viewport position
-    virt.scrollTopForAnchor.mockReturnValue(4319) // 78px, like a tool row measuring shorter
+    virt.scrollTopForAnchor.mockReturnValue(4319)
 
     repin.repinToAnchor()
 
-    expect(writes).toEqual([])
-    expect(repin.currentAnchor()).toEqual(anchorAt('top@4763.5'))
+    expect(writes).toEqual([4319])
+    expect(repin.currentAnchor()).toEqual(anchorAt('m1'))
     expect(flingSettle.reset).toHaveBeenCalled()
   })
 
@@ -554,7 +570,7 @@ describe('createanchorrepin repintoanchor decision', () => {
   })
 })
 
-describe('createanchorrepin deferred-during-animation', () => {
+describe('createAnchorRepin deferred-during-animation', () => {
   it('defers a re-pin while an animation is running and applies it on a mid-flight cancel', () => {
     const { repin, el, writes, virt, setAnimating } = setup()
     el.scrollTop = 0
@@ -586,7 +602,7 @@ describe('createanchorrepin deferred-during-animation', () => {
   })
 })
 
-describe('createanchorrepin clamp reporting (onrepinclamp)', () => {
+describe('createAnchorRepin clamp reporting (onRepinClamp)', () => {
   it('reports a top-edge clamp: the keep-position target went negative and the row jumped up', () => {
     const { repin, el, writes, virt, onRepinClamp } = setup({ clientHeight: 500, scrollHeight: 5000 })
     el.scrollTop = 200
@@ -644,21 +660,23 @@ describe('createanchorrepin clamp reporting (onrepinclamp)', () => {
   })
 })
 
-describe('createanchorrepin drift reporting (onanchordrift)', () => {
+describe('createAnchorRepin drift reporting (onAnchorDrift)', () => {
   it('reports an ABSORBED slow-scroll correction (uncorrected on-screen shift)', () => {
     const { repin, el, writes, virt, onAnchorDrift, setUserScrolling } = setup({ clientHeight: 500 })
     el.scrollTop = 200
     repin.setAnchor(anchorAt('m'), 200, 0) // captured at the viewport top (ratio 0)
-    virt.scrollTopForAnchor.mockReturnValue(250) // row top now 250 -> ideal 250, a +50px correction
+    virt.scrollTopForAnchor.mockReturnValue(206) // row top now 206 -> ideal 206, a +6px correction
     setUserScrolling(true) // a slow user scroll is in progress
     repin.repinToAnchor()
-    // The 50px correction (<= the small-absorb cap) is ABSORBED, not written: the anchored
-    // row is left displaced 50px on-screen, reported as drift.
+    // The 6px correction (<= the small-absorb cap) is ABSORBED, not written: the anchored
+    // row is left displaced 6px on-screen, reported as drift. The engine reports every
+    // absorbed shift; the emission policy applies its own visible-px floor on top (the
+    // absorb cap now sits under that floor, so this is a tripwire for a raised cap).
     expect(writes).toEqual([])
     expect(onAnchorDrift).toHaveBeenCalledTimes(1)
     expect(onAnchorDrift).toHaveBeenCalledWith(expect.objectContaining({
       anchorId: 'm',
-      residualPx: 50,
+      residualPx: 6,
       reason: 'absorbed',
       fromTop: 200,
       clientHeight: 500,
@@ -689,5 +707,45 @@ describe('createanchorrepin drift reporting (onanchordrift)', () => {
     repin.repinToAnchor()
     expect(writes).toEqual([250]) // corrected, so the row stays on its line -- no drift
     expect(onAnchorDrift).not.toHaveBeenCalled()
+  })
+
+  it('writes a premeasure correction that lands during a SLOW scroll after the handler returns', () => {
+    // The reported "anchored content drifted without correction" WARN. The reader scrolls UP
+    // slowly, so the premeasure bands measure rows ABOVE the viewport-midpoint anchor and the
+    // offset map contracts there. The commit lands on the next frame -- OUTSIDE handleScroll
+    // (isUserScrolling false) -- while the 750ms wheel grace still holds, but the viewport is
+    // NOT flinging: the velocity sample is fresh and below the fling threshold. There is no
+    // momentum for a write to cancel, so the correction MUST be written. Dropping it leaves
+    // the whole 74px on-screen as a jump.
+    const { repin, el, writes, virt, velocity, flingSettle, onAnchorDrift } = setup({ clientHeight: 732, scrollHeight: 13367 })
+    velocity.isFling.mockReturnValue(false) // a fresh, slow sample -- not a fling
+    velocity.isActivelyFlinging.mockReturnValue(false) // momentum does not move the viewport
+    el.scrollTop = 10918
+    repin.setAnchor(anchorAt('m1'), 10918, 0.5) // captured at the live position
+    virt.scrollTopForAnchor.mockReturnValue(11210) // idealTop = 11210 - 366 = 10844, a -74px shift
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([10844])
+    expect(repin.currentAnchor()).toEqual(anchorAt('m1')) // still pinned to the same row
+    expect(onAnchorDrift).not.toHaveBeenCalled()
+    expect(flingSettle.accumulate).not.toHaveBeenCalled()
+  })
+
+  it('still defers a correction that lands during LIVE momentum after the handler returns', () => {
+    // The counterpart the fix must not break: same async arrival, but momentum DOES move the
+    // viewport. A write cancels it, so the correction defers into the fling-settle instead.
+    const { repin, el, writes, virt, velocity, flingSettle, onAnchorDrift } = setup({ clientHeight: 732, scrollHeight: 13367 })
+    velocity.isActivelyFlinging.mockReturnValue(true)
+    velocity.isFling.mockReturnValue(true)
+    el.scrollTop = 10918
+    repin.setAnchor(anchorAt('m1'), 10918, 0.5)
+    virt.scrollTopForAnchor.mockReturnValue(11210)
+
+    repin.repinToAnchor()
+
+    expect(writes).toEqual([])
+    expect(flingSettle.accumulate).toHaveBeenCalledWith(-74)
+    expect(onAnchorDrift).toHaveBeenCalledWith(expect.objectContaining({ reason: 'deferred-fling' }))
   })
 })

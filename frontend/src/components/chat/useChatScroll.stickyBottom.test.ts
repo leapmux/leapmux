@@ -7,7 +7,7 @@ import {
   triggerResizeObserversSync,
 } from '~/test-support/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -306,7 +306,7 @@ describe('usechatscroll resize sticky-bottom', () => {
           // totalHeight()===0) stays out of this test; we want only the explicit
           // scroll events to dispatch pagination.
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -372,7 +372,7 @@ describe('usechatscroll resize sticky-bottom', () => {
           const [streamingText] = createSignal('')
           let newerLoads = 0
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 5000.4,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -426,7 +426,7 @@ describe('usechatscroll resize sticky-bottom', () => {
           const [streamingText] = createSignal('')
           let updateViewportCalls = 0
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 0,
             geometryVersion: () => 0,
             updateViewport: () => { updateViewportCalls += 1 },

@@ -15,11 +15,25 @@ interface AnchorRepinFlingSettle {
   rebase: () => void
 }
 
-/** The velocity read the re-pin uses to tell a momentum fling from a deliberate scroll. */
+/**
+ * The velocity read the re-pin uses to tell a momentum fling from a deliberate scroll.
+ *
+ * `isActivelyFlinging` must mean "momentum moves the viewport, and a scrollTop write would
+ * CANCEL it". That is not the same as speed: a fast finger or scrollbar drag measures like a
+ * coast but carries no inertia, and a write during one costs nothing. The caller composes
+ * that distinction (see the velocity deps in useChatScroll) and this engine only reads the
+ * answer.
+ *
+ * Deliberately NO `hasRecentMomentumInput`, and the caller must not fold that 750ms input
+ * grace into either member. It marks that the user touched the surface recently, which is
+ * neither question, and it is wrong at both ends: it outlasts a real coast by ~600ms, and a
+ * bare coast stops refreshing it while the viewport still moves. Suppressing ON the grace
+ * made every premeasure inside it a permanent uncorrected shift; narrowing a suppression BY
+ * the grace made the engine write into live momentum and cancel it.
+ */
 interface AnchorRepinVelocity {
   isFling: () => boolean
   isActivelyFlinging: () => boolean
-  hasRecentMomentumInput: () => boolean
 }
 
 export interface AnchorRepinDeps {
@@ -76,14 +90,16 @@ export interface AnchorRepinDeps {
    * correction we withheld). This is the OUTCOME-based counterpart to onRepinClamp: it
    * catches a content shift that produces NO scroll event, so the hook's scroll-event
    * detector can't see it. Two reasons:
-   *  - 'absorbed': a small estimate->measure correction arrived during a slow/tailing
-   *    scroll and we re-anchored to the shifted position instead of snapping back (a
-   *    PERMANENT accepted shift, up to the small-absorb cap).
-   *  - 'deferred-fling': a correction was deferred mid-fling as drift (transient -- the
-   *    fling-settle re-anchors it when momentum stops).
-   * The engine stays mechanical; the hook owns the WARN policy (a visible-px floor, and
-   * ignoring the fast-fling frames where the shift blends into momentum). Optional: unit
-   * tests omit it.
+   *  - 'absorbed': a small estimate->measure correction arrived INSIDE the scroll handler,
+   *    during a slow user scroll, and we re-anchored to the shifted position instead of
+   *    snapping back (a PERMANENT accepted shift, under the small-absorb cap). A correction
+   *    that lands after the handler returns is never absorbed -- see the branch below.
+   *  - 'deferred-fling': the engine deferred a correction mid-fling as drift, so the
+   *    fling-settle owns it. Also permanent, because the settle drops the drift and
+   *    re-anchors; the reader watched the viewport coast there under their own gesture.
+   * The engine stays mechanical; the hook owns the WARN policy (which reasons to surface, a
+   * cumulative visible-px floor, and ignoring the fast-fling frames where the shift blends
+   * into momentum). Optional: unit tests omit it.
    */
   onAnchorDrift?: (info: {
     anchorId: string
@@ -99,8 +115,24 @@ export interface AnchorRepinDeps {
  * deltas this small, re-anchor to the live viewport and let the user's scroll trajectory
  * win. Larger shifts are structural enough (prepend/trim/tall outlier) that preserving
  * the existing anchor is less surprising than silently absorbing the movement.
+ *
+ * The bound is STRICT (`delta <` below), so an absorbed shift stays under the smallest one
+ * the diagnostics call perceptible: VISIBLE_ANCHOR_JUMP_PX, also 8, whose own doc reads
+ * "below this the shift is imperceptible; at or above it the row visibly jumps". The two
+ * numbers are a documented relationship rather than an import, because they answer different
+ * questions -- what the engine may permanently leave on screen, and what a WARN reports --
+ * and each must stay free to move without dragging the other.
+ *
+ * Absorbing is permanent: the engine leaves the row displaced and re-anchors it there, so
+ * this cap is the largest on-screen jump the engine may accept in exchange for not writing
+ * scrollTop. It was 128px -- a sixth of a laptop viewport, and the size of the drift WARNs
+ * that a premeasure band above the anchor produced. Anything the reader can see is worth one
+ * corrected frame instead.
+ *
+ * Absorbed shifts still ACCUMULATE, because each one re-anchors at the displaced position.
+ * Detector C therefore gates on their running sum, not on one event (see ANCHOR_DRIFT_WARN_PX).
  */
-const SMALL_USER_SCROLL_REPIN_ABSORB_PX = 128
+const SMALL_USER_SCROLL_REPIN_ABSORB_PX = 8
 const VIEWPORT_MIDPOINT_RATIO = 0.5
 
 /**
@@ -416,10 +448,13 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
           // by that much would be worse than one interrupted fling -- and supersedes any
           // deferred drift.
           const flingSuppressPx = el.clientHeight / 2
+          // The Math.min is inert at any real pane size: it binds only under a 16px viewport,
+          // and clientHeight 0 already returned above. It stays as a MECHANICAL bound -- a
+          // permanent absorb may never exceed the fling-suppress half-viewport, whatever the
+          // constant becomes -- rather than a rule that holds only while the constant is 8.
           const smallUserScrollAbsorbPx = Math.min(SMALL_USER_SCROLL_REPIN_ABSORB_PX, flingSuppressPx)
           const flingLike = deps.velocity.isFling()
           const activeFling = deps.velocity.isActivelyFlinging()
-          const recentMomentumInput = deps.velocity.hasRecentMomentumInput()
           // How far the viewport has moved since this anchor was captured. Large only when a
           // fling outran the per-scroll-event captures (see anchorCaptureTop) -- a
           // keep-position prepend/trim leaves the viewport in place, so this stays ~0 for
@@ -448,13 +483,33 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
             // falls through to the immediate-write branch below.
             reanchorAndDropDrift()
           }
-          else if ((deps.isUserScrolling() || recentMomentumInput) && !flingLike && delta <= smallUserScrollAbsorbPx) {
-            // A small estimate->measure correction arrived while the user is slowly
-            // scrolling, or during the low-velocity tail just after the scroll handler
-            // returned. Writing scrollTop here fights the native momentum event and
-            // shows up as a tiny backward/forward bounce. Absorb the correction by making
-            // the current viewport row the new anchor; large structural shifts still fall
-            // through and preserve the old anchor.
+          else if (deps.isUserScrolling() && !flingLike && delta < smallUserScrollAbsorbPx) {
+            // A small estimate->measure correction arrived INSIDE handleScroll, while the
+            // user scrolls slowly. Absorb it by making the current viewport row the new
+            // anchor; a larger correction falls through and preserves the old anchor.
+            //
+            // The bound is STRICT so an absorbed shift stays under the perceptible floor, not
+            // at it: absorbing is permanent, so a shift the reader can see must never take
+            // this branch. What the absorb buys is silence for the shifts BELOW that floor --
+            // a scrollTop write is not free even when it is invisible, because it dispatches
+            // an echo scroll event the handler must classify, and doing that per mounting row
+            // through a whole page of history is noise for a shift nobody can perceive.
+            //
+            // Scoped to the scroll handler ON PURPOSE. The gate was once
+            // `isUserScrolling() || hasRecentMomentumInput()`, which extended this permanent
+            // absorb across the whole 750ms wheel grace -- so a premeasure band landing on
+            // the next frame, with the viewport already stationary, dropped its correction
+            // and left the shift on screen (the "anchored content drifted without correction"
+            // WARNs, 60-90px each, while scrollTop barely moved). Outside the handler the only
+            // reason not to write is LIVE momentum, which the branch below owns; when there is
+            // none, the else branch corrects immediately and invisibly.
+            //
+            // KNOWN GAP: the branch below owns momentum only at or above the fling threshold
+            // (FLING_VELOCITY_THRESHOLD_PX_PER_MS, 1 px/ms). A coast that decays under it
+            // still moves the viewport, and no branch withholds the write there. The velocity
+            // tracker cannot separate that decaying coast from a genuinely slow deliberate
+            // scroll, where writing IS correct, so closing the gap needs a motion signal the
+            // tracker does not have today -- not a wider threshold.
             //
             // The anchored row is `signed` off its captured line and we are NOT correcting
             // it -- an on-screen content shift with no scroll event. Report it (BEFORE the
@@ -468,16 +523,23 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
             // returns, so outside the handler we gate on `activeFling` -- isActivelyFlinging,
             // which is TRUE only while momentum is genuinely moving the viewport (a write
             // would cancel it) and FALSE once it has stopped. It is deliberately NOT the
-            // 750ms momentum-input grace: that grace outlasts the momentum by ~600ms, and
-            // deferring through it meant a look-ahead premeasure landing during the post-fling
-            // SETTLE (viewport already stationary) accumulated as drift instead of correcting
-            // -- the observed run of deferred-fling WARNs climbing to ~176px at a fixed
-            // scrollTop. Once momentum stops, the viewport is stationary, so the else branch
-            // below writes the (off-screen, invisible) correction immediately and the anchor
-            // never drifts. Slow/manual scrolls are absorbed by the branch above.
-            // The row is `signed` off its line this frame -- transient drift the settle
-            // re-anchors when momentum stops. Report it; the hook ignores the fast-fling
-            // frames (where it blends into momentum) and surfaces only a lingering shift.
+            // 750ms momentum-input grace, in EITHER direction. The grace outlasts a real
+            // coast by ~600ms, so deferring through it left a look-ahead premeasure that
+            // landed during the post-fling settle (viewport already stationary) accumulating
+            // as drift instead of correcting. And a bare coast stops refreshing the grace
+            // while it is still moving, so narrowing this predicate BY the grace made the
+            // engine write into live momentum and cancel it -- which is why the hook passes
+            // the tracker's raw read (see the velocity deps in useChatScroll).
+            //
+            // Once momentum stops, the viewport is stationary, so the else branch below writes
+            // the (off-screen, invisible) correction immediately and the anchor never drifts.
+            // A slow/manual scroll inside the handler is absorbed by the branch above, but
+            // only below the imperceptible cap.
+            //
+            // The row is `signed` off its line this frame. Report it, though the hook does NOT
+            // surface this reason today: the settle drops the drift and re-anchors, so the
+            // shift is permanent, but the reader watched the viewport coast there under their
+            // own gesture (see Detector C's reason filter for why that is not an anomaly).
             reportDrift('deferred-fling')
             deps.flingSettle().accumulate(signed)
           }

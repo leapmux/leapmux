@@ -25,6 +25,11 @@ export function createScrollVelocity(deps: {
   let lastWriteTime = -1
   // px/ms over the last inter-event gap; Infinity until two samples establish it.
   let velocity = Number.POSITIVE_INFINITY
+  // Whether INERTIA currently carries the viewport (see isCoasting). A latch, not a speed
+  // test: momentum decays continuously, so the instant it drops under thresholdPxPerMs it is
+  // still moving the viewport, and a speed test calls that stopped. A fling LATCHES this; the
+  // motion itself clears it.
+  let coasting = false
   return {
     /** Record a scroll event at position `pos` (px). Call once per real (non-echo) scroll. */
     sample(pos: number) {
@@ -50,13 +55,35 @@ export function createScrollVelocity(deps: {
         // tail that coalesces can't hold a stale-high velocity past its real momentum.
         if (dt <= 0)
           return
-        velocity = Math.abs(pos - lastPos) / dt
+        const displacement = Math.abs(pos - lastPos)
+        velocity = displacement / dt
+        // Maintain the coast latch from DISPLACEMENT, not from the speed test. The previous
+        // motion already stopped if this sample arrives past the idle window, so any earlier
+        // coast ended and this is a new gesture. A sample that moved nothing means the
+        // viewport came to rest. Otherwise a fling-speed sample latches the coast, and every
+        // slower sample after it keeps the latch while the viewport still moves -- which is
+        // the whole point, because that decaying tail is exactly what a speed test misses.
+        if (t - lastTime > deps.idleMs || displacement === 0)
+          coasting = false
+        else if (velocity >= deps.thresholdPxPerMs)
+          coasting = true
       }
       seeded = true
       lastPos = pos
       lastTime = t
       // A real sample supersedes any pending programmatic-write baseline.
       lastWriteTime = -1
+    },
+    /**
+     * Report that the user supplied a fresh scroll increment (a wheel notch). A scroll the
+     * user drives right now is not inertia, however fast it measures, so this clears the coast
+     * latch. It exists because a brisk deliberate wheel scroll can cross thresholdPxPerMs for
+     * one sample, and without this that sample would latch a coast that never happens. A real
+     * momentum coast re-latches immediately from its own fast samples, because the OS drives
+     * it with bare scroll events and sends no further wheel input.
+     */
+    noteUserInput() {
+      coasting = false
     },
     /**
      * Advance the position baseline to `pos` for a PROGRAMMATIC scroll write (a re-pin
@@ -102,6 +129,25 @@ export function createScrollVelocity(deps: {
       if (deps.now() - lastTime > deps.idleMs)
         return false
       return Number.isFinite(velocity) && velocity >= deps.thresholdPxPerMs
+    },
+    /**
+     * Whether INERTIA still carries the viewport: momentum began and the motion has not
+     * stopped. This is the question "would a scrollTop write cancel the user's scroll?", and
+     * isActivelyFlinging does NOT answer it. That one asks how fast the viewport moves right
+     * now, and momentum decays continuously: the last few hundred ms of a trackpad coast run
+     * under thresholdPxPerMs while the viewport plainly still moves. A write there kills the
+     * coast under the reader's finger, and a speed test cannot see it coming.
+     *
+     * FALSE while idle (the sample went stale, so the motion stopped -> a write is safe) and
+     * FALSE before a fling establishes the latch, so a slow deliberate scroll -- where an
+     * immediate correction is correct -- never reads as inertia.
+     */
+    isCoasting(): boolean {
+      if (!seeded)
+        return false
+      if (deps.now() - lastTime > deps.idleMs)
+        return false
+      return coasting
     },
     /**
      * The current scroll speed in px/ms, for the render-ahead overscan that paints

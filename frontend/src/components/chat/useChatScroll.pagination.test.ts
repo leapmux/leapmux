@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { maxScrollTopOf } from './chatScrollGeometry'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeRowVirtualizer, makeStubVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeRowVirtualizer, makeStubVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -335,7 +335,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollTop(200) // visible buffer ABOVE = 200, well under 1500; BELOW = 200
           const [total, setTotal] = createSignal(900)
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -410,7 +410,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(1000) // scrollable (maxScrollTop = 500)
           div.setScrollTop(500) // pinned at the bottom -- distFromBottom = 0
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 1000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -474,7 +474,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollTop(0)
           const [total, setTotal] = createSignal(0)
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -543,7 +543,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollTop(20)
           const [total, setTotal] = createSignal(520)
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -607,7 +607,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(1000) // scrollable (maxScrollTop = 500)
           div.setScrollTop(500) // at the loaded bottom -- distFromBottom = 0
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 1000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -661,7 +661,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(700)
           div.setScrollTop(200) // a deficient above-buffer were the tab visible
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 700,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -709,7 +709,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollTop(1600) // buffer ABOVE = 1600 (>= 1500, satisfied); BELOW = 100
           const [total, setTotal] = createSignal(2200)
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -774,7 +774,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           // totalHeight never grows: every older page is hidden (no visible height).
           const [total] = createSignal(900)
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -835,7 +835,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(900)
           div.setScrollTop(200) // buffer above 200 < 1500 -> deficient, would pre-fetch
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 900,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -898,7 +898,7 @@ describe('usechatscroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(300)
           div.setScrollTop(0) // non-scrollable (maxScrollTop 0); older buffer deficient
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 300,
             geometryVersion: () => 0,
             updateViewport: () => {},

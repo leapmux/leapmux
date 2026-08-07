@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 
 import { FLING_OVERSCAN_HARD_CAP_PX, flingOverscanCapPx, useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, measurementDeferralNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -41,7 +41,7 @@ describe('usechatscroll render-ahead overscan', () => {
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'newer'
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
             updateViewport: (_st, _ch, lead) => {
@@ -100,7 +100,7 @@ describe('usechatscroll render-ahead overscan', () => {
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'older'
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
             updateViewport: (_st, _ch, lead) => {
@@ -159,7 +159,7 @@ describe('usechatscroll render-ahead overscan', () => {
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
             updateViewport: (_st, _ch, lead) => {
@@ -448,7 +448,7 @@ describe('usechatscroll windowing trim', () => {
           // A virtualizer that pins the viewport midpoint to row 'm50' (the reader
           // scrolled up to it). totalHeight constant so the geometry effect is quiet.
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -509,7 +509,7 @@ describe('usechatscroll windowing trim', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkMsgs(MAX_LOADED_CHAT_MESSAGES))
           const [streamingText] = createSignal('')
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -567,7 +567,7 @@ describe('usechatscroll windowing trim', () => {
           // The captured anchor row is NOT present in the window (deleted / reseq'd
           // out between capture and the trim), so findIndex returns -1.
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -625,7 +625,7 @@ describe('usechatscroll windowing trim', () => {
           // MIDDLE row m10 once m1 is gone -- modelling an optimistic local that
           // reconciled to a server echo under a new id between capture and trim.
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -691,7 +691,7 @@ describe('usechatscroll windowing trim', () => {
           // (rows are rowH tall), so the buffer-top anchor (bufferTargetPx above the
           // viewport top) resolves to a row STRICTLY above the viewport anchor.
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 40000,
             geometryVersion: () => 0,
             updateViewport: () => {},
@@ -754,7 +754,7 @@ describe('usechatscroll windowing trim', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           const [streamingText] = createSignal('')
           const virt: ChatScrollVirtualizer = {
-            ...measurementDeferralNoOps(),
+            ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
