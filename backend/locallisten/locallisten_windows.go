@@ -6,15 +6,33 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os/user"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Microsoft/go-winio"
 )
 
 const pipePrefix = `\\.\pipe\`
+
+// closeRetryInterval is how long Close waits for one winio close before it
+// starts another, and closeAttempts is how many closes it starts. Together they
+// bound how long Close can hold up the caller. See Close for why a retry is
+// necessary and why a bound is.
+const (
+	closeRetryInterval = 250 * time.Millisecond
+	closeAttempts      = 8
+)
+
+// errCloseStuck reports a listener routine that did not stop. The routine keeps
+// the first pipe instance for the life of the process, so a later listen on the
+// SAME name fails -- the desktop sidecar rebinds one fixed name after an idle
+// shutdown, and that relisten is what a stuck listener costs. Report it; the
+// alternative is a caller that never returns at all, which costs more.
+var errCloseStuck = errors.New("npipe listener did not close")
 
 func listenNpipe(name string) (net.Listener, error) {
 	pipePath := fullPipePath(name)
@@ -30,10 +48,17 @@ func listenNpipe(name string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("npipe listen %s: %w", pipePath, err)
 	}
+	return newNpipeListener(listener), nil
+}
+
+// newNpipeListener wraps ln. It is the ONE construction site, so a listener a
+// test builds carries the same close policy as a production one.
+func newNpipeListener(ln net.Listener) *npipeListener {
 	return &npipeListener{
-		Listener: listener,
-		conns:    make(map[*trackedPipeConn]struct{}),
-	}, nil
+		Listener:      ln,
+		retryInterval: closeRetryInterval,
+		conns:         make(map[*trackedPipeConn]struct{}),
+	}
 }
 
 // npipeListener wraps winio.Listener so callers can uniformly check for
@@ -47,8 +72,68 @@ func listenNpipe(name string) (net.Listener, error) {
 // "pipe instance" that blocks the next ListenPipe(FIRST_PIPE_INSTANCE).
 type npipeListener struct {
 	net.Listener
-	mu    sync.Mutex
-	conns map[*trackedPipeConn]struct{}
+	// retryInterval paces Close. A field rather than the constant alone, so a
+	// test drives the retry without a real wait.
+	retryInterval time.Duration
+	mu            sync.Mutex
+	conns         map[*trackedPipeConn]struct{}
+}
+
+// Close stops the listener. It starts another close every retryInterval that
+// the close before it does not return.
+//
+// The retry works around https://github.com/microsoft/go-winio/issues/85, open
+// since 2018 and unfixed in v0.6.2, the newest release. The fix for it,
+// https://github.com/microsoft/go-winio/pull/369, is open and unmerged. Delete
+// this retry once a release carries that fix.
+//
+// The defect leaves a close blocked forever. winio's Close sends ONE token on
+// the listener's private closeCh and then waits for doneCh. The token usually
+// reaches the listener routine's own select, which stops the routine and closes
+// doneCh. An accept that is already in flight takes the token first, in
+// makeConnectedServerPipe, and THAT path rewrites the aborted connect's error to
+// ErrPipeListenerClosed only when the connect returned nil or ErrFileClosed. Any
+// other result -- the ERROR_NO_DATA that a connect-and-close client leaves
+// behind, for example -- goes back to the routine, which computes
+// "closed = err == ErrPipeListenerClosed", reads false, and continues to run.
+// doneCh stays open, and the token that would have stopped the routine is spent.
+// See pipe.go lines 440 to 485 of go-winio v0.6.2.
+//
+// A later token stops the routine from either state that it parks in. The
+// routine's own select receives the token and sets closed. Alternatively
+// makeConnectedServerPipe receives it and aborts a connect that no client
+// satisfied, which does map to ErrPipeListenerClosed.
+//
+// Close must RETURN, which is why the attempts are bounded and a stuck listener
+// is reported instead of waited out. http.Server.Shutdown closes its listeners
+// while it holds srv.mu, so a close that blocks also blocks every Serve that
+// returns and every connection that ends, and the whole http.Server deadlocks:
+// Shutdown never reaches its own context deadline, because it blocks before it
+// reads the context. The bound also covers a hang no token can release --
+// https://github.com/microsoft/go-winio/issues/357, where the routine parks on
+// the connect result itself rather than on a select. Close reports that listener
+// and lets the caller continue.
+func (l *npipeListener) Close() error {
+	// One slot for each attempt: an attempt that returns late, after the routine
+	// finally stops, must not park forever on its send.
+	results := make(chan error, closeAttempts)
+	timer := time.NewTimer(l.retryInterval)
+	defer timer.Stop()
+	for attempt := 1; ; attempt++ {
+		go func() { results <- l.Listener.Close() }()
+		select {
+		case err := <-results:
+			return err
+		case <-timer.C:
+			if attempt >= closeAttempts {
+				return fmt.Errorf("%w: %s gave no answer to %d closes over %s",
+					errCloseStuck, l.Addr(), closeAttempts, time.Duration(closeAttempts)*l.retryInterval)
+			}
+			slog.Warn("npipe listener close did not return; starting another",
+				"pipe", l.Addr().String(), "attempt", attempt)
+			timer.Reset(l.retryInterval)
+		}
+	}
 }
 
 func (l *npipeListener) Accept() (net.Conn, error) {

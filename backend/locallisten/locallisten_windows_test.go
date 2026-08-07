@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/user"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -229,29 +231,38 @@ func TestDialer_NpipeReachesListener(t *testing.T) {
 }
 
 func TestDialer_NpipeAcceptsFullNTPath(t *testing.T) {
-	// Full NT paths must be accepted in the URL target. Dial itself doesn't
-	// behave differently from the short-name form — npipeDialer normalizes
-	// via fullPipePath — so this covers only the parser contract.
-	// Round-trip coverage lives in TestDialer_NpipeReachesListener.
+	// A full NT path must work end to end, not only through the parser.
 	//
-	// Caveat: an earlier version of this test exercised the full round-trip
-	// (listen, accept loop, dial, close) and intermittently wedged on
-	// Windows Server 2025 inside go-winio v0.6.2's Close path during
-	// teardown — goroutine 66 parked past `closeCh <- 1` waiting on
-	// doneCh, while the listener routine was still in
-	// makeConnectedServerPipe's select that should have received the send.
-	// v0.6.2 is the latest release and we couldn't repro locally, so we
-	// dropped the round-trip rather than chasing a winio deadlock we don't
-	// fully understand. If TestDialer_NpipeReachesListener (identical
-	// structure) starts flaking the same way, revisit.
+	// This test dropped its round trip once: listen, accept loop, dial and close
+	// wedged on Windows Server 2025 inside go-winio v0.6.2's close path during
+	// teardown, with one goroutine parked past `closeCh <- 1` on doneCh while the
+	// listener routine still ran. That is
+	// https://github.com/microsoft/go-winio/issues/85. npipeListener.Close now
+	// starts another close for exactly that state, so the round trip is back. Read
+	// Close for the mechanism.
 	name := uniqueTestPipeName(t)
+	ln, err := Listen("npipe:" + fullPipePath(name))
+	if err != nil {
+		t.Fatalf("Listen with full NT path: %v", err)
+	}
+	acceptDone := runAcceptLoop(t, ln)
+
 	dial, err := Dialer("npipe:" + fullPipePath(name))
 	if err != nil {
 		t.Fatalf("Dialer with full NT path: %v", err)
 	}
-	if dial == nil {
-		t.Fatal("Dialer returned nil dial function")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, err := dial(ctx)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
 	}
+	_ = conn.Close()
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("listener close: %v", err)
+	}
+	<-acceptDone
 }
 
 // TestCloseAccepted_FreesPipeNameForRelisten reproduces the Switch-Mode bug:
@@ -332,5 +343,244 @@ func TestNpipeListener_AcceptTranslatesClose(t *testing.T) {
 	}
 	if !errors.Is(acceptErr, winio.ErrPipeListenerClosed) {
 		t.Errorf("Accept error %v should still wrap winio.ErrPipeListenerClosed for debugging", acceptErr)
+	}
+}
+
+// stuckListener stands in for a winio listener whose close blocks. Every close
+// before releaseAfter waits; the one AT releaseAfter releases them all. That is
+// the go-winio state npipeListener.Close retries out of: the first close token
+// reaches an accept that is in flight, leaves the listener routine running, and
+// only a later token stops it. See
+// https://github.com/microsoft/go-winio/issues/85.
+//
+// A hand-written fake rather than a real pipe, because the winio path that
+// swallows the first token needs an unmapped error from an aborted connect, and
+// no test can make Windows produce that on demand. The race against a real pipe
+// is covered by TestNpipeListener_CloseReturnsWithAnAcceptInFlight.
+type stuckListener struct {
+	releaseAfter int64
+	closeErr     error
+	calls        atomic.Int64
+	release      chan struct{}
+	releaseOnce  sync.Once
+}
+
+func newStuckListener(releaseAfter int64) *stuckListener {
+	return &stuckListener{releaseAfter: releaseAfter, release: make(chan struct{})}
+}
+
+func (l *stuckListener) releaseAll() { l.releaseOnce.Do(func() { close(l.release) }) }
+
+func (l *stuckListener) Close() error {
+	if l.calls.Add(1) >= l.releaseAfter {
+		l.releaseAll()
+		return l.closeErr
+	}
+	<-l.release
+	return nil
+}
+
+func (l *stuckListener) Accept() (net.Conn, error) {
+	return nil, errors.New("stuckListener never accepts")
+}
+
+func (l *stuckListener) Addr() net.Addr { return stuckAddr{} }
+
+type stuckAddr struct{}
+
+func (stuckAddr) Network() string { return "pipe" }
+func (stuckAddr) String() string  { return `\\.\pipe\stuck` }
+
+// The ordinary close sends ONE close and returns what it returns. The retry
+// exists for a wedged listener; it must not add a second close to a healthy one,
+// because each extra close token aborts an accept that winio has in flight.
+//
+// The hour-long interval is the assertion: a Close that waits for the timer at
+// all cannot finish inside the deadline below.
+func TestNpipeListener_CloseSendsOneCloseWhenTheListenerStops(t *testing.T) {
+	fake := newStuckListener(1)
+	ln := newNpipeListener(fake)
+	ln.retryInterval = time.Hour
+
+	closed := make(chan error, 1)
+	go func() { closed <- ln.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close waited for the retry timer on a listener that stopped")
+	}
+	if got := fake.calls.Load(); got != 1 {
+		t.Errorf("close attempts = %d, want 1", got)
+	}
+}
+
+// The regression: a first close that never returns must not become a Close that
+// never returns. Without the retry this test hangs, which is what wedged the Hub
+// on Windows -- http.Server.Shutdown holds srv.mu across the listener close.
+func TestNpipeListener_CloseRetriesWhenTheFirstCloseWedges(t *testing.T) {
+	fake := newStuckListener(2)
+	t.Cleanup(fake.releaseAll)
+	ln := newNpipeListener(fake)
+	ln.retryInterval = 20 * time.Millisecond
+
+	closed := make(chan error, 1)
+	go func() { closed <- ln.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return although a second close would have released it")
+	}
+	// At least two: the first close wedges by construction, so a Close that sent
+	// only one could not have returned. A slow runner may fit more in.
+	if got := fake.calls.Load(); got < 2 {
+		t.Errorf("close attempts = %d, want at least 2", got)
+	}
+}
+
+// A listener that answers no close at all still has to let the caller go, with
+// the failure reported rather than swallowed. Holding out for the listener is
+// the deadlock this whole path exists to prevent.
+func TestNpipeListener_CloseReportsAListenerThatNeverStops(t *testing.T) {
+	fake := newStuckListener(math.MaxInt64)
+	// The attempts stay parked on the release channel until this runs.
+	t.Cleanup(fake.releaseAll)
+	ln := newNpipeListener(fake)
+	ln.retryInterval = 5 * time.Millisecond
+
+	closed := make(chan error, 1)
+	go func() { closed <- ln.Close() }()
+	select {
+	case err := <-closed:
+		if !errors.Is(err, errCloseStuck) {
+			t.Fatalf("Close error = %v, want one wrapping errCloseStuck", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close never gave up on a listener that never stops")
+	}
+	// The bound is the point: Close retried, and it started no more closes than
+	// it promised. The count is read after Close returned, so the last attempt's
+	// goroutine may not have run yet -- an exact count would be a timing bet.
+	if got := fake.calls.Load(); got < 2 || got > closeAttempts {
+		t.Errorf("close attempts = %d, want between 2 and %d", got, closeAttempts)
+	}
+}
+
+// The retry must not swallow what the listener reports. Close runs the winio
+// close on its own goroutine now, so the error takes a channel to reach the
+// caller, and hub teardown reads that error to name a listener that failed.
+func TestNpipeListener_CloseReportsTheListenersOwnError(t *testing.T) {
+	want := errors.New("pipe close refused")
+	fake := newStuckListener(1)
+	fake.closeErr = want
+	ln := newNpipeListener(fake)
+	ln.retryInterval = time.Hour
+
+	closed := make(chan error, 1)
+	go func() { closed <- ln.Close() }()
+	select {
+	case err := <-closed:
+		if !errors.Is(err, want) {
+			t.Fatalf("Close error = %v, want %v", err, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
+
+// The Hub closes its local listener twice: http.Server.Shutdown closes it, and
+// the teardown that follows closes it again. The second close must return at
+// once and report nothing, NOT spend the retry budget and report a stuck
+// listener.
+func TestNpipeListener_CloseTwiceReportsNothingTheSecondTime(t *testing.T) {
+	ln, err := Listen("npipe:" + uniqueTestPipeName(t))
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	acceptDone := runAcceptLoop(t, ln)
+	if err := ln.Close(); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
+	<-acceptDone
+
+	closed := make(chan error, 1)
+	go func() { closed <- ln.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("second close: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second close did not return")
+	}
+}
+
+// net/http closes a listener from its own Serve teardown while Shutdown closes
+// the same one, so two closes can overlap. Every one of them must return, and
+// none may panic on the listener routine's single doneCh close.
+func TestNpipeListener_ConcurrentClosesAllReturn(t *testing.T) {
+	ln, err := Listen("npipe:" + uniqueTestPipeName(t))
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	acceptDone := runAcceptLoop(t, ln)
+
+	const closers = 4
+	closed := make(chan error, closers)
+	for range closers {
+		go func() { closed <- ln.Close() }()
+	}
+	for i := range closers {
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatalf("concurrent close %d: %v", i, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d of %d concurrent closes returned", i, closers)
+		}
+	}
+	<-acceptDone
+}
+
+// The race against a REAL pipe, in the shape that wedged CI: a readiness probe
+// connects and writes nothing, the accept loop re-arms, and the listener closes
+// on top of that accept. One iteration is a coin toss, so this runs a batch;
+// each close is bounded well above Close's own retry budget, so only a close
+// that cannot finish at all fails the test.
+func TestNpipeListener_CloseReturnsWithAnAcceptInFlight(t *testing.T) {
+	for i := range 50 {
+		name := uniqueTestPipeName(t)
+		ln, err := Listen("npipe:" + name)
+		if err != nil {
+			t.Fatalf("Listen %d: %v", i, err)
+		}
+		acceptDone := runAcceptLoop(t, ln)
+
+		// Connect and write nothing, exactly what locallisten.WaitReady leaves
+		// behind. A connect that ends this way is what makes winio's aborted
+		// connect report an error its close path does not map.
+		conn, err := winio.DialPipe(pipePrefix+name, nil)
+		if err != nil {
+			t.Fatalf("dial %d: %v", i, err)
+		}
+		_ = conn.Close()
+
+		closed := make(chan error, 1)
+		go func() { closed <- ln.Close() }()
+		select {
+		case cerr := <-closed:
+			if cerr != nil {
+				t.Fatalf("close %d: %v", i, cerr)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("listener close wedged on iteration %d", i)
+		}
+		<-acceptDone
 	}
 }
