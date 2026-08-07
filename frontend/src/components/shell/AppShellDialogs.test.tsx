@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createDialogState, createToggleDialog } from '~/hooks/createDialogState'
+import { createDialogState, createToggleDialog, createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeInspectResp } from '~/test-support/gitBranchFixtures'
 import { AppShellDialogs } from './AppShellDialogs'
 
@@ -84,7 +84,7 @@ function makeDialogs(): AppShellDialogStates {
     newWorkspace: createDialogState(),
     confirmDeleteWs: createDialogState(),
     confirmArchiveWs: createDialogState(),
-    lastTabConfirm: createDialogState(),
+    lastTabConfirm: createUpdatableDialogState(),
     keyPinConfirm: createDialogState(),
     changeBranch: createDialogState(),
     deleteBranch: createDialogState(),
@@ -165,7 +165,7 @@ describe('appShellDialogs branch dialogs', () => {
     await chooseSwitchToAndConfirm('main')
 
     await waitFor(() => expect(onBranchChanged).toHaveBeenCalledTimes(1))
-    expect(onBranchChanged).toHaveBeenCalledWith('w1', '/repo', 'main')
+    expect(onBranchChanged).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w1', gitToplevel: '/repo' }), 'main')
     expect(showWarnToast).not.toHaveBeenCalled()
     // The dialog still closes: the notify must not prevent the close.
     await waitFor(() => expect(dialogs.deleteBranch.value()).toBeNull())
@@ -196,7 +196,7 @@ describe('appShellDialogs branch dialogs', () => {
     await chooseSwitchToAndConfirm('main')
 
     await waitFor(() => expect(onBranchChanged).toHaveBeenCalledTimes(1))
-    expect(onBranchChanged).toHaveBeenCalledWith('w9', '/second-repo', 'main')
+    expect(onBranchChanged).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w9', gitToplevel: '/second-repo' }), 'main')
   })
 
   it('delete branch: a replacing open() re-points the dialog at the new repo', async () => {
@@ -224,7 +224,7 @@ describe('appShellDialogs branch dialogs', () => {
     await chooseSwitchToAndConfirm('main')
 
     await waitFor(() => expect(onBranchChanged).toHaveBeenCalledTimes(1))
-    expect(onBranchChanged).toHaveBeenCalledWith('w9', '/second-repo', 'main')
+    expect(onBranchChanged).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w9', gitToplevel: '/second-repo' }), 'main')
     expect(vi.mocked(workerRpc.deleteBranch).mock.calls[0][1]).toMatchObject({ path: '/second-repo' })
   })
 
@@ -276,8 +276,59 @@ describe('appShellDialogs branch dialogs', () => {
     fireEvent.click(await screen.findByTestId('change-branch-stub'))
 
     expect(onBranchChanged).toHaveBeenCalledTimes(1)
-    expect(onBranchChanged).toHaveBeenCalledWith('w2', '/other', 'main')
+    expect(onBranchChanged).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w2', gitToplevel: '/other' }), 'main')
     expect(dialogs.changeBranch.value()).toBeNull()
+  })
+
+  // Every payload slot renders under a keyed <Show>, so its callbacks hold
+  // the payload itself rather than an accessor the close disposes. These pin
+  // the two slots where a stale read would strand a promise forever: the
+  // workspace confirms resolve a `new Promise` that AppShell awaits with no
+  // timeout, and keyPinConfirm's resolve gates every later key-pin prompt
+  // through KeyPinStore's confirm chain. Both call resolve NEXT TO their
+  // close, so before keyed they were correct only by statement order.
+  it.each([
+    ['confirmDeleteWs', true],
+    ['confirmDeleteWs', false],
+    ['confirmArchiveWs', true],
+    ['confirmArchiveWs', false],
+  ] as const)('%s resolves its promise when the user answers %s', async (which, answer) => {
+    const { dialogs } = renderDialogs()
+    const resolve = vi.fn()
+    dialogs[which].open({ workspaceId: 'ws-1', resolve })
+
+    if (!answer) {
+      fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+    }
+    else if (which === 'confirmDeleteWs') {
+      // The delete confirm is `danger`, so ConfirmDialog wraps it in a
+      // ConfirmButton: it arms on the first click and fires on the second.
+      fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Confirm?' }))
+    }
+    else {
+      fireEvent.click(await screen.findByRole('button', { name: 'Archive' }))
+    }
+
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(resolve).toHaveBeenCalledWith(answer)
+    expect(dialogs[which].value()).toBeNull()
+  })
+
+  it('keyPinConfirm resolves its decision, so the confirm chain is not stranded', async () => {
+    const { dialogs } = renderDialogs()
+    const resolve = vi.fn()
+    dialogs.keyPinConfirm.open({
+      workerId: 'w1',
+      expectedFingerprint: 'aa:bb',
+      actualFingerprint: 'cc:dd',
+      resolve,
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: /Reject/i }))
+
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(dialogs.keyPinConfirm.value()).toBeNull()
   })
 
   // The workspace guard on onAgentCreated / onTerminalCreated had no

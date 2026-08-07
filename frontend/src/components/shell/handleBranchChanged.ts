@@ -1,6 +1,7 @@
 import type { TabStampTarget } from './syncGitStatusToTabs'
 import type { TabContext } from './tabContext'
 import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
+import type { RepoRef } from '~/stores/tab.helpers'
 import { getGitFileStatus } from '~/api/workerRpc'
 import { createLogger } from '~/lib/logger'
 import { isSameRepo } from '~/stores/tab.helpers'
@@ -46,14 +47,13 @@ export interface BranchChangedDeps {
 
 export function handleBranchChanged(
   deps: BranchChangedDeps,
-  workerId: string,
-  gitToplevel: string,
+  repo: RepoRef,
   newBranch: string,
 ): void {
-  stampBranchOnTabs(deps.target, workerId, gitToplevel, newBranch)
+  stampBranchOnTabs(deps.target, repo, newBranch)
 
-  if (isSameRepo(deps.getCurrentTabContext(), workerId, gitToplevel)) {
-    void deps.gitFileStatusStore.refresh(workerId, gitToplevel)
+  if (isSameRepo(deps.getCurrentTabContext(), repo)) {
+    void deps.gitFileStatusStore.refresh(repo.workerId, repo.gitToplevel)
       .then(() => {
         // Reuse the singleton's freshly-refreshed state rather than firing a
         // second getGitFileStatus.
@@ -70,14 +70,14 @@ export function handleBranchChanged(
     return
   }
 
-  void getGitFileStatus(workerId, { workerId, path: gitToplevel })
+  void getGitFileStatus(repo.workerId, { workerId: repo.workerId, path: repo.gitToplevel })
     .then((resp) => {
       // `toplevel` is authoritative: the worker sets it on every success path
       // (`git.go` queryGitPathInfo), and a non-repo path returns it empty
       // alongside an empty repo_root. An empty value therefore means "no
       // working tree", which `applyGitStatusToTabs` correctly declines to stamp.
       applyGitStatusToTabs(deps.target, {
-        workerId,
+        workerId: repo.workerId,
         toplevel: resp.toplevel,
         originUrl: resp.originUrl,
         currentBranch: resp.currentBranch,

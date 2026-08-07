@@ -21,7 +21,7 @@ import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/cl
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { createDialogState } from '~/hooks/createDialogState'
+import { createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename } from '~/lib/paths'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
@@ -91,7 +91,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
 
   const [closingTabKeys, setClosingTabKeys] = createSignal<Set<string>>(new Set())
 
-  const lastTabConfirmDialog = createDialogState<LastTabConfirmState>()
+  const lastTabConfirmDialog = createUpdatableDialogState<LastTabConfirmState>()
 
   let isTabEditing: () => boolean = () => false
 

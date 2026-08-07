@@ -1,6 +1,6 @@
 import { createEffect, createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { createDialogState, createToggleDialog } from '~/hooks/createDialogState'
+import { createDialogState, createToggleDialog, createUpdatableDialogState } from '~/hooks/createDialogState'
 import { flush } from '~/test-support/async'
 
 describe('createDialogState', () => {
@@ -93,9 +93,29 @@ describe('createDialogState', () => {
     // protects callbacks (resolve, onDismiss) from being clobbered by
     // an accidental field-collision spread.
 
+    it('is unreachable on the narrow handle, which is the point of the split', () => {
+      // Whether a payload changes in place decides how AppShellDialogs
+      // renders the dialog: an open/close-only payload goes under a keyed
+      // <Show>, which hands the children the payload itself and so leaves
+      // no accessor for a post-close callback to read. `update` breaks
+      // that, because keyed re-creates the subtree on every payload
+      // identity change and would remount the native <dialog>. This
+      // assertion is the guarantee: a dialog cannot silently gain `update`
+      // and invalidate its parent's render form. The runtime object DOES
+      // carry the method -- createDialogState narrows by return type only
+      // -- so the type error is the whole test, and `@ts-expect-error`
+      // fails the typecheck if the field ever becomes reachable.
+      createRoot((dispose) => {
+        const d = createDialogState<{ id: string }>()
+        // @ts-expect-error -- `update` must not exist on DialogState.
+        expect(d.update).toBeDefined()
+        dispose()
+      })
+    })
+
     it('returns false and does not write when the dialog is closed', () => {
       createRoot((dispose) => {
-        const d = createDialogState<{ id: string, label: string }>()
+        const d = createUpdatableDialogState<{ id: string, label: string }>()
         const wrote = d.update({ label: 'new' })
         expect(wrote).toBe(false)
         expect(d.value()).toBeNull()
@@ -105,7 +125,7 @@ describe('createDialogState', () => {
 
     it('returns true and merges patch into the current payload', () => {
       createRoot((dispose) => {
-        const d = createDialogState<{ id: string, label: string, count: number }>()
+        const d = createUpdatableDialogState<{ id: string, label: string, count: number }>()
         d.open({ id: 'one', label: 'first', count: 1 })
         const wrote = d.update({ label: 'updated' })
         expect(wrote).toBe(true)
@@ -121,7 +141,7 @@ describe('createDialogState', () => {
       createRoot((dispose) => {
         const resolve = vi.fn()
         interface State { id: string, resolve: () => void, gitState: { dirty: boolean } | null }
-        const d = createDialogState<State>()
+        const d = createUpdatableDialogState<State>()
         d.open({ id: 'one', resolve, gitState: null })
         d.update({ gitState: { dirty: true } })
         const after = d.value()
@@ -134,7 +154,7 @@ describe('createDialogState', () => {
 
     it('subsequent updates compound (each merges on top of the previous result)', () => {
       createRoot((dispose) => {
-        const d = createDialogState<{ a: number, b: number, c: number }>()
+        const d = createUpdatableDialogState<{ a: number, b: number, c: number }>()
         d.open({ a: 1, b: 1, c: 1 })
         d.update({ a: 2 })
         d.update({ b: 3 })
@@ -152,7 +172,7 @@ describe('createDialogState', () => {
       // shape) can't quietly mask a refresh.
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
-          const d = createDialogState<{ a: number }>()
+          const d = createUpdatableDialogState<{ a: number }>()
           d.open({ a: 1 })
           let runs = 0
           createEffect(() => {
@@ -179,7 +199,7 @@ describe('createDialogState', () => {
       // <Show when={value()}> to unmount the dialog. update must not.
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {
-          const d = createDialogState<{ a: number }>()
+          const d = createUpdatableDialogState<{ a: number }>()
           d.open({ a: 1 })
           const seen: (number | null)[] = []
           createEffect(() => {
@@ -205,7 +225,7 @@ describe('createDialogState', () => {
       // are unchanged — useful so a "no-op refresh" call site doesn't
       // accidentally close the dialog.
       createRoot((dispose) => {
-        const d = createDialogState<{ a: number }>()
+        const d = createUpdatableDialogState<{ a: number }>()
         d.open({ a: 1 })
         const wrote = d.update({})
         expect(wrote).toBe(true)

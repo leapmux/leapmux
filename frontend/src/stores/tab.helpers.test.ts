@@ -103,17 +103,17 @@ describe('tabDisplayLabel', () => {
 // every behavior listed here represents a contract those callers rely on.
 describe('isSameRepo', () => {
   it('matches when workerId and gitToplevel both equal', () => {
-    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo' }, 'w1', '/repo')).toBe(true)
+    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo' }, { workerId: 'w1', gitToplevel: '/repo' })).toBe(true)
   })
 
   it('rejects when workerId differs (cross-worker leakage guard)', () => {
     // A branch change on worker A must never trigger a stamp on a tab
     // hosted by worker B even if both happen to share a repo path.
-    expect(isSameRepo({ workerId: 'wA', gitToplevel: '/repo' }, 'wB', '/repo')).toBe(false)
+    expect(isSameRepo({ workerId: 'wA', gitToplevel: '/repo' }, { workerId: 'wB', gitToplevel: '/repo' })).toBe(false)
   })
 
   it('rejects when gitToplevel differs (cross-repo guard)', () => {
-    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo-a' }, 'w1', '/repo-b')).toBe(false)
+    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo-a' }, { workerId: 'w1', gitToplevel: '/repo-b' })).toBe(false)
   })
 
   it('rejects an empty workerId instead of matching every unresolved tab', () => {
@@ -122,9 +122,9 @@ describe('isSameRepo', () => {
     // the symmetric half of the empty-toplevel wildcard below. The guard used
     // to live at one call site (`stampBranchOnTabs`), so the predicate itself
     // answered `('' === '')` -> true and every other caller was on its own.
-    expect(isSameRepo({ gitToplevel: '/repo' }, '', '/repo')).toBe(false)
-    expect(isSameRepo({ workerId: '', gitToplevel: '/repo' }, '', '/repo')).toBe(false)
-    expect(isSameRepo({ gitToplevel: '/repo' }, 'w1', '/repo')).toBe(false)
+    expect(isSameRepo({ gitToplevel: '/repo' }, { workerId: '', gitToplevel: '/repo' })).toBe(false)
+    expect(isSameRepo({ workerId: '', gitToplevel: '/repo' }, { workerId: '', gitToplevel: '/repo' })).toBe(false)
+    expect(isSameRepo({ gitToplevel: '/repo' }, { workerId: 'w1', gitToplevel: '/repo' })).toBe(false)
   })
 
   // Regression guard, and the reason an empty `repoToplevel` is rejected
@@ -134,32 +134,32 @@ describe('isSameRepo', () => {
   // un-stamped repo on the same worker — and since the stamp now spans every
   // workspace rather than just the active one, across the whole account.
   it('never matches an empty repoToplevel, even against an unresolved tab', () => {
-    expect(isSameRepo({ workerId: 'w1' }, 'w1', '')).toBe(false)
-    expect(isSameRepo({ workerId: 'w1', gitToplevel: '' }, 'w1', '')).toBe(false)
-    expect(isSameRepo({ workerId: 'w1' }, 'w1', '/repo')).toBe(false)
+    expect(isSameRepo({ workerId: 'w1' }, { workerId: 'w1', gitToplevel: '' })).toBe(false)
+    expect(isSameRepo({ workerId: 'w1', gitToplevel: '' }, { workerId: 'w1', gitToplevel: '' })).toBe(false)
+    expect(isSameRepo({ workerId: 'w1' }, { workerId: 'w1', gitToplevel: '/repo' })).toBe(false)
   })
 
   it('rejects an empty repoToplevel before the workerId comparison', () => {
     // Not reachable via a workerId mismatch — the guard has to fire on its
     // own, or a same-worker query would still leak.
-    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo' }, 'w1', '')).toBe(false)
+    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo' }, { workerId: 'w1', gitToplevel: '' })).toBe(false)
   })
 
   it('returns false for null / undefined input', () => {
-    expect(isSameRepo(null, 'w1', '/repo')).toBe(false)
-    expect(isSameRepo(undefined, 'w1', '/repo')).toBe(false)
+    expect(isSameRepo(null, { workerId: 'w1', gitToplevel: '/repo' })).toBe(false)
+    expect(isSameRepo(undefined, { workerId: 'w1', gitToplevel: '/repo' })).toBe(false)
   })
 
   it('returns false when only one side is unset (no accidental empty-empty matches)', () => {
-    expect(isSameRepo({ workerId: 'w1' }, '', '/repo')).toBe(false)
-    expect(isSameRepo({ gitToplevel: '/repo' }, 'w1', '')).toBe(false)
+    expect(isSameRepo({ workerId: 'w1' }, { workerId: '', gitToplevel: '/repo' })).toBe(false)
+    expect(isSameRepo({ gitToplevel: '/repo' }, { workerId: 'w1', gitToplevel: '' })).toBe(false)
   })
 
   it('does not perform substring matching on gitToplevel', () => {
     // Regression guard: `/repo` must not match `/repo-other` even
     // though one is a prefix of the other.
-    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo-other' }, 'w1', '/repo')).toBe(false)
-    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo' }, 'w1', '/repo-other')).toBe(false)
+    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo-other' }, { workerId: 'w1', gitToplevel: '/repo' })).toBe(false)
+    expect(isSameRepo({ workerId: 'w1', gitToplevel: '/repo' }, { workerId: 'w1', gitToplevel: '/repo-other' })).toBe(false)
   })
 
   it('accepts a full Tab object (the common production call shape)', () => {
@@ -170,7 +170,7 @@ describe('isSameRepo', () => {
       workerId: 'w1',
       gitToplevel: '/repo',
     }
-    expect(isSameRepo(tab, 'w1', '/repo')).toBe(true)
+    expect(isSameRepo(tab, { workerId: 'w1', gitToplevel: '/repo' })).toBe(true)
   })
 })
 

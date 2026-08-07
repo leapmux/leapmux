@@ -1,4 +1,5 @@
 import type { TabStampTarget } from './syncGitStatusToTabs'
+import type { RepoRef } from '~/stores/tab.helpers'
 import { isSameRepo } from '~/stores/tab.helpers'
 
 /**
@@ -25,14 +26,13 @@ import { isSameRepo } from '~/stores/tab.helpers'
  */
 export function stampBranchOnTabs(
   target: TabStampTarget,
-  workerId: string,
-  repoToplevel: string,
+  repo: RepoRef,
   newBranch: string,
 ): boolean {
-  if (!workerId)
+  if (!repo.workerId)
     return false
   const matches = target.tabs.filter(
-    t => isSameRepo(t, workerId, repoToplevel) && t.gitBranch !== newBranch,
+    t => isSameRepo(t, repo) && t.gitBranch !== newBranch,
   )
   if (matches.length === 0)
     return false

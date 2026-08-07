@@ -1,11 +1,12 @@
 import { execSync } from 'node:child_process'
 import { existsSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { TabType } from '../../src/generated/leapmux/v1/workspace_pb'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
 import { clearRecordedToasts, getRecordedToasts, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
-import { createGitRepo, createWorkspaceWithWorktreeViaAPI, waitForAgentStartupViaAPI } from './helpers/worktree'
+import { createGitRepo, createWorkspaceWithWorktreeViaAPI, inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI } from './helpers/worktree'
 
 /**
  * How long to let a toast show up before concluding none is coming. The close
@@ -177,6 +178,28 @@ test.describe('file tab close', () => {
       await agentTab.locator('[data-testid="tab-close"]').click()
       await expect(agentTab).toHaveCount(0)
       await expect(page.getByRole('dialog')).toHaveCount(0)
+
+      // The tab count above is OPTIMISTIC local state: the CRDT tombstone
+      // applies speculatively, so the tab leaves the bar while CloseAgent is
+      // still running its teardown on the worker. The next close asks the
+      // WORKER whether a sibling tab still holds this branch, and an agent
+      // row that is not closed YET answers yes -- which takes the no-prompt
+      // fast path in inspectLastTabClose's hasOtherNonWorktreeTabOnBranch.
+      // The hub's tab list cannot answer this, because the tombstone clears
+      // it the instant it applies; only the worker knows when its own row
+      // closed. Poll the worker's own verdict for this file tab, so the
+      // assertion below tests the UI rather than racing the previous close.
+      const fileTabId = await fileTab.getAttribute('data-tab-id')
+      expect(fileTabId, 'the file tab must carry its id for the worker probe').toBeTruthy()
+      await expect
+        .poll(async () => (await inspectLastTabCloseViaAPI(
+          hubUrl,
+          adminToken,
+          workerId,
+          TabType.FILE,
+          fileTabId!,
+        )).shouldPrompt)
+        .toBe(true)
 
       // Now it IS the last tab, on a branch with uncommitted work.
       await fileTab.locator('[data-testid="tab-close"]').click()

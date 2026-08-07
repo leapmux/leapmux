@@ -7,7 +7,7 @@ import { sectionClient, workspaceClient } from '~/api/clients'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
-import { mid } from '~/lib/lexorank'
+import { appendPosition, mid } from '~/lib/lexorank'
 import { isWorkspaceSection } from './sectionUtils'
 
 export interface SectionGroup {
@@ -183,8 +183,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
 
   const moveWorkspace = async (workspaceId: string, sectionId: string) => {
     const sectionItems = store.getItemsForSection(sectionId)
-    const lastItem = sectionItems.at(-1)
-    const position = lastItem ? mid(lastItem.position, '') : mid('', '')
+    const position = appendPosition(sectionItems)
     const done = startWorkspaceLoading(workspaceId)
     try {
       await sectionClient.moveWorkspace({ workspaceId, sectionId, position })
@@ -308,8 +307,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       .filter(i => i.workspaceId !== wsId)
     const targetIdx = items.findIndex(i => i.workspaceId === targetWsId)
     if (targetIdx < 0) {
-      const lastItem = items.at(-1)
-      return lastItem ? mid(lastItem.position, '') : mid('', '')
+      return appendPosition(items)
     }
     if (direction === 'after') {
       const prevPos = items[targetIdx].position
@@ -357,8 +355,7 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       if (fromSectionId === targetSectionId)
         return
       const items = store.getItemsForSection(targetSectionId)
-      const lastItem = items.at(-1)
-      position = lastItem ? mid(lastItem.position, '') : mid('', '')
+      position = appendPosition(items)
     }
     else {
       return
