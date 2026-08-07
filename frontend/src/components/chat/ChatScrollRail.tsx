@@ -71,6 +71,24 @@ export interface ChatScrollRailProps {
    * or two scrollbars. See resolveScrollbarOwner.
    */
   hidden: boolean
+  /**
+   * Whether the host's scroll-activity window is open (see ChatView's railActivity).
+   * ORTHOGONAL to `hidden`: that one is the scrollbar-OWNER decision and unmounts the
+   * rail, while this one is paint-only and must NEVER unmount it -- an unmount would
+   * disconnect the rail's ResizeObserver, cancel a live thumb drag, and rebuild every
+   * dot's tooltip on each transition. The resulting `railIdle` class fades the rail on
+   * EVERY screen/pointer; only the touch-safety `pointer-events: none` it also carries
+   * is coarse-only.
+   */
+  scrollActive: boolean
+  /**
+   * The rail's OWN interaction reopens the host's activity window. Required, not a
+   * nicety: a thumb drag captures the pointer, so its pointermove events retarget to the
+   * rail element and the host's scroll container never sees them. Without this the rail
+   * would snap dark the instant a drag releases or a focused dot is tabbed away from,
+   * with no fade tail.
+   */
+  onActivity?: () => void
   hasMoreOlder: boolean
   hasMoreNewer: boolean
   /**
@@ -213,6 +231,14 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   // the viewport with zero or two scrollbars; the rail now trusts the single upstream decision.
   const hidden = () => props.hidden
 
+  // Idle is a PAINT state, never an unmount (see the `scrollActive` prop). Two of the
+  // rail's OWN states override the host's window, so an interaction never fades under the
+  // reader's finger or cursor: a live thumb drag AND its post-release settle (drag() stays
+  // non-null until the seek lands -- see createDragReleaseHold), and an open dot popover
+  // (activeDot() folds hover, KEYBOARD FOCUS, and scrub into one signal, so no CSS
+  // :focus-within is needed).
+  const idle = createMemo(() => !props.scrollActive && drag() === null && activeDot() === null)
+
   createEffect(() => {
     if (hidden())
       disconnectRail()
@@ -294,9 +320,27 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     handle.start(event.pointerId, event.clientY)
   }
 
+  // "You can't click what you can't see." A press on a FADED rail or dot only REVEALS it
+  // (via onActivity); the grab or jump is rejected, so the NEXT press -- rail now lit -- acts.
+  // Read `faded` BEFORE onActivity: that call reopens the host's window synchronously, so idle()
+  // would read false the instant after. onActivity fires on EVERY press, faded or lit: a lit
+  // track-click jump still wants the fade tail that the re-arm buys. preventDefault is held back
+  // on a faded press too, so a rejected click does not steal focus or start a native selection
+  // drag on something the reader could not see. On a coarse pointer the idle rail is
+  // pointer-events:none, so this never runs faded there.
+  const revealIfFaded = () => {
+    const faded = idle()
+    props.onActivity?.()
+    return faded
+  }
+
   // One pointerdown handler for the rail: hit-test the thumb (start a drag) vs the track
   // (jump to the clicked position). Dots stop propagation so they never reach here.
   const onRailPointerDown = (event: PointerEvent) => {
+    // Whether or not this grab is accepted, reaching for the rail is intent to use it, so it
+    // must keep the rail lit rather than fade under the cursor (see revealIfFaded).
+    if (revealIfFaded())
+      return
     const el = railEl
     // Ignore a second pointerdown while a thumb-drag is already live (dragCleanup is set from
     // startDrag until the pointer lifecycle ends). Without this, a second finger landing on the
@@ -322,8 +366,16 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   }
 
   const onDotPointerDown = (event: PointerEvent, seq: bigint) => {
-    // Prioritize the dot over the thumb/track underneath: jump to its message.
+    // Prioritize the dot over the thumb/track underneath: a dot press is always handled HERE
+    // and never also as a track click -- stopPropagation runs before the faded guard so a
+    // rejected (faded) press still doesn't fall through to onRailPointerDown.
     event.stopPropagation()
+    // Same reveal-but-reject rule as a track/thumb press (see revealIfFaded). The dot
+    // hover/focus path keeps the rail visible on its own, so this only bites the very first
+    // press onto a faded strip. A coarse-pointer idle rail is pointer-events:none, so the dot
+    // buttons under it are unreachable there.
+    if (revealIfFaded())
+      return
     event.preventDefault()
     props.onJumpToSeq(seq)
   }
@@ -343,10 +395,20 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   // are overflow:hidden, so a wheel over it would otherwise scroll nothing (a dead zone).
   // Forward the delta to the chat container as a genuine user scroll -- exactly what
   // wheeling over the native scrollbar did before it was hidden.
+  //
+  // While idle on a COARSE pointer the rail is pointer-events:none (see railIdle), which
+  // makes this handler unreachable -- but no dead zone comes back: the wheel then
+  // hit-tests to messageList itself, which the rail OVERLAYS as a sibling rather than
+  // nesting inside, and that element is the real scroller.
   const onRailWheel = (event: WheelEvent) => {
     const el = props.scrollEl
     if (!el)
       return
+    // A wheel over the rail is genuine scroll intent, so relight the rail directly. The
+    // re-dispatched wheel below also relights it indirectly (via the scroller's passive
+    // listener -> noteScrollInput), but counting on that chain couples the relight to a
+    // listener registration that a future refactor could move to capture phase or drop.
+    props.onActivity?.()
     el.dispatchEvent(new WheelEvent('wheel', {
       bubbles: true,
       cancelable: false,
@@ -374,9 +436,23 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     <Show when={!hidden()}>
       <div
         ref={setRailRef}
-        class={styles.rail}
+        class={`${styles.rail}${idle() ? ` ${styles.railIdle}` : ''}`}
         data-testid="chat-scroll-rail"
         onPointerDown={onRailPointerDown}
+        // Reopen the host's window ONLY when the rail is faded: a cursor crossing the invisible
+        // strip relights it (intent to use it), and a captured thumb drag's pointermove retargets
+        // here so the scroll container never sees it. Once lit, idle() is false -- the drag itself
+        // (drag() !== null) or the now-open host window holds the rail visible -- so further moves
+        // would only re-arm a timer that the next move cancels again (dozens of clearTimeout +
+        // setTimeout pairs per second of dragging). No-op once visible; the host's idle timer
+        // carries the fade tail.
+        onPointerMove={() => {
+          if (idle())
+            props.onActivity?.()
+        }}
+        // focusin bubbles from a dot button, so tabbing through the dots keeps the rail
+        // lit and tabbing away gets a fade tail instead of an instant blackout.
+        onFocusIn={() => props.onActivity?.()}
         onWheel={onRailWheel}
       >
         {/* Inset the track to the thumb-CENTRE travel range so its ends are where the thumb

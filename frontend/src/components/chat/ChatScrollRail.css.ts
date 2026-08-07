@@ -15,8 +15,12 @@ const RAIL_WIDTH_PX = 10
 /**
  * Wider interactive column on COARSE pointers (touch): a finger can't hit a 10px strip, so
  * the hit area grows to a touch-friendlier size while the thin visuals (track/thumb/dots)
- * stay their fine-pointer widths, just centred in the wider column. Kept modest so the strip
- * stays within (or barely past) the list's right padding rather than eating message taps.
+ * stay their fine-pointer widths, just centred in the wider column. Below breakpoints.sm the
+ * list's right gutter shrinks to reclaim text width, so this strip now overlaps roughly 20px
+ * of message content instead of 8px. That is acceptable ONLY because the rail is
+ * pointer-events:none while idle (see railIdle), which is the large majority of the time.
+ * Widening it further, or dropping the idle inertness, starts swallowing message taps into
+ * track-click jumps.
  */
 const RAIL_WIDTH_COARSE_PX = 22
 /** Thumb width, matching the app's 8px native scrollbar thumb. */
@@ -34,11 +38,63 @@ export const rail = style({
   // Never capture text selection while dragging the thumb.
   'userSelect': 'none',
   'touchAction': 'none',
+  // The fade railIdle drives. The transition animates both directions (show + hide) and is
+  // scoped to (prefers-reduced-motion: no-preference) rather than overridden by a competing
+  // (prefers-reduced-motion: reduce) { transition: none } block. The two blocks set the same
+  // property at equal specificity, so winning the tie by source order is fragile (a key reorder
+  // silently re-enables the fade under reduced-motion). Guarding it behind `no-preference`
+  // makes reduced-motion the default and the fade opt-in, with no tie to break.
   '@media': {
+    '(prefers-reduced-motion: no-preference)': {
+      transition: 'opacity var(--transition)',
+    },
     '(pointer: coarse)': {
       width: `${RAIL_WIDTH_COARSE_PX}px`,
     },
   },
+})
+
+/**
+ * Idle (auto-hide) state, applied whenever the reader is outside the host's scroll-activity
+ * window. The WHOLE rail fades as one -- track, thumb, and teal jump dots -- because they are
+ * children of this element; fading them separately would let the dots read as a second,
+ * unrelated affordance mid-transition.
+ *
+ * The element is never unmounted (see ChatScrollRailProps.scrollActive), so `opacity` is the
+ * only safe lever. `visibility: hidden` or `display: none` would drop it out of the hit-test
+ * tree and could disturb the height its own ResizeObserver measures.
+ *
+ * `pointer-events: none` is COARSE-ONLY, deliberately:
+ *   - on touch the idle rail must go inert, because below breakpoints.sm the list's right
+ *     gutter shrinks and this strip then overlaps ~20px of message content. An invisible
+ *     strip that swallowed taps into a track-click jump would be a trap.
+ *   - on a FINE pointer the faded rail STAYS hit-testable so a `pointermove` over it relights
+ *     it (see ChatScrollRail.onPointerMove -> onActivity), but a CLICK on the faded rail is
+ *     rejected in the pointer handler -- you can't click what you can't see. So a mouse
+ *     reaches the rail by scrolling or by moving onto the strip (which relights it) first.
+ *
+ * `opacity: 0` is universal: every screen/pointer fades the idle rail the same way. There is
+ * deliberately NO `:hover { opacity: 1 }` shortcut: that would make the rail LOOK visible
+ * under a parked cursor while the activity window is still closed, so the click guard would
+ * reject a click on something that appeared visible. Visibility stays driven solely by the
+ * activity window, which carries its own idle timeout so a parked cursor cannot pin it lit.
+ */
+export const railIdle = style({
+  'opacity': 0,
+  '@media': {
+    '(pointer: coarse)': {
+      pointerEvents: 'none',
+    },
+  },
+})
+
+// The thumb (cursor: grab) and dots (cursor: pointer) are children of the faded rail, and cursor
+// is independent of opacity -- so without this, a fine pointer crossing the invisible strip sees a
+// grab/pointer caret over blank space. Reset every descendant to the default while the rail is
+// faded. `& *` targets the thumb, dots, and track; the strip itself keeps cursor: pointer (harmless:
+// the whole faded strip is a uniform invisible region, and a press on it only reveals the rail).
+globalStyle(`${railIdle} *`, {
+  cursor: 'auto',
 })
 
 /** The muted vertical track line, centered in the rail. Non-interactive (clicks fall to rail). */

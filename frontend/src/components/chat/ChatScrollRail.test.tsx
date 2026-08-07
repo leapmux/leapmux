@@ -91,6 +91,9 @@ function baseProps(overrides: BasePropsOverrides = {}): ChatScrollRailProps {
     railRowSeqs: rowStartSeqs(items), // ChatView computes this once and passes it down (see F2)
     rail,
     hidden: hidden ?? resolvedHidden,
+    // Default to "the reader is scrolling", so every pre-existing test renders the rail in
+    // its visible state and keeps its original intent; the auto-hide tests pass false.
+    scrollActive: true,
     hasMoreOlder: false,
     hasMoreNewer: false,
     onJumpToSeq: vi.fn(),
@@ -745,5 +748,256 @@ describe('chatscrollrail dot preview popover', () => {
     const popover = hoverFirstDot(container)!
     expect(popover).toHaveTextContent('3 messages') // the aggregate header
     expect(popover).toHaveTextContent('the nearest message') // the representative's preview
+  })
+
+  // The floating auto-hide. Only the CLASS is observable here: vitest inserts no stylesheet
+  // for a .css.ts import and jsdom evaluates no media query, so the opacity, the
+  // pointer-events, and the media scoping that make the class do anything are E2E-only (see
+  // tests/e2e/047b-chat-scroll-rail-autohide.spec.ts).
+  describe('railIdle auto-hide', () => {
+    /** The rail root, with a concrete rect so pointer hit-tests resolve (jsdom does no layout). */
+    function railWithRect(container: HTMLElement): HTMLElement {
+      const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+      rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+      return rail
+    }
+
+    it('marks the rail idle when the activity window closes and un-marks it when it reopens', () => {
+      const [scrollActive, setScrollActive] = createSignal(true)
+      const { container } = render(() => <ChatScrollRail {...baseProps()} scrollActive={scrollActive()} />)
+      const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      setScrollActive(false)
+      expect(rail.className).toContain(styles.railIdle)
+
+      setScrollActive(true)
+      expect(rail.className).not.toContain(styles.railIdle)
+    })
+
+    it('adds the idle class without remounting the rail or its dots', () => {
+      // The guard against implementing idle as a <Show>: an unmount would disconnect the
+      // rail's ResizeObserver, cancel any live drag, and rebuild every dot's tooltip on
+      // every single idle transition.
+      const [scrollActive, setScrollActive] = createSignal(true)
+      const { container } = render(() => <ChatScrollRail {...baseProps()} scrollActive={scrollActive()} />)
+      const railBefore = container.querySelector('[data-testid="chat-scroll-rail"]')
+      const dotsBefore = Array.from(container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]'))
+      expect(dotsBefore.length).toBe(2)
+
+      setScrollActive(false)
+
+      expect(container.querySelector('[data-testid="chat-scroll-rail"]')).toBe(railBefore)
+      const dotsAfter = Array.from(container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]'))
+      expect(dotsAfter[0]).toBe(dotsBefore[0])
+      expect(dotsAfter[1]).toBe(dotsBefore[1])
+    })
+
+    it('keeps the rail visible while a thumb drag is live, however long the window has been shut', () => {
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const [scrollActive, setScrollActive] = createSignal(true)
+      const { container } = render(() => <ChatScrollRail {...baseProps()} scrollActive={scrollActive()} />)
+      const rail = railWithRect(container)
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      // Grab the fixed thumb (spans 0..24) while the rail is lit, THEN shut the activity window:
+      // the drag itself must keep the rail visible until release, however long the window stays shut.
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+      setScrollActive(false)
+      expect(rail.className).not.toContain(styles.railIdle)
+    })
+
+    it('stays visible through the drag-release hold, not just the pointer lifecycle', async () => {
+      // Keyed on drag() rather than the pointer being down: createDragReleaseHold keeps the
+      // thumb pinned until the release seek settles, and the rail must stay lit that whole
+      // time or it blinks out from under a scrub that is still landing.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      let landSeek!: (scrolled: boolean) => void
+      const onJumpToSeq = vi.fn(() => new Promise<boolean>((r) => {
+        landSeek = r
+      }))
+      const [scrollActive, setScrollActive] = createSignal(true)
+      const { container } = render(() => (
+        <ChatScrollRail
+          {...baseProps({ onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })}
+          scrollActive={scrollActive()}
+        />
+      ))
+      const rail = railWithRect(container)
+      // Grab while lit, THEN shut the window so the only thing keeping the rail visible is the hold.
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+      rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
+      setScrollActive(false)
+      // The pointer is up, but the seek has not landed: still held, so still lit.
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      landSeek(false)
+      await tick()
+      expect(rail.className).toContain(styles.railIdle)
+    })
+
+    it('keeps the rail visible while a dot preview is open, on hover and on keyboard focus', () => {
+      const { container } = render(() => <ChatScrollRail {...baseProps({ scrollActive: false })} />)
+      const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+      const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
+      expect(rail.className).toContain(styles.railIdle)
+
+      fireEvent.pointerEnter(dot)
+      expect(rail.className).not.toContain(styles.railIdle)
+      fireEvent.pointerLeave(dot)
+      expect(rail.className).toContain(styles.railIdle)
+
+      // activeDot() folds focus in with hover, which is what lets the rail skip a CSS
+      // :focus-within rule -- pin that here so a refactor can't quietly drop it.
+      fireEvent.focus(dot)
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      // Focus OUT must null activeDot() so the rail fades again -- without this a broken onBlur
+      // would pin the rail lit forever after a keyboard tab-away.
+      fireEvent.blur(dot)
+      expect(rail.className).toContain(styles.railIdle)
+    })
+
+    it('reopens the host window from the rail own traffic: pointerdown and focusin', () => {
+      // pointerdown always reopens (a track-click jump wants its fade tail), and focusin bubbles
+      // from a dot button so tabbing through dots keeps the rail lit. pointermove is covered by
+      // its own test below (it reopens only while faded, not on every move).
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const onActivity = vi.fn()
+      const { container } = render(() => <ChatScrollRail {...baseProps({ onActivity })} />)
+      const rail = railWithRect(container)
+
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalledTimes(1)
+
+      const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
+      fireEvent.focusIn(dot)
+      expect(onActivity).toHaveBeenCalledTimes(2)
+    })
+
+    it('reopens the host window from a pointermove only while the rail is faded, not on every move', () => {
+      // A captured thumb drag retargets its pointermove to the rail, so the host's scroll
+      // container sees nothing -- the FIRST move onto a faded strip must relight it. But once lit
+      // (by the drag itself, an open dot, or the now-open host window) further moves would only
+      // re-arm a timer the next move cancels again: dozens of clearTimeout + setTimeout pairs per
+      // second of dragging. So pointermove reopens the window ONLY while idle, then goes quiet.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      // onActivity is wired to a real scrollActive signal, mirroring ChatView: a call flips the
+      // rail to its lit state so the second pointermove sees a visible rail and no-ops.
+      const [scrollActive, setScrollActive] = createSignal(false)
+      const onActivity = vi.fn(() => setScrollActive(true))
+      const { container } = render(() => (
+        <ChatScrollRail {...baseProps({ onActivity })} scrollActive={scrollActive()} />
+      ))
+      const rail = railWithRect(container)
+      expect(rail.className).toContain(styles.railIdle)
+
+      // Faded: the first pointermove relights it.
+      rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalledTimes(1)
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      // Now lit: further moves are no-ops (no redundant timer churn).
+      rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 210, pointerId: 1 }))
+      rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 220, pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalledTimes(1)
+    })
+
+    it('relights directly on a wheel over the faded rail, not only via the re-dispatched event', () => {
+      // onRailWheel forwards the delta to the scroll container by re-dispatching a wheel, which
+      // indirectly relights the rail via the scroller's passive listener. That chain is fragile
+      // (a capture-phase listener or a dropped bubbles flag breaks it), so the wheel also calls
+      // onActivity directly. Pin that here so a refactor of the indirect path cannot strand a
+      // faded rail under a wheel.
+      const onActivity = vi.fn()
+      const { container } = render(() => <ChatScrollRail {...baseProps({ onActivity, scrollActive: false })} />)
+      const rail = railWithRect(container)
+      expect(rail.className).toContain(styles.railIdle)
+
+      rail.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 40 }))
+      expect(onActivity).toHaveBeenCalledTimes(1)
+    })
+
+    it('reports activity even for a grab it rejects, so a stray second finger cannot fade it', () => {
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const onActivity = vi.fn()
+      const onJumpToSeq = vi.fn()
+      const { container } = render(() => <ChatScrollRail {...baseProps({ onActivity, onJumpToSeq })} />)
+      const rail = railWithRect(container)
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+      onActivity.mockClear()
+
+      // A second finger on the track mid-drag: the jump is correctly refused, but the touch
+      // is still the reader on the rail, so the window must reopen anyway.
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 2 }))
+      expect(onJumpToSeq).not.toHaveBeenCalled()
+      expect(onActivity).toHaveBeenCalledTimes(1)
+    })
+
+    it('renders nothing at all when hidden, idle or not', () => {
+      // hidden and idle compose one way only: hidden wins and unmounts, so there is never a
+      // mounted-but-idle rail on a viewport that has no rail to show.
+      const { container } = render(() => <ChatScrollRail {...baseProps({ hidden: true, scrollActive: false })} />)
+      expect(container.querySelector('[data-testid="chat-scroll-rail"]')).toBeNull()
+    })
+
+    it('rejects a press on a faded rail so you cannot click what you cannot see', () => {
+      // A press onto a faded rail only REVEALS it (via onActivity); the grab is refused so a
+      // stray press into the invisible strip cannot start a drag or fire a jump. The NEXT press
+      // -- rail now lit -- acts. On a coarse pointer the idle rail is pointer-events:none, so
+      // this guard only ever applies to a fine pointer.
+      //
+      // onActivity is wired to a real scrollActive signal, mirroring ChatView: a call flips the
+      // rail to its lit state so the second press -- now against a visible rail -- goes through.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const [scrollActive, setScrollActive] = createSignal(false)
+      const onActivity = vi.fn(() => setScrollActive(true))
+      const onJumpToSeq = vi.fn()
+      const { container } = render(() => (
+        <ChatScrollRail {...baseProps({ onActivity, onJumpToSeq })} scrollActive={scrollActive()} />
+      ))
+      const rail = railWithRect(container)
+      expect(rail.className).toContain(styles.railIdle)
+
+      // First press: faded -> rejected. onActivity fires (and lights the rail), but no grab
+      // and no jump.
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalledTimes(1)
+      expect(onJumpToSeq).not.toHaveBeenCalled()
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      // Second press on the now-lit rail: the track jump goes through.
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 2 }))
+      expect(onJumpToSeq).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects a press on a faded dot but reveals it, so the next press jumps', () => {
+      // The same "can't click what you can't see" rule covers dots: a press on a faded dot only
+      // reveals the rail; the jump happens on the next press. onActivity flips scrollActive, so
+      // the second press sees a lit rail.
+      const [scrollActive, setScrollActive] = createSignal(false)
+      const onActivity = vi.fn(() => setScrollActive(true))
+      const onJumpToSeq = vi.fn()
+      const { container } = render(() => (
+        <ChatScrollRail {...baseProps({ onActivity, onJumpToSeq })} scrollActive={scrollActive()} />
+      ))
+      const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+      const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
+      expect(rail.className).toContain(styles.railIdle)
+
+      dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalledTimes(1)
+      expect(onJumpToSeq).not.toHaveBeenCalled()
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 2 }))
+      expect(onJumpToSeq).toHaveBeenCalledTimes(1)
+    })
   })
 })

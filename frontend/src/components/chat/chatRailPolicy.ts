@@ -51,6 +51,14 @@ export function canRenderSeqRailThumb(rowSeqs: number[] | null, range: RailRange
  * MORE than one seq: a single distinct seq (maxSeq === minSeq) collapses the thumb-drag to a
  * point, so a lone message taller than the viewport must keep the native scrollbar rather than
  * strand behind a frozen rail.
+ *
+ * TOUCH EXCEPTION. On `(pointer: coarse)` the native bar is suppressed on the chat list
+ * UNCONDITIONALLY (see messageList in ChatView.css.ts), so a touch viewport that resolves to
+ * 'native' here shows NEITHER bar. That is intentional: Chrome Android's ::-webkit-scrollbar
+ * styling forces an always-painted classic 8px bar that eats layout width from a phone-width
+ * text column, and a finger scrolls by direct manipulation with no thumb to grab. The invariant
+ * this function enforces is therefore "never TWO scrollbars, and never zero on a FINE pointer".
+ * The 'rail' / 'none' / 'native' resolution below is itself unchanged.
  */
 export type ScrollbarOwner = 'native' | 'rail' | 'none'
 
