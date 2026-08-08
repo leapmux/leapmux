@@ -6,6 +6,7 @@ import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
+import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
@@ -64,6 +65,10 @@ export interface SidebarCommonProps {
   hasActiveFileTab?: boolean
   showTodos: boolean
   activeTodos: TodoItem[]
+  showBackgroundTasks: boolean
+  activeBackgroundTasks: BackgroundTaskItem[]
+  onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
+  resolveAgentTabTitle?: (id: string) => string | undefined
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
   /**
@@ -193,6 +198,10 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     setFilesSectionHandle,
     get showTodos() { return props.showTodos },
     get activeTodos() { return props.activeTodos },
+    get showBackgroundTasks() { return props.showBackgroundTasks },
+    get activeBackgroundTasks() { return props.activeBackgroundTasks },
+    get onOpenBackgroundTask() { return props.onOpenBackgroundTask },
+    get resolveAgentTabTitle() { return props.resolveAgentTabTitle },
     get workers() { return props.workers },
     workerInfoFn: props.workerInfoFn,
     channelStatusFn: props.channelStatusFn,

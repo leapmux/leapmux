@@ -1,4 +1,4 @@
-import type { Tab } from './tab.types'
+import type { AgentTab, Tab } from './tab.types'
 import type { AgentGitStatus, AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
@@ -6,7 +6,7 @@ import { AgentGitStatusSchema, AgentInfoSchema, AgentProvider, AgentStatus, Avai
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, isSameRepo, isTabReadyForGitStatus, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue, tabDisplayLabel, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -485,6 +485,24 @@ describe('agentTabToInfo model-dependent option groups', () => {
   })
 })
 
+describe('agentTabToInfo subagent linkage', () => {
+  it('passes parentAgentId and acceptsMessages through to AgentInfo', () => {
+    const tab = agent({ parentAgentId: 'root-1', acceptsMessages: true }) as Tab
+    const info = agentTabToInfo(tab)
+    expect(info).toBeDefined()
+    expect(info!.parentAgentId).toBe('root-1')
+    expect(info!.acceptsMessages).toBe(true)
+  })
+
+  it('defaults parentAgentId to empty and acceptsMessages to false for a root agent', () => {
+    const tab = agent() as Tab
+    const info = agentTabToInfo(tab)
+    expect(info).toBeDefined()
+    expect(info!.parentAgentId).toBe('')
+    expect(info!.acceptsMessages).toBe(false)
+  })
+})
+
 describe('deriveOptionGroupTabFields', () => {
   function group(id: string, currentValue: string): AvailableOptionGroup {
     return create(AvailableOptionGroupSchema, {
@@ -793,5 +811,131 @@ describe('terminalProgressBarProps', () => {
       progressPercent: 40,
       progressState: TerminalProgress_State.INDETERMINATE,
     })).title).toBe('In progress')
+  })
+})
+
+/**
+ * `rootAgentIdFor` walks an agent's parentAgentId chain up to the root, with a
+ * visited-set cycle guard. It keys the per-root background-task registry, and a
+ * cycle (or an unbounded walk) would hang the registry lookup at startup.
+ */
+describe('rootAgentIdFor', () => {
+  it('walks a parentAgentId chain up to the root id', () => {
+    // grand <- parent <- child; each lookup returns the next tab up.
+    const tabs = new Map<string, AgentTab>([
+      ['child', { type: TabType.AGENT, id: 'child', workspaceId: 'ws-1', parentAgentId: 'parent' }],
+      ['parent', { type: TabType.AGENT, id: 'parent', workspaceId: 'ws-1', parentAgentId: 'grand' }],
+      ['grand', { type: TabType.AGENT, id: 'grand', workspaceId: 'ws-1' }], // root
+    ])
+    const get = (id: string) => tabs.get(id)
+
+    expect(rootAgentIdFor(get, 'child')).toBe('grand')
+    // Mid-chain start still reaches the same root.
+    expect(rootAgentIdFor(get, 'parent')).toBe('grand')
+  })
+
+  it('returns the dangling parent id when the chain ends at an unknown parent', () => {
+    // child points at a parent the hydration has not delivered yet. The impl
+    // returns the LAST id it walked (the unresolvable parent), NOT the input
+    // id -- the docstring's "falls back to agentId" wording describes the cycle
+    // arm, not this one. The divergence is observationally harmless: the result
+    // keys the background-task registry, and neither the dangling parent id nor
+    // the input child id is a real root, so both miss the registry the same way.
+    const tabs = new Map<string, AgentTab>([
+      ['child', { type: TabType.AGENT, id: 'child', workspaceId: 'ws-1', parentAgentId: 'missing' }],
+    ])
+    expect(rootAgentIdFor((id: string) => tabs.get(id), 'child')).toBe('missing')
+  })
+
+  it('returns the input id when the tab has no parentAgentId (itself a root)', () => {
+    const tabs = new Map<string, AgentTab>([
+      ['root', { type: TabType.AGENT, id: 'root', workspaceId: 'ws-1' }],
+    ])
+    expect(rootAgentIdFor((id: string) => tabs.get(id), 'root')).toBe('root')
+  })
+
+  it('returns the input id when getAgentTab returns undefined for the starting id', () => {
+    // A tab id the projection has no record of at all -- the cycle guard's
+    // other early-out (no tab -> no parent -> return current).
+    expect(rootAgentIdFor(() => undefined, 'ghost')).toBe('ghost')
+  })
+
+  it('terminates on a cycle and returns the input id (does not infinite-loop)', () => {
+    // A -> B -> A: a corrupted/circular chain. The visited-set guard must
+    // break the loop and fall back to the input rather than spin forever.
+    const tabs = new Map<string, AgentTab>([
+      ['A', { type: TabType.AGENT, id: 'A', workspaceId: 'ws-1', parentAgentId: 'B' }],
+      ['B', { type: TabType.AGENT, id: 'B', workspaceId: 'ws-1', parentAgentId: 'A' }],
+    ])
+    expect(rootAgentIdFor((id: string) => tabs.get(id), 'A')).toBe('A')
+  })
+
+  it('breaks a longer cycle that returns to the start after several hops', () => {
+    // A -> B -> C -> A: the guard catches the revisit on the fourth lookup.
+    const tabs = new Map<string, AgentTab>([
+      ['A', { type: TabType.AGENT, id: 'A', workspaceId: 'ws-1', parentAgentId: 'B' }],
+      ['B', { type: TabType.AGENT, id: 'B', workspaceId: 'ws-1', parentAgentId: 'C' }],
+      ['C', { type: TabType.AGENT, id: 'C', workspaceId: 'ws-1', parentAgentId: 'A' }],
+    ])
+    expect(rootAgentIdFor((id: string) => tabs.get(id), 'A')).toBe('A')
+  })
+})
+
+/**
+ * `isSteerableAgentTab` gates whether an agent tab's composer is enabled. Roots
+ * always steer; children steer only when their provider can drive a subagent
+ * conversation. Used to exclude non-steerable children from MRU-agent
+ * resolution (mentions/quotes never target a read-only transcript).
+ */
+describe('isSteerableAgentTab', () => {
+  it('returns false for a non-AGENT tab', () => {
+    // The type guard short-circuits before any other field is consulted.
+    expect(isSteerableAgentTab({ type: TabType.FILE, agentProvider: AgentProvider.CODEX })).toBe(false)
+    expect(isSteerableAgentTab({ type: TabType.TERMINAL })).toBe(false)
+  })
+
+  it('returns true for a root agent tab (no parentAgentId)', () => {
+    expect(isSteerableAgentTab({ type: TabType.AGENT })).toBe(true)
+    expect(isSteerableAgentTab({ type: TabType.AGENT, acceptsMessages: false })).toBe(true)
+  })
+
+  it('returns true for a child with acceptsMessages === true (backend-authoritative)', () => {
+    expect(
+      isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', acceptsMessages: true }),
+    ).toBe(true)
+  })
+
+  it('returns false for a child with acceptsMessages === false (read-only transcript)', () => {
+    expect(
+      isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', acceptsMessages: false }),
+    ).toBe(false)
+  })
+
+  it('falls back to the provider for an unhydrated child: CODEX is optimistically steerable', () => {
+    // acceptsMessages is unset (optimistic state before hydration). Codex is the
+    // only provider whose children accept messages, so its composer is enabled
+    // up-front rather than flickering disabled->enabled.
+    expect(
+      isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', agentProvider: AgentProvider.CODEX }),
+    ).toBe(true)
+  })
+
+  it('returns false for an unhydrated child of a non-CODEX provider', () => {
+    // Claude/ACP children do not steer; before hydration they are treated as
+    // read-only rather than optimistically enabling a composer that may not work.
+    expect(
+      isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', agentProvider: AgentProvider.CLAUDE_CODE }),
+    ).toBe(false)
+    expect(
+      isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root' }),
+    ).toBe(false)
+  })
+
+  it('acceptsMessages wins over the provider fallback when both are present', () => {
+    // A CODEX child that the backend says is NOT steerable must read false --
+    // the authoritative flag overrides the optimistic provider default.
+    expect(
+      isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', acceptsMessages: false, agentProvider: AgentProvider.CODEX }),
+    ).toBe(false)
   })
 })

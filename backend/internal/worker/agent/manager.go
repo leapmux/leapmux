@@ -194,7 +194,12 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 			}
 		}
 
-		if provider.IsStopped() {
+		// Read IsStopped once. It reflects mutable process state; reading it
+		// twice (once for the log, once for onExit) could diverge if it changed
+		// between the reads, mislabeling the registry rows as 'interrupted'
+		// (crash) instead of 'stopped' (user action).
+		stopped := provider.IsStopped()
+		if stopped {
 			slog.Info("agent stopped",
 				"agent_id", opts.AgentID,
 			)
@@ -220,7 +225,7 @@ func (m *Manager) startAgentWith(ctx context.Context, opts Options, sink OutputS
 		onExit := m.onExit
 		m.mu.RUnlock()
 		if onExit != nil {
-			onExit(opts.AgentID, exitCode, err)
+			onExit(opts.AgentID, exitCode, err, stopped)
 		}
 	}()
 
@@ -264,6 +269,43 @@ func (m *Manager) Interrupt(agentID string) error {
 		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
 	}
 	return p.Interrupt()
+}
+
+// SendChildInput routes a user message to a subagent conversation (identified
+// by childKey, the provider linkage key stored in the registry row_key) inside
+// the owner process rootAgentID. It type-asserts the running Agent to
+// ChildSteerer; providers that cannot steer a subagent return
+// ErrChildSteeringUnsupported. The service resolves childKey from the registry
+// before calling here.
+func (m *Manager) SendChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) error {
+	m.mu.RLock()
+	p, ok := m.agents[rootAgentID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrAgentNotFound, rootAgentID)
+	}
+	steerer, ok := p.(ChildSteerer)
+	if !ok {
+		return ErrChildSteeringUnsupported
+	}
+	return steerer.SendChildInput(childKey, content, attachments)
+}
+
+// InterruptChild aborts a subagent's current turn inside the owner process,
+// mirroring SendChildInput. Same resolution + ErrChildSteeringUnsupported
+// disposition for a non-steering provider.
+func (m *Manager) InterruptChild(rootAgentID, childKey string) error {
+	m.mu.RLock()
+	p, ok := m.agents[rootAgentID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrAgentNotFound, rootAgentID)
+	}
+	steerer, ok := p.(ChildSteerer)
+	if !ok {
+		return ErrChildSteeringUnsupported
+	}
+	return steerer.InterruptChild(childKey)
 }
 
 // StopAgent stops the agent with the given agent ID.

@@ -64,6 +64,12 @@ type PiAgent struct {
 	// the correlator's key type stays narrow even though we generate from
 	// an int64 atom.
 	nextReqID atomic.Int64
+
+	// toolCallDescriptions records toolCallId -> description (from the
+	// tool_execution_start input) for the background-task registry title.
+	// Guarded by mu. Cleared per turn (the id space does not repeat within a
+	// turn).
+	toolCallDescriptions map[string]string
 }
 
 // StartPi starts a `pi --mode rpc` process and performs the startup handshake.

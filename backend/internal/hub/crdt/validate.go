@@ -88,8 +88,16 @@ func ValidateBatch(
 	//    because creation-order ops within the batch can't observe
 	//    pre-batch tombstones; the validator's "set on tombstoned
 	//    entity" check is against pre-batch state only.
+	//
+	//    A same-batch ReviveTab rescues companion SetTab* ops on the SAME tab:
+	//    the revive clears the tombstone in `working`, but the pre-check runs
+	//    against `pre`, so without an exemption the Set ops would be rejected
+	//    before the revive applies. Collect the batch's revived tab ids and
+	//    exempt them here. The revive op itself is always exempt (it targets a
+	//    tombstoned tab by design).
+	revivedTabs := batchRevivedTabIDs(batch)
 	for _, op := range batch {
-		if msg := preApplyTombstoneCheck(pre, op); msg != "" {
+		if msg := preApplyTombstoneCheck(pre, op, revivedTabs); msg != "" {
 			result.Reason = leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TOMBSTONED_TARGET
 			result.OffendingOpID = op.GetOpId()
 			return result, nil
@@ -332,9 +340,12 @@ func ValidateBatch(
 // targets an already-tombstoned entity in `pre`. Redundant tombstones
 // (`Tombstone…` on something already tombstoned) are allowed; only Set
 // ops on tombstoned entities are rejected.
-func preApplyTombstoneCheck(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp) string {
+func preApplyTombstoneCheck(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp, revivedTabs map[string]struct{}) string {
 	switch op.GetBody().(type) {
 	case *leapmuxv1.CrdtOp_TombstoneNode, *leapmuxv1.CrdtOp_TombstoneTab, *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
+		return ""
+	case *leapmuxv1.CrdtOp_ReviveTab:
+		// A revive targets a tombstoned tab by design; never reject it.
 		return ""
 	}
 	ref := OpTarget(op)
@@ -344,6 +355,10 @@ func preApplyTombstoneCheck(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp) 
 			return op.GetOpId()
 		}
 	case EntityKindTab:
+		// A same-batch revive rescues companion Set ops on this tab; exempt it.
+		if _, revived := revivedTabs[ref.TabID]; revived {
+			return ""
+		}
 		if rec, ok := pre.GetTabs()[ref.TabID]; ok && !HLCIsZero(rec.GetTombstoneAt()) {
 			return op.GetOpId()
 		}
@@ -356,6 +371,21 @@ func preApplyTombstoneCheck(pre *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp) 
 		// tombstone is governed by the root-immutable rules rather than here.
 	}
 	return ""
+}
+
+// batchRevivedTabIDs returns the set of tab ids a ReviveTab op in the batch
+// targets. Used to exempt companion SetTab* ops from the pre-apply tombstone
+// check so a revive + re-placement batch validates.
+func batchRevivedTabIDs(batch []*leapmuxv1.CrdtOp) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, op := range batch {
+		if rt, ok := op.GetBody().(*leapmuxv1.CrdtOp_ReviveTab); ok {
+			if id := rt.ReviveTab.GetTab().GetTabId(); id != "" {
+				out[id] = struct{}{}
+			}
+		}
+	}
+	return out
 }
 
 // validateSetOnce enforces the set-once rules (parent_id, root_node_id) and the

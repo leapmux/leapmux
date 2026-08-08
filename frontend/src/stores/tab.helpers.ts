@@ -3,7 +3,7 @@ import type { TerminalMeta } from './tabMetadata.store'
 import type { listTerminals } from '~/api/workerRpc'
 import type { AgentGitStatus, AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { basename } from '~/lib/paths'
@@ -189,12 +189,63 @@ export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Parti
     createdAt: agent.createdAt || undefined,
     startupError: agent.startupError || undefined,
     startupMessage: agent.startupMessage || undefined,
+    parentAgentId: agent.parentAgentId || undefined,
+    acceptsMessages: agent.acceptsMessages,
     // The whole git group as one unit, through the shared producer. Both agent
     // producers of this group must agree about what "no answer" is and about
     // reference reuse, and the only way to make that true rather than merely
     // asserted is for the answer to live in one place.
     ...toAgentGitTabFields(agent.gitStatus),
   }
+}
+
+/**
+ * Walk an agent tab's parentAgentId chain up to the ROOT main agent id, with a
+ * visited-set cycle guard. Used to key the background-task registry (one per
+ * root) when the agent in hand is a child tab. Falls back to `agentId` when a
+ * parent is unknown (an unhydrated chain) or no parent is set.
+ */
+export function rootAgentIdFor(
+  getAgentTab: (id: string) => AgentTab | undefined,
+  agentId: string,
+): string {
+  let current = agentId
+  const visited = new Set<string>()
+  while (true) {
+    if (visited.has(current))
+      return agentId // cycle guard: fall back to the input
+    visited.add(current)
+    const tab = getAgentTab(current)
+    if (!tab || !tab.parentAgentId)
+      return current
+    current = tab.parentAgentId
+  }
+}
+
+/**
+ * Whether an agent tab accepts a user message (its composer is enabled). Roots
+ * always accept. Children accept only when their feeding provider can steer a
+ * subagent conversation (acceptsMessages === true); a non-steerable child is a
+ * read-only transcript. Used to exclude non-steerable children from MRU-agent
+ * resolution (file mentions/quotes never target a disabled composer).
+ */
+export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string, acceptsMessages?: boolean, agentProvider?: AgentProvider }): boolean {
+  if (tab.type !== TabType.AGENT)
+    return false
+  if (!tab.parentAgentId)
+    return true
+  // acceptsMessages (backend-authoritative) wins when present; fall back to
+  // false for optimistic state before hydration (the registry's
+  // supportsSubagentSend is consulted by callers that can import the registry;
+  // this leaf module avoids that dependency).
+  if (tab.acceptsMessages !== undefined)
+    return tab.acceptsMessages
+  // Codex is the only provider whose children accept messages; before
+  // hydration, optimistically treat a Codex child as steerable so its composer
+  // is enabled rather than flickering disabled->enabled.
+  if (tab.agentProvider === AgentProvider.CODEX)
+    return true
+  return false
 }
 
 /**
@@ -326,6 +377,8 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     homeDir: '',
     startupError: tab.startupError ?? '',
     startupMessage: tab.startupMessage ?? '',
+    parentAgentId: tab.parentAgentId ?? '',
+    acceptsMessages: tab.acceptsMessages ?? false,
   } as AgentInfo
 }
 

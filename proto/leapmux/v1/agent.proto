@@ -188,6 +188,19 @@ message AgentInfo {
   // git_status before this change; the rest are never reused, and the names cannot return.
   reserved 17, 18, 19, 20, 21, 22;
   reserved "model", "effort", "permission_mode", "extra_settings", "available_models", "available_option_groups", "supports_model_effort";
+
+  // Subagent linkage. parent_agent_id is non-empty only for virtual child
+  // agents (subagent transcripts fed by the parent provider's process); a
+  // child never owns a process. spawn_span_id is the tool_use span in the
+  // PARENT transcript that spawned this child (the tab/spawn correlation key).
+  string parent_agent_id = 23;
+  string spawn_span_id = 24;
+  // Whether this agent accepts a user message sent directly to it. Roots:
+  // always true. Children: true only when the feeding provider supports
+  // steering a subagent conversation inside the same process (Codex); false
+  // for read-only transcripts (Claude, ACP, Pi). The frontend gates the
+  // composer on this.
+  bool accepts_messages = 25;
 }
 
 // AvailableOption describes a single selectable value within an option group
@@ -403,6 +416,17 @@ message ListAgentMessagesResponse {
   // falls back to its loaded cursor; present 0 = the agent genuinely has no messages;
   // present >0 = the authoritative MAX(seq).
   optional int64 latest_seq = 5;
+  // Authoritative provider-agnostic background-task registry at the time the
+  // response is served. Drives the "Background tasks" sidebar section; survives
+  // page reloads and cross-client opens via the worker's
+  // agent_background_tasks table. Same explicit-presence contract as
+  // todos/todos_loaded: only meaningful when background_tasks_loaded is true.
+  repeated BackgroundTaskItem background_tasks = 6;
+  // Whether `background_tasks` carries an authoritative snapshot. True only on
+  // a latest page whose LoadBackgroundTasks succeeded; false otherwise. The
+  // client overwrites its registry ONLY when this is true, so a transient DB
+  // error can't wipe a populated list with an empty array.
+  bool background_tasks_loaded = 7;
 }
 
 // GetAgentMessage fetches a SINGLE message by its per-agent seq. Used by the
@@ -474,6 +498,54 @@ enum TodoStatus {
 message AgentTodosChanged {
   string agent_id = 1;
   repeated TodoItem todos = 2;
+}
+
+// BackgroundTaskItem is a row in the provider-neutral background-task registry
+// that drives the "Background tasks" sidebar section. Sources include Claude
+// Task*/Workflow events, Codex collab/subAgentActivity, ACP tool notifications
+// (OpenCode/Kilo/Goose/Reasonix), and Pi tool-execution updates. Same security
+// posture as TodoItem: content lives only in worker SQLite and travels only
+// over the E2EE WatchEvents channel.
+message BackgroundTaskItem {
+  string id = 1;              // registry row_key (provider linkage key)
+  BackgroundTaskKind kind = 2;
+  string child_agent_id = 3;  // set when the task owns a transcript (openable tab)
+  string parent_agent_id = 4; // immediate parent agent id ('' == the owner itself)
+  string group_key = 5;       // workflow/phase grouping key ('' = ungrouped)
+  string group_label = 6;     // human label for the group
+  string title = 7;
+  string description = 8;
+  string active_form = 9;     // live activity text
+  BackgroundTaskStatus status = 10;
+  string created_at = 11;
+  string updated_at = 12;
+  string ended_at = 13;       // empty while active
+}
+
+enum BackgroundTaskKind {
+  BACKGROUND_TASK_KIND_UNSPECIFIED = 0;
+  BACKGROUND_TASK_KIND_SUBAGENT = 1;
+  BACKGROUND_TASK_KIND_SHELL = 2;
+}
+
+enum BackgroundTaskStatus {
+  BACKGROUND_TASK_STATUS_UNSPECIFIED = 0;
+  BACKGROUND_TASK_STATUS_PENDING = 1;
+  BACKGROUND_TASK_STATUS_RUNNING = 2;
+  BACKGROUND_TASK_STATUS_COMPLETED = 3;
+  BACKGROUND_TASK_STATUS_FAILED = 4;
+  BACKGROUND_TASK_STATUS_STOPPED = 5;
+  // The worker or the feeding agent process restarted and cut the task off.
+  BACKGROUND_TASK_STATUS_INTERRUPTED = 6;
+}
+
+// AgentBackgroundTasksChanged is broadcast whenever a background-task registry
+// row mutates (after persistence). agent_id is the ROOT owner agent id.
+// Recipients should replace the agent's registry with tasks verbatim -- this
+// event is authoritative.
+message AgentBackgroundTasksChanged {
+  string agent_id = 1;                       // ROOT owner agent id
+  repeated BackgroundTaskItem tasks = 2;     // authoritative; replace wholesale
 }
 
 // --- Control Request/Response ---

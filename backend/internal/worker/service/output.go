@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -596,6 +597,18 @@ type OutputHandler struct {
 	// per-agent state above.
 	todos sync.Map // agentID -> *agentTodoCache
 
+	// Per-ROOT-agent in-memory background-task registry mirror. Keyed by the
+	// ROOT owner agent id; each bgTaskCache carries its own mutex. Rows for
+	// descendants at any depth live under the root, so a child sink writes
+	// through to its root's cache. Mirrors `todos`.
+	bgtasks sync.Map // rootAgentID -> *bgTaskCache
+
+	// shuttingDown is set by Service.Shutdown so a shutdown-driven StopAll
+	// leaves background-task rows active (the next boot marks them
+	// 'interrupted' -- a truthful "worker restart" label -- rather than
+	// 'stopped'). MarkAgentBackgroundTasksExited observes it.
+	shuttingDown atomic.Bool
+
 	// Plan mode tool_use tracking (shared across agents).
 	planModeToolUse sync.Map // tool_use_id -> target mode string ("plan" or "default")
 
@@ -663,6 +676,10 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	h.lastNotifThread.Delete(agentID)
 	h.spanTrackers.Delete(agentID)
 	h.todos.Delete(agentID)
+	// bgtasks is keyed by ROOT owner id; a child id keys no entry here (its
+	// rows live under the root), so this delete is a safe no-op for children.
+	// A root close reaps the root's own registry cache.
+	h.bgtasks.Delete(agentID)
 	h.cleanupAutoContinue(agentID)
 	// The control-response answer claims are DURABLE rows (control_response_answers), not in-memory
 	// state, so there is nothing to reclaim here -- a reused request_id is deduped per INSTANCE by its
@@ -714,7 +731,7 @@ func (h *OutputHandler) claimControlResponseAnswer(agentID, requestID, claimToke
 // per-exit handler keeps this state for a possible relaunch, so it isn't cleared there).
 func (h *OutputHandler) TrackedAgentIDs() []string {
 	seen := make(map[string]struct{})
-	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.spanTrackers, &h.todos} {
+	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.spanTrackers, &h.todos, &h.bgtasks} {
 		m.Range(func(key, _ any) bool {
 			if id, ok := key.(string); ok {
 				seen[id] = struct{}{}
@@ -807,6 +824,7 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 	return &agentOutputSink{
 		h:             h,
 		agentID:       agentID,
+		rootAgentID:   agentID,
 		agentProvider: agentProvider,
 		plugin:        agent.ProviderFor(agentProvider),
 		tracker:       h.spanTracker(agentID),
@@ -815,11 +833,23 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 
 // agentOutputSink implements agent.OutputSink for a single agent.
 type agentOutputSink struct {
-	h             *OutputHandler
-	agentID       string
+	h *OutputHandler
+	// agentID is THIS sink's agent id (a child id for a child sink).
+	agentID string
+	// rootAgentID is the ROOT main agent id that owns the registry; it equals
+	// agentID for a root sink. A child sink shares its parent's rootAgentID so
+	// every registry write (EnsureChildAgent, UpsertBackgroundTask, ...) lands
+	// under the root and a child's own TodoWrite feeds agent_todos under the
+	// child id (correct for the child tab).
+	rootAgentID   string
 	agentProvider leapmuxv1.AgentProvider
 	plugin        agent.Provider
 	tracker       *SpanTracker
+	// childSinks caches ChildSink results by child agent id so repeated
+	// PersistChild* / nested-spawn calls reuse the same child sink (and its
+	// span tracker). Guarded by childMu.
+	childMu    sync.Mutex
+	childSinks map[string]*agentOutputSink
 
 	// sessionInfoMu guards lastSessionInfo against concurrent
 	// BroadcastSessionInfo calls. Agent handlers may broadcast from

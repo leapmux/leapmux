@@ -28,6 +28,7 @@ enum SectionType {
   SECTION_TYPE_FILES = 4;
   SECTION_TYPE_TODOS = 5;
   SECTION_TYPE_WORKERS = 6;
+  SECTION_TYPE_BACKGROUND_TASKS = 7;
 }
 
 // Sidebar indicates which sidebar a section belongs to.

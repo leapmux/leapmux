@@ -412,19 +412,66 @@ func dbCloseFailureMessage(tabType leapmuxv1.TabType) string {
 // commit made that offline path the normal one, which is what turned a
 // discrepancy into a leak.
 func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResult {
+	// A virtual child agent (a subagent transcript): closing its tab is
+	// UI-only. Run NO teardown, stamp NO closed_at, and return an empty
+	// successful result. Transcript + registry survive (they live under the
+	// root); reopening the tab re-hydrates from the still-open row.
+	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+	if err == nil && dbAgent.ParentAgentID.Valid {
+		return &leapmuxv1.CloseTabResult{}
+	}
+
+	rootTeardown := func() {
+		svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(action, linkPolicy))
+		// Close the root AND every virtual descendant in one tree. Closing only
+		// the root row would orphan child rows (they have no worktree_tabs link
+		// and are invisible to the reconciler). Free each child's span
+		// tracker/caches alongside the row teardown.
+		descendants, _ := svc.Queries.ListDescendantAgentIDs(bgCtx(), sql.NullString{String: agentID, Valid: true})
+		svc.Agents.StopAgent(agentID)
+		svc.Output.ClearAgentRuntimeState(agentID)
+		svc.agentCleanups.run(agentID)
+		for _, childID := range descendants {
+			svc.Output.CleanupAgent(childID)
+		}
+		// A close with no running process still terminalizes the registry rows
+		// as 'stopped' (a deliberate user action).
+		svc.Output.MarkAgentBackgroundTasksExited(agentID, true)
+	}
+	rootClose := func() (bool, error) {
+		// Stamp closed_at on the root + all open descendants via the tree id
+		// list (sqlc cannot parse a recursive CTE inside an UPDATE's
+		// IN-subquery). CloseAgent's closed_at IS NULL guard makes each step
+		// idempotent.
+		ids, err := svc.Queries.ListAgentTreeIDs(bgCtx(), agentID)
+		if err != nil {
+			return false, err
+		}
+		var anyRetired bool
+		// Continue past a transient error on one id so a single failed
+		// CloseAgent does not orphan the remaining descendants. The orphan
+		// reconciler lists only roots, so an unclosed child row is never
+		// reaped; closing every id we can keeps the tree consistent. The first
+		// error is returned so the caller still sees the failure.
+		var firstErr error
+		for _, id := range ids {
+			retired, affErr := rowsAffected(svc.Queries.CloseAgent(bgCtx(), id))
+			if affErr != nil && firstErr == nil {
+				firstErr = affErr
+				continue
+			}
+			anyRetired = anyRetired || retired
+		}
+		return anyRetired, firstErr
+	}
 	return svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_AGENT,
 		agentID,
 		userID,
 		action,
 		linkPolicy,
-		func() {
-			svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(action, linkPolicy))
-			svc.Agents.StopAgent(agentID)
-			svc.Output.ClearAgentRuntimeState(agentID)
-			svc.agentCleanups.run(agentID)
-		},
-		func() (bool, error) { return rowsAffected(svc.Queries.CloseAgent(bgCtx(), agentID)) },
+		rootTeardown,
+		rootClose,
 	)
 }
 

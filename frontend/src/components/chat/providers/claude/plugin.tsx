@@ -34,7 +34,13 @@ function buildInterruptRequest(): string {
 
 /** Extra notification types for Claude Code (plan_execution, system subtypes). */
 const CLAUDE_EXTRA_TYPES = new Set(['plan_execution'])
-/** System message subtypes that should never surface in the UI. */
+/**
+ * System message subtypes that should never surface in the UI.
+ * task_notification / task_updated are legacy guards for pre-migration
+ * transcripts: new sessions never persist these rows (the backend's
+ * --forward-subagent-text handling consumes them to drive the background-task
+ * registry). Kept so an old transcript still renders cleanly.
+ */
 const HIDDEN_SYSTEM_SUBTYPES = new Set(['init', 'task_notification', 'task_updated'])
 /**
  * Tool span types whose `tool_use` row is suppressed. `ToolSearch` is a

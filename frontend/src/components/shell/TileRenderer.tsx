@@ -44,9 +44,10 @@ import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
+import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
-import { agentTabToInfo } from '~/stores/tab.helpers'
+import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/tab.helpers'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { shouldShowThinkingIndicator } from '~/utils/agentState'
@@ -128,6 +129,14 @@ interface TileRendererOpts {
   }
   /** Settings-loading signal used by the empty-tile placeholder. */
   settingsLoading: ReturnType<typeof createLoadingSignal>
+  /**
+   * Open a subagent tab from a background-task row (shared by the sidebar
+   * section and the ThinkingIndicator chip popover). Omit to keep rows/chips
+   * non-clickable.
+   */
+  onOpenBackgroundTask?: (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => void
+  /** Resolve a tab title by agent id (for the chip popover's "via {parent}"). */
+  resolveParentLabel?: (agentId: string) => string | undefined
 }
 
 export function createTileRenderer(opts: TileRendererOpts) {
@@ -487,7 +496,20 @@ export function createTileRenderer(opts: TileRendererOpts) {
     chatStore.getMessages(agentId),
     chatStore.streamingText.get(agentId),
     controlStore.getRequests(agentId).length,
+    countActiveBackgroundTasks(chatStore.backgroundTasks.get(agentId)),
   )
+  // Background-task registry helpers. The registry is keyed by ROOT owner id,
+  // so resolve up to the root for a child tab. Only roots key a registry, so a
+  // child ChatView correctly shows no chip (empty).
+  const bgRootFor = (agentId: string): string => rootAgentIdFor((id: string) => view.getAgentTab(id), agentId)
+  const bgTasksFor = (agentId: string) => chatStore.backgroundTasks.get(bgRootFor(agentId))
+  const bgTaskCountFor = (agentId: string) => countActiveBackgroundTasks(bgTasksFor(agentId))
+  // Todos are owned by the root agent (the child has no independent todo list).
+  // Resolve to the root so a child tab shows the root's todos, mirroring
+  // background tasks. The root entry in the watch plan delivers the live updates.
+  const todosFor = (agentId: string) => chatStore.todos.get(bgRootFor(agentId))
+  const onOpenBackgroundTask = opts.onOpenBackgroundTask
+  const resolveParentLabel = opts.resolveParentLabel ?? ((id: string) => view.getAgentTab(id)?.title)
 
   const createTabBarForTile = (tileId: string, actions?: () => TileActions) => {
     // Reactive accessor either way: callers from `renderTile` pass their
@@ -693,7 +715,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
               getCommandStreamBySpanId: spanId => chatStore.getCommandStream(agentId, spanId),
               hasRenderableCommandStreamBySpanId: spanId => chatStore.hasRenderableCommandStream(agentId, spanId),
               getMessageContentVersion: id => chatStore.getMessageContentVersion(id),
-              getTodoById: taskId => chatStore.todos.getById(agentId, taskId),
+              getTodoById: taskId => chatStore.todos.getById(bgRootFor(agentId), taskId),
             }
             // The scroll-rail prop object, memoized like `lookups` above: getRailData does
             // firstServerSeq/lastServerSeq scans and the rail's per-frame memos read
@@ -793,6 +815,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       startupError: agent()?.startupError,
                       startupMessage: agent()?.startupMessage,
                       providerLabel: agentProviderLabel(agent()?.agentProvider),
+                      backgroundTaskCount: bgTaskCountFor(agentId),
+                      backgroundTasks: bgTasksFor(agentId),
+                      onOpenSubagent: onOpenBackgroundTask,
+                      resolveParentLabel,
+                      todos: todosFor(agentId),
                     }}
                   />
                 </Show>
@@ -938,6 +965,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const FocusedAgentEditorPanel: Component<{ containerHeight: number }> = (props) => {
     const agentId = () => focusedAgentId()!
+    // Composer gate: a child (subagent) tab whose provider cannot steer a
+    // subagent conversation gets a disabled composer + a hint. Roots and
+    // steerable children keep the live composer. isSteerableAgentTab resolves
+    // acceptsMessages (backend-authoritative) with a supportsSubagentSend
+    // fallback for optimistic state.
+    const composerDisabled = () => {
+      const t = view.getAgentTab(agentId())
+      if (!t?.parentAgentId)
+        return false
+      return !isSteerableAgentTab(t)
+    }
     return (
       <AgentEditorPanel
         agentId={agentId()}
@@ -1027,7 +1065,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
         addFilesRef={(fn) => { addFilesRef.set(fn) }}
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
-        disabled={false}
+        disabled={composerDisabled()}
+        disabledHint={composerDisabled() ? 'This subagent doesn\'t accept messages' : undefined}
         focusRef={(fn) => { focusEditorRef.set(fn) }}
         controlRequests={controlStore.getRequests(agentId())}
         onControlResponse={agentOps.handleControlResponse}

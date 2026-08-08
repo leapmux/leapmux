@@ -21,6 +21,12 @@ CREATE TABLE agents (
     -- agent process (model/effort/permission/etc.), as a JSON array.
     option_groups    TEXT NOT NULL DEFAULT '[]',
     agent_provider   INTEGER NOT NULL DEFAULT 1,
+    -- Subagent linkage. parent_agent_id is set ONLY for virtual child agents
+    -- (subagent transcripts fed by the parent provider's process; they never
+    -- own a process). spawn_span_id is the tool_use span in the PARENT
+    -- transcript that spawned this child.
+    parent_agent_id  TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    spawn_span_id    TEXT NOT NULL DEFAULT '',
     session_start_seq INTEGER NOT NULL DEFAULT 0,
     -- Per-agent monotonic message-seq high-water mark. Message seqs are allocated as
     -- (message_seq_hwm + 1) rather than (MAX(live seq) + 1), so a deleted tail seq is
@@ -34,6 +40,11 @@ CREATE TABLE agents (
     closed_at        DATETIME
 );
 CREATE INDEX idx_agents_closed_at ON agents(closed_at) WHERE closed_at IS NOT NULL;
+CREATE INDEX idx_agents_parent ON agents(parent_agent_id) WHERE parent_agent_id IS NOT NULL;
+-- One child row per spawning tool_use: makes EnsureChildAgent replay
+-- idempotency a constraint (worker restart mid-spawn), not a convention.
+CREATE UNIQUE INDEX idx_agents_spawn_span ON agents(parent_agent_id, spawn_span_id)
+    WHERE parent_agent_id IS NOT NULL AND spawn_span_id <> '';
 
 -- Messages (verbatim storage, per agent)
 CREATE TABLE messages (
@@ -289,6 +300,37 @@ CREATE TABLE agent_todos (
     UNIQUE (agent_id, seq)
 );
 
+-- Background-task registry rows. Populated incrementally by the worker output
+-- handler from provider-neutral OutputSink primitives so the sidebar survives
+-- page reloads and cross-machine opens. One registry per ROOT main agent
+-- (owner_agent_id); rows for descendants at any depth live under the root.
+-- row_key is the provider linkage key (Claude task_id, Codex thread id, ACP
+-- toolCallId, etc.). child_agent_id is set only for subagent rows that own a
+-- transcript (openable tab); deliberately NOT an FK so the registry row
+-- survives its child row, and whole-tree deletion cascades through the owner.
+-- Same security posture as agent_todos: content lives only in worker SQLite
+-- and travels only over the E2EE WatchEvents channel.
+CREATE TABLE agent_background_tasks (
+    owner_agent_id  TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE, -- ROOT main agent
+    row_key         TEXT NOT NULL,  -- provider linkage key (tool_use id / thread id / session id / task id)
+    seq             INTEGER NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('subagent','shell')),
+    child_agent_id  TEXT NOT NULL DEFAULT '', -- set for subagent rows that own a transcript
+    parent_agent_id TEXT NOT NULL DEFAULT '', -- immediate parent agent id ('' == the owner itself)
+    group_key       TEXT NOT NULL DEFAULT '', -- workflow/phase grouping key
+    group_label     TEXT NOT NULL DEFAULT '', -- human label for the group
+    title           TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    active_form     TEXT NOT NULL DEFAULT '', -- live "what it does now" text
+    status          TEXT NOT NULL CHECK (status IN ('pending','running','completed','failed','stopped','interrupted')),
+    created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    ended_at        DATETIME,
+    PRIMARY KEY (owner_agent_id, row_key),
+    UNIQUE (owner_agent_id, seq)
+);
+CREATE INDEX idx_agent_background_tasks_child ON agent_background_tasks(child_agent_id) WHERE child_agent_id <> '';
+
 -- Every OPEN tab and the directory its git questions are answered from, as one
 -- relation.
 --
@@ -314,7 +356,7 @@ CREATE TABLE agent_todos (
 -- DELETED on close, so its presence IS its openness.
 CREATE VIEW tab_locations AS
 SELECT 1 AS tab_type, id AS tab_id, '' AS user_id, working_dir AS working_dir
-FROM agents WHERE closed_at IS NULL
+FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL
 UNION ALL
 SELECT 2, id, '', working_dir
 FROM terminals WHERE closed_at IS NULL
@@ -324,6 +366,9 @@ FROM worker_file_tabs;
 
 -- +goose Down
 DROP VIEW IF EXISTS tab_locations;
+DROP TABLE IF EXISTS agent_background_tasks;
+DROP INDEX IF EXISTS idx_agents_spawn_span;
+DROP INDEX IF EXISTS idx_agents_parent;
 DROP TABLE IF EXISTS agent_todos;
 DROP TABLE IF EXISTS worker_file_tabs;
 DROP TABLE IF EXISTS terminals;

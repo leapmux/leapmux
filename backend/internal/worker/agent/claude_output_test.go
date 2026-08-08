@@ -9,6 +9,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -102,6 +103,9 @@ func TestHandleOutput_AssistantToolUse(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
+	// A message carrying parent_tool_use_id is a FORWARDED subagent envelope
+	// (--forward-subagent-text) and routes into the child transcript, not the
+	// parent's. The parent transcript is left untouched.
 	content := []byte(`{
 		"type": "assistant",
 		"parent_tool_use_id": "parent-123",
@@ -116,23 +120,29 @@ func TestHandleOutput_AssistantToolUse(t *testing.T) {
 
 	agent.HandleOutput(content)
 
-	msgs := sink.Messages()
-	require.Len(t, msgs, 1)
+	// The parent transcript receives nothing.
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.OpenSpans())
 
+	// The message routed into the child transcript keyed by the spawn span.
+	child, ok := sink.ChildSink("child-of-parent-123").(*testSink)
+	require.True(t, ok)
+	msgs := child.Messages()
+	require.Len(t, msgs, 1)
 	msg := msgs[0]
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msg.Source)
 	assert.Equal(t, "parent-123", msg.ParentSpanID)
 	assert.Equal(t, "tu-001", msg.SpanID)
 	assert.Equal(t, "Read", msg.SpanType)
 
-	// processAssistantBlocks should have opened a span.
-	spans := sink.OpenedSpans()
+	// The child span tracker (not the parent's) opened the tool_use span.
+	spans := child.OpenSpans()
 	require.Len(t, spans, 1)
 	assert.Equal(t, "tu-001", spans[0].SpanID)
 	assert.Equal(t, "parent-123", spans[0].ParentSpanID)
 
-	// Tool use counter should be incremented.
-	assert.Equal(t, 1, agent.turnToolUses)
+	// The forwarded envelope is NOT counted against the parent's turn.
+	assert.Equal(t, 0, agent.turnToolUses)
 }
 
 func TestHandleOutput_AssistantToolUse_FallbackParentSpanID(t *testing.T) {
@@ -168,9 +178,9 @@ func TestHandleOutput_UserToolResult(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(sink)
 
-	// Pre-register a span type so GetSpanType works.
-	sink.SetSpanType("tu-001", "Read")
-
+	// A user envelope carrying parent_tool_use_id is the subagent's OWN
+	// tool_result (forwarded), so it routes into the child transcript and
+	// closes the child span there.
 	content := []byte(`{
 		"type": "user",
 		"parent_tool_use_id": "parent-123",
@@ -184,19 +194,22 @@ func TestHandleOutput_UserToolResult(t *testing.T) {
 
 	agent.HandleOutput(content)
 
-	msgs := sink.Messages()
-	require.Len(t, msgs, 1)
+	// Parent transcript is untouched.
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.ClosedSpanCount())
 
+	child, ok := sink.ChildSink("child-of-parent-123").(*testSink)
+	require.True(t, ok)
+	msgs := child.Messages()
+	require.Len(t, msgs, 1)
 	msg := msgs[0]
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, msg.Source)
 	assert.Equal(t, "parent-123", msg.ParentSpanID)
 	assert.Equal(t, "tu-001", msg.SpanID)
-	assert.Equal(t, "Read", msg.SpanType)
 
-	// Span should be closed after persist.
-	closed := sink.ClosedSpans()
-	require.Len(t, closed, 1)
-	assert.Equal(t, "tu-001", closed[0])
+	// The child span closed after persist.
+	closed := child.ClosedSpanCount()
+	assert.Equal(t, 1, closed)
 }
 
 func TestHandleOutput_AssistantNoToolUse(t *testing.T) {
@@ -1660,4 +1673,338 @@ func TestContextUsageSnapshot_BuildBroadcast(t *testing.T) {
 		_, ok := s.buildBroadcast(claudeMsgTypeResult, base.Add(time.Second))
 		assert.True(t, ok, "a result message always broadcasts, even mid-debounce")
 	})
+}
+
+// TestHandleOutput_SystemSessionStateChangedConsumed verifies a Claude
+// session_state_changed system line is consumed silently (not persisted into
+// the transcript and not driving the registry).
+func TestHandleOutput_SystemSessionStateChangedConsumed(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	content := []byte(`{"type":"system","subtype":"session_state_changed","session_id":"s1","cwd":"/tmp"}`)
+	agent.HandleOutput(content)
+
+	assert.Equal(t, 0, sink.MessageCount(), "session_state_changed must be consumed, not persisted")
+	assert.Empty(t, sink.BackgroundTasks(), "session_state_changed must not create a registry row")
+}
+
+// TestClaudeHandleTaskStarted_FallsBackToPromptFirstLine verifies that when
+// task_started omits description but carries a spawn prompt, the registry row
+// title falls back to the first line of the prompt (probe-verified shape).
+func TestClaudeHandleTaskStarted_FallsBackToPromptFirstLine(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	content := []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1","task_type":"local_bash","prompt":"build the feature\nand ship it"}`)
+	agent.HandleOutput(content)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "build the feature", tasks[0].Title,
+		"empty description falls back to firstLine(prompt)")
+}
+
+// TestClaudeHandleTaskStarted_PrefersDescriptionOverPrompt verifies the
+// description wins when both description and prompt are present.
+func TestClaudeHandleTaskStarted_PrefersDescriptionOverPrompt(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	content := []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1","task_type":"local_bash","description":"the real title","prompt":"something else\nmultiline"}`)
+	agent.HandleOutput(content)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "the real title", tasks[0].Title,
+		"description must win over prompt when both are present")
+}
+
+// TestClaudeHandleTaskProgress_PrefersDescriptionOverLastToolName verifies the
+// activity line derives from description first (probe-verified order), then
+// last_tool_name, then usage counts.
+func TestClaudeHandleTaskProgress_PrefersDescriptionOverLastToolName(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// Seed a running row.
+	started := []byte(`{"type":"system","subtype":"task_started","task_id":"t1","tool_use_id":"tu1","task_type":"local_bash","description":"original"}`)
+	agent.HandleOutput(started)
+
+	// Progress with a description + last_tool_name: description wins.
+	progress := []byte(`{"type":"system","subtype":"task_progress","task_id":"t1","description":"installing deps","last_tool_name":"Bash"}`)
+	agent.HandleOutput(progress)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "installing deps", tasks[0].ActiveForm,
+		"progress activity prefers description over last_tool_name")
+}
+
+// TestHandleOutput_TaskStartedUpsertsSubagentRegistryAndChild verifies that a
+// task_started for a Task subagent (local_agent with a tool_use_id) upserts a
+// Running registry row keyed by task_id AND pre-creates the child transcript
+// via EnsureChildAgent.
+func TestHandleOutput_TaskStartedUpsertsSubagentRegistryAndChild(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	content := []byte(`{"type":"system","subtype":"task_started","task_id":"task-sub-1","tool_use_id":"tu-spawn-1","task_type":"local_agent","description":"research the codebase"}`)
+	agent.HandleOutput(content)
+
+	// One registry row, keyed by task_id, Running, titled by the description.
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	row := tasks[0]
+	assert.Equal(t, "task-sub-1", row.RowKey)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, "research the codebase", row.Title)
+	assert.Equal(t, bgtask.KindSubagent, row.Kind, "local_agent maps to a Subagent-kind row")
+
+	// EnsureChildAgent was invoked keyed by the spawn tool_use id, so the child
+	// transcript resolves immediately. Resolve the child sink via ChildSink using
+	// the synthetic id EnsureChildAgent produced (child-of-<spawnSpanID>).
+	child, ok := sink.ChildSink("child-of-tu-spawn-1").(*testSink)
+	require.True(t, ok, "EnsureChildAgent must have created a child keyed by the spawn span")
+	require.NotNil(t, child)
+	// The child registry row also carries the child agent id and title.
+	assert.Equal(t, "child-of-tu-spawn-1", row.ChildAgentID)
+}
+
+// TestHandleOutput_TaskStartedLocalBashUpsertsShellNoChild verifies that a
+// task_started for a background shell (local_bash) upserts a Shell-kind registry
+// row and does NOT pre-create a child transcript (shells have no transcript).
+func TestHandleOutput_TaskStartedLocalBashUpsertsShellNoChild(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	content := []byte(`{"type":"system","subtype":"task_started","task_id":"task-shell-1","tool_use_id":"tu-shell-1","task_type":"local_bash","description":"long build"}`)
+	agent.HandleOutput(content)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	row := tasks[0]
+	assert.Equal(t, "task-shell-1", row.RowKey)
+	assert.Equal(t, bgtask.KindShell, row.Kind, "local_bash maps to a Shell-kind row")
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, "long build", row.Title)
+	// No child transcript pre-created for a shell.
+	assert.Equal(t, "", row.ChildAgentID, "local_bash must not EnsureChildAgent")
+}
+
+// TestHandleOutput_TaskStartedCarriesWorkflowGroup verifies that a task_started
+// carrying a workflow_name populates the registry row's GroupKey/GroupLabel so
+// the sidebar groups workflow rows together.
+func TestHandleOutput_TaskStartedCarriesWorkflowGroup(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	content := []byte(`{"type":"system","subtype":"task_started","task_id":"wf-1","task_type":"local_workflow","workflow_name":"release","description":"cut release"}`)
+	agent.HandleOutput(content)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	row := tasks[0]
+	assert.Equal(t, "wf-1", row.RowKey)
+	assert.Equal(t, "workflow:release", row.GroupKey, "GroupKey derives from workflow_name")
+	assert.Equal(t, "release", row.GroupLabel, "GroupLabel is the workflow_name")
+	assert.Equal(t, "cut release", row.Title)
+}
+
+// TestHandleOutput_TaskProgressUpdatesActivityOnly verifies that task_progress
+// only refreshes the activity (ActiveForm) and never creates a new row or
+// changes the status off Running.
+func TestHandleOutput_TaskProgressUpdatesActivityOnly(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	started := []byte(`{"type":"system","subtype":"task_started","task_id":"t-prog","tool_use_id":"tu-prog","task_type":"local_bash","description":"seed title"}`)
+	agent.HandleOutput(started)
+
+	progress := []byte(`{"type":"system","subtype":"task_progress","task_id":"t-prog","description":"running tests"}`)
+	agent.HandleOutput(progress)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1, "progress must not create a new registry row")
+	row := tasks[0]
+	assert.Equal(t, "t-prog", row.RowKey)
+	assert.Equal(t, bgtask.StatusRunning, row.Status, "progress must not change status")
+	assert.Equal(t, "running tests", row.ActiveForm, "progress updates ActiveForm")
+}
+
+// TestHandleOutput_TaskNotificationClosesRegistryEntry verifies that a
+// task_notification transitions the registry row to the terminal status mapped
+// from the wire status (completed/failed/stopped) and closes it.
+func TestHandleOutput_TaskNotificationClosesRegistryEntry(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		wireStatus string
+		wantStatus bgtask.Status
+	}{
+		{"completed", "completed", bgtask.StatusCompleted},
+		{"failed", "failed", bgtask.StatusFailed},
+		{"stopped", "stopped", bgtask.StatusStopped},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &outputTestSink{}
+			agent := newTestAgent(sink)
+
+			started := []byte(`{"type":"system","subtype":"task_started","task_id":"t-notif","tool_use_id":"tu-notif","task_type":"local_bash","description":"do work"}`)
+			agent.HandleOutput(started)
+			require.Len(t, sink.BackgroundTasks(), 1)
+
+			notif := []byte(`{"type":"system","subtype":"task_notification","task_id":"t-notif","status":"` + tc.wireStatus + `","summary":"done and dusted"}`)
+			agent.HandleOutput(notif)
+
+			tasks := sink.BackgroundTasks()
+			require.Len(t, tasks, 1, "notification must close the existing row, not add a new one")
+			assert.Equal(t, tc.wantStatus, tasks[0].Status,
+				"wire status %q maps to %v", tc.wireStatus, tc.wantStatus)
+			assert.True(t, tasks[0].Status.IsTerminal(), "notification status must be terminal")
+		})
+	}
+}
+
+// TestHandleOutput_TaskNotificationUnknownStatusLeavesRowRunning verifies that a
+// task_notification carrying a status the map does not recognize does NOT
+// terminalize the row. An unrecognized status must not close a running task
+// (the zero-value StatusPending would otherwise write an active+ended row).
+func TestHandleOutput_TaskNotificationUnknownStatusLeavesRowRunning(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	started := []byte(`{"type":"system","subtype":"task_started","task_id":"t-unk","tool_use_id":"tu-unk","task_type":"local_bash","description":"do work"}`)
+	agent.HandleOutput(started)
+	require.Len(t, sink.BackgroundTasks(), 1)
+
+	// "running" is not in claudeTaskStatusMap; the handler must ignore it.
+	notif := []byte(`{"type":"system","subtype":"task_notification","task_id":"t-unk","status":"running","summary":"still going"}`)
+	agent.HandleOutput(notif)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1, "unknown status must not add a row")
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status, "unknown status must leave the row running")
+	assert.True(t, tasks[0].EndedAt.IsZero(), "unknown status must not stamp ended_at")
+}
+
+// TestHandleOutput_DuplicateTaskStartedIsIdempotent verifies that replaying the
+// same task_started line leaves exactly one registry row (the upsert is keyed by
+// row_key, so the second call merges into the first).
+func TestHandleOutput_DuplicateTaskStartedIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	started := []byte(`{"type":"system","subtype":"task_started","task_id":"t-dup","tool_use_id":"tu-dup","task_type":"local_bash","description":"once is enough"}`)
+	agent.HandleOutput(started)
+	agent.HandleOutput(started)
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1, "duplicate task_started must merge into a single registry row")
+	assert.Equal(t, "t-dup", tasks[0].RowKey)
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
+	assert.Equal(t, "once is enough", tasks[0].Title)
+}
+
+// TestHandleOutput_SubagentAssistantRoutesToChildTranscript verifies that after
+// a task_started registers the spawn tool_use id, a forwarded assistant envelope
+// carrying parent_tool_use_id routes into the CHILD transcript and never touches
+// the parent transcript.
+func TestHandleOutput_SubagentAssistantRoutesToChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// Register the subagent (local_agent) keyed by tool_use_id "tu-route".
+	started := []byte(`{"type":"system","subtype":"task_started","task_id":"t-route","tool_use_id":"tu-route","task_type":"local_agent","description":"child task"}`)
+	agent.HandleOutput(started)
+
+	// Forwarded assistant message carrying parent_tool_use_id.
+	assistant := []byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-route",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{"type": "text", "text": "child is working"},
+				{"type": "tool_use", "id": "tu-child-1", "name": "Read", "input": {"file_path": "/tmp/x"}}
+			]
+		}
+	}`)
+	agent.HandleOutput(assistant)
+
+	// Parent transcript untouched.
+	assert.Empty(t, sink.Messages(), "forwarded assistant must not persist to the parent transcript")
+
+	// Child transcript received the message.
+	child, ok := sink.ChildSink("child-of-tu-route").(*testSink)
+	require.True(t, ok)
+	msgs := child.Messages()
+	require.Len(t, msgs, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, msgs[0].Source)
+	assert.Equal(t, "tu-route", msgs[0].ParentSpanID)
+	assert.Equal(t, "tu-child-1", msgs[0].SpanID)
+	assert.Equal(t, "Read", msgs[0].SpanType)
+}
+
+// TestHandleOutput_SubagentResultRoutesAsChildTurnEnd verifies that a forwarded
+// subagent result message (parent_tool_use_id set) routes into the child
+// transcript as a PersistTurnEnd divider (not a regular PersistMessage) and
+// closes the registry row.
+func TestHandleOutput_SubagentResultRoutesAsChildTurnEnd(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	started := []byte(`{"type":"system","subtype":"task_started","task_id":"t-result","tool_use_id":"tu-result","task_type":"local_agent","description":"child result task"}`)
+	agent.HandleOutput(started)
+
+	result := []byte(`{
+		"type": "result",
+		"parent_tool_use_id": "tu-result",
+		"subtype": "success",
+		"result": "child finished"
+	}`)
+	agent.HandleOutput(result)
+
+	// Parent transcript untouched.
+	assert.Empty(t, sink.Messages(), "forwarded result must not persist to the parent transcript")
+
+	// Child transcript received a turn-end divider.
+	child, ok := sink.ChildSink("child-of-tu-result").(*testSink)
+	require.True(t, ok)
+	msgs := child.Messages()
+	require.Len(t, msgs, 1)
+	assert.True(t, msgs[0].TurnEnd, "forwarded result routes through PersistTurnEnd into the child transcript")
+
+	// The registry row is closed (Completed for a non-error result).
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status, "subagent result closes the registry row")
 }

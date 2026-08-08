@@ -29,6 +29,7 @@ import { useVisualViewportInset } from '~/hooks/useVisualViewportInset'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { assertNever } from '~/lib/assertNever'
 import { KEY_CLI_PATH_CHECKED, localStorageGet, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { getCRDTBridge } from '~/lib/crdt'
 import { hasWorkspaceDesktopChrome } from '~/lib/desktopChrome'
 import { createImperativeRef } from '~/lib/imperativeRef'
 import { createLogger } from '~/lib/logger'
@@ -46,7 +47,7 @@ import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
 import { createLayoutStore, useLayoutFocusSweep } from '~/stores/layout.store'
 import { createSectionStore } from '~/stores/section.store'
-import { agentTabToInfo, isTabReadyForGitStatus, tabKey } from '~/stores/tab.helpers'
+import { agentTabToInfo, isSteerableAgentTab, isTabReadyForGitStatus, rootAgentIdFor, tabKey } from '~/stores/tab.helpers'
 import { createTabMetadataStore, useMetadataSweep } from '~/stores/tabMetadata.store'
 import { createTabSelectionStore, useSelectionSweep } from '~/stores/tabSelection.store'
 import { createTabView } from '~/stores/tabView'
@@ -61,6 +62,7 @@ import { GridPopoverHostProvider } from './GridPopoverHost'
 import { handleBranchChanged } from './handleBranchChanged'
 import { createMobileSidebarToggles, MobileLayout } from './MobileLayout'
 import { mruAgentEditorDeps } from './mruAgentEditorDeps'
+import { openSubagentTab } from './openSubagentTab'
 import { resolveActiveWorkspace } from './resolveActiveWorkspace'
 import { createTabSelectionRestorer } from './restoreTabSelection'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
@@ -527,7 +529,7 @@ export const AppShell: Component = () => {
     // to re-look-up the tab allocated one string per tab and a second lookup for
     // the winner -- `mruOrder` already returns the assembled `Tab` objects.
     const agent = tabView.mruOrder(workspace.activeWorkspaceId() ?? '')
-      .find(t => t.type === TabType.AGENT)
+      .find(t => t.type === TabType.AGENT && isSteerableAgentTab(t))
     if (!agent)
       return { workingDir: '', homeDir: '' }
     return {
@@ -759,15 +761,53 @@ export const AppShell: Component = () => {
 
   // Active agent todos (for right sidebar To-dos pane). "Active" is
   // derived from the active tab — if the user is looking at an AGENT
-  // tab, that's the active agent.
+  // tab, that's the active agent. Todos are owned by the root agent, so a
+  // child (subagent) tab resolves up to its root (mirrors background tasks).
   const activeTodos = createMemo(() => {
     const tab = activeTab()
     if (tab?.type !== TabType.AGENT)
       return []
-    return chatStore.todos.get(tab.id)
+    const rootId = rootAgentIdFor((id: string) => tabView.getAgentTab(id), tab.id)
+    return chatStore.todos.get(rootId)
   })
 
   const showTodos = createMemo(() => activeTabType() === TabType.AGENT && activeTodos().length > 0)
+
+  // Background-task registry for the active agent. Keyed by the ROOT owner
+  // agent id, so a child (subagent) tab resolves up to its root and the
+  // section stays populated while a child is active. Visible whenever the
+  // root has ANY rows (past rows keep the section alive).
+  const activeRootAgentId = createMemo(() => {
+    const tab = activeTab()
+    if (tab?.type !== TabType.AGENT)
+      return null
+    return rootAgentIdFor((id: string) => tabView.getAgentTab(id), tab.id)
+  })
+  const activeBackgroundTasks = createMemo(() =>
+    activeRootAgentId() ? chatStore.backgroundTasks.get(activeRootAgentId()!) : [],
+  )
+  const showBackgroundTasks = createMemo(() => activeBackgroundTasks().length > 0)
+  const resolveAgentTabTitle = (id: string): string | undefined => {
+    const t = tabView.getAgentTab(id)
+    return t?.title
+  }
+  // Open a subagent tab from a Background tasks row. Built once here and shared
+  // with the sidebar section + the ThinkingIndicator popover (via sidebarOpts).
+  const onOpenBackgroundTask = (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => {
+    if (!item.childAgentId)
+      return
+    openSubagentTab(
+      {
+        view: tabView,
+        layoutStore,
+        selection,
+        metadata: tabMetadata,
+        speculativeTabs: () => getCRDTBridge()?.speculativeState()?.tabs ?? {},
+        focusTileId: (tileId: string) => focusTile(tileId),
+      },
+      item,
+    )
+  }
 
   // Workspace selection switches in place — there is no per-workspace URL.
   const handleSelectWorkspace = (id: string) => {
@@ -871,6 +911,8 @@ export const AppShell: Component = () => {
       onAttachTab: handleAttachTab,
     },
     settingsLoading,
+    onOpenBackgroundTask,
+    resolveParentLabel: resolveAgentTabTitle,
   })
 
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
@@ -934,6 +976,10 @@ export const AppShell: Component = () => {
     get isActiveWorkspaceArchived() { return isActiveWorkspaceArchived() },
     get showTodos() { return showTodos() },
     get activeTodos() { return activeTodos() },
+    get showBackgroundTasks() { return showBackgroundTasks() },
+    get activeBackgroundTasks() { return activeBackgroundTasks() },
+    onOpenBackgroundTask: item => onOpenBackgroundTask(item),
+    resolveAgentTabTitle,
     termOps,
     gitStatusStore: gitFileStatusStore,
     get turnEndTrigger() { return turnEndTrigger() },

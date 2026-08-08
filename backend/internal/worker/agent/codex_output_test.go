@@ -586,7 +586,7 @@ func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 	require.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
-func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
+func TestHandleCodexOutput_SpawnAgentStartedOpensFlatSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -598,11 +598,11 @@ func TestHandleCodexOutput_SpawnAgentStartedOpensSubagentSpan(t *testing.T) {
 	got := sink.OpenSpans()
 	require.Len(t, got, 1)
 	require.Equal(t, "call-1", got[0].SpanID)
-	require.Equal(t, "", got[0].ParentSpanID)
+	require.Equal(t, "", got[0].ParentSpanID, "spawn span is flat (no parent)")
 	require.Equal(t, 0, sink.ClosedSpanCount())
 }
 
-func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
+func TestHandleCodexOutput_WaitIsAFlatToolSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -618,19 +618,12 @@ func TestHandleCodexOutput_WaitMessagesStayInsideSpawnAgentSpan(t *testing.T) {
 
 	messages := sink.Messages()
 	require.Len(t, messages, 3)
-	require.Equal(t, "call-1", messages[1].ParentSpanID)
-	require.Equal(t, "call-1", messages[2].ParentSpanID)
-	require.True(t, messages[2].Closing)
-	require.Equal(t, "call-1", messages[2].ConnectorSpanID)
-	openSpans := sink.OpenSpans()
-	require.Len(t, openSpans, 1)
-	require.Equal(t, "call-1", openSpans[0].SpanID)
-	closedSpans := sink.ClosedSpans()
-	require.Len(t, closedSpans, 1)
-	require.Equal(t, "call-1", closedSpans[0])
+	// wait is a flat tool span: no parent nesting, no connector.
+	require.Equal(t, "", messages[1].ParentSpanID, "wait started is flat")
+	require.Equal(t, "", messages[2].ParentSpanID, "wait completed is flat")
 }
 
-func TestHandleCodexOutput_SubagentCommandPersistsVisibleParentSpan(t *testing.T) {
+func TestHandleCodexOutput_SubagentCommandRoutesToChildTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -644,22 +637,32 @@ func TestHandleCodexOutput_SubagentCommandPersistsVisibleParentSpan(t *testing.T
 	handleCodexOutput(agent, parseLine([]byte(cmdStarted)))
 	handleCodexOutput(agent, parseLine([]byte(cmdCompleted)))
 
-	messages := sink.Messages()
-	require.Len(t, messages, 3)
-	require.Equal(t, "call-1", messages[1].ParentSpanID)
-	require.Equal(t, "call-1", messages[2].ParentSpanID)
+	// The parent transcript keeps only the spawn row; the child's command
+	// routed to the child transcript.
+	parentMessages := sink.Messages()
+	require.Len(t, parentMessages, 1, "parent keeps only the spawn row")
+
+	child := sink.ChildSink("child-of-call-1").(*testSink)
+	childMessages := child.Messages()
+	require.Len(t, childMessages, 2, "child got started + completed")
 }
 
-func TestHandleCodexOutput_SpawnAgentCompletedDoesNotCloseSubagentSpan(t *testing.T) {
+func TestHandleCodexOutput_SpawnAgentCompletedClosesSpawnSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
+	// Start the spawn span first.
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	handleCodexOutput(agent, parseLine([]byte(started)))
 
-	require.Equal(t, 0, sink.ClosedSpanCount())
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+
+	// The spawn span CLOSES at spawn completion (children route to their own
+	// transcripts; they no longer nest under it).
+	require.Contains(t, sink.ClosedSpans(), "call-1")
 }
 
 func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *testing.T) {
@@ -676,14 +679,12 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	handleCodexOutput(agent, parseLine([]byte(completed)))
 	handleCodexOutput(agent, parseLine([]byte(cmdStarted)))
 
-	openSpans := sink.OpenSpans()
-	require.Len(t, openSpans, 2)
-	require.Equal(t, "call-1", openSpans[0].SpanID)
-	require.Equal(t, "cmd-1", openSpans[1].SpanID)
-	require.Equal(t, "call-1", openSpans[1].ParentSpanID)
-	messages := sink.Messages()
-	require.Len(t, messages, 3)
-	require.Equal(t, "call-1", messages[2].ParentSpanID)
+	// The child's command routed to the child transcript (late receiver
+	// registration at spawn completion made the child index resolve).
+	parentMessages := sink.Messages()
+	require.Len(t, parentMessages, 2, "parent keeps spawn started + completed")
+	child := sink.ChildSink("child-of-call-1").(*testSink)
+	require.Len(t, child.Messages(), 1, "child got the command")
 }
 
 func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T) {
@@ -692,22 +693,33 @@ func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T)
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
 
-	require.Empty(t, sink.ClosedSpans())
+	// wait is a flat tool span that CLOSES at completion (like every other collab
+	// tool). The old code gated CloseSpan behind `collab.Tool == "spawnAgent"`,
+	// leaving wait/sendInput/resumeAgent/closeAgent spans open until turn reset.
+	require.Contains(t, sink.ClosedSpans(), "call-2", "wait span closes at completion")
 }
 
-func TestHandleCodexOutput_WaitCompletedDoesNotCloseNonTerminalOrMissingStatuses(t *testing.T) {
+func TestHandleCodexOutput_WaitCompletedDoesNotAffectSpawnSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
+	// A wait completion with a non-terminal agent state must close the WAIT
+	// tool span (its own lifecycle) but must NOT touch a spawn span. There is no
+	// spawn here, so ClosedSpans contains only the wait span.
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	require.Empty(t, sink.ClosedSpans())
+	// The wait span closes at completion (its own lifecycle).
+	require.Contains(t, sink.ClosedSpans(), "call-2")
+	// No spawn span exists, so nothing else is closed.
+	require.NotContains(t, sink.ClosedSpans(), "call-1")
 }
 
 func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
@@ -716,10 +728,12 @@ func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"shutdown","message":null}}}}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"shutdown","message":null}}}}}`
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
 
-	require.Empty(t, sink.ClosedSpans())
+	require.Contains(t, sink.ClosedSpans(), "call-3", "closeAgent span closes at completion")
 }
 
 func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T) {
@@ -728,13 +742,17 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"},"child-2":{"status":"running","message":null},"child-3":{"status":"notFound","message":null}}}}}`
-	handleCodexOutput(agent, parseLine([]byte(input)))
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"},"child-2":{"status":"running","message":null},"child-3":{"status":"notFound","message":null}}}}}`
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
 
-	require.Empty(t, sink.ClosedSpans())
+	// The collab span closes at completion regardless of which receivers are
+	// terminal -- the span lifecycle is about the tool_call, not the children.
+	require.Contains(t, sink.ClosedSpans(), "call-4", "wait span closes at completion")
 }
 
-func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFinishes(t *testing.T) {
+func TestHandleCodexOutput_WaitIsFlatNoDrain(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -747,13 +765,13 @@ func TestHandleCodexOutput_WaitCompletedClosesParentSpawnOnlyAfterLastReceiverFi
 	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
 	handleCodexOutput(agent, parseLine([]byte(waitCompletedFirst)))
 
-	require.Empty(t, sink.ClosedSpans())
+	// No drain: the spawn span is unaffected by wait completion.
+	require.NotContains(t, sink.ClosedSpans(), "call-1")
 
 	handleCodexOutput(agent, parseLine([]byte(waitCompletedSecond)))
 
-	closedSpans := sink.ClosedSpans()
-	require.Len(t, closedSpans, 1)
-	require.Equal(t, "call-1", closedSpans[0])
+	// Still no drain -- wait is a flat tool span, not a spawn-span closer.
+	require.NotContains(t, sink.ClosedSpans(), "call-1")
 }
 
 func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
@@ -1077,6 +1095,37 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 	require.Equal(t, 0, sink.MessageCount())
 	require.Equal(t, 0, sink.ResetSpanCount())
 	require.Equal(t, 0, sink.SessionInfoCount())
+}
+
+// TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd verifies a
+// registered child thread's turn/completed persists a turn-end divider into the
+// CHILD transcript (mirrors the main-thread PersistTurnEnd), rather than being
+// a silent no-op. The child must be registered first via a spawnAgent
+// item/started so routeChildItemIfApplicable can resolve the child agent id.
+func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+	agent.threadID = "main-thread"
+
+	// Register child-1 -> call-1 in the child index (spawnAgent item/started).
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
+
+	childTurnCompleted := `{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
+	handleCodexOutput(agent, parseLine([]byte(childTurnCompleted)))
+
+	// The turn-end divider lands in the CHILD transcript, not the parent's.
+	child := sink.ChildSink("child-of-call-1").(*testSink)
+	turnEnds := 0
+	for _, m := range child.Messages() {
+		if m.TurnEnd {
+			turnEnds++
+		}
+	}
+	assert.Equal(t, 1, turnEnds,
+		"child turn/completed must persist a turn-end divider into the child transcript")
 }
 
 func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *testing.T) {

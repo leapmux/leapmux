@@ -8,6 +8,7 @@ import { DoubleListSchema } from '~/generated/leapmux/v1/user_crdt_pb'
 import {
   CrdtOpSchema,
   OpBatchSchema,
+  ReviveTabOpSchema,
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
@@ -73,6 +74,10 @@ export function opTarget(op: CrdtOp): OpTarget {
       return { case: 'entity', kind: 'tab', id: body.value.tabId }
     case 'tombstoneTab':
       return { case: 'entity', kind: 'tab', id: body.value.tabId }
+    case 'reviveTab':
+      // ReviveTabOp clears a tab tombstone so a closed subagent tab can re-open.
+      // Targets the same tab entity as its tombstone/set siblings.
+      return { case: 'entity', kind: 'tab', id: body.value.tab?.tabId ?? '' }
     case 'setFloatingWindowRegister':
       return { case: 'entity', kind: 'fw', id: body.value.windowId }
     case 'tombstoneFloatingWindow':
@@ -211,6 +216,20 @@ export function tombstoneTab(ctx: OpBuilderCtx, tabType: TabType, tabId: string)
   return buildOp(ctx, {
     case: 'tombstoneTab',
     value: create(TombstoneTabOpSchema, { tabType, tabId }),
+  })
+}
+
+/**
+ * Build a ReviveTabOp, which clears a tab tombstone so a closed subagent tab
+ * can re-open. The revive is an LWW register write on the tombstone register:
+ * it clears tombstoneAt only when its HLC is strictly newer. A revived tab
+ * must be re-completed by the SAME batch (revive + setTabTileId +
+ * setTabPosition + setTabWorkerId together) -- see emitReviveTab.
+ */
+export function reviveTab(ctx: OpBuilderCtx, tabType: TabType, tabId: string): CrdtOp {
+  return buildOp(ctx, {
+    case: 'reviveTab',
+    value: create(ReviveTabOpSchema, { tab: { tabType, tabId } }),
   })
 }
 

@@ -102,6 +102,15 @@ export interface AgentTab extends BaseTab {
   startupError?: string
   /** Phase label carried while AgentStatus.STARTING (e.g. "Starting Claude…"). */
   startupMessage?: string
+  /**
+   * Subagent linkage. parentAgentId is set only for virtual child agents
+   * (subagent transcripts fed by the parent provider's process). A child tab
+   * never owns a process; close is tab-only and the registry resolves through
+   * the root.
+   */
+  parentAgentId?: string
+  /** Whether this agent accepts a message sent directly to it (composer gate). */
+  acceptsMessages?: boolean
 }
 
 /** TERMINAL tab. Worker-driven PTY + screen snapshot. */

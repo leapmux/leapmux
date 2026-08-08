@@ -6,6 +6,7 @@ import {
   ctxFromBridge,
   getCRDTBridge,
   newBatch,
+  reviveTab,
   setTabPosition,
   setTabTileId,
   setTabWorkerId,
@@ -70,6 +71,29 @@ export function emitAddTab(tab: {
 
 export function emitRemoveTab(type: TabType, id: string): string | null {
   return emitOps(ctx => [tombstoneTab(ctx, type, id)])
+}
+
+/**
+ * Re-open a previously-closed (tombstoned) tab: revive + re-placement in ONE
+ * batch. The revive clears the tombstone; the companion Set ops re-complete the
+ * record (tile/position/worker) so the batch passes the completeness check. A
+ * revived tab is always on the parent's worker (children never own a process).
+ */
+export function emitReviveTab(tab: {
+  type: TabType
+  id: string
+  tileId: string
+  position: string
+  workerId: string
+}): string | null {
+  return emitOps((ctx) => {
+    return [
+      reviveTab(ctx, tab.type, tab.id),
+      setTabTileId(ctx, tab.type, tab.id, tab.tileId),
+      setTabPosition(ctx, tab.type, tab.id, tab.position),
+      setTabWorkerId(ctx, tab.type, tab.id, tab.workerId),
+    ]
+  })
 }
 
 export function emitSetTabPosition(type: TabType, id: string, position: string): string | null {

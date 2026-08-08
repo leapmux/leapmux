@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -643,4 +644,144 @@ func TestWatchEvents_PromoteAfterCancelSkipsReplay(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, 0, countCatchUpCompletes(w),
 		"a promote racing a cancel must not ship a catch-up replay")
+}
+
+// TestReplayIncludesBackgroundTasksSnapshot pins the background-task leg of
+// replayAgentCatchUp: a tab that watches an agent in FULL mode must receive an
+// AgentBackgroundTasksChanged event carrying the registry snapshot for the
+// agent's root owner. The registry is keyed by root owner id (a child tab ships
+// its root's registry under the root id), so the replay's AgentId is the root
+// even when a child is watched -- but here a root is watched directly, so the
+// event's AgentId equals the watched root.
+func TestReplayIncludesBackgroundTasksSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+
+	// Seed two background-task rows on the root via the OutputHandler's upsert
+	// path -- the same path providers use at runtime.
+	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-a", Kind: bgtask.KindSubagent, Title: "alpha", Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "task-b", Kind: bgtask.KindShell, Title: "beta", Status: bgtask.StatusPending,
+	}))
+
+	// Watch the root in FULL mode: this triggers replayAgentCatchUp, which must
+	// emit a BackgroundTasksChanged event alongside the message/todo/status legs.
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "root-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+	}, w)
+
+	// The replay must converge.
+	require.Eventually(t, func() bool {
+		return countCatchUpCompletes(w) == 1
+	}, time.Second, 10*time.Millisecond, "FULL watch must drive exactly one catch-up replay")
+	assert.False(t, streamEndedWithError(w), "watch replay must not surface a stream error")
+
+	// Find the BackgroundTasksChanged event in the replay burst and assert it
+	// carries the seeded snapshot under the root's id.
+	var bgEvent *leapmuxv1.AgentBackgroundTasksChanged
+	for _, e := range decodeAgentEvents(w) {
+		if changed := e.GetBackgroundTasksChanged(); changed != nil {
+			bgEvent = changed
+			break
+		}
+	}
+	require.NotNil(t, bgEvent, "replay must include an AgentBackgroundTasksChanged event")
+	assert.Equal(t, "root-1", bgEvent.GetAgentId(),
+		"snapshot event must be keyed by the watched root's id")
+
+	keys := make(map[string]*leapmuxv1.BackgroundTaskItem, len(bgEvent.GetTasks()))
+	for _, tk := range bgEvent.GetTasks() {
+		keys[tk.GetId()] = tk
+	}
+	require.Contains(t, keys, "task-a")
+	assert.Equal(t, "alpha", keys["task-a"].GetTitle())
+	require.Contains(t, keys, "task-b")
+	assert.Equal(t, "beta", keys["task-b"].GetTitle())
+}
+
+// TestWatchChildAgentReplaysWithoutProcess pins that watching a CHILD agent
+// (parent_agent_id set) replays its messages WITHOUT requiring a process.
+// Children are tabless virtual transcripts fed by their root's process, so they
+// never own one; the catch-up must succeed (no "agent not running" stream error)
+// and must not attempt to start/resume a process for the child. The child's
+// status is derived from agentProcessRunning, which resolves the root -- here
+// the root is NOT running, so the child replays as INACTIVE and that is the
+// expected, non-error outcome.
+func TestWatchChildAgentReplaysWithoutProcess(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+
+	// Root + child, linked via the OutputHandler's EnsureChildAgent (the same
+	// path providers use). The child row carries parent_agent_id = root-1.
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-2",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	rootSink := svc.Output.NewSink("root-2", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	childID, err := rootSink.EnsureChildAgent("spawn-span-watch", "row-key-watch", "child task")
+	require.NoError(t, err)
+	require.NotEmpty(t, childID)
+	// The root is NOT registered with the agent manager, so agentProcessRunning
+	// resolves to false for both root and child. This is the condition under
+	// which a non-child watch previously had to guard against "agent not
+	// running"; a child must never hit that path.
+
+	// Seed one message into the child transcript so the replay has something to
+	// ship and we can confirm the replay actually ran (not just an empty
+	// catch-up).
+	_, err = createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID:            "child-msg-1",
+		AgentID:       childID,
+		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:       []byte("hello from child"),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	})
+	require.NoError(t, err)
+
+	// Watch the CHILD in FULL mode. The replay must succeed without a process.
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: childID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+	}, w)
+
+	// The child's catch-up must converge and must NOT surface a stream error --
+	// the invariant: watching a child does not error on "agent not running" and
+	// does not attempt to start/resume a process for the child.
+	require.Eventually(t, func() bool {
+		return countCatchUpCompletes(w) == 1
+	}, time.Second, 10*time.Millisecond, "child FULL watch must drive exactly one catch-up replay")
+	assert.False(t, streamEndedWithError(w),
+		"watching a child must not surface a stream error (children have no process)")
+
+	// The replayed message reached the watcher, proving the replay ran for the
+	// child transcript rather than short-circuiting on a missing process.
+	var sawChildMessage bool
+	for _, e := range decodeAgentEvents(w) {
+		if am := e.GetAgentMessage(); am != nil && am.GetId() == "child-msg-1" {
+			sawChildMessage = true
+			break
+		}
+	}
+	assert.True(t, sawChildMessage, "child replay must ship the child transcript's messages")
+
+	// And no process was registered for the child -- the precondition that
+	// "watching a child does not attempt to start/resume a process" holds.
+	assert.False(t, svc.Agents.HasAgent(childID),
+		"a child watch must not register a process for the child")
+	assert.False(t, svc.Agents.HasAgent("root-2"),
+		"a child watch must not register a process for the root either")
 }

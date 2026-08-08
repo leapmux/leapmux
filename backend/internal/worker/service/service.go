@@ -539,7 +539,28 @@ func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent,
 // runtime state (HasAgent/HasTerminal), not from the DB, so there is no
 // stale row to clear at startup.
 func (svc *Service) RestoreState() {
+	// Before anything else, mark every still-active background-task row
+	// 'interrupted': the previous worker process was cut off (crash/restart),
+	// so a row left 'pending'/'running' is genuinely not making progress. Pure
+	// DB -- caches do not exist yet at boot. Logs the affected-row count so a
+	// surprising number surfaces.
+	if n, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx()); err != nil {
+		slog.Warn("mark active background tasks interrupted failed", "error", err)
+	} else if n > 0 {
+		slog.Info("marked background tasks interrupted on boot", "count", n)
+	}
 	svc.Output.restoreAutoContinueSchedules()
+}
+
+// HandleAgentProcessExit is the ExitHandler body: it clears the exited
+// process's pending control requests (so request_ids bound to it don't reappear
+// stale on resume) and terminalizes its background-task registry (stopped on an
+// explicit Stop, interrupted on a crash). It fires for every exit including a
+// relaunch's old-process stop; stopAndWait serializes this hook before a new
+// process registers, so fresh spawns can never be clobbered.
+func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopped bool) {
+	svc.Output.ClearPendingControlRequests(agentID)
+	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
 }
 
 // Shutdown persists in-memory terminal state to the database so it
@@ -552,6 +573,11 @@ func (svc *Service) Shutdown() {
 	// set that can no longer grow. See the field's comment for what got in
 	// otherwise.
 	svc.shuttingDown.Store(true)
+	// Set the Output-level shutdown latch too: a shutdown-driven StopAll below
+	// must leave background-task rows ACTIVE so the NEXT boot's RestoreState
+	// sweep labels them 'interrupted' (a truthful "worker restart" label)
+	// rather than MarkAgentBackgroundTasksExited stamping them 'stopped'.
+	svc.Output.SetShuttingDown()
 
 	// The user-visible goodbye goes FIRST, before anything that can block.
 	//
@@ -1230,6 +1256,12 @@ func (svc *Service) refuseIfShuttingDown(sender channel.ResponseWriter) bool {
 // still starting up).
 func sendFailedPrecondition(sender channel.ResponseWriter, msg string) {
 	_ = sender.SendError(int32(codes.FailedPrecondition), msg)
+}
+
+// sendUnavailable signals a transient failure (the caller should retry). The
+// frontend's STARTING-state queue re-queues messages that receive this code.
+func sendUnavailable(sender channel.ResponseWriter, msg string) {
+	_ = sender.SendError(int32(codes.Unavailable), msg)
 }
 
 // sendValidationError routes a validation failure to the most accurate

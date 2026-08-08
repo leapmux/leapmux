@@ -1,7 +1,7 @@
 import type { MessageCategory } from '../../messageClassification'
 import type { ClassificationContext, ClassificationInput } from '../registry'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { isObject } from '~/lib/jsonPick'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { ACP_SESSION_UPDATE } from '~/types/toolMessages'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { isNotificationThreadWrapper, isTerminalCompactingStatus } from '../../messageUtils'
@@ -76,6 +76,42 @@ export interface ACPClassifyConfig {
 }
 
 /**
+ * Detect a Goose subagent tool-request update by its two-level-nested _meta
+ * shape: `_meta.toolNotification.type === "message"` and the discriminator
+ * `params.data.type === "subagent_tool_request"`. Goose only ever ships tool
+ * REQUESTS over ACP (never results); each carries the subagent_id and the
+ * requested tool_call name. Shape-based and provider-neutral: only Goose emits
+ * this meta, so the discriminator is unambiguous even though it lives in the
+ * shared classifier. See `gooseSubagentFromToolCallUpdate` in
+ * `backend/internal/worker/agent/goose.go` for the backend twin.
+ */
+export function isGooseSubagentToolRequest(parent: Record<string, unknown>): boolean {
+  const meta = pickObject(parent, '_meta')
+  if (!meta)
+    return false
+  const toolNotification = pickObject(meta, 'toolNotification')
+  if (!toolNotification || toolNotification.type !== 'message')
+    return false
+  const params = pickObject(toolNotification, 'params')
+  if (!params)
+    return false
+  const data = pickObject(params, 'data')
+  return data?.type === 'subagent_tool_request'
+}
+
+/**
+ * Extract the requested tool name from a Goose subagent tool-request update
+ * (the `_meta.toolNotification.params.data.tool_call.name` path). Returns the
+ * empty string when the shape is absent.
+ */
+export function gooseSubagentToolRequestName(parent: Record<string, unknown>): string {
+  const meta = pickObject(parent, '_meta')
+  const data = pickObject(pickObject(pickObject(meta, 'toolNotification'), 'params'), 'data')
+  const toolCall = pickObject(data, 'tool_call')
+  return toolCall ? pickString(toolCall, 'name') : ''
+}
+
+/**
  * Shared `extractQuotableText` for ACP-based providers (OpenCode, Cursor,
  * Kilo, Goose, Copilot, Reasonix). Reads `parent.content.text` for
  * agent_message_chunk / agent_thought_chunk shapes (via `extractAgentText`)
@@ -146,6 +182,15 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
       return { kind: 'tool_use', toolName: (parent.kind as string) || ACP_SESSION_UPDATE.TOOL_CALL, toolUse: parent, content: [] }
 
     if (sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL_UPDATE) {
+      // Goose surfaces subagent tool REQUESTS (never results) over ACP via a
+      // two-level-nested _meta payload (toolNotification.params.data.type ===
+      // "subagent_tool_request"). These carry no text content, so without this
+      // arm they would fall through to the `hidden` in_progress branch below
+      // and never render. Detect the shape here so the shared renderer can draw
+      // a compact "Requested tool: <name>" card in the child transcript.
+      if (isGooseSubagentToolRequest(parent)) {
+        return { kind: 'tool_use', toolName: 'subagent_tool_request', toolUse: parent, content: [] }
+      }
       const status = parent.status as string | undefined
       if (status === 'completed' || status === 'failed' || status === 'cancelled')
         return { kind: 'tool_use', toolName: (parent.kind as string) || ACP_SESSION_UPDATE.TOOL_CALL_UPDATE, toolUse: parent, content: [] }

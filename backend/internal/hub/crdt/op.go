@@ -312,6 +312,14 @@ func OpTarget(op *leapmuxv1.CrdtOp) EntityRef {
 			TabType: body.TombstoneTab.GetTabType(),
 			TabID:   body.TombstoneTab.GetTabId(),
 		}
+	case *leapmuxv1.CrdtOp_ReviveTab:
+		// ReviveTabOp clears a tab tombstone so a closed subagent tab can re-open.
+		// The TabType/TabID live on the nested TabRef.
+		return EntityRef{
+			Kind:    EntityKindTab,
+			TabType: body.ReviveTab.GetTab().GetTabType(),
+			TabID:   body.ReviveTab.GetTab().GetTabId(),
+		}
 	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 		return EntityRef{Kind: EntityKindFloatingWindow, WindowID: body.SetFloatingWindowRegister.GetWindowId()}
 	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:

@@ -387,6 +387,13 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 			return
 		}
 
+		// Task/Workflow events drive the background-task registry (and, for
+		// Task subagents, the child transcript via --forward-subagent-text).
+		// They are consumed here and never persist into the parent transcript.
+		if a.claudeHandleTaskEvent(content) {
+			return
+		}
+
 		a.claudeCodeHandleSystemInit(content)
 
 		if isNotificationThreadable(content, source) {
@@ -414,6 +421,17 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 	var env messageEnvelope
 	if err := json.Unmarshal(content, &env); err != nil {
 		slog.Warn("invalid message envelope", "agent_id", a.agentID, "error", err)
+		return
+	}
+
+	// Route subagent output (forwarded via --forward-subagent-text) into the
+	// child's OWN transcript. Every forwarded envelope -- assistant text,
+	// thinking, the child's own tool_use, its tool_result, and the child's
+	// result -- carries the SAME parent_tool_use_id (the parent's Task
+	// tool_use). None of it persists into the parent transcript.
+	if env.ParentToolUseID != "" && (msgType == claudeMsgTypeAssistant ||
+		msgType == claudeMsgTypeUser || msgType == claudeMsgTypeResult) {
+		a.routeSubagentMessage(content, msgType, &env)
 		return
 	}
 

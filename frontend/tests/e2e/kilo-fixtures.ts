@@ -10,6 +10,9 @@ const kiloConfig: ACPFixtureConfig = {
   cliBinary: 'kilo',
   skipMessage: 'Kilo E2E requires a kilo CLI on PATH',
   workspacePrefix: 'kilo-e2e',
+  // Kilo's default model is an image model that no-ops agentic turns; open the
+  // agent with an explicit text-capable model so subagent spawns actually run.
+  model: 'zai-coding-plan/glm-5.2',
 }
 
 export const KILO_E2E_SKIP_REASON = detectACPSkipReason(kiloConfig)

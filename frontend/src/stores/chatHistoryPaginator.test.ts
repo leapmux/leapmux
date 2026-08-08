@@ -104,6 +104,7 @@ function harness(init: {
     trimOldestEnd,
     trimNewestEnd,
     replaceTodos: vi.fn(),
+    replaceBackgroundTasks: vi.fn(),
     loadLocalMessages: vi.fn(),
   })
 

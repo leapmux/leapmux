@@ -132,6 +132,8 @@ func Apply(state *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp) {
 		applySetTabRegister(state, body.SetTabRegister, canon)
 	case *leapmuxv1.CrdtOp_TombstoneTab:
 		applyTombstoneTab(state, body.TombstoneTab, canon)
+	case *leapmuxv1.CrdtOp_ReviveTab:
+		applyReviveTab(state, body.ReviveTab, canon)
 	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 		applySetFloatingWindowRegister(state, body.SetFloatingWindowRegister, canon)
 	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
@@ -328,6 +330,34 @@ func applyTombstoneTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneTa
 			TabId:       id,
 			TombstoneAt: HLCClone(hlc),
 		}
+	}
+}
+
+// applyReviveTab clears a tab's tombstone so a CLOSED tab can re-open. The
+// revive is itself an LWW register write on the tombstone register: it clears
+// TombstoneAt only when its HLC is strictly newer than the tombstone. An
+// older-than-tombstone revive is a no-op (remove-wins for CONCURRENT
+// set-vs-tombstone stays). Unlike applyTombstoneTab, revive preserves the
+// record in place -- the same batch's SetTab* ops (co-scheduled after the
+// revive) repopulate the tile/worker/position registers, and the post-batch
+// completeness check demands they be present.
+func applyReviveTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.ReviveTabOp, hlc *leapmuxv1.HLC) {
+	id := op.GetTab().GetTabId()
+	if id == "" {
+		return
+	}
+	rec, ok := state.Tabs[id]
+	if !ok {
+		// A revive of a never-seen tab: materialize a live record (the same
+		// batch's Set ops complete it). tab_type comes from the op's TabRef.
+		state.Tabs[id] = &leapmuxv1.TabRecord{
+			TabType: op.GetTab().GetTabType(),
+			TabId:   id,
+		}
+		return
+	}
+	if HLCCmp(hlc, rec.GetTombstoneAt()) > 0 {
+		rec.TombstoneAt = nil
 	}
 }
 

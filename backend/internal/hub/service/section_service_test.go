@@ -94,7 +94,7 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 
 	// Should auto-create all default sections: In progress, Archived, Workers (left), Files, To-dos (right).
 	sections := resp.Msg.GetSections()
-	require.Len(t, sections, 5)
+	require.Len(t, sections, 6)
 
 	var hasInProgress, hasArchived, hasWorkers, hasFiles, hasTodos bool
 	for _, s := range sections {
@@ -184,7 +184,7 @@ func TestSectionService_CreateSection(t *testing.T) {
 	// Verify it appears in the list.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{}, env.token))
-	require.Len(t, listResp.Msg.GetSections(), 6)
+	require.Len(t, listResp.Msg.GetSections(), 7)
 }
 
 func TestSectionService_CreateSection_EmptyName(t *testing.T) {
@@ -256,10 +256,10 @@ func TestSectionService_DeleteSection(t *testing.T) {
 		&leapmuxv1.DeleteSectionRequest{SectionId: sectionID}, env.token))
 	require.NoError(t, err)
 
-	// Verify it's gone (back to 5 default sections).
+	// Verify it's gone (back to 6 default sections).
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{}, env.token))
-	require.Len(t, listResp.Msg.GetSections(), 5)
+	require.Len(t, listResp.Msg.GetSections(), 6)
 }
 
 func TestSectionService_DeleteSection_WithItems(t *testing.T) {

@@ -45,6 +45,13 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 			a.modelDecorator = decorateCursorModel
 			a.modeChannel = modeChannelPermissionMode
 			a.extraMethod = a.handleExtraMethod
+			// Subagent registry (best-effort): Cursor's Task tool surfaces a spawn
+			// tool_call with rawInput._toolName == "task" and a title "Task: <desc>".
+			// Registry-only -- Cursor exposes no child-session metadata. The observed
+			// toolCallId can contain an embedded newline; the neutral layer sanitizes
+			// the row key.
+			a.subagentFromToolCall = acpSubagentFromCursorToolCall
+			a.subagentFromToolCallUpdate = acpSubagentFromCursorToolCallUpdate
 		},
 		afterHandshake: func(a *CursorCLIAgent, handshake *acpSessionResult, opts Options) error {
 			return a.applyPermissionModeStartup(handshake, opts, CursorCLIModeAgent, normalizeCursorModelID(opts.Model()))

@@ -96,3 +96,21 @@ export function rawTodosToItems(raw: unknown): TodoItem[] {
     activeForm: String(t.activeForm || ''),
   }))
 }
+
+/**
+ * Count the non-deleted todos and the completed ones, returning `{done, total}`
+ * for the rail badge / ThinkingIndicator todos chip. Deleted todos are excluded
+ * from both counts (a deleted row is not work-done and must not inflate total).
+ */
+export function todoProgress(todos: TodoItem[]): { done: number, total: number } {
+  let done = 0
+  let total = 0
+  for (const t of todos) {
+    if (t.status === 'deleted')
+      continue
+    total++
+    if (t.status === 'completed')
+      done++
+  }
+  return { done, total }
+}

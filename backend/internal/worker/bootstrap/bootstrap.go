@@ -173,8 +173,8 @@ func Wire(p Params) *Wiring {
 	// two settings-change notifications bracketing a model/effort switch
 	// stay in one thread and consolidate. Permanent teardown does the full
 	// cleanup via its own ClearAgentRuntimeState call.
-	p.Client.AgentManager().SetOnExit(func(agentID string, _ int, _ error) {
-		svc.Output.ClearPendingControlRequests(agentID)
+	p.Client.AgentManager().SetOnExit(func(agentID string, exitCode int, err error, stopped bool) {
+		svc.HandleAgentProcessExit(agentID, exitCode, err, stopped)
 	})
 
 	dispatcher := channel.NewDispatcher()

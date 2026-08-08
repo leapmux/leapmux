@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -111,6 +112,16 @@ type acpBase struct {
 	sink               OutputSink
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
+	// subagentFromToolCall / subagentFromToolCallUpdate are optional
+	// provider-specific hooks that translate a tool_call / tool_call_update
+	// into a neutral acpSubagentObservation driving the background-task
+	// registry (and, for Goose, a best-effort tool-request transcript). nil
+	// for providers that surface no subagent activity over ACP (Cursor,
+	// Copilot) -- the plumbing is inert. Membership is decided per provider in
+	// its configure (the registration site), keeping provider-specific
+	// names/shapes out of this shared file.
+	subagentFromToolCall       func(tc acpToolCallEnvelope) *acpSubagentObservation
+	subagentFromToolCallUpdate func(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation
 	// modelIDNormalizer, when set, rewrites model ids parsed from configOptions
 	// (e.g. Cursor's auto<->default[] aliasing) before they reach availableModels.
 	modelIDNormalizer func(string) string
@@ -959,6 +970,10 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 // acpStandardInitParams marshals the standard ACP "initialize" params shared by
 // OpenCode, Kilo, Copilot, Goose, and Cursor: protocol version 1, the LeapMux
 // clientInfo, and empty capabilities.
+//
+// LeapMux does not advertise the ACP `terminal` capability, so Goose/Reasonix
+// run shells agent-side and no background-shell rows exist for them. See
+// https://github.com/leapmux/leapmux/issues/370.
 func acpStandardInitParams() (json.RawMessage, error) {
 	params, err := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
@@ -1371,13 +1386,87 @@ func unwrapACPResult(resp json.RawMessage) json.RawMessage {
 	return wrapper.Content
 }
 
+// acpToolCallEnvelope is the parsed shape of an ACP session/notification
+// tool_call. Title/RawInput/RawOutput/Meta are carried here (previously
+// dropped) so provider-specific hooks can detect a subagent spawn by input
+// SHAPE rather than tool-name guessing.
+type acpToolCallEnvelope struct {
+	ToolCallID string          `json:"toolCallId"`
+	Title      string          `json:"title"`
+	Kind       string          `json:"kind"`
+	Status     string          `json:"status"`
+	RawInput   json.RawMessage `json:"rawInput"`
+	RawOutput  json.RawMessage `json:"rawOutput"`
+	Meta       json.RawMessage `json:"_meta"`
+}
+
+// acpToolCallUpdateEnvelope is the parsed shape of an ACP session/notification
+// tool_call_update. Meta carries provider-specific payloads like Goose's
+// tool-request notifications.
+type acpToolCallUpdateEnvelope struct {
+	ToolCallID string             `json:"toolCallId"`
+	Status     string             `json:"status"`
+	Content    []acpToolCallBlock `json:"content"`
+	RawInput   json.RawMessage    `json:"rawInput"`
+	RawOutput  json.RawMessage    `json:"rawOutput"`
+	Title      string             `json:"title"`
+	Meta       json.RawMessage    `json:"_meta"`
+}
+
+// acpObservationMode controls how applySubagentObservation translates an
+// observation into registry sink calls.
+type acpObservationMode int
+
+const (
+	// acpModeUpsert (the default) upserts the registry row, optionally persists
+	// a child transcript payload, then closes if CloseRow is set. Used by every
+	// detector that carries descriptive fields (spawn, tool-request, progress).
+	acpModeUpsert acpObservationMode = iota
+	// acpModeCloseOnly skips the upsert and closes an existing row without first
+	// creating one. Used by terminal-update detectors that fire for EVERY
+	// tool_call (Goose, Cursor), so a plain tool's terminal update does not
+	// create a spurious subagent row.
+	acpModeCloseOnly
+)
+
+// acpSubagentObservation is the neutral struct a provider-specific hook
+// produces: registry upsert data (kind/rowKey/title/activity/status/group), an
+// optional terminal close, and an optional child-transcript payload (childKey +
+// raw bytes to persist). Shared code translates observations into sink calls,
+// so provider-specific names/shapes stay out of this file.
+type acpSubagentObservation struct {
+	// Registry fields. RowKey is the provider linkage key (toolCallId / child
+	// session id). Empty RowKey => no registry write.
+	RowKey   string
+	Kind     bgtask.Kind // defaults to Subagent
+	Title    string
+	Activity string
+	Status   bgtask.Status
+	GroupKey string
+	// ChildAgentKey, when non-empty, drives EnsureChildAgent so the row links
+	// to a transcript (openable tab). Empty => registry-only.
+	ChildAgentKey string
+	// CloseRow true => terminalize the row after the upsert (Status carries
+	// the terminal status).
+	CloseRow bool
+	// Mode selects close-only vs upsert. Defaults to acpModeUpsert (zero value);
+	// set acpModeCloseOnly explicitly when the observation carries no descriptive
+	// fields and should close an existing row without creating one.
+	Mode acpObservationMode
+	// SpawnRowKey, when set on a CloseRow observation, names the key the row
+	// was OPENED under when it differs from RowKey. A provider re-keys a row
+	// across its lifecycle (OpenCode opens under the toolCallId, learns the
+	// child session id only on the terminal update, then re-keys to it). The
+	// close must terminalize BOTH keys, or the original spawn row leaks as a
+	// Running row forever (the close is an exact-key no-op against it).
+	SpawnRowKey string
+	// ChildTranscriptPayload, when non-nil, persists to the child transcript
+	// via PersistChildMessage. Goose's tool REQUESTS use this.
+	ChildTranscriptPayload []byte
+}
+
 func (b *acpBase) handleToolCall(update json.RawMessage) {
-	var tc struct {
-		ToolCallID string `json:"toolCallId"`
-		Title      string `json:"title"`
-		Kind       string `json:"kind"`
-		Status     string `json:"status"`
-	}
+	var tc acpToolCallEnvelope
 	if err := json.Unmarshal(update, &tc); err != nil {
 		slog.Warn("acp tool_call unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return
@@ -1399,6 +1488,9 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		}); err != nil {
 			slog.Error("persist terminal acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
 		}
+		if b.subagentFromToolCall != nil {
+			b.applySubagentObservation(b.subagentFromToolCall(tc))
+		}
 		return
 	}
 
@@ -1410,20 +1502,28 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 	}
 	b.sink.SetSpanType(tc.ToolCallID, spanType)
 	b.sink.OpenSpan(tc.ToolCallID, "")
+	if b.subagentFromToolCall != nil {
+		b.applySubagentObservation(b.subagentFromToolCall(tc))
+	}
 }
 
 func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
-	var tcu struct {
-		ToolCallID string             `json:"toolCallId"`
-		Status     string             `json:"status"`
-		Content    []acpToolCallBlock `json:"content"`
-	}
+	var tcu acpToolCallUpdateEnvelope
 	if err := json.Unmarshal(update, &tcu); err != nil {
 		slog.Warn("acp tool_call_update unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return
 	}
 	if tcu.ToolCallID == "" {
 		return
+	}
+
+	// Goose's tool-request meta rides content-less in_progress updates, so the
+	// subagent hook runs BEFORE the content-less early-return below. OpenCode/
+	// Kilo terminal updates close on the terminal arm below.
+	if b.subagentFromToolCallUpdate != nil {
+		if obs := b.subagentFromToolCallUpdate(tcu); obs != nil {
+			b.applySubagentObservation(obs)
+		}
 	}
 
 	switch tcu.Status {
@@ -1462,6 +1562,154 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	}
 }
 
+// applySubagentObservation translates a provider hook's neutral observation
+// into registry sink calls (and, for Goose, a best-effort child-transcript
+// persist). A nil observation is a no-op. The shared ACP terminal status map
+// lives here so every provider agrees: completed→Completed, failed→Failed,
+// cancelled→Stopped.
+//
+// A close-only observation (Mode == acpModeCloseOnly) skips the upsert: it
+// closes an existing row without first creating one. This matters for
+// Goose/Cursor, whose terminal-update hooks fire for EVERY tool_call, not just
+// spawns — the detector sets the Mode explicitly instead of relying on which
+// fields happen to be empty.
+func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
+	if obs == nil || obs.RowKey == "" || b.sink == nil {
+		return
+	}
+	if obs.Mode != acpModeCloseOnly {
+		kind := obs.Kind
+		if kind == bgtask.KindUnspecified {
+			kind = bgtask.KindSubagent
+		}
+		childAgentID := ""
+		if obs.ChildAgentKey != "" {
+			var err error
+			childAgentID, err = b.sink.EnsureChildAgent(obs.RowKey, obs.ChildAgentKey, obs.Title)
+			if err != nil {
+				slog.Warn("acp subagent ensure child failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+			}
+		}
+		if err := b.sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey:        obs.RowKey,
+			Kind:          kind,
+			ChildAgentID:  childAgentID,
+			ParentAgentID: b.agentID,
+			Title:         obs.Title,
+			ActiveForm:    obs.Activity,
+			GroupKey:      obs.GroupKey,
+			Status:        obs.Status,
+		}); err != nil {
+			slog.Warn("acp subagent upsert failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+		}
+		if obs.ChildTranscriptPayload != nil && childAgentID != "" {
+			if err := b.sink.PersistChildMessage(childAgentID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, obs.ChildTranscriptPayload, SpanInfo{}); err != nil {
+				slog.Warn("acp subagent child persist failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+			}
+		}
+	}
+	if obs.CloseRow {
+		if err := b.sink.CloseBackgroundTask(obs.RowKey, obs.Status); err != nil {
+			slog.Warn("acp subagent close failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+		}
+		// Also close the original spawn key when the provider re-keyed the row
+		// across its lifecycle. CloseBackgroundTask is an exact-key no-op when
+		// the row is absent or already terminal, so this is safe to fire even
+		// when the spawn key equals RowKey or no spawn row exists.
+		if obs.SpawnRowKey != "" && obs.SpawnRowKey != obs.RowKey {
+			if err := b.sink.CloseBackgroundTask(obs.SpawnRowKey, obs.Status); err != nil {
+				slog.Warn("acp subagent spawn-key close failed", "provider", b.providerName, "row_key", obs.SpawnRowKey, "error", err)
+			}
+		}
+	}
+}
+
+// acpTerminalStatus maps an ACP tool_call status to the registry terminal
+// status. Unknown values fall through to Stopped (treat as cancelled).
+func acpTerminalStatus(s string) bgtask.Status {
+	switch s {
+	case "completed":
+		return bgtask.StatusCompleted
+	case "failed":
+		return bgtask.StatusFailed
+	case "cancelled":
+		return bgtask.StatusStopped
+	default:
+		return bgtask.StatusStopped
+	}
+}
+
+// acpSubagentFromOpenCodeToolCall detects an OpenCode/Kilo subagent spawn by
+// the rawInput SHAPE {description, prompt, subagent_type} (shape detection, not
+// tool-name guessing). Shared by both providers since they run the same ACP
+// layer. Returns nil for a non-spawn tool call.
+func acpSubagentFromOpenCodeToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
+	var input struct {
+		Description  string          `json:"description"`
+		Prompt       json.RawMessage `json:"prompt"`
+		SubagentType string          `json:"subagent_type"`
+		// Some builds spell it with a different key; the shape still carries a
+		// prompt + a type, so detect on the union.
+		SubagentID string `json:"subagentID"`
+	}
+	if len(tc.RawInput) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(tc.RawInput, &input); err != nil {
+		return nil
+	}
+	// Spawn shape requires at least a prompt and a subagent discriminator.
+	if len(input.Prompt) == 0 || (input.SubagentType == "" && input.SubagentID == "") {
+		return nil
+	}
+	title := tc.Title
+	if title == "" {
+		title = input.Description
+	}
+	if title == "" {
+		title = input.SubagentType
+	}
+	return &acpSubagentObservation{
+		RowKey: tc.ToolCallID,
+		Title:  title,
+		Status: bgtask.StatusRunning,
+	}
+}
+
+// acpSubagentFromOpenCodeToolCallUpdate closes the registry row on a terminal
+// status, and when rawOutput.metadata.sessionId is present, re-keys the row to
+// the child session id (the metadata surfaces only on the terminal update).
+// The spawn row was opened under the toolCallId, so SpawnRowKey carries it to
+// keep the close from leaking it as a Running row.
+func acpSubagentFromOpenCodeToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
+	if tcu.Status != "completed" && tcu.Status != "failed" && tcu.Status != "cancelled" {
+		return nil
+	}
+	// The terminal rawOutput may carry the child session id under metadata.
+	rowKey := tcu.ToolCallID
+	spawnRowKey := ""
+	if len(tcu.RawOutput) > 0 {
+		var out struct {
+			Metadata struct {
+				SessionID string `json:"sessionId"`
+			} `json:"metadata"`
+		}
+		if json.Unmarshal(tcu.RawOutput, &out) == nil && out.Metadata.SessionID != "" {
+			// Re-key to the child session id for revival/linkage, but remember
+			// the original spawn key so its row is also terminalized.
+			rowKey = out.Metadata.SessionID
+			spawnRowKey = tcu.ToolCallID
+		}
+	}
+	return &acpSubagentObservation{
+		RowKey:      rowKey,
+		SpawnRowKey: spawnRowKey,
+		Status:      acpTerminalStatus(tcu.Status),
+		CloseRow:    true,
+		Mode:        acpModeCloseOnly,
+	}
+}
+
 // acpToolCallBlock is the {type, content:{type,text}} shape ACP servers ship
 // for tool_call_update.content[]. The outer type is typically "content" and
 // the inner content carries the renderable payload.
@@ -1471,6 +1719,99 @@ type acpToolCallBlock struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+}
+
+// acpSubagentFromReasonixToolCall detects Reasonix's spawn tool_call. Reasonix
+// sends a single tool_call (kind "other", title "task") whose rawInput carries
+// {description, prompt} with NO subagent_type discriminator, so it cannot reuse
+// the OpenCode shape detector. Registry-only: Reasonix withholds ToolProgress
+// from ACP by design, and no child-session content crosses the wire.
+func acpSubagentFromReasonixToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
+	if len(tc.RawInput) == 0 {
+		return nil
+	}
+	var input struct {
+		Description string          `json:"description"`
+		Prompt      json.RawMessage `json:"prompt"`
+	}
+	if err := json.Unmarshal(tc.RawInput, &input); err != nil {
+		return nil
+	}
+	// Spawn shape = a prompt (optionally a description). No subagent_type.
+	if len(input.Prompt) == 0 && input.Description == "" {
+		return nil
+	}
+	title := tc.Title
+	if title == "" || title == "task" {
+		title = input.Description
+	}
+	if title == "" {
+		title = "Reasonix subagent"
+	}
+	return &acpSubagentObservation{
+		RowKey: tc.ToolCallID,
+		Title:  title,
+		Status: bgtask.StatusRunning,
+	}
+}
+
+// acpSubagentFromCursorToolCall detects Cursor's Task delegation tool_call
+// (rawInput._toolName == "task", title "Task: <description>"). The observed
+// toolCallId can contain an embedded newline; the neutral layer sanitizes row
+// keys before use, so no fixup is needed here. Registry-only: Cursor surfaces
+// no metadata/child linkage.
+func acpSubagentFromCursorToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
+	if len(tc.RawInput) == 0 {
+		return nil
+	}
+	var input struct {
+		ToolName string `json:"_toolName"`
+	}
+	if err := json.Unmarshal(tc.RawInput, &input); err != nil || input.ToolName != "task" {
+		return nil
+	}
+	title := strings.TrimPrefix(tc.Title, "Task: ")
+	if title == "" {
+		title = "Cursor subagent"
+	}
+	return &acpSubagentObservation{
+		RowKey: tc.ToolCallID,
+		Title:  title,
+		Status: bgtask.StatusRunning,
+	}
+}
+
+// acpSubagentFromCursorToolCallUpdate maps Cursor's task tool_call status
+// transitions to terminal registry rows. The terminal update fires for EVERY
+// terminal tool_call (not just spawns); a plain tool (isBackground absent) is
+// a close-only observation so it does not create a spurious row. A background
+// task carries an activity line and upserts before closing.
+func acpSubagentFromCursorToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
+	switch tcu.Status {
+	case "completed", "failed", "cancelled":
+	default:
+		return nil
+	}
+	activity := ""
+	if len(tcu.RawOutput) > 0 {
+		var out struct {
+			IsBackground bool `json:"isBackground"`
+		}
+		if json.Unmarshal(tcu.RawOutput, &out) == nil && out.IsBackground {
+			activity = "background task"
+		}
+	}
+	mode := acpModeCloseOnly
+	if activity != "" {
+		mode = acpModeUpsert
+	}
+	return &acpSubagentObservation{
+		RowKey:   tcu.ToolCallID,
+		Activity: activity,
+		Status:   acpTerminalStatus(tcu.Status),
+		CloseRow: true,
+		Mode:     mode,
+	}
 }
 
 // acpToolCallText concatenates the text from all `{type:"content"}` blocks

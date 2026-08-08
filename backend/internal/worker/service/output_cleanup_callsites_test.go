@@ -141,7 +141,7 @@ func TestSubprocessCrash_DropsPendingControlRequests(t *testing.T) {
 	// Mirror runner.go's wiring: every subprocess exit drops pending control
 	// requests against svc.Output (without the in-memory tracker cleanup).
 	cleared := make(chan string, 1)
-	svc.Agents.SetOnExit(func(agentID string, _ int, _ error) {
+	svc.Agents.SetOnExit(func(agentID string, _ int, _ error, _ bool) {
 		svc.Output.ClearPendingControlRequests(agentID)
 		cleared <- agentID
 	})

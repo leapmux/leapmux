@@ -1,4 +1,6 @@
 /// <reference types="vitest/globals" />
+import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
+import type { TodoItem } from '~/stores/chatTodos'
 import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
@@ -130,5 +132,61 @@ describe('thinking indicator token count', () => {
       globalThis.requestAnimationFrame = realRaf
       vi.useRealTimers()
     }
+  })
+})
+
+describe('thinking indicator chips', () => {
+  const realRaf = globalThis.requestAnimationFrame
+
+  function renderChips(props: {
+    backgroundTaskCount?: number
+    backgroundTasks?: BackgroundTaskItem[]
+    todos?: TodoItem[]
+  }) {
+    globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
+    try {
+      return render(() => (
+        <ThinkingIndicator visible={true} paused={true} {...props} />
+      ))
+    }
+    finally {
+      globalThis.requestAnimationFrame = realRaf
+    }
+  }
+
+  it('renders the bg-tasks chip when backgroundTaskCount > 0', () => {
+    const { getByTestId, queryByTestId } = renderChips({ backgroundTaskCount: 2 })
+    expect(getByTestId('thinking-bg-tasks-chip')).toBeInTheDocument()
+    expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('2')
+    expect(queryByTestId('bg-tasks-popover')).toBeInTheDocument()
+  })
+
+  it('hides the bg-tasks chip when count is zero', () => {
+    const { queryByTestId } = renderChips({ backgroundTaskCount: 0 })
+    expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
+  })
+
+  it('renders the todos chip with done/total when todos are present', () => {
+    const todos: TodoItem[] = [
+      { content: 'a', status: 'completed', activeForm: '' },
+      { content: 'b', status: 'in_progress', activeForm: 'doing b' },
+      { content: 'c', status: 'pending', activeForm: '' },
+    ]
+    const { getByTestId } = renderChips({ todos })
+    expect(getByTestId('thinking-todos-chip')).toHaveTextContent('1/3')
+    expect(getByTestId('todo-list-popover')).toBeInTheDocument()
+  })
+
+  it('hides the todos chip when all todos are deleted', () => {
+    const todos: TodoItem[] = [
+      { content: 'a', status: 'deleted', activeForm: '' },
+    ]
+    const { queryByTestId } = renderChips({ todos })
+    expect(queryByTestId('thinking-todos-chip')).toBeNull()
+  })
+
+  it('hides the todos chip when the list is empty', () => {
+    const { queryByTestId } = renderChips({ todos: [] })
+    expect(queryByTestId('thinking-todos-chip')).toBeNull()
   })
 })

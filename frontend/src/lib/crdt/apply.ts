@@ -67,6 +67,9 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
     case 'tombstoneTab':
       applyTombstoneTab(state, body.value.tabType, body.value.tabId, canon)
       break
+    case 'reviveTab':
+      applyReviveTab(state, body.value.tab?.tabType ?? 0, body.value.tab?.tabId ?? '', canon)
+      break
     case 'setFloatingWindowRegister':
       applySetFloatingWindowRegister(state, body.value, canon)
       break
@@ -268,6 +271,25 @@ function applyTombstoneTab(state: UserCrdtState, tabType: number, tabId: string,
       tombstoneAt: hlcClone(hlc),
     }),
   )
+}
+
+/**
+ * Mirror of the hub's applyReviveTab: clears a tab's tombstone so a closed
+ * subagent tab can re-open. LWW on the tombstone register -- only clears when
+ * the revive's HLC is strictly newer than the tombstone. Preserves the record
+ * in place (the same batch's Set ops repopulate the registers). A revive of a
+ * never-seen tab materializes a live record.
+ */
+function applyReviveTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
+  if (!tabId)
+    return
+  const existing = state.tabs[tabId]
+  if (!existing) {
+    state.tabs[tabId] = create(TabRecordSchema, { tabType, tabId })
+    return
+  }
+  if (hlcCmp(hlc, existing.tombstoneAt) > 0)
+    existing.tombstoneAt = undefined
 }
 
 type FloatingWindowFieldHandler = (rec: FloatingWindowRecord, hlc: HLC, value: unknown) => void

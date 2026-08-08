@@ -1,4 +1,4 @@
-import type { Tab } from '~/stores/tab.types'
+import type { AgentTab, Tab } from '~/stores/tab.types'
 import { describe, expect, it } from 'vitest'
 import { TabType, WatchMode, WatchRejectionReason } from '~/generated/leapmux/v1/workspace_pb'
 import {
@@ -119,6 +119,72 @@ describe('buildWatchPlans', () => {
     const activeKey = () => '1:t1'
     const plans = buildWatchPlans(tabs, 'ws-1', activeKey)
     expect(plans.get('w1')?.terminals.map(t => t.terminalId)).toEqual(['t1'])
+  })
+
+  it('adds a NOTIFY root entry for a child tab so it receives root notification events', () => {
+    // A root tab + a child tab on the same worker. The child has parentAgentId
+    // set to the root.
+    const tabs = [
+      agent({ id: 'root-1', tileId: 'tile-1' }),
+      agent({ id: 'child-1', tileId: 'tile-2', parentAgentId: 'root-1' }),
+    ]
+    const activeKey = (tileId: string) => {
+      if (tileId === 'tile-1')
+        return '1:root-1'
+      if (tileId === 'tile-2')
+        return '1:child-1'
+      return null
+    }
+    const getAgentTab = (id: string): AgentTab | undefined =>
+      tabs.find(t => t.id === id) as AgentTab | undefined
+    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0, getAgentTab)
+    const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
+    // root-1 appears twice (its own FULL + the child-driven NOTIFY). The dedup
+    // keeps it to one entry — the root's own tab already placed it.
+    expect(agentIds.filter(a => a.id === 'root-1')).toHaveLength(1)
+    expect(agentIds).toContainEqual({ id: 'child-1', mode: WatchMode.FULL })
+  })
+
+  it('adds a NOTIFY root entry when the root tab is NOT placed (child-only)', () => {
+    // Only the child is placed; the root is absent from the tab list.
+    const child = agent({ id: 'child-1', tileId: 'tile-1', parentAgentId: 'root-1' })
+    // getAgentTab resolves the child to its root even though root-1 is not in
+    // the tabs list (simulating a lookup that finds the root tab record).
+    const getAgentTab = (id: string): AgentTab | undefined => {
+      if (id === 'child-1')
+        return child as AgentTab
+      if (id === 'root-1')
+        return { ...child, id: 'root-1', parentAgentId: undefined } as AgentTab
+      return undefined
+    }
+    const plans = buildWatchPlans([child], 'ws-1', () => '1:child-1', () => 0n, () => 0, getAgentTab)
+    const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
+    // The child's own entry + a NOTIFY root entry.
+    expect(agentIds).toContainEqual({ id: 'child-1', mode: WatchMode.FULL })
+    expect(agentIds).toContainEqual({ id: 'root-1', mode: WatchMode.NOTIFY })
+  })
+
+  it('dedupes the root entry when two children share a root', () => {
+    const tabs = [
+      agent({ id: 'child-a', tileId: 'tile-1', parentAgentId: 'root-1' }),
+      agent({ id: 'child-b', tileId: 'tile-2', parentAgentId: 'root-1' }),
+    ]
+    const activeKey = (tileId: string) => {
+      if (tileId === 'tile-1')
+        return '1:child-a'
+      if (tileId === 'tile-2')
+        return '1:child-b'
+      return null
+    }
+    const getAgentTab = (id: string): AgentTab | undefined => {
+      if (id === 'root-1')
+        return { type: TabType.AGENT, id: 'root-1' } as AgentTab
+      return tabs.find(t => t.id === id) as AgentTab | undefined
+    }
+    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0, getAgentTab)
+    const rootEntries = plans.get('w1')!.agents.filter(a => a.agentId === 'root-1')
+    expect(rootEntries).toHaveLength(1)
+    expect(rootEntries[0].mode).toBe(WatchMode.NOTIFY)
   })
 })
 

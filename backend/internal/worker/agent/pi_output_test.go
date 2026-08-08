@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -796,4 +797,137 @@ func TestHandlePiOutput_TurnAndToolBoundariesResetThinkingTokens(t *testing.T) {
 			assert.Equal(t, int64(2), lastThinkingTokens(&sink.testSink), "the boundary restarts the estimate")
 		})
 	}
+}
+
+// TestHandlePiOutput_ToolUpdateDetailsUpsertsSubagentActivity verifies that a
+// tool_execution_update whose partialResult.details carries the pi-subagents
+// shape {status, activity} upserts a Running Subagent registry row keyed by
+// details.agentId (falling back to the toolCallId) with the activity as
+// ActiveForm.
+func TestHandlePiOutput_ToolUpdateDetailsUpsertsSubagentActivity(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	// A tool_execution_start records the spawn prompt as the title (read from
+	// the `input` field) so the subagent row has a label.
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"call-sub-1","toolName":"Task","input":{"description":"build the feature","prompt":"build it"}}`)))
+
+	// An update whose partialResult.details carries the subagent shape.
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_update","toolCallId":"call-sub-1","partialResult":{"content":[{"type":"text","text":"working\n"}],"details":{"status":"running","activity":"running tests","agentId":"agent-xyz"}}}`)))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1, "details shape must upsert exactly one registry row")
+	row := tasks[0]
+	assert.Equal(t, "agent-xyz", row.RowKey, "row keys by details.agentId when present")
+	assert.Equal(t, bgtask.KindSubagent, row.Kind)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, "running tests", row.ActiveForm, "ActiveForm comes from details.activity")
+	assert.Equal(t, "build the feature", row.Title, "Title comes from tool_execution_start input.description")
+}
+
+// TestHandlePiOutput_ToolUpdateDetails_FallsBackToToolCallID verifies that when
+// details has the subagent shape but no agentId, the row is keyed by toolCallId.
+func TestHandlePiOutput_ToolUpdateDetails_FallsBackToToolCallID(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"call-no-id","toolName":"Task","input":{"description":"work"}}`)))
+
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_update","toolCallId":"call-no-id","partialResult":{"content":[{"type":"text","text":"x\n"}],"details":{"status":"running","activity":"thinking"}}}`)))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "call-no-id", tasks[0].RowKey, "row keys by toolCallId when details.agentId is absent")
+}
+
+// TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID verifies that a
+// tool_execution_end whose result carries status:"background" and an agentId
+// re-keys the registry row from toolCallId to details.agentId and leaves it
+// Running (the close of the old toolCallId row prevents a stale Running entry).
+func TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	// Seed a running row keyed by toolCallId.
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"call-bg","toolName":"Task","input":{"description":"bg work"}}`)))
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_update","toolCallId":"call-bg","partialResult":{"content":[{"type":"text","text":"x\n"}],"details":{"status":"running","activity":"starting"}}}`)))
+
+	// tool_execution_end whose result is the pi-subagents details shape with
+	// status:"background" + agentId. piApplySubagentEnd unmarshals the result
+	// directly as the details shape.
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_end","toolCallId":"call-bg","toolName":"Task","result":{"status":"background","agentId":"agent-bg-1"}}`)))
+
+	tasks := sink.BackgroundTasks()
+	// Two rows: the old toolCallId row closed (Completed) and the new
+	// agentId-keyed row still Running.
+	require.Len(t, tasks, 2)
+
+	var bgRow, toolCallRow *bgtask.Item
+	for i := range tasks {
+		switch tasks[i].RowKey {
+		case "agent-bg-1":
+			bgRow = &tasks[i]
+		case "call-bg":
+			toolCallRow = &tasks[i]
+		}
+	}
+	require.NotNil(t, bgRow, "background re-key must upsert a row keyed by details.agentId")
+	assert.Equal(t, bgtask.StatusRunning, bgRow.Status, "background row stays Running")
+	assert.Equal(t, bgtask.KindSubagent, bgRow.Kind)
+
+	require.NotNil(t, toolCallRow, "the old toolCallId row must be present (closed)")
+	assert.Equal(t, bgtask.StatusCompleted, toolCallRow.Status,
+		"old toolCallId row is closed so it does not pin a stale Running indicator")
+}
+
+// TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry verifies
+// that a message_end with customType:"subagent-notification" closes the registry
+// row from its details AND still persists to the parent transcript (it is real
+// conversational context).
+func TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingControlSink{}
+	a := newPiAgentWithSink(sink)
+
+	// Seed a running subagent row keyed by agentId (the notification carries
+	// agentId, not toolCallId).
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"call-notif","toolName":"Task","args":{"description":"notif task"}}`)))
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_update","toolCallId":"call-notif","partialResult":{"content":[{"type":"text","text":"x\n"}],"details":{"status":"running","activity":"busy","agentId":"agent-notif-1"}}}`)))
+	require.Len(t, sink.BackgroundTasks(), 1)
+
+	// A message_end with customType:"subagent-notification" carrying a terminal
+	// status in details.
+	msgEnd := []byte(`{"type":"message_end","customType":"subagent-notification","message":{"role":"assistant","content":[{"type":"text","text":"subagent finished"}]},"details":{"status":"completed","activity":"done","agentId":"agent-notif-1"}}`)
+	handlePiOutput(a, parseLine(msgEnd))
+
+	// Registry row closed.
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status,
+		"subagent-notification with a terminal status must close the registry row")
+	assert.True(t, tasks[0].Status.IsTerminal())
+
+	// The message STILL persisted to the parent transcript (alongside the
+	// tool_execution_start message). The notification must be the final
+	// persisted message.
+	require.GreaterOrEqual(t, sink.MessageCount(), 1, "subagent-notification must still persist to the parent transcript")
+	last := sink.Messages()[len(sink.Messages())-1]
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
+	assert.Contains(t, string(last.Content), "subagent-notification")
 }

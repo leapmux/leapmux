@@ -215,6 +215,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       tileId => selection.activeKeyForTile(tileId),
       agentId => untrack(() => chatStore.getResumeAfterSeq(agentId)),
       terminalId => untrack(() => metadata.get(terminalId)?.lastOffset ?? 0),
+      (agentId: string) => view.getAgentTab(agentId),
     ),
   )
 
@@ -306,6 +307,14 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       case 'todosChanged': {
         const tc = inner.value
         chatStore.todos.replace(tc.agentId, tc.todos)
+        break
+      }
+      case 'backgroundTasksChanged': {
+        // The registry is keyed by the ROOT owner agent id and rides the root
+        // tab's existing WatchAgentEntry (notification-class, so an off-screen
+        // root tab still updates the sidebar/badge).
+        const bc = inner.value
+        chatStore.backgroundTasks.replace(bc.agentId, bc.tasks)
         break
       }
       case 'catchUpStart':

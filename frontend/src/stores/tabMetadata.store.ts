@@ -104,6 +104,17 @@ export interface AgentMeta {
   optionValues?: Record<string, string>
   optionGroups?: AvailableOptionGroup[]
   agentGitStatus?: AgentGitStatus
+  /**
+   * Subagent linkage. parentAgentId is set only for virtual child agents
+   * (protoToAgentTabFields hydrates it from AgentInfo). Without it in AgentMeta
+   * the field is written into the metadata store by patch() but never copied
+   * back out by assemble(), so every consumer reading the assembled Tab sees
+   * undefined -- composer gating, the corner icon, MRU exclusion and
+   * rootAgentIdFor all silently break.
+   */
+  parentAgentId?: string
+  /** Backend-authoritative: a child that accepts user messages is steerable. */
+  acceptsMessages?: boolean
 }
 
 export interface TerminalMeta {

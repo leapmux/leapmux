@@ -1,5 +1,6 @@
 import type { Tab } from '~/stores/tab.types'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
+import { isSteerableAgentTab } from '~/stores/tab.helpers'
 
 export interface EditorRef {
   get: () => string
@@ -85,7 +86,10 @@ export function insertIntoMruAgentEditor(
   text: string,
   mode: 'block' | 'inline' = 'block',
 ): void {
-  const target = deps.mruTabs().find(t => t.type === TabType.AGENT)
+  // Find the most-recent agent tab that is STEERABLE — a non-steerable child
+  // (a read-only subagent transcript) must never receive an inserted mention or
+  // quote.
+  const target = deps.mruTabs().find(t => t.type === TabType.AGENT && isSteerableAgentTab(t))
   if (!target)
     return
   const agentId = target.id

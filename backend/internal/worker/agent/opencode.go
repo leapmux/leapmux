@@ -38,6 +38,11 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		configure: func(a *OpenCodeAgent) {
 			a.modeChannel = modeChannelPrimaryAgent
 			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+			// Subagent spawn detection (registry-only; OpenCode drops child
+			// sessions over ACP so there is no transcript). Detect by input
+			// shape, not tool-name guessing.
+			a.subagentFromToolCall = acpSubagentFromOpenCodeToolCall
+			a.subagentFromToolCallUpdate = acpSubagentFromOpenCodeToolCallUpdate
 		},
 		afterHandshake: func(a *OpenCodeAgent, handshake *acpSessionResult, opts Options) error {
 			return a.applyPrimaryAgentStartup(handshake, opts, OpenCodePrimaryAgentBuild)

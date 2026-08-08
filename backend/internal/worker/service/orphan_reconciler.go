@@ -566,7 +566,7 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 	// retry it. cleanupRegistry.claim now closes that window at the source -- the
 	// cleanup fires the moment it registers -- so the backstop is no longer needed
 	// and the redundant work is gone with it.
-	rows, err := r.queries.ListAllOpenAgentIDs(ctx)
+	rows, err := r.queries.ListAllOpenRootAgentIDs(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list agents", "err", err)
 		return

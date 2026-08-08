@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -295,6 +296,117 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 
+			// --- Subagent (child) routing ---
+			// A virtual child agent is fed by its parent provider's process.
+			// Resolves the registry row (owner + row_key), then drives the owner
+			// process via ChildSteerer (Codex). Slash commands and provider-
+			// specific attachment semantics are unsupported for child targets.
+			if dbAgent.ParentAgentID.Valid {
+				row, rowErr := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), agentID)
+				if rowErr != nil {
+					// A not-yet-seeded registry row (a worker restart where the
+					// child agent row exists but the registry upsert hasn't
+					// replayed yet) is transient. Return UNAVAILABLE so the
+					// frontend re-queues; a genuine DB error is a hard failure.
+					if errors.Is(rowErr, sql.ErrNoRows) {
+						sendUnavailable(sender, "subagent registry not yet loaded; retry")
+					} else {
+						sendFailedPrecondition(sender, "this subagent cannot be messaged")
+					}
+					return
+				}
+				trimmedChild := strings.TrimSpace(r.GetContent())
+				if trimmedChild == "/clear" || trimmedChild == "/reset" || trimmedChild == "/new" {
+					sendInvalidArgument(sender, "slash commands are not supported for this subagent")
+					return
+				}
+				// Resolve the owner process and the child's steerable key.
+				// persistChildUserRowWithDeliveryError writes a user row into the
+				// CHILD transcript stamped with a delivery error, broadcasts it, and
+				// acks the request. Used by both the owner-not-running path and
+				// the SendChildInput-failure path so a transient steering failure
+				// surfaces in the child transcript instead of dropping the message.
+				persistChildUserRowWithDeliveryError := func(deliveryErr string) {
+					childMsgID := id.Generate()
+					nowChild := nowMillis()
+					innerJSON, mErr := json.Marshal(map[string]string{"content": r.GetContent()})
+					if mErr != nil {
+						sendInternalError(sender, "failed to encode message")
+						return
+					}
+					compressedChild, compChild := msgcodec.Compress(innerJSON)
+					childSpanLines := svc.Output.snapshotPassthroughSpanLines(agentID)
+					childSeq, pErr := createMessageRow(bgCtx(), svc.Queries, db.CreateMessageParams{
+						ID:                 childMsgID,
+						AgentID:            agentID,
+						Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+						Content:            compressedChild,
+						ContentCompression: compChild,
+						SpanLines:          childSpanLines,
+						AgentProvider:      dbAgent.AgentProvider,
+						MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
+						CreatedAt:          sqltime.NewSQLiteTime(nowChild),
+					})
+					if pErr != nil {
+						slog.Error("failed to persist child message", "agent_id", agentID, "error", pErr)
+						sendInternalError(sender, "failed to persist message")
+						return
+					}
+					_ = svc.Queries.SetMessageDeliveryError(bgCtx(), db.SetMessageDeliveryErrorParams{
+						DeliveryError: deliveryErr,
+						ID:            childMsgID,
+						AgentID:       agentID,
+					})
+					svc.Watchers.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+						AgentId: agentID,
+						Event: &leapmuxv1.AgentEvent_AgentMessage{
+							AgentMessage: &leapmuxv1.AgentChatMessage{
+								Id:                 childMsgID,
+								Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+								Content:            compressedChild,
+								ContentCompression: compChild,
+								Seq:                childSeq,
+								AgentProvider:      dbAgent.AgentProvider,
+								CreatedAt:          timefmt.Format(nowChild),
+								SpanLines:          childSpanLines,
+								MarkType:           leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
+								DeliveryError:      deliveryErr,
+							},
+						},
+					})
+					sendProtoResponse(sender, &leapmuxv1.SendAgentMessageResponse{})
+				}
+				if !svc.Agents.HasAgent(row.OwnerAgentID) {
+					// Owner not running: persist the user row into the CHILD
+					// transcript with a delivery error; no auto-start (a child
+					// has no process of its own, and starting the owner to feed
+					// a single child message is not the contract).
+					persistChildUserRowWithDeliveryError("agent is not running")
+					return
+				}
+				// Owner running: steer the child conversation. An unsupported
+				// provider surfaces as FailedPrecondition with NO persisted row.
+				childAtts, attErr := agent.NormalizeAttachmentsForProvider(dbAgent.AgentProvider, r.GetAttachments())
+				if attErr != nil {
+					sendInvalidArgument(sender, attErr.Error())
+					return
+				}
+				if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, r.GetContent(), childAtts); err != nil {
+					if errors.Is(err, agent.ErrChildSteeringUnsupported) {
+						sendFailedPrecondition(sender, "this subagent does not accept messages")
+						return
+					}
+					// Other errors: persist the user row with a delivery error so
+					// the failure is visible in the child transcript rather than
+					// dropping the message silently.
+					slog.Error("send child input failed", "agent_id", agentID, "error", err)
+					persistChildUserRowWithDeliveryError("failed to send message to subagent")
+					return
+				}
+				sendProtoResponse(sender, &leapmuxv1.SendAgentMessageResponse{})
+				return
+			}
+
 			content := r.GetContent()
 			attachments := r.GetAttachments()
 
@@ -483,6 +595,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGated(d, "SendAgentRawMessage",
 		func(_ context.Context, _ userid.UserID, r *leapmuxv1.SendAgentRawMessageRequest, dbAgent db.Agent, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
+			// A child agent has no process and no raw-control surface; reject.
+			if dbAgent.ParentAgentID.Valid {
+				sendFailedPrecondition(sender, "this subagent cannot be messaged")
+				return
+			}
 			content := r.GetContent()
 			if notice := agent.ProviderFor(dbAgent.AgentProvider).SyntheticInterruptNotice(); notice != "" && agent.IsInterruptRequest(dbAgent.AgentProvider, content) {
 				// An interrupt notice is not the user's answer to a control request, so it
@@ -526,7 +643,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 
 		protoAgents := make([]*leapmuxv1.AgentInfo, 0, len(agents))
 		for i := range agents {
-			hasAgent := svc.Agents.HasAgent(agents[i].ID)
+			// A child tab derives ACTIVE from its feeding (root) process; a
+			// root tab from its own. ListAgentsByIDs returns only closed_at IS
+			// NULL rows, so a child here is an open transcript whose status
+			// tracks its owner process.
+			hasAgent := svc.agentProcessRunning(&agents[i])
 			// agentToProto -> optionGroupsForAgent -> optionGroupsView already preloads the
 			// cached option-group catalog from the DB for an inactive agent (and decodes
 			// option_groups exactly once), so no separate PreloadCache is needed here -- a
@@ -586,6 +707,31 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				}
 			}
 
+			// Background-task registry snapshot, same explicit-presence contract as
+			// todos/todos_loaded. A CHILD agent (virtual subagent) owns no registry
+			// and must NOT inherit the root's -- otherwise every active sibling task
+			// spins the child's thinking indicator. A child answers
+			// empty-but-loaded (loaded=true so the client overwrites with the
+			// correct empty set, never leaving a stale inherited registry); a root
+			// loads its own.
+			var bgItems []bgtask.Item
+			bgTasksLoaded := false
+			if isLatestPage {
+				if agentRow.ParentAgentID.Valid {
+					// Children own no registry: report a successful empty load so
+					// the client wipes any stale state rather than retaining it.
+					bgTasksLoaded = true
+				} else {
+					items, bgErr := svc.Output.LoadBackgroundTasks(ctx, agentID)
+					if bgErr != nil {
+						slog.Warn("failed to load agent_background_tasks", "agent_id", agentID, "error", bgErr)
+					} else {
+						bgItems = items
+						bgTasksLoaded = true
+					}
+				}
+			}
+
 			// Fetch one extra (plan.limit+1) so a full page reveals has_more below.
 			dbMessages, queryErr := svc.fetchMessagePageRows(ctx, agentID, plan.mode, plan.bound, plan.limit+1)
 			if queryErr != nil {
@@ -625,11 +771,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 
 			sendProtoResponse(sender, &leapmuxv1.ListAgentMessagesResponse{
-				Messages:    protoMessages,
-				HasMore:     hasMore,
-				Todos:       todoevents.ItemsToProto(todoItems),
-				TodosLoaded: todosLoaded,
-				LatestSeq:   latestSeq,
+				Messages:              protoMessages,
+				HasMore:               hasMore,
+				Todos:                 todoevents.ItemsToProto(todoItems),
+				TodosLoaded:           todosLoaded,
+				LatestSeq:             latestSeq,
+				BackgroundTasks:       bgtask.ItemsToProto(bgItems),
+				BackgroundTasksLoaded: bgTasksLoaded,
 			})
 		})
 
@@ -953,6 +1101,37 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	registerAgentGatedByID(d, "InterruptAgent", dispatchPlain,
 		func(_ context.Context, _ userid.UserID, r *leapmuxv1.InterruptAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
+			// A child agent: resolve its registry row, then interrupt the child
+			// conversation inside the owner process via ChildSteerer.
+			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+			if err != nil {
+				sendNotFoundError(sender, "agent not found")
+				return
+			}
+			if dbAgent.ParentAgentID.Valid {
+				row, rowErr := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), agentID)
+				if rowErr != nil {
+					// A not-yet-seeded registry row is transient (see the send
+					// path above). Return UNAVAILABLE so the client retries.
+					if errors.Is(rowErr, sql.ErrNoRows) {
+						sendUnavailable(sender, "subagent registry not yet loaded; retry")
+					} else {
+						sendFailedPrecondition(sender, "this subagent cannot be interrupted")
+					}
+					return
+				}
+				if err := svc.Agents.InterruptChild(row.OwnerAgentID, row.RowKey); err != nil {
+					if errors.Is(err, agent.ErrChildSteeringUnsupported) {
+						sendFailedPrecondition(sender, "this subagent cannot be interrupted")
+						return
+					}
+					slog.Warn("interrupt child failed", "agent_id", agentID, "error", err)
+					sendNotFoundError(sender, "agent not found or not running")
+					return
+				}
+				sendProtoResponse(sender, &leapmuxv1.InterruptAgentResponse{})
+				return
+			}
 			if err := svc.Agents.Interrupt(agentID); err != nil {
 				slog.Warn("interrupt failed", "agent_id", agentID, "error", err)
 				sendNotFoundError(sender, "agent not found or not running")
@@ -1231,12 +1410,39 @@ func (svc *Service) replayAgentCatchUp(
 		})
 	}
 
+	// Refresh the background-task registry on (re)subscribe, same rationale as
+	// the todos leg above. The registry is keyed by ROOT owner id, so a child
+	// tab's replay ships its root's registry under the root id (the sidebar
+	// resolves the root from the active tab).
+	if !sink.alive() {
+		return
+	}
+	// Resolve the root once. Calling rootAgentIDFor twice would run the
+	// recursive CTE twice and could return different roots if the parent chain
+	// changed between the calls, shipping one root's tasks under another's id.
+	rootID := svc.rootAgentIDFor(bgCtx(), agentID)
+	if bgItems, bgErr := svc.Output.LoadBackgroundTasks(bgCtx(), rootID); bgErr != nil {
+		slog.Warn("failed to load agent_background_tasks for replay", "agent_id", agentID, "error", bgErr)
+	} else {
+		broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+			AgentId: rootID,
+			Event: &leapmuxv1.AgentEvent_BackgroundTasksChanged{
+				BackgroundTasksChanged: &leapmuxv1.AgentBackgroundTasksChanged{
+					AgentId: rootID,
+					Tasks:   bgtask.ItemsToProto(bgItems),
+				},
+			},
+		})
+	}
+
 	if !sink.alive() {
 		return
 	}
 
 	// Send a statusChange marker (signals end of message replay).
-	hasAgent := svc.Agents.HasAgent(agentID)
+	// A child tab derives ACTIVE from its feeding (root) process rather than
+	// its own (a virtual child never owns a process).
+	hasAgent := svc.agentProcessRunning(&dbAgent)
 	// Preload the cached option-group catalog from DB for inactive agents.
 	if !hasAgent {
 		svc.Agents.PreloadCache(agentID, parseOptionGroups(dbAgent.OptionGroups))
@@ -1347,11 +1553,52 @@ func (svc *Service) agentToProto(a *db.Agent, isRunning bool, gs *leapmuxv1.Agen
 		StartupMessage: startupMessage,
 	}
 
+	// Subagent linkage. parent_agent_id is set only for virtual child agents.
+	if a.ParentAgentID.Valid {
+		info.ParentAgentId = a.ParentAgentID.String
+		info.SpawnSpanId = a.SpawnSpanID
+		// A child accepts messages only when its feeding provider can steer a
+		// subagent conversation inside the same process (Codex). Roots always
+		// accept; non-steering children are read-only transcripts.
+		info.AcceptsMessages = agent.ProviderFor(a.AgentProvider).SupportsChildSteering()
+	} else {
+		info.AcceptsMessages = true
+	}
+
 	if a.ClosedAt.Valid {
 		info.ClosedAt = timefmt.Format(a.ClosedAt.Time)
 	}
 
 	return info
+}
+
+// rootAgentIDFor resolves the ROOT main agent id for the given agent. A root
+// agent (parent_agent_id IS NULL) resolves to itself; a virtual child resolves
+// to its root via GetRootAgentID. Used to key the background-task registry
+// (one registry per root) when the agent in hand is a child tab. On a query
+// error or an unresolved chain, falls back to agentID (treated as a root) so a
+// transient failure degrades to an empty registry rather than erroring.
+func (svc *Service) rootAgentIDFor(ctx context.Context, agentID string) string {
+	rootID, err := svc.Queries.GetRootAgentID(ctx, agentID)
+	if err != nil || rootID == "" {
+		return agentID
+	}
+	return rootID
+}
+
+// agentProcessRunning reports whether the feeding process for agentID is
+// running. A root agent -> HasAgent(id). A child agent -> resolve its root,
+// then HasAgent(root): a child tab shows ACTIVE while the feeding process runs,
+// even though the child never owns a process itself.
+func (svc *Service) agentProcessRunning(agentRow *db.Agent) bool {
+	if !agentRow.ParentAgentID.Valid {
+		return svc.Agents.HasAgent(agentRow.ID)
+	}
+	rootID, err := svc.Queries.GetRootAgentID(bgCtx(), agentRow.ID)
+	if err != nil || rootID == "" {
+		return false
+	}
+	return svc.Agents.HasAgent(rootID)
 }
 
 // runAgentStartup is the async body of OpenAgent: it executes the git-mode
@@ -2411,6 +2658,13 @@ func (svc *Service) ensureAgentRunning(agentID string, preResolvedResumeSessionI
 	if err != nil {
 		slog.Error("ensureAgentRunning: failed to fetch agent", "agent_id", agentID, "error", err)
 		return fmt.Errorf("agent not found: %w", err)
+	}
+	// A virtual child agent (a subagent transcript) never owns a process: it is
+	// fed by its parent provider's process. Refuse every auto-start path at this
+	// single choke point so a send/interrupt to a child routes through the owner
+	// process (SendChildInput / InterruptChild) instead of trying to spawn one.
+	if dbAgent.ParentAgentID.Valid {
+		return fmt.Errorf("agent %s is a subagent transcript; it has no process of its own", agentID)
 	}
 
 	var resumeSessionID string

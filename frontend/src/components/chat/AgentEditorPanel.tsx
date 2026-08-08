@@ -43,6 +43,8 @@ export interface AgentEditorPanelProps {
   agentId: string
   agent?: AgentInfo
   disabled?: boolean
+  /** Single-line hint rendered when the composer is disabled (e.g. a non-steerable subagent). */
+  disabledHint?: string
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
@@ -287,6 +289,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         on:dblclick={resetEditorHeight}
       />
       <div class={styles.inputArea}>
+        <Show when={props.disabled && props.disabledHint}>
+          <div class={styles.disabledHint} data-testid="composer-disabled-hint">
+            {props.disabledHint}
+          </div>
+        </Show>
         <Show when={!ctrl.activeControlRequest()}>
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
         </Show>

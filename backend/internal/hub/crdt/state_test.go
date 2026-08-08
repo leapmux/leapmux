@@ -29,6 +29,8 @@ func stamped(body any, hlc *leapmuxv1.HLC) *leapmuxv1.CrdtOp {
 		op.Body = &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: b}
 	case *leapmuxv1.TombstoneTabOp:
 		op.Body = &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: b}
+	case *leapmuxv1.ReviveTabOp:
+		op.Body = &leapmuxv1.CrdtOp_ReviveTab{ReviveTab: b}
 	case *leapmuxv1.SetFloatingWindowRegisterOp:
 		op.Body = &leapmuxv1.CrdtOp_SetFloatingWindowRegister{SetFloatingWindowRegister: b}
 	case *leapmuxv1.TombstoneFloatingWindowOp:
@@ -118,7 +120,64 @@ func TestApply_TombstoneEarlierThanCurrentSet_DropsTheSet(t *testing.T) {
 	assert.False(t, crdt.HLCIsZero(rec.GetTombstoneAt()))
 }
 
+func TestApply_ReviveTabClearsTombstone(t *testing.T) {
+	state := crdt.NewState("user-1")
+	// Place a tab then tombstone it.
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		TabId:   "tab-1",
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-1"},
+	}, hlcAt(10, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}, hlcAt(20, 0, "a")))
+	require.False(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()))
+
+	// A revive newer than the tombstone clears it. The record stays (a same-
+	// batch Set repopulates the registers).
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+	}, hlcAt(30, 0, "a")))
+	rec := state.Tabs["tab-1"]
+	require.NotNil(t, rec)
+	assert.True(t, crdt.HLCIsZero(rec.GetTombstoneAt()), "revive newer than tombstone clears it")
+	// tab_type is preserved.
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, rec.GetTabType())
+
+	// A later Set now lands (the tab is live again).
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		TabId:   "tab-1",
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-2"},
+	}, hlcAt(40, 0, "a")))
+	assert.Equal(t, "tile-2", state.Tabs["tab-1"].GetTileId().GetValue())
+}
+
+func TestApply_ReviveTabOlderThanTombstoneIsNoOp(t *testing.T) {
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}, hlcAt(50, 0, "a")))
+	// Revive at an older HLC: remove-wins for concurrent, older-revive no-op.
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+	}, hlcAt(40, 0, "a")))
+	assert.False(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()), "older revive does not clear tombstone")
+}
+
+func TestApply_ReviveTabAbsentMaterializesLive(t *testing.T) {
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabId: "tab-new", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+	}, hlcAt(10, 0, "a")))
+	rec := state.Tabs["tab-new"]
+	require.NotNil(t, rec)
+	assert.True(t, crdt.HLCIsZero(rec.GetTombstoneAt()), "revive of unseen tab is live")
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, rec.GetTabType())
+}
+
 func TestApply_ParentIdSetOnce(t *testing.T) {
+
 	state := crdt.NewState("user-1")
 	// First parent_id write lands.
 	crdt.Apply(state, stamped(&leapmuxv1.SetNodeRegisterOp{
