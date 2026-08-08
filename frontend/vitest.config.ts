@@ -1,7 +1,6 @@
 import { createRequire } from 'node:module'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
 import solid from 'vite-plugin-solid'
-import tsconfigPaths from 'vite-tsconfig-paths'
 import { defineConfig } from 'vitest/config'
 
 const require = createRequire(import.meta.url)
@@ -35,11 +34,14 @@ const resolveSolidRefreshVirtual = {
 }
 
 export default defineConfig({
+  resolve: {
+    // Supplies the `~` mapping from tsconfig.json's `paths`, so it is declared
+    // once for tsc, Vite and vitest rather than three times.
+    tsconfigPaths: true,
+  },
   // hot: false — HMR-runtime injection (/@solid-refresh) breaks fileURLToPath
   // on Windows and tests don't need it.
-  // tsconfigPaths supplies the `~` alias from tsconfig.json's `paths`, so it
-  // is declared once for tsc, Vite and vitest rather than three times.
-  plugins: [tsconfigPaths(), vanillaExtractPlugin(), resolveSolidRefreshVirtual, solid({ hot: false })],
+  plugins: [vanillaExtractPlugin(), resolveSolidRefreshVirtual, solid({ hot: false })],
   test: {
     // Worker threads rather than the default forked processes: this suite is
     // ~450 files of pure CPU (transform, module evaluation, environment

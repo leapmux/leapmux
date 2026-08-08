@@ -18,10 +18,10 @@
     "isolatedModules": true,
     "skipLibCheck": true
   },
-  // vite-tsconfig-paths supplies the `~` alias to Vite and vitest FROM this
-  // list -- it refuses the mapping for any importer outside `include` -- so a
-  // root-level file that wants `~/...` has to be named here. vitest.setup.ts
-  // runs before every test file, so a `~` import it could not resolve fails
-  // the whole suite at load rather than one spec.
+  // Vite's `resolve.tsconfigPaths` supplies the `~` mapping to Vite and vitest
+  // FROM this list -- it refuses the mapping for any importer outside
+  // `include` -- so a root-level file that wants `~/...` has to be named here.
+  // vitest.setup.ts runs before every test file, so a `~` import it could not
+  // resolve fails the whole suite at load rather than one spec.
   "include": ["src", "app.config.ts", "vitest.setup.ts"]
 }

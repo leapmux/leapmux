@@ -3,7 +3,6 @@ import process from 'node:process'
 import { defineConfig } from '@solidjs/start/config'
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin'
 import MagicString from 'magic-string'
-import tsconfigPaths from 'vite-tsconfig-paths'
 
 const require = createRequire(import.meta.url)
 
@@ -25,9 +24,6 @@ export default defineConfig({
   vite: {
     build: { sourcemap: true },
     plugins: [
-      // Supplies the `~` alias from tsconfig.json's `paths`, so it is declared
-      // once for tsc, Vite and vitest rather than three times over.
-      tsconfigPaths(),
       {
         // Workaround: vinxi passes configFile: false to Vite, so
         // @vanilla-extract/vite-plugin falls back to config.inlineConfig
@@ -85,6 +81,12 @@ export default defineConfig({
     ],
     envPrefix: ['VITE_', 'LEAPMUX_'],
     resolve: {
+      // Maps tsconfig.json's `paths` for Vite, so a mapping is declared once
+      // for tsc, Vite and vitest rather than three times over. SolidStart also
+      // injects its own `~` -> `src` alias, and an alias wins over this option,
+      // so today `~` resolves through SolidStart here and through this option
+      // under vitest. A second entry in `paths` would need this option in both.
+      tsconfigPaths: true,
       alias: {
         // See decodeNamedCharacterReferenceNodeBuild above: keep the markdown
         // worker from importing the document-dependent browser build.
