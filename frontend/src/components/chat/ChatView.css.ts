@@ -57,14 +57,61 @@ export const messageListContent = style({
 })
 
 export const messageList = style({
-  flex: 1,
-  overflowX: 'hidden',
-  overflowY: 'auto',
-  overflowAnchor: 'none',
-  padding: 'var(--space-4) var(--space-4) var(--space-4) var(--space-6)',
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--space-3)',
+  'flex': 1,
+  'overflowX': 'hidden',
+  'overflowY': 'auto',
+  'overflowAnchor': 'none',
+  'padding': 'var(--space-4)',
+  'display': 'flex',
+  'flexDirection': 'column',
+  'gap': 'var(--space-3)',
+  '@media': {
+    /**
+     * TOUCH: never a native scrollbar on the chat list, whether or not the rail owns
+     * scrolling. The app-wide `::-webkit-scrollbar { width: 8px }` in the global
+     * stylesheet (~/styles/global.css.ts) opts every element OUT of Chrome Android's
+     * auto-hiding overlay scrollbars, so this list paints a permanent classic 8px bar that
+     * eats layout width from an already-narrow text column -- most visibly in the window
+     * BEFORE the marks RPC seeds the rail, which is exactly when `messageListRailActive`
+     * cannot apply. Scoped to this list; the app-wide rule is left alone.
+     *
+     * This DELIBERATELY relaxes the "never zero scrollbars" invariant on touch: when the
+     * rail is not the owner (the marks RPC failed or lags), a touch viewport now shows
+     * NEITHER bar. That is the right trade on a surface where scrolling is direct
+     * manipulation and there is no thumb to grab -- see resolveScrollbarOwner, which
+     * records the same exception.
+     *
+     * Keep every `*.css.ts` reference above path-qualified (`~/...` or `./...`). A BARE
+     * basename anywhere in a `.css.ts` file, a comment included, makes the vanilla-extract
+     * compiler throw "Styles were unable to be assigned to a file" and point at an
+     * unrelated line in this file.
+     */
+    '(pointer: coarse)': {
+      scrollbarWidth: 'none',
+    },
+    /**
+     * Phone gutters. The rail floats over the right edge, so 16px reserved there is pure
+     * lost text width; 4px still keeps the text off the glass. The left drops to 12px
+     * rather than matching 4px for two reasons: the span-line stack overhangs the content
+     * box by COL_OVERLAP (5px, see ./widgets/SpanLines.css.ts) and `overflowX: hidden`
+     * would clip it, and 24px against 4px reads visibly lopsided on a 360px viewport.
+     */
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      paddingLeft: 'var(--space-3)',
+      paddingRight: 'var(--space-1)',
+    },
+  },
+})
+
+// The WebKit half of the coarse-pointer rule above. `::-webkit-scrollbar` is not
+// `&`-anchored, so it cannot be a `selectors` entry and needs its own globalStyle --
+// the same shape as messageListRailActive's below.
+globalStyle(`${messageList}::-webkit-scrollbar`, {
+  '@media': {
+    '(pointer: coarse)': {
+      display: 'none',
+    },
+  },
 })
 
 /**
@@ -73,6 +120,11 @@ export const messageList = style({
  * `messageList` only while the rail is actually active (marks seeded); if the marks RPC
  * fails or lags, the native scrollbar stays visible rather than leaving a long
  * conversation with no scrollbar at all. Scoped here -- the app-wide thin scrollbar stays.
+ *
+ * On COARSE pointers this is redundant: `messageList` hides the native bar there
+ * unconditionally (see its `(pointer: coarse)` block), which is a deliberate exception to
+ * the fallback described above -- on touch, a viewport with no rail simply has no
+ * scrollbar, because scrolling is direct manipulation.
  */
 export const messageListRailActive = style({
   scrollbarWidth: 'none',

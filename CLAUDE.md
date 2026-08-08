@@ -15,6 +15,10 @@ Use `task` (`Taskfile.yaml`) targets, not the underlying tools directly.
 - Proto generation: `buf generate` (via `task generate-proto`)
 - SQL generation: `sqlc generate` (via `task generate-sqlc`)
 
+### vanilla-extract `.css.ts` files
+
+Never write a bare `*.css.ts` basename inside a `.css.ts` file — not in code, and not in a comment. Write `~/styles/global.css.ts` or `./widgets/SpanLines.css.ts`, never `global.css.ts`. A bare basename makes the vanilla-extract compiler fail the whole module with `Styles were unable to be assigned to a file`, pointing at an unrelated line in that file. Every test that imports the module then fails to load, which reads as a broken component rather than a broken comment.
+
 ### sqlc files
 
 `backend/internal/hub/store/{sqlite,postgres,mysql}/db/queries/*.sql` and any other sqlc query files MUST contain only ASCII characters. The sqlc parser falls over on non-ASCII bytes (typically inside comments) with a misleading `mismatched input 'SELECr'`-style error that points at the wrong line. Use `--` (double hyphen) and plain ASCII punctuation instead of `—` (em-dash) or smart quotes.

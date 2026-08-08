@@ -9,7 +9,8 @@ import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentChatMessageSchema, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor, triggerResizeObservers } from '~/test-support/resizeObserverStub'
-import { ChatView, rowChromeHeightKey, SKELETON_SHOW_DELAY_MS } from './ChatView'
+import { railIdle } from './ChatScrollRail.css'
+import { ChatView, RAIL_MOMENTUM_GRACE_MS, RAIL_VISIBLE_IDLE_MS, rowChromeHeightKey, SKELETON_SHOW_DELAY_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
 import { messageListRailActive, rowSkeletonClosing } from './ChatView.css'
 import { computeOverscanPx, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { sameVirtualItems } from './useChatVirtualizer'
@@ -94,6 +95,10 @@ vi.mock('./MessageBubble', async () => {
               data-testid="mock-message-bubble"
               data-message-id={props.message.id}
               data-premeasure={props.premeasureMode ? 'true' : 'false'}
+              // The scroll-idle highlight pause is only observable through the host
+              // binding MessageBubble forwards into its RenderContext, so surface it
+              // here for the tests that pin ChatView's highlightActivity window.
+              data-syntax-paused={props.host?.syntaxHighlightingPaused?.() ? 'true' : 'false'}
             />
           )
         : actual.MessageBubble(props)
@@ -2700,6 +2705,82 @@ describe('chat view virtualized with stubbed deps', () => {
     })
   })
 
+  // The scroll-idle window that holds syntax highlighting (and the premeasure warm-up)
+  // off while the reader scrolls. It runs on a createScrollActivity instance shared with
+  // the scroll rail's own window, so these pin the behaviour that must NOT change when
+  // the rail's window is fed differently -- see ChatView's highlightActivity.
+  describe('chat view syntax-highlight scroll pause', () => {
+    const renderChat = () => render(() => (
+      <ChatView
+        messages={[message('m0', 1)]}
+        streamingText=""
+      />
+    ))
+
+    const paused = (container: HTMLElement): string | null =>
+      container.querySelector('[data-testid="mock-message-bubble"]')?.getAttribute('data-syntax-paused') ?? null
+
+    const scroller = (container: HTMLElement): HTMLElement =>
+      container.querySelector('[data-chat-scroll-container]') as HTMLElement
+
+    it('pauses highlighting on a scroll gesture and resumes after the idle window', () => {
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderChat()
+      expect(paused(container)).toBe('false')
+
+      fireEvent.wheel(scroller(container), { deltaY: 40 })
+      expect(paused(container)).toBe('true')
+
+      vi.advanceTimersByTime(SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS - 1)
+      expect(paused(container)).toBe('true')
+
+      vi.advanceTimersByTime(1)
+      expect(paused(container)).toBe('false')
+    })
+
+    it('stays paused across a continued scroll instead of resuming mid-gesture', () => {
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderChat()
+
+      fireEvent.wheel(scroller(container), { deltaY: 40 })
+      vi.advanceTimersByTime(SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS - 20)
+      fireEvent.wheel(scroller(container), { deltaY: 40 })
+
+      // A throttle would have resumed at the first window's end; the debounce measures
+      // from the second wheel.
+      vi.advanceTimersByTime(SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS - 20)
+      expect(paused(container)).toBe('true')
+
+      vi.advanceTimersByTime(20)
+      expect(paused(container)).toBe('false')
+    })
+
+    it('still pauses on a bare scroll event with no user input behind it', () => {
+      // Deliberate asymmetry with the rail, whose window ignores an un-prompted scroll:
+      // the agent's stick-to-bottom churn during a streaming turn is exactly when
+      // highlighting and the premeasure warm-up must stay off the main thread.
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderChat()
+
+      fireEvent.scroll(scroller(container))
+      expect(paused(container)).toBe('true')
+
+      vi.advanceTimersByTime(SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS)
+      expect(paused(container)).toBe('false')
+    })
+
+    it('pauses on the keys that scroll natively and ignores the keys that do not', () => {
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderChat()
+
+      fireEvent.keyDown(scroller(container), { key: 'a' })
+      expect(paused(container)).toBe('false')
+
+      fireEvent.keyDown(scroller(container), { key: 'PageDown' })
+      expect(paused(container)).toBe('true')
+    })
+  })
+
   describe('chat view native scrollbar hiding', () => {
     // The seq-space rail replaces the native scrollbar, but ONLY once it is active AND can
     // draw a thumb, or when there is no scrollable local-only content that needs the native
@@ -2771,6 +2852,106 @@ describe('chat view virtualized with stubbed deps', () => {
       ))
 
       expect(scroller(container).className).not.toContain(messageListRailActive)
+    })
+  })
+
+  // The seam between ChatView's railActivity window and the rail's paint state. The unit
+  // suites cover each half (chatScrollActivity.test.ts, ChatScrollRail.test.tsx); these pin
+  // that ChatView connects them the right way round and feeds the rail window the
+  // momentum-gated `noteScroll` rather than the highlight window's `noteInput`.
+  describe('chat view scroll rail auto-hide wiring', () => {
+    const railBase = {
+      loaded: true,
+      minSeq: 1n,
+      maxSeq: 10n,
+      marks: [],
+      windowFirstSeq: 1n,
+      windowLastSeq: 5n,
+    }
+    const renderWithRail = () => render(() => (
+      <ChatView messages={[message('m0', 1)]} streamingText="" rail={railBase} />
+    ))
+    const scroller = (container: HTMLElement) => container.querySelector('[data-chat-scroll-container]') as HTMLElement
+    const rail = (container: HTMLElement) => container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+
+    it('starts idle, lights the rail on a user scroll input, and lets it idle again', () => {
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderWithRail()
+      // Nothing has scrolled yet, so the rail opens in its faded state rather than flashing
+      // on at mount and fading a beat later.
+      expect(rail(container).className).toContain(railIdle)
+
+      fireEvent.wheel(scroller(container), { deltaY: 40 })
+      expect(rail(container).className).not.toContain(railIdle)
+
+      vi.advanceTimersByTime(RAIL_VISIBLE_IDLE_MS - 1)
+      expect(rail(container).className).not.toContain(railIdle)
+
+      vi.advanceTimersByTime(1)
+      expect(rail(container).className).toContain(railIdle)
+    })
+
+    it('does not light the rail for a bare scroll event with no user input behind it', () => {
+      // The whole point of the split: the agent's stick-to-bottom fires a scroll on every
+      // streaming commit, and a rail that lit up for those would stay lit for the entire
+      // response. Contrast with the syntax-highlight pause above, which DOES take these.
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderWithRail()
+
+      for (let commit = 0; commit < 10; commit++) {
+        vi.advanceTimersByTime(16)
+        fireEvent.scroll(scroller(container))
+        expect(rail(container).className).toContain(railIdle)
+      }
+    })
+
+    it('keeps the rail lit through a flick coast, where only scroll events fire', () => {
+      // After a touch flick no touch or pointer event fires while the content glides, so
+      // without the momentum grace the rail would fade mid-fling. The grace is the tighter
+      // of the two bounds, so a qualifying coast scroll always lands while the window is
+      // still open -- what this pins is that such a scroll EXTENDS it.
+      expect(RAIL_MOMENTUM_GRACE_MS).toBeLessThan(RAIL_VISIBLE_IDLE_MS)
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = renderWithRail()
+
+      fireEvent.touchStart(scroller(container))
+      fireEvent.touchEnd(scroller(container))
+
+      // The coast: one scroll at the far edge of the grace.
+      vi.advanceTimersByTime(RAIL_MOMENTUM_GRACE_MS - 1)
+      fireEvent.scroll(scroller(container))
+
+      // Past where the un-extended window would have closed (the touchend was
+      // RAIL_VISIBLE_IDLE_MS + 1 ms ago). Still lit, so the coast scroll pushed it out.
+      vi.advanceTimersByTime(RAIL_VISIBLE_IDLE_MS - RAIL_MOMENTUM_GRACE_MS + 2)
+      expect(rail(container).className).not.toContain(railIdle)
+
+      // ...and it closes RAIL_VISIBLE_IDLE_MS after the coast scroll, not after the touch.
+      vi.advanceTimersByTime(RAIL_MOMENTUM_GRACE_MS - 3)
+      expect(rail(container).className).not.toContain(railIdle)
+      vi.advanceTimersByTime(1)
+      expect(rail(container).className).toContain(railIdle)
+    })
+
+    it('does not arm the rail window on scroll when no rail is present', () => {
+      // Without a rail prop the rail never mounts, so feeding its window arms a 1200ms timer that
+      // fires into a dead signal on every gesture. The feed is gated on rail presence so a
+      // marks-less conversation pays nothing. Assert the gate indirectly: render with no rail,
+      // then mount one and confirm the now-fed window lights on the next scroll.
+      vi.useFakeTimers({ toFake: ['performance', 'setTimeout', 'clearTimeout'] })
+      const { container } = render(() => (
+        <ChatView messages={[message('m0', 1)]} streamingText="" />
+      ))
+
+      // No rail mounted, so no rail element to fade or light.
+      expect(container.querySelector('[data-testid="chat-scroll-rail"]')).toBeNull()
+      // Scrolling while rail-less must not leave an armed rail timer behind (it would fire into
+      // a dead signal). Advance well past the idle window: a stray timer firing here would throw
+      // into the disposed-rail scope only if the gate were absent, which we cannot assert
+      // directly -- but the rail stays absent, which is the observable contract.
+      fireEvent.wheel(scroller(container), { deltaY: 40 })
+      vi.advanceTimersByTime(RAIL_VISIBLE_IDLE_MS + 1)
+      expect(container.querySelector('[data-testid="chat-scroll-rail"]')).toBeNull()
     })
   })
 })

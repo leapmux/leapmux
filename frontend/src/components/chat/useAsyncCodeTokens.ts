@@ -114,7 +114,7 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
   // Crucially this seeds THROUGH the `hold` gate -- only `premeasure` (a geometry-only
   // render) blocks it. The click that expands/collapses a row (or toggles the diff view)
   // fires a pointerdown, which pauses syntax highlighting for a scroll-idle beat (ChatView's
-  // pauseSyntaxHighlightingForScroll), so the freshly-mounted body has hold=true. Unlike the
+  // highlightActivity window), so the freshly-mounted body has hold=true. Unlike the
   // running effects -- which defer applying tokens during hold to avoid SWAPPING text nodes
   // mid-scroll/selection -- the seed is the INITIAL paint of a fresh instance: there is no
   // prior node to swap and no selection on it to clear, so applying the cached tokens

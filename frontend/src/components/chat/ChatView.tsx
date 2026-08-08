@@ -28,6 +28,7 @@ import { createChatPremeasureBands } from './chatPremeasureBands'
 import { resolveScrollbarOwner } from './chatRailPolicy'
 import { kindScopedLayoutKey } from './chatRowGeometry'
 import { createRowHeightPersistence } from './chatRowHeightPersistence'
+import { createScrollActivity } from './chatScrollActivity'
 import { ChatScrollRail } from './ChatScrollRail'
 import { rowStartSeqs } from './chatScrollRailGeometry'
 import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet } from './chatSkeletonCrossfade'
@@ -48,7 +49,27 @@ import { SpanLines } from './widgets/SpanLines'
 import { NO_SPAN_MARGIN } from './widgets/SpanLines.geometry'
 import { ThinkingIndicator } from './widgets/ThinkingIndicator'
 
-const SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS = 160
+/**
+ * Quiet period after the last scroll before syntax highlighting (and the premeasure
+ * warm-up) resumes. Exported so a test can measure the boundary from this value rather
+ * than a hand-copied literal.
+ */
+export const SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS = 160
+/**
+ * How long the floating scroll rail stays lit after the last scroll activity, on the
+ * touch / narrow viewports where it auto-hides at all. Much longer than the
+ * syntax-highlight pause on purpose: that one only has to outlast a repaint, while this
+ * is a navigation affordance the reader must have time to see, aim at, and tap a jump
+ * dot on.
+ */
+export const RAIL_VISIBLE_IDLE_MS = 1200
+/**
+ * How long after a real user input a bare `scroll` event still counts as that gesture's
+ * momentum, so the rail stays lit through a touch flick's coast (no touch or pointer
+ * event fires while the content glides -- only `scroll`). See createScrollActivity for
+ * why the grace is measured from the last INPUT and never extended by `scroll` itself.
+ */
+export const RAIL_MOMENTUM_GRACE_MS = 750
 // How long an outgoing skeleton lingers (fading via rowSkeletonClosing) after
 // its real content takes over, so the swap reads as a crossfade instead of a
 // pop. The shared motion token keeps this unmount timer and the CSS fade
@@ -473,6 +494,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // railProps memo), so a bare `props.rail ?` here would re-run the O(n) scan on each of those
   // even when the row list is unchanged. railPresent flips only when the rail appears / disappears,
   // so the scan reruns solely when virtualItems changes -- exactly as the note above promises.
+  //
+  // On COARSE pointers messageList additionally suppresses the native bar unconditionally, so a
+  // touch viewport that resolves to 'native' shows NEITHER bar. That is a deliberate exception,
+  // recorded on resolveScrollbarOwner and messageListRailActive; the resolution below is unchanged.
   const railPresent = createMemo(() => props.rail !== undefined)
   const railRowSeqs = createMemo(() => (railPresent() ? rowStartSeqs(virtualItems()) : null))
   const railOwner = createMemo(() => {
@@ -534,7 +559,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     renderCacheStore.prune(visibleEntries().map(renderCacheKeyForEntry))
   })
 
-  const [syntaxHighlightingPaused, setSyntaxHighlightingPaused] = createSignal(false)
+  // Two scroll-activity windows over the SAME gesture stream, differing in length AND in
+  // which events feed them (see createScrollActivity):
+  //   - highlightActivity takes EVERY scroll, our own programmatic writes included -- a
+  //     streaming stick-to-bottom is exactly when the highlighter and the premeasure
+  //     warm-up must stay out of the way.
+  //   - railActivity takes USER INPUT only, plus a momentum-gated `scroll` for the
+  //     post-flick coast. A rail lit by our own scrollTop writes would stay lit for a
+  //     whole streaming response, defeating its auto-hide when it matters most.
+  const highlightActivity = createScrollActivity({ idleMs: SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS })
+  const railActivity = createScrollActivity({
+    idleMs: RAIL_VISIBLE_IDLE_MS,
+    momentumGraceMs: RAIL_MOMENTUM_GRACE_MS,
+  })
+  const syntaxHighlightingPaused = highlightActivity.active
 
   /**
    * The per-row bindings a MessageBubble needs from ChatView, bundled into one
@@ -597,7 +635,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // premeasureCandidates and hides in-range unmeasured rows via collapsedPremeasureIds.
   // The warm-up enable policy stays here (it reads ChatView-level scroll/stream state):
   // while the pane is visible, sized, and quiet. syntaxHighlightingPaused doubles as the
-  // "scroll recently active" gate -- set on every scroll, cleared after the idle window.
+  // "scroll recently active" gate -- see highlightActivity (createScrollActivity), which
+  // opens on EVERY scroll and closes after its idle window.
   const premeasure = createChatPremeasureBands({
     visibleEntries,
     virtualItems,
@@ -623,22 +662,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       tailVisibleId: () => tailVisibleEntry()?.msg.id,
       hasMeasuredHeight: virt.hasMeasuredHeight,
     })
-
-  let syntaxHighlightResumeTimer: ReturnType<typeof setTimeout> | undefined
-  const pauseSyntaxHighlightingForScroll = () => {
-    setSyntaxHighlightingPaused(true)
-    if (syntaxHighlightResumeTimer !== undefined)
-      clearTimeout(syntaxHighlightResumeTimer)
-    syntaxHighlightResumeTimer = setTimeout(() => {
-      syntaxHighlightResumeTimer = undefined
-      setSyntaxHighlightingPaused(false)
-    }, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS)
-  }
-
-  onCleanup(() => {
-    if (syntaxHighlightResumeTimer !== undefined)
-      clearTimeout(syntaxHighlightResumeTimer)
-  })
 
   // The rendered window: only the rows in/near the viewport.
   const visibleSlice = createMemo(() => {
@@ -793,27 +816,68 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // once in the store's getRailData (see resolveRailRange), so ChatView passes props.rail
   // straight through to ChatScrollRail rather than re-deriving the range in the view.
 
-  const pauseThen = <Args extends unknown[]>(handler: (...args: Args) => void): ((...args: Args) => void) =>
+  // The rail window only matters when a rail could render. On a conversation with no marks
+  // prop, or before the marks RPC seeds, no rail mounts and railActivity.active() has no
+  // subscriber -- so feeding it arms a 1200ms timer that fires into a dead signal on every
+  // wheel, touch, and keypress for nothing. Gate the feed on rail presence to skip that work
+  // entirely when there is no rail to light.
+  const noteRailInput = () => {
+    if (props.rail !== undefined)
+      railActivity.noteInput()
+  }
+  const noteRailScroll = () => {
+    if (props.rail !== undefined)
+      railActivity.noteScroll()
+  }
+
+  /**
+   * Wrap a genuine USER scroll input so BOTH activity windows see it. The `onScroll`
+   * handler below is deliberately not wrapped: a `scroll` event is not proof of user
+   * intent, so the two windows must treat it differently.
+   */
+  const noteScrollInput = <Args extends unknown[]>(handler: (...args: Args) => void): ((...args: Args) => void) =>
+    // The returned function IS an event handler (assigned to onPointerDown/Up/Cancel and the
+    // passive wheel/touch listeners below), so reading props.rail via noteRailInput at call
+    // time reads the current value -- the linter cannot trace the factory's call sites.
+    // eslint-disable-next-line solid/reactivity
     (...args: Args) => {
-      pauseSyntaxHighlightingForScroll()
+      highlightActivity.noteInput()
+      noteRailInput()
       handler(...args)
     }
 
   const scrollHandlers = {
-    onScroll: pauseThen(scroll.handlers.onScroll),
+    // The one asymmetric handler. A `scroll` event alone is NOT user intent -- the
+    // stick-to-bottom writes scrollTop on every streaming commit. The highlight pause
+    // WANTS those (that churn is exactly when highlighting and the premeasure warm-up must
+    // not run), so it keeps taking noteInput, unchanged from before this split. The rail
+    // takes the momentum-gated noteScroll instead, which opens its window only within
+    // RAIL_MOMENTUM_GRACE_MS of a real input: enough to ride out a touch flick's coast,
+    // never enough for a streaming turn to hold the rail lit.
+    onScroll: () => {
+      highlightActivity.noteInput()
+      noteRailScroll()
+      scroll.handlers.onScroll()
+    },
     onKeyDown: (event: KeyboardEvent) => {
-      if (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || event.key === ' '
-        || event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
-        pauseSyntaxHighlightingForScroll()
+      // A modifier-bearing key (Ctrl+End, Cmd+PageDown) is an OS/app shortcut, not a native
+      // scroll -- useChatScroll's own native-scroll attribution ignores them for the same
+      // reason (useChatScroll.ts). Mirror that gate here so the windows do not arm for a
+      // gesture that does not scroll.
+      if (!event.altKey && !event.ctrlKey && !event.metaKey
+        && (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || event.key === ' '
+          || event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home')) {
+        highlightActivity.noteInput()
+        noteRailInput()
       }
       scroll.handlers.onKeyDown(event)
     },
-    onPointerDown: pauseThen(scroll.handlers.onPointerDown),
+    onPointerDown: noteScrollInput(scroll.handlers.onPointerDown),
     onPointerMove: (event: PointerEvent) => {
       scroll.handlers.onPointerMove(event)
     },
-    onPointerUp: pauseThen(scroll.handlers.onPointerUp),
-    onPointerCancel: pauseThen(scroll.handlers.onPointerCancel),
+    onPointerUp: noteScrollInput(scroll.handlers.onPointerUp),
+    onPointerCancel: noteScrollInput(scroll.handlers.onPointerCancel),
   }
 
   // Wheel and touch listeners attach PASSIVE, imperatively: nothing in their
@@ -828,11 +892,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // props above.
   const attachPassiveScrollListeners = (el: HTMLElement): void => {
     const passive = { passive: true } as const
-    el.addEventListener('wheel', pauseThen(scroll.handlers.onWheel), passive)
-    el.addEventListener('touchstart', pauseThen(scroll.handlers.onTouchStart), passive)
-    el.addEventListener('touchmove', pauseThen(scroll.handlers.onTouchMove), passive)
-    el.addEventListener('touchend', pauseThen(scroll.handlers.onTouchEnd), passive)
-    el.addEventListener('touchcancel', pauseThen(scroll.handlers.onTouchCancel), passive)
+    el.addEventListener('wheel', noteScrollInput(scroll.handlers.onWheel), passive)
+    el.addEventListener('touchstart', noteScrollInput(scroll.handlers.onTouchStart), passive)
+    el.addEventListener('touchmove', noteScrollInput(scroll.handlers.onTouchMove), passive)
+    el.addEventListener('touchend', noteScrollInput(scroll.handlers.onTouchEnd), passive)
+    el.addEventListener('touchcancel', noteScrollInput(scroll.handlers.onTouchCancel), passive)
   }
 
   // Re-stick to the bottom after a TAIL SIBLING of the virtual spacer grows. These
@@ -1177,6 +1241,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             // derived from ONE railOwner resolution (single viewport-height source), so the rail is
             // shown exactly when the native bar is hidden -- never zero, never two scrollbars.
             hidden={railOwner() !== 'rail'}
+            // Paint-only auto-hide on touch / narrow viewports; never an unmount (see the
+            // rail's scrollActive prop). Driven by railActivity, which takes user input plus
+            // a momentum-gated scroll, so a streaming turn's stick-to-bottom writes cannot
+            // light it. Passed unconditionally: every declaration the resulting class carries
+            // lives inside a media query, so desktop is unaffected with no JS branch here.
+            scrollActive={railActivity.active()}
+            // The rail's own interactions (grab, drag move, dot hover or focus) reopen the
+            // window -- a captured thumb drag fires no events on the scroll container.
+            onActivity={() => railActivity.noteInput()}
             hasMoreOlder={!!props.pagination?.hasOlderMessages}
             hasMoreNewer={!!props.pagination?.hasNewerMessages}
             onJumpToSeq={seq => scroll.jumpToSeq(seq)}
