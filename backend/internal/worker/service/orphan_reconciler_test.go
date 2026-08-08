@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"log/slog"
@@ -572,4 +573,53 @@ func fileTabsByUser(t *testing.T, q *db.Queries, ctx context.Context) map[string
 		out[r.UserID] = r
 	}
 	return out
+}
+
+// TestReconcileAgentsSkipsChildAgents pins that the orphan reconciler never
+// reaps a child agent. reconcileAgents iterates ListAllOpenRootAgentIDs (roots
+// only; parent_agent_id IS NULL), so a tabless child -- which is its DEFAULT
+// state and disappears when its root closes -- is never handed to the teardown.
+//
+// Both agents here are open and absent from the hub (the orphan condition). The
+// root MAY be reaped per the existing logic (and is), but the child must stay
+// open: closed_at stays NULL and the shared teardown is never called for it.
+func TestReconcileAgentsSkipsChildAgents(t *testing.T) {
+	t.Parallel()
+
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	ctx := context.Background()
+
+	// Root + child, both open, both absent from the hub. The child is linked to
+	// the root via parent_agent_id, so ListAllOpenRootAgentIDs returns only the
+	// root.
+	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "root-orphan", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	require.NoError(t, q.CreateChildAgent(ctx, db.CreateChildAgentParams{
+		ID:            "child-orphan",
+		ParentAgentID: sql.NullString{String: "root-orphan", Valid: true},
+		SpawnSpanID:   "span-1",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	setFake("user-1", nil, nil)
+
+	require.True(t, runOnce(ctx, rec), "the pass must converge")
+
+	// The root is hub-absent, so it is reaped per the existing logic: closed_at
+	// is stamped and the shared teardown ran for it.
+	root, err := q.GetAgentByID(ctx, "root-orphan")
+	require.NoError(t, err)
+	assert.True(t, root.ClosedAt.Valid, "the hub-absent root must be reaped")
+	assert.Contains(t, teardown.agents, "root-orphan",
+		"the root must be handed to the shared teardown")
+
+	// The child must NEVER be reaped: it is tabless by design and disappears
+	// only when its root closes. closed_at stays NULL and the teardown is never
+	// invoked for it.
+	child, err := q.GetAgentByID(ctx, "child-orphan")
+	require.NoError(t, err)
+	assert.False(t, child.ClosedAt.Valid,
+		"a child agent must never be reaped by the orphan reconciler -- it is tabless by design and disappears with its root")
+	assert.NotContains(t, teardown.agents, "child-orphan",
+		"the child must never be handed to the shared teardown")
 }

@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // ReasonixAgent manages a single Reasonix (DeepSeek) ACP process.
@@ -60,6 +62,13 @@ func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 			a.modelFixedAtLaunch = true
 			a.reapplySettings = nil
 			a.refreshFromSession = nil
+			// Registry entry from the spawn tool_call only: Reasonix withholds
+			// ToolProgress from ACP by design, so there is no update hook and
+			// the row stays running until the agent's terminal tool_result
+			// closes the span (no close signal arrives over ACP for it).
+			// Reasonix's rawInput carries {description, prompt} with NO
+			// subagent_type, so it uses its own shape detector.
+			a.subagentFromToolCall = reasonixSubagentFromToolCall
 		},
 	})
 }
@@ -103,4 +112,38 @@ func init() {
 		"",
 		"reasonix",
 	)
+}
+
+// reasonixSubagentFromToolCall detects Reasonix's spawn tool_call. Reasonix
+// sends a single tool_call (kind "other", title "task") whose rawInput carries
+// {description, prompt} with NO subagent_type discriminator. Registry-only:
+// Reasonix withholds ToolProgress from ACP by design, and no child-session
+// content crosses the wire.
+func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
+	if len(tc.RawInput) == 0 {
+		return nil
+	}
+	var input struct {
+		Description string          `json:"description"`
+		Prompt      json.RawMessage `json:"prompt"`
+	}
+	if err := json.Unmarshal(tc.RawInput, &input); err != nil {
+		return nil
+	}
+	// Spawn shape = a prompt (optionally a description). No subagent_type.
+	if len(input.Prompt) == 0 && input.Description == "" {
+		return nil
+	}
+	title := tc.Title
+	if title == "" || title == "task" {
+		title = input.Description
+	}
+	if title == "" {
+		title = "Reasonix subagent"
+	}
+	return &acpSubagentObservation{
+		RowKey: tc.ToolCallID,
+		Title:  title,
+		Status: bgtask.StatusRunning,
+	}
 }

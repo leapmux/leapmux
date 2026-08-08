@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../../controls/types'
+import type { MessageCategory } from '../../messageClassification'
 import type { AttachmentCapabilities, Provider } from '../registry'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { PermissionMode } from '~/utils/controlResponse'
@@ -85,6 +86,13 @@ export interface ACPProviderOptions {
   /** Extra `session/update` types that should be hidden from the chat. */
   extraHiddenSessionUpdates?: Set<string>
   /**
+   * Provider-specific classification of a `tool_call_update` session update.
+   * Returns a `tool_use` category when the provider recognizes its own wire
+   * shape in the update (e.g. Goose's subagent tool-request _meta), or
+   * `undefined` to fall through to the shared status-based classifier.
+   */
+  classifyToolCallUpdate?: (parent: Record<string, unknown>) => MessageCategory | undefined
+  /**
    * Attachment capabilities. Defaults to full support; pass a restricted set for
    * providers that can't take every attachment kind (e.g. Reasonix is text-only).
    */
@@ -139,10 +147,10 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
   const plugin: Provider = {
     attachments: opts.attachments ?? { text: true, image: true, pdf: true, binary: true },
 
-    classify: classifyACPMessage(opts.extraHiddenSessionUpdates
-      ? { extraHiddenSessionUpdates: opts.extraHiddenSessionUpdates }
-      : undefined,
-    ),
+    classify: classifyACPMessage({
+      ...(opts.extraHiddenSessionUpdates ? { extraHiddenSessionUpdates: opts.extraHiddenSessionUpdates } : {}),
+      ...(opts.classifyToolCallUpdate ? { classifyToolCallUpdate: opts.classifyToolCallUpdate } : {}),
+    }),
     renderMessage: renderACPMessage,
     resultDivider: acpResultDivider,
     extractQuotableText: acpExtractQuotableText,

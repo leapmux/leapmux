@@ -7,6 +7,7 @@ import type { Section } from '~/generated/leapmux/v1/section_pb'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
+import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
@@ -17,6 +18,7 @@ import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 
 import Plus from 'lucide-solid/icons/plus'
 import { Show } from 'solid-js'
+import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
 import { IconButton } from '~/components/common/IconButton'
 import { TodoList } from '~/components/todo/TodoList'
 import { FilesSection, FilesSectionHeaderActions } from '~/components/tree/FilesSection'
@@ -27,6 +29,8 @@ import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { flavorFromOs } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { isWorkerKnownOnline } from '~/lib/workerLiveness'
+import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
+import { todoProgress } from '~/stores/chatTodos'
 import * as csStyles from './CollapsibleSidebar.css'
 import { getSectionIcon, isWorkspaceSection, sectionTypeTestId } from './sectionUtils'
 
@@ -78,6 +82,12 @@ export interface SectionDefContext {
   // Todos section
   showTodos: boolean
   activeTodos: TodoItem[]
+
+  // Background tasks section
+  showBackgroundTasks: boolean
+  activeBackgroundTasks: BackgroundTaskItem[]
+  onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
+  resolveAgentTabTitle?: (id: string) => string | undefined
 
   // Workers section
   workers: Worker[]
@@ -228,27 +238,43 @@ export function buildSectionDef(
       draggable: true,
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       railBadge: () => {
-        // Single pass: numerator counts completed, denominator counts
-        // everything except deleted tombstones (so soft-deleted rows
-        // don't inflate the "X of Y" reading).
-        let completed = 0
-        let visible = 0
-        for (const t of ctx.activeTodos) {
-          if (t.status === 'deleted')
-            continue
-          visible++
-          if (t.status === 'completed')
-            completed++
-        }
+        const { done, total } = todoProgress(ctx.activeTodos)
         return (
           <span class={csStyles.railBadgeText}>
-            {completed}
+            {done}
             /
-            {visible}
+            {total}
           </span>
         )
       },
       content: () => <TodoList todos={ctx.activeTodos} />,
+    }
+  }
+
+  if (sectionType === SectionType.BACKGROUND_TASKS) {
+    // Visible whenever the root has ANY rows (past rows keep the section alive
+    // -- viewing finished subagents is a first-class use case). Hidden only
+    // when the registry is truly empty. The badge counts active
+    // (pending/running) rows.
+    const activeCount = countActiveBackgroundTasks(ctx.activeBackgroundTasks)
+    return {
+      id: sectionId,
+      title: section.name,
+      railIcon: getSectionIcon(section),
+      railTitle: section.name,
+      visible: ctx.showBackgroundTasks,
+      draggable: true,
+      testId: `section-header-${sectionTypeTestId(sectionType)}`,
+      railBadge: activeCount > 0
+        ? () => <span class={csStyles.railBadgeText}>{activeCount}</span>
+        : undefined,
+      content: () => (
+        <BackgroundTaskList
+          tasks={ctx.activeBackgroundTasks}
+          onOpenSubagent={ctx.onOpenBackgroundTask}
+          resolveParentLabel={ctx.resolveAgentTabTitle}
+        />
+      ),
     }
   }
 

@@ -120,6 +120,26 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		Status:  "pending",
 	}))
 
+	// agent_background_tasks: created_at/updated_at are Go-bound on the Upsert;
+	// ended_at/updated_at are Go-bound on the Close. Agent agent-1 (root) already
+	// exists; insert a running row then close it so ended_at is non-null.
+	require.NoError(t, queries.UpsertAgentBackgroundTask(ctx, gendb.UpsertAgentBackgroundTaskParams{
+		OwnerAgentID: "agent-1",
+		RowKey:       "bg-1",
+		Seq:          1,
+		Kind:         "subagent",
+		Status:       "running",
+		CreatedAt:    sqltime.NewSQLiteTime(now),
+		UpdatedAt:    sqltime.NewSQLiteTime(now),
+	}))
+	require.NoError(t, queries.CloseAgentBackgroundTask(ctx, gendb.CloseAgentBackgroundTaskParams{
+		Status:       "completed",
+		EndedAt:      sqltime.SQLiteNullTimeOf(now),
+		UpdatedAt:    sqltime.NewSQLiteTime(now),
+		OwnerAgentID: "agent-1",
+		RowKey:       "bg-1",
+	}))
+
 	// control_requests.created_at via the column DEFAULT on CreateControlRequest.
 	require.NoError(t, queries.CreateControlRequest(ctx, gendb.CreateControlRequestParams{
 		AgentID:    "agent-1",

@@ -377,3 +377,94 @@ func TestCleanupRegistry_NormalOrderAndAbandonedClaim(t *testing.T) {
 	assert.Equal(t, 0, late,
 		"an abandoned claim must not make a later register fire immediately -- that id is a fresh tab, not a closed one")
 }
+
+// TestCleanup_DeleteClosedAgentsReclaimsChildAlongsideRoot pins that a CLOSED
+// child agent row is reclaimed by the same retention sweep that deletes its
+// root. Children soft-close with the tree (their closed_at is stamped when the
+// root closes), and agents.parent_agent_id carries ON DELETE CASCADE, so once
+// the sweep deletes the root the child is removed by the cascade -- it does not
+// strand behind a parent that no longer exists.
+//
+// Both rows are backdated past the retention window; after the sweep BOTH must
+// be gone. (RowsAffected reports only the explicit delete; the child is removed
+// by the FK cascade, so the count is not a reliable signal here -- row
+// existence is.)
+func TestCleanup_DeleteClosedAgentsReclaimsChildAlongsideRoot(t *testing.T) {
+	t.Parallel()
+
+	sqlDB, queries := setupTestDB(t)
+	ctx := context.Background()
+
+	// Root + child, linked via parent_agent_id.
+	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
+		ID: "root-closed", WorkingDir: "/tmp", HomeDir: "/home",
+	}))
+	require.NoError(t, queries.CreateChildAgent(ctx, gendb.CreateChildAgentParams{
+		ID:            "child-closed",
+		ParentAgentID: sql.NullString{String: "root-closed", Valid: true},
+		SpawnSpanID:   "span-1",
+		WorkingDir:    "/tmp",
+		HomeDir:       "/home",
+	}))
+
+	// Backdate BOTH rows' closed_at past the retention window. A child soft-
+	// closes with its tree, so both are stamped when the root closes.
+	old := time.Now().UTC().Add(-(cleanupRetention + 24*time.Hour)).Format("2006-01-02T15:04:05.000Z")
+	_, err := sqlDB.ExecContext(ctx, `UPDATE agents SET closed_at = ? WHERE id IN (?, ?)`,
+		old, "root-closed", "child-closed")
+	require.NoError(t, err)
+
+	// The retention sweep: same cutoff runCleanup uses.
+	cutoff := sqltime.SQLiteNullTimeOf(time.Now().Add(-cleanupRetention))
+	_, err = queries.DeleteClosedAgentsBefore(ctx, cutoff)
+	require.NoError(t, err)
+
+	// Both rows are gone -- the child does not strand behind a deleted root. The
+	// child is reclaimed by the parent_agent_id ON DELETE CASCADE when the root
+	// is removed, so a closed tree is fully reclaimed in one sweep.
+	_, err = queries.GetAgentByID(ctx, "root-closed")
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the closed root must be reclaimed")
+	_, err = queries.GetAgentByID(ctx, "child-closed")
+	assert.ErrorIs(t, err, sql.ErrNoRows,
+		"the closed child must be reclaimed alongside its root via the parent_agent_id cascade, not stranded")
+}
+
+// TestCleanup_DeleteClosedAgentsRetainsChildWhenRootRetained is the retention-
+// window twin: when the closed tree is NEWER than the cutoff, the sweep retains
+// BOTH the root and the child. The child shares the root's retention fate --
+// it is not deleted out from under a root the sweep chose to keep.
+func TestCleanup_DeleteClosedAgentsRetainsChildWhenRootRetained(t *testing.T) {
+	t.Parallel()
+
+	sqlDB, queries := setupTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, queries.CreateAgent(ctx, gendb.CreateAgentParams{
+		ID: "root-recent", WorkingDir: "/tmp", HomeDir: "/home",
+	}))
+	require.NoError(t, queries.CreateChildAgent(ctx, gendb.CreateChildAgentParams{
+		ID:            "child-recent",
+		ParentAgentID: sql.NullString{String: "root-recent", Valid: true},
+		SpawnSpanID:   "span-2",
+		WorkingDir:    "/tmp",
+		HomeDir:       "/home",
+	}))
+
+	// Stamp closed_at just inside the retention window (newer than the cutoff).
+	recent := time.Now().UTC().Add(-(cleanupRetention - 24*time.Hour)).Format("2006-01-02T15:04:05.000Z")
+	_, err := sqlDB.ExecContext(ctx, `UPDATE agents SET closed_at = ? WHERE id IN (?, ?)`,
+		recent, "root-recent", "child-recent")
+	require.NoError(t, err)
+
+	cutoff := sqltime.SQLiteNullTimeOf(time.Now().Add(-cleanupRetention))
+	res, err := queries.DeleteClosedAgentsBefore(ctx, cutoff)
+	require.NoError(t, err)
+	n, err := res.RowsAffected()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "rows inside the retention window must not be reclaimed")
+
+	for _, id := range []string{"root-recent", "child-recent"} {
+		_, err := queries.GetAgentByID(ctx, id)
+		assert.NoError(t, err, "%s must survive: it shares its root's retention fate", id)
+	}
+}

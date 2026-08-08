@@ -14,6 +14,7 @@ import { PlanExecutionMessage, UserContentMessage } from '../../messageRenderers
 import {
   acpAgentMessageRenderer,
   acpPlanRenderer,
+  acpSubagentToolRequestRenderer,
   acpThoughtRenderer,
   acpToolCallRenderer,
   acpToolCallUpdateRenderer,
@@ -34,6 +35,9 @@ export function renderACPMessage(category: MessageCategory, parsed: unknown, con
     const cat = category as { toolName: string, toolUse: Record<string, unknown> }
     if (cat.toolName === ACP_SESSION_UPDATE.PLAN)
       return acpPlanRenderer(cat.toolUse, context)
+    // Goose subagent tool-request (classifier sets toolName explicitly).
+    if (cat.toolName === 'subagent_tool_request')
+      return acpSubagentToolRequestRenderer(cat.toolUse, context)
     if (cat.toolUse.sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL_UPDATE)
       return acpToolCallUpdateRenderer(cat.toolUse, context)
     return acpToolCallRenderer(cat.toolUse, context)

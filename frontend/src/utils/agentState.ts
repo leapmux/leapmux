@@ -167,6 +167,11 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
  * takes precedence over the message-history heuristic when defined, so
  * idle-but-running tabs don't show as thinking on creation and post-
  * reconnect rehydration is driven by the authoritative session-info.
+ *
+ * A nonzero `activeBackgroundTaskCount` keeps the indicator up even when the
+ * parent turn has ended -- an active subagent/shell means the agent is still
+ * working. Todo counts deliberately do NOT appear here (a nonzero todo count
+ * alone must not show the indicator).
  */
 export function shouldShowThinkingIndicator(
   agent: AgentInfo | undefined,
@@ -174,11 +179,14 @@ export function shouldShowThinkingIndicator(
   msgs: AgentChatMessage[],
   streamingText: string | undefined,
   pendingControlRequests = 0,
+  activeBackgroundTaskCount = 0,
 ): boolean {
   if (!agent || agent.status !== AgentStatus.ACTIVE)
     return false
   if (pendingControlRequests > 0)
     return false
+  if (activeBackgroundTaskCount > 0)
+    return true
   if (streamingText)
     return true
   const plugin = pluginFor(agent.agentProvider)

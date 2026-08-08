@@ -67,6 +67,9 @@ export function applyOp(state: UserCrdtState, op: CrdtOp, canonOverride?: HLC): 
     case 'tombstoneTab':
       applyTombstoneTab(state, body.value.tabType, body.value.tabId, canon)
       break
+    case 'reviveTab':
+      applyReviveTab(state, body.value.tab?.tabType ?? 0, body.value.tab?.tabId ?? '', canon)
+      break
     case 'setFloatingWindowRegister':
       applySetFloatingWindowRegister(state, body.value, canon)
       break
@@ -256,18 +259,49 @@ function applySetTabRegister(state: UserCrdtState, op: { tabType: number, tabId:
 }
 
 function applyTombstoneTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
-  applyTombstoneRecord(
-    state.tabs,
-    tabId,
-    hlc,
-    existing => create(TabRecordSchema, {
+  const existing = state.tabs[tabId]
+  // The tombstone is a true LWW register over both tombstone and revive
+  // writes: a tombstone applies only when its HLC is newer than the current
+  // tombstone AND the last revive (revivedAt). Mirrors the hub applyTombstoneTab.
+  if (!existing || (hlcCmp(hlc, existing.tombstoneAt) > 0 && hlcCmp(hlc, existing.revivedAt) > 0)) {
+    state.tabs[tabId] = create(TabRecordSchema, {
       // Preserve the existing record's tabType when replacing; only
       // fall back to the op-provided tabType for the fresh-create path.
       tabType: existing?.tabType ?? tabType,
       tabId,
       tombstoneAt: hlcClone(hlc),
-    }),
-  )
+    })
+  }
+}
+
+/**
+ * Mirror of the hub's applyReviveTab: clears a tab's tombstone so a closed
+ * subagent tab can re-open. LWW on the tombstone register -- only clears when
+ * the revive's HLC is strictly newer than the tombstone. Preserves the record
+ * in place (the same batch's Set ops repopulate the registers). A revive of
+ * a never-seen tab materializes a live record.
+ *
+ * revivedAt is a monotone max (mirrors the hub): a redelivered or out-of-order
+ * revive can never regress revivedAt below a prior successful revive, so a
+ * later tombstone newer than the stale revive but older than the real one
+ * cannot re-close a tab the user reopened.
+ */
+function applyReviveTab(state: UserCrdtState, tabType: number, tabId: string, hlc: HLC): void {
+  if (!tabId)
+    return
+  const existing = state.tabs[tabId]
+  if (!existing) {
+    state.tabs[tabId] = create(TabRecordSchema, { tabType, tabId, revivedAt: hlcClone(hlc) })
+    return
+  }
+  if (hlcCmp(hlc, existing.tombstoneAt) > 0) {
+    existing.tombstoneAt = undefined
+  }
+  // Monotone max: keep the newer of the incoming and existing revive HLC. A
+  // losing revive (the branch above did not fire) must not regress revivedAt.
+  if (hlcCmp(hlc, existing.revivedAt) > 0) {
+    existing.revivedAt = hlcClone(hlc)
+  }
 }
 
 type FloatingWindowFieldHandler = (rec: FloatingWindowRecord, hlc: HLC, value: unknown) => void

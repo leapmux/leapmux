@@ -94,8 +94,20 @@ type CodexAgent struct {
 	// counter moving for models that stream only one of the two.
 	reasoningStreamKind map[string]string
 	availableModels     []*ModelInfo
-	collabThreadSpans   map[string]string // child thread ID -> owning spawnAgent span ID
-	collabSpanThreads   map[string]int    // spawnAgent span ID -> active child thread count
+	collabThreadSpans   map[string]string // child thread ID -> owning spawnAgent span ID (child index)
+	// collabChildItems records the child agent id that owns a streamed item
+	// (commandExecution/fileChange itemID -> childID). Populated when
+	// persistItemStartedChild routes the item/started to a child; consulted by
+	// the output-delta handlers (which carry only an itemID, no threadID) so a
+	// subagent's command output streams to its own transcript, not the parent's.
+	// Guarded by mu.
+	collabChildItems map[string]string
+	// collabChildTitles records the spawn prompt's first line per child thread
+	// (the registry + child tab title). Guarded by mu.
+	collabChildTitles map[string]string
+	// childTurnIDs records the active turn id per child thread (for steering).
+	// Guarded by mu. Cleared on child turn/completed.
+	childTurnIDs map[string]string
 }
 
 // StartCodex starts a Codex agent process and performs the JSON-RPC handshake.
@@ -363,6 +375,12 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.turnAssistantText = ""
 	a.streamingPlan = false
 	clear(a.reasoningStreamKind)
+	// Clear the collab child index: a new thread means prior child threads are
+	// gone. Entries are otherwise only removed on terminal collab status.
+	clear(a.collabThreadSpans)
+	clear(a.collabChildItems)
+	clear(a.collabChildTitles)
+	clear(a.childTurnIDs)
 	a.mu.Unlock()
 	// The thread was replaced; drop any in-flight thinking-token estimate so it
 	// doesn't leak into the new context (mirrors acpBase.ClearContext). The next

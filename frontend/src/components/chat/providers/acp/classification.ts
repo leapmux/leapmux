@@ -73,6 +73,15 @@ export function isJsonRpcResponseObject(parent: Record<string, unknown>): boolea
 
 export interface ACPClassifyConfig {
   extraHiddenSessionUpdates?: Set<string>
+  /**
+   * Provider-specific classification of a `session/update` whose
+   * `sessionUpdate` is `tool_call_update`. Returns a `tool_use` category when
+   * the provider recognizes its own wire shape in the update (e.g. Goose's
+   * subagent tool-request _meta), or `undefined` to let the shared classifier
+   * handle it. Kept provider-neutral here; each provider supplies its own from
+   * its plugin registration.
+   */
+  classifyToolCallUpdate?: (parent: Record<string, unknown>) => MessageCategory | undefined
 }
 
 /**
@@ -146,6 +155,14 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
       return { kind: 'tool_use', toolName: (parent.kind as string) || ACP_SESSION_UPDATE.TOOL_CALL, toolUse: parent, content: [] }
 
     if (sessionUpdate === ACP_SESSION_UPDATE.TOOL_CALL_UPDATE) {
+      // A provider may recognize its own tool_call_update wire shape (Goose's
+      // subagent tool-request _meta) before the shared status-based path runs.
+      // The provider-specific shape lives in the provider plugin, not here.
+      if (config.classifyToolCallUpdate) {
+        const providerCategory = config.classifyToolCallUpdate(parent)
+        if (providerCategory)
+          return providerCategory
+      }
       const status = parent.status as string | undefined
       if (status === 'completed' || status === 'failed' || status === 'cancelled')
         return { kind: 'tool_use', toolName: (parent.kind as string) || ACP_SESSION_UPDATE.TOOL_CALL_UPDATE, toolUse: parent, content: [] }

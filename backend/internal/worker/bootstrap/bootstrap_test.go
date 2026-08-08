@@ -376,3 +376,34 @@ func TestWire_PropagatesMaxMessageSize(t *testing.T) {
 	assert.Equal(t, uint64(configured), resp.GetMaxMessageSize(),
 		"channel manager must negotiate with the wired worker budget")
 }
+
+// TestLiveTabForMint_SkipsChildAgents verifies the delegation-mint tab picker
+// never returns a CHILD agent id: a child is excluded from tab_locations
+// (parent_agent_id IS NULL), so the hub 403s it ("tab not owned by calling
+// worker") and the mint backoff loops to permanent failure. Only roots are
+// worker-owned tabs.
+func TestLiveTabForMint_SkipsChildAgents(t *testing.T) {
+	queries := setupTestDB(t)
+	ctx := context.Background()
+
+	// Root must exist before the child (foreign key on parent_agent_id).
+	require.NoError(t, queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:         "root-1",
+		WorkingDir: "/tmp",
+	}))
+	require.NoError(t, queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
+		ID:            "child-1",
+		ParentAgentID: sql.NullString{String: "root-1", Valid: true},
+		SpawnSpanID:   "span-1",
+		WorkingDir:    "/tmp",
+		HomeDir:       "/tmp",
+		Title:         "child",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+
+	provider := liveTabForMint(queries)
+	id, tabType, ok := provider()
+	require.True(t, ok)
+	assert.Equal(t, "root-1", id, "mint must target a root agent, never a child")
+	assert.Equal(t, int32(leapmuxv1.TabType_TAB_TYPE_AGENT), tabType)
+}

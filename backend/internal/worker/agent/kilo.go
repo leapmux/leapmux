@@ -27,6 +27,10 @@ func StartKilo(ctx context.Context, opts Options, sink OutputSink) (Agent, error
 		configure: func(a *KiloAgent) {
 			a.modeChannel = modeChannelPrimaryAgent
 			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+			// Subagent spawn detection (registry-only; same ACP layer as
+			// OpenCode, so the same shape-detection helpers apply).
+			a.subagentFromToolCall = openCodeSubagentFromToolCall
+			a.subagentFromToolCallUpdate = openCodeSubagentFromToolCallUpdate
 		},
 		afterHandshake: func(a *KiloAgent, handshake *acpSessionResult, opts Options) error {
 			return a.applyPrimaryAgentStartup(handshake, opts, KiloPrimaryAgentCode)

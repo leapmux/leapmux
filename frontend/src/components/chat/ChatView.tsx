@@ -5,6 +5,7 @@ import type { ChatScrollState, PaginationCallbacks } from './useChatScroll'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { CommandStreamSegment, SpanMessageRevision } from '~/stores/chatTypes'
@@ -201,6 +202,14 @@ export interface AgentLifecycleProps {
   startupMessage?: string
   /** Human-readable label for the agent provider (e.g. "Claude Code"). */
   providerLabel?: string
+  /** Active background-task count (keeps the indicator up + drives the chip). */
+  backgroundTaskCount?: number
+  /** Full registry for the chip popover. */
+  backgroundTasks?: BackgroundTaskItem[]
+  onOpenSubagent?: (item: BackgroundTaskItem) => void
+  resolveParentLabel?: (agentId: string) => string | undefined
+  /** The agent's to-do list for the todos chip + popover. */
+  todos?: TodoItem[]
 }
 
 /**
@@ -1163,6 +1172,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     visible={props.agentLifecycle?.agentWorking ?? false}
                     thinkingTokens={props.agentLifecycle?.thinkingTokens}
                     paused={props.tabActive === false}
+                    backgroundTaskCount={props.agentLifecycle?.backgroundTaskCount}
+                    backgroundTasks={props.agentLifecycle?.backgroundTasks}
+                    onOpenSubagent={props.agentLifecycle?.onOpenSubagent}
+                    resolveParentLabel={props.agentLifecycle?.resolveParentLabel}
+                    todos={props.agentLifecycle?.todos}
                     onExpandTick={() => {
                       if (scroll.isAtBottomFresh())
                         scroll.jumpToBottom()

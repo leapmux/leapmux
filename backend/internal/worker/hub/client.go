@@ -125,7 +125,7 @@ func New(hubURL string) *Client {
 		hubURL:    hubURL,
 		terminals: terminal.NewManager(),
 	}
-	c.agents = agent.NewManager(func(agentID string, exitCode int, err error) {
+	c.agents = agent.NewManager(func(agentID string, exitCode int, err error, _ bool) {
 		if err != nil {
 			slog.Info("agent exited with error", "agent_id", agentID, "exit_code", exitCode, "error", err)
 		} else {

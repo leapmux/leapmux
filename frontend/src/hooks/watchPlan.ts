@@ -11,13 +11,14 @@ import type {
  * select content vs notification-class traffic so a background tab still
  * badges and rings without paying for chat deltas / terminal bytes.
  */
-import type { Tab } from '~/stores/tab.types'
+import type { AgentTab, Tab } from '~/stores/tab.types'
 import { WatchReplayMode } from '~/generated/leapmux/v1/agent_pb'
 import {
   TabType,
   WatchMode,
   WatchRejectionReason,
 } from '~/generated/leapmux/v1/workspace_pb'
+import { rootAgentIdFor } from '~/stores/tab.helpers'
 
 export interface WatchPlan {
   agents: WatchAgentEntry[]
@@ -79,6 +80,18 @@ export function agentWatchEntry(
 
 /**
  * One plan per worker that hosts any placed tab. Excludes FILE tabs.
+ *
+ * A child agent tab (a subagent transcript with `parentAgentId` set) also
+ * subscribes to its ROOT owner agent id with NOTIFY mode. The registry
+ * (BackgroundTasksChanged) and the root's TodosChanged are broadcast under the
+ * root id, so without this entry a child-only watcher never receives live
+ * updates when the root spawns another subagent or its todo list changes.
+ * NOTIFY is sufficient (both event types are notification-class) and avoids
+ * the backend "last mode wins" dedup demoting a real on-screen root tab's FULL
+ * entry.
+ *
+ * `getAgentTab` resolves a child to its root; pass `undefined` to skip the
+ * root-entry logic (used by tests that do not exercise the child path).
  */
 export function buildWatchPlans(
   tabs: readonly Tab[],
@@ -86,21 +99,49 @@ export function buildWatchPlans(
   activeKeyForTile: (tileId: string) => string | null,
   agentResumeSeq: (agentId: string) => bigint = () => 0n,
   terminalAfterOffset: (terminalId: string) => bigint | number = () => 0,
+  getAgentTab: ((agentId: string) => AgentTab | undefined) | undefined = undefined,
 ): Map<string, WatchPlan> {
   const plans = new Map<string, WatchPlan>()
+  // Track which agent ids each worker's plan already watches, so a child-driven
+  // root entry is not duplicated when the root tab is itself placed (or when two
+  // children share a root). Keeps watchPlanKey stable and the wire update minimal.
+  const watchedAgentIds = new Map<string, Set<string>>()
+  const agentIdsFor = (workerId: string): Set<string> => {
+    let s = watchedAgentIds.get(workerId)
+    if (!s) {
+      s = new Set()
+      watchedAgentIds.set(workerId, s)
+    }
+    return s
+  }
   for (const tab of tabs) {
     if (tab.type === TabType.FILE)
       continue
     if (!tab.workerId || !tab.tileId)
       continue
     const mode = tabWatchMode(tab, activeWorkspaceId, activeKeyForTile)
-    let plan = plans.get(tab.workerId)
+    const workerId = tab.workerId
+    let plan = plans.get(workerId)
     if (!plan) {
       plan = { agents: [], terminals: [] }
-      plans.set(tab.workerId, plan)
+      plans.set(workerId, plan)
     }
     if (tab.type === TabType.AGENT) {
+      const seen = agentIdsFor(workerId)
       plan.agents.push(agentWatchEntry(tab.id, agentResumeSeq(tab.id), mode))
+      seen.add(tab.id)
+      // A child tab also needs the root's notification-class events
+      // (BackgroundTasksChanged, the root's TodosChanged). These are broadcast
+      // under the root id, so subscribe to it with NOTIFY. Skip when the root
+      // is already watched (the root tab itself is placed, or a sibling child
+      // already added it).
+      if (getAgentTab && tab.parentAgentId) {
+        const rootId = rootAgentIdFor(getAgentTab, tab.id)
+        if (rootId !== tab.id && !seen.has(rootId)) {
+          plan.agents.push(agentWatchEntry(rootId, 0n, WatchMode.NOTIFY))
+          seen.add(rootId)
+        }
+      }
     }
     else if (tab.type === TabType.TERMINAL) {
       const after = terminalAfterOffset(tab.id)

@@ -3,6 +3,9 @@
  * Eliminates duplicated fixture boilerplate across Copilot, Cursor, and OpenCode.
  */
 import { execFileSync } from 'node:child_process'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
@@ -51,7 +54,11 @@ export async function createACPWorkspace(
     adminToken,
     `${config.workspacePrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
   )
-  await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
+  // Use a temp working directory instead of the home dir (the empty-workingDir
+  // fallback). Some ACP agents (OpenCode) hang when started from the home
+  // directory, so always launch from an empty temp dir.
+  const workingDir = mkdtempSync(join(tmpdir(), `${config.workspacePrefix}-wd-`))
+  await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, workingDir, {
     agentProvider: config.agentProvider,
     model: config.model,
   })

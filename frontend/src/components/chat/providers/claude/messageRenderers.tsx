@@ -1,11 +1,9 @@
 /* eslint-disable solid/components-return-once -- render methods are not Solid components */
 import type { JSX } from 'solid-js'
 import type { MessageContentRenderer, RenderContext } from '../../messageRenderers'
-import Bot from 'lucide-solid/icons/bot'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { isObject } from '~/lib/jsonPick'
 import { MarkdownText, PlanExecutionMessage, ThinkingMessage, UserContentMessage } from '../../messageRenderers'
-import { ToolStatusHeader } from '../../results/ToolStatusHeader'
 import { getMessageContentArray } from './extractors/assistantContent'
 
 /** Handles assistant messages: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}} */
@@ -43,16 +41,6 @@ export const planExecutionRenderer: MessageContentRenderer = {
     if (!content)
       return null
     return <PlanExecutionMessage text={content} context={context} />
-  },
-}
-
-/** Renders task_started system messages as a minimal "Task started" line (thread child). */
-export const taskStartedRenderer: MessageContentRenderer = {
-  render(parsed, _context) {
-    if (!isObject(parsed) || parsed.type !== 'system' || parsed.subtype !== 'task_started')
-      return null
-
-    return <ToolStatusHeader icon={Bot} title="Task started" />
   },
 }
 
@@ -121,5 +109,4 @@ export function tryClaudeUnknownKindRenderers(
     ?? assistantTextRenderer.render(parsed, context)
     ?? assistantThinkingRenderer.render(parsed, context)
     ?? userContentRenderer.render(parsed, context)
-    ?? taskStartedRenderer.render(parsed, context)
 }

@@ -162,3 +162,62 @@ DELETE FROM agents WHERE rowid IN (SELECT a.rowid FROM agents a WHERE a.closed_a
 -- metacharacters cannot produce false positives or false negatives.
 -- name: ListAgentIDsWithPlanInDir :many
 SELECT id FROM agents WHERE instr(plan_file_path, ?) = 1;
+
+-- CreateChildAgent inserts a virtual child agent (a subagent transcript fed by
+-- the parent provider's process; it never owns a process). The caller copies
+-- working_dir/home_dir/agent_provider from the parent row.
+-- name: CreateChildAgent :exec
+INSERT INTO agents (id, parent_agent_id, spawn_span_id, working_dir, home_dir, title, agent_provider) VALUES (?, ?, ?, ?, ?, ?, ?);
+
+-- GetChildAgentBySpawnSpan is the worker-restart fallback behind
+-- EnsureChildAgent: re-attach a child row when the registry upsert did not
+-- land before the restart. The (parent_agent_id, spawn_span_id) pair is unique
+-- among children (idx_agents_spawn_span), so this is at most one row.
+-- name: GetChildAgentBySpawnSpan :one
+SELECT * FROM agents WHERE parent_agent_id = ? AND spawn_span_id = ?;
+
+-- GetRootAgentID walks parent_agent_id up to the root main agent. A root row
+-- has parent_agent_id IS NULL.
+-- name: GetRootAgentID :one
+WITH RECURSIVE ancestors AS (
+    SELECT a.id AS id, a.parent_agent_id AS parent_agent_id FROM agents a WHERE a.id = ?
+    UNION ALL
+    SELECT a.id AS id, a.parent_agent_id AS parent_agent_id FROM agents a
+    JOIN ancestors ON a.id = ancestors.parent_agent_id
+)
+SELECT ancestors.id FROM ancestors WHERE ancestors.parent_agent_id IS NULL LIMIT 1;
+
+-- ListDescendantAgentIDs walks parent_agent_id DOWN from a root, returning the
+-- ids of every virtual child at any depth. Used by root-tab close to clean up
+-- child span trackers/caches alongside the row teardown.
+-- name: ListDescendantAgentIDs :many
+WITH RECURSIVE descendants AS (
+    SELECT a.id AS id FROM agents a WHERE a.parent_agent_id = ?
+    UNION ALL
+    SELECT a.id AS id FROM agents a JOIN descendants ON a.parent_agent_id = descendants.id
+)
+SELECT descendants.id FROM descendants;
+
+-- ListAgentTreeIDs returns the root id AND every descendant id (the whole
+-- subtree rooted at the given agent). Used by root-tab close to stamp
+-- closed_at on the root and all its (virtual) children: the caller iterates
+-- this list and runs CloseAgent per id inside one transaction (sqlc cannot
+-- parse a recursive CTE inside an UPDATE's IN-subquery, so the close loop
+-- lives in Go). CloseAgent's `closed_at IS NULL` guard keeps each step
+-- idempotent.
+-- name: ListAgentTreeIDs :many
+WITH RECURSIVE tree AS (
+    SELECT a.id AS id FROM agents a WHERE a.id = ?
+    UNION ALL
+    SELECT a.id AS id FROM agents a JOIN tree ON a.parent_agent_id = tree.id
+)
+SELECT tree.id FROM tree;
+
+-- ListAllOpenRootAgentIDs is the orphan reconciler's view: only root main
+-- agents (parent_agent_id IS NULL). Tabless children are their DEFAULT state
+-- and must never be reaped, so they are excluded here; they disappear when
+-- their root closes. ListAllOpenAgentIDs (above) still returns children so the
+-- state sweep keeps seeing them.
+-- name: ListAllOpenRootAgentIDs :many
+SELECT id FROM agents WHERE closed_at IS NULL AND parent_agent_id IS NULL;
+

@@ -6,6 +6,7 @@ import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { Worker } from '~/generated/leapmux/v1/worker_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
+import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { createGitFileStatusStore, GitFilterTab } from '~/stores/gitFileStatus.store'
 import type { createSectionStore } from '~/stores/section.store'
@@ -50,6 +51,10 @@ export interface SidebarElementsOpts {
   hasActiveFileTab: boolean
   showTodos: boolean
   activeTodos: TodoItem[]
+  showBackgroundTasks: boolean
+  activeBackgroundTasks: BackgroundTaskItem[]
+  onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
+  resolveAgentTabTitle?: (id: string) => string | undefined
   termOps: ReturnType<typeof useTerminalOperations>
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger: number

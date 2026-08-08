@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // Claude Code permission mode values.
@@ -134,6 +135,20 @@ type ClaudeCodeAgent struct {
 	// already hold it). nil/empty ⇒ fall back to the static claudeCodeAvailableModels
 	// catalog.
 	availableModels []*ModelInfo
+
+	// Subagent (Task/Workflow) index. Maps a Claude task_id <-> the spawning
+	// tool_use id (parent_tool_use_id on forwarded envelopes). Used to route
+	// forwarded subagent output into the right child transcript and to drive
+	// the background-task registry. Guarded by a.mu. NOT cleared at turn end
+	// (background tasks outlive turns); entries dropped on the terminal
+	// task_notification.
+	taskToolUse map[string]string // task_id -> tool_use_id
+	toolUseTask map[string]string // tool_use_id -> task_id
+	// pendingTaskEnd holds a terminal status for a Task subagent whose result
+	// message arrived BEFORE its task_started (a forward of the child's terminal
+	// result can race past a reordered task_started). Keyed by spawn tool_use id
+	// so the late task_started can close the row it just opened. Guarded by a.mu.
+	pendingTaskEnd map[string]bgtask.Status // spawn tool_use_id -> terminal status
 }
 
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
@@ -164,6 +179,12 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		// Emit summarized thinking text in thinking blocks; without this,
 		// thinking blocks arrive with an empty `thinking` field.
 		"--thinking-display", "summarized",
+		// Forward subagent (Task tool) assistant text + thinking + the child's
+		// own tool_use/tool_result envelopes onto the stream, each carrying the
+		// spawning tool's parent_tool_use_id. Lets the worker route a subagent's
+		// output into its OWN transcript (a virtual child agent) rather than
+		// rendering it inline in the parent. Verified live against 2.1.220.
+		"--forward-subagent-text",
 	}
 
 	if opts.ResumeSessionID != "" {
@@ -231,6 +252,8 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		thirdPartyFromSettings: thirdPartyFromSettings,
 		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
 		alwaysThinking:         AlwaysThinkingOn,
+		taskToolUse:            make(map[string]string),
+		toolUseTask:            make(map[string]string),
 	}
 
 	TraceStartupPhase(opts.AgentID, "before_exec_start")

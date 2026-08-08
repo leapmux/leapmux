@@ -338,4 +338,37 @@ describe('shouldShowThinkingIndicator', () => {
       '',
     )).toBe(true)
   })
+
+  it('forces visible when there is an active background task, even with no streaming text', () => {
+    expect(shouldShowThinkingIndicator(
+      makeAgent(),
+      {},
+      [],
+      '',
+      0,
+      2,
+    )).toBe(true)
+  })
+
+  it('active background task count is ignored when status is not ACTIVE', () => {
+    expect(shouldShowThinkingIndicator(
+      makeAgent({ status: AgentStatus.INACTIVE }),
+      {},
+      [],
+      '',
+      0,
+      3,
+    )).toBe(false)
+  })
+
+  it('active background task count is ignored when a control request is pending', () => {
+    expect(shouldShowThinkingIndicator(
+      makeAgent(),
+      {},
+      [],
+      '',
+      1,
+      3,
+    )).toBe(false)
+  })
 })

@@ -450,7 +450,6 @@ describe('messageBubbleClass', () => {
     expect(messageBubbleClass('result_divider', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
     expect(messageBubbleClass('control_response', MessageSource.USER)).toBe(chatStyles.metaMessage)
     expect(messageBubbleClass('compact_summary', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
-    expect(messageBubbleClass('task_notification', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
   })
 
   it('returns assistantMessage for assistant_text with AGENT source', () => {

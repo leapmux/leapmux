@@ -43,13 +43,13 @@ func startMockAgent(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 }
 
 func TestManager_SetOnExit_FiresOnStop(t *testing.T) {
-	m := NewManager(func(string, int, error) {
+	m := NewManager(func(string, int, error, bool) {
 		// Original handler: should be replaced by SetOnExit below.
 		t.Error("original onExit should not be called after SetOnExit")
 	})
 
 	exited := make(chan string, 1)
-	m.SetOnExit(func(agentID string, _ int, _ error) {
+	m.SetOnExit(func(agentID string, _ int, _ error, _ bool) {
 		exited <- agentID
 	})
 
@@ -200,7 +200,7 @@ func (b *blockingStub) Wait() error { <-b.waitCh; return nil }
 func TestManager_ExitGoroutineHonorsIdentityGuard(t *testing.T) {
 	m := NewManager(nil)
 	exited := make(chan struct{})
-	m.SetOnExit(func(string, int, error) { close(exited) })
+	m.SetOnExit(func(string, int, error, bool) { close(exited) })
 
 	// Provider A blocks in Wait until released; it is registered with a cache entry.
 	old := &blockingStub{
@@ -267,7 +267,7 @@ func TestManager_StopAndWaitWaitsForOnExit(t *testing.T) {
 	m := NewManager(nil)
 	onExitStarted := make(chan struct{})
 	releaseOnExit := make(chan struct{})
-	m.SetOnExit(func(string, int, error) {
+	m.SetOnExit(func(string, int, error, bool) {
 		close(onExitStarted)
 		<-releaseOnExit // hold onExit open so the test can observe stopAndWait still blocked
 	})

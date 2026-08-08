@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"encoding/base64"
+	"errors"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // stdoutScannerStartBuf is the scanner's initial buffer. It grows on
@@ -261,6 +263,45 @@ type OutputSink interface {
 	UpdatePlan(content []byte, compression leapmuxv1.ContentCompression, title string)
 	ScheduleAutoContinue(schedule AutoContinueSchedule)
 	CancelAutoContinue(reason AutoContinueReason)
+
+	// --- Subagent transcripts and the background-task registry ---
+
+	// EnsureChildAgent resolves (and creates on first sight) the virtual child
+	// agent spawned by the tool_use span spawnSpanID in THIS sink's transcript,
+	// linked to the provider's child key. Idempotent across replays and worker
+	// restarts. providerChildKey doubles as the registry row_key when non-empty.
+	EnsureChildAgent(spawnSpanID, providerChildKey, title string) (childAgentID string, err error)
+
+	// ChildSink returns an OutputSink bound to the child agent's transcript.
+	// The child sink has its OWN span tracker; transcript primitives act on the
+	// child. Registry primitives on a child sink write under the same ROOT owner.
+	ChildSink(childAgentID string) OutputSink
+
+	// PersistChildMessage / PersistChildTurnEnd are shorthands for
+	// ChildSink(id).PersistMessage / PersistTurnEnd.
+	PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error
+	PersistChildTurnEnd(childAgentID string, content []byte, span SpanInfo) error
+
+	// CleanupChildAgent releases the per-child service state (span tracker,
+	// todos cache, cached child sink) for a child that has reached a terminal
+	// state. A provider calls this once a subagent closes for good so a
+	// long-running root that cycles many children does not accumulate a stale
+	// SpanTracker + sink ref per closed child until the root itself closes.
+	// Idempotent. The child AGENT row and its transcript survive (they live
+	// under the root and re-hydrate on reopen); only the in-memory caches are
+	// reclaimed. A no-op for an unknown child id.
+	CleanupChildAgent(childAgentID string)
+
+	// Registry writes. All are keyed under the ROOT owner of this sink.
+	UpsertBackgroundTask(task bgtask.Upsert) error
+	UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error
+	CloseBackgroundTask(rowKey string, status bgtask.Status) error
+	// RenameBackgroundTask atomically re-keys a row from oldKey to newKey,
+	// preserving its status, child linkage, and terminal state. Used when a
+	// provider learns the stable child id only on the terminal update (OpenCode:
+	// the row opens under the toolCallId and the session id surfaces late). A
+	// no-op when oldKey is absent or newKey is empty.
+	RenameBackgroundTask(oldKey, newKey string) error
 }
 
 // Agent is the interface that all coding agent providers must implement.
@@ -301,3 +342,34 @@ type Agent interface {
 	// failed (e.g. stdin write error).
 	Interrupt() error
 }
+
+// ChildSteerer is optionally implemented by a running Agent whose provider can
+// address a child conversation inside the same process (Codex's collab child
+// threads). It is the backend hook behind "send a message to a subagent":
+// SendAgentMessage resolves the child's registry row, then drives the owner
+// process through this interface. Providers that cannot steer a subagent
+// (Claude, ACP, Pi) simply do not implement it; the service rejects a send to
+// such a child with FailedPrecondition instead of crashing.
+type ChildSteerer interface {
+	// SendChildInput sends a user message to a child conversation identified by
+	// childKey (the provider linkage key stored in the registry row_key). Returns
+	// ErrChildSteeringUnsupported only via the Manager's type-assertion path.
+	SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error
+	// InterruptChild aborts the child's current turn inside the owner process.
+	InterruptChild(childKey string) error
+}
+
+// ErrChildSteeringUnsupported is returned by the Manager when a running Agent
+// does not implement ChildSteerer (the provider cannot steer a subagent). The
+// service maps it to FailedPrecondition so the frontend shows the composer
+// gate rather than a delivery-error bubble.
+var ErrChildSteeringUnsupported = errors.New("agent provider does not support steering a subagent")
+
+// ErrChildNotSteerableYet is returned by a ChildSteerer when the owner process
+// is running but does not yet know the child thread (a worker restart emptied
+// the in-memory spawn index; the registry row resolves, but the live stream has
+// not re-fired the spawn). The service maps it to UNAVAILABLE so the frontend
+// re-queues the send/interrupt instead of treating it as a permanent delivery
+// failure (SendChildInput) or a missing child (InterruptChild). Distinguished
+// from ErrChildSteeringUnsupported: this provider DOES steer, just not yet.
+var ErrChildNotSteerableYet = errors.New("subagent not yet steerable in the running owner process; retry")

@@ -5,6 +5,9 @@
  * mirrors the Codex pattern rather than the shared ACP factory.
  */
 import { execFileSync } from 'node:child_process'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { AgentProvider } from './acp-fixture-factory'
 import { test as base, expect } from './fixtures'
 import {
@@ -44,7 +47,7 @@ export const piTest = base.extend<{
       adminToken,
       `pi-e2e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     )
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, undefined, {
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, mkdtempSync(join(tmpdir(), 'pi-e2e-wd-')), {
       agentProvider: AgentProvider.PI,
     })
     await use({ workspaceId })

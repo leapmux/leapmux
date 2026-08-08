@@ -9,7 +9,7 @@ import type { createChatStore } from '~/stores/chat.store'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { FileOpenSource, FileTab, Tab } from '~/stores/tab.types'
+import type { AgentTab, FileOpenSource, FileTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
@@ -394,6 +394,20 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     const key = tabKey(tab)
     if (closingTabKeys().has(key))
       return false
+    // A subagent (child) tab close is UI-only: the worker treats CloseAgent on
+    // a child as tab-close-only (no teardown, no closed_at), so skip the
+    // inspect/worktree prompt entirely and commit KEEP. Transcript + registry
+    // survive; the tab can be revived (Part 5b).
+    if (tab.type === TabType.AGENT && (tab as AgentTab).parentAgentId) {
+      addClosingTabKey(key)
+      try {
+        await closeTabWithAction(tab, WorktreeAction.KEEP)
+        return true
+      }
+      finally {
+        removeClosingTabKey(key)
+      }
+    }
     addClosingTabKey(key)
 
     // Decide phase: the tab stays visible (with a spinner) while we

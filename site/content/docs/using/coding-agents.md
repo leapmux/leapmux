@@ -124,6 +124,11 @@ Long tool results are collapsible (an **Expand** button), and most rows have a *
 
 When an agent produces a task plan or todo list, LeapMux shows it in a persistent sidebar with each item's status (pending, in progress, completed). Codex turn plans, Claude Code's todo and task tracking, and other providers' plan updates all feed this sidebar. The list is server-authoritative, so it stays correct across reconnects.
 
+### Subagents and the Background tasks sidebar
+
+When an agent spawns a subagent (Claude Code's Task tool) or runs a background shell, LeapMux tracks it in a **Background tasks** sidebar section. Each row shows the task's live status and, for subagents that own a transcript, is clickable to open the subagent in its own tab alongside its parent. A small chip on the thinking indicator shows the active count and opens the same list as a popover. Closing a subagent tab is tab-only — the transcript and registry survive, and the tab can be reopened from the section later. Only providers whose CLIs expose subagent activity appear here; the registry lives in the worker's local database and never reaches the hub.
+
+
 ### Turn boundaries and notifications
 
 The end of each turn is marked by a divider that may carry a label such as a duration ("Took 2.1s") or an error ("API Error: 529 …"). LeapMux also surfaces notifications for events like rate limits, context compaction, retries, and settings changes, collapsing repeated or no-op notifications so they don't flood the transcript.

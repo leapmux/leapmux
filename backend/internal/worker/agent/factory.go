@@ -88,9 +88,12 @@ const EffortXHigh = "xhigh"
 const EffortHigh = "high"
 
 // ExitHandler is called when an agent process exits.
-// agentID identifies the agent, exitCode is the process exit code,
-// and err is non-nil if the process exited with an error.
-type ExitHandler func(agentID string, exitCode int, err error)
+// agentID identifies the agent, exitCode is the process exit code, err is
+// non-nil if the process exited with an error, and stopped is true when the
+// exit was driven by an explicit Stop (a user interrupt, a relaunch, or a
+// shutdown) rather than a crash. The background-task registry uses stopped to
+// label rows 'stopped' vs 'interrupted'.
+type ExitHandler func(agentID string, exitCode int, err error, stopped bool)
 
 // Options configures a new ClaudeCodeAgent.
 type Options struct {

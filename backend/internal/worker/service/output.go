@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -545,20 +546,19 @@ func unwrapNotifContent(data []byte) (*notifThreadWrapper, error) {
 // --- OutputHandler ---
 
 // agentTodoCache mirrors an agent's agent_todos rows in memory so the
-// worker can build the post-mutation broadcast without re-fetching
-// after each event, and pick the next seq for an INSERT without a
-// pre-SELECT round-trip. Initialized lazily from the DB on first
-// touch per agent; the cache and DB stay in lock-step because every
-// successful write goes through applyTodoEvent.
+// worker can build the post-mutation broadcast without re-fetching after each
+// event, and pick the next seq for an INSERT without a pre-SELECT round-trip.
+// Initialized lazily from the DB on first touch per agent; the cache and DB
+// stay in lock-step because every successful write goes through applyTodoEvent.
 //
-// `mu` serializes the multi-step "check existence → DB write →
-// in-place mutation" sequences and also gates the lazy DB seed.
-type agentTodoCache struct {
-	mu      sync.Mutex
-	seeded  bool
-	rows    []cachedTodo
-	nextSeq int64
-}
+// It is an alias for the shared registryCache mechanics (seed/snapshot/index/
+// evict), with the type-specific behaviour supplied by todoOps. The todo-
+// specific dual-key lookups (indexByID by task id, itemsEqual for snapshot
+// no-op detection, todoItems projection) live as free functions below; the
+// cache's own mutex (registryCache.Mu) serializes the multi-step
+// "check existence -> DB write -> in-place mutation" sequences and gates the
+// lazy DB seed.
+type agentTodoCache = registryCache[cachedTodo]
 
 // cachedTodo pairs an Item with the agent_todos `row_key` it persists
 // under. The row_key is the Item's ID when set (incremental Task*
@@ -596,6 +596,32 @@ type OutputHandler struct {
 	// per-agent state above.
 	todos sync.Map // agentID -> *agentTodoCache
 
+	// Per-ROOT-agent in-memory background-task registry mirror. Keyed by the
+	// ROOT owner agent id; each bgTaskCache carries its own mutex. Rows for
+	// descendants at any depth live under the root, so a child sink writes
+	// through to its root's cache. Mirrors `todos`.
+	bgtasks sync.Map // rootAgentID -> *bgTaskCache
+
+	// rootSinks tracks the root agentOutputSink per root agent id so CleanupAgent
+	// can prune a closed child from its parent's childSinks cache (which would
+	// otherwise retain the child's SpanTracker + OutputHandler ref for the
+	// parent's lifetime). Populated by NewSink; entry per root.
+	rootSinks sync.Map // rootAgentID -> *agentOutputSink
+
+	// shuttingDown is set by Service.Shutdown so a shutdown-driven StopAll
+	// leaves background-task rows active (the next boot marks them
+	// 'interrupted' -- a truthful "worker restart" label -- rather than
+	// 'stopped'). MarkAgentBackgroundTasksExited observes it.
+	shuttingDown atomic.Bool
+
+	// shutdownCtx is cancelled (via shutdownCancel) AFTER the Shutdown drains
+	// finish, right before the caller closes the DB. The bgtask write paths use
+	// it instead of a bare context.Background() so an in-flight write that the
+	// drains did not cover fails fast (context.Canceled) instead of racing
+	// sqlDB.Close() and leaving the in-memory cache disagreeing with the DB.
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+
 	// Plan mode tool_use tracking (shared across agents).
 	planModeToolUse sync.Map // tool_use_id -> target mode string ("plan" or "default")
 
@@ -624,14 +650,36 @@ type OutputHandler struct {
 // agent_todos snapshot transaction; tests that never trigger a
 // snapshot may pass nil.
 func NewOutputHandler(sqlDB *sql.DB, queries *db.Queries, watcher *WatcherManager, agents *agent.Manager, wl *wakelock.ActivityTracker) *OutputHandler {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &OutputHandler{
-		queries:  queries,
-		db:       sqlDB,
-		watcher:  watcher,
-		agents:   agents,
-		wakeLock: wl,
-		now:      time.Now,
+		queries:        queries,
+		db:             sqlDB,
+		watcher:        watcher,
+		agents:         agents,
+		wakeLock:       wl,
+		now:            time.Now,
+		shutdownCtx:    ctx,
+		shutdownCancel: cancel,
 	}
+}
+
+// CancelBackgroundCtx cancels the shutdown context used by the background-task
+// write paths. Service.Shutdown calls it AFTER the in-flight drains finish, so
+// any write the drains did not cover fails fast instead of racing sqlDB.Close().
+func (h *OutputHandler) CancelBackgroundCtx() {
+	if h.shutdownCancel != nil {
+		h.shutdownCancel()
+	}
+}
+
+// bgTaskCtx returns the shutdown-aware context for background-task DB work.
+// Falls back to context.Background() when no shutdown context is wired (a
+// hand-built OutputHandler in a test that never shuts down).
+func (h *OutputHandler) bgTaskCtx() context.Context {
+	if h.shutdownCtx != nil {
+		return h.shutdownCtx
+	}
+	return context.Background()
 }
 
 // ResetSpanTracker resets the span tracker for the given agent, clearing all
@@ -663,10 +711,91 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 	h.lastNotifThread.Delete(agentID)
 	h.spanTrackers.Delete(agentID)
 	h.todos.Delete(agentID)
+	// bgtasks is keyed by ROOT owner id; a child id keys no entry here (its
+	// rows live under the root), so this delete is a safe no-op for children.
+	// A root close reaps the root's own registry cache.
+	h.bgtasks.Delete(agentID)
+	// Prune the child-sink cache so a closed child's SpanTracker + sink ref are
+	// not retained for the parent's lifetime. A root id is its own root: clear
+	// its whole childSinks map (every child dies with the root). A child id is
+	// pruned from whichever root sink cached it.
+	if root, ok := h.rootSinks.Load(agentID); ok {
+		rootSink := root.(*agentOutputSink)
+		rootSink.childMu.Lock()
+		rootSink.childSinks = nil
+		rootSink.childMu.Unlock()
+		h.rootSinks.Delete(agentID)
+	} else {
+		h.rootSinks.Range(func(_, v any) bool {
+			rootSink := v.(*agentOutputSink)
+			rootSink.childMu.Lock()
+			if rootSink.childSinks != nil {
+				delete(rootSink.childSinks, agentID)
+			}
+			rootSink.childMu.Unlock()
+			return true
+		})
+	}
 	h.cleanupAutoContinue(agentID)
 	// The control-response answer claims are DURABLE rows (control_response_answers), not in-memory
 	// state, so there is nothing to reclaim here -- a reused request_id is deduped per INSTANCE by its
 	// claim_token (no release needed) and rows are cleaned up in bulk with the agent via ON DELETE CASCADE.
+}
+
+// CleanupChildAgents prunes per-child state for a set of descendants in one
+// pass when a root closes, instead of calling CleanupAgent per child. Each
+// per-child CleanupAgent call would otherwise do a full rootSinks.Range scan to
+// find the child's cached sink (O(children x roots) on a root close). Here the
+// root is known, so its whole childSinks map clears once and only the cheap
+// per-agent maps (spanTrackers/todos/etc.) delete per child.
+func (h *OutputHandler) CleanupChildAgents(childIDs []string) {
+	for _, childID := range childIDs {
+		h.cleanupChildMaps(childID)
+	}
+}
+
+// cleanupChildMaps deletes the cheap per-agent maps for one child. Shared by
+// CleanupChildAgents (root close, many children) and CleanupChild (a single
+// child's terminal close driven from a provider's OutputSink). Does NOT touch
+// rootSinks/bgtasks: those are keyed by root owner and are reaped on root close.
+func (h *OutputHandler) cleanupChildMaps(childID string) {
+	h.notifMu.Delete(childID)
+	h.lastNotifThread.Delete(childID)
+	h.spanTrackers.Delete(childID)
+	h.todos.Delete(childID)
+	h.cleanupAutoContinue(childID)
+}
+
+// CleanupChild releases the per-child service state for a child that has closed
+// for good, so a long-running root that cycles many subagents does not retain a
+// stale SpanTracker + sink ref per closed child. The child AGENT row and its
+// transcript survive (they live under the root); only the in-memory caches are
+// reclaimed. Idempotent; a no-op for an unknown child id.
+func (h *OutputHandler) CleanupChild(childID string) {
+	h.cleanupChildMaps(childID)
+	// Prune the child sink from whichever root cached it (a root id is its own
+	// root and is never a child key here, so the Range finds the owning root).
+	h.rootSinks.Range(func(_, v any) bool {
+		rootSink := v.(*agentOutputSink)
+		rootSink.childMu.Lock()
+		if rootSink.childSinks != nil {
+			delete(rootSink.childSinks, childID)
+		}
+		rootSink.childMu.Unlock()
+		return true
+	})
+}
+
+// ForgetChildSinks clears a root's entire cached childSinks map. Called on
+// root teardown alongside CleanupChildAgents so no closed child sink outlives
+// the root. No-op when the root has no cached sink.
+func (h *OutputHandler) ForgetChildSinks(rootID string) {
+	if root, ok := h.rootSinks.Load(rootID); ok {
+		rootSink := root.(*agentOutputSink)
+		rootSink.childMu.Lock()
+		rootSink.childSinks = nil
+		rootSink.childMu.Unlock()
+	}
 }
 
 // claimControlResponseAnswer atomically records that (agentID, requestID, claimToken)'s answer is being
@@ -714,7 +843,12 @@ func (h *OutputHandler) claimControlResponseAnswer(agentID, requestID, claimToke
 // per-exit handler keeps this state for a possible relaunch, so it isn't cleared there).
 func (h *OutputHandler) TrackedAgentIDs() []string {
 	seen := make(map[string]struct{})
-	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.spanTrackers, &h.todos} {
+	// rootSinks is keyed by ROOT owner id (each entry caches that root's child
+	// sinks). Include it so the orphan sweep can reclaim a root sink whose
+	// agent was closed through a path that bypassed ClearAgentRuntimeState --
+	// otherwise the root sink (and every cached child sink) leaks for the
+	// worker's lifetime.
+	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.spanTrackers, &h.todos, &h.bgtasks, &h.rootSinks} {
 		m.Range(func(key, _ any) bool {
 			if id, ok := key.(string); ok {
 				seen[id] = struct{}{}
@@ -804,22 +938,37 @@ func (h *OutputHandler) snapshotPassthroughSpanLines(agentID string) string {
 
 // NewSink creates a per-agent OutputSink backed by this OutputHandler.
 func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentProvider) agent.OutputSink {
-	return &agentOutputSink{
+	s := &agentOutputSink{
 		h:             h,
 		agentID:       agentID,
+		rootAgentID:   agentID,
 		agentProvider: agentProvider,
 		plugin:        agent.ProviderFor(agentProvider),
 		tracker:       h.spanTracker(agentID),
 	}
+	h.rootSinks.Store(agentID, s)
+	return s
 }
 
 // agentOutputSink implements agent.OutputSink for a single agent.
 type agentOutputSink struct {
-	h             *OutputHandler
-	agentID       string
+	h *OutputHandler
+	// agentID is THIS sink's agent id (a child id for a child sink).
+	agentID string
+	// rootAgentID is the ROOT main agent id that owns the registry; it equals
+	// agentID for a root sink. A child sink shares its parent's rootAgentID so
+	// every registry write (EnsureChildAgent, UpsertBackgroundTask, ...) lands
+	// under the root and a child's own TodoWrite feeds agent_todos under the
+	// child id (correct for the child tab).
+	rootAgentID   string
 	agentProvider leapmuxv1.AgentProvider
 	plugin        agent.Provider
 	tracker       *SpanTracker
+	// childSinks caches ChildSink results by child agent id so repeated
+	// PersistChild* / nested-spawn calls reuse the same child sink (and its
+	// span tracker). Guarded by childMu.
+	childMu    sync.Mutex
+	childSinks map[string]*agentOutputSink
 
 	// sessionInfoMu guards lastSessionInfo against concurrent
 	// BroadcastSessionInfo calls. Agent handlers may broadcast from
@@ -1846,9 +1995,9 @@ func (h *OutputHandler) lookupPairedToolUseJSON(agentID string, span agent.SpanI
 func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]todoevents.Item, bool, error) {
 	ctx := bgCtx()
 	cache := h.todoCache(agentID)
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	if err := cache.ensureSeededLocked(ctx, h.queries, agentID); err != nil {
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	if err := cache.ensureSeededLocked(ctx, agentID); err != nil {
 		return nil, false, err
 	}
 
@@ -1860,18 +2009,18 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 		if ev.Item.ID == "" {
 			return nil, false, nil
 		}
-		existingIdx := cache.indexByID(ev.Item.ID)
+		existingIdx := todoIndexByID(cache.Rows, ev.Item.ID)
 		merged := ev.Item
 		if existingIdx >= 0 {
 			if ev.Kind == todoevents.KindDetail {
-				merged = todoevents.MergeDetail(cache.rows[existingIdx].item, ev.Item)
+				merged = todoevents.MergeDetail(cache.Rows[existingIdx].item, ev.Item)
 			}
 			// Idempotent replay: skip the DB write and the broadcast
 			// when the post-merge row equals the existing row.
-			if cache.rows[existingIdx].item == merged {
-				return cache.snapshot(), false, nil
+			if cache.Rows[existingIdx].item == merged {
+				return todoItems(cache.Rows), false, nil
 			}
-		} else if len(cache.rows) >= todoevents.MaxTodos {
+		} else if len(cache.Rows) >= todoevents.MaxTodos {
 			// At cap: evict the oldest terminal row (completed or
 			// deleted) to make room for the new task. When no terminal
 			// row exists, drop the new task and log so operators see
@@ -1883,7 +2032,7 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			if !evicted {
 				slog.Warn("agent_todos cap reached, no completed or deleted task to evict; dropping new task",
 					"agent_id", agentID, "task_id", ev.Item.ID, "cap", todoevents.MaxTodos)
-				return cache.snapshot(), false, nil
+				return todoItems(cache.Rows), false, nil
 			}
 		}
 		// Pick the next seq from the in-memory mirror so a fresh insert
@@ -1904,26 +2053,26 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			return nil, false, err
 		}
 		if existingIdx < 0 {
-			cache.rows = append(cache.rows, cachedTodo{item: merged, rowKey: ev.Item.ID})
+			cache.Rows = append(cache.Rows, cachedTodo{item: merged, rowKey: ev.Item.ID})
 			cache.nextSeq++
 		} else {
-			cache.rows[existingIdx].item = merged
+			cache.Rows[existingIdx].item = merged
 		}
-		return cache.snapshot(), true, nil
+		return todoItems(cache.Rows), true, nil
 
 	case todoevents.KindUpdate:
 		if ev.ID == "" {
 			return nil, false, nil
 		}
-		idx := cache.indexByID(ev.ID)
+		idx := todoIndexByID(cache.Rows, ev.ID)
 		if idx < 0 {
 			return nil, false, nil
 		}
-		merged := todoevents.ApplyPatch(cache.rows[idx].item, ev.Patch)
+		merged := todoevents.ApplyPatch(cache.Rows[idx].item, ev.Patch)
 		// No-op patch (every Patch field nil or already-matching): skip
 		// the DB write and broadcast.
-		if merged == cache.rows[idx].item {
-			return cache.snapshot(), false, nil
+		if merged == cache.Rows[idx].item {
+			return todoItems(cache.Rows), false, nil
 		}
 		if err := h.queries.UpdateAgentTodo(ctx, db.UpdateAgentTodoParams{
 			Content:     merged.Content,
@@ -1931,18 +2080,18 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			Description: merged.Description,
 			Status:      todoevents.StatusWire(merged.Status),
 			AgentID:     agentID,
-			RowKey:      cache.rows[idx].rowKey,
+			RowKey:      cache.Rows[idx].rowKey,
 		}); err != nil {
 			return nil, false, err
 		}
-		cache.rows[idx].item = merged
-		return cache.snapshot(), true, nil
+		cache.Rows[idx].item = merged
+		return todoItems(cache.Rows), true, nil
 
 	case todoevents.KindDelete:
 		if ev.ID == "" {
 			return nil, false, nil
 		}
-		idx := cache.indexByID(ev.ID)
+		idx := todoIndexByID(cache.Rows, ev.ID)
 		if idx < 0 {
 			return nil, false, nil
 		}
@@ -1950,44 +2099,45 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 		// Keeps the tombstone in the broadcast snapshot so the chat
 		// thread and sidebar can render a "deleted" visual, and lets
 		// the cap-eviction pool include deleted rows.
-		if cache.rows[idx].item.Status == todoevents.StatusDeleted {
+		if cache.Rows[idx].item.Status == todoevents.StatusDeleted {
 			return nil, false, nil
 		}
 		if err := h.queries.UpdateAgentTodoStatus(ctx, db.UpdateAgentTodoStatusParams{
 			Status:  todoevents.StatusWire(todoevents.StatusDeleted),
 			AgentID: agentID,
-			RowKey:  cache.rows[idx].rowKey,
+			RowKey:  cache.Rows[idx].rowKey,
 		}); err != nil {
 			return nil, false, err
 		}
-		cache.rows[idx].item.Status = todoevents.StatusDeleted
-		return cache.snapshot(), true, nil
+		cache.Rows[idx].item.Status = todoevents.StatusDeleted
+		return todoItems(cache.Rows), true, nil
 	}
 	return nil, false, nil
 }
 
-// evictOldestTerminalLocked removes the oldest terminal row
-// (completed or deleted) from the cache and the DB. Returns false
-// (with no error) when no terminal row exists; the caller drops the
-// incoming event in that case. Caller must hold cache.mu.
+// evictOldestTerminalLocked removes the oldest terminal row (completed or
+// deleted) from the cache and the DB via the shared registryCache mechanics.
+// Returns false (with no error) when no terminal row exists; the caller drops
+// the incoming event in that case. Logs the eviction for operator visibility.
+// Caller must hold the cache's mutex.
 func (h *OutputHandler) evictOldestTerminalLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
-	evictIdx := slices.IndexFunc(cache.rows, func(r cachedTodo) bool {
+	// Capture the to-be-evicted row for the log before the generic deletes it.
+	evictIdx := slices.IndexFunc(cache.Rows, func(r cachedTodo) bool {
 		return r.item.Status.IsTerminal()
 	})
 	if evictIdx < 0 {
 		return false, nil
 	}
-	evicted := cache.rows[evictIdx]
-	if _, err := h.queries.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{
-		AgentID: agentID,
-		RowKey:  evicted.rowKey,
-	}); err != nil {
-		return false, fmt.Errorf("evict agent_todo: %w", err)
+	evicted := cache.Rows[evictIdx]
+	evictedHappened, err := cache.evictOldestTerminalLocked(ctx, agentID)
+	if err != nil {
+		return false, err
 	}
-	cache.rows = slices.Delete(cache.rows, evictIdx, evictIdx+1)
-	slog.Info("agent_todos cap reached; evicted oldest completed/deleted task",
-		"agent_id", agentID, "evicted_task_id", evicted.item.ID, "evicted_status", todoevents.StatusWire(evicted.item.Status), "cap", todoevents.MaxTodos)
-	return true, nil
+	if evictedHappened {
+		slog.Info("agent_todos cap reached; evicted oldest completed/deleted task",
+			"agent_id", agentID, "evicted_task_id", evicted.item.ID, "evicted_status", todoevents.StatusWire(evicted.item.Status), "cap", todoevents.MaxTodos)
+	}
+	return evictedHappened, nil
 }
 
 // applySnapshotLocked replaces every agent_todos row with the supplied
@@ -2003,18 +2153,18 @@ func (h *OutputHandler) applySnapshotLocked(ctx context.Context, agentID string,
 	// Re-emitted plans (Codex re-broadcasts on every tick; TaskList
 	// polled twice with no change) carry a structurally identical
 	// snapshot. Skip the delete-and-insert tx + broadcast on a no-op.
-	if cache.itemsEqual(capped) {
-		return cache.snapshot(), false, nil
+	if todoItemsEqual(cache.Rows, capped) {
+		return todoItems(cache.Rows), false, nil
 	}
 	if err := h.snapshotWriteToDB(ctx, agentID, capped); err != nil {
 		return nil, false, err
 	}
-	cache.rows = make([]cachedTodo, len(capped))
+	cache.Rows = make([]cachedTodo, len(capped))
 	for i, it := range capped {
-		cache.rows[i] = cachedTodo{item: it, rowKey: rowKeyFor(it, i+1)}
+		cache.Rows[i] = cachedTodo{item: it, rowKey: rowKeyFor(it, i+1)}
 	}
 	cache.nextSeq = int64(len(capped)) + 1
-	return cache.snapshot(), true, nil
+	return todoItems(cache.Rows), true, nil
 }
 
 func (h *OutputHandler) snapshotWriteToDB(ctx context.Context, agentID string, capped []todoevents.Item) error {
@@ -2087,9 +2237,44 @@ func (h *OutputHandler) todoCache(agentID string) *agentTodoCache {
 	if v, ok := h.todos.Load(agentID); ok {
 		return v.(*agentTodoCache)
 	}
-	fresh := &agentTodoCache{}
+	fresh := &agentTodoCache{ops: h.todoOps()}
 	actual, _ := h.todos.LoadOrStore(agentID, fresh)
 	return actual.(*agentTodoCache)
+}
+
+// todoOps is the registryOps for agent_todos, capturing the handler's queries so
+// every cache instance shares the same type-specific behaviour. Mirrors bgTaskOps.
+func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
+	return registryOps[cachedTodo]{
+		listRows: func(ctx context.Context, ownerID string, limit int32) ([]seedEntry[cachedTodo], error) {
+			rows, err := h.queries.ListAgentTodos(ctx, db.ListAgentTodosParams{
+				AgentID: ownerID,
+				Limit:   int64(limit),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("list agent_todos: %w", err)
+			}
+			entries := make([]seedEntry[cachedTodo], len(rows))
+			for i, r := range rows {
+				entries[i] = seedEntry[cachedTodo]{item: cachedTodo{item: itemFromRow(r), rowKey: r.RowKey}, seq: r.Seq}
+			}
+			return entries, nil
+		},
+		keyOf:  func(r cachedTodo) string { return r.rowKey },
+		setKey: func(r *cachedTodo, key string) { r.rowKey = key },
+		isTerminal: func(r cachedTodo) bool {
+			return r.item.Status.IsTerminal()
+		},
+		deleteByKey: func(ctx context.Context, ownerID, key string) error {
+			_, err := h.queries.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{
+				AgentID: ownerID,
+				RowKey:  key,
+			})
+			return err
+		},
+		cap:   todoevents.MaxTodos,
+		label: "agent_todos",
+	}
 }
 
 // LoadTodos returns the agent's to-do list, seeding the in-memory
@@ -2098,71 +2283,43 @@ func (h *OutputHandler) todoCache(agentID string) *agentTodoCache {
 // subsequent caller observes the same authoritative snapshot.
 func (h *OutputHandler) LoadTodos(ctx context.Context, agentID string) ([]todoevents.Item, error) {
 	cache := h.todoCache(agentID)
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	if err := cache.ensureSeededLocked(ctx, h.queries, agentID); err != nil {
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	if err := cache.ensureSeededLocked(ctx, agentID); err != nil {
 		return nil, err
 	}
-	return cache.snapshot(), nil
+	return todoItems(cache.Rows), nil
 }
 
-// ensureSeededLocked loads the agent's existing rows from the DB on
-// first touch. On failure the cache remains unseeded so a later call
-// can retry. Caller must hold c.mu.
-func (c *agentTodoCache) ensureSeededLocked(ctx context.Context, queries *db.Queries, agentID string) error {
-	if c.seeded {
-		return nil
-	}
-	rows, err := queries.ListAgentTodos(ctx, db.ListAgentTodosParams{
-		AgentID: agentID,
-		Limit:   todoevents.MaxTodos,
-	})
-	if err != nil {
-		return fmt.Errorf("list agent_todos: %w", err)
-	}
-	c.rows = make([]cachedTodo, len(rows))
-	var maxSeq int64
+// todoItems projects the cache's rows into a freshly-allocated slice of the
+// items (no row_keys). Used to build the post-mutation broadcast payload.
+// Caller must hold the cache's mutex.
+func todoItems(rows []cachedTodo) []todoevents.Item {
+	out := make([]todoevents.Item, len(rows))
 	for i, r := range rows {
-		c.rows[i] = cachedTodo{item: itemFromRow(r), rowKey: r.RowKey}
-		if r.Seq > maxSeq {
-			maxSeq = r.Seq
-		}
-	}
-	// Eviction physically deletes the oldest terminal row, leaving the
-	// remaining seqs sparse. A `len(rows)+1` start would collide with the
-	// highest surviving seq on the next UpsertAgentTodo, so derive from
-	// the actual max instead.
-	c.nextSeq = maxSeq + 1
-	c.seeded = true
-	return nil
-}
-
-// snapshot returns a freshly-allocated slice of the cache's items
-// (no row_keys). Used to build the post-mutation broadcast payload.
-// Caller must hold c.mu.
-func (c *agentTodoCache) snapshot() []todoevents.Item {
-	out := make([]todoevents.Item, len(c.rows))
-	for i, r := range c.rows {
 		out[i] = r.item
 	}
 	return out
 }
 
-// indexByID returns the row index for the given task id, or -1 when
-// not present. Caller must hold c.mu.
-func (c *agentTodoCache) indexByID(id string) int {
-	return slices.IndexFunc(c.rows, func(r cachedTodo) bool { return r.item.ID == id })
+// todoIndexByID returns the row index for the given task id, or -1 when not
+// present. Todos are addressed by task id for create/update/delete (the
+// registry row_key matches the id for incremental Task* events but diverges to
+// a synthetic `snap-N` for snapshot rows), so this lookup is by item.ID rather
+// than by the registryCache row_key. Caller must hold the cache's mutex.
+func todoIndexByID(rows []cachedTodo, id string) int {
+	return slices.IndexFunc(rows, func(r cachedTodo) bool { return r.item.ID == id })
 }
 
-// itemsEqual reports whether the cache's items are element-wise equal
-// to `other`. Used by the snapshot path to short-circuit no-op
-// re-broadcasts. Caller must hold c.mu.
-func (c *agentTodoCache) itemsEqual(other []todoevents.Item) bool {
-	if len(c.rows) != len(other) {
+// todoItemsEqual reports whether the cache's items are element-wise equal to
+// `other`. Used by the snapshot path to short-circuit no-op re-broadcasts.
+// Caller must hold the cache's mutex.
+func todoItemsEqual(rows []cachedTodo, other []todoevents.Item) bool {
+	if len(rows) != len(other) {
 		return false
 	}
-	for i := range c.rows {
-		if c.rows[i].item != other[i] {
+	for i := range rows {
+		if rows[i].item != other[i] {
 			return false
 		}
 	}

@@ -39,6 +39,20 @@ export const verbRow = style({
   gap: 'var(--space-1)',
 })
 
+// bgTaskChip is the small active-count chip beside the verb. Sits in the
+// baseline-aligned verbRow; a button so it can host the registry popover.
+export const bgTaskChip = style({
+  display: 'inline-flex',
+  alignItems: 'center',
+  fontSize: 'var(--text-7)',
+  fontWeight: 'var(--font-bold)',
+  color: 'var(--primary)',
+  background: 'none',
+  border: 'none',
+  cursor: 'pointer',
+  padding: 0,
+})
+
 // verbStack hosts two overlapping verb spans so we can crossfade
 // between them on each 60s in-turn rotation. Grid layout with
 // `grid-template: 1fr / 1fr` puts both spans in the same cell;

@@ -314,6 +314,7 @@ message AgentEvent {
     AgentTodosChanged todos_changed = 11;
     CatchUpStart catch_up_start = 12;
     AgentTurnEnd turn_end = 13;
+    AgentBackgroundTasksChanged background_tasks_changed = 14;
   }
 }
 

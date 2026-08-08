@@ -267,6 +267,10 @@ const CODEX_ITEM_CLASSIFIERS: Record<string, CodexItemClassifier> = {
     return { kind: 'assistant_thinking' }
   },
   [CODEX_ITEM.USER_MESSAGE]: () => ({ kind: 'hidden' }),
+  // subAgentActivity (v2) is consumed by the backend's background-task
+  // registry drive and never persisted. A legacy row (pre-migration) must not
+  // render raw JSON, so classify it hidden defensively.
+  subAgentActivity: () => ({ kind: 'hidden' }),
 }
 
 /** LeapMux-side notification `type` values produced by the worker. */
@@ -372,6 +376,10 @@ const codexPlugin: Provider = {
   // Codex accepts an option selection AND a free-text note together, so the
   // AskUserQuestion UI keeps both instead of treating them as mutually exclusive.
   preservesSelectionNotes: true,
+  // Codex collab child threads accept host-initiated turns inside the same
+  // process, so a child tab keeps an enabled composer. AgentInfo.accepts_messages
+  // (the backend-authoritative field) wins when present; this is the fallback.
+  supportsSubagentSend: true,
   attachments: {
     text: true,
     image: true,
