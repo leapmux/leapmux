@@ -118,7 +118,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				return
 			}
 			// Same window as the agent path: the row is durable and reapable, but
-			// its cleanup is only registered once spawnRemoteIPC runs. See
+			// its cleanup is only registered once spawnControlIPC runs. See
 			// cleanupRegistry.claim.
 			svc.terminalCleanups.claim(terminalID)
 
@@ -137,7 +137,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			})
 
 			// Kick off git-mode execution + PTY spawn in the background.
-			// The RemoteIPC mint happens inside runTerminalStartup so an
+			// The ControlIPC mint happens inside runTerminalStartup so an
 			// unusually slow factory doesn't stretch the synchronous RPC
 			// latency the user sees.
 			spawnInfo := TerminalSpawnInfo{
@@ -158,7 +158,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 
 	// RestartTerminal respawns the shell process for a terminal whose
 	// previous PTY has exited. Reuses the tab's working_dir / shell /
-	// shell_start_dir and mints fresh LEAPMUX_REMOTE_* env vars. The
+	// shell_start_dir and mints fresh LEAPMUX_CONTROL_* env vars. The
 	// existing screen buffer (including the "[Terminal process exited
 	// (N) - Press Enter to restart]" notice) is preserved so the new
 	// shell's prompt lands directly below the notice.
@@ -488,7 +488,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 // git-mode plan, spawns the PTY, and reports READY or STARTUP_FAILED to the
 // frontend. On failure it rolls back any partial git-mode side effects.
 //
-// spawnInfo carries the data needed to mint the LEAPMUX_REMOTE_* token.
+// spawnInfo carries the data needed to mint the LEAPMUX_CONTROL_* token.
 // The mint runs inside this goroutine (rather than synchronously, before
 // sendProtoResponse) so an unusually slow RemoteIPC factory doesn't
 // stretch the RPC latency the user sees.
@@ -503,8 +503,8 @@ func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Option
 	// a close that lost the register-vs-cleanup race doesn't leak it.
 	// When no token was minted (RemoteIPC disabled or factory failed),
 	// nothing was registered, so the defer skips the mutex roundtrip.
-	remoteEnvs, ipcErr := svc.spawnRemoteIPC("terminal", terminalID, "open", svc.terminalCleanups.register, func() ([]string, func(), error) {
-		return svc.RemoteIPC.TerminalSpawning(spawnInfo)
+	remoteEnvs, ipcErr := svc.spawnControlIPC("terminal", terminalID, "open", svc.terminalCleanups.register, func() ([]string, func(), error) {
+		return svc.ControlIPC.TerminalSpawning(spawnInfo)
 	})
 	if ipcErr != nil {
 		// Only a missing identity is fatal here; every other factory failure
@@ -638,10 +638,10 @@ func (svc *Service) runTerminalRestart(
 	// old cleanup registered would strand a listening unix socket plus an
 	// unrevoked per-user delegation bearer for a process that is gone.
 	var newCleanup func()
-	remoteEnvs, ipcErr := svc.spawnRemoteIPC("terminal", terminalID, "restart", func(_ string, fn func()) {
+	remoteEnvs, ipcErr := svc.spawnControlIPC("terminal", terminalID, "restart", func(_ string, fn func()) {
 		newCleanup = fn
 	}, func() ([]string, func(), error) {
-		return svc.RemoteIPC.TerminalSpawning(spawnInfo)
+		return svc.ControlIPC.TerminalSpawning(spawnInfo)
 	})
 	if ipcErr != nil {
 		// See the open path: a spawn that cannot name its user fails the

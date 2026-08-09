@@ -274,11 +274,11 @@ const piPlugin: Provider = {
       return { kind: 'unknown' }
 
     // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
-    // classifyMessage, before any plugin.classify runs, since it is a Leapmux-neutral shape.)
+    // classifyMessage, before any plugin.classify runs, since it is a LeapMux-neutral shape.)
 
     const type = pickString(parent, 'type')
 
-    // User messages persisted by the Leapmux service layer are stored as
+    // User messages persisted by the LeapMux service layer are stored as
     // plain `{"content":"...","attachments":[...]}` with no `type` field —
     // not a Pi RPC event. Match this shape *before* event-type dispatch so
     // Pi-persisted user echoes don't fall through to the unknown fallback
@@ -300,7 +300,7 @@ const piPlugin: Provider = {
     if (type === PI_EVENT.MessageEnd) {
       // Pi emits message_end for *every* message added to the conversation —
       // the user's prompt, tool results, and bash-execution echoes — not just
-      // the assistant's reply. Leapmux already persists the user message via
+      // the assistant's reply. LeapMux already persists the user message via
       // the synthetic user_content row, and tool results render through the
       // tool_execution_* span. Hide these to avoid duplicates; only the
       // assistant's text/thinking message_end should reach the chat view.
@@ -372,7 +372,7 @@ const piPlugin: Provider = {
     return null
   },
 
-  // Pi marks only user sends and control-response answers. A user send is the Leapmux-neutral
+  // Pi marks only user sends and control-response answers. A user send is the LeapMux-neutral
   // `{content}` shape the shared extractor handles; a control answer is the structured
   // `{controlResponse}` row, which classifies as `control_response` and resolves through
   // controlResponseDisplay (chatMarkPreview), not here.

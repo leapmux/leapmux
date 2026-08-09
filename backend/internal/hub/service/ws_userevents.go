@@ -340,7 +340,7 @@ func parseUserEventsRequest(r *http.Request) (userEventsRequest, error) {
 	// REJECTED rather than silently degraded to a snapshot, for the reason the
 	// malformed-cursor arm above gives: degradation masks the bug and lets a
 	// broken client limp along forever. Nothing in tree sends this pairing --
-	// remoteipc's hub_stream and the remote CLI both pass their workspace ids
+	// controlipc's hub_stream and the control CLI both pass their workspace ids
 	// with a nil cursor -- so this narrows the contract without breaking a
 	// caller. Permitting a SAFE narrowed resume needs the mint-time filter
 	// carried alongside the cursor and re-checked here, which this deliberately

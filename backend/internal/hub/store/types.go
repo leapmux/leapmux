@@ -967,7 +967,7 @@ type DeleteOAuthUserLinkParams struct {
 
 // --- API token types ---
 
-// APIToken is a durable bearer credential issued to leapmux remote CLI
+// APIToken is a durable bearer credential issued to leapmux control CLI
 // (and future external clients). The exposed bearer is composed in code
 // as "lmx_<id>_<secret>"; SecretHash stores HMAC-SHA256(secret, server
 // pepper) so leaks of the snapshot alone don't allow forgery.

@@ -1,21 +1,21 @@
 /**
- * CLI runner helpers for `leapmux remote` end-to-end tests.
+ * CLI runner helpers for `leapmux control` end-to-end tests.
  *
  * The leapmux binary is built once per Playwright run by global-setup
  * (`task build-backend`) and lives at the repo root. The same binary
- * serves the `remote`, `admin`, and daemon commands; tests invoke it
+ * serves the `control`, `admin`, and daemon commands; tests invoke it
  * as a child process and parse its JSON-on-stdout contract.
  *
  * Auth model used by these helpers
  * --------------------------------
  * The CLI is the production path for external clients, so it expects
- * credentials on disk (`~/.config/leapmux/remote/<host>.json`). The
- * `LEAPMUX_REMOTE_CONFIG_DIR` env var redirects that lookup to a
+ * credentials on disk (`~/.config/leapmux/control/<host>.json`). The
+ * `LEAPMUX_CONTROL_CONFIG_DIR` env var redirects that lookup to a
  * per-test directory; combined with `mintCLITokenForAdmin` (which
  * runs `leapmux admin api-token issue` against the test hub's
  * SQLite DB and writes the resulting bearer into a credential file)
  * this lets a Playwright test drive the CLI exactly the way a user
- * would after running `leapmux remote auth login`, without
+ * would after running `leapmux control auth login`, without
  * round-tripping through the OAuth-style flow.
  */
 
@@ -34,7 +34,7 @@ const execFileAsync = promisify(execFile)
 
 /** A short-lived directory holding the CLI's credentials and pin store. */
 export interface CLIConfigDir {
-  /** Absolute path written into `LEAPMUX_REMOTE_CONFIG_DIR`. */
+  /** Absolute path written into `LEAPMUX_CONTROL_CONFIG_DIR`. */
   path: string
   /** Hub URL the credential file targets. */
   hubURL: string
@@ -110,11 +110,11 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
     throw new Error(`mintCLITokenForAdmin: could not parse access_token out of admin output:\n${stdout}`)
   }
 
-  // `LEAPMUX_REMOTE_CONFIG_DIR` returns the directory the CLI uses
+  // `LEAPMUX_CONTROL_CONFIG_DIR` returns the directory the CLI uses
   // verbatim — credentials live as `<dir>/<hub-host>.json` inside it.
-  // Don't introduce an extra `remote/` subdir: that's only present in
-  // the default `~/.config/leapmux/remote/` layout, where the CLI
-  // appends `/leapmux/remote` itself when only `XDG_CONFIG_HOME` is
+  // Don't introduce an extra `control/` subdir: that's only present in
+  // the default `~/.config/leapmux/control/` layout, where the CLI
+  // appends `/leapmux/control` itself when only `XDG_CONFIG_HOME` is
   // set.
   const configDir = mkdtempSync(join(tmpdir(), 'leapmux-cli-cfg-'))
   mkdirSync(configDir, { recursive: true })
@@ -139,15 +139,15 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
 }
 
 /**
- * Run `leapmux remote …` against the cfg dir's hub.
+ * Run `leapmux control …` against the cfg dir's hub.
  *
  * Returns the parsed JSON `data` payload from stdout. CLI errors are
  * thrown as `CLIError` carrying the upstream `code` and `message` so
  * test assertions can match on either (e.g.
  * `await expect(...).rejects.toMatchObject({ code: 'out_of_date' })`).
  *
- * The `LEAPMUX_REMOTE_*` env vars are scrubbed (except
- * `LEAPMUX_REMOTE_CONFIG_DIR`) so a test running on a laptop that
+ * The `LEAPMUX_CONTROL_*` env vars are scrubbed (except
+ * `LEAPMUX_CONTROL_CONFIG_DIR`) so a test running on a laptop that
  * happens to have an active worker shell can't pollute the harness's
  * auth context.
  */
@@ -158,18 +158,18 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
   timeoutMs?: number
 }): Promise<unknown> {
   const { binaryPath } = getGlobalState()
-  const env = scrubLeapmuxEnv({
+  const env = scrubLeapMuxEnv({
     ...process.env,
     ...options?.env,
-    LEAPMUX_REMOTE_CONFIG_DIR: cfg.path,
+    LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
   })
   // `--hub` is a leaf-command flag, not top-level. The first
-  // non-flag tokens in `args` walk the remote command tree
+  // non-flag tokens in `args` walk the control command tree
   // (e.g. ["agent","open"]); we splice `--hub <url>` AFTER that
   // walk so the dispatcher reaches the leaf before parsing flags.
   const cliArgs = withHubFlag(args, cfg.hubURL)
   try {
-    const { stdout } = await execFileAsync(binaryPath, ['remote', ...cliArgs], {
+    const { stdout } = await execFileAsync(binaryPath, ['control', ...cliArgs], {
       env,
       timeout: options?.timeoutMs ?? 30_000,
     })
@@ -192,7 +192,7 @@ export async function runCLI(cfg: CLIConfigDir, args: string[], options?: {
         // fall through to the catastrophic-error path
       }
     }
-    throw new Error(`leapmux remote ${args.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
+    throw new Error(`leapmux control ${args.join(' ')} exit=${e.code}: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`)
   }
 }
 
@@ -208,11 +208,11 @@ export function streamCLI(cfg: CLIConfigDir, args: string[]): {
   done: Promise<void>
 } {
   const { binaryPath } = getGlobalState()
-  const env = scrubLeapmuxEnv({
+  const env = scrubLeapMuxEnv({
     ...process.env,
-    LEAPMUX_REMOTE_CONFIG_DIR: cfg.path,
+    LEAPMUX_CONTROL_CONFIG_DIR: cfg.path,
   })
-  const child = spawn(binaryPath, ['remote', ...withHubFlag(args, cfg.hubURL)], { env })
+  const child = spawn(binaryPath, ['control', ...withHubFlag(args, cfg.hubURL)], { env })
 
   const events = (async function* () {
     let buf = ''
@@ -243,7 +243,7 @@ export function streamCLI(cfg: CLIConfigDir, args: string[]): {
 }
 
 /**
- * Run `leapmux remote tab open --type=agent` and return the tab_id
+ * Run `leapmux control tab open --type=agent` and return the tab_id
  * the hub minted. The CLI envelope is `{"data": ...}` where the
  * payload has snake_case keys including `tab_id`, `workspace_id`,
  * `worker_id`.
@@ -280,7 +280,7 @@ export async function cliAgentOpen(cli: CLIConfigDir, params: {
  * Wait for `count` agent tabs to render. Dev mode boots the worker
  * subprocess lazily so the first render after seeding can take a beat
  * longer than the default action timeout; 60s matches the budget the
- * remote-CLI specs use for their worker-spawn / broadcast assertions.
+ * control-CLI specs use for their worker-spawn / broadcast assertions.
  */
 export async function waitForAgentTabs(page: Page, count: number) {
   await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]'))
@@ -289,7 +289,7 @@ export async function waitForAgentTabs(page: Page, count: number) {
 
 export class CLIError extends Error {
   constructor(public readonly args: string[], public readonly code: string, message: string) {
-    super(`leapmux remote ${args.join(' ')} failed: ${code}: ${message}`)
+    super(`leapmux control ${args.join(' ')} failed: ${code}: ${message}`)
     this.name = 'CLIError'
   }
 }
@@ -336,13 +336,13 @@ function parseAdminTokenStdout(stdout: string): string | null {
 function parseEnvelope(stdout: string, args: string[]): unknown {
   const trimmed = stdout.trim()
   if (!trimmed)
-    throw new Error(`leapmux remote ${args.join(' ')}: empty stdout`)
+    throw new Error(`leapmux control ${args.join(' ')}: empty stdout`)
   let parsed: unknown
   try {
     parsed = JSON.parse(trimmed)
   }
   catch (err) {
-    throw new Error(`leapmux remote ${args.join(' ')}: stdout is not JSON:\n${trimmed}\n\nparse error: ${(err as Error).message}`)
+    throw new Error(`leapmux control ${args.join(' ')}: stdout is not JSON:\n${trimmed}\n\nparse error: ${(err as Error).message}`)
   }
   if (parsed && typeof parsed === 'object') {
     if ('error' in parsed) {
@@ -359,10 +359,10 @@ function parseEnvelope(stdout: string, args: string[]): unknown {
 
 /**
  * Splice `--hub <url>` into args AFTER the leading
- * command-tree tokens (`agent open`, `tab close`, …). The remote
+ * command-tree tokens (`agent open`, `tab close`, …). The control
  * dispatcher rejects flags at the group level — it walks the tree
  * to a leaf first — so passing `--hub` before the leaf fails with
- * "unknown remote command: --hub". Existing `--hub` tokens take
+ * "unknown control command: --hub". Existing `--hub` tokens take
  * precedence: the helper only inserts when the caller didn't
  * provide one.
  */
@@ -376,16 +376,16 @@ function withHubFlag(args: string[], hubURL: string): string[] {
 }
 
 /**
- * Drop LEAPMUX_REMOTE_* env vars so a developer's local agent shell
+ * Drop LEAPMUX_CONTROL_* env vars so a developer's local agent shell
  * doesn't accidentally short-circuit the CLI's transport selection
  * (e.g. spawning the CLI from an active LeapMux agent would otherwise
  * direct calls at the per-agent unix socket instead of the test
  * hub).
  */
-function scrubLeapmuxEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function scrubLeapMuxEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env }
   for (const k of Object.keys(out)) {
-    if (k.startsWith('LEAPMUX_REMOTE_') && k !== 'LEAPMUX_REMOTE_CONFIG_DIR')
+    if (k.startsWith('LEAPMUX_CONTROL_') && k !== 'LEAPMUX_CONTROL_CONFIG_DIR')
       delete out[k]
   }
   delete out.LEAPMUX_HUB
@@ -393,7 +393,7 @@ function scrubLeapmuxEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /**
- * Mirror `(remote.HubHost)` from the Go CLI so the credential
+ * Mirror `(control.HubHost)` from the Go CLI so the credential
  * filename produced here is the one the CLI will look up.
  */
 function hubHostForURL(hubURL: string): string {

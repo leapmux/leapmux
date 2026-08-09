@@ -82,7 +82,7 @@ import (
 // "never exceeds an op it received", and a client that reconnects under a WIDER
 // workspace_ids filter than the one the cursor was minted under can miss ops.
 // The persisted cursor is per-user, not per-filter. Two in-tree callers DO
-// narrow the filter -- remoteipc.HubEventStreamer and remote.Client both forward
+// narrow the filter -- controlipc.HubEventStreamer and remote.Client both forward
 // a workspace_ids set -- but neither ever PRESENTS a cursor (both hard-code
 // nil/0 and are stateless per call), and the browser, which does present one,
 // always subscribes to all owned workspaces. So the pairing that would bite --

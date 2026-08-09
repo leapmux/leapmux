@@ -13,7 +13,7 @@ const LocalIPCStreamPrefix = "localipc:"
 // It matters because local-IPC ids never reach the channel manager's close
 // callback -- that fires for E2EE channels only -- and every local stream
 // mints a FRESH synthetic id, so replace-semantics can never reclaim the
-// previous one either. Without this, a `leapmux remote --follow` against an
+// previous one either. Without this, a `leapmux control --follow` against an
 // entity that then goes idle leaves a registration pinned for the life of the
 // worker process, because only a failing broadcast would have swept it and no
 // broadcast ever comes.

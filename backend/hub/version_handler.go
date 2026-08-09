@@ -12,7 +12,7 @@ import (
 // The endpoint is intentionally not behind a session/bearer check:
 // build identity is non-secret (it appears in the startup banner and
 // is reported back to authenticated users via AuthService.Validate),
-// and `leapmux remote version` benefits from being able to compare
+// and `leapmux control version` benefits from being able to compare
 // CLI and hub versions before login (so first-time setup can detect
 // a hub/CLI mismatch).
 //

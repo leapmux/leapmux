@@ -396,7 +396,7 @@ func TestDelegationStore_ReleaseRejectsEmptyArgs(t *testing.T) {
 // macOS). t.TempDir() routinely produces directories that exceed it.
 func shortDelegationSocket(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp(os.TempDir(), "lmx-deleg-")
+	dir, err := os.MkdirTemp(os.TempDir(), "leapmux-deleg-")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return filepath.Join(dir, "hub.sock")
@@ -408,7 +408,7 @@ func shortDelegationSocket(t *testing.T) string {
 // transport instead of being handed to net/http with a literal `unix:`
 // scheme (which fails with "unsupported protocol scheme \"unix\"").
 //
-// Regression coverage for `leapmux remote workspace list` from inside
+// Regression coverage for `leapmux control workspace list` from inside
 // a remote-enabled terminal in solo mode.
 func TestDelegationStore_MintAndRevokeOverUnixSocket(t *testing.T) {
 	if runtime.GOOS == "windows" {

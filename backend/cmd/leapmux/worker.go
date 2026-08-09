@@ -151,7 +151,7 @@ func runWorker(args []string) error {
 	// only authority for it. Everything else this entry point needs --
 	// remote IPC, the orphan reconciler, the retention loops -- comes from
 	// the shared sequence rather than being re-listed here, which is how
-	// this entry point silently lost svc.RemoteIPC before.
+	// this entry point silently lost svc.ControlIPC before.
 	wiring := bootstrap.Wire(bootstrap.Params{
 		Ctx:                  ctx,
 		Client:               client,

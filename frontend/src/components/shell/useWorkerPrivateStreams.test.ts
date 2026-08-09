@@ -118,7 +118,7 @@ describe('useWorkerPrivateStreams', () => {
   /**
    * The subscription must not depend on the workspace already holding a tab.
    * A worker that hosts a tab ANYWHERE is subscribed, so the first tab opened
-   * in a brand-new (or so-far empty) workspace — by the `leapmux remote` CLI,
+   * in a brand-new (or so-far empty) workspace — by the `leapmux control` CLI,
    * by another session — is delivered on the stream that is already up.
    */
   it('keeps the worker stream up for a workspace that holds no tabs yet', async () => {

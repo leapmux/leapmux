@@ -43,6 +43,10 @@ func testCLIRunners(calls *[]cliCall) cliRunners {
 			record("admin", args, false)
 			return nil
 		},
+		runControl: func(args []string) error {
+			record("control", args, false)
+			return nil
+		},
 		version: func() string {
 			return "test-version"
 		},

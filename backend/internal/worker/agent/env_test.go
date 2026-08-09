@@ -46,15 +46,15 @@ func TestFinalizeAgentEnv_DeclinesOptionalLocks(t *testing.T) {
 
 // TestFinalizeAgentEnv_ExtraEnvSurvivesTheLockSetting guards the append order:
 // the lock setting must not displace a caller's ExtraEnv, which is where the
-// fresh LEAPMUX_REMOTE_* values arrive.
+// fresh LEAPMUX_CONTROL_* values arrive.
 func TestFinalizeAgentEnv_ExtraEnvSurvivesTheLockSetting(t *testing.T) {
 	t.Parallel()
 
 	env := FinalizeAgentEnv([]string{"PATH=/usr/bin"}, Options{
-		ExtraEnv: []string{"LEAPMUX_REMOTE_SOCKET=/tmp/sock"},
+		ExtraEnv: []string{"LEAPMUX_CONTROL_SOCKET=/tmp/sock"},
 	})
 
-	assert.Contains(t, env, "LEAPMUX_REMOTE_SOCKET=/tmp/sock")
+	assert.Contains(t, env, "LEAPMUX_CONTROL_SOCKET=/tmp/sock")
 	assert.Contains(t, env, gitutil.GitOptionalLocksOff)
 	assert.Contains(t, env, "LEAPMUX_WORKER=1")
 }

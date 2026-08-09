@@ -139,7 +139,7 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
       return { kind: 'unknown' }
 
     // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
-    // classifyMessage, before any plugin.classify runs, since it is a Leapmux-neutral shape covering
+    // classifyMessage, before any plugin.classify runs, since it is a LeapMux-neutral shape covering
     // every ACP-based provider -- OpenCode/Kilo/Goose/Copilot/Reasonix/Cursor -- at one site.)
 
     const sessionUpdate = parent.sessionUpdate as string | undefined

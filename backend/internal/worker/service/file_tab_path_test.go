@@ -100,7 +100,7 @@ func TestFileTabPath_RegisterAndGet(t *testing.T) {
 		"the originating tab's working dir is stored as given, not re-derived from the file's own directory")
 }
 
-// A caller with no originating tab to name -- `leapmux remote tab open
+// A caller with no originating tab to name -- `leapmux control tab open
 // --type=file` builds its tab entirely CLI-side -- still gets a usable working
 // dir, because every reader of the column treats it as authoritative and a
 // blank one would make the file tab unanswerable to `git -C`.

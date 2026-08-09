@@ -41,8 +41,8 @@ func TestDisplayName(t *testing.T) {
 
 // TestCLIAlias pins the hyphenated short form CLIAlias emits for each
 // provider. Adding a new AgentProvider proto value requires extending
-// CLIAlias too — otherwise `LEAPMUX_REMOTE_AGENT_PROVIDER` silently
-// drops the new provider on spawn and `leapmux remote tab open` won't
+// CLIAlias too — otherwise `LEAPMUX_CONTROL_AGENT_PROVIDER` silently
+// drops the new provider on spawn and `leapmux control tab open` won't
 // inherit it. The parity test below verifies every CLIAlias value
 // round-trips through ParseProvider.
 func TestCLIAlias(t *testing.T) {
@@ -72,7 +72,7 @@ func TestCLIAlias(t *testing.T) {
 // TestCLIAlias_RoundTripsThroughParseProvider confirms that for every
 // known provider the CLIAlias output is one of the inputs
 // ParseProvider accepts and maps back to the same enum. Without this,
-// the env-var injection could ship a string `leapmux remote` doesn't
+// the env-var injection could ship a string `leapmux control` doesn't
 // recognise.
 func TestCLIAlias_RoundTripsThroughParseProvider(t *testing.T) {
 	for _, p := range AllProviders() {

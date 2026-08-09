@@ -140,7 +140,7 @@ Key behaviors:
 
 Worker details are cached for about a minute, so reopening a dialog doesn't re-fetch worker details; click **Refresh workers** to force a re-list (for example, right after a new Worker comes online).
 
-To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux remote tab open --worker-id <id> ...` — see [Remote Control CLI](/docs/operating/remote-control-cli/).
+To open an agent or terminal on a chosen Worker, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/). To script the same thing, `leapmux control tab open --worker-id <id> ...` — see [Remote Control CLI](/docs/operating/control-cli/).
 
 ## Auto-reconnect
 
@@ -243,7 +243,7 @@ There are three independent pin stores, depending on *who* is connecting:
 | --- | --- | --- |
 | **Your browser** (Frontend) | `localStorage` (`leapmux:key-pins`, kept ~1 year) | Accept the in-app *Worker public key changed* dialog, or clear the key from browser storage. |
 | **A Worker → a sibling Worker** (cross-worker channels) | `<data_dir>/cross_worker_pins.json` on the Worker | `leapmux worker cross-worker-pins remove --target-worker-id=<id>` |
-| **The `leapmux remote` CLI** | `<config-dir>/<hub-host>/pins.json` | `leapmux remote worker pins remove --worker-id=<id>` |
+| **The `leapmux control` CLI** | `<config-dir>/<hub-host>/pins.json` | `leapmux control worker pins remove --worker-id=<id>` |
 
 ### What a mismatch looks like in the browser
 
@@ -256,14 +256,14 @@ When a Worker's key has changed since you last connected, the Frontend stops and
 For non-browser clients there is no dialog — agents and scripts can't answer interactive prompts — so a mismatch **aborts the connection** with an error of the form `worker <id> key mismatch — <hint>`. The hint names the exact command to clear the pin so the next connect re-pins the new key:
 
 ```bash
-# A leapmux remote agent or script hit a pin mismatch:
-leapmux remote worker pins remove --worker-id=<id>
+# A leapmux control agent or script hit a pin mismatch:
+leapmux control worker pins remove --worker-id=<id>
 
 # One Worker connecting to a sibling Worker hit a pin mismatch:
 leapmux worker cross-worker-pins remove --target-worker-id=<id>
 ```
 
-Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux remote worker pins list|show|remove` reference (and the required `--hub` flag), see [Remote Control CLI](/docs/operating/remote-control-cli/).
+Both pin-management commands run entirely against local pin files — no Worker process needs to be running to manage them. For the full `leapmux control worker pins list|show|remove` reference (and the required `--hub` flag), see [Remote Control CLI](/docs/operating/control-cli/).
 
 > **Note:** There is no UI for browsing or pre-clearing browser pins; in the browser, a pin is only reset by accepting the mismatch dialog (or by clearing browser storage). For a deeper look at the handshake, fingerprints, and the full trust model, see [Security & Threat Model](/docs/operating/security/).
 
@@ -298,7 +298,7 @@ Leave this at the default unless you have a specific reason to change it; both e
 - [Running LeapMux](/docs/operating/running-leapmux/) — run modes, ports, data directories, the bundled Worker.
 - [Configuration](/docs/operating/configuration/) — Worker flags, env vars, and config-file precedence.
 - [Security & Threat Model](/docs/operating/security/) — the E2EE protocol, TOFU pinning, and what the Hub can and cannot see.
-- [Remote Control CLI](/docs/operating/remote-control-cli/) — `leapmux remote worker` and `worker pins` for scripting and pin management.
+- [Remote Control CLI](/docs/operating/control-cli/) — `leapmux control worker` and `worker pins` for scripting and pin management.
 - [Admin CLI](/docs/operating/admin-cli/) — the full `leapmux admin worker` and registration-key reference.
 </content>
 </invoke>

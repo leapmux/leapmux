@@ -221,7 +221,7 @@ type OpenChannelOptions struct {
 
 	// BearerToken, when non-empty, is sent as "Authorization: Bearer
 	// <token>" on every hub call (GetWorkerHandshakeParams, OpenChannel,
-	// /ws/channel upgrade). Used by the leapmux remote CLI and the
+	// /ws/channel upgrade). Used by the leapmux control CLI and the
 	// worker-side cross-worker client.
 	//
 	// Apply it with applyAuth rather than by hand: an open touches the Hub four
@@ -256,7 +256,7 @@ type OpenChannelOptions struct {
 
 // KeyPinStore captures the per-hub TOFU key-pinning behaviour the
 // CLI / cross-worker callers need. Implementations are responsible for
-// persistence (CLI: ~/.config/leapmux/remote/<hub-host>/pins.json;
+// persistence (CLI: ~/.config/leapmux/control/<hub-host>/pins.json;
 // worker: <datadir>/cross_worker_pins.json).
 type KeyPinStore interface {
 	// Verify is called with the worker's freshly-fetched public keys.
@@ -520,7 +520,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	//
 	// Bounded by sessionVerifyTimeout rather than CallRPC's generic 30s: this runs
 	// INSIDE the open, so its budget is the open's, not a normal RPC's. Callers whose
-	// own context is unbounded (the `leapmux remote` commands) would otherwise hang
+	// own context is unbounded (the `leapmux control` commands) would otherwise hang
 	// for 30s on a wedged worker, and a caller's DefaultChannelOpenTimeout would be
 	// consumed entirely by this one round trip. The claim exchange this replaced
 	// bounded itself at 10s for the same reason.

@@ -267,7 +267,7 @@ CREATE TABLE worker_file_tabs (
     -- in is that tab's; deriving a dir from the path instead would answer for
     -- whatever repo the file happens to sit in, which is a different question
     -- and a different answer whenever the two diverge. Writers that have no
-    -- originating tab (`leapmux remote tab open --type=file`) fall back to the
+    -- originating tab (`leapmux control tab open --type=file`) fall back to the
     -- file's own directory, normalized once at write time in
     -- FileTabPathStore.Register so every reader can just read the column.
     working_dir  TEXT NOT NULL DEFAULT '',

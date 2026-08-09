@@ -323,7 +323,7 @@ func closeErr(_ sql.Result, err error) error { return err }
 // TestCleanupRegistry_CloseDuringStartupWindowStillRetiresTheResource pins the
 // mechanism that lets the orphan reconciler read only OPEN rows.
 //
-// A tab's row becomes durable (and therefore reapable) BEFORE spawnRemoteIPC
+// A tab's row becomes durable (and therefore reapable) BEFORE spawnControlIPC
 // registers its cleanup. A close landing in that window used to make run() a
 // silent no-op, and the cleanup registered afterwards was fired by nobody: the
 // tab's unix-socket listener stayed open and its delegation token unrevoked for

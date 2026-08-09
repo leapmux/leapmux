@@ -27,7 +27,7 @@ func (f *noIdentityRemoteIPC) spawn(tabID string) ([]string, func(), error) {
 	if f.calls >= f.failFrom {
 		return nil, nil, ErrMissingIdentity
 	}
-	return []string{"LEAPMUX_REMOTE_TAB_ID=" + tabID}, func() { f.cleanups++ }, nil
+	return []string{"LEAPMUX_CONTROL_TAB_ID=" + tabID}, func() { f.cleanups++ }, nil
 }
 
 func (f *noIdentityRemoteIPC) AgentSpawning(info AgentSpawnInfo) ([]string, func(), error) {

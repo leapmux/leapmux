@@ -78,7 +78,7 @@ export function classifyMessage(
   if (!plugin)
     return { kind: 'unsupported_provider' }
 
-  // A persisted control-response row ({isSynthetic, controlResponse}) is a Leapmux-NEUTRAL synthetic
+  // A persisted control-response row ({isSynthetic, controlResponse}) is a LeapMux-NEUTRAL synthetic
   // shape, not a provider wire format, so its classification lives here once instead of being
   // re-hardcoded in every plugin's classify (where a new provider plugin could forget it and render
   // the row as raw JSON). It is persisted as a standalone row, never inside a notification thread, so

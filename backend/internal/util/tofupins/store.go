@@ -1,5 +1,5 @@
 // Package tofupins implements a JSON-backed Trust-On-First-Use (TOFU)
-// key-pin store shared by the CLI (`leapmux remote`) and the worker's
+// key-pin store shared by the CLI (`leapmux control`) and the worker's
 // cross-worker tunnel layer.
 //
 // Both callers persist the same (worker_id → {x25519, mlkem, slhdsa,
@@ -53,7 +53,7 @@ type Options struct {
 	FileMode os.FileMode
 	// MismatchHintTmpl is a fmt-string template (one %s for the
 	// worker_id) appended to the mismatch error so end users learn
-	// how to clear the pin. Example: "clear with `leapmux remote
+	// how to clear the pin. Example: "clear with `leapmux control
 	// worker pins remove --worker-id=%s`".
 	MismatchHintTmpl string
 	// LastUsedPersistMinGap throttles on-disk rewrites caused by

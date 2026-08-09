@@ -794,7 +794,7 @@ func TestDetectDefaultShell(t *testing.T) {
 	assert.True(t, filepath.IsAbs(shell), "detectDefaultShell should return an absolute path, got %q", shell)
 }
 
-func TestResolveDefaultShell_LeapmuxEnvInvalidBareName(t *testing.T) {
+func TestResolveDefaultShell_LeapMuxEnvInvalidBareName(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "nonexistent-shell-xyz")
 	t.Setenv("SHELL", "/bin/fallback-shell")
 	resetShellCache()

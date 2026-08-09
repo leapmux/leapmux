@@ -155,7 +155,7 @@ export function registerACPProvider(opts: ACPProviderOptions): void {
     resultDivider: acpResultDivider,
     extractQuotableText: acpExtractQuotableText,
     // ACP-based providers (OpenCode, Cursor, Copilot, ...) mark only user sends and control-response
-    // answers. A user send is the Leapmux-neutral `{content}` shape the shared extractor handles; a
+    // answers. A user send is the LeapMux-neutral `{content}` shape the shared extractor handles; a
     // control answer is the structured `{controlResponse}` row, which classifies as
     // `control_response` and resolves through controlResponseDisplay (below), not here.
     previewText: defaultMarkPreview,

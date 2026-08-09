@@ -89,7 +89,7 @@ func TestWorkspaceService_GetTab_BindsTheCallerAsOwner(t *testing.T) {
 // TestWorkspaceService_LocateTab_BindsTheCallerAsOwner is the same pin for the
 // workspace-less lookup. LocateTab searches by (tab_type, tab_id) alone, so the
 // owner binding is the ONLY thing separating the two colliding rows here -- and
-// this is the path `leapmux remote` uses to expand an env-injected tab id.
+// this is the path `leapmux control` uses to expand an env-injected tab id.
 func TestWorkspaceService_LocateTab_BindsTheCallerAsOwner(t *testing.T) {
 	t.Parallel()
 

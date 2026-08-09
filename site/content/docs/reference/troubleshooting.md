@@ -108,7 +108,7 @@ The Worker's remembered key no longer matches the key the Worker is now presenti
 
 > **Warning:** Accepting overwrites the pinned key permanently. Only accept after confirming the new fingerprint really belongs to your Worker.
 
-### A `leapmux remote` or Worker-to-Worker connection aborts with "key mismatch"
+### A `leapmux control` or Worker-to-Worker connection aborts with "key mismatch"
 
 **Symptom**
 A CLI or cross-worker connection fails with:
@@ -120,17 +120,17 @@ worker <id> key mismatch — <hint>
 **Cause**
 Non-browser clients also pin Worker keys TOFU, but they cannot pop a dialog, so a mismatch aborts the connection. The hint tells you exactly how to clear the pin. There are two separate pin stores:
 
-- The **`leapmux remote` CLI** keeps pins per Hub host.
+- The **`leapmux control` CLI** keeps pins per Hub host.
 - A **Worker** keeps cross-worker pins for sibling Workers.
 
 **Fix**
 Clear the stale pin so the next connect re-pins the new key, then reconnect.
 
-For the remote CLI:
+For the control CLI:
 
 ```bash
-leapmux remote worker pins list                       # see all pinned workers
-leapmux remote worker pins remove --worker-id <id>    # clear one pin
+leapmux control worker pins list                       # see all pinned workers
+leapmux control worker pins remove --worker-id <id>    # clear one pin
 ```
 
 For a Worker's cross-worker pins (runs entirely against local files — no Worker process needs to be running):
@@ -140,7 +140,7 @@ leapmux worker cross-worker-pins list                              # see all pin
 leapmux worker cross-worker-pins remove --target-worker-id <id>    # clear one pin
 ```
 
-There is no UI for clearing key pins — pin removal is CLI-only. See [Remote Control CLI](/docs/operating/remote-control-cli/) and [Managing Workers](/docs/operating/managing-workers/).
+There is no UI for clearing key pins — pin removal is CLI-only. See [Remote Control CLI](/docs/operating/control-cli/) and [Managing Workers](/docs/operating/managing-workers/).
 
 ## Ports, listen address, and reaching the UI
 
@@ -427,31 +427,31 @@ You restored `hub.db` but not the matching `encryption.key`, or restored a key f
 **Fix**
 Restore the `encryption.key` from the same backup as the database. For planned key rotation, use `leapmux admin encryption-key rotate` then `reencrypt` — and follow the on-screen instruction to restart the Hub between the two. See [Encryption & Data](/docs/operating/encryption-and-data/).
 
-## Terminals and `leapmux remote`
+## Terminals and `leapmux control`
 
-For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see [Remote Control CLI](/docs/operating/remote-control-cli/).
+For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see [Remote Control CLI](/docs/operating/control-cli/).
 
-### `leapmux remote` inside a terminal/agent says it can't find the Hub
+### `leapmux control` inside a terminal/agent says it can't find the Hub
 
 **Symptom**
-Running `leapmux remote ...` from inside a LeapMux terminal or agent fails with something like:
+Running `leapmux control ...` from inside a LeapMux terminal or agent fails with something like:
 
 ```
-no --hub flag or LEAPMUX_HUB / LEAPMUX_REMOTE_SOCK env var; run `leapmux remote auth login --hub <url>` or invoke from inside an agent
+no --hub flag or LEAPMUX_HUB / LEAPMUX_CONTROL_SOCK env var; run `leapmux control auth login --hub <url>` or invoke from inside an agent
 ```
 
 **Cause**
-`leapmux remote` resolves its target from `LEAPMUX_REMOTE_SOCK` (+ `LEAPMUX_REMOTE_TOKEN`) when spawned inside a LeapMux terminal/agent, or from `--hub`/`LEAPMUX_HUB` plus saved login credentials otherwise. Those `LEAPMUX_REMOTE_*` env vars are injected automatically for every terminal and agent spawn — but if they're missing, the command can't locate the Hub.
+`leapmux control` resolves its target from `LEAPMUX_CONTROL_SOCK` (+ `LEAPMUX_CONTROL_TOKEN`) when spawned inside a LeapMux terminal/agent, or from `--hub`/`LEAPMUX_HUB` plus saved login credentials otherwise. Those `LEAPMUX_CONTROL_*` env vars are injected automatically for every terminal and agent spawn — but if they're missing, the command can't locate the Hub.
 
 **Fix**
-- **Inside a LeapMux terminal/agent:** the `LEAPMUX_REMOTE_*` vars should already be present. Confirm with `env | grep LEAPMUX_REMOTE`. If they're absent, you likely spawned a sub-shell that stripped the environment, or the remote-IPC server wasn't available at spawn — open a fresh terminal tab. (There is **no** "remote-enabled" checkbox to toggle; it's wired up automatically.)
+- **Inside a LeapMux terminal/agent:** the `LEAPMUX_CONTROL_*` vars should already be present. Confirm with `env | grep LEAPMUX_CONTROL`. If they're absent, you likely spawned a sub-shell that stripped the environment, or the remote-IPC server wasn't available at spawn — open a fresh terminal tab. (There is **no** "remote-enabled" checkbox to toggle; it's wired up automatically.)
 - **From your own shell (not inside LeapMux):** authenticate first:
 
   ```bash
-  leapmux remote auth login --hub https://hub.example.com
+  leapmux control auth login --hub https://hub.example.com
   ```
 
-  For headless/SSH/container shells where a browser can't open, add `--device-code` to use the device-code flow. Check your identity with `leapmux remote whoami` and `leapmux remote auth status`.
+  For headless/SSH/container shells where a browser can't open, add `--device-code` to use the device-code flow. Check your identity with `leapmux control whoami` and `leapmux control auth status`.
 
 ### A terminal shows "[Terminal process exited ... Press Enter to restart]"
 

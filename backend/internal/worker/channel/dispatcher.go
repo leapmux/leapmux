@@ -58,7 +58,7 @@ type errorQueuer interface {
 // exactly that, parking it in the watcher registry to carry live events
 // for the rest of the channel's life. That is only sound because every
 // transport mints a FRESH writer per inbound request (see the
-// boundSender built in HandleMessage, and remoteipc's per-call
+// boundSender built in HandleMessage, and controlipc's per-call
 // collectors): the writer carries the request's correlation id, so a
 // retained one keeps addressing the stream it was created for. A
 // transport that pooled or reused writers would silently misroute every
@@ -180,7 +180,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, userID userid.UserID, req *le
 // DispatchWith routes an InnerRpcRequest to the appropriate handler
 // using a custom ResponseWriter. Synchronous; the call returns after
 // the handler completes. Used by the local-IPC router (which serves
-// the `leapmux remote` CLI on a synchronous request/response loop).
+// the `leapmux control` CLI on a synchronous request/response loop).
 //
 // For tracked methods, Add(1)/Done() bracket the handler call so a
 // SIGTERM mid-request waits for the response to flush before Shutdown

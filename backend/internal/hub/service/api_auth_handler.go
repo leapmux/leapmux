@@ -1,4 +1,4 @@
-// Package service: API auth handler exposes the leapmux remote CLI auth
+// Package service: API auth handler exposes the leapmux control CLI auth
 // flows (local-redirect with PKCE, RFC 8628 device-code) and the bearer
 // refresh / revoke endpoints. Endpoints live at /auth/cli/*.
 package service

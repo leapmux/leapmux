@@ -1,7 +1,7 @@
 // Package agentlabels owns the two human-facing label tables for the
 // AgentProvider proto enum: DisplayName (enum → user-facing string) and
 // ParseProvider (free-form input → enum). Both the worker package
-// (`internal/worker/agent`) and the remote CLI (`internal/cli/remote`)
+// (`internal/worker/agent`) and the control CLI (`internal/cli/control`)
 // depend on these mappings, but the worker package pulls in a large
 // dependency tree that the CLI shouldn't have to inherit just to render
 // a label — so the tables live in a leaf package both can import.
@@ -23,9 +23,9 @@ import (
 )
 
 // CLIAlias returns the canonical kebab-case identifier that the
-// `leapmux remote` CLI accepts (and emits) for an AgentProvider. This
+// `leapmux control` CLI accepts (and emits) for an AgentProvider. This
 // is the hyphenated short form embedded in
-// `LEAPMUX_REMOTE_AGENT_PROVIDER` so a child `leapmux remote tab open
+// `LEAPMUX_CONTROL_AGENT_PROVIDER` so a child `leapmux control tab open
 // --type agent` invocation can inherit the parent's provider with zero
 // flags. Unknown / unspecified providers return "" so callers can
 // guard the env-var emit with `if alias != ""`.

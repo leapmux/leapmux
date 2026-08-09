@@ -296,7 +296,7 @@ export function PlanExecutionMessage(props: { text: string, context?: RenderCont
 
 /**
  * Provider-neutral renderer for user messages persisted as
- * `{"content":"...", "attachments":[...]}` by the Leapmux service layer.
+ * `{"content":"...", "attachments":[...]}` by the LeapMux service layer.
  * Used by Claude, Codex, Pi, and every ACP-based provider
  * (OpenCode/Cursor/Goose/Kilo/Copilot/Reasonix) so no plugin has to reinvent
  * attachment + markdown rendering. Renders nothing when the parsed body has

@@ -54,8 +54,8 @@ func TestFilterEnv_MalformedEntries(t *testing.T) {
 
 func TestStripByPrefix_DropsMatchingNames(t *testing.T) {
 	got := StripByPrefix(
-		[]string{"LEAPMUX_REMOTE_TOKEN=abc", "LEAPMUX_REMOTE_HUB=h", "HOME=/x", "PATH=/usr/bin"},
-		"LEAPMUX_REMOTE_",
+		[]string{"LEAPMUX_CONTROL_TOKEN=abc", "LEAPMUX_CONTROL_HUB=h", "HOME=/x", "PATH=/usr/bin"},
+		"LEAPMUX_CONTROL_",
 	)
 	assert.Equal(t, []string{"HOME=/x", "PATH=/usr/bin"}, got)
 }
@@ -64,8 +64,8 @@ func TestStripByPrefix_CaseSensitive(t *testing.T) {
 	// Lower-case names that share the prefix bytes must survive — the
 	// scrub only targets uppercase namespaces by convention.
 	got := StripByPrefix(
-		[]string{"leapmux_remote_token=stay", "LEAPMUX_REMOTE_TOKEN=drop", "HOME=/x"},
-		"LEAPMUX_REMOTE_",
+		[]string{"leapmux_remote_token=stay", "LEAPMUX_CONTROL_TOKEN=drop", "HOME=/x"},
+		"LEAPMUX_CONTROL_",
 	)
 	assert.Equal(t, []string{"leapmux_remote_token=stay", "HOME=/x"}, got)
 }
@@ -74,10 +74,10 @@ func TestStripByPrefix_MatchesNameNotValue(t *testing.T) {
 	// An entry whose VALUE happens to start with the prefix must not
 	// be stripped — only the NAME portion is matched.
 	got := StripByPrefix(
-		[]string{"NOTE=LEAPMUX_REMOTE_TOKEN was a thing", "LEAPMUX_REMOTE_TOKEN=drop"},
-		"LEAPMUX_REMOTE_",
+		[]string{"NOTE=LEAPMUX_CONTROL_TOKEN was a thing", "LEAPMUX_CONTROL_TOKEN=drop"},
+		"LEAPMUX_CONTROL_",
 	)
-	assert.Equal(t, []string{"NOTE=LEAPMUX_REMOTE_TOKEN was a thing"}, got)
+	assert.Equal(t, []string{"NOTE=LEAPMUX_CONTROL_TOKEN was a thing"}, got)
 }
 
 func TestStripByPrefix_EmptyPrefix_PassThrough(t *testing.T) {

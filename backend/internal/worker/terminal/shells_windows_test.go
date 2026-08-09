@@ -14,7 +14,7 @@ import (
 // require a drive letter, and exec.LookPath honours PATHEXT (so a bare
 // "cmd" resolves to ...\cmd.exe).
 
-func TestResolveDefaultShell_Windows_PrefersLeapmuxEnv(t *testing.T) {
+func TestResolveDefaultShell_Windows_PrefersLeapMuxEnv(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", `C:\test-leapmux-shell.exe`)
 	t.Setenv("SHELL", `C:\other-shell.exe`)
 	resetShellCache()
@@ -22,7 +22,7 @@ func TestResolveDefaultShell_Windows_PrefersLeapmuxEnv(t *testing.T) {
 	assert.Equal(t, `C:\test-leapmux-shell.exe`, shell)
 }
 
-func TestResolveDefaultShell_Windows_LeapmuxEnvBareName(t *testing.T) {
+func TestResolveDefaultShell_Windows_LeapMuxEnvBareName(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "cmd")
 	t.Setenv("SHELL", `C:\other-shell.exe`)
 	resetShellCache()

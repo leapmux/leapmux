@@ -427,7 +427,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // The CLI's `tab close` does the same fallback (`isWorkerUnreachable` in
     // cmd/preflight.go); keep the CONNECT-CODE halves of these two predicates in
     // sync (the channel leg is browser-only). Note the CLI's half additionally
-    // depends on remoteipc.relayError preserving the upstream connect code --
+    // depends on controlipc.relayError preserving the upstream connect code --
     // this side always talks to the hub directly, so it sees the real code
     // either way, which is why the CLI's copy could silently stop matching
     // while this one kept working.

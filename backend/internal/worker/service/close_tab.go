@@ -407,7 +407,7 @@ func dbCloseFailureMessage(tabType leapmuxv1.TabType) string {
 // ran only the DB close plus StopAgent, omitting AgentStartup.cancelAndClear
 // (so a startup racing the reap kept running and could rewrite the rows just
 // closed), Output.ClearAgentRuntimeState, and agentCleanups.run -- which is the
-// spawnRemoteIPC teardown, so the tab's unix-socket listener stayed open and its
+// spawnControlIPC teardown, so the tab's unix-socket listener stayed open and its
 // delegation token stayed UNREVOKED for the life of the worker process. This
 // commit made that offline path the normal one, which is what turned a
 // discrepancy into a leak.

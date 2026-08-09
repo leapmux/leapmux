@@ -149,9 +149,45 @@ func runAdmin(args []string) error {
 	return dispatchAdminGroup(adminTree, args, nil)
 }
 
+// matchCommandToken resolves arg against names using btrfs-style prefix
+// matching: an exact match always wins; otherwise arg must be a unique
+// unambiguous prefix of exactly one name. This mirrors the algorithm in
+// btrfs-progs' parse_one_token (btrfs.c): shorten any command name as far
+// as it stays unambiguous.
+//
+// Returns the matched name, or an error describing ambiguity ("ambiguous
+// token 'pre'; did you mean one of: a, b") or a total miss ("unknown
+// command: pre"). candidates holds the names that share the prefix, so
+// the caller can render the "did you mean" list in its own error format.
+func matchCommandToken(arg string, names []string) (matched string, candidates []string, err error) {
+	// Exact match wins outright, even if arg is also a prefix of others.
+	for _, n := range names {
+		if n == arg {
+			return n, nil, nil
+		}
+	}
+	// Otherwise collect every name for which arg is a strict prefix.
+	for _, n := range names {
+		if strings.HasPrefix(n, arg) {
+			candidates = append(candidates, n)
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return "", nil, fmt.Errorf("unknown command: %s", arg)
+	case 1:
+		return candidates[0], candidates, nil
+	default:
+		return "", candidates, fmt.Errorf("ambiguous token %q; did you mean one of: %s", arg, strings.Join(candidates, ", "))
+	}
+}
+
 // dispatchAdminGroup walks adminTree to invoke a leaf command. path is the
 // fully-qualified group path leading to group (empty for the root), used to
 // build error messages and the leaf's adminCmdCtx.
+//
+// Command and subgroup names may be abbreviated to any unambiguous prefix
+// (btrfs-style): e.g. `admin user lis` resolves to `user list`.
 func dispatchAdminGroup(group adminGroup, args, path []string) error {
 	if len(args) == 0 {
 		if len(path) == 0 {
@@ -159,21 +195,63 @@ func dispatchAdminGroup(group adminGroup, args, path []string) error {
 		}
 		return fmt.Errorf("%s command is required", strings.Join(path, " "))
 	}
+
+	// Try subgroups first, then leaf commands — but only if the token
+	// resolves unambiguously within that category. An exact match in one
+	// category is dispatched immediately; an ambiguous or unique-prefix
+	// match is only acted on when the other category has no better claim.
+	// When both categories could match, ambiguity across the union is
+	// reported so the user sees every candidate at once.
+
+	subNames := make([]string, len(group.Subgroups))
 	for i := range group.Subgroups {
-		if group.Subgroups[i].Name == args[0] {
-			return dispatchAdminGroup(group.Subgroups[i], args[1:], append(path, args[0]))
-		}
+		subNames[i] = group.Subgroups[i].Name
 	}
+	cmdNames := make([]string, len(group.Commands))
 	for i := range group.Commands {
-		c := group.Commands[i]
-		if c.Name == args[0] {
-			ctx := adminCmdCtx{
-				Path:        strings.Join(append(path, c.Name), " "),
-				Description: c.Summary + ".",
+		cmdNames[i] = group.Commands[i].Name
+	}
+
+	subMatch, subCand, subErr := matchCommandToken(args[0], subNames)
+	cmdMatch, cmdCand, cmdErr := matchCommandToken(args[0], cmdNames)
+
+	// Neither category matched at all.
+	if subErr != nil && cmdErr != nil {
+		// If one side had candidates (ambiguous) and the other had none,
+		// surface the ambiguous side's candidates. If both had none, it's
+		// a plain unknown command.
+		allCand := append(subCand, cmdCand...)
+		if len(allCand) == 0 {
+			if len(path) == 0 {
+				return fmt.Errorf("unknown admin group: %s", args[0])
 			}
-			return c.Run(ctx, args[1:])
+			return fmt.Errorf("unknown %s command: %s", strings.Join(path, " "), args[0])
+		}
+		return fmt.Errorf("ambiguous token %q; did you mean one of: %s", args[0], strings.Join(allCand, ", "))
+	}
+
+	// Prefer an exact/unique subgroup match; fall back to commands.
+	if subErr == nil {
+		for i := range group.Subgroups {
+			if group.Subgroups[i].Name == subMatch {
+				return dispatchAdminGroup(group.Subgroups[i], args[1:], append(path, subMatch))
+			}
 		}
 	}
+	if cmdErr == nil {
+		for i := range group.Commands {
+			c := group.Commands[i]
+			if c.Name == cmdMatch {
+				ctx := adminCmdCtx{
+					Path:        strings.Join(append(path, c.Name), " "),
+					Description: c.Summary + ".",
+				}
+				return c.Run(ctx, args[1:])
+			}
+		}
+	}
+
+	// Should be unreachable given the error checks above.
 	if len(path) == 0 {
 		return fmt.Errorf("unknown admin group: %s", args[0])
 	}
@@ -204,6 +282,7 @@ func formatAdminGroupUsage(g adminGroup, fullPath string) string {
 	for _, sub := range g.Subgroups {
 		fmt.Fprintf(&sb, "  %-18s%s\n", sub.Name, sub.Summary)
 	}
+	sb.WriteString("\nAny command name can be shortened as far as it stays unambiguous.\n")
 	return sb.String()
 }
 

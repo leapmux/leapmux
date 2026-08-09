@@ -9,7 +9,7 @@ This chapter is the complete reference for configuring the LeapMux **Hub** and *
 
 If you are looking for *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/operating/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/operating/encryption-and-data/).
 
-> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app and the `remote`/`admin` CLIs are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Remote Control CLI](/docs/operating/remote-control-cli/), and [Admin CLI](/docs/operating/admin-cli/).
+> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app and the `control`/`admin` CLIs are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Remote Control CLI](/docs/operating/control-cli/), and [Admin CLI](/docs/operating/admin-cli/).
 
 ## Configuration precedence
 
@@ -307,7 +307,7 @@ And, unlabelled by pool:
 
 It exists because the queue budgets above cannot bound themselves. Those are shared by *class* of connection, and each connection in a class is guaranteed a small working set it cannot be refused. Guarantee that to an unlimited number of connections and the total grows without limit, however carefully the budget was sized. This is the number that stops it.
 
-**It counts sockets, not tabs, and an active browser tab holds two** — one for live updates, and one more once it opens its first terminal or agent. Everything authenticated as the same account draws on the one allowance: browser tabs, the desktop app, and any `leapmux remote` CLI session. At the default of `32` that is roughly sixteen active tabs alongside a CLI session or two.
+**It counts sockets, not tabs, and an active browser tab holds two** — one for live updates, and one more once it opens its first terminal or agent. Everything authenticated as the same account draws on the one allowance: browser tabs, the desktop app, and any `leapmux control` CLI session. At the default of `32` that is roughly sixteen active tabs alongside a CLI session or two.
 
 **Tunnels are cheaper than they look.** All of a machine's tunnels to the same Worker share one encrypted channel, and the individual forwarded connections inside them share it too, so what counts is how many *distinct Workers* you hold tunnels to — not how many tunnels, and not how much traffic they carry. Twenty tunnels to one Worker cost one connection; one tunnel each to three Workers costs three.
 

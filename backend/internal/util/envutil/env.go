@@ -1,6 +1,6 @@
 // Package envutil collects env-var slice manipulation helpers shared
 // across worker spawn paths, the desktop AppImage scrub, and the
-// remoteipc namespace strip. All helpers take/return `[]string` in
+// controlipc namespace strip. All helpers take/return `[]string` in
 // `KEY=value` form (matching os.Environ / exec.Cmd.Env shape) and
 // preserve the relative order of surviving entries.
 package envutil
@@ -169,7 +169,7 @@ func ValuesFor(environ []string, key string) []string {
 
 // StripByPrefix returns a copy of environ with entries whose name
 // (the part before the first '=') starts with prefix removed. Useful
-// for namespaced env-var groups (e.g. `LEAPMUX_REMOTE_*`) where the
+// for namespaced env-var groups (e.g. `LEAPMUX_CONTROL_*`) where the
 // caller wants to wipe the entire group before re-injecting fresh
 // values. Matching is case-sensitive — env-var conventions for the
 // namespaces this helper serves are always uppercase, and folding

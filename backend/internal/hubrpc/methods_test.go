@@ -19,7 +19,7 @@ import (
 
 // TestRegistry_KnowsEverySupportedMethod pins the wire surface: any
 // new hub method requires updating Registry, which both the worker
-// remoteipc bridge and the CLI hubcall router read. Forgetting this
+// controlipc bridge and the CLI hubcall router read. Forgetting this
 // table means agents can't invoke the new method from inside a
 // worker session.
 func TestRegistry_KnowsEverySupportedMethod(t *testing.T) {
