@@ -587,8 +587,11 @@ type OutputHandler struct {
 	notifMu         sync.Map // agentID -> *sync.Mutex
 	lastNotifThread sync.Map // agentID -> *notifThreadRef
 
-	// Per-agent span tracking (concurrent access).
-	spanTrackers sync.Map // agentID -> *SpanTracker
+	// Per-agent span tracking. The registry records whether each tracker
+	// belongs to a root main agent or a virtual child, so cleanup and the
+	// orphan sweep can reason about each population explicitly. See
+	// spanTrackerRegistry for the lifecycle contract.
+	trackers *spanTrackerRegistry
 
 	// Per-agent in-memory to-do mirror. Keyed by agent_id; each
 	// agentTodoCache carries its own mutex for the multi-step event
@@ -660,6 +663,7 @@ func NewOutputHandler(sqlDB *sql.DB, queries *db.Queries, watcher *WatcherManage
 		now:            time.Now,
 		shutdownCtx:    ctx,
 		shutdownCancel: cancel,
+		trackers:       newSpanTrackerRegistry(),
 	}
 }
 
@@ -685,9 +689,7 @@ func (h *OutputHandler) bgTaskCtx() context.Context {
 // ResetSpanTracker resets the span tracker for the given agent, clearing all
 // active spans. Used when the agent's context is cleared or plan execution restarts.
 func (h *OutputHandler) ResetSpanTracker(agentID string) {
-	if v, ok := h.spanTrackers.Load(agentID); ok {
-		v.(*SpanTracker).Reset()
-	}
+	h.trackers.reset(agentID)
 }
 
 // SetSendMessageFunc sets the callback used by auto-continue to inject
@@ -709,7 +711,7 @@ func (h *OutputHandler) SetAgentStartingFunc(fn func(agentID string) bool) {
 func (h *OutputHandler) CleanupAgent(agentID string) {
 	h.notifMu.Delete(agentID)
 	h.lastNotifThread.Delete(agentID)
-	h.spanTrackers.Delete(agentID)
+	h.trackers.delete(agentID)
 	h.todos.Delete(agentID)
 	// bgtasks is keyed by ROOT owner id; a child id keys no entry here (its
 	// rows live under the root), so this delete is a safe no-op for children.
@@ -747,7 +749,7 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 // per-child CleanupAgent call would otherwise do a full rootSinks.Range scan to
 // find the child's cached sink (O(children x roots) on a root close). Here the
 // root is known, so its whole childSinks map clears once and only the cheap
-// per-agent maps (spanTrackers/todos/etc.) delete per child.
+// per-agent maps (trackers/todos/etc.) delete per child.
 func (h *OutputHandler) CleanupChildAgents(childIDs []string) {
 	for _, childID := range childIDs {
 		h.cleanupChildMaps(childID)
@@ -761,29 +763,9 @@ func (h *OutputHandler) CleanupChildAgents(childIDs []string) {
 func (h *OutputHandler) cleanupChildMaps(childID string) {
 	h.notifMu.Delete(childID)
 	h.lastNotifThread.Delete(childID)
-	h.spanTrackers.Delete(childID)
+	h.trackers.delete(childID)
 	h.todos.Delete(childID)
 	h.cleanupAutoContinue(childID)
-}
-
-// CleanupChild releases the per-child service state for a child that has closed
-// for good, so a long-running root that cycles many subagents does not retain a
-// stale SpanTracker + sink ref per closed child. The child AGENT row and its
-// transcript survive (they live under the root); only the in-memory caches are
-// reclaimed. Idempotent; a no-op for an unknown child id.
-func (h *OutputHandler) CleanupChild(childID string) {
-	h.cleanupChildMaps(childID)
-	// Prune the child sink from whichever root cached it (a root id is its own
-	// root and is never a child key here, so the Range finds the owning root).
-	h.rootSinks.Range(func(_, v any) bool {
-		rootSink := v.(*agentOutputSink)
-		rootSink.childMu.Lock()
-		if rootSink.childSinks != nil {
-			delete(rootSink.childSinks, childID)
-		}
-		rootSink.childMu.Unlock()
-		return true
-	})
 }
 
 // ForgetChildSinks clears a root's entire cached childSinks map. Called on
@@ -848,7 +830,7 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 	// agent was closed through a path that bypassed ClearAgentRuntimeState --
 	// otherwise the root sink (and every cached child sink) leaks for the
 	// worker's lifetime.
-	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.spanTrackers, &h.todos, &h.bgtasks, &h.rootSinks} {
+	for _, m := range []*sync.Map{&h.notifMu, &h.lastNotifThread, &h.todos, &h.bgtasks, &h.rootSinks} {
 		m.Range(func(key, _ any) bool {
 			if id, ok := key.(string); ok {
 				seen[id] = struct{}{}
@@ -856,6 +838,12 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 			return true
 		})
 	}
+	// The span-tracker registry holds root and child trackers in one typed
+	// container; fold both populations into the candidate set.
+	h.trackers.rangeAll(func(id string) bool {
+		seen[id] = struct{}{}
+		return true
+	})
 	ids := make([]string, 0, len(seen))
 	for id := range seen {
 		ids = append(ids, id)
@@ -917,13 +905,35 @@ func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
 	h.CleanupAgent(agentID)
 }
 
-// spanTracker returns the per-agent SpanTracker, creating one if needed.
-func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
-	if v, ok := h.spanTrackers.Load(agentID); ok {
-		return v.(*SpanTracker)
+// rootTracker returns the SpanTracker for a ROOT main agent, creating one if
+// needed. Used by NewSink; the kind is recorded so cleanup and the orphan sweep
+// can distinguish root trackers from child trackers.
+func (h *OutputHandler) rootTracker(agentID string) *SpanTracker {
+	return h.trackers.getOrCreate(agentID, spanTrackerRoot)
+}
+
+// childTracker returns the SpanTracker for a virtual child agent, creating one
+// if needed. Used by ChildSink; the kind is recorded as child. A child id
+// registered earlier as root (or vice versa) panics — see
+// spanTrackerRegistry.getOrCreate.
+func (h *OutputHandler) childTracker(agentID string) *SpanTracker {
+	return h.trackers.getOrCreate(agentID, spanTrackerChild)
+}
+
+// trackerForSnapshot resolves the tracker for a read-only snapshot without
+// seeding an entry. Used by paths whose agent is expected to already have a
+// sink (and thus a tracker); creating one here would mask a missing-sink bug.
+// Returns a zero-value fallback only when the agent is genuinely unknown so
+// the snapshot still renders "[]" instead of nil-dereferencing, and logs a
+// warning so a real missing-sink regression surfaces in telemetry instead of
+// rendering silently empty spans.
+func (h *OutputHandler) trackerForSnapshot(agentID string) *SpanTracker {
+	if t, _, ok := h.trackers.get(agentID); ok {
+		return t
 	}
-	v, _ := h.spanTrackers.LoadOrStore(agentID, &SpanTracker{})
-	return v.(*SpanTracker)
+	slog.Warn("snapshot resolved no span tracker for agent; expected a sink to own one",
+		"agent_id", agentID)
+	return &SpanTracker{}
 }
 
 // snapshotPassthroughSpanLines returns the JSON-encoded span lines for a
@@ -932,7 +942,7 @@ func (h *OutputHandler) spanTracker(agentID string) *SpanTracker {
 // bars so the surrounding span columns remain visually unbroken across the
 // row. Returns "[]" when no spans are active.
 func (h *OutputHandler) snapshotPassthroughSpanLines(agentID string) string {
-	_, lines, _ := h.spanTracker(agentID).Snapshot("", "", false)
+	_, lines, _ := h.trackerForSnapshot(agentID).Snapshot("", "", false)
 	return lines
 }
 
@@ -944,7 +954,7 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 		rootAgentID:   agentID,
 		agentProvider: agentProvider,
 		plugin:        agent.ProviderFor(agentProvider),
-		tracker:       h.spanTracker(agentID),
+		tracker:       h.rootTracker(agentID),
 	}
 	h.rootSinks.Store(agentID, s)
 	return s
@@ -1844,7 +1854,12 @@ func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmu
 		h.wakeLock.RecordActivity()
 	}
 	if tracker == nil {
-		tracker = h.spanTracker(agentID)
+		// Read-only resolution: the nil-tracker callers (control-response
+		// echoes, synthetic user turns) target an agent that already owns a
+		// sink and thus a tracker. Seeding one here would mask a missing-sink
+		// bug; a fallback empty tracker renders "[]" for a genuinely unknown
+		// agent, and trackerForSnapshot logs the miss.
+		tracker = h.trackerForSnapshot(agentID)
 	}
 	connectorSpanID := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
 	depth, spanLines, connectorColor := tracker.Snapshot(span.ParentSpanID, connectorSpanID, span.Closing)

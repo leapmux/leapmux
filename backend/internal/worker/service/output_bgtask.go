@@ -396,8 +396,6 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 			return "", fmt.Errorf("create child agent: %w", err)
 		}
 	}
-	// Record the child span tracker so ChildSink(childID) is ready.
-	s.h.spanTracker(childID)
 	// 3. Re-acquire the lock to link the registry row (and re-check the cache
 	//    for a concurrent insert that won the race while the lock was released).
 	s.linkRegistryRow(cache, providerChildKey, childID, title, pendingBroadcast)
@@ -449,8 +447,19 @@ func (s *agentOutputSink) ensureRegistryRowLocked(cache *bgTaskCache, rowKey, ch
 }
 
 // ChildSink returns an OutputSink bound to the child agent's transcript. The
-// child sink has its OWN span tracker; transcript primitives act on the child.
-// Registry primitives on a child sink write under the same ROOT owner.
+// child sink has its OWN span tracker (registered with kind=child so cleanup
+// and the orphan sweep distinguish it from a root tracker); transcript
+// primitives act on the child. Registry primitives on a child sink write under
+// the same ROOT owner.
+//
+// Per-provider child-span contract (provider-capability-driven, not enforced
+// by the interface):
+//   - Claude, Codex: full per-child span lifecycle — Open/Close/Reserve/
+//     SetType/GetType driven through the child sink.
+//   - ACP (every ACP family): child transcripts are persisted flat
+//     (SpanInfo{}); the child tracker is created but quiescent. ACP's own
+//     tool-call spans run on the ROOT sink.
+//   - Pi: no child sink; child linkage is registry-only.
 func (s *agentOutputSink) ChildSink(childAgentID string) agent.OutputSink {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
@@ -465,7 +474,7 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.OutputSink {
 		rootAgentID:   s.rootAgentID,
 		agentProvider: s.agentProvider,
 		plugin:        s.plugin,
-		tracker:       s.h.spanTracker(childAgentID),
+		tracker:       s.h.childTracker(childAgentID),
 	}
 	if s.childSinks == nil {
 		s.childSinks = make(map[string]*agentOutputSink)
@@ -483,10 +492,32 @@ func (s *agentOutputSink) PersistChildTurnEnd(childAgentID string, content []byt
 }
 
 // CleanupChildAgent releases the per-child service state for a child that has
-// closed for good. Delegates to OutputHandler.CleanupChild so the cleanup logic
-// (per-agent map deletes + childSinks prune) lives in one place.
+// closed permanently. This sink is the child's DIRECT PARENT: the cached child
+// sink lives in s.childSinks, so prune it here in O(1) instead of scanning
+// h.rootSinks to find the owning root. The per-agent maps (span tracker,
+// todos, ...) live on the handler and are keyed by child id, so they go
+// through cleanupChildMaps.
+//
+// Precondition: the receiver is the child's direct parent (the sink that
+// cached the child via ChildSink). A caller that resolves a child only by id,
+// without the parent sink, has no single correct parent to delete from and
+// must not use this method.
+//
+// cleanupChildMaps runs BEFORE the childSinks delete. If a concurrent
+// ChildSink re-caches the child after the registry entry is gone but before
+// the cache delete, it creates a FRESH registry entry that the already-run
+// cleanupChildMaps leaves intact — the re-cached sink binds to a live tracker,
+// not an orphan. Reversing the order would let cleanupChildMaps orphan a
+// sink that a racing ChildSink just cached.
+//
+// Idempotent; a no-op when the child was never cached.
 func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
-	s.h.CleanupChild(childAgentID)
+	s.h.cleanupChildMaps(childAgentID)
+	s.childMu.Lock()
+	if s.childSinks != nil {
+		delete(s.childSinks, childAgentID)
+	}
+	s.childMu.Unlock()
 }
 
 // --- Registry write primitives on the sink ---

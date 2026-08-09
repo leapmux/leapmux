@@ -23,7 +23,7 @@ func TestPersistNotification_StandaloneCapturesActiveSpans(t *testing.T) {
 	svc, _, w := setupTestService(t)
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
-	svc.Output.spanTracker("agent-1").OpenSpan("span-A", "")
+	svc.Output.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	notif, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
@@ -75,7 +75,7 @@ func TestPersistNotification_AppendRefreshesSpanLines(t *testing.T) {
 	threadID := rows[0].ID
 
 	// A subagent opens a span between the two notifications.
-	svc.Output.spanTracker("agent-1").OpenSpan("span-A", "")
+	svc.Output.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	second, err := json.Marshal(map[string]any{"type": "interrupted"})
 	require.NoError(t, err)
@@ -110,13 +110,13 @@ func TestPersistNotification_AppendDropsClosedSpan(t *testing.T) {
 	svc, _, w := setupTestService(t)
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
-	svc.Output.spanTracker("agent-1").OpenSpan("span-A", "")
+	svc.Output.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	first, err := json.Marshal(map[string]any{"type": "context_cleared"})
 	require.NoError(t, err)
 	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, first)
 
-	svc.Output.spanTracker("agent-1").CloseSpan("span-A")
+	svc.Output.rootTracker("agent-1").CloseSpan("span-A")
 
 	second, err := json.Marshal(map[string]any{"type": "interrupted"})
 	require.NoError(t, err)

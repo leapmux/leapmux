@@ -34,17 +34,17 @@ func TestSweepOrphanedAgentState(t *testing.T) {
 	// An OPEN agent with in-memory state (e.g. crashed but not closed).
 	openID := "agent-open"
 	createAgent(openID)
-	svc.Output.spanTracker(openID)
+	svc.Output.rootTracker(openID)
 
 	// A CLOSED agent whose state was orphaned (never routed through cleanup).
 	closedID := "agent-closed"
 	createAgent(closedID)
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, closedID)))
-	svc.Output.spanTracker(closedID)
+	svc.Output.rootTracker(closedID)
 
 	// A DELETED agent (no DB row at all) with leftover state.
 	deletedID := "agent-deleted"
-	svc.Output.spanTracker(deletedID)
+	svc.Output.rootTracker(deletedID)
 
 	require.ElementsMatch(t, []string{openID, closedID, deletedID}, svc.Output.TrackedAgentIDs())
 
@@ -94,7 +94,7 @@ func TestCleanupChildAgentsBatchPrunesWithoutRootScan(t *testing.T) {
 	// reaps).
 	rootSink := svc.Output.NewSink("root-batch", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE).(*agentOutputSink)
 	for _, childID := range []string{"child-a", "child-b", "child-c"} {
-		svc.Output.spanTracker(childID)
+		svc.Output.childTracker(childID)
 	}
 	// Cache a child sink on the root so ForgetChildSinks has something to clear.
 	rootSink.childMu.Lock()
