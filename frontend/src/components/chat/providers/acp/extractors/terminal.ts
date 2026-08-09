@@ -2,8 +2,8 @@ import { isObject, pickString } from '~/lib/jsonPick'
 
 /**
  * First ACP tool-call content entry of `{ type: 'terminal', terminalId }`.
- * Goose embeds this while a host terminal runs so the client can correlate
- * the tool call with a live terminal session. Returns null when absent.
+ * ACP agents embed this while a host terminal runs so the client can
+ * correlate the tool call with the session. Returns null when absent.
  */
 export function acpTerminalFromToolCallContent(
   content: unknown,

@@ -4,6 +4,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -207,7 +208,7 @@ func TestACPTerminal_KillThenWait(t *testing.T) {
 	sink.bgTasksMu.Lock()
 	row := sink.bgTasks[termID]
 	sink.bgTasksMu.Unlock()
-	assert.Equal(t, bgtask.StatusFailed, row.Status)
+	assert.Equal(t, bgtask.StatusStopped, row.Status, "host kill must map to StatusStopped")
 }
 
 func TestACPTerminal_OutputByteLimitTruncates(t *testing.T) {
@@ -404,6 +405,42 @@ func TestACPTerminal_NegativeOutputByteLimitRejected(t *testing.T) {
 	errObj := resps[0]["error"].(map[string]interface{})
 	assert.EqualValues(t, -32602, errObj["code"])
 	assert.Contains(t, errObj["message"], "outputByteLimit")
+}
+
+func TestACPTerminal_ZeroOutputByteLimitRetainsNothing(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+	limit := 0
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId":       "sess-1",
+		"command":         "printf 'abcdefgh'",
+		"cwd":             b.workingDir,
+		"outputByteLimit": limit,
+	})
+	resps := rec.wait(t, 1, 3*time.Second)
+	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
+
+	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	_ = rec.wait(t, 2, 5*time.Second)
+
+	dispatchTerminal(b, acpMethodTerminalOutput, 3, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	resps = rec.wait(t, 3, 3*time.Second)
+	outResult := resps[2]["result"].(map[string]interface{})
+	assert.Equal(t, true, outResult["truncated"])
+	assert.Equal(t, "", outResult["output"])
+
+	dispatchTerminal(b, acpMethodTerminalRelease, 4, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	_ = rec.wait(t, 4, 3*time.Second)
 }
 
 func TestACPTerminal_ArgvStyleCommand(t *testing.T) {
@@ -625,4 +662,178 @@ func TestACPTerminal_MissingJSONRPCIDIsIgnored(t *testing.T) {
 	b.terminalsMu.Lock()
 	assert.Empty(t, b.terminals)
 	b.terminalsMu.Unlock()
+}
+
+func TestACPTerminal_StopReapsLongLivedChild(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+	pr, pw := io.Pipe()
+	go func() { _, _ = io.Copy(io.Discard, pr) }()
+	t.Cleanup(func() { _ = pw.Close(); _ = pr.Close() })
+	b.stdin = struct {
+		io.Writer
+		io.Closer
+	}{Writer: io.MultiWriter(rec, pw), Closer: pw}
+	b.processDone = make(chan struct{})
+	close(b.processDone)
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId": "sess-1",
+		// sleep inherits the host pipes; without process-group kill, Stop
+		// would hang waiting for stdout EOF after killing only /bin/sh.
+		"command": "sleep 60",
+		"cwd":     b.workingDir,
+	})
+	_ = rec.wait(t, 1, 3*time.Second)
+
+	done := make(chan struct{})
+	go func() {
+		b.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("Stop hung waiting for ACP terminal teardown")
+	}
+
+	b.terminalsMu.Lock()
+	assert.True(t, b.terminalsClosed)
+	assert.Empty(t, b.terminals)
+	b.terminalsMu.Unlock()
+}
+
+func TestACPTerminal_CreateRejectedAfterStop(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+	pr, pw := io.Pipe()
+	go func() { _, _ = io.Copy(io.Discard, pr) }()
+	t.Cleanup(func() { _ = pw.Close(); _ = pr.Close() })
+	b.stdin = struct {
+		io.Writer
+		io.Closer
+	}{Writer: io.MultiWriter(rec, pw), Closer: pw}
+	b.processDone = make(chan struct{})
+	close(b.processDone)
+
+	b.Stop()
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId": "sess-1",
+		"command":   "echo hi",
+		"cwd":       b.workingDir,
+	})
+	resps := rec.wait(t, 1, 3*time.Second)
+	errObj := resps[0]["error"].(map[string]interface{})
+	assert.EqualValues(t, -32603, errObj["code"])
+	assert.Contains(t, errObj["message"], "stopped")
+}
+
+func TestACPTerminal_ReleaseSessionOnClearContext(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+	// newSessionLocked needs a cancelled ctx so sendRequest fails fast after
+	// releaseSessionTerminals has already run.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	b.ctx = ctx
+	b.processDone = make(chan struct{})
+	close(b.processDone)
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId": "sess-1",
+		"command":   "sleep 30",
+		"cwd":       b.workingDir,
+	})
+	resps := rec.wait(t, 1, 3*time.Second)
+	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
+
+	_, ok := b.ClearContext()
+	assert.False(t, ok, "session/new must fail without a live agent")
+
+	b.terminalsMu.Lock()
+	_, still := b.terminals[termID]
+	closed := b.terminalsClosed
+	b.terminalsMu.Unlock()
+	assert.False(t, still)
+	assert.False(t, closed, "ClearContext must not latch terminals closed")
+
+	sink.bgTasksMu.Lock()
+	row := sink.bgTasks[termID]
+	sink.bgTasksMu.Unlock()
+	assert.Equal(t, bgtask.StatusStopped, row.Status)
+}
+
+func TestACPTerminal_BaseEnvPinsWorkerMarker(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+	t.Setenv("LEAPMUX_WORKER", "0")
+	t.Setenv("GOOSE_TERMINAL", "1")
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId": "sess-1",
+		"command":   `printf '%s|%s' "$LEAPMUX_WORKER" "${GOOSE_TERMINAL-}"`,
+		"cwd":       b.workingDir,
+	})
+	resps := rec.wait(t, 1, 3*time.Second)
+	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
+
+	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	_ = rec.wait(t, 2, 5*time.Second)
+
+	dispatchTerminal(b, acpMethodTerminalOutput, 3, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	resps = rec.wait(t, 3, 3*time.Second)
+	out := resps[2]["result"].(map[string]interface{})["output"].(string)
+	assert.Equal(t, "1|", out, "FinalizeAgentEnv must pin LEAPMUX_WORKER and scrub GOOSE_TERMINAL")
+
+	dispatchTerminal(b, acpMethodTerminalRelease, 4, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	_ = rec.wait(t, 4, 3*time.Second)
+}
+
+func TestACPTerminal_KillReportsSignalName(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId": "sess-1",
+		"command":   "sleep 30",
+		"cwd":       b.workingDir,
+	})
+	resps := rec.wait(t, 1, 3*time.Second)
+	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
+
+	dispatchTerminal(b, acpMethodTerminalKill, 2, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	_ = rec.wait(t, 2, 3*time.Second)
+
+	dispatchTerminal(b, acpMethodTerminalWaitForExit, 3, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	resps = rec.wait(t, 3, 5*time.Second)
+	waitResult := resps[2]["result"].(map[string]interface{})
+	if waitResult["exitCode"] != nil {
+		t.Logf("got exitCode=%v (acceptable if shell reports numeric)", waitResult["exitCode"])
+	} else {
+		sig, _ := waitResult["signal"].(string)
+		require.NotEmpty(t, sig)
+		assert.NotEqual(t, "terminated", sig, "should report the real WaitStatus signal when available")
+	}
+
+	dispatchTerminal(b, acpMethodTerminalRelease, 4, map[string]interface{}{
+		"sessionId":  "sess-1",
+		"terminalId": termID,
+	})
+	_ = rec.wait(t, 4, 3*time.Second)
 }

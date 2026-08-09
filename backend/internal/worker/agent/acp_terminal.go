@@ -11,15 +11,24 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 	"unicode/utf8"
 
+	"github.com/leapmux/leapmux/internal/util/envutil"
 	utilid "github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // Default retained output size when terminal/create omits outputByteLimit.
-// Matches Reasonix's host-terminal cap (1 MiB).
+// Matches Reasonix's host-terminal cap (1 MiB). Explicit 0 means retain
+// nothing (still reports truncated when any bytes were produced).
 const acpDefaultOutputByteLimit = 1 << 20
+
+// How long release/Stop waits for a killed terminal's wait goroutine before
+// giving up. Tree-kill should make this unnecessary; the bound keeps Stop
+// from hanging the agent lifecycle if a descendant still refuses to die.
+const acpTerminalReleaseWait = 10 * time.Second
 
 // acpTerminalEnvVar is one ACP EnvVariable entry on terminal/create.
 type acpTerminalEnvVar struct {
@@ -58,6 +67,11 @@ type acpTerminalSession struct {
 	exitCode       *int
 	signal         *string
 	registryClosed bool
+	// killed is set when the host intentionally terminates the process
+	// (terminal/kill, release, Stop, ClearContext). Registry status then
+	// becomes StatusStopped rather than Failed.
+	killed    bool
+	jobObject *procutil.JobObject
 
 	// done is closed once the process has exited and exit fields are set.
 	done chan struct{}
@@ -69,8 +83,14 @@ func (s *acpTerminalSession) appendOutput(p []byte) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.byteLimit == 0 {
+		// Explicit retain-nothing: discard bytes but mark truncated so
+		// agents know output existed.
+		s.truncated = true
+		return
+	}
 	s.buf = append(s.buf, p...)
-	if s.byteLimit > 0 && len(s.buf) > s.byteLimit {
+	if len(s.buf) > s.byteLimit {
 		s.truncated = true
 		s.buf = truncateACPTerminalOutput(s.buf, s.byteLimit)
 	}
@@ -78,8 +98,12 @@ func (s *acpTerminalSession) appendOutput(p []byte) {
 
 // truncateACPTerminalOutput drops the oldest bytes so retained is at most
 // limit bytes, cutting at a UTF-8 character boundary (ACP requirement).
+// limit == 0 retains nothing.
 func truncateACPTerminalOutput(buf []byte, limit int) []byte {
-	if limit <= 0 || len(buf) <= limit {
+	if limit == 0 {
+		return nil
+	}
+	if limit < 0 || len(buf) <= limit {
 		return buf
 	}
 	start := len(buf) - limit
@@ -113,6 +137,9 @@ func exitStatusFromProcessState(ps *os.ProcessState) (exitCode *int, signal *str
 	if ps == nil {
 		return nil, nil
 	}
+	if code, sig, ok := exitStatusFromWaitStatus(ps); ok {
+		return code, sig
+	}
 	code := ps.ExitCode()
 	if code >= 0 {
 		c := code
@@ -128,17 +155,37 @@ func exitStatusFromProcessState(ps *os.ProcessState) (exitCode *int, signal *str
 func (s *acpTerminalSession) kill() {
 	s.mu.Lock()
 	exited := s.exited
+	if !exited {
+		s.killed = true
+	}
 	cancel := s.cancel
+	job := s.jobObject
 	cmd := s.cmd
 	s.mu.Unlock()
 	if exited {
 		return
 	}
+	// Tree-kill first so grandchildren holding the pipes die before we
+	// wait on stdout/stderr readers.
+	if err := job.Terminate(); err != nil {
+		slog.Debug("acp terminal job terminate failed", "terminal_id", s.id, "error", err)
+	}
 	if cancel != nil {
 		cancel()
 	}
-	if cmd != nil && cmd.Process != nil {
+	if job == nil && cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
+	}
+}
+
+func (s *acpTerminalSession) waitDone(timeout time.Duration) {
+	select {
+	case <-s.done:
+	case <-time.After(timeout):
+		slog.Warn("acp terminal wait timed out after kill",
+			"terminal_id", s.id,
+			"timeout", timeout,
+		)
 	}
 }
 
@@ -210,6 +257,21 @@ func (b *acpBase) getTerminal(terminalID string) (*acpTerminalSession, bool) {
 	return s, ok
 }
 
+// terminalBaseEnv returns the environment the host command should inherit.
+// Prefer the agent process env (already FinalizeAgentEnv + AppImage-scrubbed
+// at launch) so GIT_OPTIONAL_LOCKS, LEAPMUX_WORKER, ExtraEnv, and identity
+// scrubbing match the agent. Fall back to FinalizeAgentEnv(os.Environ())
+// when no agent cmd is attached (unit tests).
+func (b *acpBase) terminalBaseEnv() []string {
+	var base []string
+	if b.cmd != nil {
+		base = append([]string(nil), b.cmd.Environ()...)
+	} else {
+		base = FinalizeAgentEnv(os.Environ(), Options{})
+	}
+	return envutil.ScrubAppImageEnvSlice(base)
+}
+
 func (b *acpBase) terminalCreate(id json.RawMessage, rawParams json.RawMessage) {
 	var params acpTerminalCreateParams
 	if err := json.Unmarshal(rawParams, &params); err != nil {
@@ -247,10 +309,19 @@ func (b *acpBase) terminalCreate(id json.RawMessage, rawParams json.RawMessage) 
 		limit = *params.OutputByteLimit
 	}
 
+	b.terminalsMu.Lock()
+	closed := b.terminalsClosed
+	b.terminalsMu.Unlock()
+	if closed {
+		b.terminalError(id, -32603, "agent is stopped")
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := buildACPTerminalCmd(ctx, params.Command, params.Args)
+	configureACPTerminalCmd(cmd)
 	cmd.Dir = cwd
-	cmd.Env = mergeACPTerminalEnv(os.Environ(), params.Env)
+	cmd.Env = mergeACPTerminalEnv(b.terminalBaseEnv(), params.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -271,6 +342,14 @@ func (b *acpBase) terminalCreate(id json.RawMessage, rawParams json.RawMessage) 
 		return
 	}
 
+	job, jobErr := procutil.AssignPID(cmd.Process.Pid)
+	if jobErr != nil {
+		slog.Warn("acp terminal attach job object failed",
+			"agent_id", b.agentID,
+			"error", jobErr,
+		)
+	}
+
 	termID := "term_" + utilid.Generate()
 	sess := &acpTerminalSession{
 		id:        termID,
@@ -278,16 +357,26 @@ func (b *acpBase) terminalCreate(id json.RawMessage, rawParams json.RawMessage) 
 		cmd:       cmd,
 		cancel:    cancel,
 		byteLimit: limit,
+		jobObject: job,
 		done:      make(chan struct{}),
 	}
 
 	b.terminalsMu.Lock()
+	if b.terminalsClosed {
+		b.terminalsMu.Unlock()
+		sess.kill()
+		sess.waitDone(acpTerminalReleaseWait)
+		b.terminalError(id, -32603, "agent is stopped")
+		return
+	}
 	if b.terminals == nil {
 		b.terminals = make(map[string]*acpTerminalSession)
 	}
 	b.terminals[termID] = sess
 	b.terminalsMu.Unlock()
 
+	// Upsert before starting the waiters/reply so CloseBackgroundTask on a
+	// fast-exiting command cannot land before the Running row exists.
 	title := bgtask.FirstLine(params.Command)
 	if title == "" {
 		title = "shell"
@@ -297,7 +386,6 @@ func (b *acpBase) terminalCreate(id json.RawMessage, rawParams json.RawMessage) 
 		Kind:          bgtask.KindShell,
 		ParentAgentID: b.agentID,
 		Title:         title,
-		Description:   title,
 		Status:        bgtask.StatusRunning,
 	}); err != nil {
 		slog.Warn("acp terminal upsert failed", "agent_id", b.agentID, "terminal_id", termID, "error", err)
@@ -353,10 +441,14 @@ func (b *acpBase) closeTerminalRegistry(sess *acpTerminalSession) {
 	}
 	sess.registryClosed = true
 	exitCode := sess.exitCode
+	killed := sess.killed
 	sess.mu.Unlock()
 
 	status := bgtask.StatusCompleted
-	if exitCode == nil || *exitCode != 0 {
+	switch {
+	case killed:
+		status = bgtask.StatusStopped
+	case exitCode == nil || *exitCode != 0:
 		status = bgtask.StatusFailed
 	}
 	if err := b.sink.CloseBackgroundTask(sess.id, status); err != nil {
@@ -463,18 +555,35 @@ func (b *acpBase) terminalRelease(id json.RawMessage, rawParams json.RawMessage)
 	}
 
 	// Kill + wait off the read loop so a still-running command cannot stall
-	// further agent→client requests. Response fires once resources are free.
+	// further agent→client requests. Response fires once resources are free
+	// (or the bounded wait expires).
 	go func() {
 		sess.kill()
-		<-sess.done
+		sess.waitDone(acpTerminalReleaseWait)
 		b.closeTerminalRegistry(sess)
 		b.terminalOK(id, map[string]interface{}{})
 	}()
 }
 
-// releaseAllTerminals kills and forgets every host terminal. Called from Stop.
+// releaseAllTerminals kills and forgets every host terminal and latches the
+// store closed so a racing terminal/create cannot re-seed orphans after Stop.
+// Called from Stop and Wait (agent crash / natural exit).
 func (b *acpBase) releaseAllTerminals() {
+	b.releaseTerminals(true)
+}
+
+// releaseSessionTerminals kills host terminals bound to the outgoing ACP
+// session without latching the store closed — ClearContext may create new
+// terminals under the replacement sessionId.
+func (b *acpBase) releaseSessionTerminals() {
+	b.releaseTerminals(false)
+}
+
+func (b *acpBase) releaseTerminals(closeLatch bool) {
 	b.terminalsMu.Lock()
+	if closeLatch {
+		b.terminalsClosed = true
+	}
 	sessions := make([]*acpTerminalSession, 0, len(b.terminals))
 	for _, s := range b.terminals {
 		sessions = append(sessions, s)
@@ -484,13 +593,13 @@ func (b *acpBase) releaseAllTerminals() {
 
 	for _, s := range sessions {
 		s.kill()
-		<-s.done
+		s.waitDone(acpTerminalReleaseWait)
 		b.closeTerminalRegistry(s)
 	}
 }
 
 // buildACPTerminalCmd builds the process for a terminal/create request.
-// Goose and Reasonix pass a full shell string with empty args; ACP also
+// Agents typically pass a full shell string with empty args; ACP also
 // allows an argv-style command+args pair.
 func buildACPTerminalCmd(ctx context.Context, command string, args []string) *exec.Cmd {
 	if len(args) == 0 {
@@ -506,26 +615,19 @@ func mergeACPTerminalEnv(base []string, overrides []acpTerminalEnvVar) []string 
 	if len(overrides) == 0 {
 		return base
 	}
-	env := append([]string(nil), base...)
-	index := make(map[string]int, len(env))
-	for i, kv := range env {
-		if name, _, ok := splitEnvKV(kv); ok {
-			index[name] = i
-		}
-	}
+	// Pin each override so a duplicate inherited key is replaced rather than
+	// layered (exec last-wins, but tests and introspection see one entry).
+	assignments := make([]string, 0, len(overrides))
 	for _, o := range overrides {
 		if o.Name == "" {
 			continue
 		}
-		entry := o.Name + "=" + o.Value
-		if i, ok := index[o.Name]; ok {
-			env[i] = entry
-			continue
-		}
-		index[o.Name] = len(env)
-		env = append(env, entry)
+		assignments = append(assignments, o.Name+"="+o.Value)
 	}
-	return env
+	if len(assignments) == 0 {
+		return base
+	}
+	return envutil.PinEnv(base, assignments...)
 }
 
 func splitEnvKV(kv string) (name, value string, ok bool) {

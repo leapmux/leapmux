@@ -238,9 +238,12 @@ type acpBase struct {
 
 	// terminals holds live ACP host terminal sessions keyed by terminalId.
 	// Guarded by terminalsMu (not b.mu) so wait_for_exit / output readers are
-	// not serialized behind the agent state lock. Tear down in Stop.
-	terminalsMu sync.Mutex
-	terminals   map[string]*acpTerminalSession
+	// not serialized behind the agent state lock. Tear down in Stop/Wait.
+	// terminalsClosed latches after Stop/Wait so a racing terminal/create
+	// cannot re-seed the map and orphan processes after teardown.
+	terminalsMu     sync.Mutex
+	terminals       map[string]*acpTerminalSession
+	terminalsClosed bool
 }
 
 // handleACPPromptResponse extracts accumulated turn text, persists the prompt
@@ -367,6 +370,11 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 // created, the reapplySettings callback (if set) re-applies provider-
 // specific settings such as model and permission mode.
 func (b *acpBase) ClearContext() (string, bool) {
+	// Host terminals are bound to the outgoing sessionId; release them before
+	// the swap so requireSession cannot strand them under a mismatch. Do not
+	// latch the store closed — the new session may create terminals again.
+	b.releaseSessionTerminals()
+
 	sessionID, resp, ok := b.newSessionLocked()
 	if !ok {
 		return "", false
@@ -1209,6 +1217,15 @@ func (b *acpBase) Stop() {
 	b.clearPromptQueue()
 	b.releaseAllTerminals()
 	b.processBase.Stop()
+}
+
+// Wait blocks until the agent process exits, then tears down any host
+// terminals that survived a crash/natural exit (Stop already released them
+// on the intentional-stop path; releaseAllTerminals is idempotent).
+func (b *acpBase) Wait() error {
+	err := b.processBase.Wait()
+	b.releaseAllTerminals()
+	return err
 }
 
 // stopAndWait stops the agent process and blocks until it exits. Used by the

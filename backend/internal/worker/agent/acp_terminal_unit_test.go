@@ -41,7 +41,7 @@ func TestTruncateACPTerminalOutput_AllGOOS(t *testing.T) {
 
 	hello := []byte("hello")
 	assert.Equal(t, hello, truncateACPTerminalOutput(hello, 10))
-	assert.Equal(t, hello, truncateACPTerminalOutput(hello, 0))
+	assert.Nil(t, truncateACPTerminalOutput(hello, 0), "limit 0 retains nothing")
 }
 
 func TestMergeACPTerminalEnv_AllGOOS(t *testing.T) {
@@ -51,12 +51,21 @@ func TestMergeACPTerminalEnv_AllGOOS(t *testing.T) {
 		{Name: "BAZ", Value: "z"},
 		{Name: "", Value: "ignored"},
 	})
-	assert.Equal(t, []string{"PATH=/bin", "FOO=9", "BAR=2", "BAZ=z"}, out)
+	// PinEnv drops overridden keys then appends assignments.
+	assert.Equal(t, []string{"PATH=/bin", "BAR=2", "FOO=9", "BAZ=z"}, out)
 	assert.Equal(t, base, []string{"PATH=/bin", "FOO=1", "BAR=2"}, "base must not be mutated")
 
 	same := mergeACPTerminalEnv(base, nil)
 	assert.Equal(t, base, same)
 	assert.Equal(t, base, mergeACPTerminalEnv(base, []acpTerminalEnvVar{}))
+}
+
+func TestAppendOutput_ZeroByteLimitDiscards(t *testing.T) {
+	sess := &acpTerminalSession{byteLimit: 0}
+	sess.appendOutput([]byte("hello"))
+	out, truncated, _, _, _ := sess.snapshot()
+	assert.Equal(t, "", out)
+	assert.True(t, truncated)
 }
 
 func TestExitStatusFromProcessState_Nil(t *testing.T) {

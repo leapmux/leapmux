@@ -220,7 +220,7 @@ export function ToolCallUpdateMessage(props: {
   // Execute-specific: hide summary when expanded + expandable command.
   const displaySummary = () => expanded() && commandExpandable() ? undefined : summary(!expanded())
 
-  // Goose embeds `{ type: 'terminal', terminalId }` while a host terminal runs.
+  // ACP `{ type: 'terminal', terminalId }` content while a host terminal runs.
   // Badge only — no live streaming in this PR.
   const terminalRef = createMemo(() => {
     const context = props.context
