@@ -42,4 +42,22 @@ describe('acpExecuteFromToolCall', () => {
     expect(source?.isError).toBe(true)
     expect(source?.exitCode).toBe(5)
   })
+
+  it('still extracts text when a terminal content block is also present', () => {
+    const source = acpExecuteFromToolCall({
+      kind: 'execute',
+      status: 'completed',
+      rawInput: { command: 'echo hi' },
+      rawOutput: { metadata: { exit: 0 } },
+      content: [
+        { type: 'terminal', terminalId: 'term_abc' },
+        { type: 'content', content: { text: 'hi\n' } },
+      ],
+    })
+    expect(source).toEqual({
+      output: 'hi\n',
+      exitCode: 0,
+      isError: false,
+    })
+  })
 })

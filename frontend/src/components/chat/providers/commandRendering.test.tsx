@@ -241,6 +241,23 @@ describe('canonical command status label across providers', () => {
     expect(container.textContent ?? '').toContain('Error (exit 5)')
   })
 
+  it('openCode execute with terminal content block shows a Terminal badge', () => {
+    const { container } = renderOpenCodeUpdate({
+      sessionUpdate: 'tool_call_update',
+      kind: 'execute',
+      status: 'completed',
+      title: 'Run something',
+      rawInput: { command: 'echo hi' },
+      rawOutput: { metadata: { exit: 0 } },
+      content: [
+        { type: 'terminal', terminalId: 'term_abc123' },
+        { type: 'content', content: { text: 'hi\n' } },
+      ],
+    })
+    expect(container.textContent ?? '').toContain('Terminal term_abc123')
+    expect(container.textContent ?? '').toContain('hi')
+  })
+
   it('uses the ACP tool-call expanded key for delegated execute output', () => {
     const output = Array.from({ length: 8 }, (_, i) => `output line ${i + 1}`).join('\n')
     const [expanded, setExpanded] = createSignal(false)

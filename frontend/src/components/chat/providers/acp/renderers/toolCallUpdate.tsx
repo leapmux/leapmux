@@ -6,6 +6,7 @@ import type { ReadFileResultSource } from '../../../results/readFileResult'
 import type { SearchResultSource } from '../../../results/searchResult'
 import type { WebFetchResultSource } from '../../../results/webFetchResult'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
+import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { pickFirstString, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
@@ -30,6 +31,7 @@ import { acpExecuteFromToolCall } from '../extractors/execute'
 import { acpFileEditFromToolCallContent, acpFileEditFromToolCallRawInput } from '../extractors/fileEdit'
 import { acpReadFromToolCall } from '../extractors/read'
 import { acpSearchFromToolCall } from '../extractors/search'
+import { acpTerminalFromToolCallContent } from '../extractors/terminal'
 import { acpWebFetchFromToolCall } from '../extractors/webFetch'
 import { ACP_FILE_PATH_KEYS, collectAcpToolText } from '../rendering'
 import { kindIcon, kindLabel } from './helpers'
@@ -218,6 +220,14 @@ export function ToolCallUpdateMessage(props: {
   // Execute-specific: hide summary when expanded + expandable command.
   const displaySummary = () => expanded() && commandExpandable() ? undefined : summary(!expanded())
 
+  // Goose embeds `{ type: 'terminal', terminalId }` while a host terminal runs.
+  // Badge only — no live streaming in this PR.
+  const terminalRef = createMemo(() => {
+    const context = props.context
+    const toolUse = props.toolUse
+    return cachedRenderValue(context, 'acp.toolCallUpdate.terminal', () => acpTerminalFromToolCallContent(toolUse.content))
+  })
+
   return (
     <ToolUseLayout
       icon={icon()}
@@ -235,6 +245,12 @@ export function ToolCallUpdateMessage(props: {
       }}
       alwaysVisible
     >
+      <Show when={terminalRef()}>
+        {ref => (
+          <ToolHeaderRow icon={Terminal} title={`Terminal ${ref().terminalId}`} />
+        )}
+      </Show>
+
       {/* Execute: full command (when expanded) */}
       <Show when={kind() === ACP_TOOL_KIND.EXECUTE && expanded() && commandExpandable()}>
         <CommandInputBody command={command()} context={props.context} />
