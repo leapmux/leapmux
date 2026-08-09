@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/util/version"
 )
 
@@ -111,6 +112,16 @@ type acpBase struct {
 	sink               OutputSink
 	extraSessionUpdate acpSessionUpdateHandler // optional provider-specific session update handler
 	extraMethod        acpMethodHandler        // optional provider-specific request/notification handler
+	// subagentFromToolCall / subagentFromToolCallUpdate are optional
+	// provider-specific hooks that translate a tool_call / tool_call_update
+	// into a neutral acpSubagentObservation driving the background-task
+	// registry (and, for Goose, a best-effort tool-request transcript). nil
+	// for providers that surface no subagent activity over ACP (Cursor,
+	// Copilot) -- the plumbing is inert. Membership is decided per provider in
+	// its configure (the registration site), keeping provider-specific
+	// names/shapes out of this shared file.
+	subagentFromToolCall       func(tc acpToolCallEnvelope) *acpSubagentObservation
+	subagentFromToolCallUpdate func(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation
 	// modelIDNormalizer, when set, rewrites model ids parsed from configOptions
 	// (e.g. Cursor's auto<->default[] aliasing) before they reach availableModels.
 	modelIDNormalizer func(string) string
@@ -959,6 +970,10 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 // acpStandardInitParams marshals the standard ACP "initialize" params shared by
 // OpenCode, Kilo, Copilot, Goose, and Cursor: protocol version 1, the LeapMux
 // clientInfo, and empty capabilities.
+//
+// LeapMux does not advertise the ACP `terminal` capability, so Goose/Reasonix
+// run shells agent-side and no background-shell rows exist for them. See
+// https://github.com/leapmux/leapmux/issues/370.
 func acpStandardInitParams() (json.RawMessage, error) {
 	params, err := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
@@ -1371,13 +1386,88 @@ func unwrapACPResult(resp json.RawMessage) json.RawMessage {
 	return wrapper.Content
 }
 
+// acpToolCallEnvelope is the parsed shape of an ACP session/notification
+// tool_call. Title/RawInput/RawOutput/Meta are carried here (previously
+// dropped) so provider-specific hooks can detect a subagent spawn by input
+// SHAPE rather than tool-name guessing.
+type acpToolCallEnvelope struct {
+	ToolCallID string          `json:"toolCallId"`
+	Title      string          `json:"title"`
+	Kind       string          `json:"kind"`
+	Status     string          `json:"status"`
+	RawInput   json.RawMessage `json:"rawInput"`
+	RawOutput  json.RawMessage `json:"rawOutput"`
+	Meta       json.RawMessage `json:"_meta"`
+}
+
+// acpToolCallUpdateEnvelope is the parsed shape of an ACP session/notification
+// tool_call_update. Meta carries provider-specific payloads like Goose's
+// tool-request notifications.
+type acpToolCallUpdateEnvelope struct {
+	ToolCallID string             `json:"toolCallId"`
+	Status     string             `json:"status"`
+	Content    []acpToolCallBlock `json:"content"`
+	RawInput   json.RawMessage    `json:"rawInput"`
+	RawOutput  json.RawMessage    `json:"rawOutput"`
+	Title      string             `json:"title"`
+	Meta       json.RawMessage    `json:"_meta"`
+}
+
+// acpObservationMode controls how applySubagentObservation translates an
+// observation into registry sink calls.
+type acpObservationMode int
+
+const (
+	// acpModeUpsert (the default) upserts the registry row, optionally persists
+	// a child transcript payload, then closes if CloseRow is set. Used by every
+	// detector that carries descriptive fields (spawn, tool-request, progress).
+	acpModeUpsert acpObservationMode = iota
+	// acpModeCloseOnly skips the upsert and closes an existing row without first
+	// creating one. Used by terminal-update detectors that fire for EVERY
+	// tool_call (Goose, Cursor), so a plain tool's terminal update does not
+	// create a spurious subagent row.
+	acpModeCloseOnly
+)
+
+// acpSubagentObservation is the neutral struct a provider-specific hook
+// produces: registry upsert data (kind/rowKey/title/activity/status/group), an
+// optional terminal close, and an optional child-transcript payload (childKey +
+// raw bytes to persist). Shared code translates observations into sink calls,
+// so provider-specific names/shapes stay out of this file.
+type acpSubagentObservation struct {
+	// Registry fields. RowKey is the provider linkage key (toolCallId / child
+	// session id). Empty RowKey => no registry write.
+	RowKey   string
+	Kind     bgtask.Kind // defaults to Subagent
+	Title    string
+	Activity string
+	Status   bgtask.Status
+	GroupKey string
+	// ChildAgentKey, when non-empty, drives EnsureChildAgent so the row links
+	// to a transcript (openable tab). Empty => registry-only.
+	ChildAgentKey string
+	// CloseRow true => terminalize the row after the upsert (Status carries
+	// the terminal status).
+	CloseRow bool
+	// Mode selects close-only vs upsert. Defaults to acpModeUpsert (zero value);
+	// set acpModeCloseOnly explicitly when the observation carries no descriptive
+	// fields and should close an existing row without creating one.
+	Mode acpObservationMode
+	// RenameFrom, when set, renames the existing row from RenameFrom to RowKey
+	// BEFORE the close. A provider that opens a row under one key and learns the
+	// stable child id only on the terminal update (OpenCode opens under the
+	// toolCallId, learns the session id on the terminal update) sets RenameFrom
+	// so the single row tracks the whole lifecycle. The alternative -- upserting
+	// a second row under RowKey and separately closing RenameFrom -- leaks the
+	// spawn row if the close is ever missed and splits one task across two keys.
+	RenameFrom string
+	// ChildTranscriptPayload, when non-nil, persists to the child transcript
+	// via PersistChildMessage. Goose's tool REQUESTS use this.
+	ChildTranscriptPayload []byte
+}
+
 func (b *acpBase) handleToolCall(update json.RawMessage) {
-	var tc struct {
-		ToolCallID string `json:"toolCallId"`
-		Title      string `json:"title"`
-		Kind       string `json:"kind"`
-		Status     string `json:"status"`
-	}
+	var tc acpToolCallEnvelope
 	if err := json.Unmarshal(update, &tc); err != nil {
 		slog.Warn("acp tool_call unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return
@@ -1399,6 +1489,9 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		}); err != nil {
 			slog.Error("persist terminal acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
 		}
+		if b.subagentFromToolCall != nil {
+			b.applySubagentObservation(b.subagentFromToolCall(tc))
+		}
 		return
 	}
 
@@ -1410,20 +1503,28 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 	}
 	b.sink.SetSpanType(tc.ToolCallID, spanType)
 	b.sink.OpenSpan(tc.ToolCallID, "")
+	if b.subagentFromToolCall != nil {
+		b.applySubagentObservation(b.subagentFromToolCall(tc))
+	}
 }
 
 func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
-	var tcu struct {
-		ToolCallID string             `json:"toolCallId"`
-		Status     string             `json:"status"`
-		Content    []acpToolCallBlock `json:"content"`
-	}
+	var tcu acpToolCallUpdateEnvelope
 	if err := json.Unmarshal(update, &tcu); err != nil {
 		slog.Warn("acp tool_call_update unmarshal failed", "provider", b.providerName, "agent_id", b.agentID, "error", err)
 		return
 	}
 	if tcu.ToolCallID == "" {
 		return
+	}
+
+	// Goose's tool-request meta rides content-less in_progress updates, so the
+	// subagent hook runs BEFORE the content-less early-return below. OpenCode/
+	// Kilo terminal updates close on the terminal arm below.
+	if b.subagentFromToolCallUpdate != nil {
+		if obs := b.subagentFromToolCallUpdate(tcu); obs != nil {
+			b.applySubagentObservation(obs)
+		}
 	}
 
 	switch tcu.Status {
@@ -1459,6 +1560,98 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		}
 		b.sink.BroadcastStreamEnd(tcu.ToolCallID)
 		b.sink.CloseSpan(tcu.ToolCallID)
+	}
+}
+
+// applySubagentObservation translates a provider hook's neutral observation
+// into registry sink calls (and, for Goose, a best-effort child-transcript
+// persist). A nil observation is a no-op. The shared ACP terminal status map
+// lives here so every provider agrees: completed→Completed, failed→Failed,
+// cancelled→Stopped.
+//
+// A close-only observation (Mode == acpModeCloseOnly) skips the upsert: it
+// closes an existing row without first creating one. This matters for
+// Goose/Cursor, whose terminal-update hooks fire for EVERY tool_call, not just
+// spawns — the detector sets the Mode explicitly instead of relying on which
+// fields happen to be empty.
+func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
+	if obs == nil || obs.RowKey == "" || b.sink == nil {
+		return
+	}
+	// Resolve the child agent id once so both the upsert and the terminal close
+	// can use it. Only the spawn observation carries ChildAgentKey; a close-only
+	// observation leaves it empty (the linkage persists in the registry row from
+	// spawn time, and the cleanup defers to root close for that path).
+	childAgentID := ""
+	if obs.ChildAgentKey != "" && obs.Mode != acpModeCloseOnly && obs.RenameFrom == "" {
+		var err error
+		childAgentID, err = b.sink.EnsureChildAgent(obs.RowKey, obs.ChildAgentKey, obs.Title)
+		if err != nil {
+			slog.Warn("acp subagent ensure child failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+		}
+	}
+	// A rename+close (RenameFrom set) operates on the existing spawn row, so it
+	// skips the upsert -- upserting RowKey would create a second row before the
+	// rename collapses the keys. acpModeCloseOnly skips the upsert for the same
+	// reason on a plain close.
+	if obs.Mode != acpModeCloseOnly && obs.RenameFrom == "" {
+		kind := obs.Kind
+		if kind == bgtask.KindUnspecified {
+			kind = bgtask.KindSubagent
+		}
+		if err := b.sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey:        obs.RowKey,
+			Kind:          kind,
+			ChildAgentID:  childAgentID,
+			ParentAgentID: b.agentID,
+			Title:         obs.Title,
+			ActiveForm:    obs.Activity,
+			GroupKey:      obs.GroupKey,
+			Status:        obs.Status,
+		}); err != nil {
+			slog.Warn("acp subagent upsert failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+		}
+		if obs.ChildTranscriptPayload != nil && childAgentID != "" {
+			if err := b.sink.PersistChildMessage(childAgentID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, obs.ChildTranscriptPayload, SpanInfo{}); err != nil {
+				slog.Warn("acp subagent child persist failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+			}
+		}
+	}
+	if obs.CloseRow {
+		// Rename the spawn row to the final key first, so one row tracks the
+		// whole lifecycle. A no-op when RenameFrom is empty or matches RowKey.
+		// The rename runs before the close so the terminal status lands on the
+		// single renamed row.
+		if obs.RenameFrom != "" && obs.RenameFrom != obs.RowKey {
+			if err := b.sink.RenameBackgroundTask(obs.RenameFrom, obs.RowKey); err != nil {
+				slog.Warn("acp subagent rename failed", "provider", b.providerName, "from", obs.RenameFrom, "to", obs.RowKey, "error", err)
+			}
+		}
+		if err := b.sink.CloseBackgroundTask(obs.RowKey, obs.Status); err != nil {
+			slog.Warn("acp subagent close failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+		}
+		// Release the child's per-agent service state so a long-running root
+		// that cycles many subagents does not retain a stale SpanTracker + sink
+		// ref per closed child until the root itself closes. The transcript row
+		// survives. Only the spawn-observation close knows the child id.
+		if childAgentID != "" {
+			b.sink.CleanupChildAgent(childAgentID)
+		}
+	}
+}
+
+// acpTerminalStatus maps an ACP tool_call status to the registry terminal
+// status. Unknown values fall through to Stopped (treat as cancelled).
+func acpTerminalStatus(s string) bgtask.Status {
+	switch s {
+	case "completed":
+		return bgtask.StatusCompleted
+	case "failed":
+		return bgtask.StatusFailed
+	case "cancelled":
+		return bgtask.StatusStopped
+	default:
+		return bgtask.StatusStopped
 	}
 }
 

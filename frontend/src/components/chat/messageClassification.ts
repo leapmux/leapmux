@@ -19,7 +19,6 @@ export type MessageCategory
     // thread (`messages: [parentObject]`). renderNotificationThread is the sole
     // renderer for both, so there is one notification category, not two.
     | { kind: 'notification', messages: unknown[] }
-    | { kind: 'task_notification' }
     | { kind: 'tool_use', toolName: string, toolUse: Record<string, unknown>, content: Array<Record<string, unknown>> }
     | { kind: 'tool_result' }
     | { kind: 'agent_prompt' }
@@ -170,7 +169,6 @@ const META_KINDS = new Set<MessageCategory['kind']>([
   'control_response',
   'compact_summary',
   'notification',
-  'task_notification',
   'unsupported_provider',
 ])
 
@@ -181,7 +179,6 @@ const META_KINDS = new Set<MessageCategory['kind']>([
  */
 const NON_STREAM_CLEAR_KINDS = new Set<MessageCategory['kind']>([
   'notification',
-  'task_notification',
   'hidden',
   'control_response',
   'compact_summary',

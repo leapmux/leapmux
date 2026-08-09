@@ -132,6 +132,8 @@ func Apply(state *leapmuxv1.UserCrdtState, op *leapmuxv1.CrdtOp) {
 		applySetTabRegister(state, body.SetTabRegister, canon)
 	case *leapmuxv1.CrdtOp_TombstoneTab:
 		applyTombstoneTab(state, body.TombstoneTab, canon)
+	case *leapmuxv1.CrdtOp_ReviveTab:
+		applyReviveTab(state, body.ReviveTab, canon)
 	case *leapmuxv1.CrdtOp_SetFloatingWindowRegister:
 		applySetFloatingWindowRegister(state, body.SetFloatingWindowRegister, canon)
 	case *leapmuxv1.CrdtOp_TombstoneFloatingWindow:
@@ -315,7 +317,12 @@ func applySetTabRegister(state *leapmuxv1.UserCrdtState, op *leapmuxv1.SetTabReg
 func applyTombstoneTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneTabOp, hlc *leapmuxv1.HLC) {
 	id := op.GetTabId()
 	rec := state.Tabs[id]
-	if rec == nil || HLCCmp(hlc, rec.GetTombstoneAt()) > 0 {
+	// The tombstone is a true LWW register over both tombstone and revive
+	// writes: a tombstone applies only when its HLC is newer than the current
+	// tombstone AND the last revive (revived_at). Without the revive check, a
+	// redelivered or out-of-order tombstone older than a successful revive
+	// would re-close a tab the user reopened.
+	if rec == nil || (HLCCmp(hlc, rec.GetTombstoneAt()) > 0 && HLCCmp(hlc, rec.GetRevivedAt()) > 0) {
 		// Preserve the existing tab_type when one is on file (it's
 		// immutable on the record); fall back to the op's tab_type
 		// when materializing a tombstone for a never-seen tab.
@@ -328,6 +335,51 @@ func applyTombstoneTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.TombstoneTa
 			TabId:       id,
 			TombstoneAt: HLCClone(hlc),
 		}
+	}
+}
+
+// applyReviveTab clears a tab's tombstone so a CLOSED tab can re-open. The
+// revive is itself an LWW register write on the tombstone register: it clears
+// TombstoneAt only when its HLC is strictly newer than the tombstone. An
+// older-than-tombstone revive is a no-op (remove-wins for CONCURRENT
+// set-vs-tombstone stays). Unlike applyTombstoneTab, revive preserves the
+// record in place -- the same batch's SetTab* ops (co-scheduled after the
+// revive) repopulate the tile/worker/position registers, and the post-batch
+// completeness check demands they be present.
+//
+// The revive's HLC is recorded on revived_at as a monotone max: a redelivered
+// or out-of-order revive can never regress revived_at below a prior successful
+// revive. applyTombstoneTab requires a tombstone to be newer than BOTH the
+// tombstone and the last revive, so regressing revived_at would let a later
+// tombstone (newer than the stale revive, older than the real one) re-close a
+// tab the user reopened. A losing revive (older than the tombstone) is a no-op
+// and never stamps revived_at.
+func applyReviveTab(state *leapmuxv1.UserCrdtState, op *leapmuxv1.ReviveTabOp, hlc *leapmuxv1.HLC) {
+	id := op.GetTab().GetTabId()
+	if id == "" {
+		return
+	}
+	rec, ok := state.Tabs[id]
+	if !ok {
+		// A revive of a never-seen tab: materialize a live record (the same
+		// batch's Set ops complete it). tab_type comes from the op's TabRef.
+		state.Tabs[id] = &leapmuxv1.TabRecord{
+			TabType:   op.GetTab().GetTabType(),
+			TabId:     id,
+			RevivedAt: HLCClone(hlc),
+		}
+		return
+	}
+	if HLCCmp(hlc, rec.GetTombstoneAt()) > 0 {
+		rec.TombstoneAt = nil
+	}
+	// revived_at is a monotone max: a winning revive keeps the newer of the
+	// incoming and the existing revive HLC. A losing revive (the branch above
+	// did not fire) still must not regress revived_at, so take the max here
+	// unconditionally -- a stale redelivered revive older than the current
+	// revived_at changes nothing.
+	if HLCCmp(hlc, rec.GetRevivedAt()) > 0 {
+		rec.RevivedAt = HLCClone(hlc)
 	}
 }
 

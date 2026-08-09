@@ -115,6 +115,10 @@ func touchedTabIDs(batch []*leapmuxv1.CrdtOp) map[string]bool {
 			out[body.SetTabRegister.GetTabId()] = true
 		case *leapmuxv1.CrdtOp_TombstoneTab:
 			out[body.TombstoneTab.GetTabId()] = true
+		case *leapmuxv1.CrdtOp_ReviveTab:
+			// A revive re-materializes the tab into the index; include it so
+			// its workspace_tab_owned/_rendered rows are re-upserted.
+			out[body.ReviveTab.GetTab().GetTabId()] = true
 		}
 	}
 	return out

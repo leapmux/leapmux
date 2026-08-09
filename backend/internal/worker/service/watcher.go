@@ -249,7 +249,8 @@ func agentEventClass(e *leapmuxv1.AgentEvent) eventClass {
 		*leapmuxv1.AgentEvent_ControlCancel,
 		*leapmuxv1.AgentEvent_TurnEnd,
 		*leapmuxv1.AgentEvent_MessageDeleted,
-		*leapmuxv1.AgentEvent_TodosChanged:
+		*leapmuxv1.AgentEvent_TodosChanged,
+		*leapmuxv1.AgentEvent_BackgroundTasksChanged:
 		return classNotify
 	case *leapmuxv1.AgentEvent_AgentMessage,
 		*leapmuxv1.AgentEvent_StreamChunk,

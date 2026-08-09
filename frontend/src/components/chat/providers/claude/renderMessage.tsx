@@ -9,7 +9,6 @@ import { isObject } from '~/lib/jsonPick'
 import { renderMarkdownForContext, useSharedExpandedState } from '../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../messageUiKeys'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../results/collapse'
-import { taskNotificationRenderer } from '../../taskRenderers'
 import {
   ToolUseLayout,
 } from '../../toolRenderers'
@@ -51,8 +50,6 @@ export function renderClaudeMessage(
       return userContentRenderer.render(parsed, context)
     case 'plan_execution':
       return planExecutionRenderer.render(parsed, context)
-    case 'task_notification':
-      return taskNotificationRenderer.render(parsed, context)
     case 'compact_summary':
     case 'hidden':
       return <span />

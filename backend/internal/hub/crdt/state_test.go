@@ -29,6 +29,8 @@ func stamped(body any, hlc *leapmuxv1.HLC) *leapmuxv1.CrdtOp {
 		op.Body = &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: b}
 	case *leapmuxv1.TombstoneTabOp:
 		op.Body = &leapmuxv1.CrdtOp_TombstoneTab{TombstoneTab: b}
+	case *leapmuxv1.ReviveTabOp:
+		op.Body = &leapmuxv1.CrdtOp_ReviveTab{ReviveTab: b}
 	case *leapmuxv1.SetFloatingWindowRegisterOp:
 		op.Body = &leapmuxv1.CrdtOp_SetFloatingWindowRegister{SetFloatingWindowRegister: b}
 	case *leapmuxv1.TombstoneFloatingWindowOp:
@@ -118,7 +120,130 @@ func TestApply_TombstoneEarlierThanCurrentSet_DropsTheSet(t *testing.T) {
 	assert.False(t, crdt.HLCIsZero(rec.GetTombstoneAt()))
 }
 
+func TestApply_ReviveTabClearsTombstone(t *testing.T) {
+	state := crdt.NewState("user-1")
+	// Place a tab then tombstone it.
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		TabId:   "tab-1",
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-1"},
+	}, hlcAt(10, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}, hlcAt(20, 0, "a")))
+	require.False(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()))
+
+	// A revive newer than the tombstone clears it. The record stays (a same-
+	// batch Set repopulates the registers).
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+	}, hlcAt(30, 0, "a")))
+	rec := state.Tabs["tab-1"]
+	require.NotNil(t, rec)
+	assert.True(t, crdt.HLCIsZero(rec.GetTombstoneAt()), "revive newer than tombstone clears it")
+	// tab_type is preserved.
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, rec.GetTabType())
+
+	// A later Set now lands (the tab is live again).
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		TabId:   "tab-1",
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		Field:   &leapmuxv1.SetTabRegisterOp_TileId{TileId: "tile-2"},
+	}, hlcAt(40, 0, "a")))
+	assert.Equal(t, "tile-2", state.Tabs["tab-1"].GetTileId().GetValue())
+}
+
+func TestApply_ReviveTabOlderThanTombstoneIsNoOp(t *testing.T) {
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}, hlcAt(50, 0, "a")))
+	// Revive at an older HLC: remove-wins for concurrent, older-revive no-op.
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+	}, hlcAt(40, 0, "a")))
+	assert.False(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()), "older revive does not clear tombstone")
+}
+
+// TestApply_TombstoneOlderThanReviveIsNoOp verifies the LWW-on-revive rule: a
+// tombstone whose HLC is older than a successful revive cannot re-tombstone the
+// tab. Without recording the revive's HLC (revived_at), the tombstone register
+// had no "last write" to compare against once cleared, so any tombstone -- even
+// one older than the revive -- would re-close a revived tab.
+func TestApply_TombstoneOlderThanReviveIsNoOp(t *testing.T) {
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}, hlcAt(10, 0, "a")))
+	// Revive at HLC 30 clears the tombstone and records revived_at = 30.
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+	}, hlcAt(30, 0, "a")))
+	assert.True(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()), "revive cleared the tombstone")
+
+	// A tombstone at HLC 20 (older than the revive at 30, newer than the
+	// original tombstone at 10) must NOT re-tombstone -- the revive won.
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}, hlcAt(20, 0, "a")))
+	rec := state.Tabs["tab-1"]
+	require.NotNil(t, rec)
+	assert.True(t, crdt.HLCIsZero(rec.GetTombstoneAt()), "tombstone older than the revive does not re-close a revived tab")
+
+	// A tombstone strictly newer than the revive still wins (genuine close).
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}, hlcAt(40, 0, "a")))
+	assert.False(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()), "tombstone newer than the revive re-closes")
+}
+
+// TestApply_RedeliveredOlderReviveDoesNotRegressRevivedAt verifies the
+// revived_at register is a monotone max: a redelivered or out-of-order revive
+// older than the last successful revive cannot regress revived_at. Without the
+// max, a regressed revived_at would let a later tombstone (newer than the
+// stale revive, older than the real one) pass both LWW gates in
+// applyTombstoneTab and re-close a tab the user reopened.
+func TestApply_RedeliveredOlderReviveDoesNotRegressRevivedAt(t *testing.T) {
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}, hlcAt(10, 0, "a")))
+	// Successful revive at HLC 30 clears the tombstone and sets revived_at = 30.
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+	}, hlcAt(30, 0, "a")))
+	wantRevived := hlcAt(30, 0, "a")
+	assert.Equal(t, wantRevived, state.Tabs["tab-1"].GetRevivedAt(), "revived_at recorded as the winning revive HLC")
+
+	// A redelivered revive at HLC 25 (older than 30, newer than the cleared
+	// tombstone) must NOT regress revived_at to 25.
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+	}, hlcAt(25, 0, "a")))
+	assert.Equal(t, wantRevived, state.Tabs["tab-1"].GetRevivedAt(), "older redelivered revive does not regress revived_at")
+
+	// A tombstone at HLC 27 (newer than the stale revive at 25, older than the
+	// real revive at 30) must NOT re-close the tab. If revived_at had regressed
+	// to 25, this tombstone would wrongly pass the revived_at gate.
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabId: "tab-1", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+	}, hlcAt(27, 0, "a")))
+	assert.True(t, crdt.HLCIsZero(state.Tabs["tab-1"].GetTombstoneAt()), "tombstone older than the real revive does not re-close")
+}
+
+func TestApply_ReviveTabAbsentMaterializesLive(t *testing.T) {
+	state := crdt.NewState("user-1")
+	crdt.Apply(state, stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabId: "tab-new", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+	}, hlcAt(10, 0, "a")))
+	rec := state.Tabs["tab-new"]
+	require.NotNil(t, rec)
+	assert.True(t, crdt.HLCIsZero(rec.GetTombstoneAt()), "revive of unseen tab is live")
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, rec.GetTabType())
+}
+
 func TestApply_ParentIdSetOnce(t *testing.T) {
+
 	state := crdt.NewState("user-1")
 	// First parent_id write lands.
 	crdt.Apply(state, stamped(&leapmuxv1.SetNodeRegisterOp{

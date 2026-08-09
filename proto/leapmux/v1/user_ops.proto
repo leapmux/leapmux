@@ -41,6 +41,7 @@ message CrdtOp {
     SetWorkspaceRootNodeOp      set_workspace_root_node       = 16;
     SetWorkspaceRegisterOp      set_workspace_register        = 17;
     TombstoneWorkspaceOp        tombstone_workspace           = 18;
+    ReviveTabOp                 revive_tab                    = 19;
   }
 }
 
@@ -80,6 +81,18 @@ message SetTabRegisterOp {
   }
 }
 message TombstoneTabOp { TabType tab_type = 1; string tab_id = 2; }
+
+// ReviveTabOp clears a tab's tombstone so a CLOSED tab can re-open. Required
+// because tab ids are never reused and tombstones are permanent: a subagent
+// tab whose id == the child agent id could never re-open after a close
+// without this op. The revive is itself an LWW register write on the
+// tombstone register: it applies (clears tombstone_at) only when its HLC is
+// strictly newer than the tombstone; an older-than-tombstone revive is a
+// no-op (remove-wins for concurrent set-vs-tombstone stays). A revived tab
+// must be re-completed by the SAME batch (revive + SetTab* registers
+// together), enforced by validate_tab. Carries a TabRef only -- no content
+// reaches the hub.
+message ReviveTabOp { TabRef tab = 1; }
 
 // SetFloatingWindowRegisterOp writes exactly one register on a
 // floating window. root_node_id writes are creation-only (set-once);

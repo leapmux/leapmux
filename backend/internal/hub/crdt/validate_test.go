@@ -268,6 +268,61 @@ func TestValidate_TabIDCollisionAcrossTypes(t *testing.T) {
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_ID_COLLISION_ACROSS_TYPES, res.Reason)
 }
 
+// TestValidate_ReviveTabWithRePlacementAcceptsBatch is the critical sequencing
+// test: a revive + SetTab* batch on a tombstoned tab must validate. The pre-
+// apply tombstone check runs against pre-batch state (where the tab is still
+// tombstoned), so without the same-batch-revive exemption the Set ops would be
+// rejected as TOMBSTONED_TARGET before the revive clears the tombstone.
+func TestValidate_ReviveTabWithRePlacementAcceptsBatch(t *testing.T) {
+	pre := seedWorkspaceWithRoot("w1", "root1")
+	// Seed a tombstoned agent tab in pre-state.
+	pre.Tabs["t1"] = &leapmuxv1.TabRecord{
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabId:       "t1",
+		TombstoneAt: hlcAt(5, 0, "old"),
+	}
+
+	revive := stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
+	}, hlcAt(10, 0, "a"))
+	tile := stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
+	}, hlcAt(10, 1, "a"))
+	worker := stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wk-1"},
+	}, hlcAt(10, 2, "a"))
+	pos := stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
+	}, hlcAt(10, 3, "a"))
+
+	res, _ := crdt.ValidateBatch(context.Background(), pre,
+		[]*leapmuxv1.CrdtOp{revive, tile, worker, pos}, false, "p1", allowAll{})
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
+		"revive + re-placement batch must validate (same-batch revive exempts companion Set ops)")
+}
+
+// TestValidate_ReviveTabAloneRejectedIncomplete: a bare revive without
+// re-placement leaves the tab live but unplaced, so the placement/completeness
+// check (which runs against post-batch state) rejects it.
+func TestValidate_ReviveTabAloneRejectedIncomplete(t *testing.T) {
+	pre := seedWorkspaceWithRoot("w1", "root1")
+	pre.Tabs["t1"] = &leapmuxv1.TabRecord{
+		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabId:       "t1",
+		TombstoneAt: hlcAt(5, 0, "old"),
+	}
+	revive := stamped(&leapmuxv1.ReviveTabOp{
+		Tab: &leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1"},
+	}, hlcAt(10, 0, "a"))
+	res, _ := crdt.ValidateBatch(context.Background(), pre,
+		[]*leapmuxv1.CrdtOp{revive}, false, "p1", allowAll{})
+	assert.NotEqual(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason,
+		"a bare revive leaves the tab unplaced/incomplete; the batch must also re-place it")
+}
+
 func TestValidate_ValueDomain_OpacityOutOfRange(t *testing.T) {
 	pre := seedWorkspaceWithRoot("w1", "root1")
 	op := stamped(&leapmuxv1.SetFloatingWindowRegisterOp{

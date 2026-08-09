@@ -173,8 +173,8 @@ func Wire(p Params) *Wiring {
 	// two settings-change notifications bracketing a model/effort switch
 	// stay in one thread and consolidate. Permanent teardown does the full
 	// cleanup via its own ClearAgentRuntimeState call.
-	p.Client.AgentManager().SetOnExit(func(agentID string, _ int, _ error) {
-		svc.Output.ClearPendingControlRequests(agentID)
+	p.Client.AgentManager().SetOnExit(func(agentID string, exitCode int, err error, stopped bool) {
+		svc.HandleAgentProcessExit(agentID, exitCode, err, stopped)
 	})
 
 	dispatcher := channel.NewDispatcher()
@@ -287,7 +287,13 @@ func newRemoteIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dis
 func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
 	return func() (string, int32, bool) {
 		ctx := context.Background()
-		if ids, err := queries.ListAllOpenAgentIDs(ctx); err == nil && len(ids) > 0 {
+		// A delegation mint targets a tab this worker owns, and worker-owned
+		// tabs are ROOT agents only (child agents are excluded from
+		// tab_locations via parent_agent_id IS NULL). List roots so a child id
+		// can never surface as ids[0] -- the hub 403s a child id ("tab not
+		// owned by calling worker") and the mint backoff would loop to a
+		// permanent failure.
+		if ids, err := queries.ListAllOpenRootAgentIDs(ctx); err == nil && len(ids) > 0 {
 			return ids[0], int32(leapmuxv1.TabType_TAB_TYPE_AGENT), true
 		}
 		if ids, err := queries.ListAllOpenTerminalIDs(ctx); err == nil && len(ids) > 0 {

@@ -61,7 +61,7 @@ A few specifics worth internalizing:
 
 - **Workspace titles are visible, agent content is not.** Name your workspaces with that in mind. Tab positions and tiling geometry are layout metadata the Hub stores so your arrangement can sync across devices (see [Device Sync & Presence](/docs/using/collaboration/)).
 - **Worker public keys are visible; private keys never leave the Worker.** The Worker registers only its public composite key with the Hub. Its private halves stay in the Worker's local state.
-- **Agent and terminal state live only in the Worker's local SQLite database.** It is never uploaded to the Hub. See [Encryption & Data](/docs/operating/encryption-and-data/) for where that data lives and how to back it up.
+- **Agent and terminal state live only in the Worker's local SQLite database.** It is never uploaded to the Hub. This includes agent and subagent transcripts, to-do lists, and the background-task registry. See [Encryption & Data](/docs/operating/encryption-and-data/) for where that data lives and how to back it up.
 - **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or heartbeats. A different component does send one: `leapmux remote` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself.
 
 ## The E2EE protocol

@@ -178,6 +178,14 @@ export const inputArea = style({
   flexShrink: 0,
 })
 
+// disabledHint is the single-line note rendered above a disabled composer (a
+// non-steerable subagent tab). Dim, small, no interaction.
+export const disabledHint = style({
+  fontSize: 'var(--text-7)',
+  color: 'var(--muted-foreground)',
+  padding: '0 0 var(--space-1)',
+})
+
 export const footerBar = style({
   display: 'flex',
   justifyContent: 'space-between',

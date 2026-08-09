@@ -129,6 +129,13 @@ type Provider interface {
 	// turn-end sound for a zero-tool turn, so a provider that cannot say must
 	// return ok=false rather than 0.
 	TurnEndToolUses(content []byte) (count int32, ok bool)
+	// SupportsChildSteering reports whether a running agent of this provider
+	// can address a subagent conversation inside the same process (Codex's
+	// collab child threads). Drives AgentInfo.accepts_messages for child tabs:
+	// a child of a steering provider keeps an enabled composer; every other
+	// child tab is read-only. Defaults to false (noopProvider); only Codex
+	// overrides it to true.
+	SupportsChildSteering() bool
 }
 
 type noopProvider struct{}
@@ -169,6 +176,11 @@ func (noopProvider) PermissionModeFromRawInput(string) (string, bool) { return "
 func (noopProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	return defaultTurnEndToolUses(content)
 }
+
+// SupportsChildSteering defaults to false: a provider whose running agents
+// cannot steer a subagent conversation inside their own process. Only Codex
+// overrides it to true (its collab child threads accept host-initiated turns).
+func (noopProvider) SupportsChildSteering() bool { return false }
 
 // defaultTurnEndToolUses reads a top-level "num_tool_uses" number. Every
 // provider shipped today puts it there, but the decision stays behind the
@@ -339,6 +351,12 @@ func (codexProvider) SyntheticInterruptNotice() string { return "[Request interr
 
 // PermissionModeFromRawInput: Codex has no set_permission_mode raw control frame.
 func (codexProvider) PermissionModeFromRawInput(string) (string, bool) { return "", false }
+
+// SupportsChildSteering: Codex collab child threads accept host-initiated turns
+// inside the same process (turn/steer / turn/start / turn/interrupt on a child
+// threadId), so a child tab keeps an enabled composer and SendAgentMessage to a
+// child routes through the owner process's ChildSteerer.
+func (codexProvider) SupportsChildSteering() bool { return true }
 
 type claudeProvider struct {
 	noopProvider

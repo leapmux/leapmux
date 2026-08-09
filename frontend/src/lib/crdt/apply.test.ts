@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { HLCSchema, NodeKind } from '~/generated/leapmux/v1/user_crdt_pb'
 import {
   CrdtOpSchema,
+  ReviveTabOpSchema,
   SetFloatingWindowRegisterOpSchema,
   SetNodeRegisterOpSchema,
   SetTabRegisterOpSchema,
@@ -70,6 +71,13 @@ function tombstoneTabOp(tabId: string, p: bigint, l: bigint, c: string) {
   return create(CrdtOpSchema, {
     canonicalHlc: hlc(p, l, c),
     body: { case: 'tombstoneTab', value: create(TombstoneTabOpSchema, { tabType: TabType.AGENT, tabId }) },
+  })
+}
+
+function reviveTabOp(tabId: string, p: bigint, l: bigint, c: string) {
+  return create(CrdtOpSchema, {
+    canonicalHlc: hlc(p, l, c),
+    body: { case: 'reviveTab', value: create(ReviveTabOpSchema, { tab: { tabType: TabType.AGENT, tabId } }) },
   })
 }
 
@@ -142,6 +150,70 @@ describe('applyOp', () => {
     applyOp(state, setTabTileIdOp('t1', 'A', 10n, 0n, 'a'))
     applyOp(state, tombstoneTabOp('t1', 20n, 0n, 'a'))
     expect(state.tabs.t1.tileId).toBeUndefined()
+  })
+
+  it('revive clears a newer tombstone and lets later sets land', () => {
+    const state = newState('user')
+    applyOp(state, setTabTileIdOp('t1', 'A', 10n, 0n, 'a'))
+    applyOp(state, tombstoneTabOp('t1', 20n, 0n, 'a'))
+    expect(state.tabs.t1.tombstoneAt).toBeDefined()
+    // Revive at a newer HLC clears the tombstone.
+    applyOp(state, reviveTabOp('t1', 30n, 0n, 'a'))
+    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
+    // A later set now lands (the tab is live again).
+    applyOp(state, setTabTileIdOp('t1', 'B', 40n, 0n, 'a'))
+    expect(state.tabs.t1.tileId?.value).toBe('B')
+  })
+
+  it('revive older than tombstone is a no-op (remove-wins for concurrent)', () => {
+    const state = newState('user')
+    applyOp(state, tombstoneTabOp('t1', 50n, 0n, 'a'))
+    applyOp(state, reviveTabOp('t1', 40n, 0n, 'a'))
+    expect(state.tabs.t1.tombstoneAt).toBeDefined()
+  })
+
+  it('tombstone older than a revive does not re-close a revived tab', () => {
+    // LWW on the revive register: a tombstone whose HLC is between the original
+    // tombstone and the revive must not re-tombstone. Without recording the
+    // revive HLC, the cleared register had no "last write" and any tombstone
+    // re-closed the tab.
+    const state = newState('user')
+    applyOp(state, tombstoneTabOp('t1', 10n, 0n, 'a'))
+    applyOp(state, reviveTabOp('t1', 30n, 0n, 'a'))
+    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
+    // Tombstone at HLC 20 (older than the revive at 30): must NOT re-close.
+    applyOp(state, tombstoneTabOp('t1', 20n, 0n, 'a'))
+    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
+    // A tombstone strictly newer than the revive still wins (genuine close).
+    applyOp(state, tombstoneTabOp('t1', 40n, 0n, 'a'))
+    expect(state.tabs.t1.tombstoneAt).toBeDefined()
+  })
+
+  it('a redelivered older revive does not regress revivedAt', () => {
+    // revivedAt is a monotone max: a redelivered/out-of-order revive older
+    // than the last successful revive must not regress it. Otherwise a later
+    // tombstone (newer than the stale revive, older than the real one) would
+    // pass both LWW gates and re-close a tab the user reopened.
+    const state = newState('user')
+    applyOp(state, tombstoneTabOp('t1', 10n, 0n, 'a'))
+    applyOp(state, reviveTabOp('t1', 30n, 0n, 'a'))
+    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
+    const revivedAt30 = state.tabs.t1.revivedAt
+    expect(revivedAt30).toBeDefined()
+    // Redelivered revive at 25 (older than 30): must not change revivedAt.
+    applyOp(state, reviveTabOp('t1', 25n, 0n, 'a'))
+    expect(state.tabs.t1.revivedAt).toBe(revivedAt30)
+    // A tombstone at 27 (newer than the stale 25, older than the real 30) must
+    // not re-close the tab.
+    applyOp(state, tombstoneTabOp('t1', 27n, 0n, 'a'))
+    expect(state.tabs.t1.tombstoneAt).toBeUndefined()
+  })
+
+  it('revive of an unseen tab materializes a live record', () => {
+    const state = newState('user')
+    applyOp(state, reviveTabOp('t-new', 10n, 0n, 'a'))
+    expect(state.tabs['t-new']).toBeDefined()
+    expect(state.tabs['t-new'].tombstoneAt).toBeUndefined()
   })
 
   it('-0.0 normalizes to +0.0 on double registers', () => {

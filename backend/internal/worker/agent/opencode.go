@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 const (
@@ -38,6 +40,11 @@ func StartOpenCode(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 		configure: func(a *OpenCodeAgent) {
 			a.modeChannel = modeChannelPrimaryAgent
 			a.primaryAgentHiddenFilter = isHiddenPrimaryAgent
+			// Subagent spawn detection (registry-only; OpenCode drops child
+			// sessions over ACP so there is no transcript). Detect by input
+			// shape, not tool-name guessing.
+			a.subagentFromToolCall = openCodeSubagentFromToolCall
+			a.subagentFromToolCallUpdate = openCodeSubagentFromToolCallUpdate
 		},
 		afterHandshake: func(a *OpenCodeAgent, handshake *acpSessionResult, opts Options) error {
 			return a.applyPrimaryAgentStartup(handshake, opts, OpenCodePrimaryAgentBuild)
@@ -62,6 +69,77 @@ func isHiddenPrimaryAgent(id string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// openCodeSubagentFromToolCall detects an OpenCode/Kilo subagent spawn by the
+// rawInput SHAPE {description, prompt, subagent_type} (shape detection, not
+// tool-name guessing). Shared by both providers since they run the same ACP
+// layer (Kilo is an OpenCode fork). Returns nil for a non-spawn tool call.
+func openCodeSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
+	var input struct {
+		Description  string          `json:"description"`
+		Prompt       json.RawMessage `json:"prompt"`
+		SubagentType string          `json:"subagent_type"`
+		// Some builds spell it with a different key; the shape still carries a
+		// prompt + a type, so detect on the union.
+		SubagentID string `json:"subagentID"`
+	}
+	if len(tc.RawInput) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(tc.RawInput, &input); err != nil {
+		return nil
+	}
+	// Spawn shape requires at least a prompt and a subagent discriminator.
+	if len(input.Prompt) == 0 || (input.SubagentType == "" && input.SubagentID == "") {
+		return nil
+	}
+	title := tc.Title
+	if title == "" {
+		title = input.Description
+	}
+	if title == "" {
+		title = input.SubagentType
+	}
+	return &acpSubagentObservation{
+		RowKey: tc.ToolCallID,
+		Title:  title,
+		Status: bgtask.StatusRunning,
+	}
+}
+
+// openCodeSubagentFromToolCallUpdate closes the registry row on a terminal
+// status, and when rawOutput.metadata.sessionId is present, re-keys the row to
+// the child session id (the metadata surfaces only on the terminal update).
+// The spawn row was opened under the toolCallId, so SpawnRowKey carries it to
+// keep the close from leaking it as a Running row.
+func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
+	if tcu.Status != "completed" && tcu.Status != "failed" && tcu.Status != "cancelled" {
+		return nil
+	}
+	// The terminal rawOutput may carry the child session id under metadata.
+	rowKey := tcu.ToolCallID
+	renameFrom := ""
+	if len(tcu.RawOutput) > 0 {
+		var out struct {
+			Metadata struct {
+				SessionID string `json:"sessionId"`
+			} `json:"metadata"`
+		}
+		if json.Unmarshal(tcu.RawOutput, &out) == nil && out.Metadata.SessionID != "" {
+			// Rename the spawn row (toolCallId) to the child session id so one
+			// row tracks the lifecycle, then terminalize it.
+			rowKey = out.Metadata.SessionID
+			renameFrom = tcu.ToolCallID
+		}
+	}
+	return &acpSubagentObservation{
+		RowKey:     rowKey,
+		RenameFrom: renameFrom,
+		Status:     acpTerminalStatus(tcu.Status),
+		CloseRow:   true,
+		Mode:       acpModeCloseOnly,
 	}
 }
 

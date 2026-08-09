@@ -4,9 +4,11 @@ import (
 	"cmp"
 	"encoding/json"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // piMessageUpdateEnvelope captures the bits of a `message_update` event we
@@ -21,14 +23,19 @@ type piMessageUpdateEnvelope struct {
 	} `json:"assistantMessageEvent"`
 }
 
-// piToolExecutionEnvelope captures `tool_execution_*` event headers.
+// piToolExecutionEnvelope captures `tool_execution_*` event headers. Input is
+// the start payload (carrying the prompt/description used as the registry
+// title); Result is the end payload.
 type piToolExecutionEnvelope struct {
-	ToolCallID string `json:"toolCallId"`
-	ToolName   string `json:"toolName"`
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	Input      json.RawMessage `json:"input"`
+	Result     json.RawMessage `json:"result"`
 }
 
 // piToolUpdateEnvelope adds the partialResult content blocks consumed when
-// computing the streaming delta for `tool_execution_update`.
+// computing the streaming delta for `tool_execution_update`, plus the Details
+// json.RawMessage the pi-subagents extension carries (subagent status/activity).
 type piToolUpdateEnvelope struct {
 	ToolCallID    string `json:"toolCallId"`
 	PartialResult struct {
@@ -36,6 +43,10 @@ type piToolUpdateEnvelope struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
+		// Details carries provider-specific structured data. For the
+		// pi-subagents extension it holds {status, activity, agentId} for a
+		// running subagent, parsed by shape in handlePiToolExecutionUpdate.
+		Details json.RawMessage `json:"details"`
 	} `json:"partialResult"`
 }
 
@@ -188,6 +199,12 @@ func isRetryablePiAgentEndFailure(raw []byte) bool {
 
 func (a *PiAgent) handlePiMessageEnd(raw []byte) {
 	augmented := a.augmentPiMessageEnd(raw)
+	// The pi-subagents extension emits a customType:"subagent-notification"
+	// message carrying registry details (status / activity / agentId, and
+	// optionally details.others[] for group nudges). Update/close the registry
+	// from it BEFORE the generic persist; the message itself STILL persists to
+	// the parent transcript (it is real conversational context).
+	piApplySubagentNotification(a.sink, augmented)
 	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, augmented, SpanInfo{}); err != nil {
 		slog.Error("pi persist message_end", "agent_id", a.agentID, "error", err)
 	}
@@ -226,6 +243,17 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 		slog.Warn("pi tool_execution_start unmarshal failed",
 			"agent_id", a.agentID, "error", err)
 		return
+	}
+
+	// Record the tool's input description (the pi-subagents extension carries
+	// the spawn prompt here) for the background-task registry title.
+	if desc := piExtractDescription(env.Input, env.ToolName); desc != "" {
+		a.mu.Lock()
+		if a.toolCallDescriptions == nil {
+			a.toolCallDescriptions = make(map[string]string)
+		}
+		a.toolCallDescriptions[env.ToolCallID] = desc
+		a.mu.Unlock()
 	}
 
 	spanColor := a.sink.ReserveSpanColor(env.ToolCallID, "")
@@ -288,6 +316,15 @@ func (a *PiAgent) handlePiToolExecutionUpdate(raw []byte) {
 		return
 	}
 	a.sink.BroadcastStreamChunk([]byte(delta.String()), env.ToolCallID, PiEventToolExecutionUpdate)
+
+	// pi-subagents extension: when partialResult.details parses to the
+	// subagent shape {status, activity} (shape detection), upsert a running
+	// registry row keyed by details.agentId (fallback toolCallId).
+	if obs := piSubagentFromDetails(env.PartialResult.Details, env.ToolCallID, a.toolCallTitle(env.ToolCallID)); obs != nil {
+		if err := a.sink.UpsertBackgroundTask(*obs); err != nil {
+			slog.Warn("pi subagent upsert failed", "agent_id", a.agentID, "tool_call", env.ToolCallID, "error", err)
+		}
+	}
 }
 
 func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
@@ -312,6 +349,14 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 	}
 	a.sink.BroadcastStreamEnd(env.ToolCallID)
 	a.sink.CloseSpan(env.ToolCallID)
+
+	// pi-subagents extension: parse the result details for terminal status, or
+	// a background re-key. The row key may change from toolCallId to
+	// details.agentId here (the agent id surfaces only at completion).
+	piApplySubagentEnd(a.sink, env.Result, env.ToolCallID, a.toolCallTitle(env.ToolCallID))
+	a.mu.Lock()
+	delete(a.toolCallDescriptions, env.ToolCallID)
+	a.mu.Unlock()
 }
 
 func (a *PiAgent) handlePiQueueUpdate(raw []byte) {
@@ -390,6 +435,219 @@ func (a *PiAgent) handlePiExtensionUIRequest(raw []byte) {
 		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
 			slog.Error("pi persist unknown extension_ui_request",
 				"agent_id", a.agentID, "method", head.Method, "error", err)
+		}
+	}
+}
+
+// --- pi-subagents extension: background-task registry helpers ---
+
+// toolCallTitle returns the description recorded at tool_execution_start for
+// the registry title (empty when none was recorded).
+func (a *PiAgent) toolCallTitle(toolCallID string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.toolCallDescriptions[toolCallID]
+}
+
+// piExtractDescription pulls a human label out of a tool_execution_start input.
+// The pi-subagents extension carries the spawn prompt as `description` (and a
+// `prompt`); fall back to the tool name.
+func piExtractDescription(input json.RawMessage, toolName string) string {
+	if len(input) == 0 {
+		return toolName
+	}
+	var in struct {
+		Description string `json:"description"`
+		Prompt      string `json:"prompt"`
+	}
+	if json.Unmarshal(input, &in) == nil {
+		if in.Description != "" {
+			return in.Description
+		}
+		if in.Prompt != "" {
+			return bgtask.TruncateRunes(bgtask.FirstLine(in.Prompt), 80)
+		}
+	}
+	return toolName
+}
+
+// piSubagentDetails is the shape the pi-subagents extension carries in
+// partialResult.details (update) and result.details (end): a status + activity
+// (+ agentId at completion). Shape detection: a details blob with a non-empty
+// status is treated as a subagent observation.
+type piSubagentDetails struct {
+	Status   string `json:"status"`
+	Activity string `json:"activity"`
+	AgentID  string `json:"agentId"`
+}
+
+// piSubagentFromDetails upserts a running registry row when details parse to
+// the subagent shape. Returns nil for a non-subagent details blob.
+func piSubagentFromDetails(details json.RawMessage, toolCallID, title string) *bgtask.Upsert {
+	if len(details) == 0 {
+		return nil
+	}
+	var d piSubagentDetails
+	if json.Unmarshal(details, &d) != nil || d.Status == "" {
+		return nil
+	}
+	rowKey := d.AgentID
+	if rowKey == "" {
+		rowKey = toolCallID
+	}
+	return &bgtask.Upsert{
+		RowKey:     rowKey,
+		Kind:       bgtask.KindSubagent,
+		Title:      title,
+		ActiveForm: d.Activity,
+		Status:     bgtask.StatusRunning,
+	}
+}
+
+// piTerminalStatus maps a pi-subagents result status to the registry terminal
+// status. completed/steered→Completed, error→Failed, stopped/aborted→Stopped.
+func piTerminalStatus(s string) (bgtask.Status, bool) {
+	switch s {
+	case "completed", "steered":
+		return bgtask.StatusCompleted, true
+	case "error":
+		return bgtask.StatusFailed, true
+	case "stopped", "aborted":
+		return bgtask.StatusStopped, true
+	default:
+		return bgtask.StatusCompleted, false
+	}
+}
+
+// piAgentIDRe matches a standalone "Agent ID: <id>" line in a Pi tool result.
+// Anchored to a line start so free-form model prose that merely mentions
+// "Agent ID:" mid-sentence does not produce a phantom registry row.
+var piAgentIDRe = regexp.MustCompile(`(?m)^Agent ID: (\S+)\s*$`)
+
+// piApplySubagentEnd parses a tool_execution_end result for terminal status or
+// a background re-key. status:"background" re-keys the row to details.agentId
+// and leaves it Running (fallback: regex "Agent ID: (\S+)" over result text).
+func piApplySubagentEnd(sink OutputSink, result json.RawMessage, toolCallID, title string) {
+	if len(result) == 0 {
+		return
+	}
+	// result may be a JSON object with details, or a raw string.
+	var d piSubagentDetails
+	if json.Unmarshal(result, &d) == nil && d.Status != "" {
+		if d.Status == "background" {
+			if agentID := d.AgentID; agentID != "" && agentID != toolCallID {
+				// Re-key: upsert under the agent id and close the toolCallId row.
+				// The close is mandatory -- without it the old toolCallId row stays
+				// Running forever and pins the parent's thinking indicator. The
+				// upsert links the child transcript (EnsureChildAgent) so the row is
+				// openable as a child tab, and the two writes share one swallowed-
+				// error discipline so a close failure is visible in the log rather
+				// than silently leaving a duplicate Running row.
+				if childID, err := sink.EnsureChildAgent(toolCallID, agentID, title); err != nil {
+					slog.Warn("pi background re-key ensure child failed", "tool_call_id", toolCallID, "agent_id", agentID, "error", err)
+				} else {
+					_ = sink.UpsertBackgroundTask(bgtask.Upsert{
+						RowKey:       agentID,
+						Kind:         bgtask.KindSubagent,
+						ChildAgentID: childID,
+						Title:        title,
+						Status:       bgtask.StatusRunning,
+					})
+				}
+				if err := sink.CloseBackgroundTask(toolCallID, bgtask.StatusCompleted); err != nil {
+					slog.Warn("pi background re-key close failed", "tool_call_id", toolCallID, "error", err)
+				}
+			}
+			// No agent id: the row stays keyed by toolCallID as-is (still running).
+			return
+		}
+		// An unrecognized status must NOT terminalize the row (piTerminalStatus
+		// returns ok=false for it). Upsert as Running so a future terminal event
+		// can still close it, matching piApplySubagentNotification's contract.
+		status, ok := piTerminalStatus(d.Status)
+		rowKey := d.AgentID
+		if rowKey == "" {
+			rowKey = toolCallID
+		}
+		if ok {
+			// A terminal upsert already stamps ended_at and the monotonic-terminal
+			// guard makes the row absorbing; no separate CloseBackgroundTask needed
+			// (it would early-return on the now-terminal row).
+			_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title, Status: status})
+		} else {
+			_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Title: title, ActiveForm: d.Activity, Status: bgtask.StatusRunning})
+		}
+		return
+	}
+	// Fallback: regex over the result text for an Agent ID (a background agent
+	// whose details did not parse). Key the row off the deterministic toolCallID
+	// so a later terminal event can close it; the captured agent id only refines
+	// the title. Free-form prose that mentions "Agent ID:" mid-sentence does not
+	// match the anchored regex. The result may be a JSON-encoded string, so
+	// decode it first; fall back to the raw text if it is not a string.
+	s := string(result)
+	var asString string
+	if json.Unmarshal(result, &asString) == nil {
+		s = asString
+	}
+	if strings.Contains(s, "Agent ID:") {
+		if m := piAgentIDRe.FindStringSubmatch(s); len(m) > 1 {
+			rowTitle := title
+			if rowTitle == "" {
+				rowTitle = "background agent " + m[1]
+			}
+			_ = sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey: toolCallID, Kind: bgtask.KindSubagent, Title: rowTitle, Status: bgtask.StatusRunning,
+			})
+		}
+	}
+}
+
+// piApplySubagentNotification sniffs a customType:"subagent-notification"
+// message and updates/closes the registry from its details (including
+// details.others[] for group nudges). The message itself still persists.
+func piApplySubagentNotification(sink OutputSink, raw []byte) {
+	var msg struct {
+		CustomType string          `json:"customType"`
+		Details    json.RawMessage `json:"details"`
+	}
+	if json.Unmarshal(raw, &msg) != nil || msg.CustomType != "subagent-notification" {
+		return
+	}
+	applyOne := func(details json.RawMessage) {
+		if len(details) == 0 {
+			return
+		}
+		var d piSubagentDetails
+		if json.Unmarshal(details, &d) != nil || d.Status == "" {
+			return
+		}
+		rowKey := d.AgentID
+		if rowKey == "" {
+			return
+		}
+		if status, ok := piTerminalStatus(d.Status); ok {
+			_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, Status: status})
+		} else {
+			_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: rowKey, Kind: bgtask.KindSubagent, ActiveForm: d.Activity, Status: bgtask.StatusRunning})
+		}
+	}
+	applyOne(msg.Details)
+	// Group nudges: details.others[] carries sibling agent ids.
+	var grp struct {
+		Others []struct {
+			AgentID string `json:"agentId"`
+			Status  string `json:"status"`
+		} `json:"others"`
+	}
+	if json.Unmarshal(msg.Details, &grp) == nil {
+		for _, o := range grp.Others {
+			if o.AgentID == "" || o.Status == "" {
+				continue
+			}
+			if status, ok := piTerminalStatus(o.Status); ok {
+				_ = sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: o.AgentID, Kind: bgtask.KindSubagent, Status: status})
+			}
 		}
 	}
 }

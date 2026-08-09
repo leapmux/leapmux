@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { TodoItemSchema, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
-import { isTerminalTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, todoDisplayLabel } from '~/stores/chatTodos'
+import { isTerminalTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, todoDisplayLabel, todoProgress } from '~/stores/chatTodos'
 
 describe('chatTodos', () => {
   describe('normalizeTodoStatus', () => {
@@ -82,6 +82,30 @@ describe('chatTodos', () => {
 
     it('tolerates missing fields with empty-string defaults', () => {
       expect(rawTodosToItems([{}])).toEqual([{ content: '', status: 'pending', activeForm: '' }])
+    })
+  })
+
+  describe('todoProgress', () => {
+    it('counts completed vs total excluding deleted', () => {
+      const todos = [
+        { content: 'a', status: 'completed' as const, activeForm: '' },
+        { content: 'b', status: 'in_progress' as const, activeForm: 'doing b' },
+        { content: 'c', status: 'pending' as const, activeForm: '' },
+        { content: 'd', status: 'deleted' as const, activeForm: '' },
+      ]
+      expect(todoProgress(todos)).toEqual({ done: 1, total: 3 })
+    })
+
+    it('returns zero counts for an empty list', () => {
+      expect(todoProgress([])).toEqual({ done: 0, total: 0 })
+    })
+
+    it('counts all-non-deleted as done when all completed', () => {
+      const todos = [
+        { content: 'a', status: 'completed' as const, activeForm: '' },
+        { content: 'b', status: 'completed' as const, activeForm: '' },
+      ]
+      expect(todoProgress(todos)).toEqual({ done: 2, total: 2 })
     })
   })
 })

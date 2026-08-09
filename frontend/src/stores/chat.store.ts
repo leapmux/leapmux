@@ -11,6 +11,7 @@ import { invalidateMessageClassificationCache } from '~/components/chat/messageC
 import { AgentChatMessageSchema, MarkType, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
+import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
 import { createCommandStreamStore } from './chatCommandStreams'
 import { createContentVersionStore } from './chatContentVersions'
 import { createHistoryPaginator, linkWatchSignal, MESSAGE_PAGE_SIZE } from './chatHistoryPaginator'
@@ -135,6 +136,7 @@ export function createChatStore() {
   const annotations = createMessageAnnotationStore()
   const pendingOutbound = createPendingOutboundStore()
   const todos = createTodoStore()
+  const backgroundTasks = createBackgroundTaskStore()
   // Saved per-agent scroll position for tab-switch viewport restore. A pure
   // get/set/clear slice with no domain logic, so it uses the per-agent spine
   // directly rather than through a dedicated wrapper module.
@@ -366,6 +368,7 @@ export function createChatStore() {
     forgetMarkPreview(agentId)
     streaming.remove(agentId)
     todos.remove(agentId)
+    backgroundTasks.remove(agentId)
     pendingOutbound.remove(agentId)
     viewportScroll.remove(agentId)
   }
@@ -1477,6 +1480,7 @@ export function createChatStore() {
     trimOldestEnd: (agentId, maxCount) => baseStore.trimOldestEnd(agentId, maxCount),
     trimNewestEnd: (agentId, maxCount) => baseStore.trimNewestEnd(agentId, maxCount),
     replaceTodos: todos.replace,
+    replaceBackgroundTasks: backgroundTasks.replace,
     loadLocalMessages: agentId => baseStore.loadLocalMessages(agentId),
   })
 
@@ -1491,6 +1495,7 @@ export function createChatStore() {
     liveTail,
     messageMarks,
     todos,
+    backgroundTasks,
     streamingText: streaming,
     pendingOutbound,
     viewportScroll,

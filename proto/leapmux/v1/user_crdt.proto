@@ -72,6 +72,12 @@ message TabRecord {
   LWWInt32  file_view_mode  = 7;  // FILE only
   LWWString file_diff_base  = 8;  // FILE only
   HLC       tombstone_at    = 9;  // remove-wins
+  // The HLC of the most recent ReviveTabOp that cleared tombstone_at. The
+  // tombstone register is a true LWW register over BOTH tombstone and revive
+  // writes: a tombstone applies only when its HLC is newer than both the
+  // current tombstone AND the last revive, so a redelivered/out-of-order
+  // tombstone older than the revive cannot re-close a revived tab.
+  HLC       revived_at      = 10;
 }
 
 // FloatingWindowRecord describes a detached floating-window overlay.

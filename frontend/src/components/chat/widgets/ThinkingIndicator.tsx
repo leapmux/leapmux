@@ -1,5 +1,12 @@
 import type { Component, JSX } from 'solid-js'
+import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
+import type { TodoItem } from '~/stores/chatTodos'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
+import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
+import { bgPopoverClass } from '~/components/backgroundtasks/BackgroundTaskList.css'
+import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { TodoList } from '~/components/todo/TodoList'
+import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
 import { getRandomVerb } from '../spinnerVerbs'
@@ -34,6 +41,25 @@ export interface ThinkingIndicatorProps {
    * indicator shows nothing.
    */
   thinkingTokens?: number
+  /**
+   * Active background-task count (pending+running subagents/shells). When > 0 a
+   * small chip renders beside the verb; clicking it opens a popover listing the
+   * full registry. Also keeps the indicator visible via shouldShowThinkingIndicator.
+   */
+  backgroundTaskCount?: number
+  /**
+   * The full background-task list for the popover (active + past). When
+   * backgroundTaskCount > 0 and this is supplied, the chip is a popover trigger.
+   */
+  backgroundTasks?: BackgroundTaskItem[]
+  onOpenSubagent?: (item: BackgroundTaskItem) => void
+  resolveParentLabel?: (agentId: string) => string | undefined
+  /**
+   * The agent's to-do list for the todos chip + popover. Shown when there is at
+   * least one non-deleted todo; the chip renders `done/total` and the popover
+   * lists the todos via the existing TodoList.
+   */
+  todos?: TodoItem[]
 }
 
 // How often the verb rotates while the indicator is visible (and not
@@ -228,6 +254,10 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       }, ROW_FADE_MS)
     }
   })
+
+  // {done, total} for the todos chip, recomputed only when the todo list
+  // changes. Deleted todos are excluded from both counts (todoProgress).
+  const todoCount = createMemo(() => todoProgress(props.todos ?? []))
 
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
   // binding can re-pin to the bottom on every frame while the
@@ -479,6 +509,51 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
                 can't keep it (or its roll effects) alive in a collapsed row. */}
             <Show when={countTokens() !== undefined}>
               <ThinkingTokenCount tokens={countTokens()!} />
+            </Show>
+            {/* Background-tasks chip: shown while there are active subagents/
+                shells. Clicking opens a popover with the full registry. */}
+            <Show when={(props.backgroundTaskCount ?? 0) > 0}>
+              <DropdownMenu
+                as="div"
+                class="card"
+                data-testid="bg-tasks-popover"
+                trigger={triggerProps => (
+                  <button
+                    class={styles.bgTaskChip}
+                    data-testid="thinking-bg-tasks-chip"
+                    {...triggerProps}
+                  >
+                    {props.backgroundTaskCount}
+                  </button>
+                )}
+              >
+                <BackgroundTaskList
+                  tasks={props.backgroundTasks ?? []}
+                  onOpenSubagent={props.onOpenSubagent}
+                  resolveParentLabel={props.resolveParentLabel}
+                  class={bgPopoverClass}
+                />
+              </DropdownMenu>
+            </Show>
+            {/* Todos chip: shown when there is at least one non-deleted todo.
+                Renders done/total; clicking opens the existing TodoList. */}
+            <Show when={todoCount().total > 0}>
+              <DropdownMenu
+                as="div"
+                class="card"
+                data-testid="todo-list-popover"
+                trigger={triggerProps => (
+                  <button
+                    class={styles.bgTaskChip}
+                    data-testid="thinking-todos-chip"
+                    {...triggerProps}
+                  >
+                    {`${todoCount().done}/${todoCount().total}`}
+                  </button>
+                )}
+              >
+                <TodoList todos={props.todos ?? []} />
+              </DropdownMenu>
             </Show>
           </span>
         </div>

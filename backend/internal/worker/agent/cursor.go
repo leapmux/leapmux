@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"strconv"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 const (
@@ -45,6 +47,13 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 			a.modelDecorator = decorateCursorModel
 			a.modeChannel = modeChannelPermissionMode
 			a.extraMethod = a.handleExtraMethod
+			// Subagent registry (best-effort): Cursor's Task tool surfaces a spawn
+			// tool_call with rawInput._toolName == "task" and a title "Task: <desc>".
+			// Registry-only -- Cursor exposes no child-session metadata. The observed
+			// toolCallId can contain an embedded newline; the neutral layer sanitizes
+			// the row key.
+			a.subagentFromToolCall = cursorSubagentFromToolCall
+			a.subagentFromToolCallUpdate = cursorSubagentFromToolCallUpdate
 		},
 		afterHandshake: func(a *CursorCLIAgent, handshake *acpSessionResult, opts Options) error {
 			return a.applyPermissionModeStartup(handshake, opts, CursorCLIModeAgent, normalizeCursorModelID(opts.Model()))
@@ -254,4 +263,63 @@ func init() {
 		"cursor-agent",
 	)
 	setModelIDNormalizer(leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, normalizeCursorModelID)
+}
+
+// cursorSubagentFromToolCall detects Cursor's Task delegation tool_call
+// (rawInput._toolName == "task", title "Task: <description>"). The observed
+// toolCallId can contain an embedded newline; the neutral layer sanitizes row
+// keys before use, so no fixup is needed here. Registry-only: Cursor surfaces
+// no metadata/child linkage.
+func cursorSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
+	if len(tc.RawInput) == 0 {
+		return nil
+	}
+	var input struct {
+		ToolName string `json:"_toolName"`
+	}
+	if err := json.Unmarshal(tc.RawInput, &input); err != nil || input.ToolName != "task" {
+		return nil
+	}
+	title := strings.TrimPrefix(tc.Title, "Task: ")
+	if title == "" {
+		title = "Cursor subagent"
+	}
+	return &acpSubagentObservation{
+		RowKey: tc.ToolCallID,
+		Title:  title,
+		Status: bgtask.StatusRunning,
+	}
+}
+
+// cursorSubagentFromToolCallUpdate maps Cursor's task tool_call status
+// transitions to terminal registry rows. The terminal update fires for EVERY
+// terminal tool_call (not just spawns); a plain tool (isBackground absent) is
+// a close-only observation so it does not create a spurious row. A background
+// task carries an activity line and upserts before closing.
+func cursorSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
+	switch tcu.Status {
+	case "completed", "failed", "cancelled":
+	default:
+		return nil
+	}
+	activity := ""
+	if len(tcu.RawOutput) > 0 {
+		var out struct {
+			IsBackground bool `json:"isBackground"`
+		}
+		if json.Unmarshal(tcu.RawOutput, &out) == nil && out.IsBackground {
+			activity = "background task"
+		}
+	}
+	mode := acpModeCloseOnly
+	if activity != "" {
+		mode = acpModeUpsert
+	}
+	return &acpSubagentObservation{
+		RowKey:   tcu.ToolCallID,
+		Activity: activity,
+		Status:   acpTerminalStatus(tcu.Status),
+		CloseRow: true,
+		Mode:     mode,
+	}
 }

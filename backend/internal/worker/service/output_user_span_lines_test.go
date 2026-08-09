@@ -91,7 +91,7 @@ func TestSnapshotPassthroughSpanLines_SingleOpenSpan(t *testing.T) {
 	t.Parallel()
 
 	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
-	h.spanTracker("agent-1").OpenSpan("span-A", "")
+	h.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	parsed := parseSpanLinesJSON(t, h.snapshotPassthroughSpanLines("agent-1"))
 	require.Len(t, parsed, 1)
@@ -105,8 +105,8 @@ func TestSnapshotPassthroughSpanLines_NestedSpans(t *testing.T) {
 	t.Parallel()
 
 	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
-	h.spanTracker("agent-1").OpenSpan("span-A", "")
-	h.spanTracker("agent-1").OpenSpan("span-B", "span-A")
+	h.rootTracker("agent-1").OpenSpan("span-A", "")
+	h.rootTracker("agent-1").OpenSpan("span-B", "span-A")
 
 	parsed := parseSpanLinesJSON(t, h.snapshotPassthroughSpanLines("agent-1"))
 	require.Len(t, parsed, 2)
@@ -122,7 +122,7 @@ func TestSnapshotPassthroughSpanLines_PerAgentIsolation(t *testing.T) {
 	t.Parallel()
 
 	h := NewOutputHandler(nil, nil, NewWatcherManager(), nil, nil)
-	h.spanTracker("agent-1").OpenSpan("span-A", "")
+	h.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	// Other agents must see an empty snapshot — span trackers are per-agent.
 	assert.Equal(t, "[]", h.snapshotPassthroughSpanLines("agent-2"))
@@ -140,7 +140,7 @@ func TestSendAgentMessage_PersistsSpanLinesWhileSpanIsOpen(t *testing.T) {
 	setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// Pretend a tool_use opened a span before the user typed.
-	svc.Output.spanTracker("agent-1").OpenSpan("span-A", "")
+	svc.Output.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	dispatch(d, "SendAgentMessage", &leapmuxv1.SendAgentMessageRequest{
 		AgentId: "agent-1",
@@ -208,7 +208,7 @@ func TestSendSyntheticUserMessage_PersistsSpanLinesWhileSpanIsOpen(t *testing.T)
 	svc, _, w := setupTestService(t)
 	setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
-	svc.Output.spanTracker("agent-1").OpenSpan("span-A", "")
+	svc.Output.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	svc.sendSyntheticUserMessage("agent-1", "synthetic prompt", leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED)
 

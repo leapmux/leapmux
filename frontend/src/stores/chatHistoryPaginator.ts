@@ -1,7 +1,7 @@
 import type { SetStoreFunction } from 'solid-js/store'
 import type { ChatStoreState } from './chat.store'
 import type { LiveTailTracker } from './chatLiveTail'
-import type { AgentChatMessage, TodoItem as ProtoTodoItem } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentChatMessage, BackgroundTaskItem as ProtoBackgroundTaskItem, TodoItem as ProtoTodoItem } from '~/generated/leapmux/v1/agent_pb'
 import { listAgentMessages } from '~/api/workerRpc'
 import { MessagePageAnchor } from '~/generated/leapmux/v1/agent_pb'
 
@@ -119,6 +119,7 @@ export interface HistoryPaginatorDeps {
   trimOldestEnd: (agentId: string, maxCount: number) => void
   trimNewestEnd: (agentId: string, maxCount: number) => void
   replaceTodos: (agentId: string, protoTodos: ProtoTodoItem[]) => void
+  replaceBackgroundTasks: (agentId: string, protoTasks: ProtoBackgroundTaskItem[]) => void
   loadLocalMessages: (agentId: string) => void
 }
 
@@ -142,19 +143,29 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
   const catchingUp = new Set<string>()
 
   /**
-   * Apply a LATEST page's body + its authoritative to-do list -- the shared tail of
-   * loadInitialMessages and jumpToLatestMessages. Applies the messages, then the
-   * to-do snapshot when todosLoaded is true. protobuf-es always materializes the
-   * repeated `todos` field as [], so false says "the LoadTodos query failed" and
-   * prevents wiping a populated list.
+   * Apply a LATEST page's body + its authoritative to-do list + background-task
+   * registry -- the shared tail of loadInitialMessages and jumpToLatestMessages.
+   * Applies the messages, then the to-do snapshot when todosLoaded is true and
+   * the registry when backgroundTasksLoaded is true. protobuf-es always
+   * materializes repeated fields as [], so false says "the query failed" and
+   * prevents wiping a populated list/registry.
    */
   function applyLatestPage(
     agentId: string,
-    resp: { messages: AgentChatMessage[], hasMore: boolean, todosLoaded: boolean, todos: ProtoTodoItem[] },
+    resp: {
+      messages: AgentChatMessage[]
+      hasMore: boolean
+      todosLoaded: boolean
+      todos: ProtoTodoItem[]
+      backgroundTasksLoaded: boolean
+      backgroundTasks: ProtoBackgroundTaskItem[]
+    },
   ): void {
     deps.applyMessages(agentId, resp.messages, resp.hasMore)
     if (resp.todosLoaded)
       deps.replaceTodos(agentId, resp.todos)
+    if (resp.backgroundTasksLoaded)
+      deps.replaceBackgroundTasks(agentId, resp.backgroundTasks)
   }
 
   /** Fetch the latest messages for an agent (initial page load). */

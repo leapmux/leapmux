@@ -1246,12 +1246,13 @@ func TestEventClassCoversEveryAgentOneofArm(t *testing.T) {
 	t.Parallel()
 
 	wantNotify := map[string]bool{
-		"status_change":   true,
-		"control_request": true,
-		"control_cancel":  true,
-		"turn_end":        true,
-		"message_deleted": true,
-		"todos_changed":   true,
+		"status_change":            true,
+		"control_request":          true,
+		"control_cancel":           true,
+		"turn_end":                 true,
+		"message_deleted":          true,
+		"todos_changed":            true,
+		"background_tasks_changed": true,
 	}
 
 	msg := &leapmuxv1.AgentEvent{}

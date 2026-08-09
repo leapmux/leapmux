@@ -67,6 +67,23 @@ func (s *SectionService) ListSections(
 		sections = append(sections, *workersSec)
 	}
 
+	// Ensure Background tasks section exists for users created before it became
+	// a server-side section. Positioned after the last right-sidebar section.
+	hasBackgroundTasks := false
+	for _, sec := range sections {
+		if sec.SectionType == leapmuxv1.SectionType_SECTION_TYPE_BACKGROUND_TASKS {
+			hasBackgroundTasks = true
+			break
+		}
+	}
+	if !hasBackgroundTasks {
+		bgSec, err := s.createBackgroundTasksSection(ctx, user.ID, sections)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create background tasks section: %w", err))
+		}
+		sections = append(sections, *bgSec)
+	}
+
 	items, err := s.store.WorkspaceSectionItems().ListByUser(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -421,6 +438,7 @@ var defaultSections = []defaultSection{
 	{"Workers", leapmuxv1.SectionType_SECTION_TYPE_WORKERS, leapmuxv1.Sidebar_SIDEBAR_LEFT},
 	{"Files", leapmuxv1.SectionType_SECTION_TYPE_FILES, leapmuxv1.Sidebar_SIDEBAR_RIGHT},
 	{"To-dos", leapmuxv1.SectionType_SECTION_TYPE_TODOS, leapmuxv1.Sidebar_SIDEBAR_RIGHT},
+	{"Background tasks", leapmuxv1.SectionType_SECTION_TYPE_BACKGROUND_TASKS, leapmuxv1.Sidebar_SIDEBAR_RIGHT},
 }
 
 // initDefaultSections creates the default sections for a user.
@@ -487,5 +505,45 @@ func (s *SectionService) createWorkersSection(ctx context.Context, userID userid
 		Position:    position,
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKERS,
 		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+	}, nil
+}
+
+// createBackgroundTasksSection creates a Background tasks section for an
+// existing user. It is positioned after the last right-sidebar section,
+// following To-dos.
+func (s *SectionService) createBackgroundTasksSection(ctx context.Context, userID userid.UserID, sections []store.WorkspaceSection) (*store.WorkspaceSection, error) {
+	var lastRightPos string
+	for _, sec := range sections {
+		if sec.Sidebar == leapmuxv1.Sidebar_SIDEBAR_RIGHT && sec.Position > lastRightPos {
+			lastRightPos = sec.Position
+		}
+	}
+
+	var position string
+	if lastRightPos != "" {
+		position = lexorank.After(lastRightPos)
+	} else {
+		position = lexorank.First()
+	}
+
+	sectionID := id.Generate()
+	if err := s.store.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+		ID:          sectionID,
+		UserID:      userID,
+		Name:        "Background tasks",
+		Position:    position,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_BACKGROUND_TASKS,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_RIGHT,
+	}); err != nil {
+		return nil, err
+	}
+
+	return &store.WorkspaceSection{
+		ID:          sectionID,
+		UserID:      userID.String(),
+		Name:        "Background tasks",
+		Position:    position,
+		SectionType: leapmuxv1.SectionType_SECTION_TYPE_BACKGROUND_TASKS,
+		Sidebar:     leapmuxv1.Sidebar_SIDEBAR_RIGHT,
 	}, nil
 }

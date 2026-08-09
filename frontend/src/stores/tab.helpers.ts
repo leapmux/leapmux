@@ -1,7 +1,8 @@
 import type { AgentTab, GitTabFields, Tab, TerminalTab } from './tab.types'
 import type { TerminalMeta } from './tabMetadata.store'
 import type { listTerminals } from '~/api/workerRpc'
-import type { AgentGitStatus, AgentInfo, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentGitStatus, AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import { pluginFor } from '~/components/chat/providers/registry'
 import { effectiveCurrent, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
@@ -189,12 +190,79 @@ export function protoToAgentTabFields(workerId: string, agent: AgentInfo): Parti
     createdAt: agent.createdAt || undefined,
     startupError: agent.startupError || undefined,
     startupMessage: agent.startupMessage || undefined,
+    parentAgentId: agent.parentAgentId || undefined,
+    acceptsMessages: agent.acceptsMessages,
+    rootAgentId: agent.rootAgentId || undefined,
     // The whole git group as one unit, through the shared producer. Both agent
     // producers of this group must agree about what "no answer" is and about
     // reference reuse, and the only way to make that true rather than merely
     // asserted is for the answer to live in one place.
     ...toAgentGitTabFields(agent.gitStatus),
   }
+}
+
+/**
+ * Resolve an agent tab's ROOT main agent id. The wire-provided rootAgentId
+ * (AgentInfo.root_agent_id, hydrated onto the tab) wins when present: the
+ * backend already walked the parent_agent_id chain server-side, so the registry
+ * owner is a wire-level fact and the frontend does not re-derive it from a
+ * client chain that can be partially hydrated. Falls back to walking the
+ * parentAgentId chain (with a visited-set cycle guard) for optimistic state
+ * before hydration or a legacy tab with no rootAgentId. Returns `agentId` when
+ * a parent is unknown or no parent is set.
+ */
+export function rootAgentIdFor(
+  getAgentTab: (id: string) => AgentTab | undefined,
+  agentId: string,
+): string {
+  const start = getAgentTab(agentId)
+  if (start?.rootAgentId)
+    return start.rootAgentId
+  let current = agentId
+  const visited = new Set<string>()
+  while (true) {
+    if (visited.has(current))
+      return agentId // cycle guard: fall back to the input
+    visited.add(current)
+    const tab = getAgentTab(current)
+    if (tab?.rootAgentId)
+      return tab.rootAgentId
+    if (!tab || !tab.parentAgentId)
+      return current
+    current = tab.parentAgentId
+  }
+}
+
+/**
+ * Whether an agent tab accepts a user message (its composer is enabled). Roots
+ * always accept. Children accept only when their feeding provider can steer a
+ * subagent conversation (acceptsMessages === true); a non-steerable child is a
+ * read-only transcript. Used to exclude non-steerable children from MRU-agent
+ * resolution (file mentions/quotes never target a disabled composer).
+ */
+export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string, acceptsMessages?: boolean, agentProvider?: AgentProvider }): boolean {
+  if (tab.type !== TabType.AGENT)
+    return false
+  if (!tab.parentAgentId)
+    return true
+  // acceptsMessages (backend-authoritative) wins when present. Before
+  // hydration, fall back to the provider plugin's supportsSubagentSend so
+  // "which providers can steer a subagent" has a single source of truth (the
+  // Codex plugin sets it true; all others omit it). Adding a second steerable
+  // provider then needs no edit here.
+  if (tab.acceptsMessages !== undefined)
+    return tab.acceptsMessages
+  return pluginFor(tab.agentProvider)?.supportsSubagentSend ?? false
+}
+
+/**
+ * Find the most-recent agent tab that is STEERABLE. Used by callers that must
+ * target a real (writable) agent for a mention/quote insert or a working-
+ * directory lookup -- a non-steerable child (a read-only subagent transcript)
+ * must never be selected. `tabs` is assumed already in MRU order.
+ */
+export function mruSteerableAgentTab<T extends Tab>(tabs: readonly T[]): T | undefined {
+  return tabs.find(t => t.type === TabType.AGENT && isSteerableAgentTab(t))
 }
 
 /**
@@ -326,6 +394,9 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     homeDir: '',
     startupError: tab.startupError ?? '',
     startupMessage: tab.startupMessage ?? '',
+    parentAgentId: tab.parentAgentId ?? '',
+    acceptsMessages: tab.acceptsMessages ?? false,
+    rootAgentId: tab.rootAgentId ?? '',
   } as AgentInfo
 }
 

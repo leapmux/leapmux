@@ -5,6 +5,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // testSinkSettingsRefreshed records the args of a PersistSettingsRefresh call.
@@ -41,6 +42,15 @@ type testSink struct {
 	autoSchedules     []AutoContinueSchedule
 	autoCancels       []AutoContinueReason
 	planModeToolUses  sync.Map
+	// childSinkMu + children let testSink serve ChildSink as a per-child testSink
+	// so provider tests can assert what got routed into a subagent transcript.
+	childSinkMu sync.Mutex
+	children    map[string]*testSink
+	childIDMu   sync.Mutex
+	childIDVal  string
+	// bgTasks records the latest registry state per row key (owner == this sink).
+	bgTasks   map[string]bgtask.Item
+	bgTasksMu sync.Mutex
 	// notifSuppressBroadcast makes PersistNotification report broadcast=false,
 	// simulating the service layer collapsing a flapping notification
 	// byte-identically into the existing thread tail (no frontend clear). Default
@@ -231,6 +241,166 @@ func (s *testSink) CancelAutoContinue(reason AutoContinueReason) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autoCancels = append(s.autoCancels, reason)
+}
+
+// --- Subagent transcripts and the background-task registry (test recording) ---
+
+// EnsureChildAgent returns a stable synthetic child id keyed by spawnSpanID so
+// provider tests can assert child resolution without a DB. The same span always
+// resolves to the same id (idempotent replay).
+func (s *testSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+	s.childSinkMu.Lock()
+	defer s.childSinkMu.Unlock()
+	if s.children == nil {
+		s.children = make(map[string]*testSink)
+	}
+	if c, ok := s.children[spawnSpanID]; ok {
+		return c.childAgentID(), nil
+	}
+	cid := "child-of-" + spawnSpanID
+	child := &testSink{}
+	child.setChildAgentID(cid)
+	s.children[spawnSpanID] = child
+	if providerChildKey != "" {
+		s.bgTasksMu.Lock()
+		if s.bgTasks == nil {
+			s.bgTasks = make(map[string]bgtask.Item)
+		}
+		item := s.bgTasks[providerChildKey]
+		item.RowKey = providerChildKey
+		item.ChildAgentID = cid
+		item.Kind = bgtask.KindSubagent
+		if title != "" {
+			item.Title = title
+		}
+		s.bgTasks[providerChildKey] = item
+		s.bgTasksMu.Unlock()
+	}
+	return cid, nil
+}
+
+// childAgentID is the synthetic id this testSink reports for itself when it is
+// used as a child sink (set by EnsureChildAgent). The field is read under the
+// childSinkMu of the PARENT sink, so it lives here on the child as its own lock
+// to avoid a parent->child lock ordering hazard.
+func (s *testSink) childAgentID() string {
+	s.childIDMu.Lock()
+	defer s.childIDMu.Unlock()
+	return s.childIDVal
+}
+
+func (s *testSink) setChildAgentID(id string) {
+	s.childIDMu.Lock()
+	defer s.childIDMu.Unlock()
+	s.childIDVal = id
+}
+
+// ChildSink returns the per-child testSink created by EnsureChildAgent (or a
+// fresh empty one), so messages routed into a subagent transcript are recorded
+// on a distinct sink a test can assert against.
+func (s *testSink) ChildSink(childAgentID string) OutputSink {
+	s.childSinkMu.Lock()
+	defer s.childSinkMu.Unlock()
+	for _, c := range s.children {
+		if c.childAgentID() == childAgentID {
+			return c
+		}
+	}
+	// A child id that was not EnsureChildAgent'd (e.g. an explicit PersistChild*):
+	// create a fresh recording sink so the call still records.
+	c := &testSink{}
+	c.setChildAgentID(childAgentID)
+	if s.children == nil {
+		s.children = make(map[string]*testSink)
+	}
+	s.children["late:"+childAgentID] = c
+	return c
+}
+
+func (s *testSink) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
+	cs, _ := s.ChildSink(childAgentID).(*testSink)
+	if cs == nil {
+		return nil
+	}
+	return cs.PersistMessage(source, content, span)
+}
+
+func (s *testSink) PersistChildTurnEnd(childAgentID string, content []byte, span SpanInfo) error {
+	cs, _ := s.ChildSink(childAgentID).(*testSink)
+	if cs == nil {
+		return nil
+	}
+	return cs.PersistTurnEnd(content, span)
+}
+
+func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	if s.bgTasks == nil {
+		s.bgTasks = make(map[string]bgtask.Item)
+	}
+	item := s.bgTasks[task.RowKey]
+	item.RowKey = task.RowKey
+	item.Kind = task.Kind
+	if task.ChildAgentID != "" {
+		item.ChildAgentID = task.ChildAgentID
+	}
+	item.ParentAgentID = task.ParentAgentID
+	item.GroupKey = task.GroupKey
+	item.GroupLabel = task.GroupLabel
+	item.Title = task.Title
+	item.Description = task.Description
+	item.ActiveForm = task.ActiveForm
+	item.Status = task.Status
+	s.bgTasks[task.RowKey] = item
+	return nil
+}
+
+func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	if item, ok := s.bgTasks[rowKey]; ok {
+		item.Status = status
+		item.ActiveForm = activeForm
+		s.bgTasks[rowKey] = item
+	}
+	return nil
+}
+
+func (s *testSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	if item, ok := s.bgTasks[rowKey]; ok {
+		item.Status = status
+		s.bgTasks[rowKey] = item
+	}
+	return nil
+}
+
+func (s *testSink) RenameBackgroundTask(oldKey, newKey string) error {
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	if item, ok := s.bgTasks[oldKey]; ok {
+		delete(s.bgTasks, oldKey)
+		item.RowKey = newKey
+		s.bgTasks[newKey] = item
+	}
+	return nil
+}
+
+// CleanupChildAgent is a no-op on the test fake: tests that exercise the
+// per-child cleanup use the real OutputHandler via svc.Output.NewSink.
+func (s *testSink) CleanupChildAgent(childAgentID string) {}
+
+// BackgroundTasks returns a snapshot of the recorded registry rows (test helper).
+func (s *testSink) BackgroundTasks() []bgtask.Item {
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	out := make([]bgtask.Item, 0, len(s.bgTasks))
+	for _, item := range s.bgTasks {
+		out = append(out, item)
+	}
+	return out
 }
 
 // MessageCount returns the number of persisted messages.
@@ -454,3 +624,16 @@ func (noopSink) LoadAndDeletePlanModeToolUse(string) (string, bool)             
 func (noopSink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string)           {}
 func (noopSink) ScheduleAutoContinue(AutoContinueSchedule)                         {}
 func (noopSink) CancelAutoContinue(AutoContinueReason)                             {}
+func (noopSink) EnsureChildAgent(string, string, string) (string, error)           { return "", nil }
+func (noopSink) ChildSink(string) OutputSink                                       { return noopSink{} }
+func (noopSink) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, SpanInfo) error {
+	return nil
+}
+func (noopSink) PersistChildTurnEnd(string, []byte, SpanInfo) error { return nil }
+func (noopSink) UpsertBackgroundTask(bgtask.Upsert) error           { return nil }
+func (noopSink) UpdateBackgroundTaskStatus(string, bgtask.Status, string) error {
+	return nil
+}
+func (noopSink) CloseBackgroundTask(string, bgtask.Status) error { return nil }
+func (noopSink) RenameBackgroundTask(string, string) error       { return nil }
+func (noopSink) CleanupChildAgent(string)                        {}

@@ -21,6 +21,9 @@ func validateTabIDCrossTabTypes(pre *leapmuxv1.UserCrdtState, batch []*leapmuxv1
 		case *leapmuxv1.CrdtOp_TombstoneTab:
 			tabID = body.TombstoneTab.GetTabId()
 			tabType = body.TombstoneTab.GetTabType()
+		case *leapmuxv1.CrdtOp_ReviveTab:
+			tabID = body.ReviveTab.GetTab().GetTabId()
+			tabType = body.ReviveTab.GetTab().GetTabType()
 		default:
 			continue
 		}

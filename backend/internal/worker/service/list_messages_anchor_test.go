@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -673,4 +675,98 @@ func TestWatchEvents_CatchUpCompleteCarriesLatestSeq(t *testing.T) {
 	// arrival (seq above it) from the phantom reap. No concurrent change here, so it
 	// matches latest_seq.
 	assert.Equal(t, seqs[1], startTail, "start_tail_seq must carry the start-of-replay tail (2)")
+}
+
+// TestListAgentMessages_ChildLatestPage_BackgroundTasksLoadedEmpty verifies
+// that a LATEST-page request for a CHILD (virtual subagent) agent answers with
+// BackgroundTasksLoaded=true and an empty task list. Children own no registry
+// and must never inherit the root's tasks; answering loaded=true (not false)
+// lets the client overwrite any stale state rather than retaining it.
+func TestListAgentMessages_ChildLatestPage_BackgroundTasksLoadedEmpty(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t)
+
+	// Root agent with a background task so a leak would be observable.
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-1",
+		WorkingDir:    "/tmp",
+		HomeDir:       "/tmp",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "rtask", Kind: bgtask.KindShell, Title: "root task", Status: bgtask.StatusRunning,
+	}))
+
+	// Child agent (virtual subagent).
+	require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
+		ID:            "child-1",
+		ParentAgentID: sql.NullString{String: "root-1", Valid: true},
+		SpawnSpanID:   "span-1",
+		WorkingDir:    "/tmp",
+		HomeDir:       "/tmp",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	// One message so the latest page is non-empty.
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID:            "m1",
+		AgentID:       "child-1",
+		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:       []byte("hi"),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
+	})
+	require.NoError(t, err)
+
+	w := newTestWriter()
+	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+		AgentId: "child-1",
+		Anchor:  leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST,
+		Limit:   10,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListAgentMessagesResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Empty(t, resp.GetBackgroundTasks(),
+		"child owns no registry; must not inherit the root's tasks")
+	assert.True(t, resp.GetBackgroundTasksLoaded(),
+		"loaded=true so the client overwrites stale state with the correct empty set")
+}
+
+// TestListAgentMessages_RootLatestPage_BackgroundTasksLoaded verifies a ROOT
+// agent's LATEST page carries its own registry (the positive counterpart to
+// the child test above).
+func TestListAgentMessages_RootLatestPage_BackgroundTasksLoaded(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t)
+
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "root-1",
+		WorkingDir:    "/tmp",
+		HomeDir:       "/tmp",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "rtask", Kind: bgtask.KindShell, Title: "root task", Status: bgtask.StatusRunning,
+	}))
+
+	w := newTestWriter()
+	dispatch(d, "ListAgentMessages", &leapmuxv1.ListAgentMessagesRequest{
+		AgentId: "root-1",
+		Anchor:  leapmuxv1.MessagePageAnchor_MESSAGE_PAGE_ANCHOR_LATEST,
+		Limit:   10,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ListAgentMessagesResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.True(t, resp.GetBackgroundTasksLoaded(), "root LATEST page loads its registry")
+	require.Len(t, resp.GetBackgroundTasks(), 1)
+	assert.Equal(t, "rtask", resp.GetBackgroundTasks()[0].GetId())
 }

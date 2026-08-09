@@ -172,3 +172,90 @@ func TestApplyDiff_PropagatesPhaseError(t *testing.T) {
 	// row count so operators can correlate logs with diff size.
 	assert.Contains(t, err.Error(), "bulk delete owned (1 keys)")
 }
+
+// TestDiffProjection_ReviveBatchReAddsTabRow pins the commit hot-path
+// behavior the plan (Part 5b) requires: a revive + re-placement batch on a
+// CLOSED tab must re-upsert the tab's workspace_tab_owned and
+// workspace_tab_rendered rows. `touchedTabIDs` includes ReviveTab, so
+// DiffProjectionForBatch re-projects the revived tab id; since the tab goes
+// from tombstoned (nil row) to live-on-a-leaf (full row), the diff emits an
+// upsert in BOTH views rather than leaving the row absent.
+//
+// The batch shape mirrors emitReviveTab (frontend/src/stores/tabOps.ts):
+// revive + SetTabTile + SetTabPosition + SetTabWorker in one batch. The revive
+// clears the tombstone; the companion Set ops repopulate the registers the
+// post-batch completeness check demands.
+func TestDiffProjection_ReviveBatchReAddsTabRow(t *testing.T) {
+	// 1. Seed a workspace with a leaf root, place a tab on it, then close it.
+	state := seedWorkspaceWithRoot("w1", "root1")
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
+	}, hlcAt(10, 0, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr1"},
+	}, hlcAt(10, 1, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p1"},
+	}, hlcAt(10, 2, "a")))
+	crdt.Apply(state, stamped(&leapmuxv1.TombstoneTabOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+	}, hlcAt(20, 0, "a")))
+	require.False(t, crdt.HLCIsZero(state.GetTabs()["tA"].GetTombstoneAt()),
+		"precondition: the tab must be tombstoned (closed) before the revive")
+
+	// 2. Snapshot prev (the published generation), then apply the revive +
+	// re-placement batch to a working copy -- mirrors the manager's
+	// commit path (CloneStateForBatch → Apply each op → DiffProjectionForBatch).
+	prev := crdt.CloneState(state)
+	working := crdt.CloneState(state)
+
+	batch := []*leapmuxv1.CrdtOp{
+		stamped(&leapmuxv1.ReviveTabOp{
+			Tab: &leapmuxv1.TabRef{TabId: "tA", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT},
+		}, hlcAt(30, 0, "a")),
+		stamped(&leapmuxv1.SetTabRegisterOp{
+			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "root1"},
+		}, hlcAt(30, 1, "a")),
+		stamped(&leapmuxv1.SetTabRegisterOp{
+			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "p2"},
+		}, hlcAt(30, 2, "a")),
+		stamped(&leapmuxv1.SetTabRegisterOp{
+			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tA",
+			Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "wkr2"},
+		}, hlcAt(30, 3, "a")),
+	}
+	for _, op := range batch {
+		crdt.Apply(working, op)
+	}
+	require.True(t, crdt.HLCIsZero(working.GetTabs()["tA"].GetTombstoneAt()),
+		"postcondition: the revive cleared the tombstone")
+
+	// 3. Compute the projection diff the journal/manager would write.
+	diff := crdt.DiffProjectionForBatch(prev, working, batch)
+
+	// 4. The revived tab's row must be re-added to BOTH projection tables.
+	require.Len(t, diff.OwnedUpserts, 1,
+		"revived tab must re-upsert into workspace_tab_owned")
+	assert.Equal(t, "tA", diff.OwnedUpserts[0].TabID)
+	assert.Equal(t, "root1", diff.OwnedUpserts[0].TileID,
+		"owned row carries the re-placed tile_id")
+	assert.Equal(t, "wkr2", diff.OwnedUpserts[0].WorkerID,
+		"owned row carries the re-placed worker_id")
+
+	require.Len(t, diff.RenderedUpserts, 1,
+		"revived tab must re-upsert into workspace_tab_rendered")
+	assert.Equal(t, "tA", diff.RenderedUpserts[0].TabID)
+	assert.Equal(t, "root1", diff.RenderedUpserts[0].TileID,
+		"rendered row carries the re-placed tile_id")
+	assert.Equal(t, "wkr2", diff.RenderedUpserts[0].WorkerID,
+		"rendered row carries the re-placed worker_id")
+
+	// A revive re-materializes a live row, so nothing is deleted.
+	assert.Empty(t, diff.OwnedDeletes, "revive adds a row, it does not delete one")
+	assert.Empty(t, diff.RenderedDeletes)
+}
