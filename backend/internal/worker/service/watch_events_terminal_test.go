@@ -225,17 +225,20 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 	svc, d, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-wrap")
 
-	// Inject >100KB synthetic output directly so we don't have to wait on
-	// the shell to produce it. AppendOutput goes through the same write
-	// path as PTY output.
-	big := make([]byte, 150*1024)
-	for i := range big {
-		big[i] = 'x'
-	}
+	// Freeze before injecting. A live shell — especially Windows ConPTY —
+	// keeps emitting mode/title sequences that leave modeTracker
+	// non-default. SnapshotSince correctly prepends a restore prefix for
+	// that state; leaving the PTY live races those bytes into the ring
+	// fill and makes a naive len(data)<=ringSize assertion flake.
+	baseline := testutil.FreezeTerminalOutput(t, svc.Terminals, "t-wrap")
+
+	const ringSize = 100 * 1024 // matches terminal.screenBufferSize
+	big := bytes.Repeat([]byte{'x'}, ringSize+50*1024)
 	require.True(t, svc.Terminals.AppendOutput("t-wrap", big))
+	wantEnd := baseline + int64(len(big))
 	testutil.AssertEventually(t, func() bool {
 		_, off, _ := svc.Terminals.ScreenSnapshotSince("t-wrap", 0)
-		return off >= int64(len(big))
+		return off >= wantEnd
 	}, "appended bytes arrived")
 
 	// Cold subscribe — after_offset=0 is now well below the retained
@@ -256,9 +259,17 @@ func TestWatchEvents_Terminal_ColdSubscribeAfterRingWrap(t *testing.T) {
 	require.NotNil(t, snap)
 	assert.True(t, snap.GetIsSnapshot(),
 		"fell-behind-ring cold subscribe must be flagged as snapshot so the frontend resets")
-	// Delta size is bounded by the 100KB ring, even though the PTY has
-	// emitted ~150KB.
-	assert.LessOrEqual(t, len(snap.GetData()), 100*1024)
-	assert.Greater(t, snap.GetEndOffset(), int64(100*1024),
+
+	data := snap.GetData()
+	// Retained ring is ringSize bytes. Fallen-behind snapshots may also
+	// prepend a synthesized mode-restore prefix that does NOT count
+	// toward end_offset, so len(data) can exceed ringSize (the failure
+	// mode that used to flake this test on Windows at 102432 > 102400).
+	require.GreaterOrEqual(t, len(data), ringSize)
+	assert.True(t, bytes.HasSuffix(data, bytes.Repeat([]byte{'x'}, ringSize)),
+		"snapshot body must be the retained ring (last %d injected bytes)", ringSize)
+	assert.Equal(t, wantEnd, snap.GetEndOffset(),
+		"end_offset is the cumulative counter, not truncated to the ring")
+	assert.Greater(t, snap.GetEndOffset(), int64(ringSize),
 		"end_offset reflects the cumulative counter, which is > ring size once the ring has wrapped")
 }
