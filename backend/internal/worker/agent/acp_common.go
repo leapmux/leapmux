@@ -41,6 +41,14 @@ const (
 	// (e.g. OpenCode/Kilo "effort", Copilot "reasoning_effort"/"allow_all") that have
 	// no dedicated set_model/set_mode channel.
 	acpMethodSessionSetConfigOption = "session/set_config_option"
+
+	// ACP host terminal methods (agent → client). Advertised via
+	// clientCapabilities.terminal; see acp_terminal.go.
+	acpMethodTerminalCreate      = "terminal/create"
+	acpMethodTerminalOutput      = "terminal/output"
+	acpMethodTerminalWaitForExit = "terminal/wait_for_exit"
+	acpMethodTerminalKill        = "terminal/kill"
+	acpMethodTerminalRelease     = "terminal/release"
 )
 
 // ACP session update type constants.
@@ -227,6 +235,15 @@ type acpBase struct {
 	// thinking-indicator counter. Fed from both the reader and the prompt-response
 	// goroutines, so it self-locks; see thinkingTokenEstimator and thinkingResetSink.
 	thinkingTokens thinkingTokenEstimator
+
+	// terminals holds live ACP host terminal sessions keyed by terminalId.
+	// Guarded by terminalsMu (not b.mu) so wait_for_exit / output readers are
+	// not serialized behind the agent state lock. Tear down in Stop/Wait.
+	// terminalsClosed latches after Stop/Wait so a racing terminal/create
+	// cannot re-seed the map and orphan processes after teardown.
+	terminalsMu     sync.Mutex
+	terminals       map[string]*acpTerminalSession
+	terminalsClosed bool
 }
 
 // handleACPPromptResponse extracts accumulated turn text, persists the prompt
@@ -353,6 +370,11 @@ func (b *acpBase) handleACPSessionUpdate(params json.RawMessage, extra acpSessio
 // created, the reapplySettings callback (if set) re-applies provider-
 // specific settings such as model and permission mode.
 func (b *acpBase) ClearContext() (string, bool) {
+	// Host terminals are bound to the outgoing sessionId; release them before
+	// the swap so requireSession cannot strand them under a mismatch. Do not
+	// latch the store closed — the new session may create terminals again.
+	b.releaseSessionTerminals()
+
 	sessionID, resp, ok := b.newSessionLocked()
 	if !ok {
 		return "", false
@@ -968,17 +990,25 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 }
 
 // acpStandardInitParams marshals the standard ACP "initialize" params shared by
-// OpenCode, Kilo, Copilot, Goose, and Cursor: protocol version 1, the LeapMux
-// clientInfo, and empty capabilities.
+// OpenCode, Kilo, Copilot, Goose, Cursor, and Reasonix: protocol version 1, the
+// LeapMux clientInfo, and clientCapabilities.
 //
-// LeapMux does not advertise the ACP `terminal` capability, so Goose/Reasonix
-// run shells agent-side and no background-shell rows exist for them. See
-// https://github.com/leapmux/leapmux/issues/370.
+// clientCapabilities.terminal is true so agents that honor the ACP host
+// terminal capability (Goose, Reasonix) route shells through terminal/*;
+// handlers live in acp_terminal.go and surface KindShell background-task
+// rows. fs.* stays false until separate host filesystem support lands.
+// See https://github.com/leapmux/leapmux/issues/370.
 func acpStandardInitParams() (json.RawMessage, error) {
 	params, err := json.Marshal(map[string]interface{}{
 		"protocolVersion": 1,
 		"clientInfo":      map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
-		"capabilities":    map[string]interface{}{},
+		"clientCapabilities": map[string]interface{}{
+			"fs": map[string]bool{
+				"readTextFile":  false,
+				"writeTextFile": false,
+			},
+			"terminal": true,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal initialize params: %w", err)
@@ -1181,10 +1211,21 @@ func (b *acpBase) SendInput(content string, attachments []*leapmuxv1.Attachment)
 	return b.enqueueOrSendPrompt(content, attachments)
 }
 
-// Stop clears the prompt queue and terminates the process.
+// Stop clears the prompt queue, tears down host terminals, and terminates the
+// agent process.
 func (b *acpBase) Stop() {
 	b.clearPromptQueue()
+	b.releaseAllTerminals()
 	b.processBase.Stop()
+}
+
+// Wait blocks until the agent process exits, then tears down any host
+// terminals that survived a crash/natural exit (Stop already released them
+// on the intentional-stop path; releaseAllTerminals is idempotent).
+func (b *acpBase) Wait() error {
+	err := b.processBase.Wait()
+	b.releaseAllTerminals()
+	return err
 }
 
 // stopAndWait stops the agent process and blocks until it exits. Used by the
@@ -3202,6 +3243,12 @@ func (b *acpBase) handleACPOutput(line *parsedLine, extraSessionUpdate acpSessio
 		b.handleACPSessionUpdate(line.Params, extraSessionUpdate)
 	case acpMethodSessionRequestPermission:
 		b.handleRequestPermission(line.IDString(), line.Raw)
+	case acpMethodTerminalCreate,
+		acpMethodTerminalOutput,
+		acpMethodTerminalWaitForExit,
+		acpMethodTerminalKill,
+		acpMethodTerminalRelease:
+		b.handleTerminalMethod(line)
 	default:
 		if extraMethod != nil && extraMethod(line) {
 			return

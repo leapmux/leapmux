@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -844,9 +846,18 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 	defer cancel()
 	stream := connectorClient.Connect(ctx)
 	stream.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
-	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
+	// ConnectRPC documents that when the server returns an error, the client's
+	// first Send may wrap io.EOF and Receive carries the real status. Fencing
+	// is the cheapest refuse path (no greeting enqueue), so on a fast runner
+	// the Hub often closes before the heartbeat envelope finishes writing —
+	// requiring Send to succeed flakes as "unknown: write envelope: EOF".
+	err = stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
-	}))
+	})
+	if err != nil {
+		require.ErrorIs(t, err, io.EOF,
+			"server may close before the first Send finishes; got %v", err)
+	}
 
 	_, err = stream.Receive()
 	require.Error(t, err, "a fenced registry must refuse the connection, not hold the stream open")
@@ -909,11 +920,15 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 
 	// openStream starts a Connect stream and returns the Hub's first frame. The
 	// worker speaks first because ConnectRPC only sends headers on the first Send.
+	// When the Hub refuses immediately, Send may wrap io.EOF; Receive carries
+	// the status (see BidiStreamForClient.Send docs).
 	openStream := func(t *testing.T, authToken string) (*workerStream, *leapmuxv1.ConnectResponse, error) {
 		t.Helper()
 		stream := connectorClient.Connect(ctx)
 		stream.RequestHeader().Set("Authorization", "Bearer "+authToken)
-		require.NoError(t, stream.Send(heartbeat))
+		if err := stream.Send(heartbeat); err != nil && !errors.Is(err, io.EOF) {
+			return stream, nil, err
+		}
 		first, err := stream.Receive()
 		return stream, first, err
 	}
