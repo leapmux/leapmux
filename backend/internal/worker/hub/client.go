@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -352,6 +353,11 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	// Send an initial heartbeat INLINE on the stream before the writer exists.
 	// ConnectRPC with gRPC protocol only sends HTTP/2 headers on the first
 	// Send(), and nothing else may enqueue until the writer is published.
+	//
+	// When the Hub refuses before that write finishes (fenced registry, worker
+	// cap, …), Send wraps io.EOF and Receive carries the real status — see
+	// connect.BidiStreamForClient.Send. Surface that status so reconnect logic
+	// sees Unavailable/ResourceExhausted instead of a bare Unknown/EOF.
 	if err := stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
 			Heartbeat: &leapmuxv1.Heartbeat{
@@ -362,6 +368,11 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 			},
 		},
 	}); err != nil {
+		if errors.Is(err, io.EOF) {
+			if _, recvErr := stream.Receive(); recvErr != nil {
+				return fmt.Errorf("initial heartbeat: %w", recvErr)
+			}
+		}
 		return fmt.Errorf("initial heartbeat: %w", err)
 	}
 
