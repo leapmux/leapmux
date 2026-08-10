@@ -125,23 +125,6 @@ export const tabDragging = style({
   opacity: 0.4,
 })
 
-export const tabDragOverlay = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: '6px',
-  padding: 'var(--space-1) 6px',
-  fontSize: 'var(--text-7)',
-  color: 'var(--foreground)',
-  backgroundColor: 'var(--card)',
-  border: '1px solid var(--border)',
-  borderRadius: '4px 4px 0 0',
-  boxShadow: 'var(--shadow-large)',
-  whiteSpace: 'nowrap',
-  maxWidth: '180px',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-})
-
 export const tabListDropTarget = style({
   backgroundColor: 'var(--secondary)',
   outline: '2px dashed var(--primary)',
@@ -153,20 +136,6 @@ export const shellDefault = style({
   marginLeft: 'var(--space-1)',
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
-})
-
-export const toggleMenuLabel = style({
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 'var(--space-2)',
-})
-
-export const toggleMenuIndicator = style({
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: '1em',
-  flexShrink: 0,
 })
 
 export const tabEditInput = style({

@@ -286,7 +286,7 @@ The chat message editor has its own in-editor key handling that is **separate** 
 - **Cmd/Ctrl+Enter sends (default):** `⌘Enter` / `Ctrl+Enter` sends the message; a plain `Enter` inserts a newline.
 - **Enter sends:** a plain `Enter` sends the message; `Shift+Enter` inserts a newline.
 
-You can flip between the two with the toggle button in the chat editor toolbar. Other editor keys handle Markdown structure inside the message box — for example, `Tab`/`Shift+Tab` adjust list and heading levels, `Backspace` lifts blockquotes and code blocks, and `Cmd/Ctrl+E` toggles inline code. These editor keys are not bindable through `custom_keybindings_json`.
+You can flip between the two from the composer's **[+]** menu. Other editor keys handle Markdown structure inside the message box — for example, `Tab`/`Shift+Tab` adjust list and heading levels, `Backspace` lifts blockquotes and code blocks, and `Cmd/Ctrl+E` toggles inline code. These editor keys are not bindable through `custom_keybindings_json`.
 
 For more on writing and sending messages to agents, see [Coding Agents](/docs/using/coding-agents/).
 

@@ -12,7 +12,7 @@ import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
-import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
@@ -40,25 +40,6 @@ export interface ProviderSettingsAction {
   testId: string
   /** Option-group id -> value to apply, all in one atomic change. */
   sets: Record<string, string>
-}
-
-/**
- * Read-only settings state surfaced to the settings panel. `optionGroups`
- * carries every configuration axis (model, effort, permission mode, and
- * provider-specific options) with its available values; `optionValues` carries
- * the current (optimistically updated) selections as one generic map keyed by
- * group id -- no axis is special-cased.
- */
-export interface ProviderSettingsState {
-  disabled?: boolean
-  settingsLoading?: boolean
-  optionValues?: Record<string, string>
-  optionGroups?: AvailableOptionGroup[]
-}
-
-export interface ProviderSettingsPanelProps extends ProviderSettingsState {
-  /** Single dispatcher for any settings panel change. */
-  onChange?: (change: ProviderSettingChange) => void
 }
 
 export interface AttachmentCapabilities {

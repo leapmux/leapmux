@@ -25,6 +25,7 @@ import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { menuTrigger, sidebarActions } from '../tree/sidebarActions.css'
+import { WORKER_OFFLINE_BRANCH_REASON } from './branchActions'
 import { BranchContextMenu } from './BranchContextMenu'
 import {
   branchKey,
@@ -33,6 +34,7 @@ import {
   isLocalRepoKey,
   repoKeyForLocal,
   repoKeyTooltip,
+  tabBranchKey,
 } from './branchKeys'
 import * as css from './workspaceTabTree.css'
 
@@ -44,10 +46,6 @@ import * as css from './workspaceTabTree.css'
  * `(no branch)`.
  */
 const NO_BRANCH_LABEL = '(no branch)'
-
-function tabBranchKey(tab: Tab): string {
-  return branchKey(tab.gitBranch || null, tab.workerId ?? '', tab.gitToplevel ?? '')
-}
 
 function branchGroupKey(b: BranchGroup): string {
   return branchKey(b.branchName, b.workerId, b.gitToplevel)
@@ -406,7 +404,7 @@ const BranchGroupRow: Component<{
     const isOnline = actions.isWorkerKnownOnline
     if (!isOnline || isOnline(props.branch().workerId))
       return undefined
-    return 'This Worker is offline. Branch actions need the machine the repository is on.'
+    return WORKER_OFFLINE_BRANCH_REASON
   })
   return (
     <>

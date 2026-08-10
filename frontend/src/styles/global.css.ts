@@ -71,7 +71,7 @@ globalStyle('html, body, #app', {
 //
 // Note: the body's `transform` makes body the containing block for
 // descendant `position: fixed` elements. Native HTML `popover` API
-// consumers (DropdownMenu, Tooltip, GridSizePopover, LinkPopover)
+// consumers (DropdownMenu, Tooltip, GridSizePopover, the toast container)
 // escape via the top layer. The one non-top-layered fixed consumer is
 // `SelectionQuotePopover`, which counter-translates by
 // `var(--vv-offset, 0px)` to stay viewport-relative.
@@ -168,7 +168,15 @@ globalStyle('ot-dropdown hr', {
 // These declarations are ours now rather than something we inherit: a menu item
 // needs them to read as a menu item at all, and leaning on a third-party
 // internal reset is what made a patch-level bump able to restyle every menu in
-// the app. Padding, width and cursor still come from Oat, which kept them.
+// the app.
+//
+// The layout half (display, width, padding, justify-content) is restated here
+// for the same reason. Oat's own rule is an EXACT `[role="menuitem"]` match, so
+// a `menuitemcheckbox` or `menuitemradio` never received it and fell back to
+// Oat's `base` button rule instead -- 16px of horizontal padding beside a
+// sibling's 12px, and `inline-flex` with centred content, which in an unclassed
+// block `<menu>` (the TabBar menus) shrinks the item to its text and paints the
+// hover accent over the label alone. Cursor still comes from Oat.
 //
 // They live in a LAYER because Oat's rule did. Oat declares
 // `@layer theme,base,components,animations,utilities` and put `[role=menuitem]`
@@ -185,9 +193,17 @@ globalStyle('ot-dropdown hr', {
 // specificity and would beat those classes outright.
 const menuItem = globalLayer('leapmuxMenuItem')
 
-globalStyle('[role="menuitem"]', {
+// Prefix match, not an enumeration: it covers `menuitem`, `menuitemcheckbox`,
+// and `menuitemradio`, and no other ARIA role begins with "menuitem". A list
+// would silently drop a menu item's padding, alignment, and hover accent the
+// first time an item takes the accurate checkbox or radio role.
+globalStyle('[role^="menuitem"]', {
   '@layer': {
     [menuItem]: {
+      display: 'flex',
+      width: '100%',
+      justifyContent: 'start',
+      padding: 'var(--space-2) var(--space-3)',
       alignItems: 'center',
       gap: 'var(--space-2)',
       fontSize: 'var(--text-7)',
@@ -210,7 +226,7 @@ globalStyle('[role="menuitem"]', {
 // -- and Oat's `:disabled` rule sets only `cursor`/`opacity`, never
 // `pointer-events: none`, so without the guard hovering one paints the accent
 // that says "this will activate" on a control that will not.
-globalStyle('[role="menuitem"]:is(:hover, :focus):not(:disabled, [aria-disabled="true"])', {
+globalStyle('[role^="menuitem"]:is(:hover, :focus):not(:disabled, [aria-disabled="true"])', {
   '@layer': {
     [menuItem]: {
       background: 'var(--accent)',

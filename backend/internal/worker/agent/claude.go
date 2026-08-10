@@ -1371,13 +1371,13 @@ func modelSupportsAdaptiveThinking(model string) bool {
 // that references it. OptionGroups()'s model projection hands these out without
 // copying, so the read-only contract extends to its callers.
 var (
-	effortTierAuto      = &EffortInfo{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort"}
-	effortTierUltracode = &EffortInfo{Id: "ultracode", Name: "Ultracode", Description: "xhigh effort plus standing dynamic-workflow orchestration"}
-	effortTierMax       = &EffortInfo{Id: "max", Name: "Max", Description: "Maximum capability with deepest reasoning"}
-	effortTierXHigh     = &EffortInfo{Id: EffortXHigh, Name: "X-High", Description: "Deeper reasoning than high, just below maximum"}
-	effortTierHigh      = &EffortInfo{Id: EffortHigh, Name: "High", Description: "Comprehensive implementation with extensive testing and documentation"}
-	effortTierMedium    = &EffortInfo{Id: "medium", Name: "Medium", Description: "Balanced approach with standard implementation and testing"}
-	effortTierLow       = &EffortInfo{Id: "low", Name: "Low", Description: "Quick, straightforward implementation with minimal overhead"}
+	effortTierAuto      = &EffortInfo{Id: EffortAuto, Name: effortLabel(EffortAuto), Description: "Let Claude decide the appropriate effort"}
+	effortTierUltracode = &EffortInfo{Id: "ultracode", Name: effortLabel("ultracode"), Description: "xhigh effort plus standing dynamic-workflow orchestration"}
+	effortTierMax       = &EffortInfo{Id: "max", Name: effortLabel("max"), Description: "Maximum capability with deepest reasoning"}
+	effortTierXHigh     = &EffortInfo{Id: EffortXHigh, Name: effortLabel(EffortXHigh), Description: "Deeper reasoning than high, just below maximum"}
+	effortTierHigh      = &EffortInfo{Id: EffortHigh, Name: effortLabel(EffortHigh), Description: "Comprehensive implementation with extensive testing and documentation"}
+	effortTierMedium    = &EffortInfo{Id: "medium", Name: effortLabel("medium"), Description: "Balanced approach with standard implementation and testing"}
+	effortTierLow       = &EffortInfo{Id: "low", Name: effortLabel("low"), Description: "Quick, straightforward implementation with minimal overhead"}
 )
 
 // claudeEffortXHighMax is used by models that support both xhigh and max, plus

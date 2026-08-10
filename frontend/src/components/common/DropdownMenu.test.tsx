@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
-import { render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { DropdownMenu, DropdownMenuItemContent } from './DropdownMenu'
+import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from './DropdownMenu'
 
 // jsdom does not implement the native Popover API.
 // Stub the methods so the component can render without errors.
@@ -249,5 +249,138 @@ describe('dropdownMenu', () => {
     const popover = screen.getByTestId('no-trigger-popover')
     expect(popover).toBeInTheDocument()
     expect(screen.getByText('Content')).toBeInTheDocument()
+  })
+})
+
+describe('dropdownMenu nested-submenu dismiss', () => {
+  it('marks every trigger it renders, so an enclosing popover can recognize one', () => {
+    render(() => (
+      <DropdownMenu
+        id="marks-trigger"
+        trigger={triggerProps => <button data-testid="t" {...triggerProps}>Open</button>}
+      >
+        <button role="menuitem">Item</button>
+      </DropdownMenu>
+    ))
+
+    expect(screen.getByTestId('t')).toHaveAttribute('data-dropdown-trigger')
+  })
+
+  it('does not dismiss itself when the click opens a nested submenu', async () => {
+    // A nested dropdown's trigger is a DOM child of this popover, so without
+    // the guard the parent hides on the very click that opens the submenu --
+    // and hiding a popover hides its descendants with it.
+    render(() => (
+      <DropdownMenu
+        id="parent-menu"
+        data-testid="parent-popover"
+        trigger={triggerProps => <button data-testid="parent-trigger" {...triggerProps}>Open</button>}
+      >
+        <button role="menuitem">Plain item</button>
+        <DropdownMenu
+          id="sub-menu"
+          trigger={triggerProps => <button data-testid="sub-trigger" {...triggerProps}>More</button>}
+        >
+          <button role="menuitem">Nested item</button>
+        </DropdownMenu>
+      </DropdownMenu>
+    ))
+
+    const parent = screen.getByTestId('parent-popover')
+    const hide = vi.spyOn(parent, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('sub-trigger'))
+    expect(hide).not.toHaveBeenCalled()
+  })
+
+  it('still dismisses when the click activates one of its own items', async () => {
+    render(() => (
+      <DropdownMenu
+        id="plain-menu"
+        data-testid="plain-popover"
+        trigger={triggerProps => <button data-testid="plain-trigger" {...triggerProps}>Open</button>}
+      >
+        <button role="menuitem" data-testid="plain-item">Item</button>
+      </DropdownMenu>
+    ))
+
+    const popover = screen.getByTestId('plain-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('plain-item'))
+    expect(hide).toHaveBeenCalled()
+  })
+})
+
+describe('dropdownMenuCheckableItem', () => {
+  it('renders a menuitemcheckbox with aria-checked and a checked indicator', () => {
+    render(() => <DropdownMenuCheckableItem kind="checkbox" label="Show status bar" checked onSelect={() => {}} />)
+
+    const item = screen.getByRole('menuitemcheckbox')
+    expect(item).toHaveAttribute('aria-checked', 'true')
+    const checkbox = screen.getByRole('checkbox', { hidden: true }) as HTMLInputElement
+    expect(checkbox.checked).toBe(true)
+    expect(checkbox).toBeDisabled()
+    expect(checkbox).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByText('Show status bar')).toBeInTheDocument()
+  })
+
+  it('reports the unchecked state through aria-checked, not only the indicator', () => {
+    render(() => <DropdownMenuCheckableItem kind="checkbox" label="Show status bar" checked={false} onSelect={() => {}} />)
+
+    expect(screen.getByRole('menuitemcheckbox')).toHaveAttribute('aria-checked', 'false')
+    expect((screen.getByRole('checkbox', { hidden: true }) as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('renders a menuitemradio for kind="radio"', () => {
+    render(() => <DropdownMenuCheckableItem kind="radio" label="Extra High" checked onSelect={() => {}} />)
+
+    const item = screen.getByRole('menuitemradio')
+    expect(item).toHaveAttribute('aria-checked', 'true')
+    const radio = document.querySelector('input[type="radio"]') as HTMLInputElement
+    expect(radio.checked).toBe(true)
+    expect(radio).toBeDisabled()
+    expect(screen.getByText('Extra High')).toBeInTheDocument()
+  })
+
+  it('calls onSelect when activated', () => {
+    const onSelect = vi.fn()
+    render(() => <DropdownMenuCheckableItem kind="checkbox" label="Toggle" checked={false} onSelect={onSelect} />)
+
+    screen.getByRole('menuitemcheckbox').click()
+    expect(onSelect).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not call onSelect while disabled, and exposes the reason', () => {
+    const onSelect = vi.fn()
+    render(() => (
+      <DropdownMenuCheckableItem
+        kind="radio"
+        label="Opus"
+        checked={false}
+        disabled
+        title="This setting is controlled by the agent"
+        onSelect={onSelect}
+      />
+    ))
+
+    const item = screen.getByRole('menuitemradio')
+    // Assert the MECHANISM, not the absence of a call. The native `disabled`
+    // attribute is what stops activation: jsdom returns from `click()` on a
+    // disabled element, and Solid's delegated click handler skips disabled
+    // nodes too -- so `expect(onSelect).not.toHaveBeenCalled()` after
+    // `item.click()` passes whether or not the component keeps a guard, and
+    // catches nothing. The paired "calls onSelect when activated" test above is
+    // what gives this one its meaning.
+    expect(item).toBeDisabled()
+    expect(item).toHaveAttribute('title', 'This setting is controlled by the agent')
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('keeps the indicator click-through so the whole row is one hit target', () => {
+    render(() => <DropdownMenuCheckableItem kind="checkbox" label="Toggle" checked onSelect={() => {}} />)
+
+    const checkbox = screen.getByRole('checkbox', { hidden: true }) as HTMLInputElement
+    expect(checkbox.style.pointerEvents).toBe('none')
   })
 })

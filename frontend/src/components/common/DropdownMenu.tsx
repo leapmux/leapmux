@@ -5,6 +5,13 @@ import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
 import { menuItemContent, menuItemLabel, menuItemShortcut } from '~/styles/shared.css'
 
+/**
+ * Marks a dropdown's trigger element. An enclosing popover's dismiss handler
+ * reads it to tell "the user opened a submenu" from "the user activated an
+ * item", which are otherwise the same click on one of its own descendants.
+ */
+const TRIGGER_ATTR = 'data-dropdown-trigger'
+
 export interface DropdownTriggerProps {
   /** Whether the dropdown is currently open. */
   'aria-expanded': boolean
@@ -64,6 +71,25 @@ export interface DropdownMenuProps {
   /** data-testid on the popover element. */
   'data-testid'?: string
 
+  /**
+   * Accessible name for the popover element.
+   *
+   * A `<menu>` of `menuitemradio` items carries no name of its own, so assistive
+   * technology announces the options with nothing that says which axis they
+   * belong to. Set this whenever the items are one named group.
+   */
+  'aria-label'?: string
+
+  /**
+   * Whether a click on the popover's own content dismisses it. Default true.
+   *
+   * True is the MENU contract: every click inside is an item activation, so the
+   * menu closes behind it. Set false for a popover whose content is a FORM —
+   * a field, a Save button, a destructive action — where a click is part of
+   * filling the thing in, and dismissing on it makes the form unusable.
+   */
+  'closeOnContentClick'?: boolean
+
   /** Callback when the popover opens or closes. */
   'onToggle'?: (open: boolean) => void
 }
@@ -81,6 +107,58 @@ export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
         {shortcut => <span class={menuItemShortcut}>{shortcut()}</span>}
       </Show>
     </span>
+  )
+}
+
+export interface DropdownMenuCheckableItemProps {
+  /** `checkbox` for an independent toggle, `radio` for one choice of a set. */
+  'kind': 'checkbox' | 'radio'
+  'label': string
+  'checked': boolean
+  'disabled'?: boolean
+  /** Hover text, typically the reason the item is disabled. */
+  'title'?: string
+  'data-testid'?: string
+  /** Invoked on activation. Not called while `disabled`. */
+  'onSelect': () => void
+}
+
+/**
+ * A menu item carrying a checked state: an OAT checkbox or radio showing that
+ * state, followed by the label.
+ *
+ * The component renders the whole item — the button, its ARIA role, and
+ * `aria-checked` — rather than the indicator alone. The indicator is
+ * display-only (`disabled`, `aria-hidden`, no `onChange`) and therefore invisible
+ * to assistive technology, so a caller that supplied its own `role="menuitem"`
+ * button announced the item with no on/off state at all. Owning the button makes
+ * that mistake impossible.
+ */
+export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps) {
+  return (
+    <button
+      role={props.kind === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio'}
+      aria-checked={props.checked}
+      disabled={props.disabled}
+      title={props.title}
+      data-testid={props['data-testid']}
+      // The guard is unreachable while the button carries the native `disabled`
+      // attribute above -- no engine dispatches a click on a disabled element,
+      // and Solid's delegated handler skips disabled nodes as well. It stays
+      // because it becomes load-bearing the moment this item moves to
+      // `aria-disabled` (which menus do, to keep a disabled item focusable), and
+      // a silent switch from "does nothing" to "dispatches a settings change"
+      // is the failure it prevents. No test can cover it; see DropdownMenu.test.
+      onClick={() => {
+        if (!props.disabled)
+          props.onSelect()
+      }}
+    >
+      <span class={menuItemContent}>
+        <input type={props.kind} checked={props.checked} disabled aria-hidden="true" style={{ 'pointer-events': 'none' }} />
+        <span class={menuItemLabel}>{props.label}</span>
+      </span>
+    </button>
   )
 }
 
@@ -105,6 +183,11 @@ export function DropdownMenu(props: DropdownMenuProps) {
 
   const setTriggerRef = (el: HTMLElement) => {
     triggerEl = el
+    // Mark the trigger so an ancestor popover's dismiss handler can recognize
+    // it. A nested dropdown's trigger is a DOM child of the parent popover, so
+    // without this the parent hides itself on the very click that opens the
+    // submenu — and hiding a popover hides its descendants too.
+    el.setAttribute(TRIGGER_ATTR, '')
   }
 
   // Resolve the positioning anchor: for the JSX-element trigger path,
@@ -320,6 +403,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
         ref={popoverRefCallback}
         class={props.class}
         data-testid={props['data-testid']}
+        aria-label={props['aria-label']}
         onKeyDown={(e: KeyboardEvent) => {
           if (e.key === 'Escape') {
             e.preventDefault()
@@ -328,6 +412,16 @@ export function DropdownMenu(props: DropdownMenuProps) {
         }}
         onClick={(e: MouseEvent) => {
           e.stopPropagation()
+          // A form's content is not a set of activations, so it opts out
+          // entirely (see `closeOnContentClick`).
+          if (props.closeOnContentClick === false)
+            return
+          // A click on a nested dropdown's trigger opens that submenu; it must
+          // not also dismiss this popover, which would close the submenu with
+          // it. Every other click inside the popover is an activation, so it
+          // closes the menu as usual.
+          if ((e.target as Element | null)?.closest?.(`[${TRIGGER_ATTR}]`))
+            return
           popoverEl?.hidePopover()
         }}
       >

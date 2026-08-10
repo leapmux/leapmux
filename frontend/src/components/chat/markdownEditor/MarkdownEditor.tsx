@@ -3,21 +3,20 @@ import type { Ctx } from '@milkdown/ctx'
 import type { Component, JSX } from 'solid-js'
 import type { EnterKeyMode } from '~/lib/browserStorage'
 import type { TrailingDebounced } from '~/lib/debounce'
-import type { ActiveFormatting } from '~/lib/editor/toolbarState'
+import type { LinkRange } from '~/lib/editor/linkPlugin'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { replaceAll } from '@milkdown/utils'
 import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner } from 'solid-js'
-import { createStore } from 'solid-js/store'
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
-import { INITIAL_ACTIVE_FORMATTING } from '~/lib/editor/toolbarState'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
+import { createComposerLayout } from './composerLayout'
 import { clearDraft, restoreCursor, saveDraftFromEditor } from './draftManagement'
-import { applyCodeBlockLanguage, applyLinkSubmit, removeLinkAtSelection, toggleCodeBlock, toggleInlineCode } from './editorCommands'
+import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
 import { setupEditorRefHandlers } from './editorRefHandlers'
-import { buildEditor } from './editorSetup'
-import { EditorToolbar } from './EditorToolbar'
+import { buildEditor, computeDocStats } from './editorSetup'
+import { LinkPopover } from './LinkPopover'
 import * as styles from './MarkdownEditor.css'
 import { decidePasteHandling } from './pasteDecision'
 
@@ -37,14 +36,19 @@ export interface MarkdownEditorDraftKey {
   controlRequestId?: string
 }
 
-/** File-attachment hooks. The toolbar/upload UI is hidden when `onUpload` is omitted. */
+/**
+ * File-attachment hooks the editor itself owns. Both fire from a DOM event on
+ * the editor root.
+ *
+ * The attach affordance is NOT here: it lives in the composer's `[+]` menu,
+ * which the parent renders and wires to its own file input. The editor has no
+ * attach button to route, so it exposes no hook for one.
+ */
 export interface MarkdownEditorAttachments {
   /** Called when files are pasted from clipboard. Prevents ProseMirror from inserting inline images. */
   onPaste?: (files: File[]) => void
   /** Called when files are dropped onto the editor. Prevents ProseMirror from inserting inline content. */
   onDrop?: (dataTransfer: DataTransfer) => void
-  /** Called when the upload button in the toolbar is clicked. */
-  onUpload?: () => void
 }
 
 /** Imperative escape hatches for the editor (refs and the ready callback). */
@@ -68,7 +72,28 @@ interface MarkdownEditorProps {
   onContentHeightChange?: (height: number) => void
   onContentChange?: (hasContent: boolean) => void
   banner?: JSX.Element
-  footer?: JSX.Element
+  /**
+   * The action row for the box, and the layout it needs.
+   *
+   * ONE value, not a slot plus a flag. Only one action row can ever render, and
+   * its layout is a property OF that row: `corner` is the compact Interrupt +
+   * Send cluster hugging the bottom-right, `fullWidth` is a control request's
+   * two-zone row, which also forces the expanded layout so it always sits below
+   * the text with the separator above it. A separate boolean let the flag and
+   * the row that actually rendered disagree, and both were set from the same
+   * test at the one call site anyway.
+   *
+   * `node` is a THUNK. Solid re-evaluates a prop's value on every read, so an
+   * element built directly into this object would be reconstructed each time the
+   * layout is consulted; the thunk is called once, where the row is inserted.
+   */
+  actions?: { layout: 'corner' | 'fullWidth', node: () => JSX.Element }
+  /**
+   * The `[+]` button (and its menu), rendered at the top-left of the box when
+   * the editor is a single line, dropping to the bottom-left when the content
+   * expands past one line. The editor's left padding makes room for it.
+   */
+  plus?: JSX.Element
   placeholder?: string
   /** When true, pressing Enter with an empty editor calls onSend('') instead of doing nothing. */
   allowEmptySend?: boolean
@@ -78,11 +103,43 @@ interface MarkdownEditorProps {
 
 export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   let editorRef: HTMLDivElement | undefined
+  // The editor row and the action-cluster slot are measured for the
+  // expand/collapse threshold. They are captured as refs, not looked up by
+  // `data-testid`: a test id is not a layout contract, and renaming one would
+  // silently leave the measurement at its fallback.
+  let editorRowEl: HTMLDivElement | undefined
+  let footerSlotEl: HTMLDivElement | undefined
   let editorInstance: Editor | undefined
   const preferences = usePreferences()
   const enterMode = preferences.enterKeyMode
   const [_markdown, setMarkdown] = createSignal('')
   const [contentHeight, setContentHeight] = createSignal(0)
+  /**
+   * Set by this component's own `onCleanup`. `buildEditor` is asynchronous, so
+   * the component can unmount while it is still pending. Solid then runs the
+   * cleanup with `editorInstance` still undefined (so `destroy()` is skipped),
+   * and a cleanup registered afterwards through `runWithOwner` is pushed onto an
+   * owner that already ran its cleanups and never runs again. The continuation
+   * reads this flag and tears down what it built instead of leaking the editor,
+   * its ResizeObservers, and its paste/drop listeners.
+   */
+  let disposed = false
+
+  /**
+   * The box's expand/collapse decision and the three DOM measurements it needs.
+   * Every probe, observer, and threshold lives in that one unit — see
+   * `./composerLayout`.
+   */
+  const layout = createComposerLayout({
+    editorRoot: () => editorRef,
+    row: () => editorRowEl,
+    actionSlot: () => footerSlotEl,
+    firstBlock: () => editorRef?.querySelector('.ProseMirror > *'),
+  })
+
+  // A full-width action row (a control request) forces the expanded layout, so
+  // its two-zone row always renders below the text with the separator above it.
+  const isExpanded = () => layout.contentExpanded() || props.actions?.layout === 'fullWidth'
 
   /** Compute the localStorage draft key, incorporating controlRequestId when present. */
   const getDraftKey = () => {
@@ -95,11 +152,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       ? `${dk.agentId}-ctrl-${dk.controlRequestId}`
       : dk.agentId
   }
-
-  // Active format state — one store keyed by formatting kind. Solid's store
-  // proxy gives per-key reactivity (only buttons whose key changed re-render),
-  // so this matches the previous fine-grained behavior with a single setter.
-  const [activeFormatting, setActiveFormatting] = createStore<ActiveFormatting>({ ...INITIAL_ACTIVE_FORMATTING })
 
   // Editor wrapper sizing: the explicit `requestedHeight` becomes a hard cap
   // when the content already overflows it, otherwise it acts as a min-height
@@ -116,24 +168,27 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     return style
   }
 
-  // Enter mode tooltip: controlled so it stays open on click and updates content
-  const [enterTooltipOpen, setEnterTooltipOpen] = createSignal(false)
+  // Enter mode tooltip state was part of the deleted formatting toolbar; the
+  // Enter-key mode toggle now lives in the composer's `[+]` menu, which reads
+  // and writes the preference directly, so the editor no longer needs a local
+  // toggle or a pinned-tooltip signal.
 
   // Code block language popover state
   const [codeLangPopoverOpen, setCodeLangPopoverOpen] = createSignal(false)
   const [codeLangNodePos, setCodeLangNodePos] = createSignal(-1)
   const [codeLangAnchorEl, setCodeLangAnchorEl] = createSignal<HTMLElement | undefined>(undefined)
   const [codeLangFilter, setCodeLangFilter] = createSignal('')
+
+  // Link edit popover state. Clicking a link opens it; it is the only way to
+  // change or remove a URL, because editing a link's visible text keeps the old
+  // href (the mark is inclusive, so it survives a delete-and-retype too).
+  const [linkPopoverOpen, setLinkPopoverOpen] = createSignal(false)
+  const [linkRange, setLinkRange] = createSignal<LinkRange | null>(null)
   // Mirror callback/flag props used from DOM-event handlers into plain refs so
   // Solid does not create lazy prop computations outside a component root.
   let onSendRef: MarkdownEditorProps['onSend'] = () => undefined
   let allowEmptySendRef = false
   let onContentChangeRef: MarkdownEditorProps['onContentChange']
-
-  const toggleEnterMode = () => {
-    const next = enterMode() === 'enter-sends' ? 'cmd-enter-sends' : 'enter-sends'
-    preferences.setEnterKeyMode(next)
-  }
 
   const focusEditor = () => {
     if (!editorInstance)
@@ -260,6 +315,12 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       return
 
     const owner = getOwner()
+    // Before the await, so the layout's observers register their cleanup on a
+    // LIVE owner. They measure the row and the action slot, neither of which
+    // waits on the editor -- and a cleanup registered after the await would
+    // never run when the component unmounts while `buildEditor` is pending.
+    layout.observe()
+
     const initialDraftKey = getDraftKey()
     const initialDraft = initialDraftKey ? loadDraft(initialDraftKey) : { content: '', cursor: -1 }
 
@@ -273,7 +334,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         onSend: handleSend,
       },
       getOnTogglePlanMode: () => onTogglePlanModeRef,
-      setActiveFormatting: next => setActiveFormatting(next),
       codeLangHandlers: {
         setCodeLangNodePos,
         setCodeLangAnchorEl,
@@ -281,14 +341,40 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         getCodeLangPopoverOpen: codeLangPopoverOpen,
         getCodeLangNodePos: codeLangNodePos,
       },
+      linkClickHandlers: {
+        setLinkRange,
+        setLinkPopoverOpen,
+        getLinkPopoverOpen: linkPopoverOpen,
+        getLinkRange: linkRange,
+      },
       setMarkdown,
       onContentChange: hasContent => props.onContentChange?.(hasContent),
+      onDocTransaction: layout.setDocStats,
       getDraftKey,
       draftSaveDebounce,
       getEditorInstance: () => editorInstance,
     })
 
+    // The component unmounted while `buildEditor` was pending. Nothing below
+    // would ever be torn down (see `disposed`), so destroy the editor here and
+    // register nothing.
+    if (disposed) {
+      editor.destroy()
+      return
+    }
+
     editorInstance = editor
+    // Seed docStats from the parsed draft so the expand/collapse decision is
+    // correct before any transaction fires. Without this a multi-line draft
+    // starts collapsed until the user types. It classifies the real
+    // ProseMirror document, so the mount decision and every later decision use
+    // one classifier and cannot disagree.
+    try {
+      editor.action((ctx: Ctx) => {
+        layout.setDocStats(computeDocStats(ctx.get(editorViewCtx).state.doc))
+      })
+    }
+    catch { /* editor may not be ready; the first transaction re-computes */ }
     // Apply editable state and auto-focus — the createEffect on `disabled`
     // may have fired before the editor was created, so set it explicitly.
     applyEditorState(editor)
@@ -397,6 +483,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   })
 
   onCleanup(() => {
+    disposed = true
     draftSaveDebounce.current?.cancel()
     // Save draft for the current agent/control-request before cleanup.
     // Prefer the cached latestDraftKey over getDraftKey(): during disposal
@@ -473,22 +560,9 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     },
   ))
 
-  // Link popover state
-  const [linkPopoverOpen, setLinkPopoverOpen] = createSignal(false)
-  const [linkUrl, setLinkUrl] = createSignal('')
-
-  const handleLinkSubmit = () => {
-    applyLinkSubmit(editorInstance, linkUrl(), () => {
-      setLinkPopoverOpen(false)
-      setLinkUrl('')
-    })
-  }
-
-  const handleLinkRemove = () => removeLinkAtSelection(editorInstance)
-
-  const handleCodeBlockClick = () => toggleCodeBlock(editorInstance, focusEditor)
-
-  const handleInlineCodeClick = () => toggleInlineCode(editorInstance)
+  // The link/code-block/inline-code toolbar handlers were part of the deleted
+  // formatting toolbar. The code-language popover below (for editing a code
+  // block's language label) is independent and remains.
 
   const applyCodeLang = (langId: string) => {
     applyCodeBlockLanguage(editorInstance, codeLangNodePos(), langId, () => {
@@ -498,36 +572,35 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   }
 
   return (
-    <div class={styles.container}>
-      <EditorToolbar
-        refs={{ editorInstance: () => editorInstance, focusEditor }}
-        activeFormatting={activeFormatting}
-        link={{
-          linkPopoverOpen,
-          setLinkPopoverOpen,
-          linkUrl,
-          setLinkUrl,
-          handleLinkSubmit,
-          handleLinkRemove,
-        }}
-        enterMode={{
-          mode: enterMode,
-          toggle: toggleEnterMode,
-          tooltipOpen: enterTooltipOpen,
-          setTooltipOpen: setEnterTooltipOpen,
-        }}
-        handleCodeBlockClick={handleCodeBlockClick}
-        handleInlineCodeClick={handleInlineCodeClick}
-        onUploadClick={props.attachments?.onUpload}
-      />
+    <div
+      class={styles.container}
+      data-expanded={isExpanded() ? '' : undefined}
+      style={{
+        '--composer-right-pad': `${layout.rightPad()}px`,
+        // Omitted until measured, so the stylesheet's own fallback applies.
+        ...(layout.actionsHeight() > 0 ? { '--composer-actions-h': `${layout.actionsHeight()}px` } : {}),
+      }}
+    >
       {props.banner}
-      <div
-        class={styles.editorWrapper}
-        ref={editorRef}
-        data-testid="chat-editor"
-        data-chat-input
-        style={editorWrapperStyle()}
-      />
+      <div class={styles.editorRow} ref={editorRowEl}>
+        <div class={styles.plusSlot} data-testid="composer-plus-slot">{props.plus}</div>
+        <div
+          class={styles.editorWrapper}
+          ref={editorRef}
+          data-testid="chat-editor"
+          data-chat-input
+          style={editorWrapperStyle()}
+        />
+        {/* Separator between text area and button row in expanded mode. Positioned
+            at the top of the button reservation (the editor row's padding-bottom
+            area) so it sits right between the text and the buttons. */}
+        <div class={styles.editorSeparator} data-testid="composer-separator" />
+        {/* The action cluster: compact Interrupt/Send (actions) when composing,
+            or the full-width control-request actions (footer) when a request is
+            active. `data-full-width` distinguishes the two so the expanded
+            layout can stretch the control-request footer across the box. */}
+        <div class={styles.footerSlot} ref={footerSlotEl} data-testid="composer-footer-slot" data-full-width={props.actions?.layout === 'fullWidth' ? '' : undefined}>{props.actions?.node()}</div>
+      </div>
       <CodeLanguagePopover
         open={codeLangPopoverOpen}
         setOpen={setCodeLangPopoverOpen}
@@ -538,7 +611,27 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         anchorRef={codeLangAnchorEl}
         onApply={applyCodeLang}
       />
-      {props.footer}
+      <LinkPopover
+        open={linkPopoverOpen}
+        setOpen={setLinkPopoverOpen}
+        range={linkRange}
+        // The editor WRAPPER, not the clicked link. ProseMirror owns the `<a>`
+        // and redraws it whenever the document changes -- including the mark
+        // rewrite this popover performs -- which leaves a detached anchor and a
+        // popover positioned from a zero-sized rect. The wrapper is outside the
+        // contenteditable and never moves.
+        anchorRef={() => editorRef}
+        onApply={(href) => {
+          const range = linkRange()
+          if (range)
+            applyLinkHref(editorInstance, range, href)
+        }}
+        onRemove={() => {
+          const range = linkRange()
+          if (range)
+            removeLinkRange(editorInstance, range)
+        }}
+      />
     </div>
   )
 }

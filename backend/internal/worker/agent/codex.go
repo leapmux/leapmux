@@ -938,14 +938,28 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 // static fallback. "auto" is a LeapMux-side sentinel: the CLI never reports
 // or accepts it, but selecting it causes LeapMux to omit reasoning_effort
 // so Codex applies its own default.
+//
+// The slice order IS the menu order: optionGroupsForAgent maps it into the
+// option group unchanged, and the frontend renders the options in order. Add a
+// new tier at its rank, never at the end -- codexEffortName looks an entry up
+// by id, so appending satisfies the label lookup while putting the tier in the
+// wrong place in every picker. TestCodexDefaultEffortsRankOrder enforces this
+// against the shared effortRank table, so a misplaced tier fails the build.
+//
+// Every tier the live CLI reports must appear here. codexEffortName is the
+// label source for the LIVE path too, so a tier that is absent renders as its
+// raw lowercase id ("ultra") next to its capitalized siblings, and the static
+// fallback offers a menu that the running session does not.
 var codexDefaultEfforts = []*EffortInfo{
-	{Id: EffortAuto, Name: "Auto", Description: "Let Codex decide the appropriate effort"},
-	{Id: "xhigh", Name: "Extra High"},
-	{Id: "high", Name: "High"},
-	{Id: "medium", Name: "Medium"},
-	{Id: "low", Name: "Low"},
-	{Id: "minimal", Name: "Minimal"},
-	{Id: "none", Name: "None"},
+	{Id: EffortAuto, Name: effortLabel(EffortAuto), Description: "Let Codex decide the appropriate effort"},
+	effortTier("ultra"),
+	effortTier("max"),
+	effortTier(EffortXHigh),
+	effortTier(EffortHigh),
+	effortTier("medium"),
+	effortTier("low"),
+	effortTier("minimal"),
+	effortTier("none"),
 }
 
 var codexDefaultModels = []*ModelInfo{

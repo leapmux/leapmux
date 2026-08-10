@@ -1,177 +1,12 @@
-import type { LucideIcon } from 'lucide-solid'
 import type { Accessor, JSX } from 'solid-js'
 import type { SettingsItem } from './settingsGroups'
 import Check from 'lucide-solid/icons/check'
-import ChevronsDown from 'lucide-solid/icons/chevrons-down'
-import ChevronsUp from 'lucide-solid/icons/chevrons-up'
-import Dot from 'lucide-solid/icons/dot'
-import Flame from 'lucide-solid/icons/flame'
-import Rocket from 'lucide-solid/icons/rocket'
-import Sparkles from 'lucide-solid/icons/sparkles'
-import Zap from 'lucide-solid/icons/zap'
-import { createEffect, createMemo, createSignal, createUniqueId, For, Index, Show, splitProps } from 'solid-js'
+import { createEffect, createMemo, createSignal, For, Index, Show, untrack } from 'solid-js'
+import { DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
-import * as styles from './ChatView.css'
-import { EFFORT_AUTO, OPTION_GROUP_SEARCHABLE_THRESHOLD } from './settingsGroups'
-
-/**
- * Icon-per-effort-level map used by {@link effortIcon}. Effort ids are global
- * (not per-provider), so one map covers every tier: `ultracode` (xhigh +
- * workflow orchestration) gets a rocket, `xhigh` a flame, and `max` keeps Zap.
- */
-export const DEFAULT_EFFORT_ICONS: Readonly<Record<string, LucideIcon>> = {
-  [EFFORT_AUTO]: Sparkles,
-  ultracode: Rocket,
-  xhigh: Flame,
-  max: Zap,
-  high: ChevronsUp,
-  medium: Dot,
-  low: ChevronsDown,
-  minimal: ChevronsDown,
-  off: ChevronsDown,
-  none: ChevronsDown,
-}
-
-/**
- * Render the icon for a thinking/effort level, falling back to the default map
- * then to a neutral Dot.
- */
-export function effortIcon(level: string): JSX.Element {
-  const I = DEFAULT_EFFORT_ICONS[level] ?? Dot
-  return <Icon icon={I} size="xs" />
-}
-
-/**
- * Shared props for the settings selectors (OptionGroupSelect / RadioGroup /
- * SearchableSelect). All three render the same labelled, optionally-read-only
- * fieldset (see {@link SettingsGroupFieldset}) and differ only in the body, so the
- * common prop set lives here once; OptionGroupSelect and RadioGroup additionally take a
- * radio `name`.
- */
-interface SettingsSelectProps {
-  label: string
-  items: SettingsItem[]
-  testIdPrefix: string
-  current: string
-  onChange: (value: string) => void
-  fieldsetClass?: string
-  /** When true, the group is read-only: inputs are disabled and clicks don't fire onChange. */
-  disabled?: boolean
-  /** Tooltip shown on the whole group explaining why it's read-only (implies disabled styling). */
-  disabledReason?: string
-}
-
-/**
- * Shared chrome for a settings group: the labelled `<div role="group">` with optional
- * read-only (disabled) styling, wrapped in a Tooltip when a disabledReason explains why
- * it's read-only. RadioGroup and SearchableSelect render their distinct body (radios /
- * current value + listbox) as children, so the fieldset, its label, the
- * data-disabled/aria-disabled toggling, and the disabled-reason tooltip live here once
- * rather than byte-for-byte in each.
- */
-function SettingsGroupFieldset(props: {
-  label: string
-  fieldsetClass?: string
-  disabled?: boolean
-  disabledReason?: string
-  children: JSX.Element
-}): JSX.Element {
-  const labelId = createUniqueId()
-  const group = (
-    <div
-      role="group"
-      aria-labelledby={labelId}
-      // data-disabled / aria-disabled are added only when truthy, so a writable
-      // group's DOM (and snapshots) stay byte-for-byte unchanged.
-      data-disabled={props.disabled ? '' : undefined}
-      aria-disabled={props.disabled ? 'true' : undefined}
-      class={[styles.settingsFieldset, props.fieldsetClass].filter(Boolean).join(' ')}
-    >
-      <div id={labelId} class={styles.settingsGroupLabel}>{props.label}</div>
-      {props.children}
-    </div>
-  )
-  return (
-    <Show when={props.disabledReason} fallback={group}>
-      <Tooltip text={props.disabledReason}>{group}</Tooltip>
-    </Show>
-  )
-}
-
-/**
- * Generic option selector: RadioGroup for small lists, SearchableSelect for
- * lists exceeding {@link OPTION_GROUP_SEARCHABLE_THRESHOLD}. Used for every
- * option group (model, effort, permission mode, provider extras) so any axis
- * with many values becomes filterable, not just model.
- */
-export function OptionGroupSelect(props: SettingsSelectProps & { name: string }): JSX.Element {
-  // Both branches forward the same prop set; only RadioGroup also takes `name`.
-  // splitProps keeps `common` a reactive proxy (a plain object literal would snapshot
-  // the values once and break reactivity), so adding/renaming a shared prop is a single
-  // edit rather than two parallel ones that can silently diverge.
-  const [radioOnly, common] = splitProps(props, ['name'])
-  return (
-    <Show
-      when={props.items.length > OPTION_GROUP_SEARCHABLE_THRESHOLD}
-      fallback={<RadioGroup {...common} name={radioOnly.name} />}
-    >
-      <SearchableSelect {...common} />
-    </Show>
-  )
-}
-
-export function RadioGroup(props: SettingsSelectProps & { name: string }): JSX.Element {
-  return (
-    <SettingsGroupFieldset
-      label={props.label}
-      fieldsetClass={props.fieldsetClass}
-      disabled={props.disabled}
-      disabledReason={props.disabledReason}
-    >
-      {/*
-        Index (not For) keys the radios by position so the <label> DOM nodes are
-        STABLE across re-renders -- only their reactive content (value/checked/
-        label) updates. The worker re-broadcasts the catalog on every status push
-        and an optimistic model switch swaps the option list, both of which hand
-        this a fresh items array; with For, each push detaches and recreates every
-        radio, which flickers and races a Playwright/user click mid-recreation.
-        Index recomputes each radio's value/checked from its position, so the
-        rendered selection is always correct even when the list changes -- e.g. the
-        effort list grows/shrinks per model, or the model list gains an entry
-        mid-list when ensureSettledModelListed surfaces the resolved account-default
-        at its canonical rank. The only thing not preserved across such a mid-list
-        change is DOM node identity at/after the insertion point, a rare settle-time
-        event we accept over the per-push churn For would cause.
-      */}
-      <Index each={props.items}>
-        {item => (
-          <Tooltip text={item().tooltip}>
-            <label
-              role="menuitemradio"
-              class={styles.settingsRadioItem}
-              data-testid={`${props.testIdPrefix}-${item().value}`}
-            >
-              <input
-                type="radio"
-                name={props.name}
-                value={item().value}
-                checked={props.current === item().value}
-                disabled={props.disabled}
-                onChange={() => {
-                  // Guard against a programmatic change event firing while disabled.
-                  if (!props.disabled)
-                    props.onChange(item().value)
-                }}
-              />
-              {item().label}
-            </label>
-          </Tooltip>
-        )}
-      </Index>
-    </SettingsGroupFieldset>
-  )
-}
+import { OPTION_GROUP_SEARCHABLE_THRESHOLD } from './settingsGroups'
+import * as styles from './settingsShared.css'
 
 /** Highlight matching substring in text (case-insensitive). */
 export function highlightMatch(text: string, filter: string): JSX.Element {
@@ -203,7 +38,7 @@ export interface FilterableItem {
 
 /**
  * Reusable filterable listbox with keyboard navigation and search input.
- * Used by SearchableSelect (inline in settings panels) and CodeLanguagePopover.
+ * Used by OptionGroupMenuItems (for large option groups) and CodeLanguagePopover.
  */
 export function FilterableListbox(props: {
   items: FilterableItem[]
@@ -212,30 +47,24 @@ export function FilterableListbox(props: {
   testIdPrefix?: string
   onSelect: (value: string) => void
   onEscape?: () => void
-  /** Auto-focus the filter input on mount. */
+  /**
+   * Take focus when the view becomes fresh (see `resetKey`), and on mount when
+   * no `resetKey` is supplied.
+   */
   autoFocus?: boolean
   /**
    * Optional "fresh view" trigger. Whenever this accessor's value changes, the
-   * highlighted row and scroll position reset to the top. An always-mounted listbox
-   * (e.g. the code-language popover, kept mounted so it measures at its real size)
-   * used to get this reset for free from remounting; pass the open signal here so a
-   * reopen starts at the top instead of a stale row (which Enter would mis-select).
+   * filter text, the highlighted row, and the scroll position all reset, and
+   * `autoFocus` takes focus.
+   *
+   * A popover keeps its children mounted across a close, so a caller that hosts
+   * this listbox in one MUST pass its open accessor here. Without it the filter
+   * the user typed last time is still applied on the next open, and the focus a
+   * mount-time ref took landed on a `display: none` input and did nothing.
    */
   resetKey?: Accessor<unknown>
-  /** CSS class overrides. */
-  listboxClass?: string
-  itemClass?: string
-  itemHighlightedClass?: string
-  itemSelectedClass?: string
-  controlClass?: string
-  inputClass?: string
 } & (
-  // Controlled filter text: provide BOTH `filter` and `setFilter`, or NEITHER. When
-  // provided, the caller owns the filter so it can reset it across reuse (e.g. a popover
-  // that stays mounted between opens); otherwise the listbox manages it internally. The
-  // discriminated union makes "only one of the pair" a compile error -- passing just one
-  // would split-brain the input (it reads the controlled accessor but writes the internal
-  // signal, or vice versa, so typing does nothing).
+  // Controlled filter text: provide BOTH `filter` and `setFilter`, or NEITHER.
   | { filter?: undefined, setFilter?: undefined }
   | { filter: Accessor<string>, setFilter: (value: string) => void }
 )): JSX.Element {
@@ -244,6 +73,7 @@ export function FilterableListbox(props: {
   const setFilter = (value: string) => (props.setFilter ?? setInternalFilter)(value)
   const [highlightedIndex, setHighlightedIndex] = createSignal(0)
   let listRef: HTMLDivElement | undefined
+  let inputRef: HTMLInputElement | undefined
 
   const filtered = createMemo(() => {
     const f = filter().toLowerCase()
@@ -255,33 +85,56 @@ export function FilterableListbox(props: {
     )
   })
 
-  // Keep highlightedIndex in range when the list shrinks underneath it -- props.items is
-  // re-emitted as a shorter catalog on an optimistic model switch (the model/effort lists swap),
-  // and the filter input is only one of the inputs that resize filtered(). Clamp (don't reset to
-  // 0) so a benign re-broadcast doesn't yank a user mid-keyboard-navigation; only an out-of-range
-  // index is pulled back to the last row. Without this, ArrowDown computes from a stale large
-  // index and Enter indexes past the end (guarded, but selects nothing).
-  createEffect(() => {
-    const len = filtered().length
-    setHighlightedIndex(i => (i > len - 1 ? Math.max(len - 1, 0) : i))
-  })
-
-  // Reset the highlighted row + scroll to the top whenever `resetKey` changes. The
-  // effect tracks only `resetKey` (the writes below create no self-dependency), so an
-  // uncontrolled caller that omits it just gets a one-time reset on mount.
-  createEffect(() => {
-    props.resetKey?.()
-    setHighlightedIndex(0)
-    if (listRef)
-      listRef.scrollTop = 0
-  })
-
   const scrollHighlightedIntoView = () => {
     requestAnimationFrame(() => {
       const el = listRef?.querySelectorAll<HTMLElement>('[data-listbox-item]')[highlightedIndex()]
       el?.scrollIntoView({ block: 'nearest' })
     })
   }
+
+  createEffect(() => {
+    const len = filtered().length
+    setHighlightedIndex(i => (i > len - 1 ? Math.max(len - 1, 0) : i))
+  })
+
+  // A fresh view: clear the filter, put the highlight on the selected row, show
+  // that row, and take focus. Everything below `resetKey` is untracked, so the
+  // effect fires on `resetKey` ALONE. Tracking `items` or `current` here would
+  // re-snap the highlight on every worker catalog re-broadcast and yank a user
+  // out of a keyboard selection -- the clamp effect above is what handles a list
+  // that shrinks underneath the highlight.
+  createEffect(() => {
+    props.resetKey?.()
+    untrack(() => {
+      // Only the internal filter: a controlled caller owns its own text.
+      if (!props.filter)
+        setInternalFilter('')
+      // Start on the selected row, not the top. This list is the only place a
+      // large group shows which value is active, and the marker is a check icon
+      // on that row -- so opening at the top hides the answer whenever the
+      // selection is below the fold. It also makes Enter on a fresh open
+      // re-select the current value instead of silently switching to the first
+      // option.
+      const rows = filtered()
+      const selected = props.current == null ? -1 : rows.findIndex(i => i.value === props.current)
+      setHighlightedIndex(selected < 0 ? 0 : selected)
+      if (listRef)
+        listRef.scrollTop = 0
+      if (selected > 0)
+        scrollHighlightedIntoView()
+      // Focus HERE rather than from a mount-time ref on the input. A popover
+      // renders its children before it opens and the UA hides a closed popover
+      // with `display: none`, so a mount-time focus() is a silent no-op and
+      // never runs again. `resetKey` is the caller's "this view is fresh"
+      // signal, which is exactly when focus is meaningful.
+      if (props.autoFocus) {
+        requestAnimationFrame(() => {
+          inputRef?.focus()
+          inputRef?.select()
+        })
+      }
+    })
+  })
 
   const handleKeyDown = (e: KeyboardEvent) => {
     const items = filtered()
@@ -310,50 +163,39 @@ export function FilterableListbox(props: {
     }
   }
 
-  const listboxCls = () => props.listboxClass || styles.searchableSelectListbox
-  const itemCls = () => props.itemClass || styles.searchableSelectItem
-  const itemHighlightCls = () => props.itemHighlightedClass || styles.searchableSelectItemHighlighted
-  const itemSelectedCls = () => props.itemSelectedClass || styles.searchableSelectItemSelected
-  const controlCls = () => props.controlClass || styles.searchableSelectControl
-  const inputCls = () => props.inputClass || styles.searchableSelectInput
-
   return (
     <>
-      <div class={listboxCls()} ref={listRef}>
+      <div class={styles.comboboxListbox} ref={listRef}>
         <For each={filtered()}>
           {(item, index) => {
+            const selected = () => props.current != null && item.value === props.current
             const row = (
               <div
-                // Keyboard-nav scrolling looks the row up by this marker (works whether
-                // or not the row is wrapped in a Tooltip's display:contents span).
                 data-listbox-item=""
-                class={`${itemCls()}${index() === highlightedIndex() ? ` ${itemHighlightCls()}` : ''}${props.current != null && item.value === props.current ? ` ${itemSelectedCls()}` : ''}`}
+                class={[styles.comboboxItem, index() === highlightedIndex() ? styles.comboboxItemHighlighted : '', selected() ? styles.comboboxItemSelected : ''].filter(Boolean).join(' ')}
                 data-testid={props.testIdPrefix ? `${props.testIdPrefix}-${item.value}` : undefined}
                 onClick={() => props.onSelect(item.value)}
                 onMouseEnter={() => setHighlightedIndex(index())}
               >
                 <span>{highlightMatch(item.label, filter())}</span>
                 <Show when={item.secondary}>
-                  <span class={styles.searchableSelectItemSecondary}>
-                    {highlightMatch(item.secondary!, filter())}
-                  </span>
+                  <span class={styles.comboboxItemSecondary}>{highlightMatch(item.secondary!, filter())}</span>
                 </Show>
-                <Show when={!item.secondary && props.current != null && item.value === props.current}>
+                {/* The check icon and the secondary text share the trailing
+                    slot, so a row with secondary text is marked selected by
+                    weight alone (see the selected style). */}
+                <Show when={!item.secondary && selected()}>
                   <Icon icon={Check} size="xs" />
                 </Show>
               </div>
             )
-            // Only pay the Tooltip's per-row listeners + effects when there's
-            // actual tooltip text. A 235-language picker has none, so wrapping
-            // every row would be 235 idle Tooltip instances -- the bulk of the
-            // list's population cost.
             return item.tooltip ? <Tooltip text={item.tooltip}>{row}</Tooltip> : row
           }}
         </For>
       </div>
-      <div class={controlCls()} onClick={e => e.stopPropagation()}>
+      <div class={styles.comboboxControl} onClick={e => e.stopPropagation()}>
         <input
-          class={inputCls()}
+          class={styles.comboboxInput}
           placeholder={props.placeholder || 'Filter...'}
           value={filter()}
           onInput={(e) => {
@@ -362,45 +204,100 @@ export function FilterableListbox(props: {
           }}
           onKeyDown={handleKeyDown}
           data-testid={props.testIdPrefix ? `${props.testIdPrefix}-filter` : undefined}
-          ref={props.autoFocus
-            ? (el: HTMLInputElement) => {
-                requestAnimationFrame(() => {
-                  el.focus()
-                  el.select()
-                })
-              }
-            : undefined}
+          ref={(el: HTMLInputElement) => (inputRef = el)}
         />
       </div>
     </>
   )
 }
 
-/** Searchable select for large item lists (e.g. models). */
-export function SearchableSelect(props: SettingsSelectProps): JSX.Element {
-  const currentLabel = () => {
-    const item = props.items.find(i => i.value === props.current)
-    return item?.label || props.current
-  }
+/**
+ * Props for {@link OptionGroupMenuItems}.
+ */
+export interface OptionGroupMenuItemsProps {
+  /** Display label for the group (used only for tooltips / fallbacks). */
+  label: string
+  /** The group's options as {@link SettingsItem}s. */
+  items: SettingsItem[]
+  /** Test-id prefix for each option item. */
+  testIdPrefix: string
+  /** Currently selected value. */
+  current: string
+  /** Called when the user selects a value. */
+  onChange: (value: string) => void
+  /** When true, items are disabled and clicks don't fire onChange. */
+  disabled?: boolean
+  /** Tooltip explaining why the group is read-only. */
+  disabledReason?: string
+  /**
+   * The host popover's open accessor. A popover keeps its children mounted
+   * across a close, so the filterable branch needs this to reset its filter and
+   * take focus on each open — see {@link FilterableListbox}'s `resetKey`.
+   */
+  openKey?: Accessor<unknown>
+}
+
+/**
+ * Menu items for a single option group, designed to be placed directly inside a
+ * `DropdownMenu` (submenu or chip popover). Two modes:
+ *
+ * - **≤ 7 options**: each option is a `<button role="menuitemradio">` with a
+ *   disabled OAT radio showing the selected state.
+ * - **> 7 options**: a `FilterableListbox` (the same filter control used by the
+ *   code-language popover) with keyboard navigation.
+ */
+export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Element {
+  const useFilterable = () => props.items.length > OPTION_GROUP_SEARCHABLE_THRESHOLD
 
   return (
-    <SettingsGroupFieldset
-      label={props.label}
-      fieldsetClass={props.fieldsetClass}
-      disabled={props.disabled}
-      disabledReason={props.disabledReason}
+    <Show
+      when={useFilterable()}
+      fallback={(
+        <Index each={props.items}>
+          {(item) => {
+            const row = () => (
+              <DropdownMenuCheckableItem
+                kind="radio"
+                label={item().label}
+                checked={props.current === item().value}
+                disabled={props.disabled}
+                title={props.disabled ? props.disabledReason : undefined}
+                data-testid={`${props.testIdPrefix}-${item().value}`}
+                onSelect={() => props.onChange(item().value)}
+              />
+            )
+            // Wrap only when there is tooltip text. A Tooltip mounts its own
+            // wrapper and listeners even with nothing to show, and most option
+            // values carry no description.
+            return (
+              <Show when={item().tooltip} fallback={row()}>
+                {tip => <Tooltip text={tip()}>{row()}</Tooltip>}
+              </Show>
+            )
+          }}
+        </Index>
+      )}
     >
-      <div class={styles.searchableSelectCurrent} data-testid={`${props.testIdPrefix}-current`}>
-        {currentLabel()}
-      </div>
-      <Show when={!props.disabled}>
+      <Show
+        when={!props.disabled}
+        fallback={(
+          // Read-only group: the list is not offered, so show the current
+          // selection. The label alone would leave the user with no way to see
+          // which value the agent is actually running.
+          <span title={props.disabledReason}>
+            {props.items.find(i => i.value === props.current)?.label || props.label}
+          </span>
+        )}
+      >
         <FilterableListbox
           items={props.items}
           current={props.current}
           testIdPrefix={props.testIdPrefix}
           onSelect={props.onChange}
+          autoFocus
+          resetKey={props.openKey}
         />
       </Show>
-    </SettingsGroupFieldset>
+    </Show>
   )
 }

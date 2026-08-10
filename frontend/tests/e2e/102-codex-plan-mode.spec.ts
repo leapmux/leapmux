@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import { codexTest, expect } from './codex-fixtures'
-import { openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
+import { expectSettingsChip, openSettingsMenu, sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 const PLAN_BODY = 'This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan.'
 
@@ -11,18 +11,16 @@ const REVISE_PLAN_PROMPT
   = 'Please revise the plan. Keep the title "# Dummy plan revised" and include the exact sentence "Add tests before implementation." Do not implement anything yet.'
 
 async function configureCodexPlanMode(page: Page) {
-  const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-  await openSettingsMenu(page)
+  await openSettingsMenu(page, 'collaboration_mode')
   await page.locator('[data-testid="collaboration_mode-plan"]').click()
-  await expect(trigger).toContainText('GPT-5.4 Mini')
-  await expect(trigger).toContainText('Plan Mode')
+  await expectSettingsChip(page, 'GPT-5.4 Mini')
+  await expectSettingsChip(page, 'Plan Mode')
 }
 
 codexTest.describe('Codex Plan Mode Prompt', () => {
   codexTest('feedback revises the plan and accept switches back to default mode', async ({ authenticatedCodexWorkspace, page }) => {
     void authenticatedCodexWorkspace
 
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     await configureCodexPlanMode(page)
 
     await sendMessage(page, INITIAL_PLAN_PROMPT)
@@ -54,7 +52,7 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(revisedBanner.getByText('Implement the proposed plan?')).toBeVisible()
 
     await page.getByTestId('control-allow-btn').click()
-    await expect(trigger).toContainText('Suggest & Approve')
+    await expectSettingsChip(page, 'Suggest & Approve')
     await expect(page.getByText('Implement the plan.')).toBeVisible()
   })
 })

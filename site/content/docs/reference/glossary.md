@@ -33,7 +33,7 @@ Running LeapMux with the Hub and one or more Workers as separate processes — t
 
 ### Effort (reasoning level)
 
-A per-agent setting that controls how much reasoning the agent applies. The available tiers are model-dependent — each model advertises its own supported set — and the default is `auto`, which lets the CLI pick. Common tiers are `low`, `medium`, and `high`, with some models adding `minimal`, `xhigh`, or `max` (Claude models, for example, expose tiers up to `max` and an `ultracode` tier; Codex models offer `auto`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `none`). You can set effort when you open an agent and change it later from the agent's settings panel. See [Coding Agents](/docs/using/coding-agents/).
+A per-agent setting that controls how much reasoning the agent applies. The available tiers are model-dependent — each model advertises its own supported set — and the default is `auto`, which lets the CLI pick. Common tiers are `low`, `medium`, and `high`, with some models adding `minimal`, `xhigh`, or `max` (Claude models, for example, expose tiers up to `max` and an `ultracode` tier; Codex models offer `auto`, `max`, `xhigh`, `high`, `medium`, `low`, `minimal`, and `none`). You can set effort when you open an agent and change it later from the composer's Effort chip or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/).
 
 ## F
 

@@ -6,6 +6,7 @@ import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { buildAllowResponse, buildDenyResponse } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
+import { ControlActionRow } from '../../controls/ControlActionRow'
 import { sendResponse, toRpcId } from '../../controls/types'
 
 function getCursorParams(payload: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -155,17 +156,14 @@ export const CursorControlActions: Component<ActionsProps> = (props) => {
   return (
     <Switch
       fallback={(
-        <div class={styles.controlFooter}>
-          <div class={styles.controlFooterLeft}>
-            {props.infoTrigger}
-          </div>
-          <div class={styles.controlFooterRight}>
+        <ControlActionRow
+          primary={(
             <ButtonGroup>
               <button class="outline" onClick={createPlanReject} data-testid="control-deny-btn">Reject</button>
               <button onClick={createPlanAllow} data-testid="control-allow-btn">Allow</button>
             </ButtonGroup>
-          </div>
-        </div>
+          )}
+        />
       )}
     >
       <Match when={isCursorAskQuestionPayload(props.request.payload)}>

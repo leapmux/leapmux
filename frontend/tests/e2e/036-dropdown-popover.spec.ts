@@ -134,26 +134,28 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 
     // Now click the editor text input area — this should light-dismiss the
     // popover and leave focus in the editor.
-    // The popover may be positioned above the trigger (data-flipped), so
-    // click near the top-right corner of the editor to avoid the popover.
+    //
+    // Click the CENTRE of the text area, not a corner. The composer box
+    // overlays the `[+]` button on the left edge and the Interrupt/Send cluster
+    // on the right edge, both absolutely positioned INSIDE the editor's own
+    // box, so a corner point lands on a button and never reaches the editor —
+    // focus then stays on the body and the assertion below fails for a reason
+    // that has nothing to do with the popover.
     const editorBox = await editor.boundingBox()
     const popoverBox = await popover.boundingBox()
     expect(editorBox).not.toBeNull()
     expect(popoverBox).not.toBeNull()
 
-    // Click at a point inside the editor but outside the popover
-    let clickX = editorBox!.x + editorBox!.width - 20
-    let clickY = editorBox!.y + 10
-    // Make sure click point is outside the popover bounding box
-    if (
-      popoverBox
+    const clickX = editorBox!.x + editorBox!.width / 2
+    const clickY = editorBox!.y + editorBox!.height / 2
+    // The popover is anchored to the status bar below the box, and may flip
+    // above its trigger. Assert rather than dodge: a popover covering the
+    // centre of the text area is itself a layout defect, and silently clicking
+    // somewhere else would hide it.
+    const overlapsPopover = popoverBox
       && clickX >= popoverBox.x && clickX <= popoverBox.x + popoverBox.width
       && clickY >= popoverBox.y && clickY <= popoverBox.y + popoverBox.height
-    ) {
-      // Try top-left corner instead
-      clickX = editorBox!.x + 20
-      clickY = editorBox!.y + 10
-    }
+    expect(overlapsPopover, 'the info popover must not cover the editor text area').toBeFalsy()
     await page.mouse.click(clickX, clickY)
 
     // Wait for the popover to close via light-dismiss

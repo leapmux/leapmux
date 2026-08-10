@@ -45,11 +45,17 @@ export async function enterAndExitPlanMode(page: Page, testId?: string) {
   const prompt = testId ? enterPlanPrompt(testId) : ENTER_PLAN_PROMPT
   await sendPlanStep(page, prompt, async () => {
     // The agent entering plan mode is what moves the permission mode, so the
-    // settings trigger is the app's own confirmation that step 1 landed. Without
-    // it a skipped EnterPlanMode was invisible here and surfaced two prompts
-    // later as "control-banner not found", 120s after the fact.
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-    const text = await trigger.textContent().catch(() => null)
+    // mode chip is the app's own confirmation that step 1 landed. Without it a
+    // skipped EnterPlanMode was invisible here and surfaced two prompts later
+    // as "control-banner not found", 120s after the fact.
+    //
+    // `count()` guards the read: `textContent()` on an absent element rejects,
+    // and the `catch` below would turn that into a permanent `false` — the
+    // predicate would then never confirm, whatever the agent did.
+    const chip = page.locator('[data-testid="composer-mode-trigger"]')
+    if (await chip.count() === 0)
+      return false
+    const text = await chip.textContent().catch(() => null)
     return text?.includes('Plan Mode') ?? false
   }, 'the agent did not enter plan mode')
 

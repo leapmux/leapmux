@@ -12,6 +12,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/con
 import * as styles from '../ControlRequestBanner.css'
 import { pluginFor } from '../providers/registry'
 import { CollapsibleList } from './CollapsibleList'
+import { ControlActionRow } from './ControlActionRow'
 import { sendResponse } from './types'
 
 // ---------------------------------------------------------------------------
@@ -355,49 +356,52 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <div class={styles.controlFooter} data-testid="control-footer">
-      <div class={styles.controlFooterLeft}>
-        <button
-          class="outline"
-          onClick={handleStop}
-          disabled={stopping()}
-          data-testid="control-stop-btn"
-        >
-          <Show when={stopping()}><Spinner /></Show>
-          {stopping() ? 'Stopping...' : 'Stop'}
-        </button>
-        <Tooltip text="Auto-fill unanswered questions and submit">
+    <ControlActionRow
+      secondary={(
+        <>
           <button
             class="outline"
-            onClick={handleYolo}
-            disabled={!anyUnanswered()}
-            data-testid="control-yolo-btn"
+            onClick={handleStop}
+            disabled={stopping()}
+            data-testid="control-stop-btn"
           >
-            YOLO
+            <Show when={stopping()}><Spinner /></Show>
+            {stopping() ? 'Stopping...' : 'Stop'}
           </button>
-        </Tooltip>
-        {props.infoTrigger}
-      </div>
-      <Show when={questions().length > 1}>
-        <div class={styles.paginationContainer} data-testid="control-pagination">
-          <For each={questions()}>
-            {(_, idx) => {
-              const isCurrent = () => props.askState.currentPage() === idx()
-              const answered = () => isPageAnswered(idx())
-              return (
-                <button
-                  type="button"
-                  class={`${styles.paginationItem} ${isCurrent() ? styles.paginationItemCurrent : ''} ${answered() ? styles.paginationItemAnswered : ''}`}
-                  onClick={() => navigateToPage(idx())}
-                >
-                  {idx() + 1}
-                </button>
-              )
-            }}
-          </For>
-        </div>
-      </Show>
-      <div class={styles.controlFooterRight}>
+          <Tooltip text="Auto-fill unanswered questions and submit">
+            <button
+              class="outline"
+              onClick={handleYolo}
+              disabled={!anyUnanswered()}
+              data-testid="control-yolo-btn"
+            >
+              YOLO
+            </button>
+          </Tooltip>
+        </>
+      )}
+      centre={(
+        <Show when={questions().length > 1}>
+          <div class={styles.paginationContainer} data-testid="control-pagination">
+            <For each={questions()}>
+              {(_, idx) => {
+                const isCurrent = () => props.askState.currentPage() === idx()
+                const answered = () => isPageAnswered(idx())
+                return (
+                  <button
+                    type="button"
+                    class={`${styles.paginationItem} ${isCurrent() ? styles.paginationItemCurrent : ''} ${answered() ? styles.paginationItemAnswered : ''}`}
+                    onClick={() => navigateToPage(idx())}
+                  >
+                    {idx() + 1}
+                  </button>
+                )
+              }}
+            </For>
+          </div>
+        </Show>
+      )}
+      primary={(
         <button
           onClick={handleSubmit}
           disabled={!allAnswered() || submitting()}
@@ -406,7 +410,7 @@ export const AskUserQuestionActions: Component<ActionsProps> = (props) => {
           <Show when={submitting()}><Spinner /></Show>
           {submitting() ? 'Submitting...' : 'Submit'}
         </button>
-      </div>
-    </div>
+      )}
+    />
   )
 }

@@ -323,7 +323,7 @@ The agent subprocess couldn't be launched or didn't complete its startup handsha
 ### A model, effort, or permission-mode change seems to "reset" the agent
 
 **Symptom**
-Changing the model or effort in the in-chat settings dropdown restarts the agent.
+Changing the model or effort from a composer chip or the **[+]** menu restarts the agent.
 
 **Cause**
 Most settings changes are applied **live**, without a restart: switching effort to a concrete level (e.g. high → xhigh) and changing the permission mode are applied in place for both Claude Code and Codex. A restart only happens when you switch effort back to **Auto** (the CLI has to relaunch without an `--effort` flag to hand the default back to the CLI), or — implicitly — when you change the model, which resets effort to Auto and trips the same relaunch. The change is applied optimistically and rolled back on failure.

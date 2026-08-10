@@ -5,6 +5,7 @@ import { For, Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from '../../ControlRequestBanner.css'
+import { ControlActionRow } from '../../controls/ControlActionRow'
 import { sendResponse, toRpcId } from '../../controls/types'
 
 interface ACPPermissionOption {
@@ -76,11 +77,8 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <div class={styles.controlFooter}>
-      <div class={styles.controlFooterLeft}>
-        {props.infoTrigger}
-      </div>
-      <div class={styles.controlFooterRight}>
+    <ControlActionRow
+      primary={(
         <ButtonGroup>
           <For each={options()}>
             {option => (
@@ -105,7 +103,7 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
             </Tooltip>
           </Show>
         </ButtonGroup>
-      </div>
-    </div>
+      )}
+    />
   )
 }

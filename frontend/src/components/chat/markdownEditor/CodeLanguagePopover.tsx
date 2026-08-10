@@ -77,11 +77,6 @@ export const CodeLanguagePopover: Component<CodeLanguagePopoverProps> = (props) 
         filter={props.filter}
         setFilter={props.setFilter}
         resetKey={props.open}
-        listboxClass={styles.comboboxListbox}
-        itemClass={styles.comboboxItem}
-        itemHighlightedClass={styles.comboboxItemHighlighted}
-        controlClass={styles.comboboxControl}
-        inputClass={styles.comboboxInput}
       />
     </DropdownMenu>
   )

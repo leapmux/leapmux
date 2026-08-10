@@ -1,96 +1,122 @@
-import type { Accessor, Component } from 'solid-js'
-import Link2 from 'lucide-solid/icons/link-2'
-import { createUniqueId } from 'solid-js'
-import { IconButton, IconButtonState } from '~/components/common/IconButton'
-import { positionPopoverAbove } from '~/lib/popoverPosition'
+import type { Accessor, Component, Setter } from 'solid-js'
+import type { LinkRange } from '~/lib/editor/linkPlugin'
+import Trash2 from 'lucide-solid/icons/trash-2'
+import { createEffect, createSignal } from 'solid-js'
+import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { Icon } from '~/components/common/Icon'
+import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from './MarkdownEditor.css'
 
 export interface LinkPopoverProps {
-  activeLink: Accessor<boolean>
-  linkPopoverOpen: Accessor<boolean>
-  setLinkPopoverOpen: (open: boolean) => void
-  linkUrl: Accessor<string>
-  setLinkUrl: (url: string) => void
-  handleLinkSubmit: () => void
-  handleLinkRemove: () => void
+  open: Accessor<boolean>
+  setOpen: Setter<boolean>
+  /** The clicked link run, or null when none is selected. */
+  range: Accessor<LinkRange | null>
+  /** The clicked anchor element, for positioning. */
+  anchorRef: Accessor<HTMLElement | undefined>
+  /** Save a new URL for the current run. */
+  onApply: (href: string) => void
+  /** Strip the link mark from the current run, keeping its text. */
+  onRemove: () => void
 }
 
+/**
+ * Edit or remove the URL of the link the user clicked.
+ *
+ * This is the only surface that can unmake a link. Editing a link's visible text
+ * does NOT clear its href — the mark is inclusive, so ProseMirror re-applies it
+ * even across a delete-and-retype — which means without this popover a corrected
+ * label silently ships the original URL to the agent.
+ */
 export const LinkPopover: Component<LinkPopoverProps> = (props) => {
-  const linkPopoverId = createUniqueId()
-  let linkPopoverRef: HTMLDivElement | undefined
-  let linkTriggerRef: HTMLButtonElement | undefined
-  let linkInputRef: HTMLInputElement | undefined
+  const [href, setHref] = createSignal('')
+  let popoverRef: HTMLElement | undefined
 
-  const handleLinkTriggerClick = () => {
-    if (props.activeLink()) {
-      props.handleLinkRemove()
+  // Seed the input from the run each time the popover opens. The popover stays
+  // mounted between opens, so without this it would still hold the previous
+  // link's URL.
+  createEffect(() => {
+    if (!props.open())
       return
-    }
-    if (props.linkPopoverOpen()) {
-      linkPopoverRef?.hidePopover()
-      return
-    }
-    props.setLinkPopoverOpen(true)
-    linkPopoverRef?.showPopover()
-    if (linkPopoverRef && linkTriggerRef) {
-      requestAnimationFrame(() => {
-        positionPopoverAbove(linkTriggerRef!, linkPopoverRef!)
-      })
-    }
-  }
+    setHref(props.range()?.href ?? '')
+    requestAnimationFrame(() => {
+      if (!props.open())
+        return
+      const input = popoverRef?.querySelector<HTMLInputElement>('input')
+      input?.focus()
+      input?.select()
+    })
+  })
 
-  const handleLinkPopoverToggle = (e: Event) => {
-    const toggleEvent = e as ToggleEvent
-    if (toggleEvent.newState === 'open') {
-      linkInputRef?.focus()
-    }
-    else {
-      props.setLinkPopoverOpen(false)
-      props.setLinkUrl('')
-    }
-  }
+  // Saving applies the URL and leaves the popover OPEN, so the user can see the
+  // value that took and reach the remove button without a second click.
+  //
+  // It also avoids a browser-level trap. Oat animates a popover's close with
+  // `display` and `overlay` in `allow-discrete`, so the element stays in the top
+  // layer for 150ms afterwards. This popover sits over its own trigger, so a
+  // click that closes it and immediately reopens it lands inside that window:
+  // `showPopover()` then re-enters an element the browser is still removing from
+  // the top layer, and the popover comes back BELOW the page, where the chat
+  // transcript intercepts every click meant for its buttons.
+  const submit = () => props.onApply(href())
 
   return (
-    <>
-      <IconButton
-        ref={linkTriggerRef}
-        icon={Link2}
-        size="md"
-        state={props.activeLink() ? IconButtonState.Active : IconButtonState.Enabled}
-        data-testid="toolbar-link"
-        title="Link"
-        onClick={handleLinkTriggerClick}
-      />
-      <div
-        popover="auto"
-        id={linkPopoverId}
-        class={styles.linkPopover}
-        data-testid="link-popover"
-        ref={linkPopoverRef}
-        onToggle={handleLinkPopoverToggle}
+    <DropdownMenu
+      as="div"
+      anchorRef={props.anchorRef}
+      open={props.open}
+      popoverRef={(el) => { popoverRef = el }}
+      class={styles.linkPopover}
+      data-testid="link-popover"
+      aria-label="Edit link"
+      // A form, not a menu: typing in the field, saving, and removing are all
+      // clicks inside it, and the menu default would dismiss the popover on
+      // each one.
+      closeOnContentClick={false}
+      onToggle={(open) => {
+        if (!open)
+          props.setOpen(false)
+      }}
+    >
+      <form
+        class={styles.linkPopoverForm}
+        onSubmit={(e) => {
+          e.preventDefault()
+          submit()
+        }}
       >
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            props.handleLinkSubmit()
-            linkPopoverRef?.hidePopover()
+        <input
+          type="url"
+          class={styles.linkPopoverInput}
+          placeholder="https://..."
+          value={href()}
+          aria-label="Link URL"
+          data-testid="link-url-input"
+          onInput={e => setHref(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            // Escape closes without applying; the popover's own handler would
+            // otherwise leave the half-typed URL staged for the next open.
+            if (e.key === 'Escape')
+              props.setOpen(false)
           }}
-          class={styles.linkPopoverForm}
-        >
-          <input
-            type="url"
-            class={styles.linkPopoverInput}
-            placeholder="https://..."
-            value={props.linkUrl()}
-            onInput={e => props.setLinkUrl(e.currentTarget.value)}
-            ref={linkInputRef}
-            data-testid="link-url-input"
-          />
-          <button type="submit" class="ghost small" data-testid="link-url-submit">
-            Add
+        />
+        <button type="submit" class="ghost small" data-testid="link-url-submit">
+          Save
+        </button>
+        <Tooltip text="Remove link, keeping the text" ariaLabel>
+          <button
+            type="button"
+            class="ghost small"
+            data-testid="link-url-remove"
+            onClick={() => {
+              props.onRemove()
+              props.setOpen(false)
+            }}
+          >
+            <Icon icon={Trash2} size="xs" />
           </button>
-        </form>
-      </div>
-    </>
+        </Tooltip>
+      </form>
+    </DropdownMenu>
   )
 }

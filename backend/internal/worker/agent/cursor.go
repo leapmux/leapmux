@@ -212,13 +212,12 @@ func cursorModelNameSuffix(params map[string]string) string {
 	return ""
 }
 
-// cursorEffortLabel renders a Cursor reasoning-effort level for the model-name suffix,
-// casing the compound "xhigh" nicely as "XHigh"; every other level just capitalizes.
+// cursorEffortLabel renders a Cursor reasoning-effort level for the model-name
+// suffix. It reads the shared table, so an id Cursor shows in a model name and
+// the same id in another provider's effort picker cannot be spelled differently
+// -- "xhigh" used to render "XHigh" here and "Extra High" everywhere else.
 func cursorEffortLabel(level string) string {
-	if strings.EqualFold(level, "xhigh") {
-		return "XHigh"
-	}
-	return capitalizeFirst(level)
+	return effortLabel(level)
 }
 
 func cursorModelIDForWire(model string) string {

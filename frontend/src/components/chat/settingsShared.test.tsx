@@ -1,11 +1,11 @@
 import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/leapmux/v1/agent_pb'
-import { buildPlanMode, currentModeFor, currentValueOrDefault, effectiveCurrent, mergeStableOptionGroupRefs, optionGroupDefaultValue, valueValidForGroup } from './settingsGroups'
-import { FilterableListbox, RadioGroup, SearchableSelect } from './settingsShared'
+import { buildPlanMode, currentModeFor, currentValueOrDefault, effectiveCurrent, mergeStableOptionGroupRefs, optionGroupDefaultValue, resolvedCurrent, valueValidForGroup } from './settingsGroups'
+import { FilterableListbox, OptionGroupMenuItems } from './settingsShared'
 
 /**
  * Build a minimal effort option group fixture. Model/effort are ordinary option
@@ -58,7 +58,7 @@ describe('currentValueOrDefault', () => {
 
   it('falls back to the group default when the effort is not offered', () => {
     // The exact optimistic-switch case: "ultracode"/"xhigh" left over from a
-    // previous model must not stay selected in the RadioGroup.
+    // previous model must not stay selected in the menu items.
     expect(currentValueOrDefault(groups, 'effort', 'ultracode')).toBe('auto')
     expect(currentValueOrDefault(groups, 'effort', 'xhigh')).toBe('auto')
   })
@@ -190,106 +190,7 @@ describe('optionGroupDefaultValue', () => {
   })
 })
 
-const radioItems = [
-  { label: 'Low', value: 'low' },
-  { label: 'High', value: 'high' },
-]
-
-describe('radioGroup', () => {
-  it('is writable by default: no data-disabled, enabled inputs, click fires onChange', async () => {
-    const onChange = vi.fn()
-    const { container } = render(() => RadioGroup({
-      label: 'Effort',
-      items: radioItems,
-      testIdPrefix: 'tl',
-      name: 'tl',
-      current: 'low',
-      onChange,
-    }))
-
-    const group = container.querySelector('[role="group"]')!
-    expect(group.hasAttribute('data-disabled')).toBe(false)
-    expect(group.hasAttribute('aria-disabled')).toBe(false)
-
-    const highInput = screen.getByTestId('tl-high').querySelector('input')!
-    expect(highInput).not.toBeDisabled()
-    await fireEvent.click(highInput)
-    expect(onChange).toHaveBeenCalledWith('high')
-  })
-
-  it('when disabled: marks the group, disables inputs, keeps the current value checked, and ignores clicks', async () => {
-    const onChange = vi.fn()
-    render(() => RadioGroup({
-      label: 'Effort',
-      items: radioItems,
-      testIdPrefix: 'tl',
-      name: 'tl',
-      current: 'high',
-      onChange,
-      disabled: true,
-    }))
-
-    const group = screen.getByRole('group')
-    expect(group).toHaveAttribute('data-disabled')
-    expect(group).toHaveAttribute('aria-disabled', 'true')
-
-    const highInput = screen.getByTestId('tl-high').querySelector('input')!
-    const lowInput = screen.getByTestId('tl-low').querySelector('input')!
-    expect(highInput).toBeDisabled()
-    expect(lowInput).toBeDisabled()
-    expect(highInput).toBeChecked() // current value stays selected
-
-    await fireEvent.click(lowInput)
-    expect(onChange).not.toHaveBeenCalled()
-  })
-
-  it('wraps the group in a tooltip when disabledReason is set', () => {
-    const { container } = render(() => RadioGroup({
-      label: 'Effort',
-      items: radioItems,
-      testIdPrefix: 'tl',
-      name: 'tl',
-      current: 'high',
-      onChange: () => {},
-      disabled: true,
-      disabledReason: 'Controlled by the agent',
-    }))
-
-    // The Tooltip wraps its children in a display:contents span; the disabled group
-    // sits directly inside it, confirming the reason is wired (not silently dropped).
-    const group = container.querySelector('[role="group"]')!
-    const wrapper = group.parentElement!
-    expect(wrapper.tagName).toBe('SPAN')
-    expect(wrapper.getAttribute('style')).toContain('display:contents')
-  })
-})
-
-describe('searchableSelect', () => {
-  // Past the searchable threshold, the model list renders as a filterable listbox.
-  const manyItems = Array.from({ length: 9 }, (_, i) => ({ label: `Model ${i}`, value: `m${i}`, tooltip: `desc ${i}` }))
-
-  it('renders each row with a keyboard-nav marker, wraps it for the hover tooltip, and fires onChange on click', async () => {
-    const onChange = vi.fn()
-    const { container } = render(() => SearchableSelect({
-      label: 'Model',
-      items: manyItems,
-      testIdPrefix: 'm',
-      current: 'm0',
-      onChange,
-    }))
-
-    // Every row carries the keyboard-nav marker, so scrollIntoView can find it even
-    // though each row sits inside the Tooltip's display:contents span.
-    const rows = container.querySelectorAll('[data-listbox-item]')
-    expect(rows.length).toBe(manyItems.length)
-    const wrapper = rows[0].parentElement!
-    expect(wrapper.tagName).toBe('SPAN')
-    expect(wrapper.getAttribute('style')).toContain('display:contents')
-
-    await fireEvent.click(screen.getByTestId('m-m3'))
-    expect(onChange).toHaveBeenCalledWith('m3')
-  })
-
+describe('filterableListbox', () => {
   // Guards the highlighted-index clamp: the worker re-emits a shorter catalog on an optimistic
   // model switch, shrinking props.items under the listbox. Without clamping, highlightedIndex
   // keeps pointing past the end and Enter selects nothing (the index resolves to undefined).
@@ -317,9 +218,7 @@ describe('searchableSelect', () => {
     await fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSelect).toHaveBeenCalledWith('m2')
   })
-})
 
-describe('filterableListbox', () => {
   it('wraps a row in the hover-tooltip span only when the row has tooltip text', () => {
     render(() => FilterableListbox({
       items: [
@@ -337,6 +236,33 @@ describe('filterableListbox', () => {
     expect(withTip.tagName).toBe('SPAN')
     expect(withTip.getAttribute('style')).toContain('display:contents')
     expect(screen.getByTestId('f-wo').parentElement!.tagName).not.toBe('SPAN')
+  })
+
+  it('styles its own rows, so no caller can omit the classes', () => {
+    // These were six pass-through class props. Every caller passed the same
+    // five and every caller forgot the sixth, which is how the code-language
+    // picker's ids lost their right-aligned muted styling.
+    render(() => FilterableListbox({
+      items: [
+        { label: 'JavaScript', value: 'javascript', secondary: 'js' },
+        { label: 'TypeScript', value: 'typescript', secondary: 'ts' },
+      ],
+      current: 'javascript',
+      testIdPrefix: 'f',
+      onSelect: () => {},
+    }))
+
+    const selected = screen.getByTestId('f-javascript')
+    const unselected = screen.getByTestId('f-typescript')
+    expect(selected.className).not.toBe('')
+    // The selected row carries a marker the unselected one does not: a row with
+    // secondary text shows no check icon, so weight is the only marker left.
+    expect(selected.className).not.toBe(unselected.className)
+
+    // The secondary text is styled, not a bare span.
+    const secondary = within(selected).getByText('js')
+    expect(secondary.tagName).toBe('SPAN')
+    expect(secondary.className).not.toBe('')
   })
 
   it('uses a controlled filter when filter/setFilter props are provided', async () => {
@@ -393,6 +319,73 @@ describe('filterableListbox', () => {
     await fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSelect).toHaveBeenLastCalledWith('alpha')
   })
+
+  it('clears the filter text when resetKey changes', async () => {
+    // A popover keeps its children mounted across a close, so without this the
+    // narrowed list the user left behind is still applied on the next open --
+    // and the option they came back for is missing.
+    const [resetKey, setResetKey] = createSignal(0)
+    render(() => FilterableListbox({
+      items: [
+        { label: 'Alpha', value: 'alpha' },
+        { label: 'Bravo', value: 'bravo' },
+      ],
+      testIdPrefix: 'f',
+      onSelect: vi.fn(),
+      resetKey,
+    }))
+
+    const input = screen.getByTestId('f-filter') as HTMLInputElement
+    await fireEvent.input(input, { target: { value: 'alph' } })
+    expect(screen.queryByTestId('f-bravo')).toBeNull()
+
+    setResetKey(1)
+    expect(input.value).toBe('')
+    expect(screen.getByTestId('f-bravo')).toBeInTheDocument()
+  })
+
+  it('opens on the SELECTED row rather than the top one', async () => {
+    // This list is the only place a large group shows which value is active, so
+    // opening at the top hides the answer whenever the selection is below the
+    // fold. It also stops Enter on a fresh open from silently switching the
+    // setting to the first option.
+    const [resetKey, setResetKey] = createSignal(0)
+    const onSelect = vi.fn()
+    render(() => FilterableListbox({
+      items: [
+        { label: 'Alpha', value: 'alpha' },
+        { label: 'Bravo', value: 'bravo' },
+        { label: 'Charlie', value: 'charlie' },
+      ],
+      current: 'charlie',
+      testIdPrefix: 'f',
+      onSelect,
+      resetKey,
+    }))
+
+    setResetKey(1)
+    await fireEvent.keyDown(screen.getByTestId('f-filter'), { key: 'Enter' })
+    expect(onSelect).toHaveBeenLastCalledWith('charlie')
+  })
+
+  it('falls back to the first row when the selection is not in the list', async () => {
+    const [resetKey, setResetKey] = createSignal(0)
+    const onSelect = vi.fn()
+    render(() => FilterableListbox({
+      items: [
+        { label: 'Alpha', value: 'alpha' },
+        { label: 'Bravo', value: 'bravo' },
+      ],
+      current: 'gone',
+      testIdPrefix: 'f',
+      onSelect,
+      resetKey,
+    }))
+
+    setResetKey(1)
+    await fireEvent.keyDown(screen.getByTestId('f-filter'), { key: 'Enter' })
+    expect(onSelect).toHaveBeenLastCalledWith('alpha')
+  })
 })
 
 describe('mergeStableOptionGroupRefs', () => {
@@ -429,5 +422,213 @@ describe('mergeStableOptionGroupRefs', () => {
     const out = mergeStableOptionGroupRefs(next, prev)
     expect(out[0]).toBe(prev[0])
     expect(out[1]).toBe(next[1])
+  })
+})
+
+describe('resolvedCurrent', () => {
+  const catalog = [effortGroup(['auto', 'max', 'high', 'low'], 'high')]
+
+  it('prefers the optimistic value over the catalog current value', () => {
+    const groups = [{ ...catalog[0]!, currentValue: 'low' } as AvailableOptionGroup]
+    expect(resolvedCurrent(groups, { effort: 'max' }, 'effort')).toBe('max')
+  })
+
+  it('falls back to the catalog current value when nothing is optimistic', () => {
+    const groups = [{ ...catalog[0]!, currentValue: 'low' } as AvailableOptionGroup]
+    expect(resolvedCurrent(groups, {}, 'effort')).toBe('low')
+  })
+
+  it('clamps a value the group no longer offers to the group default', () => {
+    // The optimistic-switch case: "xhigh" left over from the previous model.
+    // The chip label, the checked radio, and an action's already-applied test
+    // all read this, so they cannot disagree about the selection.
+    expect(resolvedCurrent(catalog, { effort: 'xhigh' }, 'effort')).toBe('high')
+  })
+
+  it('returns an empty string for an unknown group', () => {
+    expect(resolvedCurrent(catalog, { effort: 'max' }, 'not-a-group')).toBe('')
+  })
+
+  it('returns an empty string for an undefined catalog', () => {
+    expect(resolvedCurrent(undefined, {}, 'effort')).toBe('')
+  })
+})
+
+describe('optionGroupMenuItems', () => {
+  const smallItems = [
+    { label: 'Low', value: 'low' },
+    { label: 'High', value: 'high' },
+  ]
+
+  it('renders radio menu items for ≤7 options and fires onChange on click', async () => {
+    const onChange = vi.fn()
+    render(() => (
+      <OptionGroupMenuItems
+        label="Effort"
+        items={smallItems}
+        testIdPrefix="effort"
+        current="low"
+        onChange={onChange}
+      />
+    ))
+
+    // Each option is a menuitemradio button.
+    const items = screen.getAllByRole('menuitemradio')
+    expect(items).toHaveLength(2)
+
+    // The current value is marked aria-checked.
+    const lowItem = screen.getByTestId('effort-low')
+    expect(lowItem).toHaveAttribute('aria-checked', 'true')
+    const highItem = screen.getByTestId('effort-high')
+    expect(highItem).toHaveAttribute('aria-checked', 'false')
+
+    // Clicking an item fires onChange with its value.
+    await fireEvent.click(highItem)
+    expect(onChange).toHaveBeenCalledWith('high')
+  })
+
+  it('renders an unchecked radio input inside each item', () => {
+    render(() => (
+      <OptionGroupMenuItems
+        label="Effort"
+        items={smallItems}
+        testIdPrefix="effort"
+        current="low"
+        onChange={() => {}}
+      />
+    ))
+
+    // The current item's radio is checked.
+    const lowRadio = screen.getByTestId('effort-low').querySelector('input[type="radio"]') as HTMLInputElement
+    expect(lowRadio.checked).toBe(true)
+    expect(lowRadio.disabled).toBe(true) // display-only
+
+    const highRadio = screen.getByTestId('effort-high').querySelector('input[type="radio"]') as HTMLInputElement
+    expect(highRadio.checked).toBe(false)
+    expect(highRadio.disabled).toBe(true)
+  })
+
+  it('disables items and suppresses onChange when disabled=true', async () => {
+    const onChange = vi.fn()
+    render(() => (
+      <OptionGroupMenuItems
+        label="Effort"
+        items={smallItems}
+        testIdPrefix="effort"
+        current="low"
+        onChange={onChange}
+        disabled
+        disabledReason="Controlled by the agent"
+      />
+    ))
+
+    const items = screen.getAllByRole('menuitemradio')
+    for (const item of items) {
+      expect(item).toBeDisabled()
+      expect(item).toHaveAttribute('title', 'Controlled by the agent')
+    }
+
+    await fireEvent.click(items[1])
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('renders a FilterableListbox for >7 options', () => {
+    const manyItems = Array.from({ length: 9 }, (_, i) => ({ label: `Model ${i}`, value: `m${i}` }))
+    render(() => (
+      <OptionGroupMenuItems
+        label="Model"
+        items={manyItems}
+        testIdPrefix="model"
+        current="m0"
+        onChange={() => {}}
+      />
+    ))
+
+    // FilterableListbox renders a filter input + rows with data-listbox-item.
+    expect(screen.getByTestId('model-filter')).toBeInTheDocument()
+    const rows = document.querySelectorAll('[data-listbox-item]')
+    expect(rows).toHaveLength(9)
+    // No menuitemradio buttons.
+    expect(screen.queryByRole('menuitemradio')).toBeNull()
+  })
+
+  it('filterableListbox onSelect fires onChange', async () => {
+    const manyItems = Array.from({ length: 9 }, (_, i) => ({ label: `Model ${i}`, value: `m${i}` }))
+    const onChange = vi.fn()
+    render(() => (
+      <OptionGroupMenuItems
+        label="Model"
+        items={manyItems}
+        testIdPrefix="model"
+        current="m0"
+        onChange={onChange}
+      />
+    ))
+
+    await fireEvent.click(screen.getByTestId('model-m3'))
+    expect(onChange).toHaveBeenCalledWith('m3')
+  })
+
+  it('wraps a radio item in a Tooltip only when the option has description text', () => {
+    // Same reason the filterable rows do: a Tooltip mounts its wrapper and its
+    // listeners even with nothing to show, and most option values carry no
+    // description.
+    render(() => (
+      <OptionGroupMenuItems
+        label="Effort"
+        items={[
+          { label: 'High', value: 'high', tooltip: 'Comprehensive' },
+          { label: 'Low', value: 'low' },
+        ]}
+        testIdPrefix="effort"
+        current="high"
+        onChange={() => {}}
+      />
+    ))
+
+    const withTip = screen.getByTestId('effort-high').parentElement!
+    expect(withTip.tagName).toBe('SPAN')
+    expect(withTip.getAttribute('style')).toContain('display:contents')
+    expect(screen.getByTestId('effort-low').parentElement!.tagName).not.toBe('SPAN')
+  })
+
+  it('shows the current value, not the group label, when disabled with >7 options', () => {
+    const manyItems = Array.from({ length: 9 }, (_, i) => ({ label: `Model ${i}`, value: `m${i}` }))
+    render(() => (
+      <OptionGroupMenuItems
+        label="Model"
+        items={manyItems}
+        testIdPrefix="model"
+        current="m3"
+        onChange={() => {}}
+        disabled
+        disabledReason="Controlled by the agent"
+      />
+    ))
+
+    // No filter input; a read-only span that shows the selection. Showing only the
+    // group label ("Model") would leave the user no way to see which model the
+    // agent is running, since the list itself is not offered.
+    expect(screen.queryByTestId('model-filter')).toBeNull()
+    const readOnly = screen.getByText('Model 3')
+    expect(readOnly.tagName).toBe('SPAN')
+    expect(readOnly).toHaveAttribute('title', 'Controlled by the agent')
+  })
+
+  it('falls back to the group label when the current value is not in the list', () => {
+    const manyItems = Array.from({ length: 9 }, (_, i) => ({ label: `Model ${i}`, value: `m${i}` }))
+    render(() => (
+      <OptionGroupMenuItems
+        label="Model"
+        items={manyItems}
+        testIdPrefix="model"
+        current="gone"
+        onChange={() => {}}
+        disabled
+        disabledReason="Controlled by the agent"
+      />
+    ))
+
+    expect(screen.getByText('Model')).toHaveAttribute('title', 'Controlled by the agent')
   })
 })

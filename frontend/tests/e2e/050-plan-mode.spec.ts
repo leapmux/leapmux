@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures'
 import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
 import { enterAndExitPlanMode, enterPlanPrompt, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
-import { sendMessage, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
+import { expectSettingsChip, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner } from './helpers/ui'
 
 test.describe('Plan Mode', () => {
   // Both tests here depend on the model actually CALLING ExitPlanMode when
@@ -13,17 +13,17 @@ test.describe('Plan Mode', () => {
   test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
 
   test('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Verify initial state: Default mode
-    await expect(trigger).toContainText('Default')
+    await expectSettingsChip(page, 'Default')
 
     // ── Step 1: Enter plan mode and write a dummy plan ──
     await sendMessage(page, enterPlanPrompt('plan-mode'))
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
-    await expect(trigger).toContainText('Plan Mode')
+    await expectSettingsChip(page, 'Plan Mode')
     await waitForAgentIdle(page)
 
     // ── Step 2: Exit plan mode (produces control_request banner) ──
@@ -41,7 +41,7 @@ test.describe('Plan Mode', () => {
     await rejectBtn.click()
 
     // Verify we are still in Plan Mode after rejection
-    await expect(trigger).toContainText('Plan Mode')
+    await expectSettingsChip(page, 'Plan Mode')
 
     // Wait for the control banner to disappear (rejection was processed)
     await expect(page.locator('[data-testid="control-banner"]')).not.toBeVisible()
@@ -71,7 +71,7 @@ test.describe('Plan Mode', () => {
     await approveBtn.click()
 
     // Verify dropdown switches to Accept Edits (plan approval sets acceptEdits mode)
-    await expect(trigger).toContainText('Accept Edits')
+    await expectSettingsChip(page, 'Accept Edits')
 
     // Without clear context, the agent continues in current context —
     // no plan_execution notification, so no plan file row in the popover.

@@ -24,13 +24,16 @@ function createTestBinary(name = 'test.bin'): string {
 }
 
 test.describe('Attachment Support', () => {
-  test('upload button opens file dialog and attachment appears in strip', async ({ page, authenticatedWorkspace }) => {
+  test('attach item opens file dialog and attachment appears in strip', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    // The upload button should be visible in the toolbar.
-    const uploadBtn = page.locator('[data-testid="toolbar-upload"]')
-    await expect(uploadBtn).toBeVisible()
+    // Attach moved from the deleted formatting toolbar into the `[+]` menu.
+    await page.locator('[data-testid="composer-plus-trigger"]').click()
+    const attach = page.locator('[data-testid="composer-attach-file"]')
+    await expect(attach).toBeVisible()
+    await expect(attach).toBeEnabled()
+    await page.keyboard.press('Escape')
 
     // Upload a file via the hidden input.
     const fileInput = page.locator('[data-testid="file-input"]')

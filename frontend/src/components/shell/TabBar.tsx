@@ -13,7 +13,7 @@ import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
 import { createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
-import { DropdownMenu, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
+import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -29,17 +29,6 @@ import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
 import { terminalStatusClassList } from './terminalStatus'
 import { TileActionsMenu } from './TileActionsMenu'
-
-const MENU_CHECK = '\u2713' // ✓
-
-function renderToggleMenuLabel(label: string, checked: boolean): JSX.Element {
-  return (
-    <span class={styles.toggleMenuLabel}>
-      <span class={styles.toggleMenuIndicator} aria-hidden="true">{checked ? MENU_CHECK : ''}</span>
-      <span>{label}</span>
-    </span>
-  )
-}
 
 const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipProps => (
   <Tooltip text={tipProps.text}>
@@ -375,24 +364,18 @@ export const TabBar: Component<TabBarProps> = (props) => {
       </For>
       <hr />
       <li class={menuSectionHeader}>Advanced</li>
-      <button
-        role="menuitem"
-        onClick={(e) => {
-          e.preventDefault()
-          prefs.setExpandAgentThoughts(!prefs.expandAgentThoughts())
-        }}
-      >
-        <DropdownMenuItemContent label={renderToggleMenuLabel('Expand agent thoughts', prefs.expandAgentThoughts())} />
-      </button>
-      <button
-        role="menuitem"
-        onClick={(e) => {
-          e.preventDefault()
-          prefs.setShowHiddenMessages(!prefs.showHiddenMessages())
-        }}
-      >
-        <DropdownMenuItemContent label={renderToggleMenuLabel('Show hidden messages', prefs.showHiddenMessages())} />
-      </button>
+      <DropdownMenuCheckableItem
+        kind="checkbox"
+        label="Expand agent thoughts"
+        checked={prefs.expandAgentThoughts()}
+        onSelect={() => prefs.setExpandAgentThoughts(!prefs.expandAgentThoughts())}
+      />
+      <DropdownMenuCheckableItem
+        kind="checkbox"
+        label="Show hidden messages"
+        checked={prefs.showHiddenMessages()}
+        onSelect={() => prefs.setShowHiddenMessages(!prefs.showHiddenMessages())}
+      />
     </>
   )
 

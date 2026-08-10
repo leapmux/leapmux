@@ -10,6 +10,7 @@ import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from
 import * as styles from '../../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
 import { CollapsibleText } from '../../controls/CollapsibleText'
+import { ControlActionRow } from '../../controls/ControlActionRow'
 import { createPlanApprovalState, PlanApprovalCheckboxes } from '../../controls/PlanApprovalCheckboxes'
 import { sendResponse, toRpcId } from '../../controls/types'
 import { codexDecisionKey, codexDecisionLabel } from './controlResponse'
@@ -177,37 +178,36 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <div class={styles.controlFooter}>
-      <div class={styles.controlFooterLeft}>
-        {props.infoTrigger}
-      </div>
-      <div class={styles.controlFooterRight}>
-        <Show when={!props.hasEditorContent}>
-          <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
-        </Show>
-        <button
-          class="outline"
-          onClick={() => {
-            if (props.hasEditorContent) {
-              props.onTriggerSend()
-              return
-            }
-            sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
-          }}
-          data-testid="control-deny-btn"
-        >
-          {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
-        </button>
-        <Show when={!props.hasEditorContent}>
+    <ControlActionRow
+      primary={(
+        <>
+          <Show when={!props.hasEditorContent}>
+            <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
+          </Show>
           <button
-            onClick={handleApprove}
-            data-testid="control-allow-btn"
+            class="outline"
+            onClick={() => {
+              if (props.hasEditorContent) {
+                props.onTriggerSend()
+                return
+              }
+              sendCodexPlanPromptResponse(props.request.agentId, props.onRespond, buildDenyResponse(props.request.requestId, ''))
+            }}
+            data-testid="control-deny-btn"
           >
-            Implement Plan
+            {props.hasEditorContent ? 'Send Feedback' : 'Stay in Plan Mode'}
           </button>
-        </Show>
-      </div>
-    </div>
+          <Show when={!props.hasEditorContent}>
+            <button
+              onClick={handleApprove}
+              data-testid="control-allow-btn"
+            >
+              Implement Plan
+            </button>
+          </Show>
+        </>
+      )}
+    />
   )
 }
 
@@ -255,11 +255,8 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
   return (
     <Switch
       fallback={(
-        <div class={styles.controlFooter}>
-          <div class={styles.controlFooterLeft}>
-            {props.infoTrigger}
-          </div>
-          <div class={styles.controlFooterRight}>
+        <ControlActionRow
+          primary={(
             <Show
               when={availableDecisions()}
               fallback={(
@@ -307,8 +304,8 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
                 </ButtonGroup>
               )}
             </Show>
-          </div>
-        </div>
+          )}
+        />
       )}
     >
       <Match when={toolName() === 'CodexPlanModePrompt'}>

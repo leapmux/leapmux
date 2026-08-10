@@ -80,4 +80,46 @@ describe('branchContextMenu', () => {
       }
     })
   })
+
+  describe('with a custom trigger', () => {
+    it('renders the custom trigger instead of the kebab', () => {
+      const onChange = vi.fn()
+      const onDelete = vi.fn()
+      render(() => (
+        <BranchContextMenu
+          onChangeBranch={onChange}
+          onDeleteBranch={onDelete}
+          trigger={triggerProps => (
+            <button data-testid="custom-trigger" {...triggerProps}>
+              main
+            </button>
+          )}
+        />
+      ))
+
+      // The custom trigger renders, not the kebab.
+      expect(screen.getByTestId('custom-trigger')).toBeInTheDocument()
+      expect(screen.getByText('main')).toBeInTheDocument()
+    })
+
+    it('fires onChangeBranch via the custom trigger opening the menu', async () => {
+      const onChange = vi.fn()
+      const onDelete = vi.fn()
+      render(() => (
+        <BranchContextMenu
+          onChangeBranch={onChange}
+          onDeleteBranch={onDelete}
+          trigger={triggerProps => (
+            <button data-testid="custom-trigger" {...triggerProps}>
+              main
+            </button>
+          )}
+        />
+      ))
+
+      await fireEvent.click(screen.getByTestId('custom-trigger'))
+      await fireEvent.click(screen.getByText('Change branch...'))
+      expect(onChange).toHaveBeenCalledTimes(1)
+    })
+  })
 })

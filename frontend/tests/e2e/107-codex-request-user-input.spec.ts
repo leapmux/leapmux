@@ -6,7 +6,7 @@ codexTest.describe('Codex requestUserInput', () => {
     void authenticatedCodexWorkspace
 
     // Switch to on-request approval policy so approval prompts appear.
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'permissionMode')
     const onRequestRadio = page.locator('[data-testid="permissionMode-on-request"]')
     await expect(onRequestRadio).toBeVisible()
     await onRequestRadio.click()

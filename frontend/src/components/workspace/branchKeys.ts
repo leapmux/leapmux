@@ -18,6 +18,8 @@
  * rather than concatenating control bytes inline.
  */
 
+import type { Tab } from '~/stores/tab.types'
+
 const KEY_SEP = '\x00'
 const NO_BRANCH_NAME_SEGMENT = '\x02'
 const LOCAL_PREFIX = '\x00local:'
@@ -37,6 +39,24 @@ export function branchNameSegment(branchName: string | null): string {
  */
 export function branchKey(branchName: string | null, workerId: string, gitToplevel: string): string {
   return `${branchNameSegment(branchName)}${KEY_SEP}${workerId}${KEY_SEP}${gitToplevel}`
+}
+
+/**
+ * The branch group a tab belongs to.
+ *
+ * Every surface that answers "which tabs are on this branch" must use this one
+ * function: the sidebar groups its tree by it, and the composer's branch chip
+ * collects the tab list it hands to the delete-branch dialog by it. A second
+ * membership test would let the dialog report a different set of affected tabs
+ * than the tree shows.
+ *
+ * The parameter is a `Pick` of the real tab, not a structural shape with three
+ * optional fields. Every field being optional made a `BranchGroup` -- which
+ * carries `branchName`, not `gitBranch` -- a valid argument that silently
+ * returned the "(no branch)" key, which is exactly the drift above.
+ */
+export function tabBranchKey(tab: Pick<Tab, 'gitBranch' | 'workerId' | 'gitToplevel'>): string {
+  return branchKey(tab.gitBranch || null, tab.workerId ?? '', tab.gitToplevel ?? '')
 }
 
 /** Repo key for an origin-less local repo, identified by its toplevel. */

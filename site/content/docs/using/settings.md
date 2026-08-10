@@ -204,10 +204,11 @@ A handful of per-browser preferences are stored alongside the others but are tog
 | **Expand agent thoughts** | On | Tab bar dropdown menu, under **Advanced** | Whether agent thinking/reasoning bubbles start expanded. |
 | **Show hidden messages** | Off | Tab bar dropdown menu, under **Advanced** | Developer view that reveals hidden chat messages. |
 | **Reveal in file manager after save** | On (desktop only) | Checkbox in the file viewer's save action | Reveals a downloaded file in Finder / Explorer / Files after saving. |
-| **Enter-key send mode** | `⌘`/`Ctrl` sends | Composer toolbar toggle (**Enter sends** / **⌘⏎ sends**) | Whether plain Enter sends a chat message or inserts a newline. |
+| **Enter-key send mode** | `⌘`/`Ctrl` sends | Composer **[+]** menu (**Send with ⌘⏎**) | Whether plain Enter sends a chat message or inserts a newline. |
+| **Show composer status bar** | On | Composer **[+]** menu (**Show status bar**) | Whether the branch/model/effort/mode chips show beneath the editor box. |
 | Terminal renderer | Auto | Not surfaced in any dialog | Renderer backend for terminals (auto / WebGL / canvas). |
 
-The composer toggle reads **Enter sends** when plain Enter sends a message, and otherwise shows the modifier-Enter label for your platform: **⌘⏎ sends** on macOS, **Ctrl+⏎ sends** on Windows/Linux. The Enter-key send mode interacts with the chat editor's send keys; see [Coding Agents](/docs/using/coding-agents/) and [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/). The terminal renderer preference has no UI control — it defaults to automatic selection (and avoids WebGL on Linux desktop).
+The **[+]** menu item reads **Send with ⌘⏎** on macOS and **Send with Ctrl+⏎** on Windows/Linux; the item shows a check when the modifier sends, and no check when plain Enter sends. The Enter-key send mode interacts with the chat editor's send keys; see [Coding Agents](/docs/using/coding-agents/) and [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/). The terminal renderer preference has no UI control — it defaults to automatic selection (and avoids WebGL on Linux desktop).
 
 ## Custom keyboard shortcuts
 

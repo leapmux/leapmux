@@ -536,31 +536,146 @@ export function waitForLayoutSave(page: Page): Promise<void> {
   })
 }
 
-/**
- * Open the agent settings menu and leave it open.
- *
- * Gates on the TRIGGER's `aria-expanded`, which is the app's own statement of
- * whether the menu is open, rather than on the menu element's visibility. A
- * menu caught mid-CLOSE is still visible for the length of its animation, so
- * the visibility check used to see "already open", skip the click, and hand
- * the caller a menu that vanished a frame later -- the caller's click on an
- * item then failed with "element is not stable" and finally "element is not
- * visible", which is exactly how 044's model switches died under load.
- */
-export async function openSettingsMenu(page: Page) {
-  const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-  const menu = page.locator('[data-testid="agent-settings-menu"]')
-  await expect(trigger).toBeVisible()
-  await expect(async () => {
-    if (await trigger.getAttribute('aria-expanded') !== 'true')
-      await trigger.click()
-    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
-    await expect(menu).toBeVisible()
-  }).toPass()
+/** The composer's status bar. Use {@link settingsChips} to read its values. */
+export function settingsBar(page: Page) {
+  return page.locator('[data-testid="composer-status-bar"]')
 }
 
 /**
- * Pick `testId` out of the agent settings menu, opening it first.
+ * The status bar's chip TRIGGERS — the labels the user actually sees.
+ *
+ * Assertions must go through these, never through the bar itself. Each chip's
+ * popover is a DOM sibling that stays mounted while closed, so the bar's own
+ * `textContent` also contains every option label of every axis: asserting
+ * `toContainText('Plan Mode')` on the bar passes whatever mode is selected,
+ * because "Plan Mode" is one of the options in the closed mode list.
+ */
+export function settingsChips(page: Page) {
+  return page.locator('[data-testid="composer-status-bar"] [data-testid$="-trigger"]')
+}
+
+/** Assert that some status-bar chip displays `text`. */
+export async function expectSettingsChip(page: Page, text: string | RegExp) {
+  await expect(settingsChips(page).filter({ hasText: text })).not.toHaveCount(0)
+}
+
+/** Assert that NO status-bar chip displays `text`. */
+export async function expectNoSettingsChip(page: Page, text: string | RegExp) {
+  await expect(settingsChips(page).filter({ hasText: text })).toHaveCount(0)
+}
+
+/**
+ * The option-group id encoded in an option's test id.
+ *
+ * `OptionGroupMenuItems` emits `<groupId>-<value>` for every option. A group id
+ * never contains a hyphen while a value can ("danger-full-access"), so the
+ * split is on the FIRST hyphen.
+ */
+function settingsGroupIdOf(optionTestId: string): string {
+  const i = optionTestId.indexOf('-')
+  if (i <= 0)
+    throw new Error(`settings option test id must be "<groupId>-<value>", got "${optionTestId}"`)
+  return optionTestId.slice(0, i)
+}
+
+/**
+ * Close every open popover, so a menu interaction starts from a known state.
+ *
+ * The composer's menus nest: the `[+]` popover holds one submenu popover per
+ * option group. A submenu left open from a previous step covers the `[+]`
+ * menu's other items, and a click on one of them is then intercepted — which
+ * shows up as a retry loop that runs to the test timeout rather than as a
+ * readable failure.
+ *
+ * Driven through `hidePopover()` rather than Escape because Escape only reaches
+ * a popover that holds focus, and the caller cannot know which one does.
+ */
+export async function closeComposerMenus(page: Page) {
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll<HTMLElement>('[popover]')) {
+      if (el.matches(':popover-open'))
+        el.hidePopover()
+    }
+  })
+  await expect(page.locator('[data-testid="composer-plus-trigger"]')).toHaveAttribute('aria-expanded', 'false')
+}
+
+/**
+ * Click `trigger` unless it already reports an open popover, then confirm it is
+ * open.
+ *
+ * Waits on `aria-expanded`, which is the app's own statement of whether its
+ * popover is open, rather than on the popover's visibility. A menu caught
+ * mid-CLOSE is still visible for the length of its animation, so a visibility
+ * check saw "already open", skipped the click, and handed the caller a menu
+ * that vanished a frame later -- the caller's click on an item then failed with
+ * "element is not stable" and finally "element is not visible", which is
+ * exactly how 044's model switches died under load.
+ *
+ * Call inside a `toPass` block: it is idempotent, so a retry re-establishes an
+ * open that a re-render closed.
+ */
+async function ensureExpanded(trigger: Locator) {
+  if (await trigger.getAttribute('aria-expanded') !== 'true')
+    await trigger.click()
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+}
+
+/** Open the composer's `[+]` menu and leave it open. */
+export async function openPlusMenu(page: Page): Promise<Locator> {
+  const plus = page.locator('[data-testid="composer-plus-trigger"]')
+  await expect(plus).toBeVisible()
+  await closeComposerMenus(page)
+  await expect(async () => {
+    await ensureExpanded(plus)
+  }).toPass()
+  return page.locator('[data-testid="composer-plus-popover"]')
+}
+
+/**
+ * The `[+]` menu's submenu trigger for one option group.
+ *
+ * Present only while the agent OFFERS that group, so its absence is how the new
+ * composer says "this axis does not apply" — the fused menu it replaced listed
+ * every group at once and expressed the same thing by omitting the group's
+ * items. Requires the `[+]` menu to be open.
+ */
+export function settingsGroupTrigger(page: Page, groupId: string): Locator {
+  return page.locator(`[data-testid="composer-group-${groupId}"]`)
+}
+
+/**
+ * Open one option group's settings submenu and leave it open.
+ *
+ * Drives the composer's `[+]` menu rather than the status-bar chips: the `[+]`
+ * menu carries EVERY group (the status bar shows only model/effort/mode), and
+ * it stays rendered at any width, while the chips are hidden below the `sm`
+ * breakpoint and can be switched off entirely by the "Show status bar"
+ * preference.
+ *
+ * Opens BOTH triggers inside one `toPass` block rather than calling
+ * `openPlusMenu` first: a settings round-trip that lands between the two closes
+ * the `[+]` menu, and only a retry that re-opens both recovers from it.
+ */
+export async function openSettingsMenu(page: Page, groupId: string): Promise<Locator> {
+  const plus = page.locator('[data-testid="composer-plus-trigger"]')
+  const submenu = settingsGroupTrigger(page, groupId)
+  await expect(plus).toBeVisible()
+  // Start closed: a submenu left open from a previous group covers this one's
+  // trigger, and the click below would be intercepted.
+  await closeComposerMenus(page)
+  await expect(async () => {
+    await ensureExpanded(plus)
+    await ensureExpanded(submenu)
+  }).toPass()
+  // Scope every option lookup to THIS popover. The status-bar chip renders the
+  // same group with the same per-option test ids, so an unscoped locator
+  // resolves to two elements and fails Playwright's strict-mode check.
+  return page.locator(`[data-testid="composer-group-${groupId}-popover"]`)
+}
+
+/**
+ * Pick `testId` out of the agent settings menu, opening its group first.
  *
  * Open-then-click is retried as ONE unit: a settings round-trip landing
  * between the two re-renders the dropdown and can close it, and an open that
@@ -568,10 +683,9 @@ export async function openSettingsMenu(page: Page) {
  * caller's invariant is "this option got chosen", so that is what is retried.
  */
 export async function chooseSettingsOption(page: Page, testId: string) {
-  const option = page.locator(`[data-testid="${testId}"]`)
   await expect(async () => {
-    await openSettingsMenu(page)
-    await option.click()
+    const menu = await openSettingsMenu(page, settingsGroupIdOf(testId))
+    await menu.locator(`[data-testid="${testId}"]`).click()
   }).toPass()
 }
 
@@ -683,23 +797,28 @@ export async function clickBranchMenuItem(page: Page, row: Locator, itemName: st
   await clickRowMenuItem(row, branchMenuTrigger(row), page.getByRole('menuitem', { name: itemName }))
 }
 
-/** Wait for the settings loading spinner to disappear. */
+/**
+ * Wait for the in-flight settings indicator to clear.
+ *
+ * The spinner moved into the composer's status bar with the rest of the
+ * settings surface. The bar is on by default, so the marker is present unless a
+ * test switches it off.
+ */
 export async function waitForSettingsIdle(page: Page) {
   await expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
 }
 
 /**
- * Wait until the settings trigger has a RESOLVED model, not the placeholder.
+ * Wait until the agent has reported its option catalog.
  *
- * The trigger renders `…` in the model slot until the agent reports an option
- * catalog (UNRESOLVED_MODEL_PLACEHOLDER in AgentSettingsPanel), so a freshly
- * opened tab shows something like "… · Auto" for as long as its agent takes to
- * hand over its groups. Assertions about the trigger's CONTENT have to wait for
- * that, and the placeholder is the app's own marker for it -- nothing invented
- * for the tests.
+ * The composer renders a settings chip only for a group that exists and offers
+ * at least one option, so the model chip's PRESENCE is the app's own marker
+ * that the catalog landed -- nothing invented for the tests. A freshly opened
+ * tab shows no model chip at all for as long as its agent takes to hand over
+ * its groups, so any assertion about a chip's content has to wait for this.
  */
 export async function waitForSettingsHydrated(page: Page) {
-  await expect(page.locator('[data-testid="agent-settings-trigger"]')).not.toContainText('…')
+  await expect(page.locator('[data-testid="composer-model-trigger"]')).toBeVisible()
 }
 
 /**

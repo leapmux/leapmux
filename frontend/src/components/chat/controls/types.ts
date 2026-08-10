@@ -1,4 +1,4 @@
-import type { Accessor, JSX, Setter } from 'solid-js'
+import type { Accessor, Setter } from 'solid-js'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import type { ControlRequest } from '~/stores/control.store'
@@ -61,8 +61,6 @@ export interface ActionsProps {
    */
   editorContentRef?: () => EditorContentRef | undefined
   agentProvider?: AgentProvider
-  /** Optional info trigger element (context usage icon) to render in the left section. */
-  infoTrigger?: JSX.Element
   /** The permission mode value that disables all approval prompts for this provider. */
   bypassPermissionMode?: PermissionMode
   /** Optional callback to change the agent's permission mode. */

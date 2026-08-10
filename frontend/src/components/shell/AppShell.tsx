@@ -3,6 +3,7 @@ import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, KeyPin
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { CliPathStatus } from '~/api/platformBridge'
+import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { useLocation, useSearchParams } from '@solidjs/router'
@@ -39,7 +40,7 @@ import { createActiveClientStore } from '~/lib/presence/activeClient'
 import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
 import { isMac } from '~/lib/shortcuts/platform'
 import { printConsoleBanner } from '~/lib/systemInfo'
-import { onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
+import { isWorkerKnownOnline, onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
@@ -166,6 +167,22 @@ export const AppShell: Component = () => {
   const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
   const changeBranchDialog = createDialogState<ChangeBranchState>()
   const deleteBranchDialog = createDialogState<DeleteBranchState>()
+  // Both branch surfaces -- the sidebar's branch row and the composer's branch
+  // chip -- open the same dialogs from the same BranchRef, so the adapters are
+  // defined once. A field added to either dialog state then reaches both.
+  const openChangeBranchDialog = (ref: BranchRef) => changeBranchDialog.open({
+    workerId: ref.workerId,
+    gitToplevel: ref.gitToplevel,
+    workspaceId: ref.workspaceId,
+    branchName: ref.branchName,
+    isWorktree: ref.isWorktree,
+  })
+  const openDeleteBranchDialog = (ref: BranchRef) => deleteBranchDialog.open({
+    workerId: ref.workerId,
+    gitToplevel: ref.gitToplevel,
+    branchName: ref.branchName,
+    tabs: ref.tabs,
+  })
   // Set to a `missing` / `mismatch` status when the macOS PATH check should
   // show its dialog. `null` keeps the dialog unmounted (ok / unavailable /
   // not-yet-checked / non-macOS).
@@ -912,6 +929,11 @@ export const AppShell: Component = () => {
     settingsLoading,
     onOpenBackgroundTask,
     resolveParentLabel: resolveAgentTabTitle,
+    branch: {
+      onChangeBranch: openChangeBranchDialog,
+      onDeleteBranch: openDeleteBranchDialog,
+      isWorkerKnownOnline: workerId => isWorkerKnownOnline(workerSection.workers(), workerId),
+    },
   })
 
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
@@ -1024,19 +1046,8 @@ export const AppShell: Component = () => {
     // projected yet (the CRDT bootstrap hasn't landed); the tree falls back to
     // a position-only sort.
     getTileOrderForWorkspace: (wsId: string) => layoutStore.tileOrderFor(wsId),
-    onChangeBranch: ref => changeBranchDialog.open({
-      workerId: ref.workerId,
-      gitToplevel: ref.gitToplevel,
-      workspaceId: ref.workspaceId,
-      branchName: ref.branchName,
-      isWorktree: ref.isWorktree,
-    }),
-    onDeleteBranch: ref => deleteBranchDialog.open({
-      workerId: ref.workerId,
-      gitToplevel: ref.gitToplevel,
-      branchName: ref.branchName,
-      tabs: ref.tabs,
-    }),
+    onChangeBranch: openChangeBranchDialog,
+    onDeleteBranch: openDeleteBranchDialog,
   })
 
   // Refresh git status only when workerId or workingDir actually changes

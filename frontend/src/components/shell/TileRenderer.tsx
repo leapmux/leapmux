@@ -7,6 +7,7 @@ import type { useAgentOperations } from './useAgentOperations'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { FileAttachment } from '~/components/chat/attachments'
 import type { ChatMessageLookups, ChatRailProps } from '~/components/chat/ChatView'
+import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
@@ -34,6 +35,7 @@ import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
+import { focusedBranchAction } from '~/components/workspace/branchActions'
 import { AgentChatMessageSchema, AgentStatus, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -137,6 +139,22 @@ interface TileRendererOpts {
   onOpenBackgroundTask?: (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => void
   /** Resolve a tab title by agent id (for the chip popover's "via {parent}"). */
   resolveParentLabel?: (agentId: string) => string | undefined
+  /**
+   * Branch-action callbacks for the composer's GitBranch chip. Each receives a
+   * fully-built {@link BranchRef} (the focused agent's repo + the tabs on its
+   * branch); the shell opens the Change/Delete Branch dialog from it. Omit to
+   * keep the chip non-interactive.
+   */
+  branch?: {
+    onChangeBranch?: (ref: BranchRef) => void
+    onDeleteBranch?: (ref: BranchRef) => void
+    /**
+     * Whether the branch's Worker is reachable. Both branch actions run on the
+     * machine the repository is on, so the composer's branch chip disables
+     * them when it is not — the same guard the sidebar's branch row applies.
+     */
+    isWorkerKnownOnline?: (workerId: string) => boolean
+  }
 }
 
 export function createTileRenderer(opts: TileRendererOpts) {
@@ -169,6 +187,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   } = opts.newTab
   const { isMobileLayout, toggleLeftSidebar, toggleRightSidebar } = opts.chrome
   const { focusEditorRef, getScrollStateRef, forceScrollToBottomRef } = opts.refs
+  const branchCallbacks = opts.branch
   const { settingsLoading } = opts
   const floatingWindowStore = opts.floatingWindow?.store
   const onDetachTab = opts.floatingWindow?.onDetachTab
@@ -979,6 +998,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
         return false
       return !isSteerableAgentTab(t)
     }
+    // The composer's GitBranch chip: one call answers both "can these actions
+    // run?" and "what ref do the dialogs get?", so an enabled menu item can
+    // never resolve to nothing. `buildRef` is lazy — the guard is read on
+    // every reactive tick, and building the ref walks the whole workspace.
+    const branchAction = () => focusedBranchAction({
+      tab: view.getAgentTab(agentId()),
+      workspaceId: activeWorkspace()?.id ?? '',
+      workspaceTabs: () => view.forWorkspace(activeWorkspace()?.id ?? ''),
+      isWorkerKnownOnline: branchCallbacks?.isWorkerKnownOnline,
+    })
+    const branchDisabledReason = () => branchAction().disabledReason
     return (
       <AgentEditorPanel
         agentId={agentId()}
@@ -1079,6 +1109,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
         settingsLoading={settingsLoading.loading()}
         agentSessionInfo={agentSessionStore.getInfo(agentId())}
         agentWorking={agentThinking(agentId())}
+        onChangeBranch={() => {
+          const build = branchAction().buildRef
+          if (build)
+            branchCallbacks?.onChangeBranch?.(build())
+        }}
+        onDeleteBranch={() => {
+          const build = branchAction().buildRef
+          if (build)
+            branchCallbacks?.onDeleteBranch?.(build())
+        }}
+        branchDisabledReason={branchDisabledReason()}
         containerHeight={props.containerHeight}
       />
     )

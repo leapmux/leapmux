@@ -57,6 +57,12 @@ export interface BrowserPreferences {
   revealAfterDownload?: boolean
   /** Desktop/browser terminal OSC notifications (OSC 9 / 777 / 99). Default off. */
   terminalOsNotifications?: boolean
+  /**
+   * Whether the composer status bar (branch/model/effort/mode +
+   * rate-limit/context chips) is shown beneath the input box. Default on;
+   * toggled from the composer's `[+]` menu.
+   */
+  showComposerStatusBar?: boolean
 }
 
 // ---------------------------------------------------------------------------

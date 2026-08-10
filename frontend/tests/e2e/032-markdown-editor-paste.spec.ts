@@ -30,11 +30,9 @@ test.describe('Clipboard Copy/Paste', () => {
     await expect(editor).toBeVisible()
     await editor.click()
 
-    // Create bold text
-    const boldBtn = page.locator('[data-testid="toolbar-bold"]')
-    await boldBtn.click()
-    await page.keyboard.type('bold text', { delay: 100 })
-    await boldBtn.click()
+    // Create bold text. `**...**` is the strong input rule; the formatting
+    // toolbar it replaced was deleted with the composer rewrite.
+    await page.keyboard.type('**bold text**', { delay: 100 })
 
     // Verify bold text exists
     await expect(editor.locator('strong')).toHaveText('bold text')
@@ -87,8 +85,8 @@ test.describe('Paste Into Code Context', () => {
     await editor.click()
 
     // Create a code block
-    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
-    await codeBlockBtn.click()
+    // The ``` input rule fires on the third backtick.
+    await page.keyboard.type('```')
     await expect(editor.locator('pre')).toBeVisible()
 
     // Set clipboard to a fenced code block and paste
@@ -116,8 +114,8 @@ test.describe('Paste Into Code Context', () => {
     await editor.click()
 
     // Create a code block
-    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
-    await codeBlockBtn.click()
+    // The ``` input rule fires on the third backtick.
+    await page.keyboard.type('```')
     await expect(editor.locator('pre')).toBeVisible()
 
     // Paste inline code
@@ -143,8 +141,8 @@ test.describe('Paste Into Code Context', () => {
     await editor.click()
 
     // Create a code block
-    const codeBlockBtn = page.locator('[data-testid="toolbar-codeblock"]')
-    await codeBlockBtn.click()
+    // The ``` input rule fires on the third backtick.
+    await page.keyboard.type('```')
     await expect(editor.locator('pre')).toBeVisible()
 
     // Paste plain text (no backticks)

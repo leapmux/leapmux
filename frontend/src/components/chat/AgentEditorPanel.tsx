@@ -14,6 +14,7 @@ import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
+import { usePreferences } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
@@ -25,9 +26,10 @@ import { iconSize } from '~/styles/tokens'
 import { useAgentInfoCard } from './AgentInfoCard'
 import { AttachmentStrip } from './AttachmentStrip'
 import * as styles from './ChatView.css'
+import { ComposerPlusMenu } from './composer/ComposerPlusMenu'
+import { ComposerStatusBar } from './composer/ComposerStatusBar'
 import { ControlRequestActions, ControlRequestContent } from './ControlRequestBanner'
 import { useControlResponseHandling } from './controlResponseHandling'
-import { EditorSettingsDropdown } from './markdownEditor/EditorSettingsDropdown'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
 import { providerFor } from './providers/registry'
 import {
@@ -61,6 +63,22 @@ export interface AgentEditorPanelProps {
   settingsLoading?: boolean
   agentSessionInfo?: AgentSessionInfo
   agentWorking?: boolean
+  /**
+   * Open the "Change branch..." dialog for the agent's repo. Wired from the
+   * shell's branch-dialog state; the panel supplies the BranchRef from the
+   * agent's git status + worker id.
+   */
+  onChangeBranch?: () => void
+  /**
+   * Open the "Delete branch..." dialog for the agent's repo. Same wiring as
+   * onChangeBranch.
+   */
+  onDeleteBranch?: () => void
+  /**
+   * Why the branch actions are unusable (e.g. worker offline), or undefined
+   * when usable. Both actions need the Worker, so one reason covers both.
+   */
+  branchDisabledReason?: string
   /** Height of the parent container, used for max editor height calculation. */
   containerHeight?: number
   /** Ref to expose the addFiles function for external callers (e.g. ChatDropZone). */
@@ -80,6 +98,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const interruptLoading = createLoadingSignal()
 
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
+  const preferences = usePreferences()
 
   const att = useChatAttachments({
     agentId: () => props.agentId,
@@ -235,9 +254,12 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   let triggerSend: (() => void) | undefined
 
-  // The context-usage / rate-limit info dropdown is rendered identically in both footer
-  // layouts (the control-request footer and the normal footer bar), differing only in how
-  // each gates it (a prop value vs JSX children). Extracted so the two call sites can't drift
+  // The body of the agent-info card. Rendered by the status bar's info popover
+  // and by the `[+]` menu's "Agent info" submenu, so it is written once: the
+  // two surfaces must show the same rows.
+  const agentInfoRows = () => <div class={styles.infoRows}>{info.infoHoverCardContent()}</div>
+
+  // The context-usage / rate-limit info dropdown. Extracted so its call sites can't drift
   // on the trigger button, the rate-limit countdown, or the hover-card body. Closes over
   // `info`/`props`/`modelContextWindow`, so it needs no props of its own.
   const AgentInfoTrigger: Component = () => (
@@ -269,11 +291,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       class="card"
       data-testid="agent-info-popover"
     >
-      <div class={styles.infoRows}>
-        {info.infoHoverCardContent()}
-      </div>
+      {agentInfoRows()}
     </DropdownMenu>
   )
+
+  // A stable reference the status bar can hold. Passing `<AgentInfoTrigger />`
+  // through the prop instead would rebuild the trigger, and close its popover,
+  // every time the panel's `agent` prop takes a new identity.
+  const renderAgentInfoTrigger = () => <AgentInfoTrigger />
 
   return (
     <div
@@ -288,7 +313,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         on:pointerdown={handleResizeStart}
         on:dblclick={resetEditorHeight}
       />
-      <div class={styles.inputArea}>
+      <div
+        class={styles.inputArea}
+        data-no-status-bar={preferences.showComposerStatusBar() ? undefined : ''}
+      >
         <Show when={props.disabled && props.disabledHint}>
           <div class={styles.disabledHint} data-testid="composer-disabled-hint">
             {props.disabledHint}
@@ -359,7 +387,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             ? {
                 onPaste: handlePasteFiles,
                 onDrop: handleDropDataTransfer,
-                onUpload: () => fileInputRef?.click(),
               }
             : undefined}
           placeholder={ctrl.isAskUserQuestion() ? 'Type a custom answer...' : ctrl.activeControlRequest() ? 'Type a rejection reason...' : undefined}
@@ -376,53 +403,69 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 )
               : undefined
           }
-          footer={
+          plus={(
+            // The `[+]` menu stays available during control requests (settings/mode
+            // remain adjustable); only "Attach file" is disabled inside it.
+            <ComposerPlusMenu
+              optionGroups={props.agent?.optionGroups}
+              optionValues={currentOptionValues()}
+              agentProvider={props.agent?.agentProvider}
+              onSettingChange={props.onSettingChange}
+              onAttachFile={() => fileInputRef?.click()}
+              canAttach={!ctrl.activeControlRequest()}
+              disabled={props.disabled}
+              settingsLoading={props.settingsLoading}
+              branchName={props.agent?.gitStatus?.branch || undefined}
+              onChangeBranch={() => props.onChangeBranch?.()}
+              onDeleteBranch={() => props.onDeleteBranch?.()}
+              branchDisabledReason={props.branchDisabledReason}
+              // The stable function, not a rendered element — see the prop's doc.
+              agentInfo={info.showInfoTrigger() ? agentInfoRows : undefined}
+              enterKeyMode={preferences.enterKeyMode}
+              onToggleEnterMode={() => {
+                const next = preferences.enterKeyMode() === 'enter-sends' ? 'cmd-enter-sends' : 'enter-sends'
+                preferences.setEnterKeyMode(next)
+              }}
+              showStatusBar={preferences.showComposerStatusBar}
+              onToggleStatusBar={() => preferences.setShowComposerStatusBar(!preferences.showComposerStatusBar())}
+            />
+          )}
+          // One action row, carrying its own layout: a control request takes the
+          // whole width for its two-zone [secondary | primary] row, while the
+          // composer's own cluster hugs the corner.
+          actions={
             ctrl.activeControlRequest()
-              ? (
-                  <ControlRequestActions
-                    request={ctrl.activeControlRequest()!}
-                    askState={askState}
-                    agentProvider={props.agent?.agentProvider}
-                    onRespond={(agentId, content) => {
+              ? {
+                  layout: 'fullWidth',
+                  node: () => (
+                    <ControlRequestActions
+                      request={ctrl.activeControlRequest()!}
+                      askState={askState}
+                      agentProvider={props.agent?.agentProvider}
+                      onRespond={(agentId, content) => {
                       // Capture the per-instance claim token from the request being answered NOW,
                       // before removeRequest can drop it, so the worker's idempotency claim keys on
                       // the answered instance even in a double-submit / answer-after-cancel race.
-                      const active = ctrl.activeControlRequest()
-                      if (active?.requestId)
-                        ctrl.cleanupControlRequestDrafts(active.requestId)
-                      editorHeight.resetEditorHeight()
-                      return props.onControlResponse?.(agentId, content, active?.claimToken) ?? Promise.resolve()
-                    }}
-                    hasEditorContent={hasContent()}
-                    onTriggerSend={() => triggerSend?.()}
-                    editorContentRef={() => editorContentRef}
-                    bypassPermissionMode={props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.bypassPermissionMode : undefined}
-                    onPermissionModeChange={props.onPermissionModeChange}
-                    contextUsage={props.agentSessionInfo?.contextUsage}
-                    modelContextWindow={modelContextWindow()}
-                    infoTrigger={
-                      info.showInfoTrigger()
-                        ? <AgentInfoTrigger />
-                        : undefined
-                    }
-                  />
-                )
-              : (
-                  <div class={styles.footerBar}>
-                    <div class={styles.footerBarLeft}>
-                      <EditorSettingsDropdown
-                        disabled={props.disabled}
-                        settingsLoading={props.settingsLoading}
-                        optionValues={currentOptionValues()}
-                        optionGroups={props.agent?.optionGroups}
-                        agentProvider={props.agent?.agentProvider}
-                        onChange={props.onSettingChange}
-                      />
-                      <Show when={info.showInfoTrigger()}>
-                        <AgentInfoTrigger />
-                      </Show>
-                    </div>
-                    <div class={styles.footerBarRight}>
+                        const active = ctrl.activeControlRequest()
+                        if (active?.requestId)
+                          ctrl.cleanupControlRequestDrafts(active.requestId)
+                        editorHeight.resetEditorHeight()
+                        return props.onControlResponse?.(agentId, content, active?.claimToken) ?? Promise.resolve()
+                      }}
+                      hasEditorContent={hasContent()}
+                      onTriggerSend={() => triggerSend?.()}
+                      editorContentRef={() => editorContentRef}
+                      bypassPermissionMode={props.agent?.agentProvider ? providerFor(props.agent.agentProvider)?.bypassPermissionMode : undefined}
+                      onPermissionModeChange={props.onPermissionModeChange}
+                      contextUsage={props.agentSessionInfo?.contextUsage}
+                      modelContextWindow={modelContextWindow()}
+                    />
+                  ),
+                }
+              : {
+                  layout: 'corner',
+                  node: () => (
+                    <div class={styles.actionCluster} data-testid="composer-actions">
                       <Show when={ctrl.showInterrupt()}>
                         <button
                           class="outline"
@@ -436,7 +479,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                           <Show when={interruptLoading.loading()} fallback={<Icon icon={Square} size="sm" />}>
                             <Spinner />
                           </Show>
-                          {interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}
+                          <span class={styles.actionLabel}>{interruptLoading.loading() ? 'Interrupting...' : 'Interrupt'}</span>
                         </button>
                       </Show>
                       <button
@@ -451,14 +494,26 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                         <Show when={sending()} fallback={<Icon icon={SendHorizontal} size="sm" />}>
                           <Spinner />
                         </Show>
-                        Send
+                        <span class={styles.actionLabel}>Send</span>
                       </button>
                     </div>
-                  </div>
-                )
+                  ),
+                }
           }
         />
       </div>
+      <Show when={preferences.showComposerStatusBar()}>
+        <ComposerStatusBar
+          agent={props.agent}
+          optionValues={currentOptionValues()}
+          onSettingChange={props.onSettingChange}
+          onChangeBranch={() => props.onChangeBranch?.()}
+          onDeleteBranch={() => props.onDeleteBranch?.()}
+          branchDisabledReason={props.branchDisabledReason}
+          disabled={props.disabled}
+          infoTrigger={info.showInfoTrigger() ? renderAgentInfoTrigger : undefined}
+        />
+      </Show>
     </div>
   )
 }

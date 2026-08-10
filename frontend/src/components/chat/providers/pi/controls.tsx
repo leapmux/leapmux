@@ -7,6 +7,7 @@ import { pickNumber, pickString } from '~/lib/jsonPick'
 import { decodeControlResponseBehavior } from '~/utils/controlResponse'
 import * as styles from '../../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
+import { ControlActionRow } from '../../controls/ControlActionRow'
 import { piQuestionsFromPayload } from './askUserQuestion'
 import {
   piAskAnswerValue,
@@ -166,44 +167,43 @@ export const PiControlActions: Component<ActionsProps> = (props) => {
     <Show
       when={method() === PI_DIALOG_METHOD.Select}
       fallback={(
-        <div class={styles.controlFooter}>
-          <div class={styles.controlFooterLeft}>
-            {props.infoTrigger}
-          </div>
-          <div class={styles.controlFooterRight}>
-            <Switch>
-              <Match when={method() === PI_DIALOG_METHOD.Input}>
-                <input
-                  type="text"
-                  placeholder={placeholder()}
-                  value={localText()}
-                  onInput={e => setLocalText((e.currentTarget as HTMLInputElement).value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      sendValue(localText())
-                    }
-                  }}
-                  data-testid="pi-input"
-                  style={{ 'flex': '1 1 auto', 'min-width': '200px' }}
-                />
-              </Match>
-              <Match when={method() === PI_DIALOG_METHOD.Editor}>
-                <textarea
-                  value={localText()}
-                  onInput={e => setLocalText((e.currentTarget as HTMLTextAreaElement).value)}
-                  data-testid="pi-editor"
-                  rows={4}
-                  style={{ 'flex': '1 1 auto', 'min-width': '300px', 'resize': 'vertical' }}
-                />
-              </Match>
-            </Switch>
-            <ButtonGroup>
-              <button class="outline" onClick={buttons().denyClick} data-testid="control-deny-btn">{buttons().denyLabel}</button>
-              <button onClick={buttons().primaryClick} data-testid="control-allow-btn">{buttons().primaryLabel}</button>
-            </ButtonGroup>
-          </div>
-        </div>
+        <ControlActionRow
+          primary={(
+            <>
+              <Switch>
+                <Match when={method() === PI_DIALOG_METHOD.Input}>
+                  <input
+                    type="text"
+                    placeholder={placeholder()}
+                    value={localText()}
+                    onInput={e => setLocalText((e.currentTarget as HTMLInputElement).value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        sendValue(localText())
+                      }
+                    }}
+                    data-testid="pi-input"
+                    style={{ 'flex': '1 1 auto', 'min-width': '200px' }}
+                  />
+                </Match>
+                <Match when={method() === PI_DIALOG_METHOD.Editor}>
+                  <textarea
+                    value={localText()}
+                    onInput={e => setLocalText((e.currentTarget as HTMLTextAreaElement).value)}
+                    data-testid="pi-editor"
+                    rows={4}
+                    style={{ 'flex': '1 1 auto', 'min-width': '300px', 'resize': 'vertical' }}
+                  />
+                </Match>
+              </Switch>
+              <ButtonGroup>
+                <button class="outline" onClick={buttons().denyClick} data-testid="control-deny-btn">{buttons().denyLabel}</button>
+                <button onClick={buttons().primaryClick} data-testid="control-allow-btn">{buttons().primaryLabel}</button>
+              </ButtonGroup>
+            </>
+          )}
+        />
       )}
     >
       <AskUserQuestionActions

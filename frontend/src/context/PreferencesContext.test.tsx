@@ -235,6 +235,26 @@ describe('preferencesContext — revealAfterDownload (default-on)', () => {
     ctx.get().setTerminalOsNotifications(false)
     expect('terminalOsNotifications' in loadBrowserPrefs()).toBe(false)
   })
+
+  it('showComposerStatusBar defaults to true and round-trips through browser prefs', () => {
+    const ctx = captureContext()
+    expect(ctx.get().showComposerStatusBar()).toBe(true)
+
+    // Opting out stores `false`; opting back in removes the key.
+    ctx.get().setShowComposerStatusBar(false)
+    expect(ctx.get().showComposerStatusBar()).toBe(false)
+    expect(loadBrowserPrefs().showComposerStatusBar).toBe(false)
+
+    ctx.get().setShowComposerStatusBar(true)
+    expect(ctx.get().showComposerStatusBar()).toBe(true)
+    expect('showComposerStatusBar' in loadBrowserPrefs()).toBe(false)
+  })
+
+  it('hydrates a stored `false` for showComposerStatusBar from localStorage', () => {
+    localStorageSet(KEY_BROWSER_PREFS, { showComposerStatusBar: false })
+    const ctx = captureContext()
+    expect(ctx.get().showComposerStatusBar()).toBe(false)
+  })
 })
 
 describe('preferencesContext — reload from API', () => {

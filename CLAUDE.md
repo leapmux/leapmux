@@ -88,6 +88,20 @@ Does NOT apply to non-spacing px values: `borderRadius`, fixed `width`/`height` 
 
 Prefer direct imports over re-export aliases. Do NOT add `export { foo as bar } from '...'` in a sibling barrel/style file just to give a symbol a context-specific name — import the canonical name directly at every call site. If the canonical name is too generic, rename the canonical export instead. Existing re-export aliases: leave them unless touching that file for another reason.
 
+### Tooltips
+
+Use the `<Tooltip>` component (`~/components/common/Tooltip`) for hover text on an interactive element. Do NOT reach for a bare `title` attribute — it renders the OS tooltip, which ignores the app's theme and typography, appears after a browser-controlled delay, and is invisible on touch.
+
+```tsx
+<Tooltip text="Remove link, keeping the text" ariaLabel>
+  <button onClick={remove}><Icon icon={Trash2} size="xs" /></button>
+</Tooltip>
+```
+
+Pass `ariaLabel` when the control has no visible text, so the tooltip doubles as its accessible name.
+
+`title` remains correct in exactly one case: a **disabled** control. A disabled element receives no pointer events, so `<Tooltip>` never fires on it — `title` is the only text the user can get. That is why `BranchContextMenu`, the `[+]` menu's attach item, and the option-group items all put their disabled reason in `title`. Reaching for `title` on an ENABLED control is the mistake this rule exists to stop.
+
 ### Browser storage
 
 Never call `localStorage` or `sessionStorage` directly. Route every read, write, and delete through `~/lib/browserStorage` (`localStorageGet`/`localStorageSet`/`localStorageRemove` for localStorage; `sessionStorageGet`/`sessionStorageSet`/`sessionStorageHas`/`sessionStorageRemove` for sessionStorage).

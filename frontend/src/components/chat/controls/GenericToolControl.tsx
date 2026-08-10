@@ -8,6 +8,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { buildAllowResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleText } from './CollapsibleText'
+import { ControlActionRow } from './ControlActionRow'
 import { sendResponse } from './types'
 
 export const GenericToolContent: Component<{ request: ControlRequest }> = (props) => {
@@ -50,35 +51,39 @@ export const GenericToolActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <>
-      <button
-        class="outline"
-        onClick={handleDeny}
-        data-testid="control-deny-btn"
-      >
-        {props.hasEditorContent ? 'Send Feedback' : 'Reject'}
-      </button>
-      <Show when={!props.hasEditorContent}>
-        <ButtonGroup>
-          <button
-            onClick={handleAllow}
-            data-testid="control-allow-btn"
-          >
-            Allow
-          </button>
-          <Show when={props.bypassPermissionMode}>
-            <Tooltip text="Allow this request and stop asking for permissions">
-              <button
-                data-variant="secondary"
-                onClick={handleBypassPermissions}
-                data-testid="control-bypass-btn"
-              >
-                & Bypass Permissions
-              </button>
-            </Tooltip>
-          </Show>
-        </ButtonGroup>
-      </Show>
-    </>
+    <ControlActionRow
+      secondary={(
+        <button
+          class="outline"
+          onClick={handleDeny}
+          data-testid="control-deny-btn"
+        >
+          {props.hasEditorContent ? 'Send Feedback' : 'Reject'}
+        </button>
+      )}
+      primary={(
+        <Show when={!props.hasEditorContent}>
+          <ButtonGroup>
+            <button
+              onClick={handleAllow}
+              data-testid="control-allow-btn"
+            >
+              Allow
+            </button>
+            <Show when={props.bypassPermissionMode}>
+              <Tooltip text="Allow this request and stop asking for permissions">
+                <button
+                  data-variant="secondary"
+                  onClick={handleBypassPermissions}
+                  data-testid="control-bypass-btn"
+                >
+                  & Bypass Permissions
+                </button>
+              </Tooltip>
+            </Show>
+          </ButtonGroup>
+        </Show>
+      )}
+    />
   )
 }
