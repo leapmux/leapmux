@@ -491,7 +491,7 @@ export const FileViewer: Component<{
   // Derived per read, NOT captured at setup. `filePath` is emphatically not
   // stable for this component's lifetime: the pane is keyed on the TAB ID (see
   // TileRenderer's `tileFileTabIds`), so a file tab that arrives from the CRDT
-  // before its path does -- a reload, a peer's open, `leapmux remote tab open
+  // before its path does -- a reload, a peer's open, `leapmux control tab open
   // --type=file` -- mounts this component with `filePath=''` and is patched
   // afterwards by the hydrator. Freezing the prefix there gave every such tab on
   // one worker the SAME key, so their scroll offsets overwrote each other.

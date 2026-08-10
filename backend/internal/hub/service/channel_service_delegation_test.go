@@ -245,7 +245,7 @@ func TestGetWorkerHandshakeParams_DelegationCannotReachAnotherUsersWorker(t *tes
 }
 
 // ...and the ordinary case still works: a token may read the handshake params of the
-// worker that minted it (the common `leapmux remote` path).
+// worker that minted it (the common `leapmux control` path).
 func TestGetWorkerHandshakeParams_DelegationReachesItsMintingWorker(t *testing.T) {
 	t.Parallel()
 
@@ -262,7 +262,7 @@ func TestGetWorkerHandshakeParams_DelegationReachesItsMintingWorker(t *testing.T
 }
 
 // The same token MUST still open a channel back to the worker that minted it --
-// the ordinary `leapmux remote` case, where an agent talks to its own host.
+// the ordinary `leapmux control` case, where an agent talks to its own host.
 func TestOpenChannel_DelegationReachesItsMintingWorker(t *testing.T) {
 	t.Parallel()
 

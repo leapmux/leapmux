@@ -400,7 +400,7 @@ func TestValidate_WorkerRef_AcceptsAccessibleWorker(t *testing.T) {
 }
 
 // TestValidate_WorkerRef_RejectsInaccessibleWorker is the regression
-// test for `leapmux remote tab open --worker-id f` silently
+// test for `leapmux control tab open --worker-id f` silently
 // committing a tab pinned to a non-existent worker. The CRDT layer
 // must refuse the whole batch with BATCH_REJECTION_INVALID_WORKER_REF
 // so trustless clients can't smuggle garbage worker_ids in.

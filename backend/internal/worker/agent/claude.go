@@ -344,7 +344,7 @@ func (a *ClaudeCodeAgent) runStartupHandshake(ctx context.Context, opts Options)
 	}
 	// Refresh from the CLI once startup completes so the persisted effort
 	// reflects the value the CLI actually picked (e.g. when we launched
-	// with --effort omitted because Leapmux resolved the effort option to
+	// with --effort omitted because LeapMux resolved the effort option to
 	// "auto"). Run even if apply_flag_settings failed so the DB mirrors
 	// the CLI's actual state rather than what we tried to set.
 	a.refreshSettingsFromAgent(timeout)

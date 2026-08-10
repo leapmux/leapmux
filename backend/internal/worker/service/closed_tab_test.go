@@ -158,13 +158,13 @@ func (w *testResponseWriter) streamsSnapshot() []*leapmuxv1.InnerStreamMessage {
 type setupOption func(*setupConfig)
 
 type setupConfig struct {
-	remoteIPC RemoteIPCFactory
+	remoteIPC ControlIPCFactory
 }
 
 // withRemoteIPC wires the worker's RemoteIPC factory before handlers are
 // registered so tests can assert mint/release semantics for the
-// LEAPMUX_REMOTE_* token without poking svc.RemoteIPC directly.
-func withRemoteIPC(ipc RemoteIPCFactory) setupOption {
+// LEAPMUX_CONTROL_* token without poking svc.ControlIPC directly.
+func withRemoteIPC(ipc ControlIPCFactory) setupOption {
 	return func(c *setupConfig) { c.remoteIPC = ipc }
 }
 
@@ -227,7 +227,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 		// connect-time WorkerIdentity rather than at construction.
 		SeedRegisteredBy: "user-1",
 	})
-	svc.RemoteIPC = cfg.remoteIPC
+	svc.ControlIPC = cfg.remoteIPC
 
 	d := channel.NewDispatcher()
 	// RegisterAll binds svc.Cleanup itself, so tracked handlers dispatched

@@ -48,19 +48,19 @@ func TestSpawnEnv_KeepsUnrelatedVariables(t *testing.T) {
 	assert.Contains(t, env, "HOME=/home/u")
 }
 
-// ExtraEnv carries the canonical LEAPMUX_REMOTE_* values for a delegated
+// ExtraEnv carries the canonical LEAPMUX_CONTROL_* values for a delegated
 // launch, so it must land LAST and must not be displaced by the pins.
 func TestSpawnEnv_ExtraEnvLandsLastAndReplacesInheritedRemoteValues(t *testing.T) {
 	t.Parallel()
 
 	env := spawnEnv(
-		[]string{"PATH=/usr/bin", "LEAPMUX_REMOTE_SOCKET=/stale/sock"},
-		[]string{"LEAPMUX_REMOTE_SOCKET=/fresh/sock"},
+		[]string{"PATH=/usr/bin", "LEAPMUX_CONTROL_SOCKET=/stale/sock"},
+		[]string{"LEAPMUX_CONTROL_SOCKET=/fresh/sock"},
 	)
 
-	assert.Equal(t, []string{"/fresh/sock"}, envutil.ValuesFor(env, "LEAPMUX_REMOTE_SOCKET"),
-		"an inherited LEAPMUX_REMOTE_* must be stripped, not layered under the fresh value")
-	assert.Equal(t, "LEAPMUX_REMOTE_SOCKET=/fresh/sock", env[len(env)-1],
+	assert.Equal(t, []string{"/fresh/sock"}, envutil.ValuesFor(env, "LEAPMUX_CONTROL_SOCKET"),
+		"an inherited LEAPMUX_CONTROL_* must be stripped, not layered under the fresh value")
+	assert.Equal(t, "LEAPMUX_CONTROL_SOCKET=/fresh/sock", env[len(env)-1],
 		"ExtraEnv lands last so it wins over everything the pins set")
 	assert.Contains(t, env, "TERM=xterm-256color", "the pins survive the ExtraEnv append")
 }

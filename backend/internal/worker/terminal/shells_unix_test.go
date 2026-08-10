@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestResolveDefaultShell_Unix_PrefersLeapmuxEnv(t *testing.T) {
+func TestResolveDefaultShell_Unix_PrefersLeapMuxEnv(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "/bin/test-leapmux-shell")
 	t.Setenv("SHELL", "/bin/other-shell")
 	resetShellCache()
@@ -18,7 +18,7 @@ func TestResolveDefaultShell_Unix_PrefersLeapmuxEnv(t *testing.T) {
 	assert.Equal(t, "/bin/test-leapmux-shell", shell)
 }
 
-func TestResolveDefaultShell_Unix_LeapmuxEnvBareName(t *testing.T) {
+func TestResolveDefaultShell_Unix_LeapMuxEnvBareName(t *testing.T) {
 	t.Setenv("LEAPMUX_DEFAULT_SHELL", "sh")
 	t.Setenv("SHELL", "/bin/other-shell")
 	resetShellCache()

@@ -289,15 +289,15 @@ func TestWire_AdvertisesPostQuantumKeysInEveryMode(t *testing.T) {
 
 // TestWire_PerformsEveryStepBothEntryPointsRelyOn pins the wiring steps
 // whose omission in one entry point is why this package exists. Each was
-// a shipped defect: a missing RemoteIPC left `leapmux remote` with no
+// a shipped defect: a missing ControlIPC left `leapmux control` with no
 // socket, and an unbound cleanup WaitGroup let Shutdown return while a
 // close handler was still writing.
 func TestWire_PerformsEveryStepBothEntryPointsRelyOn(t *testing.T) {
 	w, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
 
 	require.NotNil(t, w.Service)
-	assert.NotNil(t, w.Service.RemoteIPC,
-		"RemoteIPC must be wired; the CLI once shipped without it")
+	assert.NotNil(t, w.Service.ControlIPC,
+		"ControlIPC must be wired; the CLI once shipped without it")
 	assert.NotNil(t, client.OnWorkerIdentity,
 		"the Hub delivers the owner on connect and is the authority")
 	assert.NotNil(t, client.TabSyncProvider, "tab sync must be published")

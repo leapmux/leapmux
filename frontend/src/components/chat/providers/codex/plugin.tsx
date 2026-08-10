@@ -437,7 +437,7 @@ const codexPlugin: Provider = {
       return { kind: 'unknown' }
 
     // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
-    // classifyMessage, before any plugin.classify runs, since it is a Leapmux-neutral shape.)
+    // classifyMessage, before any plugin.classify runs, since it is a LeapMux-neutral shape.)
 
     if (isCodexJsonRpcResponse(parent) || codexAssistantInterruptEcho(parent))
       return { kind: 'hidden' }
@@ -573,7 +573,7 @@ const codexPlugin: Provider = {
     return null
   },
 
-  // Codex marks only user sends and control-response answers. A user send is the Leapmux-neutral
+  // Codex marks only user sends and control-response answers. A user send is the LeapMux-neutral
   // `{content}` shape the shared extractor handles; a control answer is the structured
   // `{controlResponse}` row, which classifies as `control_response` and resolves its preview
   // through controlResponseDisplay (chatMarkPreview), not here.

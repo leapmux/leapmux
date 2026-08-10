@@ -241,7 +241,7 @@ export interface Provider {
    * Short plaintext preview of a MARKED user-send row for the chat scroll rail's dot-hover
    * tooltip. Sibling of {@link extractQuotableText}: each provider knows its own wire shapes, so
    * preview extraction is a per-provider concern. Providers whose marked user sends are the
-   * Leapmux-neutral `{content}` shape delegate to the shared `defaultMarkPreview`; Claude also
+   * LeapMux-neutral `{content}` shape delegate to the shared `defaultMarkPreview`; Claude also
    * reads its Anthropic `message.content[]` tool_result blocks. Persisted control-response rows
    * are NOT previewed here -- they classify as `control_response` and the rail resolves their
    * preview through {@link controlResponseDisplay} (see chatMarkPreview.ts). Return null when

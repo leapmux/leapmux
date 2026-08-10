@@ -267,8 +267,8 @@ type Options struct {
 	Rows          uint16
 	// ExtraEnv is appended verbatim to the spawned shell's environment
 	// after TERM is set. The service.Service populates this with
-	// LEAPMUX_REMOTE_* so scripts inside the shell can drive LeapMux
-	// via `leapmux remote`.
+	// LEAPMUX_CONTROL_* so scripts inside the shell can drive LeapMux
+	// via `leapmux control`.
 	ExtraEnv []string
 }
 
@@ -298,10 +298,10 @@ func spawnEnv(environ, extraEnv []string) []string {
 	if len(extraEnv) == 0 {
 		return env
 	}
-	// Strip any pre-existing LEAPMUX_REMOTE_* (defensive — leapmux worker
+	// Strip any pre-existing LEAPMUX_CONTROL_* (defensive — leapmux worker
 	// doesn't normally set them, but a recursive launch would inherit) before
 	// injecting the canonical values.
-	return append(envutil.StripByPrefix(env, "LEAPMUX_REMOTE_"), extraEnv...)
+	return append(envutil.StripByPrefix(env, "LEAPMUX_CONTROL_"), extraEnv...)
 }
 
 // Start creates a new PTY terminal session. The supplied context

@@ -23,7 +23,7 @@ export function AskUserQuestionResultView(props: {
           const question = String(q.question || '')
           const header = String(q.header || question)
           // Claude Code keys AskUserQuestion answers by the full question text.
-          // Fall back to the header for transcripts produced by older Leapmux builds.
+          // Fall back to the header for transcripts produced by older LeapMux builds.
           const answer = answers()[question] ?? answers()[header]
           return (
             <div class={toolResultPrompt}>

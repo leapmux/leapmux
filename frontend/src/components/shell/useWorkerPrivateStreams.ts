@@ -16,7 +16,7 @@ import { openWorkerPrivateEventStream } from '~/lib/workerPrivateEvents'
  * no workspace id, so there is nothing to key a narrower subscription on --
  * and the pair shape was the bug, not just redundancy: the pair set was
  * derived from tabs that already exist, so a workspace with no tabs yet had no
- * stream, and the first tab opened in it (by the `leapmux remote` CLI, or by
+ * stream, and the first tab opened in it (by the `leapmux control` CLI, or by
  * another session) delivered no events until something else forced a re-open.
  *
  * ACCOUNT-WIDE ON PURPOSE. This used to gate on the active workspace, which

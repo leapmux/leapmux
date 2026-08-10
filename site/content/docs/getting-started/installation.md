@@ -65,7 +65,7 @@ The macOS build is signed with a Developer ID and notarized, so it opens without
 
 > **Note:** Solo mode on macOS requires **Full Disk Access** so LeapMux can traverse directories in your home folder. The first time you select **Solo**, the launcher shows a **Full Disk Access Required** card with an **Open System Settings** button. Grant access there; the app detects the change and restarts itself automatically. Distributed mode does not require Full Disk Access.
 
-> **Tip:** On macOS the desktop app can install a `leapmux` command-line symlink at `/usr/local/bin/leapmux` so you can use the [Remote control CLI](/docs/operating/remote-control-cli/) from a terminal. When you enter a Solo workspace and the CLI isn't on your `PATH`, LeapMux offers to install it. This integration is macOS-only.
+> **Tip:** On macOS the desktop app can install a `leapmux` command-line symlink at `/usr/local/bin/leapmux` so you can use the [Remote control CLI](/docs/operating/control-cli/) from a terminal. When you enter a Solo workspace and the CLI isn't on your `PATH`, LeapMux offers to install it. This integration is macOS-only.
 
 ### Linux
 
@@ -157,7 +157,7 @@ cd leapmux_<version>_linux_amd64
 
 The macOS package is signed with a Developer ID and notarized.
 
-> **Tip:** Put `leapmux` somewhere on your `PATH` (e.g. `/usr/local/bin`) so you can invoke it from any directory and use the [Remote control CLI](/docs/operating/remote-control-cli/). To upgrade, replace the binary with the one from a newer release archive; Hub and Worker database migrations run automatically the next time you start.
+> **Tip:** Put `leapmux` somewhere on your `PATH` (e.g. `/usr/local/bin`) so you can invoke it from any directory and use the [Remote control CLI](/docs/operating/control-cli/). To upgrade, replace the binary with the one from a newer release archive; Hub and Worker database migrations run automatically the next time you start.
 
 For run modes, ports, and data directories, see [Running LeapMux](/docs/operating/running-leapmux/); for the full subcommand and flag reference, see [CLI Reference](/docs/reference/cli-reference/).
 

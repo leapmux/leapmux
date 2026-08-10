@@ -1089,7 +1089,7 @@ func TestCleanupWorkspace_LeavesTheWorktreeReclaimable(t *testing.T) {
 // OFFLINE convergence path performs the same teardown as an online CloseAgent.
 //
 // The reconciler used to run only the DB close plus StopAgent, skipping the
-// registered cleanups -- which is the spawnRemoteIPC teardown, so the tab's
+// registered cleanups -- which is the spawnControlIPC teardown, so the tab's
 // unix-socket listener stayed open and its delegation token stayed UNREVOKED for
 // the life of the worker process. This commit made the offline path the normal
 // one for a close, which is what turned that discrepancy into a leak.

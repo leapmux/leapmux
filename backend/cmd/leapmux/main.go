@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/leapmux/leapmux/internal/cli/remote"
+	"github.com/leapmux/leapmux/internal/cli/control"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
 	"github.com/leapmux/leapmux/internal/logging"
 	"github.com/leapmux/leapmux/util/version"
@@ -22,33 +22,35 @@ Commands:
   worker    Run a Worker connected to a Hub
   dev       Run Hub + Worker for development
   admin     Manage LeapMux resources
-  remote    Drive LeapMux remotely (CLI / spawned agent)
+  control   Control LeapMux remotely (CLI / spawned agent)
   version   Print version and exit
 
 Common options:
   -h, --help     Print help and exit
   -version       Print version and exit
   --version      Print version and exit
+
+Any command name can be shortened as far as it stays unambiguous.
 `
 
 type cliRunners struct {
-	runHub    func([]string) error
-	runWorker func([]string) error
-	runSolo   func([]string, bool) error
-	runAdmin  func([]string) error
-	runRemote func([]string) error
-	version   func() string
+	runHub     func([]string) error
+	runWorker  func([]string) error
+	runSolo    func([]string, bool) error
+	runAdmin   func([]string) error
+	runControl func([]string) error
+	version    func() string
 }
 
 func main() {
 	logging.Setup()
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr, cliRunners{
-		runHub:    runHub,
-		runWorker: runWorker,
-		runSolo:   runSolo,
-		runAdmin:  runAdmin,
-		runRemote: runRemote,
-		version:   version.Format,
+		runHub:     runHub,
+		runWorker:  runWorker,
+		runSolo:    runSolo,
+		runAdmin:   runAdmin,
+		runControl: runControl,
+		version:    version.Format,
 	}))
 }
 
@@ -60,6 +62,8 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 		return 1
 	}
 
+	// Handle help/version flags and bare "help" before prefix matching —
+	// these are not abbreviable command names.
 	switch args[0] {
 	case "-h", "-help", "--help", "help":
 		printUsage(stdout)
@@ -67,6 +71,33 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 	case "-version", "--version":
 		_, _ = fmt.Fprintln(stdout, runners.version())
 		return 0
+	}
+
+	// Reject anything that looks like a flag — it can't be a command name.
+	if len(args[0]) > 0 && args[0][0] == '-' {
+		_, _ = fmt.Fprintf(stderr, "error: %s is not a top-level flag\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "hint: use \"leapmux solo %s\" to pass solo-mode flags\n", args[0])
+		printUsage(stderr)
+		return 1
+	}
+
+	// Btrfs-style prefix matching: any top-level command may be shortened
+	// to an unambiguous prefix (e.g. `leapmux sol` = solo, `leapmux adm`
+	// = admin). An exact match always wins; ambiguous prefixes error with
+	// a candidate list.
+	topLevelNames := []string{"solo", "hub", "worker", "dev", "admin", "control", "version"}
+	matched, candidates, matchErr := matchCommandToken(args[0], topLevelNames)
+	if matchErr != nil {
+		if len(candidates) > 0 {
+			_, _ = fmt.Fprintf(stderr, "ambiguous token %q; did you mean one of: %s\n", args[0], strings.Join(candidates, ", "))
+		} else {
+			_, _ = fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
+		}
+		printUsage(stderr)
+		return 1
+	}
+
+	switch matched {
 	case "solo":
 		if err := runners.runSolo(args[1:], true); err != nil {
 			return handleRunError(stderr, err)
@@ -95,16 +126,16 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 			return handleRunError(stderr, err)
 		}
 		return 0
-	case "remote":
-		if code, handled := handleRemoteArgs(args[1:], stdout, stderr); handled {
+	case "control":
+		if code, handled := handleControlArgs(args[1:], stdout, stderr); handled {
 			return code
 		}
-		if err := runners.runRemote(args[1:]); err != nil {
+		if err := runners.runControl(args[1:]); err != nil {
 			// EmitError already wrote the JSON envelope to stdout
 			// via the emittedError marker; suppress the plain-text
 			// "error: …" fallback so the JSON consumer doesn't see
 			// the same failure surfaced twice across two streams.
-			if remote.IsEmitted(err) {
+			if control.IsEmitted(err) {
 				return 1
 			}
 			return handleRunError(stderr, err)
@@ -117,17 +148,8 @@ func runCLI(args []string, stdout, stderr io.Writer, runners cliRunners) int {
 		}
 		_, _ = fmt.Fprintln(stdout, runners.version())
 		return 0
-	default:
-		if len(args[0]) > 0 && args[0][0] == '-' {
-			_, _ = fmt.Fprintf(stderr, "error: %s is not a top-level flag\n", args[0])
-			_, _ = fmt.Fprintf(stderr, "hint: use \"leapmux solo %s\" to pass solo-mode flags\n", args[0])
-			printUsage(stderr)
-			return 1
-		}
-		_, _ = fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
-		printUsage(stderr)
-		return 1
 	}
+	return 0
 }
 
 // handleAdminArgs walks adminTree to validate args and print group/leaf help
@@ -158,24 +180,49 @@ func walkAdminArgs(group adminGroup, path, args []string, stdout, stderr io.Writ
 		return 0, true
 	}
 
+	// Btrfs-style prefix matching: try subgroups first, then commands.
+	// An exact match in either category wins; a unique unambiguous prefix
+	// also matches; ambiguous or missing prefixes fall through to error.
+	subNames := make([]string, len(group.Subgroups))
 	for i := range group.Subgroups {
-		if group.Subgroups[i].Name == args[0] {
-			return walkAdminArgs(group.Subgroups[i], append(path, args[0]), args[1:], stdout, stderr)
+		subNames[i] = group.Subgroups[i].Name
+	}
+	cmdNames := make([]string, len(group.Commands))
+	for i := range group.Commands {
+		cmdNames[i] = group.Commands[i].Name
+	}
+
+	subMatch, subCand, subErr := matchCommandToken(args[0], subNames)
+	cmdMatch, cmdCand, cmdErr := matchCommandToken(args[0], cmdNames)
+
+	if subErr == nil {
+		for i := range group.Subgroups {
+			if group.Subgroups[i].Name == subMatch {
+				return walkAdminArgs(group.Subgroups[i], append(path, subMatch), args[1:], stdout, stderr)
+			}
 		}
 	}
-	for i := range group.Commands {
-		if group.Commands[i].Name == args[0] {
-			return 0, false
+	if cmdErr == nil {
+		for i := range group.Commands {
+			if group.Commands[i].Name == cmdMatch {
+				return 0, false
+			}
 		}
 	}
 
-	var errMsg string
-	if group.Name == "" {
-		errMsg = fmt.Sprintf("unknown admin group: %s", args[0])
+	// Neither category resolved unambiguously.
+	allCand := append(subCand, cmdCand...)
+	if len(allCand) > 0 {
+		_, _ = fmt.Fprintf(stderr, "ambiguous token %q; did you mean one of: %s\n", args[0], strings.Join(allCand, ", "))
 	} else {
-		errMsg = fmt.Sprintf("unknown %s command: %s", strings.Join(path, " "), args[0])
+		var errMsg string
+		if group.Name == "" {
+			errMsg = fmt.Sprintf("unknown admin group: %s", args[0])
+		} else {
+			errMsg = fmt.Sprintf("unknown %s command: %s", strings.Join(path, " "), args[0])
+		}
+		_, _ = fmt.Fprintln(stderr, errMsg)
 	}
-	_, _ = fmt.Fprintln(stderr, errMsg)
 	_, _ = fmt.Fprintln(stderr)
 	_, _ = fmt.Fprint(stderr, usage)
 	return 1, true

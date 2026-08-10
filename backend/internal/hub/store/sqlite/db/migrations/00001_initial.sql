@@ -376,7 +376,7 @@ CREATE TABLE hub_runtime_lease (
     lease_expires_at DATETIME NOT NULL
 );
 
--- Durable, low-churn API tokens used by the leapmux remote CLI (and any
+-- Durable, low-churn API tokens used by the leapmux control CLI (and any
 -- future mobile / IDE / integration). Each row's id appears verbatim in
 -- the bearer string ("lmx_<id>_<secret>") so verification is a single
 -- primary-key lookup. The secret is HMAC-SHA256(secret, server_pepper)

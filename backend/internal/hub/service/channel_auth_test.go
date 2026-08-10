@@ -160,7 +160,7 @@ func TestVerifyDelegationWorkerScopeStoreFreeArms(t *testing.T) {
 	// depth against an in-package struct literal that bypasses the constructor.
 
 	// The minting worker itself stays reachable without a store lookup -- the
-	// common `leapmux remote` path must not pay for a query, nor fail when the
+	// common `leapmux control` path must not pay for a query, nor fail when the
 	// target and minter already match.
 	self := &auth.UserInfo{
 		ID:         userid.MustNew("user-1"),

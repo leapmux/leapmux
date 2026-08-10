@@ -17,7 +17,7 @@ import (
 // TestOpenAgent_DefaultsEffortToAuto verifies that when the OpenAgent
 // request omits the effort, the backend fills it in with the "auto"
 // sentinel so the agent binary picks its own default (rather than pinning
-// Leapmux to a specific effort name that older CLIs may not recognize).
+// LeapMux to a specific effort name that older CLIs may not recognize).
 func TestOpenAgent_DefaultsEffortToAuto(t *testing.T) {
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)

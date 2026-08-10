@@ -14,7 +14,7 @@ export const OPTION_ID_EFFORT = 'effort' as const
 export const OPTION_ID_PERMISSION_MODE = 'permissionMode' as const
 
 /**
- * Leapmux-side sentinel meaning "let the CLI pick its own default reasoning effort". The
+ * LeapMux-side sentinel meaning "let the CLI pick its own default reasoning effort". The
  * backend omits --effort (Claude) / reasoning_effort (Codex) when an agent carries this value,
  * so older CLIs that don't recognize newer effort names (e.g. "xhigh") still work. Mirrors
  * `agent.EffortAuto` in the Go worker. Every catalog-effort model offers it, so it is the safe

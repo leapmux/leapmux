@@ -3,7 +3,7 @@ package leapmux.v1;
 
 import "leapmux/v1/workspace.proto";
 
-// APIAuthService backs the leapmux remote CLI authentication flows.
+// APIAuthService backs the leapmux control CLI authentication flows.
 // It is exposed by the hub alongside the existing AuthService and is
 // reachable without a session cookie (its endpoints either bootstrap a
 // session — local-redirect / device-code — or accept refresh tokens).

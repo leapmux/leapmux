@@ -261,7 +261,7 @@ func TestWSReadLimit_DefaultRejectsLargeChunk(t *testing.T) {
 //
 // The relay accepts three auth modes: solo, cookie, Bearer. The cookie
 // path is exercised indirectly by every workspace test in this package
-// already; these tests pin down the Bearer path that the leapmux remote
+// already; these tests pin down the Bearer path that the leapmux control
 // CLI relies on. Solo mode is covered by the smoke test below to keep
 // the matrix complete in one place.
 

@@ -556,7 +556,7 @@ func (n *recordingNudger) snapshot() []string {
 // or, when that never arrives, through its orphan reconciler -- which runs
 // hourly and was triggered only by the worker's own reconnect handshake. So a
 // close whose RPC failed against a still-connected worker, or one a peer client
-// or `leapmux remote tab close` performed CRDT-only, left the agent subprocess
+// or `leapmux control tab close` performed CRDT-only, left the agent subprocess
 // running for up to an hour. The nudge makes convergence round-trip bound.
 //
 // Asserting DEDUPLICATION as well as delivery: a batch closing several tabs on

@@ -5,7 +5,7 @@
 //
 // Three loops in this tree retry the same shape — double, cap, reset on
 // success — and each had hand-rolled or hand-configured it: the hub client's
-// reconnect, the `leapmux remote` follower's WatchEvents reconnect, and the
+// reconnect, the `leapmux control` follower's WatchEvents reconnect, and the
 // worker's orphan-reconciler pass. Three copies of `min(prev*2, cap)` is three
 // places to get the arithmetic wrong, and it HAD been: the follower carried a
 // six-line comment about an overshoot its author had to clamp by hand, because

@@ -13,7 +13,7 @@ import (
 )
 
 // TestVersionHandler_ReturnsJSONIdentity locks the response shape
-// `leapmux remote version` consumes. The CLI relies on these exact
+// `leapmux control version` consumes. The CLI relies on these exact
 // keys, so any future rename here will break that consumer; tests
 // guard that contract.
 func TestVersionHandler_ReturnsJSONIdentity(t *testing.T) {
@@ -48,7 +48,7 @@ func TestVersionHandler_ReturnsJSONIdentity(t *testing.T) {
 // so it isolates the handler from the surrounding mux/middleware
 // stack. A higher-level test would need to start the full hub server,
 // which is out of scope here. The CLI-side test in
-// internal/cli/remote/cmd/version_test.go does exercise an httptest
+// internal/cli/control/cmd/version_test.go does exercise an httptest
 // server with no auth, providing the round-trip coverage.
 func TestVersionHandler_DoesNotRequireAuth(t *testing.T) {
 	rr := httptest.NewRecorder()

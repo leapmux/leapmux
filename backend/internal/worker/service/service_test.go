@@ -211,7 +211,7 @@ func TestLazyProtoJSON_PayloadReachesAnEnabledHandler(t *testing.T) {
 //
 // The walk covers the whole worker tree, not just this package. The
 // hazard is wherever a proto meets a log call, and the packages next
-// door -- channel, remoteipc, terminal -- are on the same hot paths; a
+// door -- channel, controlipc, terminal -- are on the same hot paths; a
 // package-local scan would let the pattern reappear one directory over
 // while still reading as if it were enforced everywhere.
 func TestNoEagerProtojsonFormatInLogCalls(t *testing.T) {

@@ -370,7 +370,7 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
  * `createKeyedRows` against `props.tabs` did -- froze each row's title, provider
  * icon, terminal status and progress at whatever they were when the tree last
  * rebuilt. A tab that reached the sidebar before its worker metadata (a peer
- * client's tab, a `leapmux remote tab open`, a cold reload, or a hydration reply
+ * client's tab, a `leapmux control tab open`, a cold reload, or a hydration reply
  * that lands after the git fields have already settled) then kept the bare
  * "Agent" label and the generic bot icon until some unrelated tab forced a
  * rebuild.

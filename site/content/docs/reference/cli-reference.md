@@ -5,9 +5,9 @@ type: docs
 weight: 1
 ---
 
-This is the quick-lookup cheat-sheet for the `leapmux` command line. It covers the top-level command list, a synopsis and flag table for each daemon mode (`solo`, `hub`, `worker`, `dev`), the `version` command, the environment variables LeapMux reads, and a pointer to the two large command groups — `admin` and `remote` — which have their own dedicated chapters.
+This is the quick-lookup cheat-sheet for the `leapmux` command line. It covers the top-level command list, a synopsis and flag table for each daemon mode (`solo`, `hub`, `worker`, `dev`), the `version` command, the environment variables LeapMux reads, and a pointer to the two large command groups — `admin` and `control` — which have their own dedicated chapters.
 
-For task-oriented walkthroughs rather than reference tables, see [Running LeapMux](/docs/operating/running-leapmux/) (run modes, ports, data dirs, Docker), [Configuration](/docs/operating/configuration/) (full config-key reference and storage backends), [Admin CLI](/docs/operating/admin-cli/), and [Remote Control CLI](/docs/operating/remote-control-cli/).
+For task-oriented walkthroughs rather than reference tables, see [Running LeapMux](/docs/operating/running-leapmux/) (run modes, ports, data dirs, Docker), [Configuration](/docs/operating/configuration/) (full config-key reference and storage backends), [Admin CLI](/docs/operating/admin-cli/), and [Remote Control CLI](/docs/operating/control-cli/).
 
 ## Top-level usage
 
@@ -22,7 +22,7 @@ Commands:
   worker    Run a Worker connected to a Hub
   dev       Run Hub + Worker for development
   admin     Manage LeapMux resources
-  remote    Drive LeapMux remotely (CLI / spawned agent)
+  control   Control LeapMux remotely (CLI / spawned agent)
   version   Print version and exit
 
 Common options:
@@ -38,7 +38,7 @@ Common options:
 | `worker` | Worker only; connects out to a Hub | [Managing Workers](/docs/operating/managing-workers/) |
 | `dev` | Hub + Worker in one process with real auth (development) | [Running LeapMux](/docs/operating/running-leapmux/) |
 | `admin` | Manage Hub data directly against the database | [Admin CLI](/docs/operating/admin-cli/) |
-| `remote` | Drive a running Hub over RPC (scripts / spawned agents) | [Remote Control CLI](/docs/operating/remote-control-cli/) |
+| `control` | Drive a running Hub over RPC (scripts / spawned agents) | [Remote Control CLI](/docs/operating/control-cli/) |
 | `version` | Print the build version and exit | [below](#version) |
 
 Notes on dispatch:
@@ -265,13 +265,13 @@ leapmux admin <group> <command> [flags]
 
 Most admin commands accept `--data-dir` and `--config` to locate the database and encryption key; output is indented JSON or a tabular listing. Commands that take `--password` prompt interactively when the flag is omitted (and require `--password` when stdin is not a terminal). See [Admin CLI](/docs/operating/admin-cli/), [Authentication Providers](/docs/operating/authentication-providers/), and [Encryption & Data](/docs/operating/encryption-and-data/).
 
-## remote (command-group outline)
+## control (command-group outline)
 
-`leapmux remote` drives a **running** Hub over RPC — it does not touch the database. It is used both by external scripts (which authorize with `leapmux remote auth login`) and by agents/terminals that LeapMux spawns (which inherit `LEAPMUX_REMOTE_*` env vars). Every command emits a JSON envelope — `{"data": ...}` on success, `{"error": {"code", "message"}}` on failure (both on stdout) — with a non-zero exit on failure. For full per-command flags, entity-ID resolution, and output shapes, see [Remote Control CLI](/docs/operating/remote-control-cli/).
+`leapmux control` drives a **running** Hub over RPC — it does not touch the database. It is used both by external scripts (which authorize with `leapmux control auth login`) and by agents/terminals that LeapMux spawns (which inherit `LEAPMUX_CONTROL_*` env vars). Every command emits a JSON envelope — `{"data": ...}` on success, `{"error": {"code", "message"}}` on failure (both on stdout) — with a non-zero exit on failure. For full per-command flags, entity-ID resolution, and output shapes, see [Remote Control CLI](/docs/operating/control-cli/).
 
 ```bash
-leapmux remote <group> <command> [flags]
-leapmux remote auth login --hub https://hub.example.com   # authorize first
+leapmux control <group> <command> [flags]
+leapmux control auth login --hub https://hub.example.com   # authorize first
 ```
 
 | Group | Commands |
@@ -317,22 +317,22 @@ Hub-family modes (`hub`, `solo`, `dev`) read variables prefixed `LEAPMUX_HUB_`; 
 
 The prefix strip lowercases the remainder but does **not** translate `_` into `.`, so nested storage keys such as `storage.type` and `storage.postgres.dsn` cannot be set cleanly via env vars — use the YAML config file or the dedicated `-storage-*` flags instead. See [Configuration](/docs/operating/configuration/) for the full list and precedence rules (defaults < config file < env vars < explicitly-set CLI flags).
 
-### Remote CLI (`leapmux remote`)
+### Remote CLI (`leapmux control`)
 
 | Variable | Used by | Meaning |
 |----------|---------|---------|
-| `LEAPMUX_HUB` | `remote` (and `auth login --hub` fallback) | Hub URL when `--hub` is not passed |
-| `LEAPMUX_REMOTE_CONFIG_DIR` | `remote` | Override the credential/pin directory (default `~/.config/leapmux/remote`) |
-| `LEAPMUX_REMOTE_SOCK` | spawned agents | Local IPC socket URL (selects local-IPC transport) |
-| `LEAPMUX_REMOTE_TOKEN` | spawned agents | Per-process bearer token for the local IPC socket |
-| `LEAPMUX_REMOTE_USER_ID` | spawned agents | Authenticated user ID (informational; no flag defaults from it) |
-| `LEAPMUX_REMOTE_WORKER_ID` | spawned agents | Host worker ID (default for `--worker-id`) |
-| `LEAPMUX_REMOTE_TAB_ID` | spawned agents | Spawning tab's ID (default for `--tab-id`) |
-| `LEAPMUX_REMOTE_TAB_TYPE` | spawned agents | `agent`, `terminal`, or `file` |
-| `LEAPMUX_REMOTE_WORKING_DIR` | spawned agents | Working directory at spawn |
-| `LEAPMUX_REMOTE_AGENT_PROVIDER` | spawned agents | Agent provider (agents only) |
+| `LEAPMUX_HUB` | `control` (and `auth login --hub` fallback) | Hub URL when `--hub` is not passed |
+| `LEAPMUX_CONTROL_CONFIG_DIR` | `control` | Override the credential/pin directory (default `~/.config/leapmux/control`) |
+| `LEAPMUX_CONTROL_SOCK` | spawned agents | Local IPC socket URL (selects local-IPC transport) |
+| `LEAPMUX_CONTROL_TOKEN` | spawned agents | Per-process bearer token for the local IPC socket |
+| `LEAPMUX_CONTROL_USER_ID` | spawned agents | Authenticated user ID (informational; no flag defaults from it) |
+| `LEAPMUX_CONTROL_WORKER_ID` | spawned agents | Host worker ID (default for `--worker-id`) |
+| `LEAPMUX_CONTROL_TAB_ID` | spawned agents | Spawning tab's ID (default for `--tab-id`) |
+| `LEAPMUX_CONTROL_TAB_TYPE` | spawned agents | `agent`, `terminal`, or `file` |
+| `LEAPMUX_CONTROL_WORKING_DIR` | spawned agents | Working directory at spawn |
+| `LEAPMUX_CONTROL_AGENT_PROVIDER` | spawned agents | Agent provider (agents only) |
 
-The `LEAPMUX_REMOTE_*` variables (the `_SOCK` / `_TOKEN` / `_*_ID` / `_TAB_*` family) are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Remote Control CLI](/docs/operating/remote-control-cli/) for how they drive entity-ID resolution.
+The `LEAPMUX_CONTROL_*` variables (the `_SOCK` / `_TOKEN` / `_*_ID` / `_TAB_*` family) are injected automatically by the Worker into the agents and terminals it spawns; you do not set them by hand. See [Remote Control CLI](/docs/operating/control-cli/) for how they drive entity-ID resolution.
 
 ## Config and data locations
 
@@ -344,6 +344,6 @@ Each mode reads an optional YAML config named after the mode, and stores data, u
 | `hub` | `~/.config/leapmux/hub/hub.yaml` | `~/.config/leapmux/hub` |
 | `worker` | `~/.config/leapmux/worker/worker.yaml` | `~/.config/leapmux/worker` |
 | `dev` | `~/.config/leapmux/dev/dev.yaml` | `~/.config/leapmux/dev` |
-| `remote` | `~/.config/leapmux/remote/<hub-host>.json` (credentials, mode 0600) | — |
+| `control` | `~/.config/leapmux/control/<hub-host>.json` (credentials, mode 0600) | — |
 
 In `solo` and `dev`, the data directory is split into `<data-dir>/hub` and `<data-dir>/worker` subdirectories. See [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) for the full layout and resolution rules.

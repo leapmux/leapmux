@@ -355,7 +355,7 @@ func TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback(t *testing.T) {
 //
 // Without this arm handleMessage falls through to the "unhandled hub message"
 // warn, and a tab close whose E2EE RPC failed -- or one a peer client or
-// `leapmux remote tab close` performed CRDT-only -- would again wait out the
+// `leapmux control tab close` performed CRDT-only -- would again wait out the
 // orphan reconciler's hourly tick, leaving the agent subprocess running the
 // whole time.
 func TestHandleMessage_ReconcileNudge_InvokesCallback(t *testing.T) {

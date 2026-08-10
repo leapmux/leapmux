@@ -1069,7 +1069,7 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 	}
 }
 
-func TestAgent_LeapmuxWorkerEnvAlwaysSet(t *testing.T) {
+func TestAgent_LeapMuxWorkerEnvAlwaysSet(t *testing.T) {
 	// Verify that LEAPMUX_WORKER=1 is always present for Claude Code and that
 	// CLAUDECODE=1 is injected only for login shells.
 	ctx := context.Background()

@@ -45,7 +45,7 @@ const (
 // agent process, used when no configured value is provided.
 const DefaultAPITimeout = time.Duration(config.DefaultAPITimeoutSeconds) * time.Second
 
-// EffortAuto is the Leapmux-side sentinel meaning "let the CLI pick its own
+// EffortAuto is the LeapMux-side sentinel meaning "let the CLI pick its own
 // default reasoning effort". When an agent's Effort is this value, the
 // provider layer omits the CLI flag / wire field entirely so older CLIs
 // that don't recognize newer effort names (e.g. "xhigh") still work.
@@ -115,8 +115,8 @@ type Options struct {
 	AgentProvider  leapmuxv1.AgentProvider // Coding agent provider (default: CLAUDE_CODE)
 	// ExtraEnv is appended verbatim to the spawned process's
 	// environment after the provider-specific env-var setup. The
-	// service.Service populates this with LEAPMUX_REMOTE_* so the
-	// running agent can drive the worker via the leapmux remote CLI.
+	// service.Service populates this with LEAPMUX_CONTROL_* so the
+	// running agent can drive the worker via the leapmux control CLI.
 	ExtraEnv []string
 }
 
@@ -397,7 +397,7 @@ func NormalizeModelID(provider leapmuxv1.AgentProvider, model string) string {
 
 // EffortEnvOverride returns the value of the provider's
 // LEAPMUX_*_DEFAULT_EFFORT environment variable, or "" if unset. This is the
-// only way Leapmux injects a concrete effort level at agent-open time; when
+// only way LeapMux injects a concrete effort level at agent-open time; when
 // the env var is unset, effort defaults to EffortAuto and the agent binary
 // picks its own level. This avoids pinning users on newer effort names
 // (e.g. "xhigh") that an older CLI binary may not recognize.

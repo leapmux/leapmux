@@ -7,7 +7,7 @@ weight: 5
 
 Coding agents are the heart of LeapMux. Each agent is a real coding-assistant CLI (Claude Code, Codex, and others) running on a Worker, wrapped in a chat tab so you can talk to it, watch its tool calls, approve its actions, and steer it without leaving the browser. This chapter covers which agents are supported, how to open one, how to chat with it, how tool calls render, how to answer permission prompts, and how to change models and settings mid-session.
 
-For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Remote Control CLI](/docs/operating/remote-control-cli/).
+For where agents live in the workspace layout, see [Tabs & Layout](/docs/using/tabs-and-layout/). For the git side of opening an agent in a branch or worktree, see [Worktrees & Branches](/docs/using/worktrees-and-branches/). To drive agents from a script instead of the browser, see [Remote Control CLI](/docs/operating/control-cli/).
 
 ## Supported agents
 
@@ -228,7 +228,7 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 | OpenCode | (CLI default) | Primary Agent `build` | Has plan mode. |
 | Kilo | (CLI default) | Primary Agent `code` | Has plan mode. |
 
-In the UI you pick these as named radio options (**Auto**, **YOLO**, **Build**, **Code**, and so on); the literal mode IDs above are only typed directly when driving an agent with `leapmux remote agent set --permission-mode`.
+In the UI you pick these as named radio options (**Auto**, **YOLO**, **Build**, **Code**, and so on); the literal mode IDs above are only typed directly when driving an agent with `leapmux control agent set --permission-mode`.
 
 **Reasonix** — a **Model** selector only; it has no permission mode, no plan mode, and no bypass. Default model **DeepSeek Flash** (`deepseek-flash`); also offered: DeepSeek Pro, MiMo Pro, MiMo Flash (the MiMo models need `MIMO_API_KEY`). Reasonix fixes its model at launch, so switching the model restarts the agent. It is text-only — image, PDF, and binary attachments aren't supported — and still shows per-request approval banners.
 
@@ -259,24 +259,24 @@ Pasting a Session ID is the manual path; most resumption happens automatically. 
 
 ## Driving agents from a script
 
-Everything in this chapter has a programmatic counterpart in the `leapmux remote` CLI, which agents themselves can call (the Worker injects credentials into each spawned agent's environment). The most relevant commands:
+Everything in this chapter has a programmatic counterpart in the `leapmux control` CLI, which agents themselves can call (the Worker injects credentials into each spawned agent's environment). The most relevant commands:
 
 ```bash
 # Send a message to an agent tab
-leapmux remote agent send --tab-id <id> --message "Refactor the auth module"
+leapmux control agent send --tab-id <id> --message "Refactor the auth module"
 
 # Interrupt the current turn
-leapmux remote agent interrupt --tab-id <id> --reason "wrong file"
+leapmux control agent interrupt --tab-id <id> --reason "wrong file"
 
 # Change model / effort / permission mode mid-session
-leapmux remote agent set --tab-id <id> --model gpt-5.4 --effort high
+leapmux control agent set --tab-id <id> --model gpt-5.4 --effort high
 
 # Open a new agent in a tab (provider, model, working dir, worktree, etc.)
-leapmux remote tab open --type agent --worker-id <id> --provider "Claude Code" \
+leapmux control tab open --type agent --worker-id <id> --provider "Claude Code" \
   --working-dir /repo --initial-message "Start on the bug fix"
 
 # Answer a Claude-Code-style control request
-leapmux remote agent send-control-response --tab-id <id> --content '<raw JSON>'
+leapmux control agent send-control-response --tab-id <id> --content '<raw JSON>'
 ```
 
-See [Remote Control CLI](/docs/operating/remote-control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.
+See [Remote Control CLI](/docs/operating/control-cli/) for the full command tree, entity-ID resolution, and the JSON output contract.

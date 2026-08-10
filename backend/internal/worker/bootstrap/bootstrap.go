@@ -5,7 +5,7 @@
 // solo binary and the desktop sidecar) and `runWorker` (the `leapmux
 // worker` CLI) -- whose wiring sequences drifted apart while both were
 // maintained by hand. The drift was not theoretical: the CLI shipped
-// without `svc.RemoteIPC`, so `leapmux remote` inside an agent it started
+// without `svc.ControlIPC`, so `leapmux control` inside an agent it started
 // found no socket even though the docs promise one, and `worker.Run`
 // shipped without the dispatcher's cleanup binding, so its Shutdown
 // waited on an always-zero WaitGroup. Both are the same defect -- a step
@@ -30,10 +30,10 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/internal/worker/controlipc"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
-	"github.com/leapmux/leapmux/internal/worker/remoteipc"
 	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 )
@@ -178,7 +178,7 @@ func Wire(p Params) *Wiring {
 	})
 
 	dispatcher := channel.NewDispatcher()
-	svc.RemoteIPC = newRemoteIPCFactory(p, svc, dispatcher)
+	svc.ControlIPC = newControlIPCFactory(p, svc, dispatcher)
 
 	// Binds svc.Cleanup as the tracked-dispatch drain as well as
 	// registering the handlers -- see service.RegisterAll.
@@ -220,14 +220,14 @@ func Wire(p Params) *Wiring {
 	return &Wiring{Service: svc, client: p.Client}
 }
 
-// newRemoteIPCFactory builds the per-agent local-IPC factory backing the
-// `leapmux remote` CLI.
+// newControlIPCFactory builds the per-agent local-IPC factory backing the
+// `leapmux control` CLI.
 //
 // Cross-worker calls use TOFU pin storage in the worker data dir;
 // failures there are non-fatal -- the worker still serves its own agents
 // over the existing E2EE channel, so a missing pin store degrades sibling
 // dispatch rather than the whole feature.
-func newRemoteIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dispatcher) *remoteipc.Factory {
+func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dispatcher) *controlipc.Factory {
 	pins, pinErr := crossworker.NewPinStore(p.DataDir)
 	if pinErr != nil {
 		slog.Warn("cross-worker pin store unavailable; sibling-worker calls disabled", "error", pinErr)
@@ -251,18 +251,18 @@ func newRemoteIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dis
 		cwClient = crossworker.New(p.Ctx, p.HubURL, pins, delegation)
 	}
 
-	var hubStreams remoteipc.HubStreamer
-	var hubBridge remoteipc.HubBridge
+	var hubStreams controlipc.HubStreamer
+	var hubBridge controlipc.HubBridge
 	if delegation != nil {
-		hubStreams = remoteipc.NewHubEventStreamer(p.HubURL, delegation)
+		hubStreams = controlipc.NewHubEventStreamer(p.HubURL, delegation)
 		// HubBridge mirrors HubStreamer for unary hub-bound RPCs
 		// (workspace/tab/tile/layout). Wired with the same delegation
 		// store so streaming and unary share a single user -> bearer cache
 		// and one revoke path.
-		hubBridge = remoteipc.NewHubUnaryBridge(p.HubURL, delegation)
+		hubBridge = controlipc.NewHubUnaryBridge(p.HubURL, delegation)
 	}
 
-	return &remoteipc.Factory{
+	return &controlipc.Factory{
 		WorkerID:    p.WorkerID,
 		Dispatcher:  dispatcher,
 		CrossWorker: cwClient,
@@ -359,7 +359,7 @@ func startBackgroundLoops(p Params, svc *service.Service) {
 	// The Hub also nudges mid-session, when a CRDT batch tombstones a tab this
 	// worker hosts. Without it the reconciler was the only route for a close
 	// whose E2EE RPC failed, or one performed CRDT-only by a peer client or
-	// `leapmux remote tab close` -- and it only ran hourly, so the agent
+	// `leapmux control tab close` -- and it only ran hourly, so the agent
 	// subprocess kept running (and burning tokens) until the next tick.
 	p.Client.OnReconcileNudge = reconciler.Trigger
 

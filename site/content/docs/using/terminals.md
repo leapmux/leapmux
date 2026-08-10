@@ -18,7 +18,7 @@ When you open a terminal, the Worker spawns your chosen shell as an interactive 
 Every spawned shell gets:
 
 - `TERM=xterm-256color` so colour-aware programs render correctly.
-- A set of `LEAPMUX_REMOTE_*` environment variables (see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control)).
+- A set of `LEAPMUX_CONTROL_*` environment variables (see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control)).
 - A process kill group, so closing the tab reaps the whole process tree (the shell and everything it started) rather than leaking orphans.
 
 Each terminal is given an auto-generated title of the form **`Terminal <Name>`** (for example `Terminal Aaliyah` or `Terminal Zoe`), drawn from a fixed pool of names. You can rename it at any time (see [Renaming a terminal](#renaming-a-terminal)).
@@ -69,16 +69,16 @@ Submit with the **"Create"** button (it reads **"Creating..."** while in flight)
 
 ### Opening a terminal from the CLI
 
-You can create a terminal from a script or another agent with the [Remote Control CLI](/docs/operating/remote-control-cli/):
+You can create a terminal from a script or another agent with the [Remote Control CLI](/docs/operating/control-cli/):
 
 ```bash
-leapmux remote tab open --type terminal \
+leapmux control tab open --type terminal \
   --worker-id <worker> \
   --working-dir /home/me/project \
   --shell /bin/zsh
 ```
 
-`--shell` is optional — leaving it empty uses the Worker's default shell. `--shell-start-dir` defaults to the working directory. See [Remote Control CLI](/docs/operating/remote-control-cli/) for the full flag set, entity-ID resolution, and placement flags.
+`--shell` is optional — leaving it empty uses the Worker's default shell. `--shell-start-dir` defaults to the working directory. See [Remote Control CLI](/docs/operating/control-cli/) for the full flag set, entity-ID resolution, and placement flags.
 
 > **Note:** Remote control is automatic; see [Driving LeapMux from inside a terminal](#driving-leapmux-from-inside-a-terminal-remote-control).
 
@@ -214,61 +214,61 @@ On an exited terminal, **Enter** is the only key that does anything — it resta
 
 > **Note:** There is no "remote-enabled" checkbox or toggle in the New terminal dialog, the CLI, or anywhere else. **Every** terminal LeapMux spawns is remote-enabled automatically (as long as the Worker has remote control configured). This is a frequent point of confusion — there is nothing to turn on.
 
-When the Worker spawns your shell, it injects a set of `LEAPMUX_REMOTE_*` environment variables that let any script or program running inside the terminal drive LeapMux through the [`leapmux remote`](/docs/operating/remote-control-cli/) CLI — without needing to log in separately. The CLI detects these variables and routes its calls over a local socket the Worker provides, scoped to the terminal's own identity.
+When the Worker spawns your shell, it injects a set of `LEAPMUX_CONTROL_*` environment variables that let any script or program running inside the terminal drive LeapMux through the [`leapmux control`](/docs/operating/control-cli/) CLI — without needing to log in separately. The CLI detects these variables and routes its calls over a local socket the Worker provides, scoped to the terminal's own identity.
 
 The variables injected into a terminal are:
 
 | Variable | When set | Meaning |
 | --- | --- | --- |
-| `LEAPMUX_REMOTE_SOCK` | Always | Local IPC socket the CLI connects to |
-| `LEAPMUX_REMOTE_TOKEN` | Always | Per-spawn bearer token for that socket |
-| `LEAPMUX_REMOTE_USER_ID` | Always | The authenticated user (informational; no flag defaults from it) |
-| `LEAPMUX_REMOTE_WORKER_ID` | Always | The host Worker |
-| `LEAPMUX_REMOTE_TAB_ID` | When known | This terminal's tab id |
-| `LEAPMUX_REMOTE_TAB_TYPE` | When known | `terminal` |
-| `LEAPMUX_REMOTE_WORKING_DIR` | When known | The working directory at spawn |
+| `LEAPMUX_CONTROL_SOCK` | Always | Local IPC socket the CLI connects to |
+| `LEAPMUX_CONTROL_TOKEN` | Always | Per-spawn bearer token for that socket |
+| `LEAPMUX_CONTROL_USER_ID` | Always | The authenticated user (informational; no flag defaults from it) |
+| `LEAPMUX_CONTROL_WORKER_ID` | Always | The host Worker |
+| `LEAPMUX_CONTROL_TAB_ID` | When known | This terminal's tab id |
+| `LEAPMUX_CONTROL_TAB_TYPE` | When known | `terminal` |
+| `LEAPMUX_CONTROL_WORKING_DIR` | When known | The working directory at spawn |
 
-Because these are set, `leapmux remote` commands run inside the terminal default their entity IDs from the environment. For example, this works with no flags from inside the terminal:
+Because these are set, `leapmux control` commands run inside the terminal default their entity IDs from the environment. For example, this works with no flags from inside the terminal:
 
 ```bash
 # Who am I, and where?
-leapmux remote whoami
+leapmux control whoami
 
 # Open a sibling terminal next to this one
-leapmux remote tab open --type terminal --last
+leapmux control tab open --type terminal --last
 ```
 
-> **Note:** Workspace id and tile id are deliberately **not** injected. The CLI derives them from `LEAPMUX_REMOTE_TAB_ID` at call time, which keeps them correct even if you move the tab. Terminals also do **not** get `LEAPMUX_REMOTE_AGENT_PROVIDER` (that is agents-only).
+> **Note:** Workspace id and tile id are deliberately **not** injected. The CLI derives them from `LEAPMUX_CONTROL_TAB_ID` at call time, which keeps them correct even if you move the tab. Terminals also do **not** get `LEAPMUX_CONTROL_AGENT_PROVIDER` (that is agents-only).
 
-Any pre-existing `LEAPMUX_REMOTE_*` values are stripped before the Worker re-injects its own, so a terminal opened from inside another agent or terminal targets itself, not its parent. The per-spawn token is retired when the terminal is closed and re-minted on restart.
+Any pre-existing `LEAPMUX_CONTROL_*` values are stripped before the Worker re-injects its own, so a terminal opened from inside another agent or terminal targets itself, not its parent. The per-spawn token is retired when the terminal is closed and re-minted on restart.
 
 ### Controlling a terminal from outside
 
-The reverse also works: from any authenticated `leapmux remote` session (or from another agent), you can write to and inspect a terminal:
+The reverse also works: from any authenticated `leapmux control` session (or from another agent), you can write to and inspect a terminal:
 
 ```bash
 # Type a command into a terminal's PTY (note the trailing newline to run it)
-leapmux remote terminal send --tab-id <tab> --data $'ls -la\n'
+leapmux control terminal send --tab-id <tab> --data $'ls -la\n'
 
 # Pipe binary or escape sequences in via stdin
-printf '\x03' | leapmux remote terminal send --tab-id <tab> --stdin
+printf '\x03' | leapmux control terminal send --tab-id <tab> --stdin
 
 # Inspect a terminal's metadata, or dump its current screen with ANSI intact
-leapmux remote terminal get --tab-id <tab>
-leapmux remote terminal get --tab-id <tab> --screen
+leapmux control terminal get --tab-id <tab>
+leapmux control terminal get --tab-id <tab> --screen
 
 # List a worker's available shells (and its default)
-leapmux remote terminal shells --worker-id <worker>
+leapmux control terminal shells --worker-id <worker>
 ```
 
-See [Remote Control CLI](/docs/operating/remote-control-cli/) for the complete terminal subcommand reference, authentication, and the JSON output contract.
+See [Remote Control CLI](/docs/operating/control-cli/) for the complete terminal subcommand reference, authentication, and the JSON output contract.
 
 ## Renaming a terminal
 
 A terminal's title updates automatically when a program sets the terminal window title (the standard OSC title escape sequence) — for example, many shells set it to the current directory or running command. You can also rename a terminal tab through its tab menu, or from a script:
 
 ```bash
-leapmux remote tab rename --tab-id <tab> --title "Build watcher"
+leapmux control tab rename --tab-id <tab> --title "Build watcher"
 ```
 
 ## Closing a terminal
@@ -286,6 +286,6 @@ The terminal and tab shortcuts (opening, closing, scrollback paging, and the mac
 - [Tabs & Layout](/docs/using/tabs-and-layout/) — tiling, floating, and moving terminal tabs.
 - [Worktrees & Branches](/docs/using/worktrees-and-branches/) — git options, worktree creation, and the close-last-tab flow.
 - [Coding Agents](/docs/using/coding-agents/) — agents share the same tab, Worker, and git-options model.
-- [Remote Control CLI](/docs/operating/remote-control-cli/) — the full `leapmux remote terminal` and `tab` command surface.
+- [Remote Control CLI](/docs/operating/control-cli/) — the full `leapmux control terminal` and `tab` command surface.
 - [Settings & Preferences](/docs/using/settings/) — terminal theme and fonts.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — remap any of the shortcuts above.

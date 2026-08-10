@@ -53,8 +53,8 @@ func (f *fakeRemoteIPC) TerminalSpawning(info TerminalSpawnInfo) ([]string, func
 	n := f.count.Add(1)
 	token := fmt.Sprintf("token-%d", n)
 	envs := []string{
-		"LEAPMUX_REMOTE_TAB_ID=" + info.TabID,
-		"LEAPMUX_REMOTE_TOKEN=" + token,
+		"LEAPMUX_CONTROL_TAB_ID=" + info.TabID,
+		"LEAPMUX_CONTROL_TOKEN=" + token,
 	}
 	f.mu.Lock()
 	f.tokens = append(f.tokens, token)

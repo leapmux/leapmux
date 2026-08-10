@@ -60,7 +60,7 @@ message CloseTerminalResponse {
 
 // RestartTerminalRequest respawns the shell process for an exited
 // terminal in place, reusing the tab's working_dir / shell / shell_start_dir
-// and freshly minting LEAPMUX_REMOTE_* env vars. The screen buffer
+// and freshly minting LEAPMUX_CONTROL_* env vars. The screen buffer
 // (including the "[Terminal process exited (N) - Press Enter to restart]"
 // notice) is preserved so the new shell's prompt appears below it.
 message RestartTerminalRequest {

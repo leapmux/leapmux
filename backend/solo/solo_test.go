@@ -85,7 +85,7 @@ func TestSoloLoadOptionsDerivesEachModesDefaults(t *testing.T) {
 // TestSoloExposesThePerUserCapsOnTheCommandLine pins the two knobs a solo user can
 // actually reach. Solo is the mode where every socket belongs to one identity --
 // an active tab holds two leases, and the desktop app, any CLI `remote` session
-// and every worker's remoteipc watcher draw on the same allowance -- so a user who
+// and every worker's controlipc watcher draw on the same allowance -- so a user who
 // hits the cap is told to close a tab, advice they cannot act on if --help offers
 // no way to raise it.
 func TestSoloExposesThePerUserCapsOnTheCommandLine(t *testing.T) {

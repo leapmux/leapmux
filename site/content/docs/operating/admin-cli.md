@@ -7,7 +7,7 @@ weight: 4
 
 `leapmux admin` is the operator-facing command-line interface for managing a LeapMux Hub's persistent data. It operates **directly against the Hub's database and on-disk encryption key file** — no running Hub, network call, or login is required. You run it on the machine that holds the Hub's data directory, typically as the same OS user that runs the Hub.
 
-This is the tool you reach for when you need to do something the web UI cannot do, or when the Hub is offline: create the first user, reset a locked-out account's password, mint and revoke tokens, add an OAuth provider, rotate encryption keys, or inspect the database. For the network-facing, session-authenticated remote control of a *running* Hub, see [Remote Control CLI](/docs/operating/remote-control-cli/) instead.
+This is the tool you reach for when you need to do something the web UI cannot do, or when the Hub is offline: create the first user, reset a locked-out account's password, mint and revoke tokens, add an OAuth provider, rotate encryption keys, or inspect the database. For the network-facing, session-authenticated remote control of a *running* Hub, see [Remote Control CLI](/docs/operating/control-cli/) instead.
 
 > **Warning:** Because `leapmux admin` writes straight to the database, anyone who can run it has full control over the Hub's data. Protect the data directory and the hosts that can reach it. There is no per-command authentication.
 
@@ -472,7 +472,7 @@ leapmux admin db migrate --config /etc/leapmux/hub.yaml
 
 ## `api-token` — durable API tokens
 
-Durable bearer tokens for headless service accounts, the CLI, and integrations. Issued tokens authenticate the [Remote Control CLI](/docs/operating/remote-control-cli/).
+Durable bearer tokens for headless service accounts, the CLI, and integrations. Issued tokens authenticate the [Remote Control CLI](/docs/operating/control-cli/).
 
 ### `api-token issue`
 
@@ -606,5 +606,5 @@ leapmux admin db migrate --config /etc/leapmux/hub.yaml
 - [Managing Workers](/docs/operating/managing-workers/) — registration keys, approval, TOFU pinning, and Worker selection.
 - [Authentication Providers](/docs/operating/authentication-providers/) — configuring GitHub, Google, Apple, and generic OIDC sign-in end to end.
 - [Encryption & Data](/docs/operating/encryption-and-data/) — keystore internals, key rotation, storage backends, migrations, and backup/restore.
-- [Remote Control CLI](/docs/operating/remote-control-cli/) — controlling a *running* Hub over the network with an API token.
+- [Remote Control CLI](/docs/operating/control-cli/) — controlling a *running* Hub over the network with an API token.
 - [Configuration](/docs/operating/configuration/) — config file keys, precedence, and storage settings.

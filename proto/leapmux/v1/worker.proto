@@ -270,7 +270,7 @@ message ConnectResponse {
 // that never arrives, through the reconciler -- which otherwise runs on an
 // hourly timer and is triggered only by the worker's own reconnect handshake. So
 // a close whose RPC failed against a still-CONNECTED worker, or one a peer
-// client or `leapmux remote tab close` performed CRDT-only, left the agent
+// client or `leapmux control tab close` performed CRDT-only, left the agent
 // subprocess running (and, for an active agent, burning tokens) for up to an
 // hour, its worktree for up to two passes more.
 //

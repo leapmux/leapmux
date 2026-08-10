@@ -367,7 +367,7 @@ func (c *Client) StreamInner(ctx context.Context, targetWorkerID string, userID 
 
 // crossWorkerStreamCtrl forwards client→worker stream frames onto a dedicated
 // cross-worker E2EE channel. Implements channel.StreamController so the
-// remoteipc Router's UpdateStream / CancelStream paths reach the remote
+// controlipc Router's UpdateStream / CancelStream paths reach the remote
 // watchSession the same way a local BindStream does.
 //
 // Updates are enqueued to a dedicated goroutine so OnClientFrame never blocks

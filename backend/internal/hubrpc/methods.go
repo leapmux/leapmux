@@ -1,6 +1,6 @@
 // Package hubrpc declares the registry of hub-side RPC methods that
-// external callers (the `leapmux remote` CLI direct mode, and the
-// worker's RemoteIPC bridge proxying for agent-spawned CLI calls)
+// external callers (the `leapmux control` CLI direct mode, and the
+// worker's ControlIPC bridge proxying for agent-spawned CLI calls)
 // invoke. Both callers share this single source of truth so adding a
 // hub method requires editing one entry instead of two parallel
 // switches.
@@ -22,7 +22,7 @@ import (
 // Descriptor describes how to invoke one hub method generically.
 type Descriptor struct {
 	// NewRequest returns a fresh zero-value request proto so callers
-	// receiving a raw `[]byte` payload (worker RemoteIPC bridge) can
+	// receiving a raw `[]byte` payload (worker ControlIPC bridge) can
 	// Unmarshal into it.
 	NewRequest func() proto.Message
 	// NewResponse returns a fresh zero-value response proto for the

@@ -50,5 +50,5 @@ var mustNewNonLiteralSites = map[string]string{
 // a package opts IN when its structs are purely in-process credential records,
 // and then EVERY UserID field in it must be typed.
 var typedIdentityPackages = map[string]string{
-	"internal/worker/remoteipc": "TokenInfo is the worker's in-process credential record -- no struct tags, never marshalled -- and Router.UserID already holds the same identity typed, so a string copy here could drift from it and would compare with a fail-open `!= \"\"`",
+	"internal/worker/controlipc": "TokenInfo is the worker's in-process credential record -- no struct tags, never marshalled -- and Router.UserID already holds the same identity typed, so a string copy here could drift from it and would compare with a fail-open `!= \"\"`",
 }

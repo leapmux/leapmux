@@ -32,17 +32,17 @@ service WorkspaceService {
   rpc GetTab(GetTabRequest) returns (GetTabResponse);
   // LocateTab resolves a tab by (tab_type, tab_id) without requiring
   // workspace_id — the hub finds the tab across every
-  // workspace the caller can access. Used by the `leapmux remote` CLI
+  // workspace the caller can access. Used by the `leapmux control` CLI
   // to derive the spawning tab's context (workspace, tile,
-  // worker) from a single env-injected anchor (LEAPMUX_REMOTE_TAB_ID
-  // + LEAPMUX_REMOTE_TAB_TYPE). Reads `workspace_tab_rendered`.
+  // worker) from a single env-injected anchor (LEAPMUX_CONTROL_TAB_ID
+  // + LEAPMUX_CONTROL_TAB_TYPE). Reads `workspace_tab_rendered`.
   rpc LocateTab(LocateTabRequest) returns (LocateTabResponse);
   // LocateTile resolves a tile by tile_id without requiring
   // workspace_id. The hub walks the user's accessible CRDT state
   // (from the in-memory `crdt.Manager` for the user), finds
   // the workspace whose tile-tree contains the node, and verifies
   // the caller can read that workspace. Returns NotFound when the
-  // tile isn't visible to the caller. Used by the `leapmux remote`
+  // tile isn't visible to the caller. Used by the `leapmux control`
   // CLI universal resolver when a script knows only a tile id.
   rpc LocateTile(LocateTileRequest) returns (LocateTileResponse);
 }
@@ -396,7 +396,7 @@ message GetTabResponse {
 //
 // Like GetTab but without a workspace_id filter: the hub looks for
 // the tab across every workspace the caller owns. Used when only the
-// tab id is known — `leapmux remote` derives workspace / tile /
+// tab id is known — `leapmux control` derives workspace / tile /
 // worker from this single hop. Returns NotFound when no accessible
 // workspace contains the tab.
 

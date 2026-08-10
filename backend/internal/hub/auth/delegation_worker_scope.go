@@ -38,7 +38,7 @@ var ErrDelegationWorkerOutOfScope = errors.New("delegation token cannot reach an
 //
 // Two cases are legitimate, and only these:
 //   - the target IS the minting worker: an agent talking back to the host it runs
-//     on, which is the common `leapmux remote` case; and
+//     on, which is the common `leapmux control` case; and
 //   - the token's user owns the minting worker: the agent is that user's own, on
 //     that user's own machine, so reaching their other workers is the cross-worker
 //     feature working as intended.
@@ -139,7 +139,7 @@ func delegationMinter(user *UserInfo) (minterID string, bounded bool, err error)
 // It is the single-target form used by worker-directed entrypoints that know their
 // target up front. It answers the two arms that need no store round trip without
 // one -- a non-delegation credential, and a target that IS the minter -- so the
-// common `leapmux remote` case (an agent talking back to the host it runs on) pays
+// common `leapmux control` case (an agent talking back to the host it runs on) pays
 // for no query. That fast path is a strict SUBSET of DelegationWorkerScope.Allows'
 // own target-is-minter clause, so the two can never disagree; it exists only to skip
 // the lookup. It also means a deregistering minter stays reachable BY ITSELF, which

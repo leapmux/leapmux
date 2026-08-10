@@ -40,7 +40,7 @@ const (
 	PiThinkingXHigh   = "xhigh"
 )
 
-// piAutoEffort is the Leapmux-side sentinel: when selected we omit the
+// piAutoEffort is the LeapMux-side sentinel: when selected we omit the
 // set_thinking_level RPC and let Pi keep its current level (typically driven
 // by ~/.pi/agent/settings.json).
 var piAutoEffort = &EffortInfo{
@@ -206,7 +206,7 @@ func (a *PiAgent) UpdateSettings(options optionmap.Map) bool {
 	curProvider := a.provider
 	a.mu.Unlock()
 
-	// Switching effort to "auto" is a Leapmux sentinel that means "let Pi
+	// Switching effort to "auto" is a LeapMux sentinel that means "let Pi
 	// pick its own default" — the wire protocol has no equivalent, so a
 	// restart is required (return false to signal the caller to restart).
 	if IsEffortAutoTransition(options[OptionIDEffort], curEffort) {

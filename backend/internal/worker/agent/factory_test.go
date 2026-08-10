@@ -58,17 +58,17 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 		assert.Contains(t, out, "LEAPMUX_WORKER=1")
 	})
 
-	t.Run("scrub precedes LEAPMUX_REMOTE strip and ExtraEnv append", func(t *testing.T) {
-		env := append(buildEnv(), "LEAPMUX_REMOTE_OLD=stale")
-		out := FinalizeAgentEnv(env, Options{ExtraEnv: []string{"LEAPMUX_REMOTE_NEW=fresh"}})
+	t.Run("scrub precedes LEAPMUX_CONTROL strip and ExtraEnv append", func(t *testing.T) {
+		env := append(buildEnv(), "LEAPMUX_CONTROL_OLD=stale")
+		out := FinalizeAgentEnv(env, Options{ExtraEnv: []string{"LEAPMUX_CONTROL_NEW=fresh"}})
 
 		// Identity scrub still applied even on the ExtraEnv path.
 		for _, k := range identity {
 			assert.Falsef(t, envutil.HasKey(out, k), "identity var %q must be scrubbed", k)
 		}
-		// Inherited LEAPMUX_REMOTE_* stripped; the injected one wins.
-		assert.NotContains(t, out, "LEAPMUX_REMOTE_OLD=stale")
-		assert.Contains(t, out, "LEAPMUX_REMOTE_NEW=fresh")
+		// Inherited LEAPMUX_CONTROL_* stripped; the injected one wins.
+		assert.NotContains(t, out, "LEAPMUX_CONTROL_OLD=stale")
+		assert.Contains(t, out, "LEAPMUX_CONTROL_NEW=fresh")
 		assert.Contains(t, out, "LEAPMUX_WORKER=1")
 		// Markers + auth still survive on this path too.
 		for _, k := range mustSurvive {
@@ -76,15 +76,15 @@ func TestFinalizeAgentEnv_ScrubsAgentIdentity(t *testing.T) {
 		}
 	})
 
-	t.Run("strips inherited LEAPMUX_REMOTE even with no ExtraEnv", func(t *testing.T) {
+	t.Run("strips inherited LEAPMUX_CONTROL even with no ExtraEnv", func(t *testing.T) {
 		// A worker spawned inside another worker's session inherits the
-		// parent's LEAPMUX_REMOTE_* but injects no fresh ExtraEnv. The stale
+		// parent's LEAPMUX_CONTROL_* but injects no fresh ExtraEnv. The stale
 		// remote context must still be shed so the child doesn't act on it.
-		env := append(buildEnv(), "LEAPMUX_REMOTE_OLD=stale")
+		env := append(buildEnv(), "LEAPMUX_CONTROL_OLD=stale")
 		out := FinalizeAgentEnv(env, Options{})
 
-		assert.NotContains(t, out, "LEAPMUX_REMOTE_OLD=stale")
-		assert.False(t, envutil.HasKey(out, "LEAPMUX_REMOTE_OLD"), "inherited LEAPMUX_REMOTE_* must be stripped")
+		assert.NotContains(t, out, "LEAPMUX_CONTROL_OLD=stale")
+		assert.False(t, envutil.HasKey(out, "LEAPMUX_CONTROL_OLD"), "inherited LEAPMUX_CONTROL_* must be stripped")
 		assert.Contains(t, out, "LEAPMUX_WORKER=1")
 		for _, k := range mustSurvive {
 			assert.Truef(t, envutil.HasKey(out, k), "var %q must survive the scrub", k)

@@ -42,7 +42,7 @@ export interface BrowserPreferences {
   terminalRenderer?: TerminalRendererPreference
   /**
    * When true, ignore `ActiveTabRequested` events from other clients
-   * (e.g. `leapmux remote tab focus`). Default false: another browser
+   * (e.g. `leapmux control tab focus`). Default false: another browser
    * tab or the CLI can steal focus, which is the intended behaviour
    * for "tab focus" to "just work" — flip this if your workflow
    * dislikes remote-driven focus changes.

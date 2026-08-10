@@ -244,7 +244,7 @@ function classifyClaudeCodeMessage(
     return { kind: 'compact_summary' }
 
   // (The synthetic {isSynthetic, controlResponse} row -> control_response is classified upstream in
-  // classifyMessage, before any plugin.classify runs, since it is a Leapmux-neutral shape.)
+  // classifyMessage, before any plugin.classify runs, since it is a LeapMux-neutral shape.)
 
   // Content-shaped types (assistant / user).
   if (type) {
@@ -295,7 +295,7 @@ function claudeExtractQuotableText(category: MessageCategory, parsed: ParsedMess
  * only this plugin knows how to read are handled here before the shared fallback: a
  * self-displaying control response (AskUserQuestion / ExitPlanMode answer) re-emitted as a
  * `message.content[]` tool_result, and a transcript user row nesting its text under
- * `{message:{content:"..."}}`. The Leapmux-neutral `{content}` user send falls back to the shared
+ * `{message:{content:"..."}}`. The LeapMux-neutral `{content}` user send falls back to the shared
  * defaultMarkPreview. A persisted `{controlResponse}` row never reaches here -- it classifies as
  * `control_response` and the rail resolves its preview through the plugin's controlResponseDisplay
  * (chatMarkPreview.ts), before previewText runs.

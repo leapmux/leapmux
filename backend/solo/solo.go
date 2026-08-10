@@ -1118,7 +1118,7 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 // max-connections-per-user and max-workers-per-user are here because solo is the
 // mode where they actually bind. Every socket belongs to the one local user: an
 // active tab holds two leases, and the desktop app, any CLI `remote` session and
-// every worker's remoteipc watcher draw on the same allowance, so the default of
+// every worker's controlipc watcher draw on the same allowance, so the default of
 // 32 is well under 16 tabs. A user who hits it is told to close a tab, which is
 // the one piece of advice a --help with no such flag cannot act on.
 //

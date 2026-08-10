@@ -12,7 +12,7 @@ import { truncatePreview } from '~/lib/textTruncate'
 // `defaultMarkPreview` as the fallback for its `Provider.previewText` WITHOUT pulling in
 // the plugin registry / classifier (chatMarkPreview.ts, which orchestrates the plugins) --
 // that would be a module-init cycle. Provider-specific extraction lives in each plugin's
-// `previewText`; this covers only the Leapmux-neutral marked shapes.
+// `previewText`; this covers only the LeapMux-neutral marked shapes.
 // ---------------------------------------------------------------------------
 
 // The control-response display labels moved to persistedControlResponse.ts (the leaf that owns
@@ -22,7 +22,7 @@ import { truncatePreview } from '~/lib/textTruncate'
 
 /**
  * Provider-NEUTRAL preview extractor and shared fallback for every provider's
- * {@link Provider.previewText}. Handles only the Leapmux-neutral user-send shape: the app persists
+ * {@link Provider.previewText}. Handles only the LeapMux-neutral user-send shape: the app persists
  * user sends (and forwarded plan-prompt feedback) as `{content:"..."}` regardless of provider.
  * Provider-specific shapes (e.g. Claude's Anthropic tool_result blocks and its `{message:{content}}`
  * transcript envelope) are handled by that provider's `previewText` BEFORE it falls back here.
@@ -34,7 +34,7 @@ export function defaultMarkPreview(_category: MessageCategory, parsed: ParsedMes
   if (!obj)
     return null
 
-  // User-typed input: the Leapmux-neutral `{content:"..."}` shape (every provider).
+  // User-typed input: the LeapMux-neutral `{content:"..."}` shape (every provider).
   // Assistant messages store `content` as a block array, so a string test here
   // never mis-picks them.
   const content = pickString(obj, 'content', '')

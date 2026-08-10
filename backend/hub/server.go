@@ -481,7 +481,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle("/metrics", promhttp.Handler())
 
 	// Unauthenticated /version endpoint. Exposes the hub's build
-	// identity so `leapmux remote version` can report both CLI and
+	// identity so `leapmux control version` can report both CLI and
 	// hub versions without needing an authenticated session.
 	mux.HandleFunc("/version", versionHandler)
 

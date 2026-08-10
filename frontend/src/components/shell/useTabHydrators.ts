@@ -15,7 +15,7 @@ import { protoToAgentTabFields, tabKey, terminalMetadata } from '~/stores/tab.he
  * The hub strips file paths and agent/terminal payloads from the
  * userevents stream — those live behind E2EE on the worker. Without
  * these hydrators a tab opened by another client (or by the
- * `leapmux remote tab open` CLI) renders as a bare CRDT row until the
+ * `leapmux control tab open` CLI) renders as a bare CRDT row until the
  * user clicks it.
  *
  * `createTabHydration` factors out the membership-set + in-flight-set
@@ -385,7 +385,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): void {
   // AGENT: ListAgents fetches the agent record for tabs that arrived
   // via the CRDT projection without going through this client's local
   // OpenAgent response (e.g. another browser tab, or the
-  // `leapmux remote tab open` CLI). Without this, AGENT tabs render as
+  // `leapmux control tab open` CLI). Without this, AGENT tabs render as
   // "Agent not found." because the tab carries only the CRDT-driven
   // tile/position/worker fields. Batched per worker so opening a
   // workspace with N agents on the same worker costs one ListAgents

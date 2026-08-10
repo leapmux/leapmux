@@ -1005,7 +1005,7 @@ describe('workspaceTabTree interactions', () => {
    * held when the tree last rebuilt.
    *
    * The user-visible shape: a tab that reaches the sidebar before its worker
-   * metadata (a peer client's tab, a `leapmux remote tab open`, a cold reload,
+   * metadata (a peer client's tab, a `leapmux control tab open`, a cold reload,
    * or a hydration reply landing after a status push already settled the git
    * fields) rendered as the bare "Agent" label with the generic bot icon, and
    * stayed that way until an unrelated tab forced a rebuild.

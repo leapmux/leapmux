@@ -379,7 +379,7 @@ export function useUserEvents(opts: UseUserEventsOpts): UserEventsHook {
     // and replayed under a wider one can miss ops, and with cross-tab cursors
     // two tabs need not even agree on what the filter was. Suppressing the
     // cursor costs one full snapshot and removes the URL half of that pairing.
-    // It is also what both in-tree Go narrowing callers already do: remoteipc's
+    // It is also what both in-tree Go narrowing callers already do: controlipc's
     // hub_stream and the remote CLI client each pass their workspace ids with a
     // nil cursor.
     //

@@ -234,7 +234,7 @@ describe('classifyMessage', () => {
   // -- control_response -----------------------------------------------------
 
   it('classifies a persisted control-response row as control_response for EVERY provider (before plugin dispatch)', () => {
-    // The {isSynthetic, controlResponse} row is a Leapmux-neutral synthetic shape classified once in
+    // The {isSynthetic, controlResponse} row is a LeapMux-neutral synthetic shape classified once in
     // classifyMessage -- not per plugin -- so it resolves identically for every provider and a new
     // plugin can't forget it. Exercise a spread of provider plugins (Claude / Codex / an ACP question
     // provider / Pi / Cursor) through the real dispatch.

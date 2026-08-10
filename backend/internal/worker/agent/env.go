@@ -51,7 +51,7 @@ var agentIdentityEnvScrubKeys = []string{
 // process needs in one place: strips inherited agent-harness identity
 // vars (see agentIdentityEnvScrubKeys) so a worker launched from inside
 // another agent's session doesn't spawn a nested one, strips any
-// inherited `LEAPMUX_REMOTE_*` values so a worker spawned inside another
+// inherited `LEAPMUX_CONTROL_*` values so a worker spawned inside another
 // worker's session never inherits the parent's remote context (any
 // fresh values arrive via opts.ExtraEnv), PINS the `LEAPMUX_WORKER=1`
 // marker (downstream CLI/agent code keys off it to detect "running
@@ -74,12 +74,12 @@ var agentIdentityEnvScrubKeys = []string{
 //
 // Provider-specific env additions (CLAUDE_CODE_ENTRYPOINT, CODEX_CI,
 // etc.) go BEFORE this call so they survive both the identity scrub and
-// the LEAPMUX_REMOTE_* strip and stack with the marker.
+// the LEAPMUX_CONTROL_* strip and stack with the marker.
 func FinalizeAgentEnv(env []string, opts Options) []string {
 	// Both scrubs must run before the ExtraEnv append so opts.ExtraEnv's
-	// fresh LEAPMUX_REMOTE_* values aren't stripped.
+	// fresh LEAPMUX_CONTROL_* values aren't stripped.
 	env = envutil.FilterEnv(env, agentIdentityEnvScrubKeys...)
-	env = envutil.StripByPrefix(env, "LEAPMUX_REMOTE_")
+	env = envutil.StripByPrefix(env, "LEAPMUX_CONTROL_")
 	// PinEnv, not append: every caller hands us an inherited environment, and a
 	// worker launched from a LeapMux terminal or agent already carries both of
 	// these -- so appending would layer a second entry rather than replace the

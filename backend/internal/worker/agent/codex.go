@@ -218,7 +218,7 @@ func StartCodex(ctx context.Context, opts Options, sink OutputSink) (Agent, erro
 	a.availableModels = a.queryAvailableModels(timeout)
 
 	// 6. Refresh from the CLI so the persisted effort reflects the value
-	// Codex actually applied — especially important when Leapmux resolved
+	// Codex actually applied — especially important when LeapMux resolved
 	// the effort option to "auto" and sent thread/start without the field.
 	// The readback broadcasts through the sink, which writes back to the
 	// agents table.
@@ -886,7 +886,7 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 		}
 		// Reverse effort order so highest appears first, and split
 		// the server description into a short label + tooltip. Prepend
-		// the Leapmux-side "auto" sentinel so users can pick it from
+		// the LeapMux-side "auto" sentinel so users can pick it from
 		// the UI even though the CLI never reports it.
 		raw := m.SupportedReasoningEfforts
 		efforts := make([]*EffortInfo, 0, len(raw)+1)
@@ -935,8 +935,8 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 }
 
 // Default Codex efforts (auto first, then strongest → weakest) used as
-// static fallback. "auto" is a Leapmux-side sentinel: the CLI never reports
-// or accepts it, but selecting it causes Leapmux to omit reasoning_effort
+// static fallback. "auto" is a LeapMux-side sentinel: the CLI never reports
+// or accepts it, but selecting it causes LeapMux to omit reasoning_effort
 // so Codex applies its own default.
 var codexDefaultEfforts = []*EffortInfo{
 	{Id: EffortAuto, Name: "Auto", Description: "Let Codex decide the appropriate effort"},

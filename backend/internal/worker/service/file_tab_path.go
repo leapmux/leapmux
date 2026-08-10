@@ -42,7 +42,7 @@ func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathPa
 	// would store "." and hand every reader below -- linkFileTabToWorktree,
 	// getTabWorkingDir, the branch-sibling scan -- a `git -C .` that answers for
 	// whatever repo the worker process happens to sit in. Both callers already
-	// promise absolute (`leapmux remote tab open --path` documents it, and the
+	// promise absolute (`leapmux control tab open --path` documents it, and the
 	// UI sends a tree path), so this refuses a caller that broke its contract
 	// instead of silently binding the tab to the wrong repository.
 	if !filepath.IsAbs(p.FilePath) {
@@ -82,9 +82,9 @@ func (s *FileTabPathStore) Register(ctx context.Context, p RegisterFileTabPathPa
 
 // resolveFileTabWorkingDir picks the working dir a file tab is stored with:
 // the originating tab's, or the file's own directory when the caller has no
-// originating tab to name. The UI always names one; `leapmux remote tab open
+// originating tab to name. The UI always names one; `leapmux control tab open
 // --type=file` names the spawning tab's dir when it runs inside one
-// ($LEAPMUX_REMOTE_WORKING_DIR) and nothing when run from a plain shell, which
+// ($LEAPMUX_CONTROL_WORKING_DIR) and nothing when run from a plain shell, which
 // is the case the fallback exists for.
 //
 // Normalizing HERE, once at write time, is what lets every reader --

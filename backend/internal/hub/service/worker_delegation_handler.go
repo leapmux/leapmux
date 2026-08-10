@@ -143,7 +143,7 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 	// workspace_tab_owned. This is the authorization check: any worker can
 	// call mint, but only for tabs it actually hosts.
 	//
-	// Lazy-mint races AddTab: an agent may invoke `leapmux remote ...`
+	// Lazy-mint races AddTab: an agent may invoke `leapmux control ...`
 	// the moment its process starts, which can be before the worker's
 	// AddTab call has committed at the hub. Poll with bounded backoff
 	// instead of failing immediately so the common case ("agent acts

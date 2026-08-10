@@ -108,7 +108,7 @@ func TestPublicAndDelegationListsAreDisjoint(t *testing.T) {
 // worker->hub RPC must be called from this package whatever mechanism it
 // authenticates with, so deriving from here covers all of them and any fourth.
 //
-// Deliberately NOT scanned: internal/worker/remoteipc, whose HubBridge and
+// Deliberately NOT scanned: internal/worker/controlipc, whose HubBridge and
 // HubEventStreamer call hub RPCs on a USER's behalf with a delegation bearer. Those
 // carry an ordinary user credential the interceptor parses, so exempting them would
 // widen the bypass rather than describe it.

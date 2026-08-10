@@ -101,7 +101,7 @@ func (s *WorkspaceService) GetTab(
 // LocateTab finds a tab by (tab_type, tab_id) without a workspace
 // filter. The store layer scopes the search to workspaces the user
 // owns, so the lookup is safe without leaking other users' tabs. Used
-// by the `leapmux remote` CLI to derive a spawning tab's full context
+// by the `leapmux control` CLI to derive a spawning tab's full context
 // (workspace / tile / worker) from just the env-injected tab id.
 func (s *WorkspaceService) LocateTab(
 	ctx context.Context,

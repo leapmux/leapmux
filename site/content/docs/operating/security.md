@@ -62,7 +62,7 @@ A few specifics worth internalizing:
 - **Workspace titles are visible, agent content is not.** Name your workspaces with that in mind. Tab positions and tiling geometry are layout metadata the Hub stores so your arrangement can sync across devices (see [Device Sync & Presence](/docs/using/collaboration/)).
 - **Worker public keys are visible; private keys never leave the Worker.** The Worker registers only its public composite key with the Hub. Its private halves stay in the Worker's local state.
 - **Agent and terminal state live only in the Worker's local SQLite database.** It is never uploaded to the Hub. This includes agent and subagent transcripts, to-do lists, and the background-task registry. See [Encryption & Data](/docs/operating/encryption-and-data/) for where that data lives and how to back it up.
-- **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or heartbeats. A different component does send one: `leapmux remote` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself.
+- **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or heartbeats. A different component does send one: `leapmux control` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself.
 
 ## The E2EE protocol
 
@@ -108,7 +108,7 @@ The Hub enforces resource limits **without decrypting**: it caps the reassembled
 
 **In-band rekey** rotates the channel's transport keys without closing it. The initiator proposes fresh key material — a new classical ephemeral and, on post-quantum channels, fresh ML-KEM material — keeps sending under the current key until the peer acknowledges, and only then switches. Both sides mix fresh Diffie–Hellman *and* post-quantum entropy into the next epoch, so compromising one epoch's key does not yield the next.
 
-The exchange travels inside the already-encrypted channel, so the current cipher authenticates it and no extra signature is needed; the Hub relays it without decrypting, as it does everything else. A refused rekey leaves both sides on their existing keys. A short key-overlap window (~10 s) lets frames a peer encrypted just before the swap still decrypt afterwards, so traffic keeps flowing across the round trip — the Frontend, `leapmux remote`, cross-worker links, and the desktop app's tunnels all share this, which is why port-forwards and SOCKS sessions survive hourly rotation without a stall.
+The exchange travels inside the already-encrypted channel, so the current cipher authenticates it and no extra signature is needed; the Hub relays it without decrypting, as it does everything else. A refused rekey leaves both sides on their existing keys. A short key-overlap window (~10 s) lets frames a peer encrypted just before the swap still decrypt afterwards, so traffic keeps flowing across the round trip — the Frontend, `leapmux control`, cross-worker links, and the desktop app's tunnels all share this, which is why port-forwards and SOCKS sessions survive hourly rotation without a stall.
 
 Hub credential expiry still bounds bearer-token channels from the outside: CLI access tokens and delegation tokens live one hour. Desktop tunnels authorized by a sliding session cookie can stay open for days, and rekey is what bounds their *key epoch* without resetting multiplexed TCP connections. Hard nonce exhaustion remains fail-closed. The Frontend re-checks key age the next time it uses a channel, on a one-minute idle timer, and again when the page wakes from suspend — so a frozen clock cannot hide an over-age key. A rekey refused for being too early tells the initiator how long to wait rather than leaving it to guess.
 
@@ -146,13 +146,13 @@ Two details are worth knowing, because both are easy to assume wrong:
 
 Teardown is immediate when the Hub handling the request is also the one holding the channel — logout, password change, and in-process token revocation land at once. Admin CLI operations (account deletion, force-logout) run in a separate process, so they reach the Hub through a durable revocation ledger that every Hub replays. That is what makes revocation work across a multi-Hub deployment, at the cost of a brief propagation delay rather than a synchronous kill.
 
-See [Admin CLI](/docs/operating/admin-cli/) for token revocation and [Remote Control CLI](/docs/operating/remote-control-cli/) for how delegation tokens are used.
+See [Admin CLI](/docs/operating/admin-cli/) for token revocation and [Remote Control CLI](/docs/operating/control-cli/) for how delegation tokens are used.
 
 ### What a delegation token can reach
 
 A Worker mints a delegation token for the agent running in one of its tabs. The token carries the identity of that Worker's **owner** — the single user the Worker is registered to — and is bounded to the machines it may reach: the Worker that minted it, plus that owner's other Workers. It can never be aimed at someone else's machine. The bound is re-checked every time the token opens a channel, not only when it was minted.
 
-On those machines the token can do whatever its owner could do from a browser. That includes the Worker RPCs that act on the machine rather than on a single tab — filesystem, git, tunnels, system info. Their scope is the whole host: paths are normalized and traversal is blocked, but nothing confines them to one project directory. This is how `leapmux remote` normally works. It is also the exposure to weigh before you point a prompt-injectable agent at a Worker.
+On those machines the token can do whatever its owner could do from a browser. That includes the Worker RPCs that act on the machine rather than on a single tab — filesystem, git, tunnels, system info. Their scope is the whole host: paths are normalized and traversal is blocked, but nothing confines them to one project directory. This is how `leapmux control` normally works. It is also the exposure to weigh before you point a prompt-injectable agent at a Worker.
 
 Every Worker RPC that touches data is **owner-only**: a Worker serves nobody but the user it is registered to. Because that is exactly one user, "the caller owns this Worker" and "the caller owns every tab this Worker holds" are the same statement. The one exception is the liveness ping, which does no work and discloses nothing.
 
@@ -194,7 +194,7 @@ It displays an **Expected:** fingerprint and an **Actual:** fingerprint, and war
 In the browser, the pin is kept for one year and refreshed on use. Pin management from the browser UI is limited; for the non-browser clients there are dedicated CLI pin stores covered in [Managing Workers](/docs/operating/managing-workers/):
 
 - Worker-to-Worker (cross-worker) pins, cleared with `leapmux worker cross-worker-pins remove --target-worker-id=<id>`.
-- `leapmux remote` CLI pins, cleared with `leapmux remote worker pins remove --worker-id=<id>`.
+- `leapmux control` CLI pins, cleared with `leapmux control worker pins remove --worker-id=<id>`.
 
 Both follow the same rule: first contact auto-pins, any later mismatch aborts the connection until you explicitly clear the pin.
 

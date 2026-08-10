@@ -67,14 +67,14 @@ type Service struct {
 	Output   *OutputHandler  // Agent output NDJSON processor
 
 	// RemoteIPC supplies per-agent local-IPC servers for the
-	// `leapmux remote` CLI. Nil disables remote control (env vars are
+	// `leapmux control` CLI. Nil disables remote control (env vars are
 	// not injected and no socket is created).
 	//
-	// It is NOT part of Config: remoteipc.Factory takes the Service as its
+	// It is NOT part of Config: controlipc.Factory takes the Service as its
 	// Authorizers, so it cannot be built until New has returned. Bootstrap
 	// assigns it before RegisterAll, which keeps it inside this block's
 	// contract.
-	RemoteIPC RemoteIPCFactory
+	ControlIPC ControlIPCFactory
 
 	startAgentFn        func(context.Context, agent.Options, agent.OutputSink) (map[string]string, error)
 	startTerminalFn     func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
@@ -224,7 +224,7 @@ type cleanupRegistry struct {
 	m  map[string]func()
 	// claimed holds ids whose row exists but whose cleanup has not been
 	// registered yet -- the startup window between createAgentRecord / the
-	// terminal upsert and spawnRemoteIPC's register call.
+	// terminal upsert and spawnControlIPC's register call.
 	claimed map[string]struct{}
 	// closedWhileClaimed holds claimed ids that run() was called for before their
 	// cleanup arrived. register() sees the mark and retires the new resource
@@ -301,7 +301,7 @@ func (r *cleanupRegistry) run(id string) {
 	}
 }
 
-// spawnRemoteIPC mints LEAPMUX_REMOTE_* env vars and registers the
+// spawnControlIPC mints LEAPMUX_CONTROL_* env vars and registers the
 // matching cleanup so a later close (or pre-restart re-mint) retires
 // the token. kind is the user-facing tab type ("agent" or "terminal")
 // — embedded in the log message and the slog id field. phase is an
@@ -313,16 +313,16 @@ func (r *cleanupRegistry) run(id string) {
 // It returns a non-nil error ONLY for ErrMissingIdentity, which is
 // fatal: callers MUST abort the spawn rather than continue without
 // remote control, because a tab started as nobody surfaces to the user
-// as an unrelated "socket not configured" error from `leapmux remote`
+// as an unrelated "socket not configured" error from `leapmux control`
 // with nothing naming the cause. The factory call is supplied as a closure so the
 // generic helper doesn't have to know about the AgentSpawnInfo /
 // TerminalSpawnInfo type split.
-func (svc *Service) spawnRemoteIPC(
+func (svc *Service) spawnControlIPC(
 	kind, tabID, phase string,
 	register func(string, func()),
 	call func() ([]string, func(), error),
 ) ([]string, error) {
-	if svc.RemoteIPC == nil {
+	if svc.ControlIPC == nil {
 		return nil, nil
 	}
 	envs, cleanup, err := call()
@@ -334,7 +334,7 @@ func (svc *Service) spawnRemoteIPC(
 		// A missing identity is FATAL, not degradable. Every other factory
 		// failure loses remote control and keeps the tab; this one would start
 		// the tab as nobody, and the symptom the user hits is an unrelated
-		// "socket not configured" error from `leapmux remote` with nothing
+		// "socket not configured" error from `leapmux control` with nothing
 		// naming the cause. Fail the spawn so it reports itself.
 		if errors.Is(err, ErrMissingIdentity) {
 			slog.Error("remote IPC spawn has no user identity; refusing to start "+kind, attrs...)

@@ -45,7 +45,7 @@ func (h *APIAuthHandler) handleStart(w http.ResponseWriter, r *http.Request) {
 
 	page := fmt.Sprintf(`<!doctype html><html><body style="font-family:sans-serif;max-width:480px;margin:48px auto;">
 <h1>Authorize CLI access?</h1>
-<p>The leapmux remote CLI on <strong>%s</strong> is requesting access to your account (<strong>%s</strong>).</p>
+<p>The leapmux control CLI on <strong>%s</strong> is requesting access to your account (<strong>%s</strong>).</p>
 <form method="POST" action="/auth/cli/authorize">
   <input type="hidden" name="redirect_uri" value="%s"/>
   <input type="hidden" name="state" value="%s"/>

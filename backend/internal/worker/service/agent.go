@@ -157,7 +157,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 
 			// The row is durable, so a reap can now find it -- but its cleanup is
-			// only registered by spawnRemoteIPC below. Claim it so a close landing
+			// only registered by spawnControlIPC below. Claim it so a close landing
 			// in that window is remembered and the cleanup fires the moment it
 			// arrives, instead of being stored for a tab nobody will close again.
 			svc.agentCleanups.claim(agentID)
@@ -173,8 +173,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			startupCtx, cancel := context.WithCancel(context.Background())
 			startupHandle := svc.AgentStartup.begin(agentID, cancel)
 
-			remoteEnvs, err := svc.spawnRemoteIPC("agent", agentID, "", svc.agentCleanups.register, func() ([]string, func(), error) {
-				return svc.RemoteIPC.AgentSpawning(AgentSpawnInfo{
+			remoteEnvs, err := svc.spawnControlIPC("agent", agentID, "", svc.agentCleanups.register, func() ([]string, func(), error) {
+				return svc.ControlIPC.AgentSpawning(AgentSpawnInfo{
 					UserID:        userID,
 					WorkerID:      svc.WorkerID,
 					TabID:         agentID,
