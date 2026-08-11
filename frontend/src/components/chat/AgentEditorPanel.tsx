@@ -41,6 +41,15 @@ import { useChatAttachments } from './useChatAttachments'
 import { useEditorMinHeight } from './useEditorMinHeight'
 import { ContextUsageGrid } from './widgets/ContextUsageGrid'
 
+/**
+ * The reason assumed when a disabled composer names none.
+ *
+ * It lives HERE, in the component that resolves it, rather than in the editor's
+ * keyboard-plugin module: this panel is the one place that answers "why is this
+ * composer dead", and every surface that states it takes the resolved string.
+ */
+export const DEFAULT_DISABLED_PLACEHOLDER = 'Connection to the agent was lost.'
+
 export interface AgentEditorPanelProps {
   agentId: string
   agent?: AgentInfo
@@ -105,6 +114,16 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const interruptLoading = createLoadingSignal()
 
   const currentProviderLabel = () => agentProviderLabel(props.agent?.agentProvider)
+
+  // The reason the composer is dead, resolved ONCE. Both surfaces that state it
+  // -- the editor's placeholder and the [+] menu's attach item -- take this
+  // resolved string rather than the raw prop, so an absent reason cannot become
+  // two different defaults applied in two leaves.
+  //
+  // There is no separate note above the box. The placeholder sits INSIDE the
+  // box the reason is about, so a note above it repeated the same sentence a
+  // few pixels higher.
+  const disabledReason = () => props.disabledHint || DEFAULT_DISABLED_PLACEHOLDER
   const preferences = usePreferences()
 
   const att = useChatAttachments({
@@ -325,11 +344,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         class={styles.inputArea}
         data-no-status-bar={preferences.showComposerStatusBar() ? undefined : ''}
       >
-        <Show when={props.disabled && props.disabledHint}>
-          <div class={styles.disabledHint} data-testid="composer-disabled-hint">
-            {props.disabledHint}
-          </div>
-        </Show>
         <Show when={!ctrl.activeControlRequest()}>
           <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
         </Show>
@@ -350,9 +364,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           }}
           onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
           disabled={props.disabled}
-          // Same string in the box as in the hint above it: the reason the
-          // composer is dead is stated once, so the two can never disagree.
-          disabledPlaceholder={props.disabledHint}
+          disabledPlaceholder={disabledReason()}
           onTogglePlanMode={ctrl.togglePlanMode}
           requestedHeight={editorMinHeightSignal()}
           maxHeight={editorHeight.maxEditorHeight()}
@@ -425,7 +437,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               onAttachFile={() => fileInputRef?.click()}
               canAttach={!ctrl.activeControlRequest()}
               disabled={props.disabled}
-              disabledReason={props.disabledHint}
+              disabledReason={disabledReason()}
               settingsLoading={props.settingsLoading}
               branchName={props.agent?.gitStatus?.branch || undefined}
               onChangeBranch={() => props.onChangeBranch?.()}

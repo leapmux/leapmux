@@ -20,6 +20,8 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -548,6 +550,16 @@ func (svc *Service) RestoreState() {
 	// the same stamp (the in-memory caches do not exist yet at boot, so there is
 	// no cache/DB drift to guard here -- this is purely for uniform labeling).
 	bootNow := nowMillis()
+	// Read the child transcripts BEFORE the sweep: afterwards those rows are no
+	// longer active and the query returns nothing. Each one gets a closing
+	// divider below, for the same reason the exit sweep writes one -- a subagent
+	// cut off by a worker restart would otherwise show an 'interrupted' row in
+	// the sidebar beside a transcript that just stops, and the tab would keep a
+	// thinking indicator that never resolves.
+	endedChildIDs, err := svc.Queries.ListActiveChildAgentIDs(bgCtx())
+	if err != nil {
+		slog.Warn("list active child agents for boot sweep failed", "error", err)
+	}
 	if n, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
 		EndedAt:   sqltime.SQLiteNullTimeOf(bootNow),
 		UpdatedAt: sqltime.NewSQLiteTime(bootNow),
@@ -555,6 +567,7 @@ func (svc *Service) RestoreState() {
 		slog.Warn("mark active background tasks interrupted failed", "error", err)
 	} else if n > 0 {
 		slog.Info("marked background tasks interrupted on boot", "count", n)
+		svc.Output.WriteSubagentEndDividers(endedChildIDs, bgtask.StatusInterrupted)
 	}
 	svc.Output.restoreAutoContinueSchedules()
 }

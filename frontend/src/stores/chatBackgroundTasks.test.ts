@@ -6,13 +6,14 @@ import {
   backgroundTaskEndLabel,
   backgroundTaskEndTooltip,
   backgroundTaskStatusLabel,
+  chipTasksFor,
   countActiveBackgroundTasks,
-  countActiveSubagentTask,
   groupBackgroundTasks,
   isActiveBackgroundTaskStatus,
-  isTerminalBackgroundTaskStatus,
   protoBackgroundTaskToStore,
+  rootWorkState,
   sortBackgroundTasks,
+  subagentWorkState,
 } from '~/stores/chatBackgroundTasks'
 
 function proto(over: { id: string, kind?: BackgroundTaskKind, status: BackgroundTaskStatus, title?: string, activeForm?: string }): ProtoBackgroundTaskItem {
@@ -124,21 +125,19 @@ describe('backgroundTaskEndTooltip', () => {
   })
 })
 
-describe('isActive/isTerminal', () => {
+describe('isActiveBackgroundTaskStatus', () => {
   it('active = pending|running', () => {
     expect(isActiveBackgroundTaskStatus('pending')).toBe(true)
     expect(isActiveBackgroundTaskStatus('running')).toBe(true)
-    expect(isActiveBackgroundTaskStatus('completed')).toBe(false)
   })
 
-  it('terminal = completed|failed|stopped|interrupted', () => {
-    expect(isTerminalBackgroundTaskStatus('completed')).toBe(true)
-    expect(isTerminalBackgroundTaskStatus('interrupted')).toBe(true)
-    expect(isTerminalBackgroundTaskStatus('running')).toBe(false)
+  it('every finished status is inactive', () => {
+    for (const status of ['completed', 'failed', 'stopped', 'interrupted'] as const)
+      expect(isActiveBackgroundTaskStatus(status)).toBe(false)
   })
 })
 
-describe('countActiveSubagentTask', () => {
+describe('subagentWorkState', () => {
   const row = (over: Partial<BackgroundTaskItem>): BackgroundTaskItem => ({
     rowKey: 'r',
     kind: 'subagent',
@@ -148,38 +147,101 @@ describe('countActiveSubagentTask', () => {
     ...over,
   })
 
-  it('counts this child while its own row is running', () => {
-    expect(countActiveSubagentTask('child-1', [row({ childAgentId: 'child-1' })])).toBe(1)
+  it('is active while this child\'s own row is running', () => {
+    expect(subagentWorkState('child-1', [row({ childAgentId: 'child-1' })])).toBe('active')
   })
 
-  it('counts a pending row as active', () => {
-    expect(countActiveSubagentTask('child-1', [row({ childAgentId: 'child-1', status: 'pending' })])).toBe(1)
+  it('is active while the row is pending', () => {
+    expect(subagentWorkState('child-1', [row({ childAgentId: 'child-1', status: 'pending' })])).toBe('active')
   })
 
-  it('drops to zero once this child reaches a terminal status', () => {
+  // 'finished', not 'unknown': the row is the authoritative record of this
+  // subagent's life, so the caller must stop rather than fall through to a
+  // transcript heuristic that would report a stopped subagent as working.
+  it('is finished once this child reaches a final status', () => {
     for (const status of ['completed', 'failed', 'stopped', 'interrupted'] as const)
-      expect(countActiveSubagentTask('child-1', [row({ childAgentId: 'child-1', status })])).toBe(0)
+      expect(subagentWorkState('child-1', [row({ childAgentId: 'child-1', status })])).toBe('finished')
   })
 
   // The whole point: a sibling still working must not keep this child's
   // indicator alive.
   it('ignores a sibling subagent that is still running', () => {
-    expect(countActiveSubagentTask('child-1', [
+    expect(subagentWorkState('child-1', [
       row({ rowKey: 'a', childAgentId: 'child-1', status: 'completed' }),
       row({ rowKey: 'b', childAgentId: 'child-2', status: 'running' }),
-    ])).toBe(0)
+    ])).toBe('finished')
   })
 
-  it('answers zero when this child has no row yet', () => {
-    expect(countActiveSubagentTask('child-1', [])).toBe(0)
-    expect(countActiveSubagentTask('child-1', [row({ childAgentId: 'child-2' })])).toBe(0)
+  it('is unknown when this child has no row yet', () => {
+    expect(subagentWorkState('child-1', [])).toBe('unknown')
+    expect(subagentWorkState('child-1', [row({ childAgentId: 'child-2' })])).toBe('unknown')
   })
 
-  it('never counts more than the one row, even with duplicates', () => {
-    expect(countActiveSubagentTask('child-1', [
+  it('reads the first matching row, even with duplicates', () => {
+    expect(subagentWorkState('child-1', [
       row({ rowKey: 'a', childAgentId: 'child-1' }),
       row({ rowKey: 'b', childAgentId: 'child-1' }),
-    ])).toBe(1)
+    ])).toBe('active')
+  })
+})
+
+describe('chipTasksFor', () => {
+  const row = (over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem => ({
+    kind: 'subagent',
+    title: 't',
+    activity: '',
+    status: 'running',
+    ...over,
+  })
+
+  // The registry is keyed by ROOT owner, so a child tab handed the whole thing
+  // showed its PARENT's count -- siblings, and its own row, included.
+  it('gives a child only the rows it spawned, never its own', () => {
+    const tasks = [
+      row({ rowKey: 'self', childAgentId: 'child-1', parentAgentId: 'root-1' }),
+      row({ rowKey: 'sibling', childAgentId: 'child-2', parentAgentId: 'root-1' }),
+      row({ rowKey: 'mine', parentAgentId: 'child-1' }),
+      row({ rowKey: 'grandchild', parentAgentId: 'child-2' }),
+    ]
+    expect(chipTasksFor('child-1', tasks, true).map(t => t.rowKey)).toEqual(['mine'])
+  })
+
+  it('is empty for a child that spawned nothing', () => {
+    const tasks = [row({ rowKey: 'self', childAgentId: 'child-1', parentAgentId: 'root-1' })]
+    expect(chipTasksFor('child-1', tasks, true)).toEqual([])
+  })
+
+  // A root owns the registry, so its chip keeps rolling up every descendant --
+  // the behaviour it has always had.
+  it('gives a root the whole registry, descendants included', () => {
+    const tasks = [
+      row({ rowKey: 'direct', parentAgentId: 'root-1' }),
+      row({ rowKey: 'grandchild', parentAgentId: 'child-1' }),
+    ]
+    expect(chipTasksFor('root-1', tasks, false).map(t => t.rowKey)).toEqual(['direct', 'grandchild'])
+  })
+})
+
+describe('rootWorkState', () => {
+  const row = (over: Partial<BackgroundTaskItem>): BackgroundTaskItem => ({
+    rowKey: 'r',
+    kind: 'subagent',
+    title: 't',
+    activity: '',
+    status: 'running',
+    ...over,
+  })
+
+  it('is active while any row is running', () => {
+    expect(rootWorkState([row({ status: 'completed' }), row({ rowKey: 'b' })])).toBe('active')
+  })
+
+  // Never 'finished'. A root with no running subagent may still be mid-turn on
+  // its own, which the registry knows nothing about -- reporting finished here
+  // would hide the indicator for every ordinary turn.
+  it('is unknown, never finished, when nothing is running', () => {
+    expect(rootWorkState([])).toBe('unknown')
+    expect(rootWorkState([row({ status: 'completed' })])).toBe('unknown')
   })
 })
 

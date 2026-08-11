@@ -116,11 +116,16 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 	if title == "" {
 		title = input.SubagentType
 	}
+	// No Prompt. OpenCode and Kilo are registry-only -- they drop child sessions
+	// over ACP, so they never report a ChildAgentKey and no child transcript is
+	// ever created. A remembered prompt can only be spent when a transcript
+	// appears, so setting it here would record a string that is never read and
+	// never released. `prompt` still discriminates the spawn shape above; it is
+	// its presence that matters, not its value.
 	return &acpSubagentObservation{
 		RowKey: toolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
-		Prompt: acpPromptString(input.Prompt),
 	}
 }
 
@@ -135,6 +140,18 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 		// tool_call carries `rawInput: {}`), so run the same detection here.
 		// Without it a Kilo spawn produced no registry row at all -- the
 		// terminal update below then closed a row that was never opened.
+		//
+		// A spawn-shaped update that arrives AFTER the terminal one re-creates
+		// the row: the terminal update renames the key to the child session id,
+		// so this upsert finds nothing under the toolCallId and inserts a fresh
+		// Running row that no later event closes. Two things keep that off the
+		// live path -- readOutput dispatches notifications inline on one
+		// goroutine, so the transport neither reorders nor duplicates, and a
+		// `session/load` history replay redelivers the terminal update too, which
+		// renames and closes the re-created row again. The gap is a replay that
+		// is truncated before its terminal update; closing it needs the registry
+		// to remember retired keys, which is not worth the state until such a
+		// replay is observed.
 		return openCodeSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput)
 	}
 	// The terminal rawOutput may carry the child session id under metadata.

@@ -96,7 +96,7 @@ func TestCodex_ParseCollabToolCallCarriesThePrompt(t *testing.T) {
 }
 
 // `prompt` is nullable on the wire for the non-spawn collab tools.
-func TestCodex_ParseCollabToolCallTolueratesNullPrompt(t *testing.T) {
+func TestCodex_ParseCollabToolCallToleratesNullPrompt(t *testing.T) {
 	t.Parallel()
 
 	collab := parseCollabToolCall(json.RawMessage(

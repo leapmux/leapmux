@@ -214,9 +214,16 @@ func (a *ClaudeCodeAgent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 		slog.Warn("claude task_notification status update failed", "task_id", ev.TaskID, "error", err)
 	}
 	// Carry the shell's output_file in the description for later inspection.
+	// Kind is set explicitly: only a shell task reports an output_file, and an
+	// upsert that omits the Kind sends KindUnspecified, which KindWire maps onto
+	// "subagent". If the shell's row was already evicted this upsert recreates
+	// it, and without the Kind it would be recreated in the SUBAGENT cap pool --
+	// letting a shell push a finished subagent out of the pool that per-kind
+	// eviction exists to protect.
 	if ev.OutputFile != "" {
 		_ = a.sink.UpsertBackgroundTask(bgtask.Upsert{
 			RowKey:      ev.TaskID,
+			Kind:        bgtask.KindShell,
 			Description: ev.OutputFile,
 			Status:      status,
 		})

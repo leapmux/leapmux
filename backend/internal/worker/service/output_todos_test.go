@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,10 +30,14 @@ func setupTodoTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentTod
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	// The seed query returns NEWEST first (it feeds a capped cache, which must
+	// keep the newest rows). Reverse here so assertions read the persisted rows
+	// in ascending seq order, which is the order the cache exposes them in.
 	listRows := func() []db.AgentTodo {
 		t.Helper()
-		rows, err := svc.Queries.ListAgentTodos(ctx, db.ListAgentTodosParams{AgentID: "agent-1", Limit: 1000})
+		rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-1", Limit: 1000})
 		require.NoError(t, err)
+		slices.Reverse(rows)
 		return rows
 	}
 	return sink, "agent-1", listRows
@@ -121,14 +126,14 @@ func TestOutputTodos_TaskCreateInsertsRowAfterResult(t *testing.T) {
 	assert.Equal(t, "pending", rows[0].Status)
 }
 
-// TestOutputTodos_ListAgentTodosOrdersBySeqNumeric drives 12 sequential
-// TaskCreate events and asserts that ListAgentTodos returns rows in
+// TestOutputTodos_ListAgentTodosNewestFirstOrdersBySeqNumeric drives 12 sequential
+// TaskCreate events and asserts that ListAgentTodosNewestFirst returns rows in
 // numeric seq order (seq=2 before seq=10), not a lexicographic order
 // where "10" would precede "2". This is the source-of-truth ordering
 // the sidebar and TaskList cards consume — `cache.snapshot()` walks
 // `cache.rows`, which is seeded from this query and appended-at-tail
 // for incremental inserts.
-func TestOutputTodos_ListAgentTodosOrdersBySeqNumeric(t *testing.T) {
+func TestOutputTodos_ListAgentTodosNewestFirstOrdersBySeqNumeric(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupTodoTest(t)
@@ -484,10 +489,14 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
+	// The seed query returns NEWEST first (it feeds a capped cache, which must
+	// keep the newest rows). Reverse here so assertions read the persisted rows
+	// in ascending seq order, which is the order the cache exposes them in.
 	listRows := func() []db.AgentTodo {
 		t.Helper()
-		rows, err := svc.Queries.ListAgentTodos(ctx, db.ListAgentTodosParams{AgentID: "agent-1", Limit: 1000})
+		rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-1", Limit: 1000})
 		require.NoError(t, err)
+		slices.Reverse(rows)
 		return rows
 	}
 

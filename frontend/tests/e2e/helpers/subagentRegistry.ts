@@ -146,22 +146,60 @@ export async function expectRowNotClickable(page: Page, row: Locator): Promise<v
 }
 
 /**
- * Worker-backed: poll `listAgents` until it settles, then assert NO returned
- * agent has `parentAgentId` set (registry-only providers must not create child
- * rows). Returns the agents array on success.
+ * The shared tail of every REGISTRY-ONLY provider spec (172, 173, 175-177):
+ * the row reaches a final status, the section survives it, the row is not
+ * clickable, and the provider linked no child transcript.
+ *
+ * One helper rather than five copies, so a change to what "registry-only"
+ * guarantees -- expectNoChildAgents was rewritten once already, after the
+ * original version turned out to assert nothing -- lands in one place instead
+ * of being pasted a sixth time by the next provider spec.
+ *
+ * `bestEffort` covers the specs that do NOT wait for the agent to go idle
+ * first: their row can still be settling when the tail runs, so a missed
+ * final status is logged rather than failed. The specs that DO wait
+ * (waitForAgentIdle) leave it off and assert strictly.
  */
-export async function expectNoChildAgents(
-  hubUrl: string,
-  token: string,
-  workerId: string,
-  tabIds: string[],
+export async function expectRegistryOnlySubagentEnds(
+  page: Page,
+  row: Locator,
+  opts: { bestEffort?: boolean } = {},
 ): Promise<void> {
-  await expect.poll(async () => {
-    const agents = await listAgents(hubUrl, token, workerId, tabIds)
-    if (!agents)
-      return null
-    return agents.filter((a: { parentAgentId: string }) => a.parentAgentId !== '').length
-  }).toBe(0)
+  const reachedTerminal = expectRowBecomesTerminal(page, row, 'Completed')
+  if (opts.bestEffort)
+    await reachedTerminal.catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
+  else
+    await reachedTerminal
+  await expectSectionPersists(page)
+  await expectRowNotClickable(page, row)
+  await expectNoChildAgents(page)
+}
+
+/**
+ * Assert this provider linked NO child transcript to any of its subagent rows.
+ *
+ * Read off the registry rows, NOT from `listAgents`. `listAgents` resolves
+ * strictly by the ids it is handed, and a registry-only provider's child --
+ * the thing whose absence is under test -- never has a tab, so no id list
+ * assembled from open tabs can contain one. Handing it the open tab ids
+ * therefore asked the worker about the ROOT and filtered its answer for
+ * children, which is 0 whether or not the provider misbehaved: the assertion
+ * could not fail. Reading the rows is not a weaker check, it is the only one
+ * available -- `data-child-agent-id` is the worker's own linkage, broadcast
+ * from the background-task registry rather than derived from CRDT tab state.
+ *
+ * Requires at least one row, so an empty registry (nothing rendered yet, or a
+ * selector that stopped matching) fails loudly instead of passing vacuously
+ * for a second time.
+ */
+export async function expectNoChildAgents(page: Page): Promise<void> {
+  const rows = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]')
+  await expect.poll(async () => rows.count()).toBeGreaterThan(0)
+
+  const childIds = await rows.evaluateAll(els =>
+    els.map(el => el.getAttribute('data-child-agent-id') ?? ''),
+  )
+  expect(childIds.filter(id => id !== '')).toEqual([])
 }
 
 /**
@@ -225,20 +263,4 @@ export async function listAgents(
   catch {
     return null
   }
-}
-
-/**
- * The open agent tabs' ids, read from the rendered tab strip.
- *
- * NOT the hub's ListTabs: tabs live in the user CRDT and the hub's tab
- * projection is empty throughout these runs, so seeding ListAgents from it
- * produced an empty id list -- which made `expectNoChildAgents` pass
- * vacuously and made 174's positive assertion unreachable. The tab strip is
- * the surface the user actually sees, and every id on it is a real agent the
- * worker can be asked about.
- */
-export async function openAgentTabIds(page: Page): Promise<string[]> {
-  const ids = await page.locator('[data-testid="tab"][data-tab-type="agent"]:visible')
-    .evaluateAll(els => els.map(el => el.getAttribute('data-tab-id') ?? ''))
-  return ids.filter(id => id !== '')
 }

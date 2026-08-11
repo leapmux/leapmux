@@ -185,6 +185,17 @@ CREATE TABLE workspace_sections (
     created_at   DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);
+-- One default section of each type per user. section_type = 1 is
+-- SECTION_TYPE_WORKSPACES_CUSTOM, which a user may hold any number of, so the
+-- uniqueness applies to every OTHER type only.
+--
+-- Structural, not procedural: the defaults are written in the same transaction
+-- as the user row and nothing backfills them, so a second signup path that
+-- forgot to seed -- or a read path that seeded on the fly, which is what this
+-- replaced -- used to produce a sidebar with two of every pane, indistinguishable
+-- from one another.
+CREATE UNIQUE INDEX idx_workspace_sections_user_default_type
+    ON workspace_sections(user_id, section_type) WHERE section_type <> 1;
 
 -- Workspaces (hub-owned registry) -- must come before workspace_section_items
 CREATE TABLE workspaces (

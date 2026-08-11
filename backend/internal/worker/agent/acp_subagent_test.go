@@ -577,6 +577,47 @@ func TestACPSubagentPrompt_DroppedWhenTheRowClosesWithNoChild(t *testing.T) {
 	assert.Empty(t, b.subagentPrompts)
 }
 
+// A closing observation that RE-KEYS the row must drop the prompt under the
+// key the spawn used, not under the new one. A provider that learns the child's
+// stable id only on the closing update (OpenCode, Kilo) arrives here with
+// RowKey = the new key and RenameFrom = the spawn key, so forgetting only
+// RowKey deletes an entry that was never inserted and leaves the spawn's own to
+// accumulate for the life of the agent process.
+func TestACPSubagentPrompt_DroppedUnderTheSpawnKeyAfterARename(t *testing.T) {
+	t.Parallel()
+
+	b := &acpBase{sink: &testSink{}}
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey: "call-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
+	})
+	require.Len(t, b.subagentPrompts, 1)
+
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey:     "ses-child",
+		RenameFrom: "call-1",
+		Status:     bgtask.StatusCompleted,
+		CloseRow:   true,
+		Mode:       acpModeCloseOnly,
+	})
+	assert.Empty(t, b.subagentPrompts, "the entry sits under the SPAWN key, not the renamed one")
+}
+
+// Replacing the session drops every unspent prompt: those rows belong to the
+// outgoing session and no closing observation will ever arrive for them, so
+// without this they are held for the life of the agent process.
+func TestACPSubagentPrompt_ClearedWhenTheSessionIsReplaced(t *testing.T) {
+	t.Parallel()
+
+	b := &acpBase{sink: &testSink{}}
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey: "tc-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
+	})
+	require.Len(t, b.subagentPrompts, 1)
+
+	b.clearSubagentPrompts()
+	assert.Empty(t, b.subagentPrompts)
+}
+
 // The spawn's own text wins: a later observation that re-reports a prompt for
 // the same row must not overwrite it.
 func TestACPSubagentPrompt_FirstWriteWins(t *testing.T) {
@@ -603,12 +644,12 @@ func TestACPPromptString(t *testing.T) {
 	assert.Empty(t, acpPromptString(nil))
 }
 
-// Each ACP provider names its spawn payload's task field differently; each
-// detector must read its OWN provider's spelling.
+// Goose is the only ACP provider that opens a child transcript, so it is the
+// only one whose detector reads the spawn's task text. It names that field
+// `instructions` on the delegate tool (summon.rs).
 func TestACPSubagentDetectors_CarryTheSpawnPrompt(t *testing.T) {
 	t.Parallel()
 
-	// Goose: `instructions` on the delegate tool (summon.rs).
 	goose := gooseSubagentFromToolCall(acpToolCallEnvelope{
 		ToolCallID: "tc-1",
 		Title:      "delegate",
@@ -617,22 +658,34 @@ func TestACPSubagentDetectors_CarryTheSpawnPrompt(t *testing.T) {
 	})
 	require.NotNil(t, goose)
 	assert.Equal(t, "Review the diff.", goose.Prompt)
+}
 
-	// OpenCode / Kilo: `prompt` on the task tool (tool/task.ts).
+// A registry-only provider must leave Prompt EMPTY even when its spawn payload
+// carries one. It never reports a ChildAgentKey, so takeSubagentPrompt never
+// runs and the entry can only be dropped by the closing observation -- which
+// Reasonix does not produce at all (it wires no update hook). Recording a
+// prompt here holds a string for the life of the agent process that nothing
+// will ever read.
+func TestACPSubagentDetectors_RegistryOnlyProvidersRecordNoPrompt(t *testing.T) {
+	t.Parallel()
+
+	// OpenCode / Kilo: `prompt` on the task tool (tool/task.ts). Still the spawn
+	// discriminator -- its PRESENCE is what identifies the shape.
 	oc := openCodeSubagentFromToolCall(acpToolCallEnvelope{
 		ToolCallID: "tc-2",
 		RawInput:   json.RawMessage(`{"description":"scan","prompt":"Find the bug.","subagent_type":"general"}`),
 	})
-	require.NotNil(t, oc)
-	assert.Equal(t, "Find the bug.", oc.Prompt)
+	require.NotNil(t, oc, "the prompt field still discriminates the spawn shape")
+	assert.Empty(t, oc.Prompt)
+	assert.Empty(t, oc.ChildAgentKey, "no child transcript means nothing can spend a prompt")
 
-	// Reasonix: `prompt`.
 	rx := reasonixSubagentFromToolCall(acpToolCallEnvelope{
 		ToolCallID: "tc-3",
 		RawInput:   json.RawMessage(`{"description":"scan","prompt":"Trace it."}`),
 	})
 	require.NotNil(t, rx)
-	assert.Equal(t, "Trace it.", rx.Prompt)
+	assert.Empty(t, rx.Prompt)
+	assert.Empty(t, rx.ChildAgentKey)
 }
 
 // A spawn payload with no task text must leave Prompt empty rather than
@@ -671,7 +724,8 @@ func TestACP_OpenCodeSpawnDetectedOnTheInProgressUpdate(t *testing.T) {
 	assert.Equal(t, "call-1", obs.RowKey)
 	assert.Equal(t, "Run echo kilo-done", obs.Title)
 	assert.Equal(t, bgtask.StatusRunning, obs.Status)
-	assert.Equal(t, "Run it.", obs.Prompt)
+	// Registry-only: the prompt discriminates the shape but is not recorded.
+	assert.Empty(t, obs.Prompt)
 	assert.False(t, obs.CloseRow)
 }
 

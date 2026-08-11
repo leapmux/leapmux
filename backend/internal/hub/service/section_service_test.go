@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -60,17 +61,21 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 		connect.WithGRPC(),
 	)
 
-	userID := id.Generate()
 	hash, _ := password.Hash("testpass")
 
-	_ = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:           userID,
+	// Route through CreateUser, the production path, because that is what seeds
+	// the default sections. ListSections only reads: a user made with a bare
+	// Users().Create has no sections at all, and every assertion below would be
+	// measuring the wrong thing.
+	user, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
 		Username:     "testuser",
 		PasswordHash: hash,
 		DisplayName:  "Test",
 		PasswordSet:  true,
 		IsAdmin:      true,
 	})
+	require.NoError(t, err)
+	userID := user.ID
 
 	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
 	require.NoError(t, err)
@@ -83,7 +88,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	}
 }
 
-func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
+func TestSectionService_ListSections_ReturnsSeededDefaults(t *testing.T) {
 	t.Parallel()
 
 	env := setupSectionTest(t)
@@ -92,7 +97,8 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.NoError(t, err)
 
-	// Should auto-create all default sections: In progress, Archived, Workers (left), Files, To-dos (right).
+	// CreateUser seeded all six: In progress, Archived, Workers (left), Files,
+	// To-dos, Background tasks (right).
 	sections := resp.Msg.GetSections()
 	require.Len(t, sections, 6)
 
@@ -165,12 +171,111 @@ func TestSectionService_ListSections_AutoInitializes(t *testing.T) {
 		"each sidebar is ranked independently, so both start at the same first rank")
 }
 
+// ListSections must not write. It used to seed the defaults itself with a
+// check-then-insert that no transaction and no uniqueness constraint
+// serialized, so concurrent callers each saw an empty list and each wrote a
+// full set -- and the sidebar rendered two of every section, with the
+// duplicates indistinguishable from one another.
+//
+// The test starts from a user with NO sections, which is the ONLY state the old
+// code's `if len(sections) == 0` seeding branch reacted to. Leaving the
+// CreateUser-seeded rows in place would make every caller take the non-empty
+// path, so the old implementation would pass this test unchanged -- the
+// concurrency would prove nothing. Starting empty makes the assertion "no
+// section appeared" fail against the old code (which writes 6 to 48 rows here)
+// and hold against a pure read.
+func TestSectionService_ListSections_NeverWrites(t *testing.T) {
+	t.Parallel()
+
+	env := setupSectionTest(t)
+	ctx := context.Background()
+
+	// A SECOND user, created straight through the store, so it has no sections.
+	// A default section cannot be deleted (the query filters section_type = 1,
+	// custom only), so bypassing the seeding is the only way to reach the state
+	// the old code's `if len(sections) == 0` branch reacted to.
+	hash, err := password.Hash("testpass")
+	require.NoError(t, err)
+	bareID := id.Generate()
+	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
+		ID:           bareID,
+		Username:     "unseeded",
+		PasswordHash: hash,
+		DisplayName:  "Unseeded",
+		PasswordSet:  true,
+	}))
+	bareToken, _, _, err := auth.Login(ctx, env.store, "unseeded", "testpass")
+	require.NoError(t, err)
+	userID := userid.MustNew(bareID)
+
+	require.Empty(t, mustListSections(t, env, userID),
+		"the bypassing path must genuinely leave the user unseeded")
+
+	const callers = 8
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, callErr := env.client.ListSections(ctx, authedReq(
+				&leapmuxv1.ListSectionsRequest{}, bareToken))
+			errs <- callErr
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	// Every call must SUCCEED. Without this, a run in which all eight failed
+	// would still satisfy the row-count assertion below.
+	for callErr := range errs {
+		require.NoError(t, callErr)
+	}
+
+	// Read the store directly: the RPC response is derived from it, so a written
+	// row is only provable here.
+	assert.Empty(t, mustListSections(t, env, userID),
+		"ListSections is a pure read; it must create nothing")
+}
+
+// mustListSections reads one user's sections straight from the store, which is
+// where a stray write is provable (the RPC response is derived from it).
+func mustListSections(t *testing.T, env *sectionTestEnv, userID userid.UserID) []store.WorkspaceSection {
+	t.Helper()
+	sections, err := env.store.WorkspaceSections().ListByUserID(context.Background(), userID)
+	require.NoError(t, err)
+	return sections
+}
+
+// The seeded set is exactly one row per default type. A second write path (or a
+// re-run of the seeding) shows up here as a duplicated type rather than only as
+// a moved total.
+func TestSectionService_CreateUser_SeedsOneSectionPerType(t *testing.T) {
+	t.Parallel()
+
+	env := setupSectionTest(t)
+
+	sections := mustListSections(t, env, userid.MustNew(env.userID))
+	require.Len(t, sections, 6)
+
+	perType := map[leapmuxv1.SectionType]int{}
+	for _, sec := range sections {
+		perType[sec.SectionType]++
+	}
+	assert.Len(t, perType, 6, "six distinct default types")
+	for sectionType, count := range perType {
+		assert.Equal(t, 1, count, "%v must exist exactly once", sectionType)
+	}
+}
+
 func TestSectionService_CreateSection(t *testing.T) {
 	t.Parallel()
 
 	env := setupSectionTest(t)
 
-	// Trigger auto-init of default sections.
+	// Load the sections CreateUser seeded.
 	_, _ = env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{}, env.token))
 
@@ -277,7 +382,7 @@ func TestSectionService_DeleteSection_WithItems(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Trigger auto-init of sections.
+	// Load the sections CreateUser seeded.
 	listResp, err := env.client.ListSections(ctx, authedReq(
 		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.NoError(t, err)
@@ -356,7 +461,7 @@ func TestSectionService_DeleteSection_ReassignsPositionsOnMerge(t *testing.T) {
 		Title:       "ws custom",
 	}))
 
-	// Auto-init.
+	// Load the seeded sections.
 	listResp, err := env.client.ListSections(ctx, authedReq(
 		&leapmuxv1.ListSectionsRequest{}, env.token))
 	require.NoError(t, err)
@@ -447,7 +552,7 @@ func TestSectionService_MoveSection(t *testing.T) {
 
 	env := setupSectionTest(t)
 
-	// Trigger auto-init.
+	// Load the seeded sections.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{}, env.token))
 
@@ -495,7 +600,7 @@ func TestSectionService_MoveWorkspace(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Trigger auto-init of sections.
+	// Load the sections CreateUser seeded.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{}, env.token))
 
@@ -537,7 +642,7 @@ func TestSectionService_IsWorkspaceInArchivedSection(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Trigger auto-init and find section IDs.
+	// Load the seeded sections and find their IDs.
 	listResp, _ := env.client.ListSections(context.Background(), authedReq(
 		&leapmuxv1.ListSectionsRequest{}, env.token))
 	var inProgressID, archivedID string

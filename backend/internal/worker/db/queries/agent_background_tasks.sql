@@ -1,5 +1,13 @@
--- name: ListAgentBackgroundTasks :many
-SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq LIMIT ?;
+-- ListAgentBackgroundTasksNewestFirst loads the cold-start seed for one owner's registry.
+-- DESC is load-bearing: the registry is capped, and eviction drops the OLDEST
+-- final row, so the rows worth holding are the NEWEST ones. An ASC LIMIT hands
+-- back the oldest N instead, which for an owner past the cap means a restart
+-- resurrects finished rows and hides the running subagents -- and derives
+-- nextSeq from a truncated maximum, so the next insert collides with a
+-- surviving seq under UNIQUE (owner_agent_id, seq). The caller reverses the
+-- result to restore ascending seq order.
+-- name: ListAgentBackgroundTasksNewestFirst :many
+SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq DESC LIMIT ?;
 
 -- UpsertAgentBackgroundTask inserts a new row or updates an existing one keyed
 -- by (owner_agent_id, row_key). seq is set only on insert (never overwritten on
@@ -92,6 +100,15 @@ UPDATE agent_background_tasks SET
     ended_at   = ?,
     updated_at = ?
 WHERE owner_agent_id = ? AND status IN ('pending','running');
+
+-- ListActiveChildAgentIDs returns the child transcripts of every still-active
+-- row, across all owners. Read at worker boot IMMEDIATELY BEFORE
+-- MarkAllActiveAgentBackgroundTasksInterrupted, so the sweep can close each of
+-- those transcripts with a divider. Running it after the UPDATE would return
+-- nothing, because the rows are no longer active.
+-- name: ListActiveChildAgentIDs :many
+SELECT child_agent_id FROM agent_background_tasks
+WHERE status IN ('pending','running') AND child_agent_id <> '';
 
 -- MarkAllActiveAgentBackgroundTasksInterrupted runs at worker boot before any
 -- caches exist: every active row left over from the previous process is

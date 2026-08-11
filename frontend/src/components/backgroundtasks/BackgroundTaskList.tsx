@@ -1,7 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import Bot from 'lucide-solid/icons/bot'
-import Circle from 'lucide-solid/icons/circle'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -43,8 +42,9 @@ function statusDotClass(status: BackgroundTaskItem['status']): string {
  * BackgroundTaskList renders the background-task registry for the sidebar
  * section and the ThinkingIndicator popover. Shared by both surfaces. Sorts
  * active-first (running before pending), groups by workflow/phase, and renders
- * a status glyph + title + secondary line per row. Subagent rows with a
- * childAgentId are clickable buttons; shell rows are static.
+ * a kind icon, a title with its status dot floated to the end of the first
+ * line, and a secondary line. Subagent rows with a childAgentId are clickable
+ * buttons; shell rows are static.
  */
 export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) => {
   // Memoized so a broadcast tick re-runs sort+group once (not twice, once per
@@ -53,14 +53,28 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
 
   // Status reads as COLOR on one constant dot, not as a different glyph per
   // state. Six shapes made the column a legend to memorize; one dot in the
-  // status palette (in progress / succeeded / failed) is legible at a glance and
-  // lines the rows up. The exact state stays available as the dot's tooltip and
-  // as the row's `data-status`, which is what tests and E2E select on.
-  const statusGlyph = (item: BackgroundTaskItem): JSX.Element => (
+  // status palette (in progress / succeeded / failed) is legible at a glance,
+  // and an in-progress dot pulses so activity is visible without a spinner.
+  // The exact state stays available as the dot's tooltip and as the row's
+  // `data-status`, which is what tests and E2E select on.
+  //
+  // Rendered INSIDE the title so it can float to the right end of the title's
+  // first line -- see statusDot in the stylesheet for why a float and not a
+  // flex sibling.
+  //
+  // role="img" is load-bearing, not decoration. Tooltip puts its ariaLabel on
+  // this element, and `aria-label` is PROHIBITED on an element with no role (it
+  // maps to ARIA's `generic`), so a screen reader may drop it -- and a static
+  // row is a plain <div>, with no enclosing button to compute a name from its
+  // contents. Without the role the status of a shell row would be carried by
+  // colour alone.
+  const statusDot = (item: BackgroundTaskItem): JSX.Element => (
     <Tooltip text={backgroundTaskStatusLabel(item.status)} ariaLabel>
-      <span class={`${styles.taskIcon} ${statusDotClass(item.status)}`} data-testid="bg-task-status-dot">
-        <Circle size={10} fill="currentColor" strokeWidth={0} />
-      </span>
+      <span
+        class={`${styles.statusDot} ${statusDotClass(item.status)}`}
+        data-testid="bg-task-status-dot"
+        role="img"
+      />
     </Tooltip>
   )
 
@@ -70,20 +84,35 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
     return <Bot class={styles.taskIcon} size={14} />
   }
 
+  // The row's first line. Shared by the renderer and by the echo guard below,
+  // so the guard compares against the string the row ACTUALLY shows: two copies
+  // of this fallback chain could drift and silently disable the guard.
+  const rowTitle = (item: BackgroundTaskItem): string =>
+    item.title || item.description || item.rowKey
+
+  // A shell row's title is the COMMAND it runs, so it is set as code. Every
+  // other row's title is prose and hyphenates.
+  const titleClass = (item: BackgroundTaskItem): string =>
+    item.kind === 'shell'
+      ? `${styles.taskTitle} ${styles.taskTitleCommand}`
+      : styles.taskTitle
+
   // The row's second line. It must never repeat the first: a provider whose
-  // spawn payload carries one string for both (Claude's local_bash names the
+  // spawn payload carries one string for both (Claude's local_bash gives the
   // command as the description, which is already the title) otherwise rendered
   // the same text twice. Neutral guard here rather than per provider, so the
   // next one to do it is covered too.
+  //
+  // Compared trimmed, because a provider that pads or wraps its copy produces a
+  // string that is visibly the same echo but not `===` to the title.
   const secondary = (item: BackgroundTaskItem): string => {
-    const title = item.title || item.description || item.rowKey
     const text = isActiveBackgroundTaskStatus(item.status)
       ? item.activity || item.description || ''
       : backgroundTaskEndLabel(item.status)
-    return text === title ? '' : text
+    return text.trim() === rowTitle(item).trim() ? '' : text
   }
 
-  // Explanatory tooltip for a terminal status whose bare label is ambiguous
+  // Explanatory tooltip for a final status whose bare label is ambiguous
   // (e.g. "Interrupted" really means the worker/agent process restarted).
   const secondaryTooltip = (item: BackgroundTaskItem): string | undefined => {
     if (isActiveBackgroundTaskStatus(item.status))
@@ -110,10 +139,15 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   // keeps the clickable and static rows from drifting apart.
   const rowBody = (item: BackgroundTaskItem): JSX.Element => (
     <>
-      {statusGlyph(item)}
       {kindIcon(item)}
       <div class={styles.taskBody}>
-        <span class={styles.taskTitle}>{item.title || item.description || item.rowKey}</span>
+        {/* The dot comes FIRST in source order: a right float is placed against
+            the top of the block it opens, so anything before it on that line
+            would push it down to the next one. */}
+        <div class={titleClass(item)}>
+          {statusDot(item)}
+          {rowTitle(item)}
+        </div>
         {renderSecondary(item)}
       </div>
     </>

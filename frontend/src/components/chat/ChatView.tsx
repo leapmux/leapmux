@@ -231,6 +231,14 @@ interface ChatViewProps {
    * restructures (tile split / make-grid / close-grid).
    */
   agentId?: string
+  /**
+   * Whether this view is a SUBAGENT's own transcript rather than the transcript
+   * that spawned it. Reaches the message classifier, where the same wire shape
+   * means different things on the two sides: a user message stamped with the
+   * spawning tool_use id is the prompt sent TO a subagent in the parent, and an
+   * ordinary message inside the child.
+   */
+  isChildTranscript?: boolean
   messages: AgentChatMessage[]
   streamingText: string
   /**
@@ -366,6 +374,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // cache from reusing the pre-update classification when the proxy/seq don't move.
     contentVersionById: id => props.lookups?.getMessageContentVersion?.(id) ?? 0,
     hasNewerMessages: () => !!props.pagination?.hasNewerMessages,
+    isChildTranscript: () => !!props.isChildTranscript,
     showHiddenMessages: () => prefs.showHiddenMessages(),
   })
   const visibleEntries = entries.visibleEntries

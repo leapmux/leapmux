@@ -46,6 +46,13 @@ export const verbRow = style({
 export const countChip = style({
   'display': 'inline-block',
   'fontSize': 'var(--text-8)',
+  // fontWeight and lineHeight are declared, not inherited. Oat's `@layer base`
+  // button rule sets both on every <button>, and an unlayered vanilla-extract
+  // class only overrides the properties it names -- so leaving these out would
+  // render the counters at --font-medium on a taller line box, beside a token
+  // count that is a <span> at the normal weight.
+  'fontWeight': 'var(--font-normal)',
+  'lineHeight': '1.3em',
   'color': 'var(--muted-foreground)',
   'fontVariantNumeric': 'tabular-nums',
   'userSelect': 'none',
@@ -59,7 +66,7 @@ export const countChip = style({
   },
 })
 
-// The `·` between two adjacent counters. Its own element (not baked into a
+// The `·` between two adjacent counters. Its own element (not included in a
 // counter's text) so any counter can be absent without leaving a dangling
 // separator, and so the separator never inherits a counter's hover color.
 export const countSeparator = style({

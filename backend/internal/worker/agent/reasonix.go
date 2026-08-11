@@ -141,10 +141,14 @@ func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 	if title == "" {
 		title = "Reasonix subagent"
 	}
+	// No Prompt. Reasonix is registry-only and wires no update hook at all, so
+	// it reports no ChildAgentKey (nothing to spend the prompt on) and produces
+	// no closing observation (nothing to drop it on) -- a remembered prompt here
+	// would be held for the life of the agent process. `prompt` still
+	// discriminates the spawn shape above, by presence.
 	return &acpSubagentObservation{
 		RowKey: tc.ToolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
-		Prompt: acpPromptString(input.Prompt),
 	}
 }

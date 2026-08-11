@@ -1,5 +1,9 @@
--- name: ListAgentTodos :many
-SELECT * FROM agent_todos WHERE agent_id = ? ORDER BY seq LIMIT ?;
+-- ListAgentTodosNewestFirst loads the cold-start seed for one agent's to-do registry.
+-- DESC for the same reason as ListAgentBackgroundTasksNewestFirst: the registry is capped
+-- and evicts the oldest final row, so the seed must take the NEWEST rows. The
+-- caller reverses the result to restore ascending seq order.
+-- name: ListAgentTodosNewestFirst :many
+SELECT * FROM agent_todos WHERE agent_id = ? ORDER BY seq DESC LIMIT ?;
 
 -- UpsertAgentTodo inserts a new row or updates an existing one keyed by
 -- (agent_id, row_key). Used by `create` and `detail` events (Claude

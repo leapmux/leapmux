@@ -43,10 +43,10 @@ export function normalizeTodoStatus(raw: unknown): TodoItem['status'] {
 }
 
 /**
- * A todo is in a terminal state — eligible for cap-eviction on the
- *  backend and for strike-through styling in the UI.
+ * A to-do reached a final state — eligible for cap-eviction on the backend and
+ * for strike-through styling in the UI.
  */
-export function isTerminalTodoStatus(status: TodoItem['status']): boolean {
+export function isFinishedTodoStatus(status: TodoItem['status']): boolean {
   return status === 'completed' || status === 'deleted'
 }
 

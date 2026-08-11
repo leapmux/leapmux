@@ -55,7 +55,7 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 	// affected-row count, so the assertion is against the persisted rows.
 	svc.RestoreState()
 
-	rows, err := svc.Queries.ListAgentBackgroundTasks(ctx, db.ListAgentBackgroundTasksParams{
+	rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: "root-1", Limit: 100,
 	})
 	require.NoError(t, err)

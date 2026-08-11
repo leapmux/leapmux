@@ -1,10 +1,6 @@
 import {
-  expectNoChildAgents,
+  expectRegistryOnlySubagentEnds,
   expectRegistrySectionAbsent,
-  expectRowBecomesTerminal,
-  expectRowNotClickable,
-  expectSectionPersists,
-  openAgentTabIds,
   tryWaitForRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
@@ -24,10 +20,8 @@ opencodeTest.describe('OpenCode subagent registry', () => {
   opencodeTest('subagent spawn creates a registry row with no child transcript', async ({
     authenticatedOpencodeWorkspace,
     page,
-    leapmuxServer,
   }) => {
     void authenticatedOpencodeWorkspace
-    const { hubUrl, adminToken, workerId } = leapmuxServer
 
     await expectRegistrySectionAbsent(page)
 
@@ -39,13 +33,8 @@ opencodeTest.describe('OpenCode subagent registry', () => {
     opencodeTest.skip(!row, 'model did not spawn a subagent')
     const r = row!
 
-    // Terminal end label (best-effort); section persists.
-    await expectRowBecomesTerminal(page, r, 'Completed').catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
-    await expectSectionPersists(page)
-
-    // Registry-only: not clickable, no child agents on the worker.
-    await expectRowNotClickable(page, r)
-    const tabIds = await openAgentTabIds(page)
-    await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
+    // Registry-only tail: final end label (best-effort -- this spec does not
+    // wait for idle first), section persists, row not clickable, no child agent.
+    await expectRegistryOnlySubagentEnds(page, r, { bestEffort: true })
   })
 })

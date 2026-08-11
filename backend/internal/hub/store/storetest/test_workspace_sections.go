@@ -348,6 +348,70 @@ func (s *Suite) testWorkspaceSections(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	// One default section of each type per user, enforced by the SCHEMA rather
+	// than by "only one code path writes them". A read path that seeded on the
+	// fly used to give a concurrent pair of callers two of every pane, and the
+	// duplicates agreed on every field, so no locator could pick between them.
+	//
+	// Expressed differently per dialect -- a partial unique index on
+	// sqlite/postgres, a NULL-yielding generated column on MySQL -- so it is
+	// worth asserting on every one.
+	t.Run("a default section type cannot be duplicated for one user", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "wsec-dupe-user")
+		owner := userid.MustNew(user.ID)
+
+		create := func(id string, sectionType leapmuxv1.SectionType) error {
+			return st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+				ID:          id,
+				UserID:      owner,
+				Name:        "In progress",
+				Position:    "n",
+				SectionType: sectionType,
+				Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+			})
+		}
+
+		require.NoError(t, create("wsec-dupe-1", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS))
+		require.Error(t, create("wsec-dupe-2", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS),
+			"a second section of the same default type must be rejected")
+
+		// A DIFFERENT default type is fine, and so is a second user's.
+		require.NoError(t, create("wsec-dupe-3", leapmuxv1.SectionType_SECTION_TYPE_FILES))
+		other := SeedUser(t, st, "wsec-dupe-other")
+		require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+			ID:          "wsec-dupe-4",
+			UserID:      userid.MustNew(other.ID),
+			Name:        "In progress",
+			Position:    "n",
+			SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS,
+			Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+		}))
+	})
+
+	// CUSTOM is exempt: a user may hold any number of custom sections, which is
+	// why the constraint cannot be a plain UNIQUE(user_id, section_type).
+	t.Run("custom sections are exempt from the uniqueness", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "wsec-custom-user")
+		owner := userid.MustNew(user.ID)
+
+		for _, id := range []string{"wsec-custom-1", "wsec-custom-2", "wsec-custom-3"} {
+			require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
+				ID:          id,
+				UserID:      owner,
+				Name:        "My section",
+				Position:    "n",
+				SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
+				Sidebar:     leapmuxv1.Sidebar_SIDEBAR_LEFT,
+			}))
+		}
+
+		sections, err := st.WorkspaceSections().ListByUserID(ctx, owner)
+		require.NoError(t, err)
+		assert.Len(t, sections, 3)
+	})
+
 	t.Run("has default for user false", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "wsec-countzero-user")

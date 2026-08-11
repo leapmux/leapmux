@@ -88,6 +88,10 @@ func (c *registryCache[T]) ensureSeededLocked(ctx context.Context, ownerID strin
 	if limit == 0 {
 		limit = c.ops.cap
 	}
+	// listRows returns the NEWEST rows first (see ListAgentBackgroundTasksNewestFirst), so
+	// a LIMIT keeps what the cap is meant to keep. Reverse into ascending seq
+	// order, which is the order every reader -- snapshot, eviction-by-slice-
+	// order, the sidebar -- assumes.
 	entries, err := c.ops.listRows(ctx, ownerID, limit)
 	if err != nil {
 		return err
@@ -95,7 +99,7 @@ func (c *registryCache[T]) ensureSeededLocked(ctx context.Context, ownerID strin
 	c.Rows = make([]T, len(entries))
 	var maxSeq int64
 	for i, e := range entries {
-		c.Rows[i] = e.item
+		c.Rows[len(entries)-1-i] = e.item
 		if e.seq > maxSeq {
 			maxSeq = e.seq
 		}

@@ -28,15 +28,19 @@ import (
 // burst of one cannot push out the other.
 const MaxTasks = 64
 
-// KindCount is the number of real (non-unspecified) kinds, i.e. the number of
-// independent MaxTasks pools. MaxTasks*KindCount is therefore the most rows one
-// agent's registry can hold, which is what the cold-start seed must load: a
-// smaller LIMIT could return only one kind's rows and leave the other pool
-// looking empty.
-const KindCount = 2
+// KindCount is the number of independent MaxTasks pools, derived from Kinds so
+// a new kind cannot silently under-size the cold-start seed. len() of an ARRAY
+// is a constant expression, which is why Kinds is [...]Kind and not a slice.
+const KindCount = len(Kinds)
 
-// MaxTasksTotal bounds the whole registry across every kind. Used for the
-// cold-start seed's LIMIT.
+// MaxTasksTotal caps the whole registry across every kind. Used for the
+// cold-start seed's LIMIT: a limit of just MaxTasks could return one kind's
+// rows only and leave the other pool looking empty.
+//
+// The cap is a SOFT bound. applyBackgroundTaskUpsertLocked exceeds it rather
+// than orphan a steerable child, so an owner can hold more rows than this. The
+// seed therefore takes the NEWEST rows (ListAgentBackgroundTasksNewestFirst),
+// which keeps the live subagents rather than the finished ones.
 const MaxTasksTotal = MaxTasks * KindCount
 
 // SanitizeRowKey strips control characters (bytes < 0x20) from a
@@ -86,6 +90,17 @@ const (
 	KindSubagent
 	KindShell
 )
+
+// Kinds lists every real (non-unspecified) kind, in declaration order. It is
+// the single source of truth for how many independent cap pools the registry
+// has: KindCount reads len(Kinds), so adding a kind here resizes the seed
+// automatically. An array, not a slice, so len() stays a constant expression.
+//
+// Add a new kind to BOTH this array and KindWire. KindWire's default arm maps
+// an unrecognized kind onto "subagent", which is the safe answer for a
+// KindUnspecified row but the WRONG pool for a real new kind, so the two must
+// stay in step.
+var Kinds = [...]Kind{KindSubagent, KindShell}
 
 // Status is the canonical background-task status. Zero == pending (friendlier
 // than the proto's UNSPECIFIED). Interrupted is set at worker boot for tasks

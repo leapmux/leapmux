@@ -882,6 +882,16 @@ describe('tabBuildKey', () => {
       expect(tabBuildKey({ ...base, ...override })).not.toBe(baseKey)
   })
 
+  // The cached key list and the live lookup must key on the SAME fields, or the
+  // cache can hold a key the lookup will never resolve. tabKey is
+  // `${type}:${id}`, so `type` has to be part of the fingerprint: a stale key
+  // now costs the row AND everything nested under it, because a subagent row
+  // renders inside its parent's guard.
+  it('covers every field tabKey is built from', () => {
+    const base = makeTab({ id: 'a1', type: TabType.AGENT })
+    expect(tabBuildKey({ ...base, type: TabType.TERMINAL })).not.toBe(tabBuildKey(base))
+  })
+
   it('ignores fields buildTree does not read', () => {
     const base = makeTab({ id: 'a1', gitBranch: 'main' })
     const baseKey = tabBuildKey(base)

@@ -15,15 +15,13 @@ export interface PluginRefs {
   /**
    * Placeholder shown while the editor is disabled. The reason a composer is
    * disabled is the caller's to state -- a lost connection, a subagent that
-   * takes no input -- so the text comes from the caller rather than being fixed
-   * here; DEFAULT_DISABLED_PLACEHOLDER covers a caller that names no reason.
+   * takes no input -- so the text comes from the caller. This module applies no
+   * default of its own: the composer resolves one reason for every surface that
+   * states it, and hands the resolved string down.
    */
   getDisabledPlaceholder: () => string
   onSend: () => void
 }
-
-/** Reason assumed when a disabled composer names none. */
-export const DEFAULT_DISABLED_PLACEHOLDER = 'Connection to the agent was lost.'
 
 /** Shows placeholder text when the editor is empty. */
 export function createPlaceholderPlugin(refs: Pick<PluginRefs, 'getDisabled' | 'getPlaceholder' | 'getDisabledPlaceholder'>) {

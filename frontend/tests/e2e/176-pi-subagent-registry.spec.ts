@@ -1,10 +1,6 @@
 import {
-  expectNoChildAgents,
+  expectRegistryOnlySubagentEnds,
   expectRegistrySectionAbsent,
-  expectRowBecomesTerminal,
-  expectRowNotClickable,
-  expectSectionPersists,
-  openAgentTabIds,
   waitForRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
@@ -25,10 +21,8 @@ piTest.describe('Pi subagent registry', () => {
   piTest('foreground subagent shows a live activity row', async ({
     authenticatedPiWorkspace,
     page,
-    leapmuxServer,
   }) => {
     void authenticatedPiWorkspace
-    const { hubUrl, adminToken, workerId } = leapmuxServer
 
     await expectRegistrySectionAbsent(page)
 
@@ -39,10 +33,6 @@ piTest.describe('Pi subagent registry', () => {
     // active, since the indicator stays up for an active task count).
     const row = await waitForRegistryRow(page)
 
-    await expectRowBecomesTerminal(page, row, 'Completed').catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
-    await expectSectionPersists(page)
-    await expectRowNotClickable(page, row)
-    const tabIds = await openAgentTabIds(page)
-    await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
+    await expectRegistryOnlySubagentEnds(page, row, { bestEffort: true })
   })
 })

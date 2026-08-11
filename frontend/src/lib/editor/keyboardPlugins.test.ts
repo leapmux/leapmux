@@ -4,7 +4,7 @@ import { commonmark } from '@milkdown/preset-commonmark'
 import { gfm } from '@milkdown/preset-gfm'
 import { AllSelection, TextSelection } from '@milkdown/prose/state'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createPlaceholderPlugin, createSelectAllPlugin, createTabKeyPlugin, DEFAULT_DISABLED_PLACEHOLDER } from './keyboardPlugins'
+import { createPlaceholderPlugin, createSelectAllPlugin, createTabKeyPlugin } from './keyboardPlugins'
 
 /**
  * Unit tests for `createTabKeyPlugin` exercising every branch of the keyboard
@@ -442,7 +442,7 @@ describe('createPlaceholderPlugin disabled text', () => {
       .use(createPlaceholderPlugin({
         getDisabled: () => opts.disabled,
         getPlaceholder: () => 'Send a message...',
-        getDisabledPlaceholder: () => opts.disabledPlaceholder ?? DEFAULT_DISABLED_PLACEHOLDER,
+        getDisabledPlaceholder: () => opts.disabledPlaceholder ?? '',
       }))
       .create()
     return host.querySelector('[data-placeholder]')?.getAttribute('data-placeholder') ?? null
@@ -455,9 +455,11 @@ describe('createPlaceholderPlugin disabled text', () => {
     })).toBe('This subagent doesn\'t accept messages.')
   })
 
-  it('falls back to the lost-connection wording when the caller names no reason', async () => {
-    expect(await placeholderAttr({ disabled: true })).toBe('Connection to the agent was lost.')
-    expect(DEFAULT_DISABLED_PLACEHOLDER).toBe('Connection to the agent was lost.')
+  // The plugin applies no default of its own -- the composer resolves one
+  // reason and hands the resolved string down. Asserting a fallback here would
+  // only re-check the `??` in this file's own helper.
+  it('renders whatever the caller resolved, including an empty reason', async () => {
+    expect(await placeholderAttr({ disabled: true })).toBe('')
   })
 
   it('renders the normal placeholder while enabled', async () => {

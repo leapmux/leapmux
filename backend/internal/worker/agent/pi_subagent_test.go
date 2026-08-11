@@ -190,9 +190,16 @@ func TestPi_ApplySubagentEnd_BackgroundRekeyPersistsThePrompt(t *testing.T) {
 
 // A foreground subagent never re-keys, so no child transcript is created and
 // nothing is written.
+//
+// Asserted on the REGISTRY ROW rather than on ChildSink's messages: ChildSink
+// creates its recording sink on demand, so the empty-message assertion alone
+// would still pass if the code wrongly created a child agent here.
 func TestPi_ApplySubagentEnd_TerminalWritesNoPrompt(t *testing.T) {
 	sink := &testSink{}
 	piApplySubagentEnd(sink, json.RawMessage(`{"status":"completed","agentId":"a-1"}`), "tc-1", "title", "Write the essay.")
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Empty(t, tasks[0].ChildAgentID, "a foreground subagent gets no child transcript")
 	child, ok := sink.ChildSink("child-of-tc-1").(*testSink)
 	require.True(t, ok)
 	assert.Empty(t, child.Messages())

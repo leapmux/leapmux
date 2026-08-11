@@ -2,7 +2,7 @@ import type { TodoItem } from '~/stores/chatTodos'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { TodoItemSchema, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
-import { isTerminalTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, sortTodos, todoDisplayLabel, todoProgress } from '~/stores/chatTodos'
+import { isFinishedTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, sortTodos, todoDisplayLabel, todoProgress } from '~/stores/chatTodos'
 
 describe('chatTodos', () => {
   describe('normalizeTodoStatus', () => {
@@ -26,12 +26,12 @@ describe('chatTodos', () => {
     })
   })
 
-  describe('isTerminalTodoStatus', () => {
+  describe('isFinishedTodoStatus', () => {
     it('is true only for completed and deleted', () => {
-      expect(isTerminalTodoStatus('completed')).toBe(true)
-      expect(isTerminalTodoStatus('deleted')).toBe(true)
-      expect(isTerminalTodoStatus('pending')).toBe(false)
-      expect(isTerminalTodoStatus('in_progress')).toBe(false)
+      expect(isFinishedTodoStatus('completed')).toBe(true)
+      expect(isFinishedTodoStatus('deleted')).toBe(true)
+      expect(isFinishedTodoStatus('pending')).toBe(false)
+      expect(isFinishedTodoStatus('in_progress')).toBe(false)
     })
   })
 

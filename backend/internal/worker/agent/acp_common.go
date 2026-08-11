@@ -388,6 +388,12 @@ func (b *acpBase) ClearContext() (string, bool) {
 	}
 	// The session was replaced; drop any in-flight thinking-token estimate too.
 	b.thinkingTokens.reset()
+	// Same for an unspent spawn prompt. Its row belongs to the OUTGOING session
+	// and will never produce a closing observation to drop it, so without this
+	// it is held for the life of the agent process -- and if the new session
+	// ever reuses the tool-call id, it would open the next transcript on the
+	// previous session's instruction. Codex clears its equivalent map here too.
+	b.clearSubagentPrompts()
 
 	b.sink.UpdateSessionID(sessionID)
 
@@ -1622,17 +1628,6 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	}
 }
 
-// applySubagentObservation translates a provider hook's neutral observation
-// into registry sink calls (and, for Goose, a best-effort child-transcript
-// persist). A nil observation is a no-op. The shared ACP terminal status map
-// lives here so every provider agrees: completed→Completed, failed→Failed,
-// cancelled→Stopped.
-//
-// A close-only observation (Mode == acpModeCloseOnly) skips the upsert: it
-// closes an existing row without first creating one. This matters for
-// Goose/Cursor, whose terminal-update hooks fire for EVERY tool_call, not just
-// spawns — the detector sets the Mode explicitly instead of relying on which
-// fields happen to be empty.
 // acpPromptString renders a spawn tool's `prompt` argument as text.
 //
 // It is declared json.RawMessage by the detectors because its shape is the
@@ -1668,6 +1663,13 @@ func acpPromptString(raw json.RawMessage) string {
 // rememberSubagentPrompt stores a spawn's prompt under its registry row key.
 // First write wins: a later observation for the same row that re-reports the
 // prompt must not replace the spawn's own text.
+//
+// Only a provider that LATER reports a ChildAgentKey can ever spend one, since
+// takeSubagentPrompt runs on the observation that creates the child transcript.
+// Goose is that provider: its spawn tool_call carries the instructions and the
+// child key arrives on a separate observation, which is the whole reason this
+// map exists. A detector that sets Prompt without such a path stores a string
+// nothing reads, so the registry-only providers deliberately leave it empty.
 func (b *acpBase) rememberSubagentPrompt(rowKey, prompt string) {
 	b.subagentPromptMu.Lock()
 	defer b.subagentPromptMu.Unlock()
@@ -1689,13 +1691,33 @@ func (b *acpBase) takeSubagentPrompt(rowKey string) string {
 	return prompt
 }
 
-// forgetSubagentPrompt drops an unspent prompt for a row that has closed.
+// forgetSubagentPrompt drops an unspent prompt for a row that closed.
 func (b *acpBase) forgetSubagentPrompt(rowKey string) {
 	b.subagentPromptMu.Lock()
 	defer b.subagentPromptMu.Unlock()
 	delete(b.subagentPrompts, rowKey)
 }
 
+// clearSubagentPrompts drops every unspent prompt. Called when the session is
+// replaced, because the rows those prompts belong to die with it and no
+// closing observation will arrive to drop them one by one.
+func (b *acpBase) clearSubagentPrompts() {
+	b.subagentPromptMu.Lock()
+	defer b.subagentPromptMu.Unlock()
+	clear(b.subagentPrompts)
+}
+
+// applySubagentObservation translates a provider hook's neutral observation
+// into registry sink calls (and, for Goose, a best-effort child-transcript
+// persist). A nil observation is a no-op. The shared ACP final-status map
+// lives here so every provider agrees: completed->Completed, failed->Failed,
+// cancelled->Stopped.
+//
+// A close-only observation (Mode == acpModeCloseOnly) skips the upsert: it
+// closes an existing row without first creating one. This matters for
+// Goose/Cursor, whose closing-update hooks fire for EVERY tool_call, not just
+// spawns -- the detector sets the Mode explicitly instead of relying on which
+// fields happen to be empty.
 func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 	if obs == nil || obs.RowKey == "" || b.sink == nil {
 		return
@@ -1754,7 +1776,17 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 	}
 	if obs.CloseRow {
 		// The row is over; an unspent prompt has no transcript left to open.
+		//
+		// Drop BOTH keys. The prompt was remembered under the key the SPAWN
+		// carried, and a provider that learns the child's stable id only on the
+		// closing update (OpenCode, Kilo) re-keys the row, so obs.RowKey here is
+		// the new key and RenameFrom is the one the prompt sits under. Forgetting
+		// only obs.RowKey deletes a key that was never inserted and leaves the
+		// spawn's entry to accumulate for the life of the process.
 		b.forgetSubagentPrompt(obs.RowKey)
+		if obs.RenameFrom != "" {
+			b.forgetSubagentPrompt(obs.RenameFrom)
+		}
 		// Rename the spawn row to the final key first, so one row tracks the
 		// whole lifecycle. A no-op when RenameFrom is empty or matches RowKey.
 		// The rename runs before the close so the terminal status lands on the

@@ -61,11 +61,23 @@ export interface ClassificationInput extends ParsedMessageContent {
 
 export interface ClassificationContext {
   /**
-   * Whether the message's span has a live command stream right now. The only
-   * context a classifier consults today: a Codex reasoning row with no persisted
-   * summary/content is `assistant_thinking` while streaming, else `hidden`.
+   * Whether the message's span has a live command stream right now: a Codex
+   * reasoning row with no persisted summary/content is `assistant_thinking`
+   * while streaming, else `hidden`.
    */
   hasCommandStream?: boolean
+  /**
+   * Whether these messages are a SUBAGENT's own transcript rather than the
+   * transcript that spawned it.
+   *
+   * The same wire shape means different things on the two sides. A provider
+   * that forwards a subagent's messages into the child transcript stamps every
+   * one of them with the spawning tool_use id, exactly like the prompt the
+   * PARENT sent to that subagent -- so the id alone cannot tell "the prompt to
+   * a subagent" from "an ordinary message inside one", and only the transcript
+   * can. A child transcript has no subagent of its own to prompt.
+   */
+  isChildTranscript?: boolean
 }
 
 /**
@@ -101,9 +113,8 @@ export type NotificationThreadEntry
     /**
      * A full-width labelled rule, drawn in the same style as a turn-end
      * divider. `loading` swaps the glyph for a spinner; `icon` overrides the
-     * default compaction arrow (a subagent-end divider carries the same status
-     * glyph the Background tasks list uses). Omit `icon` and the shared
-     * renderer picks the compaction arrow.
+     * default compaction arrow (a subagent-end divider passes one glyph per
+     * outcome). Omit `icon` and the shared renderer picks the compaction arrow.
      */
     | { kind: 'divider', text: string, loading?: boolean, icon?: LucideIcon }
 

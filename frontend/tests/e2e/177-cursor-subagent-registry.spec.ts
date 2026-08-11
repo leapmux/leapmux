@@ -9,13 +9,9 @@
  */
 import { CURSOR_E2E_SKIP_REASON, cursorTest, expect } from './cursor-fixtures'
 import {
-  backgroundTasksSection,
-  expectNoChildAgents,
+  expectRegistryOnlySubagentEnds,
   expectRegistrySectionAbsent,
-  expectRowBecomesTerminal,
-  expectRowNotClickable,
-  expectSectionPersists,
-  openAgentTabIds,
+  waitForRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
@@ -25,19 +21,15 @@ cursorTest.describe('Cursor subagent registry', () => {
   cursorTest('Task delegation creates a registry row with a sanitized key', async ({
     authenticatedCursorWorkspace,
     page,
-    leapmuxServer,
   }) => {
     void authenticatedCursorWorkspace
-    const { hubUrl, adminToken, workerId } = leapmuxServer
 
     await expectRegistrySectionAbsent(page)
 
     await sendMessage(page, 'Delegate this to a subagent: reply with the single word PONG.')
     await waitForAgentIdle(page, 180_000)
 
-    await expect(backgroundTasksSection(page)).toBeVisible()
-    const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').first()
-    await expect(row).toBeVisible()
+    const row = await waitForRegistryRow(page)
 
     // Regression guard: the row's testid/data attributes must never contain a
     // control character (the embedded-newline toolCallId quirk is sanitized in
@@ -47,10 +39,6 @@ cursorTest.describe('Cursor subagent registry', () => {
     const hasControlChar = Array.from(rowHtml).some(ch => ch.codePointAt(0)! < 0x20)
     expect(hasControlChar).toBe(false)
 
-    await expectRowBecomesTerminal(page, row, 'Completed')
-    await expectSectionPersists(page)
-    await expectRowNotClickable(page, row)
-    const tabIds = await openAgentTabIds(page)
-    await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
+    await expectRegistryOnlySubagentEnds(page, row)
   })
 })

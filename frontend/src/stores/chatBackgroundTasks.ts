@@ -80,10 +80,6 @@ export function isActiveBackgroundTaskStatus(s: BackgroundTaskItem['status']): b
   return s === 'pending' || s === 'running'
 }
 
-export function isTerminalBackgroundTaskStatus(s: BackgroundTaskItem['status']): boolean {
-  return s === 'completed' || s === 'failed' || s === 'stopped' || s === 'interrupted'
-}
-
 // countActiveBackgroundTasks returns the number of pending/running rows -- the
 // figure the rail badge and the ThinkingIndicator chip render.
 export function countActiveBackgroundTasks(items: BackgroundTaskItem[]): number {
@@ -96,20 +92,65 @@ export function countActiveBackgroundTasks(items: BackgroundTaskItem[]): number 
 }
 
 /**
- * Whether THIS subagent is still running, as 0 or 1, read from its own row in
- * the root's registry.
+ * What the registry can say about ONE tab's own work.
  *
- * The registry is keyed by ROOT owner, so countActiveBackgroundTasks over it
- * answers "is any subagent of this root running" -- the right question for a
- * root agent's thinking indicator, and the wrong one for a child's: it kept a
- * FINISHED subagent's indicator spinning for as long as any SIBLING subagent
- * ran. Answers 0 for a child with no row yet (a spawn the provider has not
- * linked), which lets the caller's message-history heuristic decide instead of
- * asserting a negative.
+ * Three states, not a count, because "no active work" and "no answer" are
+ * different facts and only one of them may hide the thinking indicator:
+ *
+ * - `active`   -- work of this tab's is running. Show the indicator.
+ * - `finished` -- this tab's own work ENDED. Hide it, definitively: the
+ *   registry row outranks any message-history guess.
+ * - `unknown`  -- the registry has no row for this tab, so it cannot answer.
+ *   The caller's message heuristic decides.
+ *
+ * Collapsing `finished` and `unknown` into a single 0 is what kept a finished
+ * subagent spinning: the heuristic then re-read the transcript and reported
+ * "working" whenever the last message was not the closing divider.
  */
-export function countActiveSubagentTask(childAgentId: string, rootTasks: BackgroundTaskItem[]): number {
+export type TabWorkState = 'active' | 'finished' | 'unknown'
+
+/**
+ * What the root's registry says about THIS subagent, from its own row.
+ *
+ * The registry is keyed by ROOT owner, so counting active rows over it answers
+ * "is any subagent of this root running" -- the right question for a root
+ * agent's thinking indicator, and the wrong one for a child's: it kept a
+ * FINISHED subagent's indicator spinning for as long as any SIBLING ran.
+ */
+export function subagentWorkState(childAgentId: string, rootTasks: BackgroundTaskItem[]): TabWorkState {
   const own = rootTasks.find(t => t.childAgentId === childAgentId)
-  return own && isActiveBackgroundTaskStatus(own.status) ? 1 : 0
+  if (!own)
+    return 'unknown'
+  return isActiveBackgroundTaskStatus(own.status) ? 'active' : 'finished'
+}
+
+/**
+ * The rows a tab's background-tasks CHIP should show: the work that tab is
+ * running, never the tab itself.
+ *
+ * A root owns the registry, so it sees every descendant's row -- that roll-up
+ * is what the chip on a root tab has always meant. A child sees only the rows
+ * IT spawned (`parentAgentId` names the immediate parent), which excludes its
+ * own row by construction: that row belongs to its parent. Without the scoping
+ * a subagent tab read its PARENT's count, siblings and itself included.
+ */
+export function chipTasksFor(
+  agentId: string,
+  rootTasks: BackgroundTaskItem[],
+  isChild: boolean,
+): BackgroundTaskItem[] {
+  return isChild ? rootTasks.filter(t => t.parentAgentId === agentId) : rootTasks
+}
+
+/**
+ * What the registry says about a ROOT agent's work.
+ *
+ * Never `finished`: a root with no running subagent may still be mid-turn on
+ * its own, and the registry knows nothing about that. Only a child tab, whose
+ * whole life IS one registry row, can be reported finished.
+ */
+export function rootWorkState(rootTasks: BackgroundTaskItem[]): TabWorkState {
+  return countActiveBackgroundTasks(rootTasks) > 0 ? 'active' : 'unknown'
 }
 
 // backgroundTaskStatusLabel names a status in full. The row shows status as a
@@ -127,7 +168,7 @@ export function backgroundTaskStatusLabel(s: BackgroundTaskItem['status']): stri
   }
 }
 
-// backgroundTaskEndLabel renders the terminal-status secondary line.
+// backgroundTaskEndLabel renders the final-status secondary line.
 export function backgroundTaskEndLabel(s: BackgroundTaskItem['status']): string {
   switch (s) {
     case 'completed':
@@ -144,7 +185,7 @@ export function backgroundTaskEndLabel(s: BackgroundTaskItem['status']): string 
 }
 
 // backgroundTaskEndTooltip returns an optional explanatory tooltip for a
-// terminal status, or undefined when the label alone is clear enough. The
+// final status, or undefined when the label alone is clear enough. The
 // interrupted status is a worker/agent-process restart cutting the task off,
 // which is not obvious from the bare "Interrupted" label.
 export function backgroundTaskEndTooltip(s: BackgroundTaskItem['status']): string | undefined {
@@ -154,15 +195,15 @@ export function backgroundTaskEndTooltip(s: BackgroundTaskItem['status']): strin
 }
 
 // sortBackgroundTasks returns a NEW array ordered active-first (running before
-// pending), then terminal; stable within each half (input order preserved).
+// pending), then finished; stable within each half (input order preserved).
 export function sortBackgroundTasks(items: BackgroundTaskItem[]): BackgroundTaskItem[] {
   const active: BackgroundTaskItem[] = []
-  const terminal: BackgroundTaskItem[] = []
+  const finished: BackgroundTaskItem[] = []
   for (const it of items) {
     if (isActiveBackgroundTaskStatus(it.status))
       active.push(it)
     else
-      terminal.push(it)
+      finished.push(it)
   }
   // Running before pending, stable.
   active.sort((a, b) => {
@@ -170,7 +211,7 @@ export function sortBackgroundTasks(items: BackgroundTaskItem[]): BackgroundTask
     const br = b.status === 'running' ? 0 : 1
     return ar - br
   })
-  return [...active, ...terminal]
+  return [...active, ...finished]
 }
 
 // groupBackgroundTasks splits sorted items into an ungrouped block first, then

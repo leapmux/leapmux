@@ -186,14 +186,6 @@ globalStyle(`${inputArea}[data-no-status-bar]`, {
   paddingBottom: 'var(--space-2)',
 })
 
-// disabledHint is the single-line note rendered above a disabled composer (a
-// non-steerable subagent tab). Dim, small, no interaction.
-export const disabledHint = style({
-  fontSize: 'var(--text-7)',
-  color: 'var(--muted-foreground)',
-  padding: '0 0 var(--space-1)',
-})
-
 /**
  * The composer's action cluster (Interrupt + Send). Rendered in the box's
  * top-right (collapsed) or bottom-right (expanded) overlay slot, so it's a

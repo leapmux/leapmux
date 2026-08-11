@@ -66,8 +66,11 @@ gooseTest.describe('Goose subagent registry', () => {
       // what proves the reason reaches the editor, since the plugin's unit
       // test cannot see the prop chain that feeds it.
       const noMessages = 'This subagent doesn\'t accept messages.'
-      await expect(page.getByTestId('composer-disabled-hint')).toHaveText(noMessages)
       await expect(page.locator(`[data-placeholder="${noMessages}"]:visible`)).toBeVisible()
+      // ONCE, not twice. The reason used to render again as a note above the
+      // box, so a read-only subagent tab said the same sentence twice, a few
+      // pixels apart.
+      await expect(page.getByText(noMessages, { exact: true })).toHaveCount(0)
     }
 
     await expectRowBecomesTerminal(page, r, 'Completed').catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))

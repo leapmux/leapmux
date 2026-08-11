@@ -41,8 +41,9 @@ codexTest.describe('Codex subagent steering', () => {
     await row.click()
     await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
 
-    // 5. Composer: NO disabled hint (Codex is steerable).
-    await expect(page.getByTestId('composer-disabled-hint')).toHaveCount(0)
+    // 5. Composer: enabled (Codex is steerable), so the box carries its normal
+    //    placeholder rather than any disabled reason.
+    await expect(page.locator('[data-placeholder="Send a message..."]:visible')).toBeVisible()
 
     // 6. Worker-backed: the child exists with parent linkage and accepts
     //    messages. Read the child tab id from the DOM and query the worker

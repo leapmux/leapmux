@@ -2,6 +2,7 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
+import * as styles from '~/components/backgroundtasks/BackgroundTaskList.css'
 
 function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem {
   return {
@@ -25,6 +26,37 @@ describe('backgroundTaskList', () => {
     expect(el.dataset.childAgentId).toBe('c1')
     expect(container.textContent).toContain('Spawned agent')
     expect(container.textContent).toContain('running Bash')
+  })
+
+  // The dot lives INSIDE the title, not as a sibling column: that is what lets
+  // it float to the right end of the title's first line while the secondary
+  // line below runs the full width.
+  it('puts the status dot inside the title, not beside it', () => {
+    const { container } = render(() => (
+      <BackgroundTaskList tasks={[row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })]} />
+    ))
+    const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
+    const title = container.querySelector(`.${styles.taskTitle}`)!
+    expect(title.contains(dot)).toBe(true)
+    // ...and NOT inside the secondary line, whose width it must not affect.
+    expect(container.querySelector(`.${styles.taskSecondary}`)!.contains(dot)).toBe(false)
+  })
+
+  // A shell task's title is the command it runs, so it is set as code; every
+  // other title is prose, which hyphenates instead.
+  it('sets a shell row\'s command title in the monospace face', () => {
+    const { container } = render(() => (
+      <BackgroundTaskList tasks={[
+        row({ rowKey: 'sh', kind: 'shell', title: 'go test ./internal/worker/service/...' }),
+        row({ rowKey: 'ag', kind: 'subagent', title: 'Review the diff' }),
+      ]}
+      />
+    ))
+    const titles = container.querySelectorAll(`.${styles.taskTitle}`)
+    const shell = [...titles].find(t => t.textContent?.includes('go test'))!
+    const agent = [...titles].find(t => t.textContent?.includes('Review'))!
+    expect(shell.className).toContain(styles.taskTitleCommand)
+    expect(agent.className).not.toContain(styles.taskTitleCommand)
   })
 
   it('renders the end label for a terminal row instead of activity', () => {

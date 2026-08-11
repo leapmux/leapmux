@@ -195,9 +195,27 @@ CREATE TABLE workspace_sections (
     section_type INT NOT NULL DEFAULT 1,
     sidebar      INT NOT NULL DEFAULT 1,
     created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    -- NULL for a custom section, the type itself otherwise. Carries the
+    -- uniqueness below, because MySQL has no partial index: a unique index
+    -- admits any number of NULLs, so the custom rows opt out by being NULL
+    -- while every default type is unique per user. STORED rather than VIRTUAL
+    -- so it can be indexed on every supported engine.
+    default_section_type INT AS (CASE WHEN section_type <> 1 THEN section_type END) STORED,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_workspace_sections_user_id ON workspace_sections(user_id);
+-- One default section of each type per user. section_type = 1 is
+-- SECTION_TYPE_WORKSPACES_CUSTOM, which a user may hold any number of, so the
+-- uniqueness applies to every OTHER type only -- see default_section_type above
+-- for how that exemption is expressed without a partial index.
+--
+-- Structural, not procedural: the defaults are written in the same transaction
+-- as the user row and nothing backfills them, so a second signup path that
+-- forgot to seed -- or a read path that seeded on the fly, which is what this
+-- replaced -- used to produce a sidebar with two of every pane, indistinguishable
+-- from one another.
+CREATE UNIQUE INDEX idx_workspace_sections_user_default_type
+    ON workspace_sections(user_id, default_section_type);
 
 -- Workspaces (hub-owned registry) -- must come before workspace_section_items
 CREATE TABLE workspaces (

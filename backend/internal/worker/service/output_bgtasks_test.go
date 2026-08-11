@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,7 +31,7 @@ func setupBgTaskTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentB
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	listRows := func() []db.AgentBackgroundTask {
 		t.Helper()
-		rows, err := svc.Queries.ListAgentBackgroundTasks(ctx, db.ListAgentBackgroundTasksParams{
+		rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 			OwnerAgentID: "agent-1", Limit: 1000,
 		})
 		require.NoError(t, err)
@@ -349,7 +350,7 @@ func TestBgTask_CapAllActiveLinkedPreservesChildLinkage(t *testing.T) {
 		Status:       bgtask.StatusRunning,
 	}))
 
-	rows, err := svc.Queries.ListAgentBackgroundTasks(ctx, db.ListAgentBackgroundTasksParams{
+	rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: "agent-linked", Limit: 1000,
 	})
 	require.NoError(t, err)
@@ -461,7 +462,7 @@ func TestBgTask_RenameOnColdCacheRekeysDBRow(t *testing.T) {
 	// registry touch on the fresh cache.
 	require.NoError(t, sink.RenameBackgroundTask("spawn-key", "sess-stable"))
 
-	rows, err := svc.Queries.ListAgentBackgroundTasks(ctx, db.ListAgentBackgroundTasksParams{
+	rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: "agent-cold", Limit: 1000,
 	})
 	require.NoError(t, err)
@@ -564,7 +565,7 @@ func TestBgTask_MarkExitedStoppedVsInterrupted(t *testing.T) {
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	listRows := func() []db.AgentBackgroundTask {
 		t.Helper()
-		rows, err := svc.Queries.ListAgentBackgroundTasks(ctx, db.ListAgentBackgroundTasksParams{
+		rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 			OwnerAgentID: "agent-1", Limit: 1000,
 		})
 		require.NoError(t, err)
@@ -752,4 +753,64 @@ func TestBgTask_SeedLoadsEveryKindPool(t *testing.T) {
 	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Len(t, loaded, bgtask.MaxTasksTotal, "the seed covers both pools")
+}
+
+// The cap is a SOFT bound: applyBackgroundTaskUpsertLocked exceeds it rather
+// than orphan a steerable child, so an owner can hold more rows than
+// MaxTasksTotal. The seed must then keep the NEWEST rows.
+//
+// An oldest-first LIMIT keeps the finished rows and drops the live subagents,
+// so a restart shows a registry of stale completed rows with the running work
+// missing -- and derives nextSeq from a truncated maximum, which then collides
+// with a surviving seq under UNIQUE (owner_agent_id, seq) and wedges every
+// later insert for that owner.
+func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+
+	// Fill the subagent pool with ACTIVE rows that each carry a child, which is
+	// the state that makes the cap soft: eviction refuses to orphan them. Go
+	// past MaxTasksTotal so the seed's LIMIT genuinely has to choose.
+	const overflow = 8
+	newest := fmt.Sprintf("agent-%03d", bgtask.MaxTasksTotal+overflow)
+	for i := 1; i <= bgtask.MaxTasksTotal+overflow; i++ {
+		rowKey := fmt.Sprintf("agent-%03d", i)
+		_, err := sink.EnsureChildAgent(fmt.Sprintf("span-%03d", i), rowKey, "SCAN")
+		require.NoError(t, err)
+	}
+	total, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Greater(t, len(total), bgtask.MaxTasksTotal,
+		"the soft cap must actually be exceeded, or this test proves nothing")
+
+	// Drop the warm cache so the next read seeds from the DB.
+	svc.Output.CleanupAgent("agent-1")
+	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, loaded, bgtask.MaxTasksTotal)
+
+	keys := make([]string, len(loaded))
+	for i, r := range loaded {
+		keys[i] = r.RowKey
+	}
+	assert.Equal(t, newest, keys[len(keys)-1], "the newest row survives the seed")
+	assert.NotContains(t, keys, "agent-001", "the oldest row is the one dropped")
+	assert.True(t, slices.IsSorted(keys), "the seed restores ascending seq order")
+
+	// nextSeq must clear every surviving seq, including the rows the seed did
+	// not load. A collision here fails the UNIQUE (owner_agent_id, seq) index
+	// and wedges the registry for this owner permanently.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "agent-after-reseed", Kind: bgtask.KindSubagent,
+		Title: "post-restart", Status: bgtask.StatusRunning,
+	}))
 }

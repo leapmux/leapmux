@@ -145,9 +145,14 @@ func TestClaude_TaskStartedForAShellPersistsNoPrompt(t *testing.T) {
 		"prompt": "npm test"
 	}`))
 
-	child, ok := sink.ChildSink("child-of-tu-spawn").(*testSink)
-	require.True(t, ok)
-	assert.Empty(t, child.Messages(), "a shell task never gets a child transcript")
+	// Assert on the REGISTRY ROW, not on ChildSink's messages. ChildSink creates
+	// its recording sink on demand, so `sink.ChildSink(...)` always succeeds and
+	// an empty message list would still pass if the code wrongly created a child
+	// agent for the shell. The row's ChildAgentID is what actually observes it.
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindShell, tasks[0].Kind)
+	assert.Empty(t, tasks[0].ChildAgentID, "a shell task never gets a child transcript")
 }
 
 // A replayed task_started (a re-attach after a worker restart) must not stack a

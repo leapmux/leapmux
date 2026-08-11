@@ -71,6 +71,12 @@ function branchGroupKey(b: BranchGroup): string {
 export function tabBuildKey(t: Tab): string {
   return [
     t.id,
+    // `type` because the ROW key is `${type}:${id}` (tabKey), not the id alone.
+    // Leaving it out lets the cached key list hold a key the live lookup can
+    // never resolve if a tab's type ever changes in place -- and now that a
+    // subagent row renders INSIDE its parent's guard, an unresolvable parent
+    // takes its whole subtree out of the sidebar with it, not just one row.
+    t.type,
     // Structure: a subagent tab renders UNDER its parent, so the link decides
     // where the row sits. It is written once (undefined -> id, at hydration),
     // so including it costs one rebuild per subagent rather than churn.
@@ -410,35 +416,6 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
   )
 }
 
-// Renders one level of the tab tree, then recurses into each row's subagents at
-// one greater depth (TabLeaf turns depth into its indent).
-const TabNodeList: Component<{ nodes: readonly TabNode[], depth: number }> = (props) => {
-  const sel = useRowSelection()
-  const keys = createStableKeys(() => props.nodes.map(n => n.tab), tabKey)
-  // Children come from the CACHED tree (they are structure, like order and
-  // membership); the row itself still resolves through the live lookup.
-  const childrenByKey = createMemo(() => {
-    const map = new Map<string, TabNode[]>()
-    for (const n of props.nodes) {
-      if (n.children.length > 0)
-        map.set(tabKey(n.tab), n.children)
-    }
-    return map
-  })
-  return (
-    <KeyedFor each={keys()} lookup={key => sel.liveTab(key)}>
-      {(tab, key) => (
-        <>
-          <TabLeafSlot tab={tab()} depth={props.depth} />
-          <Show when={childrenByKey().get(key)}>
-            {children => <TabNodeList nodes={children()} depth={props.depth + 1} />}
-          </Show>
-        </>
-      )}
-    </KeyedFor>
-  )
-}
-
 /**
  * A list of tab leaves keyed by TAB KEY, not by the `Tab` object.
  *
@@ -469,6 +446,39 @@ const TabNodeList: Component<{ nodes: readonly TabNode[], depth: number }> = (pr
  * that lands after the git fields have already settled) then kept the bare
  * "Agent" label and the generic bot icon until some unrelated tab forced a
  * rebuild.
+ */
+// Renders one level of the tab tree, then recurses into each row's subagents at
+// one greater depth (TabLeaf turns depth into its indent).
+const TabNodeList: Component<{ nodes: readonly TabNode[], depth: number }> = (props) => {
+  const sel = useRowSelection()
+  const keys = createStableKeys(() => props.nodes.map(n => n.tab), tabKey)
+  // Children come from the CACHED tree (they are structure, like order and
+  // membership); the row itself still resolves through the live lookup.
+  const childrenByKey = createMemo(() => {
+    const map = new Map<string, TabNode[]>()
+    for (const n of props.nodes) {
+      if (n.children.length > 0)
+        map.set(tabKey(n.tab), n.children)
+    }
+    return map
+  })
+  return (
+    <KeyedFor each={keys()} lookup={key => sel.liveTab(key)}>
+      {(tab, key) => (
+        <>
+          <TabLeafSlot tab={tab()} depth={props.depth} />
+          <Show when={childrenByKey().get(key)}>
+            {children => <TabNodeList nodes={children()} depth={props.depth + 1} />}
+          </Show>
+        </>
+      )}
+    </KeyedFor>
+  )
+}
+
+/**
+ * The rows for one branch bucket: nests the flat tab list into a forest, then
+ * hands it to TabNodeList, which owns the keying described above.
  */
 const TabLeafList: Component<{ tabs: readonly Tab[], depth: number }> = (props) => {
   // Nest here rather than in buildTree: BranchGroup.tabs stays the flat set of

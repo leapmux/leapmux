@@ -1018,6 +1018,22 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 // agent's stdout-read loop is not blocked by the git subprocesses plus
 // the DB lookup.
 func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) error {
+	// Exactly ONE divider closes a subagent transcript, in EITHER arrival order.
+	//
+	// The registry side already yields to a provider that forwards its own
+	// closing envelope (see childTranscriptAlreadyEnded). This is the other
+	// half: the two events are independent, and when the registry row goes
+	// final FIRST -- Claude's task_notification can arrive before the forwarded
+	// result -- the neutral divider is already there, and persisting this one on
+	// top would stack two rules saying the same thing. The neutral divider
+	// carries the finished status, so the transcript still closes honestly; only
+	// the result's duration and error detail are lost, which beats a duplicate.
+	//
+	// Child sinks only (agentID != rootAgentID). A root turn end is not a
+	// subagent boundary and must not pay a read per turn.
+	if s.agentID != s.rootAgentID && s.h.childTranscriptEndsWithSubagentDivider(s.agentID) {
+		return nil
+	}
 	if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker); err != nil {
 		return err
 	}
@@ -2262,7 +2278,7 @@ func (h *OutputHandler) todoCache(agentID string) *agentTodoCache {
 func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 	return registryOps[cachedTodo]{
 		listRows: func(ctx context.Context, ownerID string, limit int32) ([]seedEntry[cachedTodo], error) {
-			rows, err := h.queries.ListAgentTodos(ctx, db.ListAgentTodosParams{
+			rows, err := h.queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{
 				AgentID: ownerID,
 				Limit:   int64(limit),
 			})

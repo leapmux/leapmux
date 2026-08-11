@@ -14,6 +14,7 @@ import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { ImperativeRef } from '~/lib/imperativeRef'
 import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
+import type { TabWorkState } from '~/stores/chatBackgroundTasks'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createControlStore } from '~/stores/control.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
@@ -46,7 +47,7 @@ import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
-import { countActiveBackgroundTasks, countActiveSubagentTask } from '~/stores/chatBackgroundTasks'
+import { chipTasksFor, countActiveBackgroundTasks, rootWorkState, subagentWorkState } from '~/stores/chatBackgroundTasks'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/tab.helpers'
@@ -519,26 +520,29 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // child ChatView correctly shows no chip (empty).
   const bgRootFor = (agentId: string): string => rootAgentIdFor((id: string) => view.getAgentTab(id), agentId)
   const bgTasksFor = (agentId: string) => chatStore.backgroundTasks.get(bgRootFor(agentId))
-  const bgTaskCountFor = (agentId: string) => countActiveBackgroundTasks(bgTasksFor(agentId))
-  // What the THINKING INDICATOR should count, which is not what the chip counts.
+  // Scoped in the store beside the other registry-scoping rules; see
+  // chipTasksFor for why a child tab must not show its parent's count.
+  const chipTasksForTab = (agentId: string) =>
+    chipTasksFor(agentId, bgTasksFor(agentId), !!view.getAgentTab(agentId)?.parentAgentId)
+  // What the THINKING INDICATOR reads, which is not what the chip counts.
   //
-  // The registry is keyed by ROOT owner, so bgTaskCountFor answers "is any
+  // The registry is keyed by ROOT owner, so counting it whole answers "is any
   // subagent of this root still running" -- right for a root tab, wrong for a
   // child: it kept a FINISHED subagent's indicator spinning for as long as any
-  // SIBLING subagent ran. A child instead counts only its OWN row, which the
-  // worker terminalizes when that subagent ends. Falling back to 0 for a child
-  // with no row yet is safe: the message-history heuristic then decides.
-  const indicatorBgTaskCount = (agentId: string): number =>
+  // SIBLING subagent ran. A child instead reads only its OWN row, and that row
+  // can say `finished`, which no count can express: a child whose row ended is
+  // done, whatever its transcript's last message looks like.
+  const indicatorWorkState = (agentId: string): TabWorkState =>
     view.getAgentTab(agentId)?.parentAgentId
-      ? countActiveSubagentTask(agentId, bgTasksFor(agentId))
-      : bgTaskCountFor(agentId)
+      ? subagentWorkState(agentId, bgTasksFor(agentId))
+      : rootWorkState(bgTasksFor(agentId))
   const agentThinking = (agentId: string) => shouldShowThinkingIndicator(
     agentTabToInfo(view.getAgentTab(agentId)),
     agentSessionStore.getInfo(agentId),
     chatStore.getMessages(agentId),
     chatStore.streamingText.get(agentId),
     controlStore.getRequests(agentId).length,
-    indicatorBgTaskCount(agentId),
+    indicatorWorkState(agentId),
   )
   // Todos are owned by the root agent (the child has no independent todo list).
   // Resolve to the root so a child tab shows the root's todos, mirroring
@@ -787,6 +791,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 >
                   <ChatView
                     agentId={agentId}
+                    isChildTranscript={!!view.getAgentTab(agentId)?.parentAgentId}
                     messages={chatStore.getMessages(agentId)}
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.streamingText.get(agentId)}
@@ -850,8 +855,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       startupError: agent()?.startupError,
                       startupMessage: agent()?.startupMessage,
                       providerLabel: agentProviderLabel(agent()?.agentProvider),
-                      backgroundTaskCount: bgTaskCountFor(agentId),
-                      backgroundTasks: bgTasksFor(agentId),
+                      backgroundTaskCount: countActiveBackgroundTasks(chipTasksForTab(agentId)),
+                      backgroundTasks: chipTasksForTab(agentId),
                       onOpenSubagent: onOpenBackgroundTask,
                       todos: todosFor(agentId),
                     }}

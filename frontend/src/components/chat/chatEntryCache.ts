@@ -192,6 +192,12 @@ export interface ClassifiedEntryCacheDeps {
   hasNewerMessages: () => boolean
   /** Show otherwise-hidden messages (the debug preference). */
   showHiddenMessages: () => boolean
+  /**
+   * Whether these messages are a SUBAGENT's own transcript. Constant for the
+   * life of a view (a tab is a child or it is not), so it is NOT a freshness
+   * dimension -- an entry can never need re-classifying because it changed.
+   */
+  isChildTranscript?: () => boolean
 }
 
 export interface ClassifiedEntryCache {
@@ -281,7 +287,10 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     !!cached && shallowEqual(cached.freshness, freshnessOf(msg, cached.category.kind))
   const buildEntry = (msg: AgentChatMessage, cached?: ClassifiedEntry): ClassifiedEntry => {
     const hasCommandStream = hasRenderableStream(msg)
-    const classified = classifyParsedMessage(msg, { hasCommandStream })
+    const classified = classifyParsedMessage(msg, {
+      hasCommandStream,
+      isChildTranscript: deps.isChildTranscript?.() ?? false,
+    })
     // Reuse the cached parse when the `spanLines` payload is byte-identical to the
     // one it was parsed from -- compared against the snapshot, not `cached.msg`
     // (the shared proxy reads the CURRENT value, so it can't detect an in-place

@@ -5,7 +5,7 @@ package leapmux.v1;
 // Called by Frontend on Hub via ConnectRPC.
 service SectionService {
   // List all sections and workspace assignments for the current user.
-  // Auto-initializes default sections on first call.
+  // Read-only: the default sections are seeded when the user is created.
   rpc ListSections(ListSectionsRequest) returns (ListSectionsResponse);
   // Create a new custom section.
   rpc CreateSection(CreateSectionRequest) returns (CreateSectionResponse);

@@ -169,9 +169,12 @@ function NotificationDivider(props: { text: string, loading?: boolean, icon?: Lu
 }
 
 /**
- * Label + glyph for the divider that closes a subagent transcript. The glyphs
- * match the Background tasks list's status glyphs, so the same terminal state
- * reads the same in the sidebar and in the transcript.
+ * Label + glyph for the divider that closes a subagent transcript.
+ *
+ * The glyph is this divider's own. The Background tasks list carries the same
+ * states as a COLOUR on one constant dot rather than as a glyph per state, so
+ * there is no shared glyph vocabulary to match; the shared reading comes from
+ * the label, which names the same four outcomes.
  */
 function subagentEndedEntry(m: Record<string, unknown>): ThreadEntry[] {
   const status = pickString(m, 'status')
@@ -185,7 +188,7 @@ function subagentEndedEntry(m: Record<string, unknown>): ThreadEntry[] {
     case 'interrupted':
       return [{ kind: 'divider', text: 'Subagent interrupted', icon: RotateCcw }]
     default:
-      // An unknown terminal status still ends the transcript; say only what is
+      // An unknown final status still ends the transcript; say only what is
       // certain rather than inventing an outcome.
       return [{ kind: 'divider', text: 'Subagent ended', icon: OctagonMinus }]
   }

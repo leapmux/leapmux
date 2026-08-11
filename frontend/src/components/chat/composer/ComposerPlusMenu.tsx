@@ -14,7 +14,6 @@ import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { BranchContextMenu } from '~/components/workspace/BranchContextMenu'
-import { DEFAULT_DISABLED_PLACEHOLDER } from '~/lib/editor/keyboardPlugins'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { formatShortcut } from '~/lib/shortcuts/display'
 import * as styles from './composer.css'
@@ -124,7 +123,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
 
   const attachDisabledReason = () => {
     if (props.disabled)
-      return props.disabledReason || DEFAULT_DISABLED_PLACEHOLDER
+      return props.disabledReason
     return props.canAttach ? undefined : 'Attach is unavailable during a control request'
   }
 

@@ -2,7 +2,6 @@ import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { DEFAULT_DISABLED_PLACEHOLDER } from '~/lib/editor/keyboardPlugins'
 import { ComposerPlusMenu } from './ComposerPlusMenu'
 import '~/components/chat/providers'
 
@@ -158,13 +157,13 @@ describe('composerPlusMenu', () => {
       .toHaveAttribute('title', 'This subagent doesn\'t accept messages.')
   })
 
-  it('falls back to the same default the editor uses when no reason is given', () => {
-    // Both surfaces resolve `reason || DEFAULT_DISABLED_PLACEHOLDER` from the
-    // same input, so an absent reason cannot make them disagree either.
+  it('invents no reason of its own when the caller gives none', () => {
+    // The menu applies no fallback: AgentEditorPanel resolves ONE reason and
+    // hands every surface the same resolved string, so a default applied here
+    // could only be a second copy that drifts from the box beside it.
     renderMenu({ disabled: true })
 
-    expect(screen.getByTestId('composer-attach-file'))
-      .toHaveAttribute('title', DEFAULT_DISABLED_PLACEHOLDER)
+    expect(screen.getByTestId('composer-attach-file')).not.toHaveAttribute('title')
   })
 
   it('prefers the disabled reason over the control-request reason', () => {

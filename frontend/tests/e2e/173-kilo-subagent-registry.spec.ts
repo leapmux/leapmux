@@ -1,11 +1,7 @@
 import {
-  backgroundTasksSection,
-  expectNoChildAgents,
+  expectRegistryOnlySubagentEnds,
   expectRegistrySectionAbsent,
-  expectRowBecomesTerminal,
-  expectRowNotClickable,
-  expectSectionPersists,
-  openAgentTabIds,
+  waitForRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 /**
@@ -15,7 +11,7 @@ import { sendMessage, waitForAgentIdle } from './helpers/ui'
  * the kilo fixture opens the agent with an explicit text-capable model so the
  * subagent spawn actually runs.
  */
-import { expect, KILO_E2E_SKIP_REASON, kiloTest } from './kilo-fixtures'
+import { KILO_E2E_SKIP_REASON, kiloTest } from './kilo-fixtures'
 
 kiloTest.skip(!!KILO_E2E_SKIP_REASON, KILO_E2E_SKIP_REASON || '')
 
@@ -23,24 +19,16 @@ kiloTest.describe('Kilo subagent registry', () => {
   kiloTest('subagent spawn creates a registry row with no child transcript', async ({
     authenticatedKiloWorkspace,
     page,
-    leapmuxServer,
   }) => {
     void authenticatedKiloWorkspace
-    const { hubUrl, adminToken, workerId } = leapmuxServer
 
     await expectRegistrySectionAbsent(page)
 
     await sendMessage(page, 'Use your task tool to spawn a subagent that runs `echo kilo-done` and reports the result.')
     await waitForAgentIdle(page, 180_000)
 
-    await expect(backgroundTasksSection(page)).toBeVisible()
-    const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').first()
-    await expect(row).toBeVisible()
+    const row = await waitForRegistryRow(page)
 
-    await expectRowBecomesTerminal(page, row, 'Completed')
-    await expectSectionPersists(page)
-    await expectRowNotClickable(page, row)
-    const tabIds = await openAgentTabIds(page)
-    await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
+    await expectRegistryOnlySubagentEnds(page, row)
   })
 })

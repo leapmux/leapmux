@@ -183,7 +183,7 @@ func TestCloseAgentOnChildKeepsRowAndTranscript(t *testing.T) {
 	require.Len(t, msgs, 1, "the child transcript survives a tab close")
 
 	// The registry row survives too.
-	rows, err := svc.Queries.ListAgentBackgroundTasks(ctx, db.ListAgentBackgroundTasksParams{
+	rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: "root-1", Limit: 100,
 	})
 	require.NoError(t, err)
@@ -386,7 +386,7 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 			Status: bgtask.StatusRunning,
 		}))
 
-	rowsBefore, err := svc.Queries.ListAgentBackgroundTasks(ctx, db.ListAgentBackgroundTasksParams{
+	rowsBefore, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: rootID, Limit: 100,
 	})
 	require.NoError(t, err)
@@ -427,7 +427,7 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 
 	// Every background-task row owned by the root is now terminal, and the
 	// previously-active rows are 'stopped' (the explicit-close disposition).
-	rowsAfter, err := svc.Queries.ListAgentBackgroundTasks(ctx, db.ListAgentBackgroundTasksParams{
+	rowsAfter, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: rootID, Limit: 100,
 	})
 	require.NoError(t, err)

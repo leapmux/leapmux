@@ -339,37 +339,72 @@ describe('shouldShowThinkingIndicator', () => {
     )).toBe(true)
   })
 
-  it('forces visible when there is an active background task, even with no streaming text', () => {
+  it('forces visible when this tab has active work, even with no streaming text', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent(),
       {},
       [],
       '',
       0,
-      2,
+      'active',
     )).toBe(true)
   })
 
-  it('active background task count is ignored when status is not ACTIVE', () => {
+  it('active work is ignored when status is not ACTIVE', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent({ status: AgentStatus.INACTIVE }),
       {},
       [],
       '',
       0,
-      3,
+      'active',
     )).toBe(false)
   })
 
-  it('active background task count is ignored when a control request is pending', () => {
+  it('active work is ignored when a control request is pending', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent(),
       {},
       [],
       '',
       1,
-      3,
+      'active',
     )).toBe(false)
+  })
+
+  // The reason this is a tri-state rather than a count. A finished subagent's
+  // transcript often does NOT end with the closing divider -- an interrupt
+  // notice, a trailing tool result, or a divider write that failed all leave
+  // the message heuristic reporting "working". The registry row is the
+  // authoritative record of that subagent's life, so it wins.
+  describe('a finished subagent', () => {
+    // A user message is a progress signal, so isAgentWorking says "working".
+    const interruptedTail = [
+      makeMsg(MessageSource.USER, rawContent({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+        parent_tool_use_id: 'toolu_1',
+      })),
+    ]
+
+    it('hides the indicator although the transcript looks busy', () => {
+      expect(shouldShowThinkingIndicator(makeAgent(), {}, interruptedTail, '', 0, 'unknown'))
+        .toBe(true)
+      expect(shouldShowThinkingIndicator(makeAgent(), {}, interruptedTail, '', 0, 'finished'))
+        .toBe(false)
+    })
+
+    it('hides it even with a stale streaming tail from the turn that ended', () => {
+      expect(shouldShowThinkingIndicator(makeAgent(), {}, [], 'half a sentence', 0, 'finished'))
+        .toBe(false)
+    })
+  })
+
+  // 'unknown' must not assert a negative: a tab the registry has no row for
+  // still falls through to the heuristic, which is what a plain root turn uses.
+  it('falls through to the message heuristic when the registry cannot answer', () => {
+    const working = [makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'working' }))]
+    expect(shouldShowThinkingIndicator(makeAgent(), {}, working, '', 0, 'unknown')).toBe(true)
   })
 })
 

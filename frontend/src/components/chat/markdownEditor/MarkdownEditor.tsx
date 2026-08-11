@@ -10,7 +10,6 @@ import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOw
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
-import { DEFAULT_DISABLED_PLACEHOLDER } from '~/lib/editor/keyboardPlugins'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { createComposerLayout } from './composerLayout'
 import { clearDraft, restoreCursor, saveDraftFromEditor } from './draftManagement'
@@ -257,7 +256,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   })
   let disabledRef = false
   let placeholderRef = 'Send a message...'
-  let disabledPlaceholderRef = DEFAULT_DISABLED_PLACEHOLDER
+  let disabledPlaceholderRef = ''
   let onTogglePlanModeRef: (() => void) | undefined
   createEffect(() => {
     onTogglePlanModeRef = props.onTogglePlanMode
@@ -292,7 +291,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     forceDecorationUpdate()
   })
   createEffect(() => {
-    disabledPlaceholderRef = props.disabledPlaceholder || DEFAULT_DISABLED_PLACEHOLDER
+    disabledPlaceholderRef = props.disabledPlaceholder ?? ''
     forceDecorationUpdate()
   })
 

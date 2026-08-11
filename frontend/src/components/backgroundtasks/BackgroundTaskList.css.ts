@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css'
+import { keyframes, style } from '@vanilla-extract/css'
 
 // Sidebar variant: the section's CollapsibleSidebar content container already
 // scrolls, so the list itself needs no overflow constraint.
@@ -66,13 +66,55 @@ export const taskIcon = style({
   height: '20px',
 })
 
-// Status is carried by the dot's COLOR, so every row keeps the same glyph and
-// the column reads as a status light rather than a set of shapes to learn.
-export const statusDotActive = style({ color: 'var(--primary)' })
-export const statusDotSuccess = style({ color: 'var(--success)' })
-export const statusDotDanger = style({ color: 'var(--danger)' })
+// A slow breath, so an in-progress row is identifiable at a glance without the
+// column becoming busy. Bottoms out well above zero: a dot that disappears
+// reads as a rendering fault rather than as activity.
+const dotPulse = keyframes({
+  '0%, 100%': { opacity: 1 },
+  '50%': { opacity: 0.35 },
+})
+
+/**
+ * The status dot, FLOATED right inside the title.
+ *
+ * Float, not a flex sibling: the dot belongs at the right end of the title's
+ * FIRST line, and a flex row would centre it against the whole wrapped block
+ * instead. A right float sits at the top-right of its container, and because
+ * the dot is only 8px tall in a ~17px line box, it shortens exactly that first
+ * line -- every line below it, and the secondary line in the block underneath,
+ * run the full width.
+ *
+ * 8px matches the workers section's dot (workerSection.css.ts), so the two
+ * sidebar sections read as one vocabulary.
+ */
+export const statusDot = style({
+  float: 'right',
+  width: 8,
+  height: 8,
+  borderRadius: '50%',
+  flexShrink: 0,
+  marginLeft: 'var(--space-2)',
+  // Centres the dot on the first line's box. In em so it tracks the font size
+  // rather than needing a second magic number per variant.
+  marginTop: '0.35em',
+})
+
+// Status is carried by the dot's COLOR, so every row keeps the same shape and
+// the column reads as a status light rather than a set of glyphs to learn.
+export const statusDotActive = style({
+  'background': 'var(--primary)',
+  '@media': {
+    // Motion is the in-progress signal, so it is opt-out, not opt-in: a reader
+    // who suppresses motion still gets the colour and the accessible name.
+    '(prefers-reduced-motion: no-preference)': {
+      animation: `${dotPulse} 2s ease-in-out infinite`,
+    },
+  },
+})
+export const statusDotSuccess = style({ background: 'var(--success)' })
+export const statusDotDanger = style({ background: 'var(--danger)' })
 // A user's explicit stop is neither a success nor a failure.
-export const statusDotMuted = style({ color: 'var(--muted-foreground)' })
+export const statusDotMuted = style({ background: 'var(--muted-foreground)' })
 
 export const taskBody = style({
   flex: 1,
@@ -83,7 +125,30 @@ export const taskBody = style({
 })
 
 export const taskTitle = style({
-  wordBreak: 'break-word',
+  // break-word + hyphens, NOT `anywhere`: the browser hyphenates at real
+  // syllable boundaries (the document is lang="en"), and only falls back to a
+  // hard mid-word break for a token it cannot hyphenate. `anywhere` would win
+  // every time and hyphenation would never run.
+  overflowWrap: 'break-word',
+  hyphens: 'auto',
+})
+
+/**
+ * A shell task's title is its COMMAND, so it is set in the monospace face and
+ * wrapped like code, not like prose: hyphenation off (a hyphen inserted into a
+ * path or a flag reads as part of the command), and breaking allowed anywhere
+ * so a long `/path/like/this` wraps at the edge instead of pushing the whole
+ * token to the next line and leaving the first one half empty.
+ */
+export const taskTitleCommand = style({
+  fontFamily: 'var(--font-mono)',
+  // Same size as any other title: the monospace face alone marks it as code,
+  // and stepping it down to the secondary line's size would flatten the
+  // title/subtitle hierarchy. `anywhere` is what actually buys the width back
+  // -- it is whole-token wrapping, not the font size, that was leaving a line
+  // half empty in front of a long path.
+  overflowWrap: 'anywhere',
+  hyphens: 'none',
 })
 
 // Wraps rather than ellipsizing on one line. The activity text a provider
@@ -98,5 +163,6 @@ export const taskSecondary = style({
   display: '-webkit-box',
   WebkitBoxOrient: 'vertical',
   WebkitLineClamp: 3,
-  overflowWrap: 'anywhere',
+  overflowWrap: 'break-word',
+  hyphens: 'auto',
 })

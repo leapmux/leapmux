@@ -11,10 +11,12 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/sections"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
 // OpenTestStore opens an in-memory SQLite store with migrations applied.
@@ -70,6 +72,26 @@ func CreateTestAdmin(t *testing.T, st store.Store) {
 		PasswordSet:  true,
 		IsAdmin:      true,
 	}))
+	seedDefaultSections(t, st, userID)
+}
+
+// seedDefaultSections gives a fixture user the same sidebar a real one gets.
+//
+// The default sections are written in the SAME transaction as the user row by
+// service.CreateUser, and nothing backfills them afterwards (ListSections is a
+// pure read), so a fixture that creates its user through the store would have
+// an empty sidebar no production user ever has -- and any test that touched
+// sections would measure the fixture's gap instead of the code.
+//
+// The fixture cannot call service.CreateUser directly: the service layer's own
+// tests import this package, so the import would be a cycle. Both call
+// sections.InitDefaults instead, which is why that package sits below the
+// service layer.
+func seedDefaultSections(t *testing.T, st store.Store, userID string) {
+	t.Helper()
+	owner, ok := userid.New(userID)
+	require.True(t, ok, "generated user id must be non-empty")
+	require.NoError(t, sections.InitDefaults(context.Background(), st, owner))
 }
 
 // CreateTestUser creates a non-admin user with the given credentials.
@@ -91,6 +113,7 @@ func CreateTestUser(t *testing.T, st store.Store, username, plainPassword string
 		DisplayName:  username,
 		PasswordSet:  true,
 	}))
+	seedDefaultSections(t, st, userID)
 	return userID
 }
 
