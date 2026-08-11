@@ -49,4 +49,14 @@ const (
 	// route into the rate-limit popover.
 	NotificationTypeRateLimit      = "rate_limit"
 	NotificationTypeRateLimitEvent = "rate_limit_event"
+
+	// NotificationTypeSubagentEnded closes a subagent transcript. The worker
+	// writes exactly one into a child transcript when that subagent's
+	// background-task row reaches a terminal status, so the subagent tab shows
+	// WHERE it stopped and WHY instead of a thinking indicator that never
+	// resolves. Carries a `status` field holding the registry's terminal wire
+	// status (completed / failed / stopped / interrupted). Provider-neutral:
+	// the registry close is the one moment every provider agrees a subagent is
+	// over, including the ones whose child transcript simply stops.
+	NotificationTypeSubagentEnded = "subagent_ended"
 )

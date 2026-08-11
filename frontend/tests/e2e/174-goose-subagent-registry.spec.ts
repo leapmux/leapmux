@@ -9,7 +9,6 @@
  */
 import { expect, GOOSE_E2E_SKIP_REASON, gooseTest } from './goose-fixtures'
 import {
-  agentTabIdsForWorkspace,
   expectRegistrySectionAbsent,
   expectRowBecomesTerminal,
   expectSectionPersists,
@@ -28,7 +27,6 @@ gooseTest.describe('Goose subagent registry', () => {
   }) => {
     void authenticatedGooseWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = authenticatedGooseWorkspace.workspaceId
 
     await expectRegistrySectionAbsent(page)
 
@@ -62,8 +60,14 @@ gooseTest.describe('Goose subagent registry', () => {
       const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
       await r.click()
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
-      // Composer on the child tab is disabled (Goose is not steerable).
-      await expect(page.getByTestId('composer-disabled-hint')).toBeVisible()
+      // Composer on the child tab is disabled (Goose is not steerable), and
+      // the box itself says WHY. The placeholder used to blame a lost
+      // connection the read-only transcript never had; asserting it here is
+      // what proves the reason reaches the editor, since the plugin's unit
+      // test cannot see the prop chain that feeds it.
+      const noMessages = 'This subagent doesn\'t accept messages.'
+      await expect(page.getByTestId('composer-disabled-hint')).toHaveText(noMessages)
+      await expect(page.locator(`[data-placeholder="${noMessages}"]:visible`)).toBeVisible()
     }
 
     await expectRowBecomesTerminal(page, r, 'Completed').catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
@@ -71,13 +75,27 @@ gooseTest.describe('Goose subagent registry', () => {
 
     // Worker-backed: a child agent exists with a parent when Goose linked one.
     if (childId) {
+      // Ask the worker about THIS child id (read off the registry row), the way
+      // 170/171 do. Seeding from the hub's tab list instead made this
+      // unreachable: tabs live in the user CRDT and the hub's tab projection is
+      // empty here, so the id list was always [].
       await expect.poll(async () => {
-        const tabIds = await agentTabIdsForWorkspace(hubUrl, adminToken, workspaceId)
-        const agents = await listAgents(hubUrl, adminToken, workerId, tabIds)
-        if (!agents)
+        const agents = await listAgents(hubUrl, adminToken, workerId, [childId!])
+        const child = agents?.find(a => a.id === childId)
+        if (!child)
           return null
-        return agents.some(a => a.parentAgentId !== '') ? 'found' : null
-      }).toBe('found')
+        return {
+          hasParent: child.parentAgentId !== '',
+          hasSpawnSpan: child.spawnSpanId !== '',
+          acceptsMessages: child.acceptsMessages,
+        }
+      }).toEqual({
+        hasParent: true,
+        hasSpawnSpan: true,
+        // Goose cannot steer a subagent, so the child tab is a read-only
+        // transcript -- the same fact the disabled composer above shows.
+        acceptsMessages: false,
+      })
     }
   })
 })

@@ -1,10 +1,10 @@
 import {
-  agentTabIdsForWorkspace,
   expectNoChildAgents,
   expectRegistrySectionAbsent,
   expectRowBecomesTerminal,
   expectRowNotClickable,
   expectSectionPersists,
+  openAgentTabIds,
   tryWaitForRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
@@ -28,7 +28,6 @@ reasonixTest.describe('Reasonix subagent registry', () => {
   }) => {
     void authenticatedReasonixWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = authenticatedReasonixWorkspace.workspaceId
 
     await expectRegistrySectionAbsent(page)
 
@@ -42,7 +41,7 @@ reasonixTest.describe('Reasonix subagent registry', () => {
     await expectRowBecomesTerminal(page, r, 'Completed').catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
     await expectSectionPersists(page)
     await expectRowNotClickable(page, r)
-    const tabIds = await agentTabIdsForWorkspace(hubUrl, adminToken, workspaceId)
+    const tabIds = await openAgentTabIds(page)
     await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
   })
 })

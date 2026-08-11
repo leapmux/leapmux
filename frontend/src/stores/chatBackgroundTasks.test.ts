@@ -5,7 +5,9 @@ import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/leapmux/v1
 import {
   backgroundTaskEndLabel,
   backgroundTaskEndTooltip,
+  backgroundTaskStatusLabel,
   countActiveBackgroundTasks,
+  countActiveSubagentTask,
   groupBackgroundTasks,
   isActiveBackgroundTaskStatus,
   isTerminalBackgroundTaskStatus,
@@ -133,5 +135,64 @@ describe('isActive/isTerminal', () => {
     expect(isTerminalBackgroundTaskStatus('completed')).toBe(true)
     expect(isTerminalBackgroundTaskStatus('interrupted')).toBe(true)
     expect(isTerminalBackgroundTaskStatus('running')).toBe(false)
+  })
+})
+
+describe('countActiveSubagentTask', () => {
+  const row = (over: Partial<BackgroundTaskItem>): BackgroundTaskItem => ({
+    rowKey: 'r',
+    kind: 'subagent',
+    title: 't',
+    activity: '',
+    status: 'running',
+    ...over,
+  })
+
+  it('counts this child while its own row is running', () => {
+    expect(countActiveSubagentTask('child-1', [row({ childAgentId: 'child-1' })])).toBe(1)
+  })
+
+  it('counts a pending row as active', () => {
+    expect(countActiveSubagentTask('child-1', [row({ childAgentId: 'child-1', status: 'pending' })])).toBe(1)
+  })
+
+  it('drops to zero once this child reaches a terminal status', () => {
+    for (const status of ['completed', 'failed', 'stopped', 'interrupted'] as const)
+      expect(countActiveSubagentTask('child-1', [row({ childAgentId: 'child-1', status })])).toBe(0)
+  })
+
+  // The whole point: a sibling still working must not keep this child's
+  // indicator alive.
+  it('ignores a sibling subagent that is still running', () => {
+    expect(countActiveSubagentTask('child-1', [
+      row({ rowKey: 'a', childAgentId: 'child-1', status: 'completed' }),
+      row({ rowKey: 'b', childAgentId: 'child-2', status: 'running' }),
+    ])).toBe(0)
+  })
+
+  it('answers zero when this child has no row yet', () => {
+    expect(countActiveSubagentTask('child-1', [])).toBe(0)
+    expect(countActiveSubagentTask('child-1', [row({ childAgentId: 'child-2' })])).toBe(0)
+  })
+
+  it('never counts more than the one row, even with duplicates', () => {
+    expect(countActiveSubagentTask('child-1', [
+      row({ rowKey: 'a', childAgentId: 'child-1' }),
+      row({ rowKey: 'b', childAgentId: 'child-1' }),
+    ])).toBe(1)
+  })
+})
+
+describe('backgroundTaskStatusLabel', () => {
+  it('names the in-progress states, which share one dot color', () => {
+    expect(backgroundTaskStatusLabel('pending')).toBe('Pending')
+    expect(backgroundTaskStatusLabel('running')).toBe('Running')
+  })
+
+  it('reuses the terminal end labels', () => {
+    expect(backgroundTaskStatusLabel('completed')).toBe('Completed')
+    expect(backgroundTaskStatusLabel('failed')).toBe('Failed')
+    expect(backgroundTaskStatusLabel('stopped')).toBe('Stopped')
+    expect(backgroundTaskStatusLabel('interrupted')).toBe('Interrupted')
   })
 })

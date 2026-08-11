@@ -46,7 +46,7 @@ import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
-import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
+import { countActiveBackgroundTasks, countActiveSubagentTask } from '~/stores/chatBackgroundTasks'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/tab.helpers'
@@ -59,6 +59,13 @@ import { EmptyTilePlaceholder } from './EmptyTilePlaceholder'
 import { TabBar } from './TabBar'
 import { Tile } from './Tile'
 import { cleanupAfterWindowDisposal, focusTile as focusTileShared } from './tileLifecycle'
+
+/**
+ * Why a non-steerable subagent's composer is dead. Shown BOTH as the hint above
+ * the box and as the box's own placeholder, so the input never claims a lost
+ * connection for a transcript that was never writable in the first place.
+ */
+const SUBAGENT_NO_MESSAGES_HINT = 'This subagent doesn\'t accept messages.'
 
 /**
  * Options for {@link createTileRenderer}. Grouped by concern so a single
@@ -137,8 +144,6 @@ interface TileRendererOpts {
    * non-clickable.
    */
   onOpenBackgroundTask?: (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => void
-  /** Resolve a tab title by agent id (for the chip popover's "via {parent}"). */
-  resolveParentLabel?: (agentId: string) => string | undefined
   /**
    * Branch-action callbacks for the composer's GitBranch chip. Each receives a
    * fully-built {@link BranchRef} (the focused agent's repo + the tabs on its
@@ -515,23 +520,31 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const bgRootFor = (agentId: string): string => rootAgentIdFor((id: string) => view.getAgentTab(id), agentId)
   const bgTasksFor = (agentId: string) => chatStore.backgroundTasks.get(bgRootFor(agentId))
   const bgTaskCountFor = (agentId: string) => countActiveBackgroundTasks(bgTasksFor(agentId))
-  // A child tab's thinking indicator must resolve the ROOT owner for the active
-  // background-task count: the store is keyed by root, and the raw child id
-  // returns [] so the indicator would drop to idle while the subagent runs.
+  // What the THINKING INDICATOR should count, which is not what the chip counts.
+  //
+  // The registry is keyed by ROOT owner, so bgTaskCountFor answers "is any
+  // subagent of this root still running" -- right for a root tab, wrong for a
+  // child: it kept a FINISHED subagent's indicator spinning for as long as any
+  // SIBLING subagent ran. A child instead counts only its OWN row, which the
+  // worker terminalizes when that subagent ends. Falling back to 0 for a child
+  // with no row yet is safe: the message-history heuristic then decides.
+  const indicatorBgTaskCount = (agentId: string): number =>
+    view.getAgentTab(agentId)?.parentAgentId
+      ? countActiveSubagentTask(agentId, bgTasksFor(agentId))
+      : bgTaskCountFor(agentId)
   const agentThinking = (agentId: string) => shouldShowThinkingIndicator(
     agentTabToInfo(view.getAgentTab(agentId)),
     agentSessionStore.getInfo(agentId),
     chatStore.getMessages(agentId),
     chatStore.streamingText.get(agentId),
     controlStore.getRequests(agentId).length,
-    bgTaskCountFor(agentId),
+    indicatorBgTaskCount(agentId),
   )
   // Todos are owned by the root agent (the child has no independent todo list).
   // Resolve to the root so a child tab shows the root's todos, mirroring
   // background tasks. The root entry in the watch plan delivers the live updates.
   const todosFor = (agentId: string) => chatStore.todos.get(bgRootFor(agentId))
   const onOpenBackgroundTask = opts.onOpenBackgroundTask
-  const resolveParentLabel = opts.resolveParentLabel ?? ((id: string) => view.getAgentTab(id)?.title)
 
   const createTabBarForTile = (tileId: string, actions?: () => TileActions) => {
     // Reactive accessor either way: callers from `renderTile` pass their
@@ -840,7 +853,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       backgroundTaskCount: bgTaskCountFor(agentId),
                       backgroundTasks: bgTasksFor(agentId),
                       onOpenSubagent: onOpenBackgroundTask,
-                      resolveParentLabel,
                       todos: todosFor(agentId),
                     }}
                   />
@@ -987,12 +999,17 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const FocusedAgentEditorPanel: Component<{ containerHeight: number }> = (props) => {
     const agentId = () => focusedAgentId()!
-    // Composer gate: a child (subagent) tab whose provider cannot steer a
-    // subagent conversation gets a disabled composer + a hint. Roots and
-    // steerable children keep the live composer. isSteerableAgentTab resolves
-    // acceptsMessages (backend-authoritative) with a supportsSubagentSend
-    // fallback for optimistic state.
-    const composerDisabled = () => {
+    // A child (subagent) tab whose provider cannot steer a subagent conversation
+    // is a READ-ONLY transcript: the worker routes both a child message
+    // (SendChildInput) and a child interrupt (InterruptChild) through the same
+    // ChildSteerer, so a provider that implements neither can do neither. Roots
+    // and steerable children stay fully interactive. isSteerableAgentTab
+    // resolves acceptsMessages (backend-authoritative) with a
+    // supportsSubagentSend fallback for optimistic state.
+    //
+    // One predicate feeds the composer gate, its hint, and the Interrupt button,
+    // so the three cannot disagree about what this tab can do.
+    const subagentReadOnly = () => {
       const t = view.getAgentTab(agentId())
       if (!t?.parentAgentId)
         return false
@@ -1098,14 +1115,15 @@ export function createTileRenderer(opts: TileRendererOpts) {
         addFilesRef={(fn) => { addFilesRef.set(fn) }}
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
-        disabled={composerDisabled()}
-        disabledHint={composerDisabled() ? 'This subagent doesn\'t accept messages' : undefined}
+        disabled={subagentReadOnly()}
+        disabledHint={subagentReadOnly() ? SUBAGENT_NO_MESSAGES_HINT : undefined}
         focusRef={(fn) => { focusEditorRef.set(fn) }}
         controlRequests={controlStore.getRequests(agentId())}
         onControlResponse={agentOps.handleControlResponse}
         onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
         onPermissionModeChange={mode => agentOps.handlePermissionModeChange(agentId(), mode)}
         onInterrupt={() => agentOps.handleInterrupt(agentId())}
+        canInterrupt={!subagentReadOnly()}
         settingsLoading={settingsLoading.loading()}
         agentSessionInfo={agentSessionStore.getInfo(agentId())}
         agentWorking={agentThinking(agentId())}

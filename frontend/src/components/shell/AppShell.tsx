@@ -803,10 +803,6 @@ export const AppShell: Component = () => {
     activeRootAgentId() ? chatStore.backgroundTasks.get(activeRootAgentId()!) : [],
   )
   const showBackgroundTasks = createMemo(() => activeBackgroundTasks().length > 0)
-  const resolveAgentTabTitle = (id: string): string | undefined => {
-    const t = tabView.getAgentTab(id)
-    return t?.title
-  }
   // Open a subagent tab from a Background tasks row. Built once here and shared
   // with the sidebar section + the ThinkingIndicator popover (via sidebarOpts).
   const onOpenBackgroundTask = (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => {
@@ -928,7 +924,6 @@ export const AppShell: Component = () => {
     },
     settingsLoading,
     onOpenBackgroundTask,
-    resolveParentLabel: resolveAgentTabTitle,
     branch: {
       onChangeBranch: openChangeBranchDialog,
       onDeleteBranch: openDeleteBranchDialog,
@@ -1000,7 +995,6 @@ export const AppShell: Component = () => {
     get showBackgroundTasks() { return showBackgroundTasks() },
     get activeBackgroundTasks() { return activeBackgroundTasks() },
     onOpenBackgroundTask: item => onOpenBackgroundTask(item),
-    resolveAgentTabTitle,
     termOps,
     gitStatusStore: gitFileStatusStore,
     get turnEndTrigger() { return turnEndTrigger() },

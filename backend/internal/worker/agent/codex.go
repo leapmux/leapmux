@@ -105,6 +105,10 @@ type CodexAgent struct {
 	// collabChildTitles records the spawn prompt's first line per child thread
 	// (the registry + child tab title). Guarded by mu.
 	collabChildTitles map[string]string
+	// collabChildPrompts records the FULL spawn prompt per child thread (the
+	// title above keeps only its first line). Spent when the child transcript is
+	// created, so the subagent tab opens on the instruction it was given.
+	collabChildPrompts map[string]string
 	// childTurnIDs records the active turn id per child thread (for steering).
 	// Guarded by mu. Cleared on child turn/completed.
 	childTurnIDs map[string]string
@@ -380,6 +384,7 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	clear(a.collabThreadSpans)
 	clear(a.collabChildItems)
 	clear(a.collabChildTitles)
+	clear(a.collabChildPrompts)
 	clear(a.childTurnIDs)
 	a.mu.Unlock()
 	// The thread was replaced; drop any in-flight thinking-token estimate so it

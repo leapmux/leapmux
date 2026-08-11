@@ -145,5 +145,6 @@ func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 		RowKey: tc.ToolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
+		Prompt: acpPromptString(input.Prompt),
 	}
 }

@@ -685,7 +685,13 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	parentMessages := sink.Messages()
 	require.Len(t, parentMessages, 2, "parent keeps spawn started + completed")
 	child := sink.ChildSink("child-of-call-1").(*testSink)
-	require.Len(t, child.Messages(), 1, "child got the command")
+	childMessages := child.Messages()
+	require.Len(t, childMessages, 2, "child transcript opens on the spawn prompt, then the command")
+	// The transcript opens on the instruction the subagent was given, so the tab
+	// shows what was asked rather than starting mid-work.
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, childMessages[0].Source)
+	assert.JSONEq(t, `{"content":"do work"}`, string(childMessages[0].Content))
+	assert.Equal(t, "cmd-1", childMessages[1].SpanID, "then the child's own command")
 }
 
 func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T) {

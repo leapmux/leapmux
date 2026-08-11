@@ -654,3 +654,102 @@ func TestUpsertBackgroundTaskSanitizesRowKey(t *testing.T) {
 	assert.Equal(t, "completed", rows[0].Status)
 	assert.Equal(t, "working", rows[0].ActiveForm)
 }
+
+// Each KIND gets its own cap pool. A run that opens shell after shell must not
+// evict the finished subagents -- those are the rows that carry a transcript
+// worth reopening.
+func TestBgTask_CapIsPerKind(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupBgTaskTest(t)
+	// Fill the SUBAGENT pool with terminal rows (the eviction-eligible kind).
+	for i := 1; i <= bgtask.MaxTasks; i++ {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("agent-%d", i),
+			Kind:   bgtask.KindSubagent,
+			Title:  fmt.Sprintf("agent %d", i),
+			Status: bgtask.StatusCompleted,
+		}))
+	}
+	require.Len(t, listRows(), bgtask.MaxTasks)
+
+	// A shell row now has its own empty pool, so it is added WITHOUT evicting a
+	// subagent -- the registry grows past what a single shared cap allowed.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "shell-1", Kind: bgtask.KindShell, Title: "npm test", Status: bgtask.StatusRunning,
+	}))
+	rows := listRows()
+	assert.Len(t, rows, bgtask.MaxTasks+1, "the shell lands in its own pool")
+	keys := map[string]struct{}{}
+	for _, r := range rows {
+		keys[r.RowKey] = struct{}{}
+	}
+	assert.Contains(t, keys, "agent-1", "no subagent evicted to make room for a shell")
+	assert.Contains(t, keys, "shell-1")
+}
+
+// The shell pool evicts its own oldest terminal row once IT is full, and still
+// leaves the subagent pool untouched.
+func TestBgTask_ShellPoolEvictsShellsOnly(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupBgTaskTest(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "agent-keep", Kind: bgtask.KindSubagent, Title: "keep me", Status: bgtask.StatusCompleted,
+	}))
+	for i := 1; i <= bgtask.MaxTasks; i++ {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("shell-%d", i),
+			Kind:   bgtask.KindShell,
+			Title:  fmt.Sprintf("cmd %d", i),
+			Status: bgtask.StatusCompleted,
+		}))
+	}
+	require.Len(t, listRows(), bgtask.MaxTasks+1)
+
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "shell-new", Kind: bgtask.KindShell, Title: "fresh", Status: bgtask.StatusRunning,
+	}))
+	rows := listRows()
+	require.Len(t, rows, bgtask.MaxTasks+1, "the shell pool stayed at its cap")
+	keys := map[string]struct{}{}
+	for _, r := range rows {
+		keys[r.RowKey] = struct{}{}
+	}
+	assert.NotContains(t, keys, "shell-1", "the shell pool evicted its own oldest terminal row")
+	assert.Contains(t, keys, "agent-keep", "the subagent pool is untouched")
+	assert.Contains(t, keys, "shell-new")
+}
+
+// The cold-start seed must load EVERY pool. A LIMIT of just one cap would
+// return one kind's rows and leave the other pool looking empty, so a reboot
+// would silently re-admit rows past the cap.
+func TestBgTask_SeedLoadsEveryKindPool(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	for i := 1; i <= bgtask.MaxTasks; i++ {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("agent-%d", i), Kind: bgtask.KindSubagent,
+			Title: "a", Status: bgtask.StatusCompleted,
+		}))
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("shell-%d", i), Kind: bgtask.KindShell,
+			Title: "s", Status: bgtask.StatusCompleted,
+		}))
+	}
+
+	// Drop the warm cache so the next read seeds from the DB.
+	svc.Output.CleanupAgent("agent-1")
+	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Len(t, loaded, bgtask.MaxTasksTotal, "the seed covers both pools")
+}

@@ -99,7 +99,29 @@ func gooseSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
 		RowKey: tc.ToolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
+		// Goose's delegate tool names its task `instructions`, not `prompt`
+		// (crates/goose/src/agents/platform_extensions/summon.rs). The child
+		// transcript is created later, on the first forwarded tool request, so
+		// applySubagentObservation holds this until then.
+		Prompt: gooseDelegateInstructions(tc.RawInput),
 	}
+}
+
+// gooseDelegateInstructions pulls the delegate call's task text out of the
+// tool_call's rawInput. Goose fills raw_input from the tool arguments
+// (acp/server/tool_calls/conversion.rs), so the delegate arguments arrive
+// verbatim. Returns "" when absent.
+func gooseDelegateInstructions(rawInput json.RawMessage) string {
+	if len(rawInput) == 0 {
+		return ""
+	}
+	var in struct {
+		Instructions string `json:"instructions"`
+	}
+	if err := json.Unmarshal(rawInput, &in); err != nil {
+		return ""
+	}
+	return in.Instructions
 }
 
 // gooseSubagentFromToolCallUpdate observes Goose's subagent tool requests.

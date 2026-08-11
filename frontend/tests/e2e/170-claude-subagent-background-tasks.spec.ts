@@ -43,6 +43,12 @@ test.describe('Claude subagent background tasks', () => {
     const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').first()
     await expect(row).toBeVisible()
 
+    // A clickable row is a <button>, which Oat's base button rule renders at
+    // var(--font-medium). The row must override that and stay at the normal
+    // weight, so a subagent does not read as emphasized against the shell rows.
+    // Only a real browser resolves the cascade, so no unit test can see this.
+    await expect(row).toHaveCSS('font-weight', '400')
+
     // 4. Wait for the row to link to a child transcript (EnsureChildAgent runs
     //    at task_started; the child-agent-id propagates via the next broadcast).
     await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
@@ -89,6 +95,9 @@ test.describe('Claude subagent background tasks', () => {
     const present = await shellRow.isVisible().catch(() => false)
     if (present) {
       await expect(shellRow).toHaveAttribute('data-child-agent-id', '')
+      // A static row is a <div>. It must render at the same weight as the
+      // clickable <button> row that spec 170's first test pins.
+      await expect(shellRow).toHaveCSS('font-weight', '400')
     }
   })
 })

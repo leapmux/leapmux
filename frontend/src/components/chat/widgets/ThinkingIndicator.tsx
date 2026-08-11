@@ -6,6 +6,7 @@ import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskL
 import { bgPopoverClass } from '~/components/backgroundtasks/BackgroundTaskList.css'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { TodoList } from '~/components/todo/TodoList'
+import { pluralize } from '~/lib/plural'
 import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
@@ -53,7 +54,6 @@ export interface ThinkingIndicatorProps {
    */
   backgroundTasks?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
-  resolveParentLabel?: (agentId: string) => string | undefined
   /**
    * The agent's to-do list for the todos chip + popover. Shown when there is at
    * least one non-deleted todo; the chip renders `done/total` and the popover
@@ -255,9 +255,21 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     }
   })
 
-  // {done, total} for the todos chip, recomputed only when the todo list
+  // {done, total} for the to-dos counter, recomputed only when the todo list
   // changes. Deleted todos are excluded from both counts (todoProgress).
   const todoCount = createMemo(() => todoProgress(props.todos ?? []))
+  // "2/5 to-dos". The noun agrees with the TOTAL, not the done count: a list of
+  // one reads "0/1 to-do" whether or not it is finished.
+  const todoCountLabel = createMemo(() => {
+    const { done, total } = todoCount()
+    return `${done}/${total} ${total === 1 ? 'to-do' : 'to-dos'}`
+  })
+
+  // Which counters the verb row shows. Named because each one is also read by
+  // its successor to decide whether to draw a leading `·`.
+  const showTokens = () => countTokens() !== undefined
+  const showBgTasks = () => (props.backgroundTaskCount ?? 0) > 0
+  const showTodos = () => todoCount().total > 0
 
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
   // binding can re-pin to the bottom on every frame while the
@@ -496,65 +508,75 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             </g>
           </svg>
           <span class={styles.verbRow}>
-            <span class={styles.verbStack}>
-              {/* Stable baseline anchor — see baselineStrut in the CSS. */}
-              <span class={styles.baselineStrut} aria-hidden="true">{' '}</span>
-              {verbSpan(true, charsA, highlightPosA)}
-              {verbSpan(false, charsB, highlightPosB)}
-            </span>
+            {/* The counters LEAD the row and the verb trails them, so it reads
+                "<tokens> · <background tasks> · <to-dos> <verb>…". Every counter
+                is optional, so each one draws its own leading `·` only when
+                something already precedes it — a separator baked into a
+                counter's own text would dangle whenever its neighbour is gone. */}
             {/* `countTokens` (not the raw prop) gates the count: it tracks the
                 live estimate while the indicator is visible, then holds the last
                 value for ROW_FADE_MS so the count fades out WITH the collapsing
                 row instead of popping — and unmounts after, so a stale estimate
                 can't keep it (or its roll effects) alive in a collapsed row. */}
-            <Show when={countTokens() !== undefined}>
+            <Show when={showTokens()}>
               <ThinkingTokenCount tokens={countTokens()!} />
             </Show>
-            {/* Background-tasks chip: shown while there are active subagents/
-                shells. Clicking opens a popover with the full registry. */}
-            <Show when={(props.backgroundTaskCount ?? 0) > 0}>
+            {/* Background tasks: shown while there are active subagents/shells.
+                Clicking opens a popover with the full registry. */}
+            <Show when={showBgTasks()}>
+              <Show when={showTokens()}>
+                <span class={styles.countSeparator} aria-hidden="true">·</span>
+              </Show>
               <DropdownMenu
                 as="div"
                 class="card"
                 data-testid="bg-tasks-popover"
                 trigger={triggerProps => (
                   <button
-                    class={styles.bgTaskChip}
+                    class={styles.countChip}
                     data-testid="thinking-bg-tasks-chip"
                     {...triggerProps}
                   >
-                    {props.backgroundTaskCount}
+                    {pluralize(props.backgroundTaskCount ?? 0, 'background task')}
                   </button>
                 )}
               >
                 <BackgroundTaskList
                   tasks={props.backgroundTasks ?? []}
                   onOpenSubagent={props.onOpenSubagent}
-                  resolveParentLabel={props.resolveParentLabel}
                   class={bgPopoverClass}
                 />
               </DropdownMenu>
             </Show>
-            {/* Todos chip: shown when there is at least one non-deleted todo.
-                Renders done/total; clicking opens the existing TodoList. */}
-            <Show when={todoCount().total > 0}>
+            {/* To-dos: shown when there is at least one non-deleted todo. Renders
+                done/total; clicking opens the existing TodoList. */}
+            <Show when={showTodos()}>
+              <Show when={showTokens() || showBgTasks()}>
+                <span class={styles.countSeparator} aria-hidden="true">·</span>
+              </Show>
               <DropdownMenu
                 as="div"
                 class="card"
                 data-testid="todo-list-popover"
                 trigger={triggerProps => (
                   <button
-                    class={styles.bgTaskChip}
+                    class={styles.countChip}
                     data-testid="thinking-todos-chip"
                     {...triggerProps}
                   >
-                    {`${todoCount().done}/${todoCount().total}`}
+                    {todoCountLabel()}
                   </button>
                 )}
               >
                 <TodoList todos={props.todos ?? []} />
               </DropdownMenu>
             </Show>
+            <span class={styles.verbStack} data-testid="thinking-verb">
+              {/* Stable baseline anchor — see baselineStrut in the CSS. */}
+              <span class={styles.baselineStrut} aria-hidden="true">{' '}</span>
+              {verbSpan(true, charsA, highlightPosA)}
+              {verbSpan(false, charsB, highlightPosB)}
+            </span>
           </span>
         </div>
       </div>

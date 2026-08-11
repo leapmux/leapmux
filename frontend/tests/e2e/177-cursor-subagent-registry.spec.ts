@@ -9,13 +9,13 @@
  */
 import { CURSOR_E2E_SKIP_REASON, cursorTest, expect } from './cursor-fixtures'
 import {
-  agentTabIdsForWorkspace,
   backgroundTasksSection,
   expectNoChildAgents,
   expectRegistrySectionAbsent,
   expectRowBecomesTerminal,
   expectRowNotClickable,
   expectSectionPersists,
+  openAgentTabIds,
 } from './helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
@@ -29,7 +29,6 @@ cursorTest.describe('Cursor subagent registry', () => {
   }) => {
     void authenticatedCursorWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = authenticatedCursorWorkspace.workspaceId
 
     await expectRegistrySectionAbsent(page)
 
@@ -51,7 +50,7 @@ cursorTest.describe('Cursor subagent registry', () => {
     await expectRowBecomesTerminal(page, row, 'Completed')
     await expectSectionPersists(page)
     await expectRowNotClickable(page, row)
-    const tabIds = await agentTabIdsForWorkspace(hubUrl, adminToken, workspaceId)
+    const tabIds = await openAgentTabIds(page)
     await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
   })
 })

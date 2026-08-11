@@ -130,6 +130,13 @@ type acpBase struct {
 	// names/shapes out of this shared file.
 	subagentFromToolCall       func(tc acpToolCallEnvelope) *acpSubagentObservation
 	subagentFromToolCallUpdate func(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation
+	// subagentPrompts holds each spawn's prompt until the child transcript that
+	// should open with it exists (see acpSubagentObservation.Prompt). Keyed by
+	// the registry RowKey. Guarded by subagentPromptMu; entries are spent when
+	// the child is created and dropped when the row closes, so a provider that
+	// never links a child cannot grow it without bound.
+	subagentPromptMu sync.Mutex
+	subagentPrompts  map[string]string
 	// modelIDNormalizer, when set, rewrites model ids parsed from configOptions
 	// (e.g. Cursor's auto<->default[] aliasing) before they reach availableModels.
 	modelIDNormalizer func(string) string
@@ -1487,6 +1494,17 @@ type acpSubagentObservation struct {
 	// ChildAgentKey, when non-empty, drives EnsureChildAgent so the row links
 	// to a transcript (openable tab). Empty => registry-only.
 	ChildAgentKey string
+	// Prompt is the instruction the subagent was spawned with, when the
+	// provider's spawn payload carries one. It becomes the child transcript's
+	// first message, so the tab opens on what was asked rather than on the
+	// reply.
+	//
+	// Remembered per RowKey until the child exists: for every ACP provider the
+	// spawn observation (which HAS the prompt) and the observation that creates
+	// the child (which does not) are different events -- Goose learns its child
+	// only on the first forwarded tool request. A provider that never links a
+	// child simply never spends it; the entry is dropped when the row closes.
+	Prompt string
 	// CloseRow true => terminalize the row after the upsert (Status carries
 	// the terminal status).
 	CloseRow bool
@@ -1615,6 +1633,69 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 // Goose/Cursor, whose terminal-update hooks fire for EVERY tool_call, not just
 // spawns — the detector sets the Mode explicitly instead of relying on which
 // fields happen to be empty.
+// acpPromptString renders a spawn tool's `prompt` argument as text.
+//
+// It is declared json.RawMessage by the detectors because its shape is the
+// SPAWN DISCRIMINATOR (presence, not value), and the shape varies: OpenCode and
+// Kilo send a plain string (packages/opencode/src/tool/task.ts), while a
+// content-block array is the natural ACP spelling and costs nothing to accept.
+// Anything else renders as "" rather than as a JSON dump the user would have to
+// read through.
+func acpPromptString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		if b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// rememberSubagentPrompt stores a spawn's prompt under its registry row key.
+// First write wins: a later observation for the same row that re-reports the
+// prompt must not replace the spawn's own text.
+func (b *acpBase) rememberSubagentPrompt(rowKey, prompt string) {
+	b.subagentPromptMu.Lock()
+	defer b.subagentPromptMu.Unlock()
+	if b.subagentPrompts == nil {
+		b.subagentPrompts = make(map[string]string)
+	}
+	if _, ok := b.subagentPrompts[rowKey]; !ok {
+		b.subagentPrompts[rowKey] = prompt
+	}
+}
+
+// takeSubagentPrompt removes and returns the remembered prompt for rowKey, or
+// "" when none was recorded.
+func (b *acpBase) takeSubagentPrompt(rowKey string) string {
+	b.subagentPromptMu.Lock()
+	defer b.subagentPromptMu.Unlock()
+	prompt := b.subagentPrompts[rowKey]
+	delete(b.subagentPrompts, rowKey)
+	return prompt
+}
+
+// forgetSubagentPrompt drops an unspent prompt for a row that has closed.
+func (b *acpBase) forgetSubagentPrompt(rowKey string) {
+	b.subagentPromptMu.Lock()
+	defer b.subagentPromptMu.Unlock()
+	delete(b.subagentPrompts, rowKey)
+}
+
 func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 	if obs == nil || obs.RowKey == "" || b.sink == nil {
 		return
@@ -1623,12 +1704,25 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 	// can use it. Only the spawn observation carries ChildAgentKey; a close-only
 	// observation leaves it empty (the linkage persists in the registry row from
 	// spawn time, and the cleanup defers to root close for that path).
+	if obs.Prompt != "" {
+		b.rememberSubagentPrompt(obs.RowKey, obs.Prompt)
+	}
 	childAgentID := ""
 	if obs.ChildAgentKey != "" && obs.Mode != acpModeCloseOnly && obs.RenameFrom == "" {
 		var err error
 		childAgentID, err = b.sink.EnsureChildAgent(obs.RowKey, obs.ChildAgentKey, obs.Title)
 		if err != nil {
 			slog.Warn("acp subagent ensure child failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+		}
+		// The child exists now, so spend the prompt the spawn remembered.
+		// PersistChildPrompt is a no-op once the transcript has a message, so a
+		// repeated observation cannot duplicate it.
+		if childAgentID != "" {
+			if prompt := b.takeSubagentPrompt(obs.RowKey); prompt != "" {
+				if err := b.sink.PersistChildPrompt(childAgentID, prompt); err != nil {
+					slog.Warn("acp subagent prompt persist failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
+				}
+			}
 		}
 	}
 	// A rename+close (RenameFrom set) operates on the existing spawn row, so it
@@ -1659,6 +1753,8 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 		}
 	}
 	if obs.CloseRow {
+		// The row is over; an unspent prompt has no transcript left to open.
+		b.forgetSubagentPrompt(obs.RowKey)
 		// Rename the spawn row to the final key first, so one row tracks the
 		// whole lifecycle. A no-op when RenameFrom is empty or matches RowKey.
 		// The rename runs before the close so the terminal status lands on the

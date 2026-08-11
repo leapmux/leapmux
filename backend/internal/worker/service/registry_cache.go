@@ -50,10 +50,32 @@ type registryOps[T any] struct {
 	isTerminal func(T) bool
 	// deleteByKey deletes the persisted row for `key` under `ownerID`.
 	deleteByKey func(ctx context.Context, ownerID string, key string) error
-	// cap is the maximum number of rows the registry holds.
+	// cap is the maximum number of rows the registry holds IN ONE POOL. With
+	// bucketOf nil there is a single pool, so this is the whole registry.
 	cap int32
+	// bucketOf groups rows into independent cap pools, so a burst of one group
+	// cannot evict another's rows. Nil means one pool for everything.
+	bucketOf func(T) string
+	// seedLimit is the DB LIMIT for the cold-start load. It must cover EVERY
+	// pool (cap * pool count); a limit of just `cap` could return one pool's
+	// rows only and leave another looking empty. Zero falls back to cap.
+	seedLimit int32
 	// label is used in the eviction error context (e.g. "agent_todos").
 	label string
+}
+
+// bucket returns the cap pool a row belongs to ("" when the registry has only
+// one pool).
+func (c *registryCache[T]) bucket(row T) string {
+	if c.ops.bucketOf == nil {
+		return ""
+	}
+	return c.ops.bucketOf(row)
+}
+
+// inBucket reports whether a row belongs to the named pool.
+func (c *registryCache[T]) inBucket(row T, bucket string) bool {
+	return c.bucket(row) == bucket
 }
 
 // ensureSeededLocked loads the owner's existing rows from the DB on first touch.
@@ -62,7 +84,11 @@ func (c *registryCache[T]) ensureSeededLocked(ctx context.Context, ownerID strin
 	if c.seeded {
 		return nil
 	}
-	entries, err := c.ops.listRows(ctx, ownerID, c.ops.cap)
+	limit := c.ops.seedLimit
+	if limit == 0 {
+		limit = c.ops.cap
+	}
+	entries, err := c.ops.listRows(ctx, ownerID, limit)
 	if err != nil {
 		return err
 	}
@@ -99,7 +125,17 @@ func (c *registryCache[T]) indexOf(key string) int {
 // the cache and DB to make room under the cap. Returns false (no error) when no
 // terminal row exists. Caller must hold c.Mu.
 func (c *registryCache[T]) evictOldestTerminalLocked(ctx context.Context, ownerID string) (bool, error) {
-	evictIdx := slices.IndexFunc(c.Rows, c.ops.isTerminal)
+	return c.evictOldestTerminalInBucketLocked(ctx, ownerID, "")
+}
+
+// evictOldestTerminalInBucketLocked is evictOldestTerminalLocked scoped to one
+// cap pool, so making room for a shell row never deletes a subagent's. With a
+// single-pool registry (bucketOf nil) every row is in bucket "" and this is the
+// unscoped behaviour. Caller must hold c.Mu.
+func (c *registryCache[T]) evictOldestTerminalInBucketLocked(ctx context.Context, ownerID, bucket string) (bool, error) {
+	evictIdx := slices.IndexFunc(c.Rows, func(r T) bool {
+		return c.inBucket(r, bucket) && c.ops.isTerminal(r)
+	})
 	if evictIdx < 0 {
 		return false, nil
 	}
@@ -143,8 +179,15 @@ func (c *registryCache[T]) renameRowKeyLocked(oldKey, newKey string) bool {
 	return true
 }
 
-// atCap reports whether the cache holds the maximum number of rows, so an
-// insert knows it must evict before appending. Caller must hold c.Mu.
-func (c *registryCache[T]) atCap() bool {
-	return len(c.Rows) >= int(c.ops.cap)
+// atCapForBucket reports whether one cap pool is full, so an insert into that
+// pool knows it must evict before appending. Pass "" for a single-pool registry
+// (bucketOf nil), where every row shares one pool. Caller must hold c.Mu.
+func (c *registryCache[T]) atCapForBucket(bucket string) bool {
+	n := 0
+	for _, r := range c.Rows {
+		if c.inBucket(r, bucket) {
+			n++
+		}
+	}
+	return n >= int(c.ops.cap)
 }

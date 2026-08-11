@@ -2287,6 +2287,7 @@ func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 			})
 			return err
 		},
+		// One cap pool (bucketOf nil), so the seed limit is the cap itself.
 		cap:   todoevents.MaxTodos,
 		label: "agent_todos",
 	}

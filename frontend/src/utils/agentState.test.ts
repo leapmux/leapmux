@@ -372,3 +372,44 @@ describe('shouldShowThinkingIndicator', () => {
     )).toBe(false)
   })
 })
+
+// A subagent transcript is closed by the worker's subagent-end divider (written
+// when that subagent's registry row goes terminal). It is a notification, so
+// without an explicit stop the backwards scan would step over it, reach the
+// subagent's last real message, and report a finished subagent as still working.
+describe('isAgentWorking: the subagent-end divider', () => {
+  const ended = (status: string) =>
+    makeMsg(MessageSource.LEAPMUX, rawContent({ type: 'subagent_ended', status }))
+
+  it('reports not working once the divider has landed', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageSource.USER, rawContent({ content: 'go' })),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'working' })),
+      ended('completed'),
+    ])).toBe(false)
+  })
+
+  it('reports not working for every terminal status', () => {
+    for (const status of ['completed', 'failed', 'stopped', 'interrupted']) {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'working' })),
+        ended(status),
+      ])).toBe(false)
+    }
+  })
+
+  it('still reports working when the subagent spoke after the divider', () => {
+    // Not a shape the worker produces, but the scan must answer from the LAST
+    // message rather than from "a divider exists somewhere".
+    expect(isAgentWorking([
+      ended('completed'),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'more' })),
+    ])).toBe(true)
+  })
+
+  it('reports working while the subagent is mid-flight', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'working' })),
+    ])).toBe(true)
+  })
+})

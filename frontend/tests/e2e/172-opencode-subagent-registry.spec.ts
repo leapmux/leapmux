@@ -1,10 +1,10 @@
 import {
-  agentTabIdsForWorkspace,
   expectNoChildAgents,
   expectRegistrySectionAbsent,
   expectRowBecomesTerminal,
   expectRowNotClickable,
   expectSectionPersists,
+  openAgentTabIds,
   tryWaitForRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
@@ -28,7 +28,6 @@ opencodeTest.describe('OpenCode subagent registry', () => {
   }) => {
     void authenticatedOpencodeWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = authenticatedOpencodeWorkspace.workspaceId
 
     await expectRegistrySectionAbsent(page)
 
@@ -46,7 +45,7 @@ opencodeTest.describe('OpenCode subagent registry', () => {
 
     // Registry-only: not clickable, no child agents on the worker.
     await expectRowNotClickable(page, r)
-    const tabIds = await agentTabIdsForWorkspace(hubUrl, adminToken, workspaceId)
+    const tabIds = await openAgentTabIds(page)
     await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
   })
 })

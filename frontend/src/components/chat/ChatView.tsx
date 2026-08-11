@@ -207,7 +207,6 @@ export interface AgentLifecycleProps {
   /** Full registry for the chip popover. */
   backgroundTasks?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
-  resolveParentLabel?: (agentId: string) => string | undefined
   /** The agent's to-do list for the todos chip + popover. */
   todos?: TodoItem[]
 }
@@ -1175,7 +1174,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     backgroundTaskCount={props.agentLifecycle?.backgroundTaskCount}
                     backgroundTasks={props.agentLifecycle?.backgroundTasks}
                     onOpenSubagent={props.agentLifecycle?.onOpenSubagent}
-                    resolveParentLabel={props.agentLifecycle?.resolveParentLabel}
                     todos={props.agentLifecycle?.todos}
                     onExpandTick={() => {
                       if (scroll.isAtBottomFresh())

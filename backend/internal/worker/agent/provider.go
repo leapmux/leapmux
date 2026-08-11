@@ -129,6 +129,19 @@ type Provider interface {
 	// turn-end sound for a zero-tool turn, so a provider that cannot say must
 	// return ok=false rather than 0.
 	TurnEndToolUses(content []byte) (count int32, ok bool)
+	// IsTurnEndEnvelope reports whether content is this provider's turn-end
+	// envelope -- the message the frontend draws as a turn-end divider.
+	//
+	// Used to decide whether a SUBAGENT transcript already ends in a divider.
+	// Claude forwards a subagent's own `result`, so its child transcript closes
+	// itself; writing the worker's neutral subagent-end divider on top would
+	// stack two rules saying the same thing. Providers whose child transcript
+	// simply stops return false and get the neutral divider.
+	//
+	// Content-based, not a static capability: the SAME Claude subagent ends
+	// with a forwarded result when it completes and with nothing at all when it
+	// is stopped mid-flight, and only the stopped one needs the neutral divider.
+	IsTurnEndEnvelope(content []byte) bool
 	// SupportsChildSteering reports whether a running agent of this provider
 	// can address a subagent conversation inside the same process (Codex's
 	// collab child threads). Drives AgentInfo.accepts_messages for child tabs:
@@ -176,6 +189,11 @@ func (noopProvider) PermissionModeFromRawInput(string) (string, bool) { return "
 func (noopProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	return defaultTurnEndToolUses(content)
 }
+
+// IsTurnEndEnvelope defaults to false: a provider that forwards no terminal
+// envelope into its subagent transcripts leaves them to be closed by the
+// worker's neutral subagent-end divider. Only Claude overrides it.
+func (noopProvider) IsTurnEndEnvelope([]byte) bool { return false }
 
 // SupportsChildSteering defaults to false: a provider whose running agents
 // cannot steer a subagent conversation inside their own process. Only Codex
@@ -433,6 +451,22 @@ func (claudeProvider) PlanModeControl(toolName string) PlanModeControlKind {
 // Claude's plan flow is EnterPlanMode/ExitPlanMode (never PlanModeControlPrompt), so no
 // plan-approval option settlement runs for it.
 func (claudeProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
+
+// IsTurnEndEnvelope recognizes Claude's terminal `{"type":"result",...}`. With
+// --forward-subagent-text a subagent's own result is forwarded into the child
+// transcript, so a Claude subagent that runs to completion already closes
+// itself with a turn-end divider and needs no neutral one stacked on top. A
+// subagent stopped mid-flight forwards no result, so its transcript does not
+// end here and still gets the neutral divider.
+func (claudeProvider) IsTurnEndEnvelope(content []byte) bool {
+	var env struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(content, &env); err != nil {
+		return false
+	}
+	return env.Type == claudeMsgTypeResult
+}
 
 // SyntheticInterruptNotice: Claude's interrupt surfaces in its own transcript, so no synthetic
 // notice is persisted for a forwarded interrupt frame.

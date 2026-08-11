@@ -7,6 +7,7 @@
 // This mirrors the backend's `agent.Provider` interface and `agent.ProviderFor`
 // lookup; each side carries the per-provider hooks its layer needs.
 
+import type { LucideIcon } from 'lucide-solid'
 import type { Component, JSX } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
@@ -97,7 +98,14 @@ export interface ToolResultMeta {
 export type NotificationThreadEntry
   = | { kind: 'text', text: string }
     | { kind: 'group', groupKey: string, prefix: string, entry: string }
-    | { kind: 'divider', text: string, loading?: boolean }
+    /**
+     * A full-width labelled rule, drawn in the same style as a turn-end
+     * divider. `loading` swaps the glyph for a spinner; `icon` overrides the
+     * default compaction arrow (a subagent-end divider carries the same status
+     * glyph the Background tasks list uses). Omit `icon` and the shared
+     * renderer picks the compaction arrow.
+     */
+    | { kind: 'divider', text: string, loading?: boolean, icon?: LucideIcon }
 
 /**
  * Provider-neutral data model for a `result_divider` (turn-end) message,

@@ -142,6 +142,7 @@ describe('thinking indicator chips', () => {
     backgroundTaskCount?: number
     backgroundTasks?: BackgroundTaskItem[]
     todos?: TodoItem[]
+    thinkingTokens?: number
   }) {
     globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
     try {
@@ -154,11 +155,15 @@ describe('thinking indicator chips', () => {
     }
   }
 
-  it('renders the bg-tasks chip when backgroundTaskCount > 0', () => {
+  it('labels the bg-tasks counter rather than showing a bare number', () => {
     const { getByTestId, queryByTestId } = renderChips({ backgroundTaskCount: 2 })
-    expect(getByTestId('thinking-bg-tasks-chip')).toBeInTheDocument()
-    expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('2')
+    expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('2 background tasks')
     expect(queryByTestId('bg-tasks-popover')).toBeInTheDocument()
+  })
+
+  it('uses the singular noun for a single background task', () => {
+    const { getByTestId } = renderChips({ backgroundTaskCount: 1 })
+    expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('1 background task')
   })
 
   it('hides the bg-tasks chip when count is zero', () => {
@@ -166,15 +171,21 @@ describe('thinking indicator chips', () => {
     expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
   })
 
-  it('renders the todos chip with done/total when todos are present', () => {
+  it('renders the todos counter as done/total plus a noun', () => {
     const todos: TodoItem[] = [
       { content: 'a', status: 'completed', activeForm: '' },
       { content: 'b', status: 'in_progress', activeForm: 'doing b' },
       { content: 'c', status: 'pending', activeForm: '' },
     ]
     const { getByTestId } = renderChips({ todos })
-    expect(getByTestId('thinking-todos-chip')).toHaveTextContent('1/3')
+    expect(getByTestId('thinking-todos-chip')).toHaveTextContent('1/3 to-dos')
     expect(getByTestId('todo-list-popover')).toBeInTheDocument()
+  })
+
+  it('uses the singular noun for a one-item to-do list', () => {
+    const todos: TodoItem[] = [{ content: 'a', status: 'pending', activeForm: '' }]
+    const { getByTestId } = renderChips({ todos })
+    expect(getByTestId('thinking-todos-chip')).toHaveTextContent('0/1 to-do')
   })
 
   it('hides the todos chip when all todos are deleted', () => {
@@ -188,5 +199,31 @@ describe('thinking indicator chips', () => {
   it('hides the todos chip when the list is empty', () => {
     const { queryByTestId } = renderChips({ todos: [] })
     expect(queryByTestId('thinking-todos-chip')).toBeNull()
+  })
+
+  // The row reads "<tokens> · <background tasks> · <to-dos> <verb>...": the
+  // counters lead, middot-separated, and the rotating verb trails them.
+  it('orders the counters before the verb, separated by middots', () => {
+    const todos: TodoItem[] = [{ content: 'a', status: 'pending', activeForm: '' }]
+    const { getByTestId, getByText } = renderChips({ thinkingTokens: 500, backgroundTaskCount: 2, todos })
+    // The odometer is aria-hidden; getByText finds the screen-reader copy.
+    const tokens = getByText('500 tokens')
+    const bg = getByTestId('thinking-bg-tasks-chip')
+    const todo = getByTestId('thinking-todos-chip')
+    const verb = getByTestId('thinking-verb')
+    const before = (a: Element, b: Element) =>
+      !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(before(tokens, bg)).toBe(true)
+    expect(before(bg, todo)).toBe(true)
+    expect(before(todo, verb)).toBe(true)
+    // Exactly two separators for three counters.
+    const dots = (getByTestId('thinking-indicator').textContent ?? '').split('\u00B7').length - 1
+    expect(dots).toBe(2)
+  })
+
+  // A missing neighbour must not leave a dangling separator.
+  it('draws no separator when only one counter is present', () => {
+    const { getByTestId } = renderChips({ backgroundTaskCount: 2 })
+    expect(getByTestId('thinking-indicator').textContent).not.toContain('\u00B7')
   })
 })

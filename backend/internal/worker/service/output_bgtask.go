@@ -3,13 +3,16 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -76,8 +79,13 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 			})
 			return err
 		},
-		cap:   bgtask.MaxTasks,
-		label: "background tasks",
+		cap: bgtask.MaxTasks,
+		// One cap pool per KIND. A run that opens hundreds of shells would
+		// otherwise evict every finished subagent, and the subagent rows are the
+		// ones carrying a transcript worth reopening.
+		bucketOf:  func(r bgtask.Item) string { return bgtask.KindWire(r.Kind) },
+		seedLimit: bgtask.MaxTasksTotal,
+		label:     "background tasks",
 	}
 }
 
@@ -272,12 +280,21 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 		return
 	}
 	changed := false
+	// The children this sweep just ended. Collected here, under the lock, on the
+	// same "was still active" test that decides the write -- so each transcript
+	// gets its terminal divider exactly once, for the same reason
+	// CloseBackgroundTask does. Without this a subagent whose owner process died
+	// would keep a transcript that simply stops.
+	var endedChildIDs []string
 	for i := range cache.Rows {
 		if !cache.Rows[i].Status.IsTerminal() {
 			cache.Rows[i].Status = status
 			cache.Rows[i].EndedAt = now
 			cache.Rows[i].UpdatedAt = now
 			changed = true
+			if cache.Rows[i].ChildAgentID != "" {
+				endedChildIDs = append(endedChildIDs, cache.Rows[i].ChildAgentID)
+			}
 		}
 	}
 	// Snapshot under the lock; broadcast AFTER release so a slow/stalled gRPC
@@ -287,6 +304,9 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	cache.Mu.Unlock()
 	if changed {
 		h.broadcastBackgroundTasks(rootAgentID, snapshot)
+	}
+	for _, childID := range endedChildIDs {
+		h.persistSubagentEndDivider(childID, status)
 	}
 }
 
@@ -491,6 +511,116 @@ func (s *agentOutputSink) PersistChildTurnEnd(childAgentID string, content []byt
 	return s.ChildSink(childAgentID).PersistTurnEnd(content, span)
 }
 
+// PersistChildPrompt writes the spawn prompt as the child transcript's first
+// message. See the OutputSink doc for the contract; the emptiness check is what
+// makes it idempotent, and it is deliberately a READ of the child's max seq
+// rather than a flag: a worker restart loses a flag but not the transcript.
+func (s *agentOutputSink) PersistChildPrompt(childAgentID, prompt string) error {
+	if childAgentID == "" || strings.TrimSpace(prompt) == "" {
+		return nil
+	}
+	maxSeq, err := s.h.queries.GetMaxSeqByAgentID(s.h.bgTaskCtx(), childAgentID)
+	if err != nil {
+		return fmt.Errorf("read child transcript head: %w", err)
+	}
+	if maxSeq > 0 {
+		// The subagent already spoke. Prepending is not possible (seq is
+		// append-only) and appending would put the instruction BELOW the work it
+		// asked for, so say nothing.
+		return nil
+	}
+	// The same envelope a typed user message uses, so the renderer needs no new
+	// shape: markdown body, USER source, no span.
+	content, err := json.Marshal(map[string]string{"content": prompt})
+	if err != nil {
+		return fmt.Errorf("marshal child prompt: %w", err)
+	}
+	return s.ChildSink(childAgentID).PersistMessage(
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
+}
+
+// persistChildEnd writes the terminal divider that closes a child transcript.
+//
+// Unexported and service-internal on purpose: no provider calls it. The one
+// caller is CloseBackgroundTask, because the registry close is the single
+// provider-neutral moment at which a subagent is known to be over -- Claude's
+// forwarded result, Codex's collab terminal state, and an ACP tool call going
+// completed all funnel through it, and the providers whose child transcript
+// merely stops have no other terminal signal at all.
+//
+// Called exactly once per row: applyBackgroundTaskClose reports changed=true
+// only on the pending/running -> terminal transition, and the DB's own
+// status-IN('pending','running') guard makes that hold across a worker restart
+// too. So this needs no emptiness check of its own.
+func (s *agentOutputSink) persistChildEnd(childAgentID string, status bgtask.Status) {
+	if childAgentID == "" {
+		return
+	}
+	s.h.persistSubagentEndDivider(childAgentID, status)
+}
+
+// childTranscriptAlreadyEnded reports whether the child's last message is its
+// provider's turn-end envelope, i.e. the transcript already closes itself.
+// Reads the DB rather than an in-memory flag so it holds across a worker
+// restart, and answers false on any read error -- a missing divider is a worse
+// outcome than a duplicated one.
+func (h *OutputHandler) childTranscriptAlreadyEnded(ctx context.Context, childAgentID string, provider leapmuxv1.AgentProvider) bool {
+	last, err := h.queries.GetLatestMessageByAgentID(ctx, childAgentID)
+	if err != nil {
+		return false
+	}
+	raw, err := msgcodec.Decompress(last.Content, last.ContentCompression)
+	if err != nil {
+		return false
+	}
+	return agent.ProviderFor(provider).IsTurnEndEnvelope(raw)
+}
+
+// persistSubagentEndDivider is the handler-level writer behind persistChildEnd.
+// It exists separately because the OTHER caller -- the process-exit sweep
+// (MarkAgentBackgroundTasksExited) -- runs on the handler and has no sink in
+// hand.
+//
+// The provider comes from the child's own agent row rather than from a caller:
+// createMessageRow refuses an UNSPECIFIED provider, and the exit sweep has no
+// sink to borrow one from. A child row that no longer resolves is skipped --
+// there is no transcript left to close.
+func (h *OutputHandler) persistSubagentEndDivider(childAgentID string, status bgtask.Status) {
+	if childAgentID == "" {
+		return
+	}
+	ctx := h.bgTaskCtx()
+	child, err := h.queries.GetAgentByID(ctx, childAgentID)
+	if err != nil {
+		slog.Warn("subagent end divider: child agent not found", "child", childAgentID, "error", err)
+		return
+	}
+	// Exactly ONE divider closes a subagent transcript. A provider that forwards
+	// its subagent's own terminal envelope (Claude's result) has already drawn
+	// one, and that one is richer -- it carries the duration, and on failure the
+	// error label and detail. Stacking the neutral divider under it would say the
+	// same thing twice. A subagent stopped before it could forward a result does
+	// not end here, so it still gets the neutral divider.
+	if h.childTranscriptAlreadyEnded(ctx, childAgentID, child.AgentProvider) {
+		return
+	}
+	content, err := json.Marshal(map[string]string{
+		"type":   agent.NotificationTypeSubagentEnded,
+		"status": bgtask.StatusWire(status),
+	})
+	if err != nil {
+		slog.Warn("marshal subagent end divider", "child", childAgentID, "error", err)
+		return
+	}
+	// The child's own tracker, so the divider renders with whatever span rails
+	// were still open in that transcript rather than against an empty snapshot.
+	if err := h.persistAndBroadcast(childAgentID, child.AgentProvider,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, agent.SpanInfo{},
+		h.childTracker(childAgentID)); err != nil {
+		slog.Warn("persist subagent end divider", "child", childAgentID, "error", err)
+	}
+}
+
 // CleanupChildAgent releases the per-child service state for a child that has
 // closed permanently. This sink is the child's DIRECT PARENT: the cached child
 // sink lives in s.childSinks, so prune it here in O(1) instead of scanning
@@ -565,9 +695,36 @@ func (s *agentOutputSink) UpdateBackgroundTaskStatus(rowKey string, status bgtas
 }
 
 func (s *agentOutputSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
-	return s.applyAndBroadcast(rowKey, func(root, key string) ([]bgtask.Item, bool, error) {
-		return s.h.applyBackgroundTaskClose(root, key, status)
+	// The child whose transcript this close ends, captured on the ONE call that
+	// actually terminalizes the row (see persistChildEnd for why that is the
+	// right idempotency guard). Empty for a shell row or a re-close.
+	var endedChildID string
+	err := s.applyAndBroadcast(rowKey, func(root, key string) ([]bgtask.Item, bool, error) {
+		rows, changed, applyErr := s.h.applyBackgroundTaskClose(root, key, status)
+		if changed {
+			endedChildID = childAgentIDForRow(rows, key)
+		}
+		return rows, changed, applyErr
 	})
+	if err != nil {
+		return err
+	}
+	// After the broadcast, so a slow transport cannot delay the DB write, and
+	// outside the cache lock applyBackgroundTaskClose holds.
+	s.persistChildEnd(endedChildID, status)
+	return nil
+}
+
+// childAgentIDForRow returns the child transcript linked to rowKey, or "" when
+// the row is absent or carries no child (a shell task, or a subagent whose
+// provider never linked a transcript).
+func childAgentIDForRow(rows []bgtask.Item, rowKey string) string {
+	for _, r := range rows {
+		if r.RowKey == rowKey {
+			return r.ChildAgentID
+		}
+	}
+	return ""
 }
 
 // RenameBackgroundTask atomically re-keys a row from oldKey to newKey under the
@@ -678,8 +835,10 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		if existing.WithUpdatedAt(merged.UpdatedAt) == merged {
 			return cache.snapshot(), false, nil
 		}
-	} else if cache.atCap() {
-		evicted, err := cache.evictOldestTerminalLocked(ctx, rootAgentID)
+	} else if bucket := bgtask.KindWire(merged.Kind); cache.atCapForBucket(bucket) {
+		// Scoped to the incoming row's kind, so making room for a shell never
+		// deletes a subagent (and the reverse).
+		evicted, err := cache.evictOldestTerminalInBucketLocked(ctx, rootAgentID, bucket)
 		if err != nil {
 			return nil, false, err
 		}
@@ -696,10 +855,10 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 			// orphan a steerable child -- the cap is a soft bound to protect
 			// the child-linkage invariant.
 			slog.Warn("background task registry at cap with no terminal row; evicting oldest unlinked active row",
-				"owner", rootAgentID, "row_key", task.RowKey, "cap", bgtask.MaxTasks)
+				"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks)
 			evictIdx := -1
 			for i, r := range cache.Rows {
-				if r.ChildAgentID == "" {
+				if bgtask.KindWire(r.Kind) == bucket && r.ChildAgentID == "" {
 					evictIdx = i
 					break
 				}
@@ -710,7 +869,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 				}
 			} else {
 				slog.Warn("background task registry at cap with all active rows linked to children; exceeding cap to avoid orphaning a steerable child",
-					"owner", rootAgentID, "row_key", task.RowKey, "cap", bgtask.MaxTasks)
+					"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks)
 			}
 		}
 	}

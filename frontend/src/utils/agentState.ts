@@ -144,6 +144,14 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
     // forever, so it likewise stops the scan as "not working".
     if (category.kind === 'result_divider' || category.kind === 'unsupported_provider')
       return false
+    // The subagent-end divider is a subagent transcript's terminal boundary:
+    // the worker writes exactly one, when that subagent's registry row goes
+    // terminal, and nothing follows it. Without this the scan would walk past
+    // it (it is a notification, so isNonProgressInner would just keep going),
+    // reach the subagent's last real message, and report a finished subagent as
+    // still working.
+    if (getInnerMessageType(parsed) === NOTIFICATION_TYPE.SubagentEnded)
+      return false
     // context_cleared in a notification-thread row means the agent
     // restarted with a fresh context and is now idle — stop scanning.
     if (containsContextCleared(parsed))

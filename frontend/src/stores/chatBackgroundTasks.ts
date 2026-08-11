@@ -95,6 +95,38 @@ export function countActiveBackgroundTasks(items: BackgroundTaskItem[]): number 
   return n
 }
 
+/**
+ * Whether THIS subagent is still running, as 0 or 1, read from its own row in
+ * the root's registry.
+ *
+ * The registry is keyed by ROOT owner, so countActiveBackgroundTasks over it
+ * answers "is any subagent of this root running" -- the right question for a
+ * root agent's thinking indicator, and the wrong one for a child's: it kept a
+ * FINISHED subagent's indicator spinning for as long as any SIBLING subagent
+ * ran. Answers 0 for a child with no row yet (a spawn the provider has not
+ * linked), which lets the caller's message-history heuristic decide instead of
+ * asserting a negative.
+ */
+export function countActiveSubagentTask(childAgentId: string, rootTasks: BackgroundTaskItem[]): number {
+  const own = rootTasks.find(t => t.childAgentId === childAgentId)
+  return own && isActiveBackgroundTaskStatus(own.status) ? 1 : 0
+}
+
+// backgroundTaskStatusLabel names a status in full. The row shows status as a
+// colored dot, so this is what the dot's tooltip (and its accessible name)
+// says -- the color alone cannot distinguish failed from interrupted, or
+// pending from running.
+export function backgroundTaskStatusLabel(s: BackgroundTaskItem['status']): string {
+  switch (s) {
+    case 'pending':
+      return 'Pending'
+    case 'running':
+      return 'Running'
+    default:
+      return backgroundTaskEndLabel(s)
+  }
+}
+
 // backgroundTaskEndLabel renders the terminal-status secondary line.
 export function backgroundTaskEndLabel(s: BackgroundTaskItem['status']): string {
   switch (s) {

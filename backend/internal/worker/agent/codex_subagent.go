@@ -71,6 +71,11 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 			childAgentID, err = a.sink.EnsureChildAgent(spawnSpan, threadID, title)
 			if err != nil {
 				slog.Warn("codex collab ensure child failed", "thread", threadID, "error", err)
+			} else if prompt := a.takeCollabPrompt(threadID); prompt != "" {
+				// The transcript exists now, so open it on the spawn prompt.
+				if err := a.sink.PersistChildPrompt(childAgentID, prompt); err != nil {
+					slog.Warn("codex collab persist prompt failed", "thread", threadID, "error", err)
+				}
 			}
 		}
 		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
@@ -188,6 +193,38 @@ func (a *CodexAgent) removeCollabChildIndex(threadID string) {
 	if a.collabChildTitles != nil {
 		delete(a.collabChildTitles, threadID)
 	}
+	if a.collabChildPrompts != nil {
+		delete(a.collabChildPrompts, threadID)
+	}
+}
+
+// rememberCollabPrompt records a spawn's full prompt for a child thread. The
+// spawn item names the receiver threads but the child transcript does not exist
+// until agentsStates reports the thread, so the prompt waits here. First write
+// wins: a later collab tool call on the same thread (send/wait) carries no
+// prompt, and a re-reported spawn repeats the same one.
+func (a *CodexAgent) rememberCollabPrompt(threadID, prompt string) {
+	if threadID == "" || prompt == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.collabChildPrompts == nil {
+		a.collabChildPrompts = make(map[string]string)
+	}
+	if _, ok := a.collabChildPrompts[threadID]; !ok {
+		a.collabChildPrompts[threadID] = prompt
+	}
+}
+
+// takeCollabPrompt removes and returns a child thread's remembered spawn
+// prompt, or "" when none was seen.
+func (a *CodexAgent) takeCollabPrompt(threadID string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	prompt := a.collabChildPrompts[threadID]
+	delete(a.collabChildPrompts, threadID)
+	return prompt
 }
 
 // collabChildTitle returns a best-effort title for a child thread (the first

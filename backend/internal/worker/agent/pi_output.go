@@ -255,6 +255,17 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 		a.toolCallDescriptions[env.ToolCallID] = desc
 		a.mu.Unlock()
 	}
+	// The spawn prompt, kept whole for the child transcript's first message.
+	// pi-subagents declares it `prompt` on the nested-agent tool
+	// (src/nested-tools.ts); a non-subagent tool simply has none.
+	if prompt := piExtractPrompt(env.Input); prompt != "" {
+		a.mu.Lock()
+		if a.toolCallPrompts == nil {
+			a.toolCallPrompts = make(map[string]string)
+		}
+		a.toolCallPrompts[env.ToolCallID] = prompt
+		a.mu.Unlock()
+	}
 
 	spanColor := a.sink.ReserveSpanColor(env.ToolCallID, "")
 	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
@@ -353,9 +364,10 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 	// pi-subagents extension: parse the result details for terminal status, or
 	// a background re-key. The row key may change from toolCallId to
 	// details.agentId here (the agent id surfaces only at completion).
-	piApplySubagentEnd(a.sink, env.Result, env.ToolCallID, a.toolCallTitle(env.ToolCallID))
+	piApplySubagentEnd(a.sink, env.Result, env.ToolCallID, a.toolCallTitle(env.ToolCallID), a.toolCallPrompt(env.ToolCallID))
 	a.mu.Lock()
 	delete(a.toolCallDescriptions, env.ToolCallID)
+	delete(a.toolCallPrompts, env.ToolCallID)
 	a.mu.Unlock()
 }
 
@@ -449,6 +461,14 @@ func (a *PiAgent) toolCallTitle(toolCallID string) string {
 	return a.toolCallDescriptions[toolCallID]
 }
 
+// toolCallPrompt returns the whole spawn prompt recorded at
+// tool_execution_start (empty when the tool carried none).
+func (a *PiAgent) toolCallPrompt(toolCallID string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.toolCallPrompts[toolCallID]
+}
+
 // piExtractDescription pulls a human label out of a tool_execution_start input.
 // The pi-subagents extension carries the spawn prompt as `description` (and a
 // `prompt`); fall back to the tool name.
@@ -469,6 +489,22 @@ func piExtractDescription(input json.RawMessage, toolName string) string {
 		}
 	}
 	return toolName
+}
+
+// piExtractPrompt pulls the whole spawn prompt out of a tool_execution_start
+// input, or "" when the tool carries none. Distinct from
+// piExtractDescription, which wants a short label and truncates to one line.
+func piExtractPrompt(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var in struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return ""
+	}
+	return in.Prompt
 }
 
 // piSubagentDetails is the shape the pi-subagents extension carries in
@@ -527,7 +563,7 @@ var piAgentIDRe = regexp.MustCompile(`(?m)^Agent ID: (\S+)\s*$`)
 // piApplySubagentEnd parses a tool_execution_end result for terminal status or
 // a background re-key. status:"background" re-keys the row to details.agentId
 // and leaves it Running (fallback: regex "Agent ID: (\S+)" over result text).
-func piApplySubagentEnd(sink OutputSink, result json.RawMessage, toolCallID, title string) {
+func piApplySubagentEnd(sink OutputSink, result json.RawMessage, toolCallID, title, prompt string) {
 	if len(result) == 0 {
 		return
 	}
@@ -546,6 +582,11 @@ func piApplySubagentEnd(sink OutputSink, result json.RawMessage, toolCallID, tit
 				if childID, err := sink.EnsureChildAgent(toolCallID, agentID, title); err != nil {
 					slog.Warn("pi background re-key ensure child failed", "tool_call_id", toolCallID, "agent_id", agentID, "error", err)
 				} else {
+					// The child transcript exists only from here, so this is where
+					// the spawn prompt becomes its first message.
+					if err := sink.PersistChildPrompt(childID, prompt); err != nil {
+						slog.Warn("pi background re-key persist prompt failed", "tool_call_id", toolCallID, "error", err)
+					}
 					_ = sink.UpsertBackgroundTask(bgtask.Upsert{
 						RowKey:       agentID,
 						Kind:         bgtask.KindSubagent,

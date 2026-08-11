@@ -123,6 +123,13 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 
 	// Some task_started events omit description but carry the spawn prompt;
 	// fall back to the prompt's first line so the row never has an empty title.
+	//
+	// For a local_bash task the description IS the command (verified against
+	// 2.1.220: task_started ships description="sleep 2 && echo BG-MARKER" and no
+	// prompt), so the command is already this row's title. Description is left
+	// unset here: copying the title into it rendered the row's secondary line as
+	// a verbatim echo of its own title. task_notification later fills it with
+	// the shell's output_file, which is something the title does not say.
 	title := ev.Description
 	if title == "" {
 		title = bgtask.FirstLine(ev.Prompt)
@@ -137,7 +144,6 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		Title:         title,
 		GroupKey:      groupKey,
 		GroupLabel:    groupLabel,
-		Description:   title,
 		Status:        bgtask.StatusRunning,
 	}
 	if err := a.sink.UpsertBackgroundTask(upsert); err != nil {
@@ -148,8 +154,15 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	// owns a tool_use span. local_bash (shell) and local_workflow have no
 	// transcript; their envelopes are never forwarded.
 	if ev.TaskType != "local_bash" && ev.TaskType != "local_workflow" && ev.ToolUseID != "" {
-		if _, err := a.sink.EnsureChildAgent(ev.ToolUseID, ev.TaskID, title); err != nil {
+		childID, err := a.sink.EnsureChildAgent(ev.ToolUseID, ev.TaskID, title)
+		if err != nil {
 			slog.Warn("claude task_started ensure child failed", "task_id", ev.TaskID, "error", err)
+		} else if err := a.sink.PersistChildPrompt(childID, ev.Prompt); err != nil {
+			// task_started is the only Claude event that carries the spawn
+			// prompt, and it lands before any forwarded envelope, so the child
+			// transcript opens on the instruction rather than on the reply.
+			// Losing it costs the first message, not the transcript.
+			slog.Warn("claude task_started persist prompt failed", "task_id", ev.TaskID, "error", err)
 		}
 	}
 
@@ -268,17 +281,19 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 		}
 	}
 
-	// Open the child span and look up the tool name for a tool_result.
+	// Look up the tool name for a tool_result, and reserve the tool_use's color.
+	// The span itself opens only AFTER the persist below -- see the ordering note
+	// there.
 	childSink := a.sink.ChildSink(childID)
 	if spanType == "" && spanID != "" {
 		spanType = childSink.GetSpanType(spanID)
 	}
 	var spanColor int32
 	if msgType == claudeMsgTypeAssistant && spanID != "" {
+		// Reserving (not opening) is what makes the color available at persist
+		// time while the span is still closed, so the tool_use row can carry the
+		// color its rail will use without yet drawing that rail.
 		spanColor = childSink.ReserveSpanColor(spanID, spawnSpanID)
-		// Open the child span so a later tool_result (carrying the same
-		// parent_tool_use_id) can close it inside the child transcript.
-		childSink.OpenSpan(spanID, spawnSpanID)
 	}
 
 	source := leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
@@ -337,6 +352,25 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	}
 	if spanType != "" {
 		childSink.SetSpanType(spanID, spanType)
+	}
+	// Spans open AFTER the persist, exactly as the parent transcript does (see
+	// handlePersistableMessage, which persists before processAssistantBlocks).
+	// The sink derives a row's span_lines from the spans open at persist time,
+	// so opening first would stamp the tool_use row with an "active" line for
+	// the span the row is itself announcing: the row renders one column too deep
+	// and draws a rail segment with nothing above it to connect to. Opening
+	// after leaves the tool_use row at the parent depth and lets its
+	// tool_result -- which persists while the span is open -- close the rail.
+	//
+	// Every tool_use block opens, not just the first: one assistant message can
+	// carry parallel tool calls, and the user envelope below closes all of them.
+	if msgType == claudeMsgTypeAssistant {
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_use" && block.ID != "" {
+				childSink.SetSpanType(block.ID, block.Name)
+				childSink.OpenSpan(block.ID, spawnSpanID)
+			}
+		}
 	}
 	// A user envelope may close multiple parallel tool_result spans in the
 	// child transcript.

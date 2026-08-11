@@ -17,10 +17,27 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// MaxTasks caps the size of an agent's background-task registry shipped to
-// clients and held in memory. Terminal rows are evicted past this cap (oldest
-// first); active rows are never evicted. Matches the agent_todos guardrail.
+// MaxTasks caps how many rows OF EACH KIND an agent's background-task registry
+// ships to clients and holds in memory. Terminal rows are evicted past this cap
+// (oldest first); active rows are never evicted. Matches the agent_todos
+// guardrail.
+//
+// PER KIND, not per registry: a run that opens hundreds of shells would
+// otherwise evict every finished subagent, and the subagent rows are the ones
+// that carry a transcript worth revisiting. Each kind gets its own pool, so a
+// burst of one cannot push out the other.
 const MaxTasks = 64
+
+// KindCount is the number of real (non-unspecified) kinds, i.e. the number of
+// independent MaxTasks pools. MaxTasks*KindCount is therefore the most rows one
+// agent's registry can hold, which is what the cold-start seed must load: a
+// smaller LIMIT could return only one kind's rows and leave the other pool
+// looking empty.
+const KindCount = 2
+
+// MaxTasksTotal bounds the whole registry across every kind. Used for the
+// cold-start seed's LIMIT.
+const MaxTasksTotal = MaxTasks * KindCount
 
 // SanitizeRowKey strips control characters (bytes < 0x20) from a
 // provider-supplied registry row key. Row keys reach DOM data-attributes and

@@ -68,7 +68,6 @@ export interface SidebarCommonProps {
   showBackgroundTasks: boolean
   activeBackgroundTasks: BackgroundTaskItem[]
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
-  resolveAgentTabTitle?: (id: string) => string | undefined
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
   /**
@@ -201,7 +200,6 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get showBackgroundTasks() { return props.showBackgroundTasks },
     get activeBackgroundTasks() { return props.activeBackgroundTasks },
     get onOpenBackgroundTask() { return props.onOpenBackgroundTask },
-    get resolveAgentTabTitle() { return props.resolveAgentTabTitle },
     get workers() { return props.workers },
     workerInfoFn: props.workerInfoFn,
     channelStatusFn: props.channelStatusFn,

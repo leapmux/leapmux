@@ -1,9 +1,14 @@
+import type { LucideIcon } from 'lucide-solid'
 import type { JSXElement } from 'solid-js'
 import type { NotificationThreadEntry } from './providers/registry'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { CompactionDetail } from '~/lib/messageParser'
 import ArrowDownToLine from 'lucide-solid/icons/arrow-down-to-line'
+import Check from 'lucide-solid/icons/check'
 import LoaderCircle from 'lucide-solid/icons/loader-circle'
+import OctagonMinus from 'lucide-solid/icons/octagon-minus'
+import RotateCcw from 'lucide-solid/icons/rotate-ccw'
+import X from 'lucide-solid/icons/x'
 import { Icon } from '~/components/common/Icon'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { isCompactBoundary, parseBoundaryMeta, toTokenCount } from '~/lib/messageParser'
@@ -140,20 +145,50 @@ function formatApiRetryLabel(data: Record<string, unknown>): string {
 // ---------------------------------------------------------------------------
 
 /**
- * A compaction divider row: a leading icon (the down-to-line arrow, or a
- * spinner while compaction is in progress) followed by the label. Rendered by
- * `renderNotificationThread` for every `divider` entry, so a boundary looks the
+ * A labelled full-width rule: a leading glyph followed by the label, drawn with
+ * the same `resultDivider` style as a turn-end divider. Rendered by
+ * `renderNotificationThread` for EVERY `divider` entry, so a boundary looks the
  * same on its own or consolidated, and across providers -- a provider that
  * surfaces its own compaction event (e.g. Pi) supplies a `divider` entry that
- * flows through here, getting the same icon + layout without re-implementing it.
+ * flows through here, getting the same layout without re-implementing it.
+ *
+ * The glyph is the spinner while `loading`, else the entry's own `icon`, else
+ * the compaction arrow (the original and still most common divider).
  */
-function CompactionDivider(props: { text: string, loading?: boolean }): JSXElement {
+function NotificationDivider(props: { text: string, loading?: boolean, icon?: LucideIcon }): JSXElement {
   return (
     <div class={resultDivider}>
-      <Icon icon={props.loading ? LoaderCircle : ArrowDownToLine} size="sm" class={props.loading ? spinner : undefined} />
+      <Icon
+        icon={props.loading ? LoaderCircle : props.icon ?? ArrowDownToLine}
+        size="sm"
+        class={props.loading ? spinner : undefined}
+      />
       {` ${props.text}`}
     </div>
   )
+}
+
+/**
+ * Label + glyph for the divider that closes a subagent transcript. The glyphs
+ * match the Background tasks list's status glyphs, so the same terminal state
+ * reads the same in the sidebar and in the transcript.
+ */
+function subagentEndedEntry(m: Record<string, unknown>): ThreadEntry[] {
+  const status = pickString(m, 'status')
+  switch (status) {
+    case 'completed':
+      return [{ kind: 'divider', text: 'Subagent completed', icon: Check }]
+    case 'failed':
+      return [{ kind: 'divider', text: 'Subagent failed', icon: X }]
+    case 'stopped':
+      return [{ kind: 'divider', text: 'Subagent stopped', icon: OctagonMinus }]
+    case 'interrupted':
+      return [{ kind: 'divider', text: 'Subagent interrupted', icon: RotateCcw }]
+    default:
+      // An unknown terminal status still ends the transcript; say only what is
+      // certain rather than inventing an outcome.
+      return [{ kind: 'divider', text: 'Subagent ended', icon: OctagonMinus }]
+  }
 }
 
 // Boundary labels with no per-message detail. COMPACTING_LABEL is exported
@@ -302,6 +337,8 @@ function threadEntriesFor(
     return textEntry(pickString(m, 'error', UNKNOWN_ERROR_LABEL))
   if (t === NOTIFICATION_TYPE.Interrupted)
     return textEntry(INTERRUPTED_LABEL)
+  if (t === NOTIFICATION_TYPE.SubagentEnded)
+    return subagentEndedEntry(m)
   if (t === NOTIFICATION_TYPE.PlanUpdated) {
     const label = planUpdatedLabel(m)
     return label !== null ? textEntry(label) : []
@@ -445,7 +482,7 @@ export function renderNotificationThread(messages: unknown[], agentProvider?: Ag
     }
 
     flushPendingText()
-    elements.push(<CompactionDivider text={entry.text} loading={entry.loading} />)
+    elements.push(<NotificationDivider text={entry.text} loading={entry.loading} icon={entry.icon} />)
   }
   flushPendingText()
 

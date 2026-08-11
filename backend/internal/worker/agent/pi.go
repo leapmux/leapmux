@@ -70,6 +70,12 @@ type PiAgent struct {
 	// Guarded by mu. Cleared per turn (the id space does not repeat within a
 	// turn).
 	toolCallDescriptions map[string]string
+	// toolCallPrompts records toolCallId -> the spawn's FULL prompt (the
+	// description above is a one-line label). Held until the background re-key
+	// creates the child transcript, so a background Pi subagent's tab opens on
+	// the instruction it was given. Cleared with the description on
+	// tool_execution_end.
+	toolCallPrompts map[string]string
 }
 
 // StartPi starts a `pi --mode rpc` process and performs the startup handshake.

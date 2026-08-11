@@ -1,10 +1,10 @@
 import {
-  agentTabIdsForWorkspace,
   expectNoChildAgents,
   expectRegistrySectionAbsent,
   expectRowBecomesTerminal,
   expectRowNotClickable,
   expectSectionPersists,
+  openAgentTabIds,
   waitForRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
@@ -29,7 +29,6 @@ piTest.describe('Pi subagent registry', () => {
   }) => {
     void authenticatedPiWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = authenticatedPiWorkspace.workspaceId
 
     await expectRegistrySectionAbsent(page)
 
@@ -43,7 +42,7 @@ piTest.describe('Pi subagent registry', () => {
     await expectRowBecomesTerminal(page, row, 'Completed').catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
     await expectSectionPersists(page)
     await expectRowNotClickable(page, row)
-    const tabIds = await agentTabIdsForWorkspace(hubUrl, adminToken, workspaceId)
+    const tabIds = await openAgentTabIds(page)
     await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
   })
 })

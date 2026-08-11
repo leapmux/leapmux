@@ -12,11 +12,21 @@ export interface PluginRefs {
   getDisabled: () => boolean
   getEnterMode: () => 'enter-sends' | 'cmd-enter-sends'
   getPlaceholder: () => string
+  /**
+   * Placeholder shown while the editor is disabled. The reason a composer is
+   * disabled is the caller's to state -- a lost connection, a subagent that
+   * takes no input -- so the text comes from the caller rather than being fixed
+   * here; DEFAULT_DISABLED_PLACEHOLDER covers a caller that names no reason.
+   */
+  getDisabledPlaceholder: () => string
   onSend: () => void
 }
 
+/** Reason assumed when a disabled composer names none. */
+export const DEFAULT_DISABLED_PLACEHOLDER = 'Connection to the agent was lost.'
+
 /** Shows placeholder text when the editor is empty. */
-export function createPlaceholderPlugin(refs: Pick<PluginRefs, 'getDisabled' | 'getPlaceholder'>) {
+export function createPlaceholderPlugin(refs: Pick<PluginRefs, 'getDisabled' | 'getPlaceholder' | 'getDisabledPlaceholder'>) {
   return $prose(() => {
     return new Plugin({
       key: new PluginKey('placeholder'),
@@ -27,7 +37,7 @@ export function createPlaceholderPlugin(refs: Pick<PluginRefs, 'getDisabled' | '
             return DecorationSet.create(doc, [
               Decoration.node(0, doc.content.size, {
                 'class': 'is-editor-empty',
-                'data-placeholder': refs.getDisabled() ? 'Connection to the agent was lost.' : refs.getPlaceholder(),
+                'data-placeholder': refs.getDisabled() ? refs.getDisabledPlaceholder() : refs.getPlaceholder(),
               }),
             ])
           }

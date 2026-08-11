@@ -1,7 +1,8 @@
+import type { TodoItem } from '~/stores/chatTodos'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { TodoItemSchema, TodoStatus } from '~/generated/leapmux/v1/agent_pb'
-import { isTerminalTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, todoDisplayLabel, todoProgress } from '~/stores/chatTodos'
+import { isTerminalTodoStatus, normalizeTodoStatus, protoTodoToStore, rawTodosToItems, sortTodos, todoDisplayLabel, todoProgress } from '~/stores/chatTodos'
 
 describe('chatTodos', () => {
   describe('normalizeTodoStatus', () => {
@@ -107,5 +108,53 @@ describe('chatTodos', () => {
       ]
       expect(todoProgress(todos)).toEqual({ done: 2, total: 2 })
     })
+  })
+})
+
+describe('sortTodos', () => {
+  const todo = (content: string, status: TodoItem['status']): TodoItem =>
+    ({ content, status, activeForm: '' })
+
+  it('puts in-progress first, then what is left, then what is done', () => {
+    const sorted = sortTodos([
+      todo('c', 'completed'),
+      todo('p', 'pending'),
+      todo('w', 'in_progress'),
+    ])
+    expect(sorted.map(t => t.content)).toEqual(['w', 'p', 'c'])
+  })
+
+  // A dropped item sorts below one that was actually finished.
+  it('sinks deleted items to the bottom', () => {
+    const sorted = sortTodos([
+      todo('d', 'deleted'),
+      todo('c', 'completed'),
+      todo('w', 'in_progress'),
+    ])
+    expect(sorted.map(t => t.content)).toEqual(['w', 'c', 'd'])
+  })
+
+  // The store holds todos in the agent's seq order, so a stable sort means the
+  // oldest of a group stays on top.
+  it('keeps the oldest first within a group', () => {
+    const sorted = sortTodos([
+      todo('p1', 'pending'),
+      todo('p2', 'pending'),
+      todo('w1', 'in_progress'),
+      todo('p3', 'pending'),
+      todo('w2', 'in_progress'),
+    ])
+    expect(sorted.map(t => t.content)).toEqual(['w1', 'w2', 'p1', 'p2', 'p3'])
+  })
+
+  it('returns a new array and leaves the input alone', () => {
+    const input = [todo('c', 'completed'), todo('w', 'in_progress')]
+    const sorted = sortTodos(input)
+    expect(sorted).not.toBe(input)
+    expect(input.map(t => t.content)).toEqual(['c', 'w'])
+  })
+
+  it('handles an empty list', () => {
+    expect(sortTodos([])).toEqual([])
   })
 })

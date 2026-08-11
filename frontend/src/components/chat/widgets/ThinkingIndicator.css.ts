@@ -39,18 +39,33 @@ export const verbRow = style({
   gap: 'var(--space-1)',
 })
 
-// bgTaskChip is the small active-count chip beside the verb. Sits in the
-// baseline-aligned verbRow; a button so it can host the registry popover.
-export const bgTaskChip = style({
-  display: 'inline-flex',
-  alignItems: 'center',
-  fontSize: 'var(--text-7)',
-  fontWeight: 'var(--font-bold)',
-  color: 'var(--primary)',
-  background: 'none',
-  border: 'none',
-  cursor: 'pointer',
-  padding: 0,
+// countChip is a background-task / to-do counter in the verb row. It reads as
+// plain running text next to the thinking-token count, so it copies that
+// count's type (see the `root` rule in ./ThinkingTokenCount.css.ts) rather than
+// looking like a separate badge. Still a button: each one hosts a popover.
+export const countChip = style({
+  'display': 'inline-block',
+  'fontSize': 'var(--text-8)',
+  'color': 'var(--muted-foreground)',
+  'fontVariantNumeric': 'tabular-nums',
+  'userSelect': 'none',
+  'whiteSpace': 'nowrap',
+  'background': 'none',
+  'border': 'none',
+  'padding': 0,
+  'cursor': 'pointer',
+  ':hover': {
+    color: 'var(--foreground)',
+  },
+})
+
+// The `·` between two adjacent counters. Its own element (not baked into a
+// counter's text) so any counter can be absent without leaving a dangling
+// separator, and so the separator never inherits a counter's hover color.
+export const countSeparator = style({
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  userSelect: 'none',
 })
 
 // verbStack hosts two overlapping verb spans so we can crossfade

@@ -65,6 +65,11 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
   const timer = setInterval(() => setNow(Date.now()), 60_000)
   onCleanup(() => clearInterval(timer))
 
+  // The rate-limit rows as a plain array. Derived once so the guard and the
+  // <For> read the SAME list instead of each re-resolving `rateLimits` off a
+  // prop that answers differently per read.
+  const rateLimitList = createMemo(() => Object.values(props.agentSessionInfo?.rateLimits ?? {}))
+
   // Derive urgent rate limit (re-evaluates each minute due to `now()` dependency)
   const urgentRateLimit = createMemo(() => {
     void now() // subscribe to timer ticks
@@ -76,20 +81,29 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
 
   const infoHoverCardContent = () => (
     <>
-      <Show when={props.agent?.agentProvider != null}>
-        <div class={styles.infoRow} data-testid="info-row-agent-type">
-          <span class={styles.infoLabel}>Agent</span>
-          <span class={styles.infoValueText} style={{ 'display': 'inline-flex', 'align-items': 'center', 'gap': 'var(--space-1)' }}>
-            <AgentProviderIcon provider={props.agent!.agentProvider} size={12} />
-            {agentProviderLabel(props.agent!.agentProvider)}
-          </span>
-        </div>
+      {/* Every row below takes its value from the guard (a keyed callback) or
+          from a total expression. None re-reads the prop the guard resolved:
+          `agent` / `agentSessionInfo` are re-resolved on each read upstream, so
+          a re-read can answer with a different agent's value than the guard saw
+          -- which is how the Context row came to dereference undefined. */}
+      <Show when={props.agent?.agentProvider ?? undefined} keyed>
+        {provider => (
+          <div class={styles.infoRow} data-testid="info-row-agent-type">
+            <span class={styles.infoLabel}>Agent</span>
+            <span class={styles.infoValueText} style={{ 'display': 'inline-flex', 'align-items': 'center', 'gap': 'var(--space-1)' }}>
+              <AgentProviderIcon provider={provider} size={12} />
+              {agentProviderLabel(provider)}
+            </span>
+          </div>
+        )}
       </Show>
-      <Show when={props.agent?.workerName}>
-        <div class={styles.infoRow} data-testid="info-row-worker">
-          <span class={styles.infoLabel}>Worker</span>
-          <span class={styles.infoValue}>{props.agent!.workerName}</span>
-        </div>
+      <Show when={props.agent?.workerName} keyed>
+        {workerName => (
+          <div class={styles.infoRow} data-testid="info-row-worker">
+            <span class={styles.infoLabel}>Worker</span>
+            <span class={styles.infoValue}>{workerName}</span>
+          </div>
+        )}
       </Show>
       <Show when={props.agent?.agentSessionId}>
         <div class={styles.infoRow}>
@@ -102,80 +116,92 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           />
         </div>
       </Show>
-      <Show when={props.agent?.gitStatus?.branch}>
-        <div class={styles.infoRow}>
-          <span class={styles.infoLabel}>Branch</span>
-          <span class={styles.infoValue}>
-            {props.agent!.gitStatus!.branch}
+      <Show when={props.agent?.gitStatus?.branch ? props.agent.gitStatus : undefined} keyed>
+        {gs => (
+          <>
+            <div class={styles.infoRow}>
+              <span class={styles.infoLabel}>Branch</span>
+              <span class={styles.infoValue}>
+                {gs.branch}
+                {(() => {
+                  const parts: string[] = []
+                  if (gs.ahead)
+                    parts.push(`+${gs.ahead}`)
+                  if (gs.behind)
+                    parts.push(`-${gs.behind}`)
+                  return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
+                })()}
+              </span>
+              <CopyButton
+                getText={() => gs.branch}
+                title="Copy branch name"
+              />
+            </div>
             {(() => {
-              const gs = props.agent!.gitStatus!
-              const parts: string[] = []
-              if (gs.ahead)
-                parts.push(`+${gs.ahead}`)
-              if (gs.behind)
-                parts.push(`-${gs.behind}`)
-              return parts.length > 0 ? ` [${parts.join(' ')}]` : ''
+              const flags: string[] = []
+              if (gs.conflicted)
+                flags.push('Conflicted')
+              if (gs.stashed)
+                flags.push('Stashed')
+              if (gs.modified)
+                flags.push('Modified')
+              if (gs.added)
+                flags.push('Added')
+              if (gs.deleted)
+                flags.push('Deleted')
+              if (gs.renamed)
+                flags.push('Renamed')
+              if (gs.typeChanged)
+                flags.push('Type-changed')
+              if (gs.untracked)
+                flags.push('Untracked')
+              return (
+                <Show when={flags.length > 0}>
+                  <div class={styles.infoRow}>
+                    <span class={styles.infoLabel}>Status</span>
+                    <span class={styles.infoValueText}>{flags.join(', ')}</span>
+                  </div>
+                </Show>
+              )
             })()}
-          </span>
-          <CopyButton
-            getText={() => props.agent!.gitStatus!.branch}
-            title="Copy branch name"
-          />
-        </div>
-        {(() => {
-          const gs = props.agent!.gitStatus!
-          const flags: string[] = []
-          if (gs.conflicted)
-            flags.push('Conflicted')
-          if (gs.stashed)
-            flags.push('Stashed')
-          if (gs.modified)
-            flags.push('Modified')
-          if (gs.added)
-            flags.push('Added')
-          if (gs.deleted)
-            flags.push('Deleted')
-          if (gs.renamed)
-            flags.push('Renamed')
-          if (gs.typeChanged)
-            flags.push('Type-changed')
-          if (gs.untracked)
-            flags.push('Untracked')
-          return (
-            <Show when={flags.length > 0}>
-              <div class={styles.infoRow}>
-                <span class={styles.infoLabel}>Status</span>
-                <span class={styles.infoValueText}>{flags.join(', ')}</span>
-              </div>
-            </Show>
-          )
-        })()}
+          </>
+        )}
       </Show>
-      <Show when={props.agent?.workingDir}>
-        <div class={styles.infoRow} data-testid="info-row-directory">
-          <span class={styles.infoLabel}>Directory</span>
-          <span class={styles.infoValue}>{tildify(props.agent!.workingDir!, props.agent!.homeDir)}</span>
-          <CopyButton
-            getText={() => props.agent!.workingDir!}
-            title="Copy directory path"
-          />
-        </div>
+      <Show when={props.agent?.workingDir} keyed>
+        {workingDir => (
+          <div class={styles.infoRow} data-testid="info-row-directory">
+            <span class={styles.infoLabel}>Directory</span>
+            <span class={styles.infoValue}>{tildify(workingDir, props.agent?.homeDir)}</span>
+            <CopyButton
+              getText={() => workingDir}
+              title="Copy directory path"
+            />
+          </div>
+        )}
       </Show>
-      <Show when={props.agentSessionInfo?.planFilePath}>
-        <div class={styles.infoRow} data-testid="info-row-plan-file">
-          <span class={styles.infoLabel}>Plan File</span>
-          <span class={styles.infoValue}>
-            {tildify(props.agentSessionInfo!.planFilePath!, props.agent?.homeDir)}
-          </span>
-          <CopyButton
-            getText={() => props.agentSessionInfo!.planFilePath!}
-            title="Copy plan file path"
-          />
-        </div>
+      <Show when={props.agentSessionInfo?.planFilePath} keyed>
+        {planFilePath => (
+          <div class={styles.infoRow} data-testid="info-row-plan-file">
+            <span class={styles.infoLabel}>Plan File</span>
+            <span class={styles.infoValue}>
+              {tildify(planFilePath, props.agent?.homeDir)}
+            </span>
+            <CopyButton
+              getText={() => planFilePath}
+              title="Copy plan file path"
+            />
+          </div>
+        )}
       </Show>
-      <Show when={props.agentSessionInfo?.contextUsage}>
-        {(() => {
-          const usage = props.agentSessionInfo!.contextUsage!
+      {/* `keyed` + a callback body, NOT a bare `<Show>` around a re-read of the
+          same prop. `agentSessionInfo` is re-resolved on every read upstream
+          (`agentSessionStore.getInfo(focusedAgentId())`), so a focus switch can
+          answer the guard with one agent's info and the body with the next
+          agent's -- and the body then dereferenced `undefined.contextWindow`
+          and tripped the error boundary. The keyed callback hands the body the
+          exact value the guard admitted, so there is nothing left to re-read. */}
+      <Show when={props.agentSessionInfo?.contextUsage} keyed>
+        {(usage) => {
           const currentModel = optionGroup(props.agent?.optionGroups, OPTION_ID_MODEL)?.currentValue || ''
           const modelCtxWindow = selectedModelContextWindow(props.agent?.optionGroups, currentModel) || undefined
           const ctxWindow = resolveContextWindow(usage, modelCtxWindow)
@@ -192,57 +218,61 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
               </span>
             </div>
           )
-        })()}
+        }}
       </Show>
+      {/* Not keyed: a real cost of 0 is falsy, and Show would hide the row.
+          The guard stays a null test and the body is total instead. */}
       <Show when={props.agentSessionInfo?.totalCostUsd != null}>
         <div class={styles.infoRow}>
           <span class={styles.infoLabel}>Cost</span>
           <span class={styles.infoValueText}>
             $
-            {props.agentSessionInfo!.totalCostUsd!.toFixed(4)}
+            {(props.agentSessionInfo?.totalCostUsd ?? 0).toFixed(4)}
           </span>
         </div>
       </Show>
-      <Show when={props.agentSessionInfo?.rateLimits && Object.keys(props.agentSessionInfo!.rateLimits!).length > 0}>
-        <For each={Object.values(props.agentSessionInfo!.rateLimits!)}>
-          {(info) => {
-            const typeLabel = RATE_LIMIT_POPOVER_LABELS[info.rateLimitType ?? '']
-              ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit')
+      <Show when={rateLimitList().length > 0 ? rateLimitList() : undefined} keyed>
+        {list => (
+          <For each={list}>
+            {(info) => {
+              const typeLabel = RATE_LIMIT_POPOVER_LABELS[info.rateLimitType ?? '']
+                ?? (info.rateLimitType ? `Rate Limit (${info.rateLimitType})` : 'Rate Limit')
 
-            const status = info.status
-            const exceeded = !!status && status !== 'allowed' && status !== 'allowed_warning'
-            const resetsAt = getResetsAt(info)
+              const status = info.status
+              const exceeded = !!status && status !== 'allowed' && status !== 'allowed_warning'
+              const resetsAt = getResetsAt(info)
 
-            const statusParts: string[] = []
-            if (status === 'allowed')
-              statusParts.push('Allowed')
-            else if (status === 'allowed_warning')
-              statusParts.push('Warning')
-            else if (exceeded)
-              statusParts.push('Exceeded')
-            if (typeof info.utilization === 'number' && !exceeded)
-              statusParts.push(`${Math.round(info.utilization * 100)}% used`)
-            if (info.isUsingOverage)
-              statusParts.push('overage')
+              const statusParts: string[] = []
+              if (status === 'allowed')
+                statusParts.push('Allowed')
+              else if (status === 'allowed_warning')
+                statusParts.push('Warning')
+              else if (exceeded)
+                statusParts.push('Exceeded')
+              if (typeof info.utilization === 'number' && !exceeded)
+                statusParts.push(`${Math.round(info.utilization * 100)}% used`)
+              if (info.isUsingOverage)
+                statusParts.push('overage')
 
-            const countdown = typeof resetsAt === 'number' ? formatCountdown(resetsAt) : null
+              const countdown = typeof resetsAt === 'number' ? formatCountdown(resetsAt) : null
 
-            return (
-              <div class={styles.infoRow}>
-                <span class={styles.infoLabel}>{typeLabel}</span>
-                <span class={styles.infoValueText}>
-                  {statusParts.length > 0 ? statusParts.join(', ') : 'Unknown'}
-                  <Show when={countdown}>
-                    {', '}
-                    <Tooltip text={typeof resetsAt === 'number' ? formatResetTimestamp(resetsAt) : undefined}>
-                      <span>{`resets in ${countdown}`}</span>
-                    </Tooltip>
-                  </Show>
-                </span>
-              </div>
-            )
-          }}
-        </For>
+              return (
+                <div class={styles.infoRow}>
+                  <span class={styles.infoLabel}>{typeLabel}</span>
+                  <span class={styles.infoValueText}>
+                    {statusParts.length > 0 ? statusParts.join(', ') : 'Unknown'}
+                    <Show when={countdown}>
+                      {', '}
+                      <Tooltip text={typeof resetsAt === 'number' ? formatResetTimestamp(resetsAt) : undefined}>
+                        <span>{`resets in ${countdown}`}</span>
+                      </Tooltip>
+                    </Show>
+                  </span>
+                </div>
+              )
+            }}
+          </For>
+        )}
       </Show>
     </>
   )

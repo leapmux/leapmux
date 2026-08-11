@@ -4,7 +4,7 @@ import { commonmark } from '@milkdown/preset-commonmark'
 import { gfm } from '@milkdown/preset-gfm'
 import { AllSelection, TextSelection } from '@milkdown/prose/state'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createSelectAllPlugin, createTabKeyPlugin } from './keyboardPlugins'
+import { createPlaceholderPlugin, createSelectAllPlugin, createTabKeyPlugin, DEFAULT_DISABLED_PLACEHOLDER } from './keyboardPlugins'
 
 /**
  * Unit tests for `createTabKeyPlugin` exercising every branch of the keyboard
@@ -417,5 +417,53 @@ describe('select-all plugin', () => {
     const handled = dispatchSelectAll('meta')
 
     expect(handled).toBe(false)
+  })
+})
+
+/**
+ * The disabled placeholder is caller-supplied: a read-only subagent transcript
+ * must say so rather than blame a lost connection it never had. Asserted
+ * against a real mounted editor's rendered `data-placeholder`, so the test
+ * fails if the plugin stops consulting the ref.
+ */
+describe('createPlaceholderPlugin disabled text', () => {
+  async function placeholderAttr(opts: {
+    disabled: boolean
+    disabledPlaceholder?: string
+  }): Promise<string | null> {
+    host = document.createElement('div')
+    document.body.appendChild(host)
+    editor = await EditorImpl.make()
+      .config((ctx) => {
+        ctx.set(rootCtx, host!)
+        ctx.set(defaultValueCtx, '')
+      })
+      .use(commonmark)
+      .use(createPlaceholderPlugin({
+        getDisabled: () => opts.disabled,
+        getPlaceholder: () => 'Send a message...',
+        getDisabledPlaceholder: () => opts.disabledPlaceholder ?? DEFAULT_DISABLED_PLACEHOLDER,
+      }))
+      .create()
+    return host.querySelector('[data-placeholder]')?.getAttribute('data-placeholder') ?? null
+  }
+
+  it('renders the caller-supplied reason while disabled', async () => {
+    expect(await placeholderAttr({
+      disabled: true,
+      disabledPlaceholder: 'This subagent doesn\'t accept messages.',
+    })).toBe('This subagent doesn\'t accept messages.')
+  })
+
+  it('falls back to the lost-connection wording when the caller names no reason', async () => {
+    expect(await placeholderAttr({ disabled: true })).toBe('Connection to the agent was lost.')
+    expect(DEFAULT_DISABLED_PLACEHOLDER).toBe('Connection to the agent was lost.')
+  })
+
+  it('renders the normal placeholder while enabled', async () => {
+    expect(await placeholderAttr({
+      disabled: false,
+      disabledPlaceholder: 'This subagent doesn\'t accept messages.',
+    })).toBe('Send a message...')
   })
 })

@@ -1,18 +1,14 @@
 import type { Component, JSX } from 'solid-js'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import Bot from 'lucide-solid/icons/bot'
-import Check from 'lucide-solid/icons/check'
 import Circle from 'lucide-solid/icons/circle'
-import LoaderCircle from 'lucide-solid/icons/loader-circle'
-import OctagonMinus from 'lucide-solid/icons/octagon-minus'
-import RotateCcw from 'lucide-solid/icons/rotate-ccw'
 import Terminal from 'lucide-solid/icons/terminal'
-import X from 'lucide-solid/icons/x'
 import { createMemo, For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
 import {
   backgroundTaskEndLabel,
   backgroundTaskEndTooltip,
+  backgroundTaskStatusLabel,
   groupBackgroundTasks,
   isActiveBackgroundTaskStatus,
   sortBackgroundTasks,
@@ -22,9 +18,25 @@ import * as styles from './BackgroundTaskList.css'
 interface BackgroundTaskListProps {
   tasks: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
-  resolveParentLabel?: (agentId: string) => string | undefined
   /** Extra class for the root list (e.g. the popover scroll variant). */
   class?: string
+}
+
+/** The status palette: in progress, succeeded, failed. */
+function statusDotClass(status: BackgroundTaskItem['status']): string {
+  switch (status) {
+    case 'completed':
+      return styles.statusDotSuccess
+    // A crash cut the task off mid-flight, so it did not succeed. A user's
+    // explicit stop is not a failure and stays muted.
+    case 'failed':
+    case 'interrupted':
+      return styles.statusDotDanger
+    case 'stopped':
+      return styles.statusDotMuted
+    default:
+      return styles.statusDotActive
+  }
 }
 
 /**
@@ -39,24 +51,18 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   // JSX read of `.ungrouped`/`.groups`), and only when props.tasks changes.
   const grouped = createMemo(() => groupBackgroundTasks(sortBackgroundTasks(props.tasks)))
 
-  const statusGlyph = (item: BackgroundTaskItem): JSX.Element => {
-    switch (item.status) {
-      case 'running':
-        return <LoaderCircle class={`${styles.taskIcon} ${styles.spinIcon}`} size={14} />
-      case 'pending':
-        return <Circle class={styles.taskIcon} size={14} />
-      case 'completed':
-        return <Check class={styles.taskIcon} size={14} />
-      case 'failed':
-        return <X class={styles.taskIcon} size={14} />
-      case 'stopped':
-        return <OctagonMinus class={styles.taskIcon} size={14} />
-      case 'interrupted':
-        return <RotateCcw class={styles.taskIcon} size={14} />
-      default:
-        return <Circle class={styles.taskIcon} size={14} />
-    }
-  }
+  // Status reads as COLOR on one constant dot, not as a different glyph per
+  // state. Six shapes made the column a legend to memorize; one dot in the
+  // status palette (in progress / succeeded / failed) is legible at a glance and
+  // lines the rows up. The exact state stays available as the dot's tooltip and
+  // as the row's `data-status`, which is what tests and E2E select on.
+  const statusGlyph = (item: BackgroundTaskItem): JSX.Element => (
+    <Tooltip text={backgroundTaskStatusLabel(item.status)} ariaLabel>
+      <span class={`${styles.taskIcon} ${statusDotClass(item.status)}`} data-testid="bg-task-status-dot">
+        <Circle size={10} fill="currentColor" strokeWidth={0} />
+      </span>
+    </Tooltip>
+  )
 
   const kindIcon = (item: BackgroundTaskItem): JSX.Element => {
     if (item.kind === 'shell')
@@ -64,10 +70,17 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
     return <Bot class={styles.taskIcon} size={14} />
   }
 
+  // The row's second line. It must never repeat the first: a provider whose
+  // spawn payload carries one string for both (Claude's local_bash names the
+  // command as the description, which is already the title) otherwise rendered
+  // the same text twice. Neutral guard here rather than per provider, so the
+  // next one to do it is covered too.
   const secondary = (item: BackgroundTaskItem): string => {
-    if (isActiveBackgroundTaskStatus(item.status))
-      return item.activity || item.description || ''
-    return backgroundTaskEndLabel(item.status)
+    const title = item.title || item.description || item.rowKey
+    const text = isActiveBackgroundTaskStatus(item.status)
+      ? item.activity || item.description || ''
+      : backgroundTaskEndLabel(item.status)
+    return text === title ? '' : text
   }
 
   // Explanatory tooltip for a terminal status whose bare label is ambiguous
@@ -92,63 +105,40 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
     )
   }
 
-  const parentLabel = (item: BackgroundTaskItem): string | undefined => {
-    if (!item.parentAgentId || !props.resolveParentLabel)
-      return undefined
-    const label = props.resolveParentLabel(item.parentAgentId)
-    return label
-  }
+  // The row's inner content and its data attributes are identical for both
+  // element kinds; only the tag and the click handler differ. Building them once
+  // keeps the clickable and static rows from drifting apart.
+  const rowBody = (item: BackgroundTaskItem): JSX.Element => (
+    <>
+      {statusGlyph(item)}
+      {kindIcon(item)}
+      <div class={styles.taskBody}>
+        <span class={styles.taskTitle}>{item.title || item.description || item.rowKey}</span>
+        {renderSecondary(item)}
+      </div>
+    </>
+  )
+
+  // `extraClass` carries taskRowStatic for the non-clickable row, which drops
+  // the pointer cursor taskRow sets for the clickable one.
+  const rowAttrs = (item: BackgroundTaskItem, extraClass?: string) => ({
+    'class': extraClass ? `${styles.taskRow} ${extraClass}` : styles.taskRow,
+    'classList': { [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status) },
+    'data-testid': 'bg-task-row',
+    'data-status': item.status,
+    'data-kind': item.kind,
+    'data-child-agent-id': item.childAgentId ?? '',
+  })
 
   const renderRow = (item: BackgroundTaskItem): JSX.Element => {
     const clickable = item.kind === 'subagent' && !!item.childAgentId && !!props.onOpenSubagent
-    const onClick = () => {
-      if (clickable && props.onOpenSubagent)
-        props.onOpenSubagent(item)
-    }
-    const pLabel = parentLabel(item)
     return (
       <Show
         when={clickable}
-        fallback={(
-          <div
-            class={styles.taskRow}
-            classList={{ [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status) }}
-            data-testid="bg-task-row"
-            data-status={item.status}
-            data-kind={item.kind}
-            data-child-agent-id={item.childAgentId ?? ''}
-          >
-            {statusGlyph(item)}
-            {kindIcon(item)}
-            <div class={styles.taskBody}>
-              <span class={styles.taskTitle}>{item.title || item.description || item.rowKey}</span>
-              {renderSecondary(item)}
-            </div>
-            <Show when={pLabel}>
-              <span class={styles.parentChip}>{`via ${pLabel}`}</span>
-            </Show>
-          </div>
-        )}
+        fallback={<div {...rowAttrs(item, styles.taskRowStatic)}>{rowBody(item)}</div>}
       >
-        <button
-          type="button"
-          class={styles.taskRow}
-          classList={{ [styles.taskStruck]: !isActiveBackgroundTaskStatus(item.status) }}
-          onClick={onClick}
-          data-testid="bg-task-row"
-          data-status={item.status}
-          data-kind={item.kind}
-          data-child-agent-id={item.childAgentId ?? ''}
-        >
-          {statusGlyph(item)}
-          {kindIcon(item)}
-          <div class={styles.taskBody}>
-            <span class={styles.taskTitle}>{item.title || item.description || item.rowKey}</span>
-            {renderSecondary(item)}
-          </div>
-          <Show when={pLabel}>
-            <span class={styles.parentChip}>{`via ${pLabel}`}</span>
-          </Show>
+        <button type="button" {...rowAttrs(item)} onClick={() => props.onOpenSubagent?.(item)}>
+          {rowBody(item)}
         </button>
       </Show>
     )

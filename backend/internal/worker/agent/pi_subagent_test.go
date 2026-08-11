@@ -51,7 +51,7 @@ func TestPi_TerminalStatus(t *testing.T) {
 func TestPi_ApplySubagentEnd_Terminal(t *testing.T) {
 	sink := &testSink{}
 	result := json.RawMessage(`{"status":"completed","agentId":"a-1"}`)
-	piApplySubagentEnd(sink, result, "tc-1", "title")
+	piApplySubagentEnd(sink, result, "tc-1", "title", "")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "a-1", tasks[0].RowKey)
@@ -61,7 +61,7 @@ func TestPi_ApplySubagentEnd_Terminal(t *testing.T) {
 func TestPi_ApplySubagentEnd_BackgroundRekey(t *testing.T) {
 	sink := &testSink{}
 	result := json.RawMessage(`{"status":"background","agentId":"bg-1"}`)
-	piApplySubagentEnd(sink, result, "tc-1", "title")
+	piApplySubagentEnd(sink, result, "tc-1", "title", "")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "bg-1", tasks[0].RowKey)
@@ -77,7 +77,7 @@ func TestPi_ApplySubagentEnd_BackgroundRekey(t *testing.T) {
 func TestPi_ApplySubagentEnd_UnrecognizedStatusStaysRunning(t *testing.T) {
 	sink := &testSink{}
 	result := json.RawMessage(`{"status":"thinking","agentId":"a-1"}`)
-	piApplySubagentEnd(sink, result, "tc-1", "title")
+	piApplySubagentEnd(sink, result, "tc-1", "title", "")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "a-1", tasks[0].RowKey)
@@ -89,7 +89,7 @@ func TestPi_ApplySubagentEnd_FallbackRegex(t *testing.T) {
 	// A standalone "Agent ID: X" line matches the anchored regex. The row keys
 	// off the deterministic toolCallID (not the captured prose) so a later
 	// terminal event can close it. The input is a JSON-encoded string.
-	piApplySubagentEnd(sink, json.RawMessage(`"Agent ID: regex-1\n"`), "tc-1", "title")
+	piApplySubagentEnd(sink, json.RawMessage(`"Agent ID: regex-1\n"`), "tc-1", "title", "")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "tc-1", tasks[0].RowKey, "row keyed off toolCallID, not the captured prose")
@@ -99,7 +99,7 @@ func TestPi_ApplySubagentEnd_FallbackRegex(t *testing.T) {
 // anchored regex and must NOT create a phantom registry row.
 func TestPi_ApplySubagentEnd_FallbackRegexIgnoresProse(t *testing.T) {
 	sink := &testSink{}
-	piApplySubagentEnd(sink, json.RawMessage(`"the model said Agent ID: something here"`), "tc-1", "title")
+	piApplySubagentEnd(sink, json.RawMessage(`"the model said Agent ID: something here"`), "tc-1", "title", "")
 	assert.Empty(t, sink.BackgroundTasks(), "mid-sentence mention does not create a phantom row")
 }
 
@@ -161,3 +161,39 @@ func TestPi_ExtractDescription_MultibyteTruncateNoInvalidUTF8(t *testing.T) {
 // interface (the testSink satisfies OutputSink).
 var _ OutputSink = (*testSink)(nil)
 var _ leapmuxv1.MessageSource
+
+// pi-subagents declares the nested agent's task as `prompt`
+// (src/nested-tools.ts). piExtractDescription truncates it to a one-line label;
+// the transcript's first message needs the whole thing.
+func TestPi_ExtractPrompt(t *testing.T) {
+	assert.Equal(t, "first line\nsecond", piExtractPrompt(json.RawMessage(`{"prompt":"first line\nsecond"}`)))
+	assert.Empty(t, piExtractPrompt(json.RawMessage(`{"description":"build it"}`)))
+	assert.Empty(t, piExtractPrompt(json.RawMessage(`{}`)))
+	assert.Empty(t, piExtractPrompt(nil))
+	assert.Empty(t, piExtractPrompt(json.RawMessage(`not json`)))
+}
+
+// A Pi subagent's child transcript is created only on the background re-key, so
+// that is where the spawn prompt becomes its first message.
+func TestPi_ApplySubagentEnd_BackgroundRekeyPersistsThePrompt(t *testing.T) {
+	sink := &testSink{}
+	result := json.RawMessage(`{"status":"background","agentId":"bg-1"}`)
+	piApplySubagentEnd(sink, result, "tc-1", "title", "Write the essay.")
+
+	child, ok := sink.ChildSink("child-of-tc-1").(*testSink)
+	require.True(t, ok)
+	msgs := child.Messages()
+	require.Len(t, msgs, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, msgs[0].Source)
+	assert.JSONEq(t, `{"content":"Write the essay."}`, string(msgs[0].Content))
+}
+
+// A foreground subagent never re-keys, so no child transcript is created and
+// nothing is written.
+func TestPi_ApplySubagentEnd_TerminalWritesNoPrompt(t *testing.T) {
+	sink := &testSink{}
+	piApplySubagentEnd(sink, json.RawMessage(`{"status":"completed","agentId":"a-1"}`), "tc-1", "title", "Write the essay.")
+	child, ok := sink.ChildSink("child-of-tc-1").(*testSink)
+	require.True(t, ok)
+	assert.Empty(t, child.Messages())
+}

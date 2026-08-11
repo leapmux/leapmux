@@ -22,6 +22,12 @@ export interface ControlResponseHandlingProps {
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   settingsLoading?: boolean
   agentWorking?: boolean
+  /**
+   * Whether Interrupt can target THIS agent alone. False for a subagent tab
+   * whose provider cannot interrupt one subagent (the worker would answer
+   * FailedPrecondition), so the button is not offered at all. Defaults to true.
+   */
+  canInterrupt?: boolean
 }
 
 export interface ControlResponseHandlingResult {
@@ -86,7 +92,8 @@ export function useControlResponseHandling(
   }
 
   // Whether the Interrupt button should be shown.
-  const showInterrupt = () => !!props.agentWorking && !activeControlRequest()
+  const showInterrupt = () =>
+    !!props.agentWorking && !activeControlRequest() && (props.canInterrupt ?? true)
 
   // Memoize the active request ID so that the effect below only fires when
   // the value actually changes. Without this, reactive store updates

@@ -10,6 +10,7 @@ import { createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOw
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
 import { loadDraft } from '~/lib/editor/draftPersistence'
+import { DEFAULT_DISABLED_PLACEHOLDER } from '~/lib/editor/keyboardPlugins'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
 import { createComposerLayout } from './composerLayout'
 import { clearDraft, restoreCursor, saveDraftFromEditor } from './draftManagement'
@@ -95,6 +96,12 @@ interface MarkdownEditorProps {
    */
   plus?: JSX.Element
   placeholder?: string
+  /**
+   * Placeholder shown while `disabled` is set. Defaults to the lost-connection
+   * wording; pass the actual reason when there is a more specific one (e.g. a
+   * subagent whose provider accepts no input).
+   */
+  disabledPlaceholder?: string
   /** When true, pressing Enter with an empty editor calls onSend('') instead of doing nothing. */
   allowEmptySend?: boolean
   /** Called when Shift+Tab is pressed in a plain paragraph (indent level 0). */
@@ -250,6 +257,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   })
   let disabledRef = false
   let placeholderRef = 'Send a message...'
+  let disabledPlaceholderRef = DEFAULT_DISABLED_PLACEHOLDER
   let onTogglePlanModeRef: (() => void) | undefined
   createEffect(() => {
     onTogglePlanModeRef = props.onTogglePlanMode
@@ -281,6 +289,10 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   })
   createEffect(() => {
     placeholderRef = props.placeholder ?? 'Send a message...'
+    forceDecorationUpdate()
+  })
+  createEffect(() => {
+    disabledPlaceholderRef = props.disabledPlaceholder || DEFAULT_DISABLED_PLACEHOLDER
     forceDecorationUpdate()
   })
 
@@ -331,6 +343,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         getDisabled: () => disabledRef,
         getEnterMode: () => enterModeRef,
         getPlaceholder: () => placeholderRef,
+        getDisabledPlaceholder: () => disabledPlaceholderRef,
         onSend: handleSend,
       },
       getOnTogglePlanMode: () => onTogglePlanModeRef,

@@ -2,13 +2,16 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -457,4 +460,302 @@ func TestCleanupChildAgent_ReChildSinkGetsFreshTracker(t *testing.T) {
 	require.True(t, regOK, "fresh registry entry exists for the re-cached child")
 	assert.Same(t, second.tracker, regTracker,
 		"the re-cached sink's tracker is the one the registry owns")
+}
+
+// childMessages reads a child transcript in seq order, decoding each row's
+// content so a test can assert on the envelope the frontend receives.
+func childMessages(t *testing.T, svc *Service, childID string) []map[string]any {
+	t.Helper()
+	rows, err := svc.Queries.ListAllMessagesByAgentID(context.Background(),
+		db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		raw, err := msgcodec.Decompress(r.Content, r.ContentCompression)
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(raw, &m))
+		m["__source"] = float64(r.Source)
+		out = append(out, m)
+	}
+	return out
+}
+
+// The subagent tab must open on the instruction the subagent was given. The
+// prompt is persisted as a plain USER message so it renders as markdown, in
+// full, with no provider-specific shape for the frontend to learn.
+func TestPersistChildPrompt_IsTheFirstMessage(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	require.NoError(t, sink.PersistChildPrompt(childID, "Review the diff."))
+
+	msgs := childMessages(t, svc, childID)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "Review the diff.", msgs[0]["content"])
+	assert.Equal(t, float64(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER), msgs[0]["__source"])
+}
+
+func TestPersistChildPrompt_SkipsABlankPrompt(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	require.NoError(t, sink.PersistChildPrompt(childID, ""))
+	require.NoError(t, sink.PersistChildPrompt(childID, "   \n  "))
+	assert.Empty(t, childMessages(t, svc, childID))
+}
+
+// Idempotency is by emptiness, not a flag: a replayed spawn (or a re-attach
+// after a worker restart, which loses any in-memory marker but not the
+// transcript) must not stack a second copy of the prompt.
+func TestPersistChildPrompt_DoesNotAppendOnceTheChildHasSpoken(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	require.NoError(t, sink.PersistChildPrompt(childID, "Review the diff."))
+	require.NoError(t, sink.PersistChildMessage(childID,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"text","text":"ok"}`), agent.SpanInfo{}))
+
+	// A replay of the same spawn, and a late prompt that would otherwise land
+	// BELOW the work it asked for.
+	require.NoError(t, sink.PersistChildPrompt(childID, "Review the diff."))
+	require.NoError(t, sink.PersistChildPrompt(childID, "A different prompt."))
+
+	msgs := childMessages(t, svc, childID)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "Review the diff.", msgs[0]["content"])
+}
+
+// Closing a subagent's registry row is the one provider-neutral moment the
+// subagent is known to be over, so that is where the child transcript gets its
+// terminal divider -- otherwise the tab shows a thinking indicator forever.
+func TestCloseBackgroundTask_WritesTheSubagentEndDivider(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	msgs := childMessages(t, svc, childID)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, "completed", msgs[0]["status"])
+	assert.Equal(t, float64(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX), msgs[0]["__source"])
+}
+
+// Every terminal status is carried through, so the divider can say WHY the
+// subagent stopped rather than just that it did.
+func TestCloseBackgroundTask_CarriesTheTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []bgtask.Status{
+		bgtask.StatusFailed, bgtask.StatusStopped, bgtask.StatusInterrupted,
+	} {
+		t.Run(bgtask.StatusWire(status), func(t *testing.T) {
+			t.Parallel()
+			svc, sink := setupRootSink(t, "root-1")
+			childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+			require.NoError(t, err)
+			require.NoError(t, sink.CloseBackgroundTask("task-1", status))
+
+			msgs := childMessages(t, svc, childID)
+			require.Len(t, msgs, 1)
+			assert.Equal(t, bgtask.StatusWire(status), msgs[0]["status"])
+		})
+	}
+}
+
+// applyBackgroundTaskClose reports changed=true only on the first
+// pending/running -> terminal transition, and the DB's own status guard makes
+// that hold across a restart -- so a re-close cannot stack a second divider.
+func TestCloseBackgroundTask_DividerIsWrittenOnce(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusFailed))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	assert.Len(t, childMessages(t, svc, childID), 1)
+}
+
+// A shell row has no transcript to close; the divider must not be written into
+// the root's own transcript by mistake.
+func TestCloseBackgroundTask_ShellRowWritesNoDivider(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "shell-1", Kind: bgtask.KindShell, Title: "npm test", Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.CloseBackgroundTask("shell-1", bgtask.StatusCompleted))
+
+	assert.Empty(t, childMessages(t, svc, "root-1"))
+}
+
+// The owner process dying is the other way a subagent ends. The exit sweep
+// terminalizes every still-active row in bulk, so it must close those
+// transcripts too -- otherwise a subagent whose owner crashed keeps a
+// transcript that simply stops.
+func TestMarkBackgroundTasksExited_WritesTheSubagentEndDivider(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	// stopped=false is the crash path, which labels the row 'interrupted'.
+	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
+
+	msgs := childMessages(t, svc, childID)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, "interrupted", msgs[0]["status"])
+}
+
+func TestMarkBackgroundTasksExited_LabelsAnExplicitStopAsStopped(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	svc.Output.MarkAgentBackgroundTasksExited("root-1", true)
+
+	msgs := childMessages(t, svc, childID)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "stopped", msgs[0]["status"])
+}
+
+// The sweep skips rows that already reached a terminal status, so a subagent
+// that finished before its owner exited keeps its original divider and does not
+// get a second one.
+func TestMarkBackgroundTasksExited_SkipsAnAlreadyClosedSubagent(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
+
+	msgs := childMessages(t, svc, childID)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "completed", msgs[0]["status"], "the original outcome survives the sweep")
+}
+
+// Exactly one divider closes a subagent transcript. Claude forwards the
+// subagent's own `result`, which the frontend already draws as a turn-end
+// divider (and which carries the duration, plus the error label and detail on
+// failure), so the neutral divider must not stack a second rule under it.
+func TestCloseBackgroundTask_SkipsTheDividerWhenTheProviderAlreadyEndedIt(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	// The forwarded subagent result, persisted as the child's turn end.
+	require.NoError(t, sink.PersistChildTurnEnd(childID,
+		[]byte(`{"type":"result","duration_ms":5100,"is_error":false}`), agent.SpanInfo{}))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	msgs := childMessages(t, svc, childID)
+	require.Len(t, msgs, 1, "the provider's own turn-end divider is the only one")
+	assert.Equal(t, "result", msgs[0]["type"])
+}
+
+// The same subagent stopped mid-flight forwards no result, so its transcript
+// does NOT close itself and still needs the neutral divider. This is why the
+// check is content-based rather than a static per-provider capability.
+func TestCloseBackgroundTask_WritesTheDividerWhenTheSubagentStoppedMidFlight(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	// Work, but no terminal envelope.
+	require.NoError(t, sink.PersistChildMessage(childID,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"text","text":"working"}`), agent.SpanInfo{}))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusStopped))
+
+	msgs := childMessages(t, svc, childID)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[1]["type"])
+	assert.Equal(t, "stopped", msgs[1]["status"])
+}
+
+// The divider is written by the HANDLER, which has no sink to borrow a
+// provider from, so it resolves one from the child's own agent row. Getting
+// this wrong is silent-ish: createMessageRow refuses an UNSPECIFIED provider,
+// so the divider is simply dropped and the transcript never closes.
+func TestCloseBackgroundTask_DividerCarriesTheChildsProvider(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	rows, err := svc.Queries.ListAllMessagesByAgentID(context.Background(),
+		db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, rows[0].AgentProvider,
+		"the divider inherits the child agent's provider, not UNSPECIFIED")
+}
+
+// The exit sweep terminalizes EVERY still-active row in one pass, so every
+// child transcript it ends must get its own divider -- not just the first.
+func TestMarkBackgroundTasksExited_ClosesEveryChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childA, err := sink.EnsureChildAgent("span-a", "task-a", "A")
+	require.NoError(t, err)
+	childB, err := sink.EnsureChildAgent("span-b", "task-b", "B")
+	require.NoError(t, err)
+
+	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
+
+	for _, childID := range []string{childA, childB} {
+		msgs := childMessages(t, svc, childID)
+		require.Len(t, msgs, 1, "child %s", childID)
+		assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+		assert.Equal(t, "interrupted", msgs[0]["status"])
+	}
+}
+
+// The sweep must not write a divider into a transcript that already closes
+// itself, for the same reason CloseBackgroundTask does not.
+func TestMarkBackgroundTasksExited_SkipsATranscriptThatAlreadyEnded(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.PersistChildTurnEnd(childID,
+		[]byte(`{"type":"result","duration_ms":5100}`), agent.SpanInfo{}))
+
+	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
+
+	msgs := childMessages(t, svc, childID)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "result", msgs[0]["type"])
 }

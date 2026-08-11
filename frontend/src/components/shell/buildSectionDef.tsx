@@ -87,7 +87,6 @@ export interface SectionDefContext {
   showBackgroundTasks: boolean
   activeBackgroundTasks: BackgroundTaskItem[]
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
-  resolveAgentTabTitle?: (id: string) => string | undefined
 
   // Workers section
   workers: Worker[]
@@ -272,7 +271,6 @@ export function buildSectionDef(
         <BackgroundTaskList
           tasks={ctx.activeBackgroundTasks}
           onOpenSubagent={ctx.onOpenBackgroundTask}
-          resolveParentLabel={ctx.resolveAgentTabTitle}
         />
       ),
     }

@@ -1,11 +1,11 @@
 import {
-  agentTabIdsForWorkspace,
   backgroundTasksSection,
   expectNoChildAgents,
   expectRegistrySectionAbsent,
   expectRowBecomesTerminal,
   expectRowNotClickable,
   expectSectionPersists,
+  openAgentTabIds,
 } from './helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 /**
@@ -27,7 +27,6 @@ kiloTest.describe('Kilo subagent registry', () => {
   }) => {
     void authenticatedKiloWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = authenticatedKiloWorkspace.workspaceId
 
     await expectRegistrySectionAbsent(page)
 
@@ -41,7 +40,7 @@ kiloTest.describe('Kilo subagent registry', () => {
     await expectRowBecomesTerminal(page, row, 'Completed')
     await expectSectionPersists(page)
     await expectRowNotClickable(page, row)
-    const tabIds = await agentTabIdsForWorkspace(hubUrl, adminToken, workspaceId)
+    const tabIds = await openAgentTabIds(page)
     await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
   })
 })

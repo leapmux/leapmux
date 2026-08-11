@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
+	"slices"
+	"strings"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -37,11 +40,14 @@ type testSink struct {
 	spanTypes         map[string]string
 	openSpans         []testSinkSpanOpen
 	closedSpans       []string
-	resetSpanCount    int
-	statusActives     []string
-	autoSchedules     []AutoContinueSchedule
-	autoCancels       []AutoContinueReason
-	planModeToolUses  sync.Map
+	// liveSpans is the CURRENTLY-open subset of openSpans (a close or a reset
+	// removes entries), mirroring the real SpanTracker's active set.
+	liveSpans        []testSinkSpanOpen
+	resetSpanCount   int
+	statusActives    []string
+	autoSchedules    []AutoContinueSchedule
+	autoCancels      []AutoContinueReason
+	planModeToolUses sync.Map
 	// childSinkMu + children let testSink serve ChildSink as a per-child testSink
 	// so provider tests can assert what got routed into a subagent transcript.
 	childSinkMu sync.Mutex
@@ -71,6 +77,12 @@ type testSinkMessage struct {
 	// distinguish the turn-end divider from regular AGENT messages
 	// without inspecting the inner content.
 	TurnEnd bool
+	// SpansOpenAtPersist snapshots the spans this sink held open at the moment
+	// the message was persisted. The real sink derives a row's span_lines from
+	// exactly that state, so it is the observable that pins the ordering rule:
+	// a tool_use row must persist BEFORE its own span opens (empty span_lines),
+	// and its tool_result must persist WHILE the span is open (connector_end).
+	SpansOpenAtPersist []testSinkSpanOpen
 }
 
 type testSinkStreamChunk struct {
@@ -84,10 +96,19 @@ type testSinkSpanOpen struct {
 	ParentSpanID string
 }
 
+// liveSpansLocked copies the spans currently open on this sink. Must be called
+// with s.mu held.
+func (s *testSink) liveSpansLocked() []testSinkSpanOpen {
+	if len(s.liveSpans) == 0 {
+		return nil
+	}
+	return append([]testSinkSpanOpen(nil), s.liveSpans...)
+}
+
 func (s *testSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, MarkType: span.MarkType})
+	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, MarkType: span.MarkType, SpansOpenAtPersist: s.liveSpansLocked()})
 	return nil
 }
 
@@ -95,15 +116,16 @@ func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = append(s.messages, testSinkMessage{
-		Source:          leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		Content:         append([]byte(nil), content...),
-		ParentSpanID:    span.ParentSpanID,
-		ConnectorSpanID: span.ConnectorSpanID,
-		SpanID:          span.SpanID,
-		SpanType:        span.SpanType,
-		Closing:         span.Closing,
-		MarkType:        span.MarkType,
-		TurnEnd:         true,
+		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		Content:            append([]byte(nil), content...),
+		ParentSpanID:       span.ParentSpanID,
+		ConnectorSpanID:    span.ConnectorSpanID,
+		SpanID:             span.SpanID,
+		SpanType:           span.SpanType,
+		Closing:            span.Closing,
+		MarkType:           span.MarkType,
+		TurnEnd:            true,
+		SpansOpenAtPersist: s.liveSpansLocked(),
 	})
 	return nil
 }
@@ -118,17 +140,26 @@ func (s *testSink) PersistNotification(source leapmuxv1.MessageSource, content [
 func (s *testSink) OpenSpan(spanID string, parentSpanID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.openSpans = append(s.openSpans, testSinkSpanOpen{SpanID: spanID, ParentSpanID: parentSpanID})
+	open := testSinkSpanOpen{SpanID: spanID, ParentSpanID: parentSpanID}
+	s.openSpans = append(s.openSpans, open)
+	// liveSpans mirrors the real SpanTracker's active set (open minus close
+	// minus reset), which is what SpansOpenAtPersist snapshots. openSpans stays
+	// a cumulative log so existing assertions about "was ever opened" hold.
+	s.liveSpans = append(s.liveSpans, open)
 }
 func (s *testSink) CloseSpan(spanID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closedSpans = append(s.closedSpans, spanID)
+	s.liveSpans = slices.DeleteFunc(s.liveSpans, func(o testSinkSpanOpen) bool {
+		return o.SpanID == spanID
+	})
 }
 func (s *testSink) ResetSpans() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resetSpanCount++
+	s.liveSpans = nil
 }
 func (s *testSink) SetSpanType(spanID, spanType string) {
 	s.mu.Lock()
@@ -331,6 +362,27 @@ func (s *testSink) PersistChildTurnEnd(childAgentID string, content []byte, span
 		return nil
 	}
 	return cs.PersistTurnEnd(content, span)
+}
+
+// PersistChildPrompt mirrors the real sink's contract: a USER message carrying
+// {"content": prompt}, written only into a child transcript that has no message
+// yet, and skipped for a blank prompt. Tests assert on the child's Messages().
+func (s *testSink) PersistChildPrompt(childAgentID, prompt string) error {
+	if childAgentID == "" || strings.TrimSpace(prompt) == "" {
+		return nil
+	}
+	cs, _ := s.ChildSink(childAgentID).(*testSink)
+	if cs == nil {
+		return nil
+	}
+	if len(cs.Messages()) > 0 {
+		return nil
+	}
+	content, err := json.Marshal(map[string]string{"content": prompt})
+	if err != nil {
+		return err
+	}
+	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, SpanInfo{})
 }
 
 func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
@@ -630,6 +682,7 @@ func (noopSink) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, Spa
 	return nil
 }
 func (noopSink) PersistChildTurnEnd(string, []byte, SpanInfo) error { return nil }
+func (noopSink) PersistChildPrompt(string, string) error            { return nil }
 func (noopSink) UpsertBackgroundTask(bgtask.Upsert) error           { return nil }
 func (noopSink) UpdateBackgroundTaskStatus(string, bgtask.Status, string) error {
 	return nil

@@ -145,6 +145,146 @@ func TestHandleOutput_AssistantToolUse(t *testing.T) {
 	assert.Equal(t, 0, agent.turnToolUses)
 }
 
+// A subagent's tool_use row must persist BEFORE its own span opens, exactly as
+// the parent transcript does (handlePersistableMessage persists, then
+// processAssistantBlocks opens). The sink derives span_lines from the spans open
+// at persist time, so opening first stamps the tool_use row with an "active"
+// line for the span it is itself announcing -- the row renders one column too
+// deep and draws a rail segment with nothing above it. The paired tool_result
+// must persist while the span IS open, so it closes the rail with connector_end.
+func TestRouteSubagentMessage_ToolUsePersistsBeforeItsSpanOpens(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "spawn-1",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{"type": "tool_use", "id": "tu-bash", "name": "Bash", "input": {"command": "git show HEAD --stat"}}
+			]
+		}
+	}`))
+	agent.HandleOutput([]byte(`{
+		"type": "user",
+		"parent_tool_use_id": "spawn-1",
+		"message": {
+			"role": "user",
+			"content": [
+				{"type": "tool_result", "tool_use_id": "tu-bash", "content": "1 file changed"}
+			]
+		}
+	}`))
+
+	child, ok := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.True(t, ok)
+	msgs := child.Messages()
+	require.Len(t, msgs, 2)
+
+	// The tool_use row: no span open yet, so the persisted row carries no span
+	// lines at all.
+	assert.Equal(t, "tu-bash", msgs[0].SpanID)
+	assert.Empty(t, msgs[0].SpansOpenAtPersist,
+		"a subagent tool_use must persist before its own span opens")
+
+	// The tool_result row: the span it closes is open, so the row renders the
+	// connector that ends the rail.
+	assert.Equal(t, "tu-bash", msgs[1].SpanID)
+	assert.True(t, msgs[1].Closing)
+	require.Len(t, msgs[1].SpansOpenAtPersist, 1)
+	assert.Equal(t, "tu-bash", msgs[1].SpansOpenAtPersist[0].SpanID)
+
+	// The span still opens on the CHILD tracker (with the spawn span as parent)
+	// and closes when the result lands.
+	assert.Equal(t, []testSinkSpanOpen{{SpanID: "tu-bash", ParentSpanID: "spawn-1"}}, child.OpenSpans())
+	assert.Equal(t, []string{"tu-bash"}, child.ClosedSpans())
+}
+
+// A subagent's plain assistant text carries no span of its own, so it must
+// persist with the child's currently-open spans intact: an in-flight tool span
+// keeps drawing its rail past the text row.
+func TestRouteSubagentMessage_TextPersistsUnderAnOpenSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "spawn-1",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "tool_use", "id": "tu-1", "name": "Read", "input": {}}]
+		}
+	}`))
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "spawn-1",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "text", "text": "Reading the file."}]
+		}
+	}`))
+
+	child, ok := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.True(t, ok)
+	msgs := child.Messages()
+	require.Len(t, msgs, 2)
+
+	assert.Empty(t, msgs[0].SpansOpenAtPersist)
+	require.Len(t, msgs[1].SpansOpenAtPersist, 1)
+	assert.Equal(t, "tu-1", msgs[1].SpansOpenAtPersist[0].SpanID)
+}
+
+// One forwarded assistant message can carry parallel tool calls. Every block
+// must open a span on the child tracker, because the user envelope that follows
+// closes every tool_result block; opening only the first leaves the others'
+// rails undrawn while their results still try to close them.
+func TestRouteSubagentMessage_ParallelToolUsesAllOpenAndClose(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "spawn-1",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{"type": "tool_use", "id": "tu-a", "name": "Read", "input": {}},
+				{"type": "tool_use", "id": "tu-b", "name": "Grep", "input": {}}
+			]
+		}
+	}`))
+
+	child, ok := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.True(t, ok)
+	assert.Equal(t, []testSinkSpanOpen{
+		{SpanID: "tu-a", ParentSpanID: "spawn-1"},
+		{SpanID: "tu-b", ParentSpanID: "spawn-1"},
+	}, child.OpenSpans())
+	// Both tool names are recorded, so each result resolves its own span type.
+	assert.Equal(t, "Read", child.GetSpanType("tu-a"))
+	assert.Equal(t, "Grep", child.GetSpanType("tu-b"))
+
+	agent.HandleOutput([]byte(`{
+		"type": "user",
+		"parent_tool_use_id": "spawn-1",
+		"message": {
+			"role": "user",
+			"content": [
+				{"type": "tool_result", "tool_use_id": "tu-a", "content": "ok"},
+				{"type": "tool_result", "tool_use_id": "tu-b", "content": "ok"}
+			]
+		}
+	}`))
+	assert.Equal(t, []string{"tu-a", "tu-b"}, child.ClosedSpans())
+}
+
 func TestHandleOutput_AssistantToolUse_FallbackParentSpanID(t *testing.T) {
 	t.Parallel()
 
@@ -1800,8 +1940,28 @@ func TestHandleOutput_TaskStartedLocalBashUpsertsShellNoChild(t *testing.T) {
 	assert.Equal(t, bgtask.KindShell, row.Kind, "local_bash maps to a Shell-kind row")
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.Equal(t, "long build", row.Title)
+	// Claude names a background shell by its COMMAND (verified against 2.1.220:
+	// task_started ships description="sleep 2 && echo BG-MARKER"), so the command
+	// is already the title. Copying it into Description too rendered the row's
+	// secondary line as a verbatim echo of its own title.
+	assert.Empty(t, row.Description, "description must not echo the title")
 	// No child transcript pre-created for a shell.
 	assert.Equal(t, "", row.ChildAgentID, "local_bash must not EnsureChildAgent")
+}
+
+// The same rule for a subagent row: its secondary line comes from
+// task_progress activity, so task_started must not pre-fill it with the title.
+func TestHandleOutput_TaskStartedLeavesTheDescriptionEmpty(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+	agent.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"tu-1","task_type":"local_agent","description":"SCAN triage angle"}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "SCAN triage angle", tasks[0].Title)
+	assert.Empty(t, tasks[0].Description)
 }
 
 // TestHandleOutput_TaskStartedCarriesWorkflowGroup verifies that a task_started

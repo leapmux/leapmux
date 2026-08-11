@@ -424,6 +424,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		if collab := parseCollabToolCall(item); collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
 				a.registerCollabReceiver(receiverID, itemID)
+				a.rememberCollabPrompt(receiverID, collab.Prompt)
 			}
 		}
 	case "reasoning":
@@ -506,6 +507,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		if collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
 				a.registerCollabReceiver(receiverID, itemID)
+				a.rememberCollabPrompt(receiverID, collab.Prompt)
 			}
 			if collab.Tool == "spawnAgent" {
 				if sp := parseCollabSpawnPrompt(item); sp != "" {
@@ -962,8 +964,12 @@ type codexCollabAgentState struct {
 }
 
 type codexCollabAgentToolCall struct {
-	Tool              string                           `json:"tool"`
-	Status            string                           `json:"status"`
+	Tool   string `json:"tool"`
+	Status string `json:"status"`
+	// Prompt is the instruction the spawned agent was given. Codex declares it
+	// `prompt: string | null` on the collabAgentToolCall thread item, so it is
+	// absent for the non-spawn collab tools (send/wait).
+	Prompt            string                           `json:"prompt"`
 	ReceiverThreadIds []string                         `json:"receiverThreadIds"`
 	AgentsStates      map[string]codexCollabAgentState `json:"agentsStates"`
 }

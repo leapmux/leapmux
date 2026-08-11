@@ -54,7 +54,6 @@ export interface SidebarElementsOpts {
   showBackgroundTasks: boolean
   activeBackgroundTasks: BackgroundTaskItem[]
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
-  resolveAgentTabTitle?: (id: string) => string | undefined
   termOps: ReturnType<typeof useTerminalOperations>
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger: number

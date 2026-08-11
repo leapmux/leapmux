@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { repoKeyForLocal } from './branchKeys'
-import { buildTree, formatGitOriginUrl, sumDiffStatsFromTabs, tabBuildKey } from './WorkspaceTabTree'
+import { buildTree, formatGitOriginUrl, nestSubagentTabs, sumDiffStatsFromTabs, tabBuildKey } from './WorkspaceTabTree'
 
 describe('formatGitOriginUrl', () => {
   it('strips https protocol', () => {
@@ -906,5 +906,116 @@ describe('tabBuildKey', () => {
     const tab1 = makeTab({ id: 'a1' })
     const tab2 = makeTab({ id: 'a1', workerId: undefined, gitBranch: undefined })
     expect(tabBuildKey(tab1)).toBe(tabBuildKey(tab2))
+  })
+  // Nesting is structure, so a hydrated parent link must invalidate the cached
+  // tree; without it the subagent row would stay flat until an unrelated change
+  // forced a rebuild.
+  it('changes when a tab gains its subagent parent link', () => {
+    const before = makeTab({ id: 'child-1' })
+    const after = makeTab({ id: 'child-1', parentAgentId: 'root-1' })
+    expect(tabBuildKey(before)).not.toBe(tabBuildKey(after))
+  })
+})
+
+describe('nestSubagentTabs', () => {
+  const root = makeTab({ id: 'root-1' })
+  const child = makeTab({ id: 'child-1', parentAgentId: 'root-1' })
+  const grandchild = makeTab({ id: 'gc-1', parentAgentId: 'child-1' })
+
+  function shape(nodes: ReturnType<typeof nestSubagentTabs>): unknown {
+    return nodes.map(n => ({ id: n.tab.id, children: shape(n.children) }))
+  }
+
+  it('returns an empty forest for no tabs', () => {
+    expect(nestSubagentTabs([])).toEqual([])
+  })
+
+  it('leaves tabs without a parent link at the top level', () => {
+    const other = makeTab({ id: 'root-2' })
+    expect(shape(nestSubagentTabs([root, other]))).toEqual([
+      { id: 'root-1', children: [] },
+      { id: 'root-2', children: [] },
+    ])
+  })
+
+  it('hangs a subagent under its parent', () => {
+    expect(shape(nestSubagentTabs([root, child]))).toEqual([
+      { id: 'root-1', children: [{ id: 'child-1', children: [] }] },
+    ])
+  })
+
+  it('nests a subagent of a subagent two levels deep', () => {
+    expect(shape(nestSubagentTabs([root, child, grandchild]))).toEqual([
+      {
+        id: 'root-1',
+        children: [{ id: 'child-1', children: [{ id: 'gc-1', children: [] }] }],
+      },
+    ])
+  })
+
+  it('keeps the input order within each level', () => {
+    const childB = makeTab({ id: 'child-2', parentAgentId: 'root-1' })
+    expect(shape(nestSubagentTabs([root, childB, child]))).toEqual([
+      {
+        id: 'root-1',
+        children: [{ id: 'child-2', children: [] }, { id: 'child-1', children: [] }],
+      },
+    ])
+  })
+
+  it('nests a subagent listed before its parent', () => {
+    expect(shape(nestSubagentTabs([child, root]))).toEqual([
+      { id: 'root-1', children: [{ id: 'child-1', children: [] }] },
+    ])
+  })
+
+  // The parent tab is closed (or grouped under another branch): there is no row
+  // to hang the subagent from, so it stays visible at the top level.
+  it('keeps a subagent at the top level when its parent is absent', () => {
+    expect(shape(nestSubagentTabs([child]))).toEqual([{ id: 'child-1', children: [] }])
+  })
+
+  // A missing middle generation must NOT promote the grandchild onto the
+  // surviving grandparent -- that would draw a lineage the user cannot see.
+  it('does not re-parent onto a grandparent when the direct parent is absent', () => {
+    expect(shape(nestSubagentTabs([root, grandchild]))).toEqual([
+      { id: 'root-1', children: [] },
+      { id: 'gc-1', children: [] },
+    ])
+  })
+
+  it('leaves non-agent tabs at the top level', () => {
+    const term = makeTab({ id: 'term-1', type: TabType.TERMINAL })
+    const file = makeTab({ id: 'file-1', type: TabType.FILE })
+    expect(shape(nestSubagentTabs([root, term, file]))).toEqual([
+      { id: 'root-1', children: [] },
+      { id: 'term-1', children: [] },
+      { id: 'file-1', children: [] },
+    ])
+  })
+
+  // An agent id and a terminal id can collide (tabKey namespaces by type), so
+  // the parent index must only ever resolve AGENT tabs.
+  it('never adopts a subagent onto a same-id terminal tab', () => {
+    const term = makeTab({ id: 'root-1', type: TabType.TERMINAL })
+    expect(shape(nestSubagentTabs([term, child]))).toEqual([
+      { id: 'root-1', children: [] },
+      { id: 'child-1', children: [] },
+    ])
+  })
+
+  // Impossible from the worker, but attaching both ends of a cycle would
+  // recurse forever in the renderer, so both must stay roots.
+  it('breaks a parent cycle instead of nesting it', () => {
+    const a = makeTab({ id: 'a', parentAgentId: 'b' })
+    const b = makeTab({ id: 'b', parentAgentId: 'a' })
+    const nodes = nestSubagentTabs([a, b])
+    expect(nodes).toHaveLength(2)
+    expect(nodes.every(n => n.children.length === 0)).toBe(true)
+  })
+
+  it('breaks a self-parent link', () => {
+    const selfRef = makeTab({ id: 'self', parentAgentId: 'self' })
+    expect(shape(nestSubagentTabs([selfRef]))).toEqual([{ id: 'self', children: [] }])
   })
 })

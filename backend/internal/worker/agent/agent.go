@@ -282,6 +282,20 @@ type OutputSink interface {
 	PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error
 	PersistChildTurnEnd(childAgentID string, content []byte, span SpanInfo) error
 
+	// PersistChildPrompt writes the spawn prompt as the FIRST message of the
+	// child transcript, so the subagent tab opens on the instruction the
+	// subagent was given instead of on its first reply. Persisted as a USER
+	// message carrying {"content": prompt}, which is the same envelope a typed
+	// message uses -- so it renders as markdown, in full, with no per-provider
+	// shape for the frontend to learn.
+	//
+	// Idempotent by emptiness: a no-op when the child transcript already holds
+	// a message, and when prompt is blank. A re-attach after a worker restart
+	// therefore cannot duplicate the prompt, and a provider that learns the
+	// prompt only AFTER the subagent has started talking does not wedge it
+	// below the transcript it is supposed to introduce.
+	PersistChildPrompt(childAgentID, prompt string) error
+
 	// CleanupChildAgent releases the per-child service state (span tracker,
 	// todos cache, cached child sink) for a child that has reached a terminal
 	// state. A provider calls this once a subagent closes for good so a

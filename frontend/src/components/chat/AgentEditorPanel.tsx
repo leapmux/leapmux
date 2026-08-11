@@ -60,6 +60,13 @@ export interface AgentEditorPanelProps {
    */
   onPermissionModeChange?: (mode: PermissionMode) => void
   onInterrupt?: () => void
+  /**
+   * Whether Interrupt can target this agent alone. Omit (or pass true) for a
+   * root agent; pass false for a subagent tab whose provider cannot interrupt a
+   * single subagent, which hides the button instead of offering a click that
+   * can only fail.
+   */
+  canInterrupt?: boolean
   settingsLoading?: boolean
   agentSessionInfo?: AgentSessionInfo
   agentWorking?: boolean
@@ -202,6 +209,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       get onSendMessage() { return props.onSendMessage },
       get settingsLoading() { return props.settingsLoading },
       get agentWorking() { return props.agentWorking },
+      get canInterrupt() { return props.canInterrupt },
     },
     askState,
     () => editorContentRef,
@@ -342,6 +350,9 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           }}
           onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
           disabled={props.disabled}
+          // Same string in the box as in the hint above it: the reason the
+          // composer is dead is stated once, so the two can never disagree.
+          disabledPlaceholder={props.disabledHint}
           onTogglePlanMode={ctrl.togglePlanMode}
           requestedHeight={editorMinHeightSignal()}
           maxHeight={editorHeight.maxEditorHeight()}

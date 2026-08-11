@@ -1189,3 +1189,93 @@ describe('workspaceTabTree interactions', () => {
     expect(isExpanded(rowB)).toBe(true)
   })
 })
+
+// Subagent rows render as CHILDREN of their parent agent row, one indent level
+// deeper. Asserted through the rendered indent (TabLeaf's only expression of
+// depth) and through document order, so the test pins what the user sees.
+describe('workspaceTabTree subagent nesting', () => {
+  function subagentTab(id: string, parentAgentId: string): Tab {
+    return { ...makeTab(TabType.AGENT, id, id), parentAgentId } as Tab
+  }
+
+  function leafIndents(): { id: string, indent: number }[] {
+    return screen.getAllByTestId('tab-tree-leaf').map(el => ({
+      id: el.getAttribute('data-tab-id') ?? '',
+      indent: Number.parseInt((el as HTMLElement).style.paddingLeft, 10),
+    }))
+  }
+
+  it('indents a subagent row one level under its parent', () => {
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[makeTab(TabType.AGENT, 'root', 'Root'), subagentTab('kid', 'root')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+      />
+    ))
+
+    const rows = leafIndents()
+    expect(rows.map(r => r.id)).toEqual(['root', 'kid'])
+    expect(rows[1].indent).toBeGreaterThan(rows[0].indent)
+  })
+
+  it('renders a subagent of a subagent two levels deep', () => {
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[
+          makeTab(TabType.AGENT, 'root', 'Root'),
+          subagentTab('kid', 'root'),
+          subagentTab('grandkid', 'kid'),
+        ]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+      />
+    ))
+
+    const rows = leafIndents()
+    expect(rows.map(r => r.id)).toEqual(['root', 'kid', 'grandkid'])
+    expect(rows[1].indent).toBeGreaterThan(rows[0].indent)
+    expect(rows[2].indent).toBeGreaterThan(rows[1].indent)
+  })
+
+  it('keeps a subagent flush with the roots when its parent tab is closed', () => {
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[makeTab(TabType.AGENT, 'other', 'Other'), subagentTab('kid', 'gone')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+      />
+    ))
+
+    // Both are roots, so the usual sort (position, then id) orders them.
+    const rows = leafIndents()
+    expect(rows.map(r => r.id)).toEqual(['kid', 'other'])
+    expect(rows[1].indent).toBe(rows[0].indent)
+  })
+
+  it('re-nests a row when its parent link arrives after the first paint', () => {
+    const [tabs, setTabs] = createSignal<Tab[]>([
+      makeTab(TabType.AGENT, 'root', 'Root'),
+      makeTab(TabType.AGENT, 'kid', 'Kid'),
+    ])
+    render(() => (
+      <WorkspaceTabTree
+        tabs={tabs()}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+      />
+    ))
+    expect(leafIndents()[1].indent).toBe(leafIndents()[0].indent)
+
+    // Hydration fills in parentAgentId; the cached tree must rebuild.
+    setTabs([makeTab(TabType.AGENT, 'root', 'Root'), subagentTab('kid', 'root')])
+
+    const rows = leafIndents()
+    expect(rows.map(r => r.id)).toEqual(['root', 'kid'])
+    expect(rows[1].indent).toBeGreaterThan(rows[0].indent)
+  })
+})

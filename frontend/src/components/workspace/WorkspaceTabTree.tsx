@@ -19,7 +19,7 @@ import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
 import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
-import { isTerminalTab } from '~/stores/tab.types'
+import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 import * as tabBarStyles from '../shell/TabBar.css'
 import { terminalStatusClassList } from '../shell/terminalStatus'
 import { RowLabelWithStats } from '../tree/gitStatusUtils'
@@ -71,6 +71,10 @@ function branchGroupKey(b: BranchGroup): string {
 export function tabBuildKey(t: Tab): string {
   return [
     t.id,
+    // Structure: a subagent tab renders UNDER its parent, so the link decides
+    // where the row sits. It is written once (undefined -> id, at hydration),
+    // so including it costs one rebuild per subagent rather than churn.
+    isAgentTab(t) ? t.parentAgentId ?? '' : '',
     t.workerId ?? '',
     t.gitBranch ?? '',
     t.gitToplevel ?? '',
@@ -104,6 +108,70 @@ function buildBranchRef(workspaceId: string, b: BranchGroup, liveTab: (key: stri
     branchName: b.branchName,
     tabs: b.tabs.map(t => liveTab(tabKey(t))).filter((t): t is Tab => t !== undefined),
   }
+}
+
+// --- Subagent nesting ---
+
+/** One row of the sidebar's tab tree, plus the subagent rows hanging under it. */
+export interface TabNode {
+  tab: Tab
+  children: TabNode[]
+}
+
+function parentAgentIdOf(tab: Tab): string | undefined {
+  return isAgentTab(tab) ? tab.parentAgentId : undefined
+}
+
+/**
+ * Fold a flat, already-sorted tab list into the subagent tree the sidebar draws.
+ *
+ * A child agent tab (one with `parentAgentId`) hangs under its parent when that
+ * parent is in the SAME list; otherwise it stays at the top level, because the
+ * parent tab is closed or sits in a different branch group and there is no row
+ * to hang it from. Nesting is per direct parent only -- a subagent whose own
+ * subagent is open renders two levels deep, but a tab whose parent is absent is
+ * NOT re-parented onto a surviving grandparent, which would claim a lineage the
+ * user cannot see.
+ *
+ * Order within every level is the input order, so the caller's sort still
+ * decides it. Pure: it reads only the fields above and allocates a fresh forest.
+ */
+export function nestSubagentTabs(tabs: readonly Tab[]): TabNode[] {
+  const nodeById = new Map<string, TabNode>()
+  for (const tab of tabs) {
+    if (isAgentTab(tab))
+      nodeById.set(tab.id, { tab, children: [] })
+  }
+
+  // True when walking up from `from` reaches `targetId`. Guards against a
+  // parent cycle: the worker cannot produce one (parent_agent_id is a DAG
+  // rooted at a main agent), but attaching both ends of a cycle would recurse
+  // forever in the renderer, so a suspect link demotes the tab to a root
+  // instead. The visited set also bounds a chain that repeats for any reason.
+  const reaches = (from: TabNode, targetId: string): boolean => {
+    const seen = new Set<string>()
+    let id = parentAgentIdOf(from.tab)
+    while (id && !seen.has(id)) {
+      if (id === targetId)
+        return true
+      seen.add(id)
+      const next = nodeById.get(id)
+      id = next ? parentAgentIdOf(next.tab) : undefined
+    }
+    return false
+  }
+
+  const roots: TabNode[] = []
+  for (const tab of tabs) {
+    const node = nodeById.get(tab.id) ?? { tab, children: [] }
+    const parentId = parentAgentIdOf(tab)
+    const parent = parentId ? nodeById.get(parentId) : undefined
+    if (parent && parent !== node && !reaches(parent, tab.id))
+      parent.children.push(node)
+    else
+      roots.push(node)
+  }
+  return roots
 }
 
 // --- Tab leaf node ---
@@ -342,6 +410,35 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
   )
 }
 
+// Renders one level of the tab tree, then recurses into each row's subagents at
+// one greater depth (TabLeaf turns depth into its indent).
+const TabNodeList: Component<{ nodes: readonly TabNode[], depth: number }> = (props) => {
+  const sel = useRowSelection()
+  const keys = createStableKeys(() => props.nodes.map(n => n.tab), tabKey)
+  // Children come from the CACHED tree (they are structure, like order and
+  // membership); the row itself still resolves through the live lookup.
+  const childrenByKey = createMemo(() => {
+    const map = new Map<string, TabNode[]>()
+    for (const n of props.nodes) {
+      if (n.children.length > 0)
+        map.set(tabKey(n.tab), n.children)
+    }
+    return map
+  })
+  return (
+    <KeyedFor each={keys()} lookup={key => sel.liveTab(key)}>
+      {(tab, key) => (
+        <>
+          <TabLeafSlot tab={tab()} depth={props.depth} />
+          <Show when={childrenByKey().get(key)}>
+            {children => <TabNodeList nodes={children()} depth={props.depth + 1} />}
+          </Show>
+        </>
+      )}
+    </KeyedFor>
+  )
+}
+
 /**
  * A list of tab leaves keyed by TAB KEY, not by the `Tab` object.
  *
@@ -374,13 +471,14 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
  * rebuild.
  */
 const TabLeafList: Component<{ tabs: readonly Tab[], depth: number }> = (props) => {
-  const sel = useRowSelection()
-  const keys = createStableKeys(() => props.tabs, tabKey)
-  return (
-    <KeyedFor each={keys()} lookup={key => sel.liveTab(key)}>
-      {tab => <TabLeafSlot tab={tab()} depth={props.depth} />}
-    </KeyedFor>
-  )
+  // Nest here rather than in buildTree: BranchGroup.tabs stays the flat set of
+  // tabs ON the branch, which is what the diff-stat roll-up and the branch
+  // dialogs' snapshot want. Only the sidebar draws a hierarchy. The memo's
+  // input is the cached tree's array, so this recomputes only when buildTree
+  // does -- parentAgentId is part of tabBuildKey, so a hydrated subagent link
+  // rebuilds the tree and re-nests here.
+  const nodes = createMemo(() => nestSubagentTabs(props.tabs))
+  return <TabNodeList nodes={nodes()} depth={props.depth} />
 }
 
 // Renders one branch row inside a repo group: the header (chevron +

@@ -20,6 +20,7 @@ export const NOTIFICATION_TYPE = {
   AgentSessionInfo: 'agent_session_info',
   RateLimit: 'rate_limit',
   RateLimitEvent: 'rate_limit_event',
+  SubagentEnded: 'subagent_ended',
 } as const
 
 export type NotificationType = typeof NOTIFICATION_TYPE[keyof typeof NOTIFICATION_TYPE]

@@ -16,7 +16,11 @@ const TERMINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as c
 
 /** Locator for the Background tasks section header (right sidebar). */
 export function backgroundTasksSection(page: Page): Locator {
-  return page.getByTestId('section-header-background_tasks')
+  // `:visible`-scoped like every other locator in this file: the sidebar is
+  // mounted twice (the desktop and the mobile tree both render), so the bare
+  // test id matches two elements and every strict-mode call on it throws once
+  // the section exists.
+  return page.locator('[data-testid="section-header-background_tasks"]:visible')
 }
 
 /** Expand the section if collapsed (mirrors the Workers-section pattern). */
@@ -224,21 +228,17 @@ export async function listAgents(
 }
 
 /**
- * Get all agent tab IDs for a workspace (hub ListTabs + filter AGENT). Needed
- * to seed ListAgents (which takes tabIds).
+ * The open agent tabs' ids, read from the rendered tab strip.
+ *
+ * NOT the hub's ListTabs: tabs live in the user CRDT and the hub's tab
+ * projection is empty throughout these runs, so seeding ListAgents from it
+ * produced an empty id list -- which made `expectNoChildAgents` pass
+ * vacuously and made 174's positive assertion unreachable. The tab strip is
+ * the surface the user actually sees, and every id on it is a real agent the
+ * worker can be asked about.
  */
-export async function agentTabIdsForWorkspace(
-  hubUrl: string,
-  token: string,
-  workspaceId: string,
-): Promise<string[]> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'cookie': `session=${token}` },
-    body: JSON.stringify({ workspaceIds: [workspaceId] }),
-  })
-  if (!res.ok)
-    return []
-  const data = await res.json() as { tabs?: Array<{ tabType: string, tabId: string }> }
-  return (data.tabs ?? []).filter(t => t.tabType === 'TAB_TYPE_AGENT').map(t => t.tabId)
+export async function openAgentTabIds(page: Page): Promise<string[]> {
+  const ids = await page.locator('[data-testid="tab"][data-tab-type="agent"]:visible')
+    .evaluateAll(els => els.map(el => el.getAttribute('data-tab-id') ?? ''))
+  return ids.filter(id => id !== '')
 }
