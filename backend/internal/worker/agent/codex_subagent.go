@@ -24,13 +24,13 @@ import (
 // restart: the child thread is paused inside the running owner process and
 // resumeAgent restarts it in the same process, so the same row_key legitimately
 // cycles running -> interrupted -> running. The wire "interrupted" must NOT map
-// to StatusInterrupted: that status is terminal (IsTerminal reports true), so
-// the registry's monotonic-terminal guard would absorb the later "running"
+// to StatusInterrupted: that status is final (IsFinished reports true), so
+// the registry's monotonic-final guard would absorb the later "running"
 // upsert that arrives when resumeAgent resumes the child, leaving the row stuck
 // at Interrupted forever. StatusInterrupted is reserved for the boot sweep that
-// marks tasks left active by a crashed worker (a genuine terminal: a background
+// marks tasks left active by a crashed worker (a genuine ending: a background
 // task never survives a worker restart).
-func codexCollabStatusToRegistry(s string) (status bgtask.Status, terminal bool, activity string) {
+func codexCollabStatusToRegistry(s string) (status bgtask.Status, finished bool, activity string) {
 	switch s {
 	case "pendingInit", "running":
 		return bgtask.StatusRunning, false, ""
@@ -61,7 +61,7 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 		if threadID == "" {
 			continue
 		}
-		status, terminal, activity := codexCollabStatusToRegistry(st.Status)
+		status, finished, activity := codexCollabStatusToRegistry(st.Status)
 		title := a.collabChildTitle(threadID)
 		// Link the registry row to a child transcript when the index knows the
 		// thread (EnsureChildAgent is idempotent).
@@ -89,7 +89,7 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 		}); err != nil {
 			slog.Warn("codex collab registry upsert failed", "thread", threadID, "error", err)
 		}
-		if terminal {
+		if finished {
 			if err := a.sink.CloseBackgroundTask(threadID, status); err != nil {
 				slog.Warn("codex collab registry close failed", "thread", threadID, "error", err)
 			}
@@ -109,7 +109,7 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 // only; never persisted): {kind: started|interacted|interrupted, agentThreadId}.
 // started→Running, interacted→activity "received input", interrupted→Running
 // with activity "paused" (resumable; see codexCollabStatusToRegistry for why a
-// resumable interrupt must not use the terminal StatusInterrupted).
+// resumable interrupt must not use the final StatusInterrupted).
 func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage) bool {
 	var act struct {
 		Type          string `json:"type"`
@@ -179,7 +179,7 @@ func (a *CodexAgent) collabSpanForThread(threadID string) string {
 	return a.collabThreadSpans[threadID]
 }
 
-// removeCollabChildIndex drops a child thread from the index (terminal state).
+// removeCollabChildIndex drops a child thread from the index (it reached a final status).
 // Both the thread->span mapping and the thread->title cache are cleared so a
 // long-lived session that repeatedly spawns and closes subagents does not
 // accumulate stale title entries (collabChildTitles is otherwise only cleared

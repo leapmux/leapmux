@@ -144,7 +144,7 @@ type ClaudeCodeAgent struct {
 	// task_notification.
 	taskToolUse map[string]string // task_id -> tool_use_id
 	toolUseTask map[string]string // tool_use_id -> task_id
-	// pendingTaskEnd holds a terminal status for a Task subagent whose result
+	// pendingTaskEnd holds a final status for a Task subagent whose result
 	// message arrived BEFORE its task_started (a forward of the child's terminal
 	// result can race past a reordered task_started). Keyed by spawn tool_use id
 	// so the late task_started can close the row it just opened. Guarded by a.mu.

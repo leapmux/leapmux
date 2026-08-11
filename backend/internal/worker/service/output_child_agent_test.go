@@ -94,7 +94,7 @@ func TestCleanupChildAgent_ReclaimsPerChildState(t *testing.T) {
 	_, _, spanLoaded := svc.Output.trackers.get(childID)
 	require.True(t, spanLoaded, "child span tracker populated")
 
-	// A terminal close drives CleanupChildAgent via the provider's sink.
+	// A closing update drives CleanupChildAgent via the provider's sink.
 	sink.CleanupChildAgent(childID)
 
 	_, _, spanLoaded = svc.Output.trackers.get(childID)
@@ -537,7 +537,7 @@ func TestPersistChildPrompt_DoesNotAppendOnceTheChildHasSpoken(t *testing.T) {
 
 // Closing a subagent's registry row is the one provider-neutral moment the
 // subagent is known to be over, so that is where the child transcript gets its
-// terminal divider -- otherwise the tab shows a thinking indicator forever.
+// closing divider -- otherwise the tab shows a thinking indicator forever.
 func TestCloseBackgroundTask_WritesTheSubagentEndDivider(t *testing.T) {
 	t.Parallel()
 
@@ -554,9 +554,9 @@ func TestCloseBackgroundTask_WritesTheSubagentEndDivider(t *testing.T) {
 	assert.Equal(t, float64(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX), msgs[0]["__source"])
 }
 
-// Every terminal status is carried through, so the divider can say WHY the
+// Every final status is carried through, so the divider can say WHY the
 // subagent stopped rather than just that it did.
-func TestCloseBackgroundTask_CarriesTheTerminalStatus(t *testing.T) {
+func TestCloseBackgroundTask_CarriesTheFinalStatus(t *testing.T) {
 	t.Parallel()
 
 	for _, status := range []bgtask.Status{
@@ -732,7 +732,7 @@ func TestCloseBackgroundTask_ShellRowWritesNoDivider(t *testing.T) {
 }
 
 // The owner process dying is the other way a subagent ends. The exit sweep
-// terminalizes every still-active row in bulk, so it must close those
+// gives it a final status every still-active row in bulk, so it must close those
 // transcripts too -- otherwise a subagent whose owner crashed keeps a
 // transcript that simply stops.
 func TestMarkBackgroundTasksExited_WritesTheSubagentEndDivider(t *testing.T) {
@@ -765,7 +765,7 @@ func TestMarkBackgroundTasksExited_LabelsAnExplicitStopAsStopped(t *testing.T) {
 	assert.Equal(t, "stopped", msgs[0]["status"])
 }
 
-// The sweep skips rows that already reached a terminal status, so a subagent
+// The sweep skips rows that already reached a final status, so a subagent
 // that finished before its owner exited keeps its original divider and does not
 // get a second one.
 func TestMarkBackgroundTasksExited_SkipsAnAlreadyClosedSubagent(t *testing.T) {
@@ -814,7 +814,7 @@ func TestCloseBackgroundTask_WritesTheDividerWhenTheSubagentStoppedMidFlight(t *
 	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
 	require.NoError(t, err)
 
-	// Work, but no terminal envelope.
+	// Work, but no closing envelope.
 	require.NoError(t, sink.PersistChildMessage(childID,
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"text","text":"working"}`), agent.SpanInfo{}))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusStopped))
@@ -845,7 +845,7 @@ func TestCloseBackgroundTask_DividerCarriesTheChildsProvider(t *testing.T) {
 		"the divider inherits the child agent's provider, not UNSPECIFIED")
 }
 
-// The exit sweep terminalizes EVERY still-active row in one pass, so every
+// The exit sweep gives it a final status EVERY still-active row in one pass, so every
 // child transcript it ends must get its own divider -- not just the first.
 func TestMarkBackgroundTasksExited_ClosesEveryChildTranscript(t *testing.T) {
 	t.Parallel()

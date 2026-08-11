@@ -50,7 +50,7 @@ func TestACP_SubagentFromToolCall_EmptyInputReturnsNil(t *testing.T) {
 	assert.Nil(t, openCodeSubagentFromToolCall(tc))
 }
 
-func TestACP_SubagentFromToolCallUpdate_TerminalCloses(t *testing.T) {
+func TestACP_SubagentFromToolCallUpdate_FinalStatusCloses(t *testing.T) {
 	tcu := acpToolCallUpdateEnvelope{
 		ToolCallID: "tc-1",
 		Status:     "completed",
@@ -79,7 +79,7 @@ func TestACP_SubagentFromToolCallUpdate_RekeysToSessionID(t *testing.T) {
 }
 
 // TestACP_SubagentFromToolCallUpdate_NoSessionIDKeepsSpawnKey covers the case
-// where the terminal update carries no metadata.sessionId: the close keys off
+// where the final update carries no metadata.sessionId: the close keys off
 // the spawn toolCallId directly, and RenameFrom stays empty (no rename).
 func TestACP_SubagentFromToolCallUpdate_NoSessionIDKeepsSpawnKey(t *testing.T) {
 	tcu := acpToolCallUpdateEnvelope{
@@ -101,11 +101,11 @@ func TestACP_SubagentFromToolCallUpdate_InProgressReturnsNil(t *testing.T) {
 	assert.Nil(t, openCodeSubagentFromToolCallUpdate(tcu))
 }
 
-func TestACP_TerminalStatusMap(t *testing.T) {
-	assert.Equal(t, bgtask.StatusCompleted, acpTerminalStatus("completed"))
-	assert.Equal(t, bgtask.StatusFailed, acpTerminalStatus("failed"))
-	assert.Equal(t, bgtask.StatusStopped, acpTerminalStatus("cancelled"))
-	assert.Equal(t, bgtask.StatusStopped, acpTerminalStatus("unknown"))
+func TestACP_FinalStatusMap(t *testing.T) {
+	assert.Equal(t, bgtask.StatusCompleted, acpFinalStatus("completed"))
+	assert.Equal(t, bgtask.StatusFailed, acpFinalStatus("failed"))
+	assert.Equal(t, bgtask.StatusStopped, acpFinalStatus("cancelled"))
+	assert.Equal(t, bgtask.StatusStopped, acpFinalStatus("unknown"))
 }
 
 func TestACP_GooseSubagentFromToolCallUpdate_ToolRequest(t *testing.T) {
@@ -128,10 +128,10 @@ func TestACP_GooseSubagentFromToolCallUpdate_ToolRequest(t *testing.T) {
 	}
 	obs := gooseSubagentFromToolCallUpdate(tcu)
 	if assert.NotNil(t, obs) {
-		// The registry row, the EnsureChildAgent linkage, AND the terminal close
+		// The registry row, the EnsureChildAgent linkage, AND the closing update
 		// all key off the SPAWN toolCallId. ChildAgentKey must match RowKey, or
 		// EnsureChildAgent would open a second row keyed by subagent_id that the
-		// terminal close (which knows only toolCallId) never reaches.
+		// closing update (which knows only toolCallId) never reaches.
 		assert.Equal(t, "tc-goose", obs.RowKey)
 		assert.Equal(t, "tool: Read", obs.Activity)
 		assert.Equal(t, bgtask.StatusRunning, obs.Status)
@@ -159,11 +159,11 @@ func TestACP_GooseSubagentFromToolCallUpdate_NonSubagentReturnsNil(t *testing.T)
 }
 
 // TestACP_GooseSpawnAndToolRequestProduceOneRow verifies the FOOTGUNS-2 fix: a
-// Goose spawn tool_call followed by tool-request updates and a terminal close
+// Goose spawn tool_call followed by tool-request updates and a closing update
 // collapse to exactly ONE registry row keyed by the spawn toolCallId. Before the
 // fix, EnsureChildAgent was called with the per-request subagent_id (different
 // from the spawn toolCallId), opening a second row keyed by subagent_id that the
-// terminal close (which knows only toolCallId) never reached -- an orphaned
+// closing update (which knows only toolCallId) never reached -- an orphaned
 // Running row that pinned the parent's thinking indicator.
 func TestACP_GooseSpawnAndToolRequestProduceOneRow(t *testing.T) {
 	sink := &testSink{}
@@ -204,7 +204,7 @@ func TestACP_GooseSpawnAndToolRequestProduceOneRow(t *testing.T) {
 
 	tasks = sink.BackgroundTasks()
 	require.Len(t, tasks, 1, "still one row after close")
-	assert.True(t, tasks[0].Status.IsTerminal(), "terminal close reached the row")
+	assert.True(t, tasks[0].Status.IsFinished(), "the closing update reached the row")
 }
 
 // TestACP_GooseSubagentToolRequestPayload_SynthesizesMetaWhenEnvelopeLacksIt
@@ -442,10 +442,10 @@ func TestACP_WireDecode_GooseMetaParses(t *testing.T) {
 }
 
 // TestACP_ApplySubagentObservation_SpawnRowKeyClosesBothRows verifies that a
-// close observation carrying SpawnRowKey terminalizes the ORIGINAL spawn row
+// close observation carrying SpawnRowKey gives it a final status the ORIGINAL spawn row
 // TestACP_ApplySubagentObservation_RenameFromCollapsesToOneTerminalRow
 // verifies the rename path: a spawn opens a row under the toolCallId, then a
-// terminal update re-keys it to the child session id via RenameFrom. One row
+// final update re-keys it to the child session id via RenameFrom. One row
 // tracks the lifecycle and ends terminal; the original spawn key is gone (not
 // leaked as a separate Running row).
 func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneTerminalRow(t *testing.T) {
@@ -461,7 +461,7 @@ func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneTerminalRow(t *tes
 	require.Len(t, sink.BackgroundTasks(), 1)
 	assert.Equal(t, bgtask.StatusRunning, sink.BackgroundTasks()[0].Status)
 
-	// Terminal update renames call-123 -> sess-abc, then closes sess-abc.
+	// Final update renames call-123 -> sess-abc, then closes sess-abc.
 	b.applySubagentObservation(&acpSubagentObservation{
 		RowKey:     "sess-abc",
 		RenameFrom: "call-123",
@@ -473,7 +473,7 @@ func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneTerminalRow(t *tes
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1, "rename + close collapsed the lifecycle to one row")
 	assert.Equal(t, "sess-abc", tasks[0].RowKey)
-	assert.True(t, tasks[0].Status.IsTerminal(), "renamed row is terminal")
+	assert.True(t, tasks[0].Status.IsFinished(), "renamed row is final")
 }
 
 // TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert verifies that an
@@ -500,7 +500,7 @@ func TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert(t *testing.T) {
 	})
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1, "close-only must not create a new row")
-	assert.True(t, tasks[0].Status.IsTerminal(), "existing row is terminalized")
+	assert.True(t, tasks[0].Status.IsFinished(), "existing row reached a final status")
 }
 
 // TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth verifies that an
@@ -522,7 +522,7 @@ func TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth(t *testing.T) 
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "bg task", tasks[0].Title, "upsert carried the title")
-	assert.True(t, tasks[0].Status.IsTerminal(), "close terminalized the row")
+	assert.True(t, tasks[0].Status.IsFinished(), "the close gave the row a final status")
 }
 
 // The spawn payload carries the prompt, but the child transcript that should
@@ -704,7 +704,7 @@ func TestACPSubagentDetectors_EmptyPromptWhenTheSpawnCarriesNone(t *testing.T) {
 // Kilo opens its spawn tool_call with `rawInput: {}` and only fills the spawn
 // shape on the first IN-PROGRESS tool_call_update (verified against kilo 7.4.20
 // over ACP). Detecting only on the tool_call left the spawn with no registry
-// row at all, and the terminal update then closed a row that was never opened.
+// row at all, and the final update then closed a row that was never opened.
 func TestACP_OpenCodeSpawnDetectedOnTheInProgressUpdate(t *testing.T) {
 	t.Parallel()
 
@@ -729,7 +729,7 @@ func TestACP_OpenCodeSpawnDetectedOnTheInProgressUpdate(t *testing.T) {
 	assert.False(t, obs.CloseRow)
 }
 
-// A non-terminal update on a PLAIN tool must not open a subagent row.
+// A non-final update on a PLAIN tool must not open a subagent row.
 func TestACP_OpenCodeNonSpawnUpdateIsIgnored(t *testing.T) {
 	t.Parallel()
 
@@ -741,7 +741,7 @@ func TestACP_OpenCodeNonSpawnUpdateIsIgnored(t *testing.T) {
 	}))
 }
 
-// The terminal update still closes (and re-keys to the child session id), so
+// The final update still closes (and re-keys to the child session id), so
 // adding the spawn arm above did not swallow the close.
 func TestACP_OpenCodeTerminalUpdateStillClosesAndRekeys(t *testing.T) {
 	t.Parallel()

@@ -36,7 +36,7 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 
 	// Seed background-task rows directly in the DB at ACTIVE statuses, the way
 	// a previous worker process would have left them at a crash. Two active
-	// rows (pending + running) plus one already-terminal row to confirm the
+	// rows (pending + running) plus one already-finished row to confirm the
 	// sweep is scoped to active rows only.
 	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "root-1", RowKey: "task-pending", Seq: 1,
@@ -71,7 +71,7 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 	assert.Equal(t, "interrupted", byKey["task-running"].Status,
 		"a running row left by a crashed worker must be relabeled 'interrupted' at boot")
 
-	// The already-terminal row is untouched -- the sweep scopes to active rows.
+	// The already-finished row is untouched -- the sweep scopes to active rows.
 	require.Contains(t, byKey, "task-done")
 	assert.Equal(t, "completed", byKey["task-done"].Status,
 		"an already-terminal row must not be relabeled by the boot sweep")

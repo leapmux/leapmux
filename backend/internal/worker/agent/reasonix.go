@@ -64,7 +64,7 @@ func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 			a.refreshFromSession = nil
 			// Registry entry from the spawn tool_call only: Reasonix withholds
 			// ToolProgress from ACP by design, so there is no update hook and
-			// the row stays running until the agent's terminal tool_result
+			// the row stays running until the agent's final tool_result
 			// closes the span (no close signal arrives over ACP for it).
 			// Reasonix's rawInput carries {description, prompt} with NO
 			// subagent_type, so it uses its own shape detector.

@@ -717,7 +717,7 @@ func TestHandleCodexOutput_WaitCompletedDoesNotAffectSpawnSpan(t *testing.T) {
 	sink := &testSink{}
 	agent := newCodexAgentWithSink(sink)
 
-	// A wait completion with a non-terminal agent state must close the WAIT
+	// A wait completion with a non-final agent state must close the WAIT
 	// tool span (its own lifecycle) but must NOT touch a spawn span. There is no
 	// spawn here, so ClosedSpans contains only the wait span.
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
@@ -1591,7 +1591,7 @@ func TestHandleCodexOutput_TurnBoundariesResetThinkingTokens(t *testing.T) {
 // TestCodexCollabStatusToRegistry_ResumableInterrupted verifies that a Codex
 // collab "interrupted" status maps to a NON-terminal registry state. An
 // interrupted child is resumable (resumeAgent restarts it), so it must not
-// collapse to the terminal StatusInterrupted -- the registry's monotonic-terminal
+// collapse to the final StatusInterrupted -- the registry's monotonic-final
 // guard would then absorb the later "running" upsert on resume and leave the row
 // stuck at Interrupted forever. StatusInterrupted is reserved for the boot sweep
 // that marks tasks left active by a crashed worker.
@@ -1625,7 +1625,7 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 			}
 			// The mapped status must NOT be terminal for a resumable interrupt.
 			if !tc.wantTerminal {
-				assert.False(t, gotStatus.IsTerminal(), "%s must not map to a terminal status", tc.status)
+				assert.False(t, gotStatus.IsFinished(), "%s must not map to a final status", tc.status)
 			}
 		})
 	}
@@ -1644,7 +1644,7 @@ func TestCodexSubAgentActivity_InterruptedStaysRunning(t *testing.T) {
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1, "interrupted activity upserts one row")
 	assert.Equal(t, bgtask.StatusRunning, rows[0].Status, "interrupted stays Running (resumable)")
-	assert.False(t, rows[0].Status.IsTerminal(), "resumable interrupt is not terminal")
+	assert.False(t, rows[0].Status.IsFinished(), "resumable interrupt is not final")
 	assert.Equal(t, "paused", rows[0].ActiveForm)
 
 	// A subsequent started activity must update the SAME row (not be absorbed).

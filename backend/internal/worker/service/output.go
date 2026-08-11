@@ -758,7 +758,7 @@ func (h *OutputHandler) CleanupChildAgents(childIDs []string) {
 
 // cleanupChildMaps deletes the cheap per-agent maps for one child. Shared by
 // CleanupChildAgents (root close, many children) and CleanupChild (a single
-// child's terminal close driven from a provider's OutputSink). Does NOT touch
+// child's closing update driven from a provider's OutputSink). Does NOT touch
 // rootSinks/bgtasks: those are keyed by root owner and are reaped on root close.
 func (h *OutputHandler) cleanupChildMaps(childID string) {
 	h.notifMu.Delete(childID)
@@ -2052,11 +2052,11 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 				return todoItems(cache.Rows), false, nil
 			}
 		} else if len(cache.Rows) >= todoevents.MaxTodos {
-			// At cap: evict the oldest terminal row (completed or
+			// At cap: evict the oldest finished row (completed or
 			// deleted) to make room for the new task. When no terminal
 			// row exists, drop the new task and log so operators see
 			// the cap pressure.
-			evicted, err := h.evictOldestTerminalLocked(ctx, agentID, cache)
+			evicted, err := h.evictOldestFinishedLocked(ctx, agentID, cache)
 			if err != nil {
 				return nil, false, err
 			}
@@ -2146,21 +2146,21 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 	return nil, false, nil
 }
 
-// evictOldestTerminalLocked removes the oldest terminal row (completed or
+// evictOldestFinishedLocked removes the oldest finished row (completed or
 // deleted) from the cache and the DB via the shared registryCache mechanics.
-// Returns false (with no error) when no terminal row exists; the caller drops
+// Returns false (with no error) when no finished row exists; the caller drops
 // the incoming event in that case. Logs the eviction for operator visibility.
 // Caller must hold the cache's mutex.
-func (h *OutputHandler) evictOldestTerminalLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
+func (h *OutputHandler) evictOldestFinishedLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
 	// Capture the to-be-evicted row for the log before the generic deletes it.
 	evictIdx := slices.IndexFunc(cache.Rows, func(r cachedTodo) bool {
-		return r.item.Status.IsTerminal()
+		return r.item.Status.IsFinished()
 	})
 	if evictIdx < 0 {
 		return false, nil
 	}
 	evicted := cache.Rows[evictIdx]
-	evictedHappened, err := cache.evictOldestTerminalLocked(ctx, agentID)
+	evictedHappened, err := cache.evictOldestFinishedLocked(ctx, agentID)
 	if err != nil {
 		return false, err
 	}
@@ -2293,8 +2293,8 @@ func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 		},
 		keyOf:  func(r cachedTodo) string { return r.rowKey },
 		setKey: func(r *cachedTodo, key string) { r.rowKey = key },
-		isTerminal: func(r cachedTodo) bool {
-			return r.item.Status.IsTerminal()
+		isFinished: func(r cachedTodo) bool {
+			return r.item.Status.IsFinished()
 		},
 		deleteByKey: func(ctx context.Context, ownerID, key string) error {
 			_, err := h.queries.DeleteAgentTodoByRowKey(ctx, db.DeleteAgentTodoByRowKeyParams{

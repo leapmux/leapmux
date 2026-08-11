@@ -307,7 +307,7 @@ func TestACPTerminal_ReleaseAllOnStop(t *testing.T) {
 	sink.bgTasksMu.Lock()
 	row := sink.bgTasks[termID]
 	sink.bgTasksMu.Unlock()
-	assert.True(t, row.Status.IsTerminal())
+	assert.True(t, row.Status.IsFinished())
 }
 
 func TestACPTerminal_DefaultCwdFromWorkingDir(t *testing.T) {

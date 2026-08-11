@@ -18,7 +18,7 @@ import (
 )
 
 // MaxTasks caps how many rows OF EACH KIND an agent's background-task registry
-// ships to clients and holds in memory. Terminal rows are evicted past this cap
+// ships to clients and holds in memory. Finished rows are evicted past this cap
 // (oldest first); active rows are never evicted. Matches the agent_todos
 // guardrail.
 //
@@ -116,10 +116,10 @@ const (
 	StatusInterrupted
 )
 
-// IsTerminal reports whether s is a terminal status -- one that makes a row
+// IsFinished reports whether s is a final status -- one that makes a row
 // eligible for cap-eviction. Pending and Running rows are never evicted; they
-// only leave through a terminal transition.
-func (s Status) IsTerminal() bool {
+// only leave through a transition into a final status.
+func (s Status) IsFinished() bool {
 	return s == StatusCompleted || s == StatusFailed || s == StatusStopped || s == StatusInterrupted
 }
 

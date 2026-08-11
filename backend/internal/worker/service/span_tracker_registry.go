@@ -29,7 +29,7 @@ const (
 // # Lifecycle
 //
 // A child tracker is created on the first ChildSink(childID) call and deleted
-// on CleanupChildAgent(childID) (a single child's terminal close) or
+// on CleanupChildAgent(childID) (a single child's closing update) or
 // CleanupChildAgents (the root-close batch). A root tracker is created on
 // NewSink and deleted on CleanupAgent.
 //

@@ -99,11 +99,11 @@ func TestBgTask_UpdateStatusTransitions(t *testing.T) {
 	assert.Equal(t, "running Bash", rows[0].ActiveForm)
 }
 
-// TestBgTask_UpdateStatusTerminalStampsEndedAt verifies that a terminal status
+// TestBgTask_UpdateStatusFinalStampsEndedAt verifies that a final status
 // transition via UpdateBackgroundTaskStatus (the path providers actually call
 // before CloseBackgroundTask) stamps ended_at. The old code left ended_at NULL
-// forever because CloseBackgroundTask early-returned on IsTerminal().
-func TestBgTask_UpdateStatusTerminalStampsEndedAt(t *testing.T) {
+// forever because CloseBackgroundTask early-returned on IsFinished().
+func TestBgTask_UpdateStatusFinalStampsEndedAt(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupBgTaskTest(t)
@@ -117,11 +117,11 @@ func TestBgTask_UpdateStatusTerminalStampsEndedAt(t *testing.T) {
 	assert.True(t, rows[0].EndedAt.Valid, "terminal status update stamps ended_at")
 }
 
-// TestBgTask_UpdateStatusMonotonicOnTerminal verifies that a non-terminal
-// status update on an already-terminal row does NOT resurrect it. A late or
+// TestBgTask_UpdateStatusMonotonicOnFinal verifies that a non-final
+// status update on an already-finished row does NOT resurrect it. A late or
 // replayed task_progress (carrying Running) arriving after a close must leave
 // the row terminal, or it pins the parent's thinking indicator forever.
-func TestBgTask_UpdateStatusMonotonicOnTerminal(t *testing.T) {
+func TestBgTask_UpdateStatusMonotonicOnFinal(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupBgTaskTest(t)
@@ -137,10 +137,10 @@ func TestBgTask_UpdateStatusMonotonicOnTerminal(t *testing.T) {
 	assert.True(t, rows[0].EndedAt.Valid, "ended_at stays stamped")
 }
 
-// TestBgTask_UpsertMonotonicOnTerminal verifies that a non-terminal UPSERT on
-// an already-terminal row does NOT resurrect it (the replay-resurrection path
+// TestBgTask_UpsertMonotonicOnFinal verifies that a non-final UPSERT on
+// an already-finished row does NOT resurrect it (the replay-resurrection path
 // after a worker restart, where replayed running rows hit the upsert).
-func TestBgTask_UpsertMonotonicOnTerminal(t *testing.T) {
+func TestBgTask_UpsertMonotonicOnFinal(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupBgTaskTest(t)
@@ -160,7 +160,7 @@ func TestBgTask_UpsertMonotonicOnTerminal(t *testing.T) {
 
 // TestBgTask_PartialUpsertPreservesExistingFields verifies that a partial upsert
 // (one that omits fields a previous upsert set) does NOT blank them. The old
-// full-row replace wiped titles/groups on a terminal output_file write. Only
+// full-row replace wiped titles/groups on a final-status output_file write. Only
 // ChildAgentID was guarded; the fix extends the blank-means-keep rule to every
 // descriptive field.
 func TestBgTask_PartialUpsertPreservesExistingFields(t *testing.T) {
@@ -226,7 +226,7 @@ func TestBgTask_CloseStampsEndedAt(t *testing.T) {
 }
 
 // TestBgTask_CloseIsIdempotentOnTerminalRow verifies a second close on an
-// already-terminal row is a no-op (CloseAgentBackgroundTask only closes active
+// already-finished row is a no-op (CloseAgentBackgroundTask only closes active
 // rows). The ended_at and status must not change.
 func TestBgTask_CloseIsIdempotentOnTerminalRow(t *testing.T) {
 	t.Parallel()
@@ -296,7 +296,7 @@ func TestBgTask_CapNoTerminalEvictsOldestActive(t *testing.T) {
 	}
 	require.Len(t, listRows(), bgtask.MaxTasks)
 
-	// Insert one more at the cap with no terminal row: the oldest ACTIVE row
+	// Insert one more at the cap with no finished row: the oldest ACTIVE row
 	// (task-1) is evicted so the new spawn links instead of being dropped --
 	// dropping would orphan an already-created child agent row.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
@@ -340,7 +340,7 @@ func TestBgTask_CapAllActiveLinkedPreservesChildLinkage(t *testing.T) {
 		}))
 	}
 
-	// Insert one more at the cap with no terminal row: every active row is
+	// Insert one more at the cap with no finished row: every active row is
 	// linked, so the cap is exceeded rather than orphaning a steerable child.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey:       "task-new",
@@ -364,7 +364,7 @@ func TestBgTask_CapAllActiveLinkedPreservesChildLinkage(t *testing.T) {
 }
 
 // TestBgTask_CapAllActiveEvictsOldestUnlinked verifies that when the cap is hit
-// with no terminal row and SOME active rows are unlinked, eviction takes the
+// with no finished row and SOME active rows are unlinked, eviction takes the
 // oldest UNLINKED row (not the oldest linked one), preserving child steerability.
 func TestBgTask_CapAllActiveEvictsOldestUnlinked(t *testing.T) {
 	t.Parallel()
@@ -458,7 +458,7 @@ func TestBgTask_RenameOnColdCacheRekeysDBRow(t *testing.T) {
 	// Simulate a worker restart: the DB row survives, the in-memory cache is gone.
 	svc.Output.bgtasks.Delete("agent-cold")
 
-	// A terminal update that renames spawn-key -> sess-stable is the first
+	// A final update that renames spawn-key -> sess-stable is the first
 	// registry touch on the fresh cache.
 	require.NoError(t, sink.RenameBackgroundTask("spawn-key", "sess-stable"))
 
@@ -663,7 +663,7 @@ func TestBgTask_CapIsPerKind(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupBgTaskTest(t)
-	// Fill the SUBAGENT pool with terminal rows (the eviction-eligible kind).
+	// Fill the SUBAGENT pool with finished rows (the eviction-eligible kind).
 	for i := 1; i <= bgtask.MaxTasks; i++ {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 			RowKey: fmt.Sprintf("agent-%d", i),
@@ -689,7 +689,7 @@ func TestBgTask_CapIsPerKind(t *testing.T) {
 	assert.Contains(t, keys, "shell-1")
 }
 
-// The shell pool evicts its own oldest terminal row once IT is full, and still
+// The shell pool evicts its own oldest finished row once IT is full, and still
 // leaves the subagent pool untouched.
 func TestBgTask_ShellPoolEvictsShellsOnly(t *testing.T) {
 	t.Parallel()

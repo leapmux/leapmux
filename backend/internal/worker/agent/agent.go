@@ -217,7 +217,7 @@ type OutputSink interface {
 	PersistNotification(source leapmuxv1.MessageSource, content []byte) (broadcast bool, err error)
 	// PersistTurnEnd persists the agent's turn-end divider envelope and
 	// fires the sink-level git-status auto-broadcast. Each provider's
-	// terminal envelope (Claude type:"result", Codex turn/completed,
+	// closing envelope (Claude type:"result", Codex turn/completed,
 	// ACP prompt response, Pi agent_end) routes here so that turn-end-
 	// specific side effects are explicit at the call site.
 	PersistTurnEnd(content []byte, span SpanInfo) error
@@ -311,8 +311,8 @@ type OutputSink interface {
 	UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error
 	CloseBackgroundTask(rowKey string, status bgtask.Status) error
 	// RenameBackgroundTask atomically re-keys a row from oldKey to newKey,
-	// preserving its status, child linkage, and terminal state. Used when a
-	// provider learns the stable child id only on the terminal update (OpenCode:
+	// preserving its status, child linkage, and final state. Used when a
+	// provider learns the stable child id only on the final update (OpenCode:
 	// the row opens under the toolCallId and the session id surfaces late). A
 	// no-op when oldKey is absent or newKey is empty.
 	RenameBackgroundTask(oldKey, newKey string) error

@@ -37,13 +37,13 @@ func TestKindWireRoundTrip(t *testing.T) {
 }
 
 func TestStatusIsTerminal(t *testing.T) {
-	terminal := []Status{StatusCompleted, StatusFailed, StatusStopped, StatusInterrupted}
+	finished := []Status{StatusCompleted, StatusFailed, StatusStopped, StatusInterrupted}
 	active := []Status{StatusPending, StatusRunning}
-	for _, s := range terminal {
-		assert.True(t, s.IsTerminal(), "%d should be terminal", s)
+	for _, s := range finished {
+		assert.True(t, s.IsFinished(), "%d should be final", s)
 	}
 	for _, s := range active {
-		assert.False(t, s.IsTerminal(), "%d should NOT be terminal", s)
+		assert.False(t, s.IsFinished(), "%d should NOT be final", s)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestItemToProto(t *testing.T) {
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING, p.GetStatus())
 	assert.Empty(t, p.GetEndedAt(), "zero EndedAt renders as empty")
 
-	// Shell kind + terminal status.
+	// Shell kind + final status.
 	shell := Item{RowKey: "sh-1", Kind: KindShell, Status: StatusCompleted, EndedAt: now}
 	sp := shell.ToProto()
 	assert.Equal(t, leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, sp.GetKind())

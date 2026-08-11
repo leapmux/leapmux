@@ -131,7 +131,7 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 
 // openCodeSubagentFromToolCallUpdate closes the registry row on a terminal
 // status, and when rawOutput.metadata.sessionId is present, re-keys the row to
-// the child session id (the metadata surfaces only on the terminal update).
+// the child session id (the metadata surfaces only on the final update).
 // The spawn row was opened under the toolCallId, so SpawnRowKey carries it to
 // keep the close from leaking it as a Running row.
 func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
@@ -139,17 +139,17 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 		// Not terminal: this is where Kilo first reveals the spawn shape (its
 		// tool_call carries `rawInput: {}`), so run the same detection here.
 		// Without it a Kilo spawn produced no registry row at all -- the
-		// terminal update below then closed a row that was never opened.
+		// final update below then closed a row that was never opened.
 		//
 		// A spawn-shaped update that arrives AFTER the terminal one re-creates
-		// the row: the terminal update renames the key to the child session id,
+		// the row: the final update renames the key to the child session id,
 		// so this upsert finds nothing under the toolCallId and inserts a fresh
 		// Running row that no later event closes. Two things keep that off the
 		// live path -- readOutput dispatches notifications inline on one
 		// goroutine, so the transport neither reorders nor duplicates, and a
-		// `session/load` history replay redelivers the terminal update too, which
+		// `session/load` history replay redelivers the final update too, which
 		// renames and closes the re-created row again. The gap is a replay that
-		// is truncated before its terminal update; closing it needs the registry
+		// is truncated before its final update; closing it needs the registry
 		// to remember retired keys, which is not worth the state until such a
 		// replay is observed.
 		return openCodeSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput)
@@ -165,7 +165,7 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 		}
 		if json.Unmarshal(tcu.RawOutput, &out) == nil && out.Metadata.SessionID != "" {
 			// Rename the spawn row (toolCallId) to the child session id so one
-			// row tracks the lifecycle, then terminalize it.
+			// row tracks the lifecycle, then give a final status to it.
 			rowKey = out.Metadata.SessionID
 			renameFrom = tcu.ToolCallID
 		}
@@ -173,7 +173,7 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 	return &acpSubagentObservation{
 		RowKey:     rowKey,
 		RenameFrom: renameFrom,
-		Status:     acpTerminalStatus(tcu.Status),
+		Status:     acpFinalStatus(tcu.Status),
 		CloseRow:   true,
 		Mode:       acpModeCloseOnly,
 	}

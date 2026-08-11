@@ -47,7 +47,7 @@ type claudeTaskUsage struct {
 //     Workflow runs (local_workflow).
 //   - task_progress {task_id, description, last_tool_name?, usage?, workflow_progress?}
 //   - task_notification {task_id, tool_use_id, status, summary, output_file, usage?}
-//     is terminal and fires for foreground Tasks too.
+//     is final and fires for foreground Tasks too.
 //   - task_updated {task_id, patch:{status,end_time}} is redundant with the
 //     notification; consumed as a no-op refresh.
 //   - background_tasks_changed is Claude's own bg-shell list push; redundant
@@ -102,7 +102,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		a.taskToolUse[ev.TaskID] = ev.ToolUseID
 		a.toolUseTask[ev.ToolUseID] = ev.TaskID
 	}
-	// A terminal result that arrived before this (reordered) task_started left
+	// A final result that arrived before this (reordered) task_started left
 	// a pending close keyed by the spawn span. Take it now and close the row
 	// this upsert is about to open, so the row cannot leak Running.
 	var pendingEnd bgtask.Status
@@ -166,7 +166,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		}
 	}
 
-	// Apply a pending terminal close from a result that arrived before this
+	// Apply a pending close from a result that arrived before this
 	// (reordered) task_started. The upsert above opened a Running row; close it
 	// now so it cannot leak. forgetTaskIndex mirrors the normal result path.
 	if hasPending {
@@ -201,7 +201,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	if ev.TaskID == "" {
 		return
 	}
-	// An unrecognized status must NOT terminalize the row. The map returns the
+	// An unrecognized status must NOT give a final status to the row. The map returns the
 	// zero value StatusPending on a miss; closing with it writes a Running row
 	// to status='pending' with ended_at set (active+ended) and pins the parent's
 	// thinking indicator. Ignore statuses the map does not know.
@@ -403,7 +403,7 @@ func (a *ClaudeCodeAgent) taskIDForToolUse(toolUseID string) string {
 }
 
 // forgetTaskIndex drops the task_id <-> tool_use_id pair from both directions
-// of the index. Called when a task reaches a terminal state via either a
+// of the index. Called when a task reaches a final state via either a
 // task_notification or the result-message fallback, so a task that ends
 // without a notification does not leak its index entries for the agent's life.
 func (a *ClaudeCodeAgent) forgetTaskIndex(taskID string) {
@@ -418,7 +418,7 @@ func (a *ClaudeCodeAgent) forgetTaskIndex(taskID string) {
 	}
 }
 
-// recordPendingTaskEnd remembers a terminal status for a Task subagent whose
+// recordPendingTaskEnd remembers a final status for a Task subagent whose
 // result message arrived before its task_started (a reorder). The late
 // task_started takes the entry and closes the row it opens, so the row cannot
 // leak Running. Keyed by the spawn tool_use id (the parent_tool_use_id every

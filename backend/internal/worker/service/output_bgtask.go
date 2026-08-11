@@ -21,7 +21,7 @@ import (
 
 // bgTaskCache is the in-memory mirror of one root agent's background-task
 // registry, built on the shared registryCache mechanics. The type-specific
-// ops (list query, key/terminal/seq extractors, delete query) live in
+// ops (list query, key/finished/seq extractors, delete query) live in
 // bgTaskOps, built once per OutputHandler.
 type bgTaskCache = registryCache[bgtask.Item]
 
@@ -69,8 +69,8 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		},
 		keyOf:  func(r bgtask.Item) string { return r.RowKey },
 		setKey: func(r *bgtask.Item, key string) { r.RowKey = key },
-		isTerminal: func(r bgtask.Item) bool {
-			return r.Status.IsTerminal()
+		isFinished: func(r bgtask.Item) bool {
+			return r.Status.IsFinished()
 		},
 		deleteByKey: func(ctx context.Context, ownerID, key string) error {
 			_, err := h.queries.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
@@ -191,12 +191,12 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 		return registryChange{rows: cache.snapshot()}, nil
 	}
 	existing := cache.Rows[idx]
-	// A terminal status is monotonic and absorbing: a late or replayed
-	// non-terminal status update (a duplicate task_progress, a replayed
+	// A final status is monotonic and absorbing: a late or replayed
+	// non-final status update (a duplicate task_progress, a replayed
 	// running upsert) must not resurrect a row that already reached a
-	// terminal state. Without this guard the row flips back to running and
+	// final state. Without this guard the row flips back to running and
 	// pins the parent's thinking indicator forever (no later close arrives).
-	if existing.Status.IsTerminal() && !status.IsTerminal() {
+	if existing.Status.IsFinished() && !status.IsFinished() {
 		return registryChange{rows: cache.snapshot()}, nil
 	}
 	if existing.Status == status && existing.ActiveForm == activeForm {
@@ -215,15 +215,15 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 	}); err != nil {
 		return registryChange{}, err
 	}
-	// A terminal transition stamps ended_at. The status-update query does not
+	// A transition into a final status stamps ended_at. The status-update query does not
 	// (sqlc cannot infer the type of a positional parameter inside a CASE WHEN,
 	// so the atomic single-statement form is not generatable), so a dedicated
 	// idempotent query does it. The stamp's WHERE filters `ended_at IS NULL AND
-	// status IN (terminal)`, so it only writes on a genuine transition. On a
+	// status IN (the final statuses)`, so it only writes on a genuine transition. On a
 	// transient DB error the cache leaves EndedAt zero (mirroring the DB's NULL)
 	// and the error propagates so the caller sees the incomplete transition;
-	// the idempotent stamp can be retried by any later terminal update.
-	if status.IsTerminal() {
+	// the idempotent stamp can be retried by any later final update.
+	if status.IsFinished() {
 		if err := h.queries.StampAgentBackgroundTaskEndedAt(ctx, db.StampAgentBackgroundTaskEndedAtParams{
 			EndedAt:      sqltime.SQLiteNullTimeOf(now),
 			OwnerAgentID: rootAgentID,
@@ -241,7 +241,7 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 	// The guards above already excluded an already-final row, so reaching here
 	// with a final status IS the active -> final transition for this row.
 	var endedChildID string
-	if status.IsTerminal() {
+	if status.IsFinished() {
 		endedChildID = cache.Rows[idx].ChildAgentID
 	}
 	return registryChange{
@@ -267,7 +267,7 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, sta
 	if idx < 0 {
 		return registryChange{rows: cache.snapshot()}, nil
 	}
-	if cache.Rows[idx].Status.IsTerminal() {
+	if cache.Rows[idx].Status.IsFinished() {
 		return registryChange{rows: cache.snapshot()}, nil
 	}
 	now := nowMillis()
@@ -331,7 +331,7 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	// a transcript that simply stops.
 	var endedChildIDs []string
 	for i := range cache.Rows {
-		if !cache.Rows[i].Status.IsTerminal() {
+		if !cache.Rows[i].Status.IsFinished() {
 			cache.Rows[i].Status = status
 			cache.Rows[i].EndedAt = now
 			cache.Rows[i].UpdatedAt = now
@@ -811,9 +811,9 @@ func (s *agentOutputSink) CloseBackgroundTask(rowKey string, status bgtask.Statu
 }
 
 // RenameBackgroundTask atomically re-keys a row from oldKey to newKey under the
-// root owner, preserving status, child linkage, and terminal state. A no-op
+// root owner, preserving status, child linkage, and final state. A no-op
 // when the old row is absent or newKey is empty. Used by ACP providers that
-// learn the stable child id only on the terminal update (OpenCode), so a single
+// learn the stable child id only on the final update (OpenCode), so a single
 // row tracks the whole lifecycle instead of a spawn row orphaned Running while
 // a separately-keyed row closes.
 //
@@ -896,22 +896,22 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		merged.CreatedAt = existing.CreatedAt
 		merged.EndedAt = existing.EndedAt
 		// Preserve descriptive fields the incoming upsert left blank so a partial
-		// upsert cannot blank a previously-set row (a terminal output_file write
+		// upsert cannot blank a previously-set row (a final-status output_file write
 		// would otherwise wipe the title). Status is exempt: callers set it
 		// deliberately, and StatusPending is a valid value, not a sentinel for
 		// "preserve".
 		merged = merged.PreservingBlanksFrom(existing)
-		// A terminal status is monotonic and absorbing: a late or replayed
-		// non-terminal upsert (a duplicate task_started, a replayed running
+		// A final status is monotonic and absorbing: a late or replayed
+		// non-final upsert (a duplicate task_started, a replayed running
 		// row after a worker restart) must not resurrect a row that reached a
-		// terminal state. Drop the non-terminal status and keep the row as-is
+		// final state. Drop the non-final status and keep the row as-is
 		// so the active-form/title refresh still lands, but the row stays
-		// terminal with its ended_at stamp intact.
-		if existing.Status.IsTerminal() && !merged.Status.IsTerminal() {
+		// final with its ended_at stamp intact.
+		if existing.Status.IsFinished() && !merged.Status.IsFinished() {
 			merged.Status = existing.Status
 			merged.EndedAt = existing.EndedAt
-		} else if merged.Status.IsTerminal() && !existing.Status.IsTerminal() {
-			// A transition into a terminal status stamps ended_at.
+		} else if merged.Status.IsFinished() && !existing.Status.IsFinished() {
+			// A transition into a final status stamps ended_at.
 			merged.EndedAt = now
 			endedChildID = merged.ChildAgentID
 		}
@@ -925,12 +925,12 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	} else if bucket := bgtask.KindWire(merged.Kind); cache.atCapForBucket(bucket) {
 		// Scoped to the incoming row's kind, so making room for a shell never
 		// deletes a subagent (and the reverse).
-		evicted, err := cache.evictOldestTerminalInBucketLocked(ctx, rootAgentID, bucket)
+		evicted, err := cache.evictOldestFinishedInBucketLocked(ctx, rootAgentID, bucket)
 		if err != nil {
 			return registryChange{}, err
 		}
 		if !evicted {
-			// At the cap with no terminal row to evict. Dropping the new row
+			// At the cap with no finished row to evict. Dropping the new row
 			// would orphan an already-created child agent row (EnsureChildAgent
 			// inserts the child before this upsert links it), leaving an
 			// unopenable transcript. Evict an older row instead. Prefer the
@@ -941,7 +941,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 			// is linked to a child transcript, exceed the cap rather than
 			// orphan a steerable child -- the cap is a soft bound to protect
 			// the child-linkage invariant.
-			slog.Warn("background task registry at cap with no terminal row; evicting oldest unlinked active row",
+			slog.Warn("background task registry at cap with no finished row; evicting oldest unlinked active row",
 				"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks)
 			evictIdx := -1
 			for i, r := range cache.Rows {
@@ -964,11 +964,11 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		merged.CreatedAt = now
 		// A row that is born final never had an active phase, so it ends its
 		// child transcript here -- the only transition it will ever have.
-		if merged.Status.IsTerminal() {
+		if merged.Status.IsFinished() {
 			endedChildID = merged.ChildAgentID
 		}
 	}
-	if merged.Status.IsTerminal() && merged.EndedAt.IsZero() {
+	if merged.Status.IsFinished() && merged.EndedAt.IsZero() {
 		merged.EndedAt = now
 	}
 	if err := h.queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{

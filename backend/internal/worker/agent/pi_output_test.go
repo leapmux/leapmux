@@ -921,7 +921,7 @@ func TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry(t *testin
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status,
 		"subagent-notification with a terminal status must close the registry row")
-	assert.True(t, tasks[0].Status.IsTerminal())
+	assert.True(t, tasks[0].Status.IsFinished())
 
 	// The message STILL persisted to the parent transcript (alongside the
 	// tool_execution_start message). The notification must be the final

@@ -574,7 +574,7 @@ func (svc *Service) RestoreState() {
 
 // HandleAgentProcessExit is the ExitHandler body: it clears the exited
 // process's pending control requests (so request_ids bound to it don't reappear
-// stale on resume) and terminalizes its background-task registry (stopped on an
+// stale on resume) and gives it a final status its background-task registry (stopped on an
 // explicit Stop, interrupted on a crash). It fires for every exit including a
 // relaunch's old-process stop; stopAndWait serializes this hook before a new
 // process registers, so fresh spawns can never be clobbered.
@@ -583,7 +583,7 @@ func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopp
 	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
 }
 
-// Shutdown persists in-memory terminal state to the database so it
+// Shutdown persists in-memory final state to the database so it
 // survives a worker restart. Call this before stopping the terminal
 // manager (which clears in-memory state). Callers must have already
 // stopped dispatching new OpenAgent/OpenTerminal/CloseAgent/CloseTerminal

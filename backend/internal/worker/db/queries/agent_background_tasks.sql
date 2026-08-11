@@ -47,7 +47,7 @@ WHERE owner_agent_id = ? AND row_key = ?;
 -- terminal but still has a NULL ended_at. This covers the status-update path:
 -- providers call UpdateBackgroundTaskStatus(terminal) then CloseBackgroundTask,
 -- but the close early-returns on IsTerminal(), so ended_at was never stamped.
--- The status filter makes this idempotent (only terminal rows qualify), so a
+-- The status filter makes this idempotent (only finished rows qualify), so a
 -- transient failure here self-corrects on the next terminal write (or the boot
 -- sweep): the status is already terminal in both DB and cache, and a NULL
 -- ended_at reads back as the zero time, matching the cache's untouched value.
@@ -64,8 +64,8 @@ WHERE owner_agent_id = ? AND row_key = ?
   AND ended_at IS NULL
   AND status IN ('completed','failed','stopped','interrupted');
 
--- CloseAgentBackgroundTask stamps the terminal status and ended_at. The
--- status-IN filter means a terminal row can never be resurrected or re-closed
+-- CloseAgentBackgroundTask stamps the final status and ended_at. The
+-- status-IN filter means a finished row can never be resurrected or re-closed
 -- by a late/duplicate event.
 -- name: CloseAgentBackgroundTask :exec
 UPDATE agent_background_tasks SET
@@ -79,7 +79,7 @@ DELETE FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
 
 -- RenameAgentBackgroundTask re-keys a row (owner_agent_id, old_row_key) to
 -- new_row_key. The row_key is the provider linkage key; a provider that learns
--- the stable child id only on the terminal update (OpenCode: the row opens under
+-- the stable child id only on the final update (OpenCode: the row opens under
 -- the toolCallId and the session id surfaces late) renames so a single row
 -- tracks the whole lifecycle instead of a spawn row + a separately-keyed row.
 -- No status-IN guard: a rename is key-only and applies to any row state.
@@ -91,7 +91,7 @@ UPDATE agent_background_tasks SET row_key = ? WHERE owner_agent_id = ? AND row_k
 -- name: GetAgentBackgroundTaskByChildAgentID :one
 SELECT * FROM agent_background_tasks WHERE child_agent_id = ?;
 
--- MarkAgentBackgroundTasksEnded terminalizes every still-active row owned by
+-- MarkAgentBackgroundTasksEnded gives it a final status every still-active row owned by
 -- an agent (used on clean process exit). Returns the affected-row count so the
 -- caller can skip the broadcast when nothing moved.
 -- name: MarkAgentBackgroundTasksEnded :execrows

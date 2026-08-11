@@ -11,8 +11,8 @@ import (
 // mirror backed by a DB table (agent_todos and agent_background_tasks). Both
 // registries need the same cold-start seed, the same snapshot-for-broadcast
 // copy, the same linear index lookup, and the same cap-driven eviction of the
-// oldest terminal row. The type-specific parts (the list query, the row-to-item
-// projection, the key/terminal/seq extractors, and the delete-by-key query) are
+// oldest finished row. The type-specific parts (the list query, the row-to-item
+// projection, the key/finished/seq extractors, and the delete-by-key query) are
 // supplied by registryOps so the mechanics live in exactly one place.
 //
 // The cache is NOT safe for concurrent use by itself; each instance carries its
@@ -46,8 +46,8 @@ type registryOps[T any] struct {
 	keyOf func(T) string
 	// setKey sets the registry key on a stored row (in place) for a rename.
 	setKey func(*T, string)
-	// isTerminal reports whether a stored row is terminal (eligible for eviction).
-	isTerminal func(T) bool
+	// isFinished reports whether a stored row is final (eligible for eviction).
+	isFinished func(T) bool
 	// deleteByKey deletes the persisted row for `key` under `ownerID`.
 	deleteByKey func(ctx context.Context, ownerID string, key string) error
 	// cap is the maximum number of rows the registry holds IN ONE POOL. With
@@ -104,7 +104,7 @@ func (c *registryCache[T]) ensureSeededLocked(ctx context.Context, ownerID strin
 			maxSeq = e.seq
 		}
 	}
-	// Eviction physically deletes the oldest terminal row, leaving the remaining
+	// Eviction physically deletes the oldest finished row, leaving the remaining
 	// seqs sparse. A len(rows)+1 start would collide with the highest surviving
 	// seq on the next insert, so derive from the actual max.
 	c.nextSeq = maxSeq + 1
@@ -125,20 +125,20 @@ func (c *registryCache[T]) indexOf(key string) int {
 	return slices.IndexFunc(c.Rows, func(r T) bool { return c.ops.keyOf(r) == key })
 }
 
-// evictOldestTerminalLocked removes the first terminal row (by slice order) from
+// evictOldestFinishedLocked removes the first finished row (by slice order) from
 // the cache and DB to make room under the cap. Returns false (no error) when no
-// terminal row exists. Caller must hold c.Mu.
-func (c *registryCache[T]) evictOldestTerminalLocked(ctx context.Context, ownerID string) (bool, error) {
-	return c.evictOldestTerminalInBucketLocked(ctx, ownerID, "")
+// finished row exists. Caller must hold c.Mu.
+func (c *registryCache[T]) evictOldestFinishedLocked(ctx context.Context, ownerID string) (bool, error) {
+	return c.evictOldestFinishedInBucketLocked(ctx, ownerID, "")
 }
 
-// evictOldestTerminalInBucketLocked is evictOldestTerminalLocked scoped to one
+// evictOldestFinishedInBucketLocked is evictOldestFinishedLocked scoped to one
 // cap pool, so making room for a shell row never deletes a subagent's. With a
 // single-pool registry (bucketOf nil) every row is in bucket "" and this is the
 // unscoped behaviour. Caller must hold c.Mu.
-func (c *registryCache[T]) evictOldestTerminalInBucketLocked(ctx context.Context, ownerID, bucket string) (bool, error) {
+func (c *registryCache[T]) evictOldestFinishedInBucketLocked(ctx context.Context, ownerID, bucket string) (bool, error) {
 	evictIdx := slices.IndexFunc(c.Rows, func(r T) bool {
-		return c.inBucket(r, bucket) && c.ops.isTerminal(r)
+		return c.inBucket(r, bucket) && c.ops.isFinished(r)
 	})
 	if evictIdx < 0 {
 		return false, nil

@@ -2017,7 +2017,7 @@ func (svc *Service) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan 
 // prologue: rolls back any partial git-mode mutation, persists the
 // error, broadcasts STARTUP_FAILED, and marks the registry failed. The
 // shared `failStartup` enforces the ordering (DB before broadcast
-// before registry) so observers see a durable terminal state.
+// before registry) so observers see a durable final state.
 func (svc *Service) failAgentStartup(dbAgent *db.Agent, gm gitModeResult, cause error, gitStatus *leapmuxv1.AgentGitStatus, h *startupEntry) {
 	svc.failStartup(gm, cause, svc.agentStartupCallbacks(dbAgent, gitStatus, h))
 }

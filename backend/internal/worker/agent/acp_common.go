@@ -1477,15 +1477,15 @@ const (
 	// detector that carries descriptive fields (spawn, tool-request, progress).
 	acpModeUpsert acpObservationMode = iota
 	// acpModeCloseOnly skips the upsert and closes an existing row without first
-	// creating one. Used by terminal-update detectors that fire for EVERY
-	// tool_call (Goose, Cursor), so a plain tool's terminal update does not
+	// creating one. Used by closing-update detectors that fire for EVERY
+	// tool_call (Goose, Cursor), so a plain tool's final update does not
 	// create a spurious subagent row.
 	acpModeCloseOnly
 )
 
 // acpSubagentObservation is the neutral struct a provider-specific hook
 // produces: registry upsert data (kind/rowKey/title/activity/status/group), an
-// optional terminal close, and an optional child-transcript payload (childKey +
+// optional close, and an optional child-transcript payload (childKey +
 // raw bytes to persist). Shared code translates observations into sink calls,
 // so provider-specific names/shapes stay out of this file.
 type acpSubagentObservation struct {
@@ -1511,8 +1511,8 @@ type acpSubagentObservation struct {
 	// only on the first forwarded tool request. A provider that never links a
 	// child simply never spends it; the entry is dropped when the row closes.
 	Prompt string
-	// CloseRow true => terminalize the row after the upsert (Status carries
-	// the terminal status).
+	// CloseRow true => give a final status to the row after the upsert (Status carries
+	// the final status).
 	CloseRow bool
 	// Mode selects close-only vs upsert. Defaults to acpModeUpsert (zero value);
 	// set acpModeCloseOnly explicitly when the observation carries no descriptive
@@ -1520,8 +1520,8 @@ type acpSubagentObservation struct {
 	Mode acpObservationMode
 	// RenameFrom, when set, renames the existing row from RenameFrom to RowKey
 	// BEFORE the close. A provider that opens a row under one key and learns the
-	// stable child id only on the terminal update (OpenCode opens under the
-	// toolCallId, learns the session id on the terminal update) sets RenameFrom
+	// stable child id only on the final update (OpenCode opens under the
+	// toolCallId, learns the session id on the final update) sets RenameFrom
 	// so the single row tracks the whole lifecycle. The alternative -- upserting
 	// a second row under RowKey and separately closing RenameFrom -- leaks the
 	// spawn row if the close is ever missed and splits one task across two keys.
@@ -1546,7 +1546,7 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		spanType = acpUpdateToolCall
 	}
 
-	// Tool calls that arrive already terminal (completed/failed/cancelled)
+	// Tool calls that arrive already final (completed/failed/cancelled)
 	// are persisted as closing spans immediately — no open/close cycle.
 	if tc.Status == "completed" || tc.Status == "failed" || tc.Status == "cancelled" {
 		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
@@ -1585,7 +1585,7 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 
 	// Goose's tool-request meta rides content-less in_progress updates, so the
 	// subagent hook runs BEFORE the content-less early-return below. OpenCode/
-	// Kilo terminal updates close on the terminal arm below.
+	// Kilo final updates close on the final-status arm below.
 	if b.subagentFromToolCallUpdate != nil {
 		if obs := b.subagentFromToolCallUpdate(tcu); obs != nil {
 			b.applySubagentObservation(obs)
@@ -1722,7 +1722,7 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 	if obs == nil || obs.RowKey == "" || b.sink == nil {
 		return
 	}
-	// Resolve the child agent id once so both the upsert and the terminal close
+	// Resolve the child agent id once so both the upsert and the closing update
 	// can use it. Only the spawn observation carries ChildAgentKey; a close-only
 	// observation leaves it empty (the linkage persists in the registry row from
 	// spawn time, and the cleanup defers to root close for that path).
@@ -1789,7 +1789,7 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 		}
 		// Rename the spawn row to the final key first, so one row tracks the
 		// whole lifecycle. A no-op when RenameFrom is empty or matches RowKey.
-		// The rename runs before the close so the terminal status lands on the
+		// The rename runs before the close so the final status lands on the
 		// single renamed row.
 		if obs.RenameFrom != "" && obs.RenameFrom != obs.RowKey {
 			if err := b.sink.RenameBackgroundTask(obs.RenameFrom, obs.RowKey); err != nil {
@@ -1809,9 +1809,9 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 	}
 }
 
-// acpTerminalStatus maps an ACP tool_call status to the registry terminal
+// acpFinalStatus maps an ACP tool_call status to the registry final
 // status. Unknown values fall through to Stopped (treat as cancelled).
-func acpTerminalStatus(s string) bgtask.Status {
+func acpFinalStatus(s string) bgtask.Status {
 	switch s {
 	case "completed":
 		return bgtask.StatusCompleted

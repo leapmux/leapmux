@@ -1440,7 +1440,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
-	// Inject a transient (non-terminal) store error inside the issuance
+	// Inject a transient (non-final) store error inside the issuance
 	// transaction so token creation rolls back. Consume runs inside the
 	// transaction; TouchPoll runs outside it, so last_polled_at must survive.
 	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, string) (int64, error) {

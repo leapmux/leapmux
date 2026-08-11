@@ -2009,7 +2009,7 @@ func TestHandleOutput_TaskProgressUpdatesActivityOnly(t *testing.T) {
 }
 
 // TestHandleOutput_TaskNotificationClosesRegistryEntry verifies that a
-// task_notification transitions the registry row to the terminal status mapped
+// task_notification transitions the registry row to the final status mapped
 // from the wire status (completed/failed/stopped) and closes it.
 func TestHandleOutput_TaskNotificationClosesRegistryEntry(t *testing.T) {
 	t.Parallel()
@@ -2041,14 +2041,14 @@ func TestHandleOutput_TaskNotificationClosesRegistryEntry(t *testing.T) {
 			require.Len(t, tasks, 1, "notification must close the existing row, not add a new one")
 			assert.Equal(t, tc.wantStatus, tasks[0].Status,
 				"wire status %q maps to %v", tc.wireStatus, tc.wantStatus)
-			assert.True(t, tasks[0].Status.IsTerminal(), "notification status must be terminal")
+			assert.True(t, tasks[0].Status.IsFinished(), "notification status must be final")
 		})
 	}
 }
 
 // TestHandleOutput_TaskNotificationUnknownStatusLeavesRowRunning verifies that a
 // task_notification carrying a status the map does not recognize does NOT
-// terminalize the row. An unrecognized status must not close a running task
+// give a final status to the row. An unrecognized status must not close a running task
 // (the zero-value StatusPending would otherwise write an active+ended row).
 func TestHandleOutput_TaskNotificationUnknownStatusLeavesRowRunning(t *testing.T) {
 	t.Parallel()

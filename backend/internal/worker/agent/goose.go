@@ -46,7 +46,7 @@ func StartGooseCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 			a.effortConfigID = GooseConfigThinkingEffort
 			// Subagent tool-request observations: Goose surfaces tool REQUESTS
 			// (never results) over ACP via _meta.toolNotification, so the hook
-			// runs on tool_call_update. The spawn tool_call's terminal update
+			// runs on tool_call_update. The spawn tool_call's final update
 			// closes the registry row. The spawn tool_call itself carries
 			// _meta.goose.toolCall {toolName:"delegate", extensionName:"summon"}.
 			a.subagentFromToolCall = gooseSubagentFromToolCall
@@ -130,23 +130,23 @@ func gooseDelegateInstructions(rawInput json.RawMessage) string {
 // params.data.type == "subagent_tool_request". Each request carries the
 // subagent_id and the tool_call name, so we upsert a running row with activity
 // "tool: <name>" and persist the raw request to the child transcript. The
-// spawn tool_call's terminal update closes the registry row.
+// spawn tool_call's final update closes the registry row.
 //
-// The registry row, the EnsureChildAgent linkage, and the terminal close all
+// The registry row, the EnsureChildAgent linkage, and the closing update all
 // key off the SPAWN toolCallId: the terminal spawn update carries only
 // toolCallId, so the row must live under that key, and ChildAgentKey must
 // match it or EnsureChildAgent would open a second row keyed by subagent_id
 // that the close never reaches.
 func gooseSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
-	// Terminal update on the spawn tool_call itself -> close the registry row.
+	// Final update on the spawn tool_call itself -> close the registry row.
 	// Goose's terminal spawn update carries no _meta, but the row was created
 	// (by the tool_call or a tool-request) under this toolCallId, so closing on
-	// the terminal update is correct. CloseRow is idempotent: a plain tool with
+	// the final update is correct. CloseRow is idempotent: a plain tool with
 	// no registry row is a no-op (the upsert path finds no row to close).
 	if tcu.Status == "completed" || tcu.Status == "failed" || tcu.Status == "cancelled" {
 		return &acpSubagentObservation{
 			RowKey:   tcu.ToolCallID,
-			Status:   acpTerminalStatus(tcu.Status),
+			Status:   acpFinalStatus(tcu.Status),
 			CloseRow: true,
 			Mode:     acpModeCloseOnly,
 		}
@@ -178,7 +178,7 @@ func gooseSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagent
 	if params.Data.Type != "subagent_tool_request" {
 		return nil
 	}
-	// Key the registry row, the child-agent linkage, AND the terminal close off
+	// Key the registry row, the child-agent linkage, AND the closing update off
 	// the SPAWN toolCallId. The terminal spawn update knows only toolCallId, so
 	// the row must live under that key; ChildAgentKey must match it too, or
 	// EnsureChildAgent would upsert a SECOND row keyed by subagent_id that the

@@ -367,7 +367,7 @@ func TestAgentToProto_RootAgentIdResolved(t *testing.T) {
 // ROOT agent tears down the whole tree: every descendant child row is stamped
 // closed_at (via ListAgentTreeIDs + CloseAgent), each descendant's span tracker
 // is cleaned up (CleanupAgent), and every still-active background-task row owned
-// by the root is terminalized as 'stopped' (MarkAgentBackgroundTasksExited with
+// by the root is give a final status tod as 'stopped' (MarkAgentBackgroundTasksExited with
 // stopped=true). This mirrors the existing child-close test but exercises the
 // ROOT close path in closeAgentTabCommon.rootTeardown/rootClose.
 func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
@@ -393,7 +393,7 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	require.GreaterOrEqual(t, len(rowsBefore), 2, "spawn row + seeded shell row")
 	hasActiveBefore := false
 	for _, r := range rowsBefore {
-		if !bgtask.StatusFromWire(r.Status).IsTerminal() {
+		if !bgtask.StatusFromWire(r.Status).IsFinished() {
 			hasActiveBefore = true
 		}
 	}
@@ -435,7 +435,7 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 		"rows are retained (not deleted) -- only terminalized")
 	for _, r := range rowsAfter {
 		status := bgtask.StatusFromWire(r.Status)
-		assert.True(t, status.IsTerminal(),
+		assert.True(t, status.IsFinished(),
 			"row %s must be terminal after root close, got %s", r.RowKey, r.Status)
 		if r.RowKey == "bg-shell-1" {
 			assert.Equal(t, bgtask.StatusStopped, status,

@@ -34,21 +34,21 @@ func TestPi_SubagentFromDetails_NilForNoStatus(t *testing.T) {
 	assert.Nil(t, piSubagentFromDetails(nil, "tc-1", "title"))
 }
 
-func TestPi_TerminalStatus(t *testing.T) {
-	s, ok := piTerminalStatus("completed")
+func TestPi_FinalStatus(t *testing.T) {
+	s, ok := piFinalStatus("completed")
 	assert.True(t, ok)
 	assert.Equal(t, bgtask.StatusCompleted, s)
-	s, ok = piTerminalStatus("error")
+	s, ok = piFinalStatus("error")
 	assert.True(t, ok)
 	assert.Equal(t, bgtask.StatusFailed, s)
-	s, ok = piTerminalStatus("stopped")
+	s, ok = piFinalStatus("stopped")
 	assert.True(t, ok)
 	assert.Equal(t, bgtask.StatusStopped, s)
-	_, ok = piTerminalStatus("running")
+	_, ok = piFinalStatus("running")
 	assert.False(t, ok)
 }
 
-func TestPi_ApplySubagentEnd_Terminal(t *testing.T) {
+func TestPi_ApplySubagentEnd_FinalStatus(t *testing.T) {
 	sink := &testSink{}
 	result := json.RawMessage(`{"status":"completed","agentId":"a-1"}`)
 	piApplySubagentEnd(sink, result, "tc-1", "title", "")
@@ -72,8 +72,8 @@ func TestPi_ApplySubagentEnd_BackgroundRekey(t *testing.T) {
 	assert.Equal(t, "child-of-tc-1", tasks[0].ChildAgentID, "re-keyed row carries child linkage")
 }
 
-// An unrecognized status must NOT terminalize the row. piApplySubagentEnd keeps
-// the row Running so a later terminal event can still close it.
+// An unrecognized status must NOT give a final status to the row. piApplySubagentEnd keeps
+// the row Running so a later final event can still close it.
 func TestPi_ApplySubagentEnd_UnrecognizedStatusStaysRunning(t *testing.T) {
 	sink := &testSink{}
 	result := json.RawMessage(`{"status":"thinking","agentId":"a-1"}`)
@@ -88,7 +88,7 @@ func TestPi_ApplySubagentEnd_FallbackRegex(t *testing.T) {
 	sink := &testSink{}
 	// A standalone "Agent ID: X" line matches the anchored regex. The row keys
 	// off the deterministic toolCallID (not the captured prose) so a later
-	// terminal event can close it. The input is a JSON-encoded string.
+	// final event can close it. The input is a JSON-encoded string.
 	piApplySubagentEnd(sink, json.RawMessage(`"Agent ID: regex-1\n"`), "tc-1", "title", "")
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
@@ -103,7 +103,7 @@ func TestPi_ApplySubagentEnd_FallbackRegexIgnoresProse(t *testing.T) {
 	assert.Empty(t, sink.BackgroundTasks(), "mid-sentence mention does not create a phantom row")
 }
 
-func TestPi_ApplySubagentNotification_Terminal(t *testing.T) {
+func TestPi_ApplySubagentNotification_FinalStatus(t *testing.T) {
 	sink := &testSink{}
 	msg, _ := json.Marshal(map[string]any{
 		"customType": "subagent-notification",
@@ -194,7 +194,7 @@ func TestPi_ApplySubagentEnd_BackgroundRekeyPersistsThePrompt(t *testing.T) {
 // Asserted on the REGISTRY ROW rather than on ChildSink's messages: ChildSink
 // creates its recording sink on demand, so the empty-message assertion alone
 // would still pass if the code wrongly created a child agent here.
-func TestPi_ApplySubagentEnd_TerminalWritesNoPrompt(t *testing.T) {
+func TestPi_ApplySubagentEnd_FinalStatusWritesNoPrompt(t *testing.T) {
 	sink := &testSink{}
 	piApplySubagentEnd(sink, json.RawMessage(`{"status":"completed","agentId":"a-1"}`), "tc-1", "title", "Write the essay.")
 	tasks := sink.BackgroundTasks()
