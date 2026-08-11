@@ -108,7 +108,7 @@ type CodexAgent struct {
 	// collabChildPrompts records the FULL spawn prompt per child thread (the
 	// title above keeps only its first line). Spent when the child transcript is
 	// created, so the subagent tab opens on the instruction it was given.
-	collabChildPrompts map[string]string
+	collabChildPrompts pendingPrompts
 	// childTurnIDs records the active turn id per child thread (for steering).
 	// Guarded by mu. Cleared on child turn/completed.
 	childTurnIDs map[string]string
@@ -380,11 +380,11 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.streamingPlan = false
 	clear(a.reasoningStreamKind)
 	// Clear the collab child index: a new thread means prior child threads are
-	// gone. Entries are otherwise only removed on terminal collab status.
+	// gone. Entries are otherwise only removed on a final collab status.
 	clear(a.collabThreadSpans)
 	clear(a.collabChildItems)
 	clear(a.collabChildTitles)
-	clear(a.collabChildPrompts)
+	a.collabChildPrompts.clear()
 	clear(a.childTurnIDs)
 	a.mu.Unlock()
 	// The thread was replaced; drop any in-flight thinking-token estimate so it
@@ -895,16 +895,12 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 		// the UI even though the CLI never reports it.
 		raw := m.SupportedReasoningEfforts
 		efforts := make([]*EffortInfo, 0, len(raw)+1)
-		efforts = append(efforts, &EffortInfo{
-			Id:          EffortAuto,
-			Name:        "Auto",
-			Description: "Let Codex decide the appropriate effort",
-		})
+		efforts = append(efforts, codexAutoEffort())
 		for i := len(raw) - 1; i >= 0; i-- {
 			e := raw[i]
 			efforts = append(efforts, &EffortInfo{
 				Id:          e.ReasoningEffort,
-				Name:        codexEffortName(e.ReasoningEffort),
+				Name:        effortLabel(e.ReasoningEffort),
 				Description: e.Description,
 			})
 		}
@@ -951,12 +947,12 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 // wrong place in every picker. TestCodexDefaultEffortsRankOrder enforces this
 // against the shared effortRank table, so a misplaced tier fails the build.
 //
-// Every tier the live CLI reports must appear here. codexEffortName is the
-// label source for the LIVE path too, so a tier that is absent renders as its
-// raw lowercase id ("ultra") next to its capitalized siblings, and the static
-// fallback offers a menu that the running session does not.
+// Every tier the live CLI reports should appear here, so the static fallback
+// offers the same menu the running session does. A tier that is absent is no
+// longer a labeling hazard: both paths resolve their label through effortLabel,
+// so an unlisted id renders capitalized like its siblings rather than raw.
 var codexDefaultEfforts = []*EffortInfo{
-	{Id: EffortAuto, Name: effortLabel(EffortAuto), Description: "Let Codex decide the appropriate effort"},
+	codexAutoEffort(),
 	effortTier("ultra"),
 	effortTier("max"),
 	effortTier(EffortXHigh),
@@ -965,6 +961,17 @@ var codexDefaultEfforts = []*EffortInfo{
 	effortTier("low"),
 	effortTier("minimal"),
 	effortTier("none"),
+}
+
+// codexAutoEffort is the LeapMux-side "auto" sentinel. The CLI never reports it,
+// so both the live catalog and the static fallback prepend this one value rather
+// than spelling the label and the description out twice.
+func codexAutoEffort() *EffortInfo {
+	return &EffortInfo{
+		Id:          EffortAuto,
+		Name:        effortLabel(EffortAuto),
+		Description: "Let Codex decide the appropriate effort",
+	}
 }
 
 var codexDefaultModels = []*ModelInfo{
@@ -1081,16 +1088,6 @@ func codexModelDisplayName(id string) string {
 		}
 	}
 	return prefix + parts[0] + " " + strings.Join(suffixParts, " ")
-}
-
-// codexEffortName returns a short human-readable label for a Codex effort ID.
-func codexEffortName(id string) string {
-	for _, e := range codexDefaultEfforts {
-		if e.Id == id {
-			return e.Name
-		}
-	}
-	return id
 }
 
 func (a *CodexAgent) handleOutput(line *parsedLine) {

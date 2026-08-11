@@ -616,7 +616,7 @@ describe('notificationThreadMetrics (height-estimate body metrics)', () => {
 
 // The worker closes a subagent transcript with one subagent_ended notification.
 // It renders as a labelled rule in the turn-end divider style, with the same
-// status glyph the Background tasks list uses for that terminal state.
+// status glyph the Background tasks list uses for that final status.
 describe('renderNotificationThread: subagent_ended', () => {
   it('labels a completed subagent', () => {
     expect(renderText([{ type: 'subagent_ended', status: 'completed' }]))

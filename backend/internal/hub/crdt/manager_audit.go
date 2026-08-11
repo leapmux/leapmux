@@ -66,7 +66,7 @@ func tombstonedTabWorkerIDs(batch *leapmuxv1.OpBatch, pre *leapmuxv1.UserCrdtSta
 //
 // This is the durable signal for "user removed a tab whose worker
 // was deleted / revoked from under them" — the CLI's
-// `agent close` / `closing update` fallback path. Without this log
+// `tab close` fallback path. Without this log
 // the only record of the cleanup is the user's stdout envelope,
 // which doesn't survive past the shell session. The hub-side
 // reconnect tab-sync covers cases where a still-alive worker
@@ -159,7 +159,7 @@ func (m *Manager) auditOrphanTabTombstones(in SubmitInput, batch *leapmuxv1.OpBa
 		}
 		if canUse(workerID, batch.GetBatchId()) {
 			// Routine close: principal can use the worker, so
-			// this is a normal `agent close` / `closing update`
+			// this is a normal `tab close`
 			// or UI-driven tombstone. Skipping these keeps the
 			// log focused on the fallback path.
 			continue

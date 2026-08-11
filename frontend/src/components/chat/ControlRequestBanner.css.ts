@@ -1,15 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 
-export const banner = style({
-  position: 'relative',
-  padding: 'var(--space-4)',
-  borderRadius: 'var(--radius-medium)',
-  border: '1px solid var(--border)',
-  borderLeft: '3px solid var(--warning)',
-  backgroundColor: 'var(--lm-warning-subtle)',
-  alignSelf: 'stretch',
-})
-
 export const questionGroup = style({
   marginBottom: 'var(--space-3)',
 })
@@ -173,11 +163,24 @@ export const controlFooter = style({
   minWidth: 0,
 })
 
+// All three zones pin their own column. Auto-placement would put a zone's column
+// at the mercy of which OTHER zones the caller passed: with `secondary` omitted,
+// an auto-placed centre becomes the first item and lands in column 1, so the
+// pagination would sit inside the left half rather than in the middle.
 export const controlFooterLeft = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
   justifyContent: 'flex-start',
+  gridColumn: 1,
+})
+
+export const controlFooterCentre = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  justifyContent: 'center',
+  gridColumn: 2,
 })
 
 export const controlFooterRight = style({

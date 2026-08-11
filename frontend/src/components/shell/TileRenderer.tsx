@@ -62,9 +62,10 @@ import { Tile } from './Tile'
 import { cleanupAfterWindowDisposal, focusTile as focusTileShared } from './tileLifecycle'
 
 /**
- * Why a non-steerable subagent's composer is dead. Shown BOTH as the hint above
- * the box and as the box's own placeholder, so the input never claims a lost
- * connection for a transcript that was never writable in the first place.
+ * Why a non-steerable subagent's composer is dead. The composer states it as the
+ * box's own placeholder, on the `[+]` menu's attach item, and on every settings
+ * submenu, so the input never claims a lost connection for a transcript that was
+ * never writable in the first place.
  */
 const SUBAGENT_NO_MESSAGES_HINT = 'This subagent doesn\'t accept messages.'
 
@@ -522,8 +523,11 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const bgTasksFor = (agentId: string) => chatStore.backgroundTasks.get(bgRootFor(agentId))
   // Scoped in the store beside the other registry-scoping rules; see
   // chipTasksFor for why a child tab must not show its parent's count.
+  // "This tab is a subagent's own transcript." One definition, because the
+  // parent link is what four separate call sites were each re-deriving.
+  const isChildAgent = (agentId: string) => !!view.getAgentTab(agentId)?.parentAgentId
   const chipTasksForTab = (agentId: string) =>
-    chipTasksFor(agentId, bgTasksFor(agentId), !!view.getAgentTab(agentId)?.parentAgentId)
+    chipTasksFor(agentId, bgTasksFor(agentId), isChildAgent(agentId))
   // What the THINKING INDICATOR reads, which is not what the chip counts.
   //
   // The registry is keyed by ROOT owner, so counting it whole answers "is any
@@ -533,7 +537,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
   // can say `finished`, which no count can express: a child whose row ended is
   // done, whatever its transcript's last message looks like.
   const indicatorWorkState = (agentId: string): TabWorkState =>
-    view.getAgentTab(agentId)?.parentAgentId
+    isChildAgent(agentId)
       ? subagentWorkState(agentId, bgTasksFor(agentId))
       : rootWorkState(bgTasksFor(agentId))
   const agentThinking = (agentId: string) => shouldShowThinkingIndicator(
@@ -773,6 +777,16 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 fetchMessageBySeq: chatStore.fetchMessageBySeq,
               })
             }
+            // One evaluation per change, and one stable array identity.
+            //
+            // `agentLifecycle` below is a plain object literal, so Solid treats
+            // it as ONE reactive unit: every read re-evaluates every field,
+            // including `thinkingTokens`, which streams many deltas per turn.
+            // Calling this twice there walked the parent chain and re-filtered
+            // the whole registry twice per delta, and each fresh array identity
+            // defeated BackgroundTaskList's own sort-and-group memo.
+            const chipTasks = createMemo(() => chipTasksForTab(agentId))
+
             const railProps = createMemo<ChatRailProps>(() => ({
               ...chatStore.getRailData(agentId),
               previewFor: railPreviewFor,
@@ -791,7 +805,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                 >
                   <ChatView
                     agentId={agentId}
-                    isChildTranscript={!!view.getAgentTab(agentId)?.parentAgentId}
+                    isChildTranscript={isChildAgent(agentId)}
                     messages={chatStore.getMessages(agentId)}
                     messageVersion={chatStore.getMessageVersion(agentId)}
                     streamingText={chatStore.streamingText.get(agentId)}
@@ -855,8 +869,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       startupError: agent()?.startupError,
                       startupMessage: agent()?.startupMessage,
                       providerLabel: agentProviderLabel(agent()?.agentProvider),
-                      backgroundTaskCount: countActiveBackgroundTasks(chipTasksForTab(agentId)),
-                      backgroundTasks: chipTasksForTab(agentId),
+                      backgroundTaskCount: countActiveBackgroundTasks(chipTasks()),
+                      backgroundTasks: chipTasks(),
                       onOpenSubagent: onOpenBackgroundTask,
                       todos: todosFor(agentId),
                     }}
@@ -1120,8 +1134,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         addFilesRef={(fn) => { addFilesRef.set(fn) }}
         addDropDataTransferRef={(fn) => { addDropDataTransferRef.set(fn) }}
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
-        disabled={subagentReadOnly()}
-        disabledHint={subagentReadOnly() ? SUBAGENT_NO_MESSAGES_HINT : undefined}
+        disabledReason={subagentReadOnly() ? SUBAGENT_NO_MESSAGES_HINT : undefined}
         focusRef={(fn) => { focusEditorRef.set(fn) }}
         controlRequests={controlStore.getRequests(agentId())}
         onControlResponse={agentOps.handleControlResponse}

@@ -21,7 +21,8 @@ export interface OptionAxisChipProps {
   /** Dispatch a change for this axis. */
   onChange?: (change: ProviderSettingChange) => void
   /** Whether the composer accepts setting changes at all. */
-  disabled?: boolean
+  /** Why the composer accepts no changes; its presence disables the options. */
+  disabledReason?: string
   /**
    * Marks a chip that the status bar drops first when the composer is narrow.
    * The responsive stylesheet hooks the resulting attribute.
@@ -42,7 +43,7 @@ export function OptionAxisChip(props: OptionAxisChipProps): JSX.Element {
       optionGroups={props.optionGroups}
       optionValues={props.optionValues}
       onChange={props.onChange}
-      disabled={props.disabled}
+      disabledReason={props.disabledReason}
       popoverClass={styles.axisPopover}
       popoverTestId={props.testIdPrefix ? `${props.testIdPrefix}-popover` : undefined}
       // The `[+]` menu renders the same group and keeps the plain

@@ -843,9 +843,9 @@ describe('sendCodexUserInputResponse', () => {
 })
 
 describe('codex settings config', () => {
-  // The provider-specific settings panel was replaced by the single
-  // AgentSettingsPanel; the provider now only declares the configuration the
-  // generic panel renders. These assertions cover the declarative shape that
+  // The provider-specific settings panel was replaced by the composer's shared
+  // settings surface (the status-bar chips and the `[+]` menu); the provider now
+  // only declares the configuration those render. These assertions cover the declarative shape that
   // used to be exercised through the deleted panel/trigger-label renderers.
   const plugin = providerFor(AgentProvider.CODEX)!
 

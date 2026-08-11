@@ -18,9 +18,14 @@ import * as styles from '../ControlRequestBanner.css'
  */
 export interface ControlActionRowProps {
   /**
-   * The left-end actions: reject, stop, stay-in-plan. Omit for a row that
-   * offers only a primary action — the zone then collapses and the grid keeps
-   * the primary action at the right end.
+   * The left-end actions that are NOT a decision on the request: Stop, YOLO.
+   *
+   * A decision button belongs in `primary`, next to the one it opposes, however
+   * it is worded — Reject, Cancel, Deny, "Stay in Plan Mode". Several providers
+   * emit their allow and deny buttons from ONE runtime list inside a connected
+   * `ButtonGroup`, so a zone split by polarity would break that segmented control
+   * and would put the same-named button at opposite ends of the row depending on
+   * which provider answered.
    */
   secondary?: JSX.Element
   /**
@@ -28,7 +33,7 @@ export interface ControlActionRowProps {
    * action. Today only the multi-question pagination uses it.
    */
   centre?: JSX.Element
-  /** The right-end actions: allow, submit, approve. */
+  /** The right-end actions: the decision on the request. */
   primary: JSX.Element
 }
 
@@ -37,7 +42,9 @@ export const ControlActionRow: Component<ControlActionRowProps> = props => (
     <Show when={props.secondary}>
       <div class={styles.controlFooterLeft}>{props.secondary}</div>
     </Show>
-    {props.centre}
+    <Show when={props.centre}>
+      <div class={styles.controlFooterCentre}>{props.centre}</div>
+    </Show>
     <div class={styles.controlFooterRight}>{props.primary}</div>
   </div>
 )

@@ -137,6 +137,11 @@ export interface DropdownMenuCheckableItemProps {
 export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps) {
   return (
     <button
+      // A <button> defaults to type="submit". This item toggles a preference, so
+      // inside a <form> the default would also submit it. The code this replaced
+      // called preventDefault() for that reason; declaring the type removes the
+      // default action instead of cancelling it at every call site.
+      type="button"
       role={props.kind === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio'}
       aria-checked={props.checked}
       disabled={props.disabled}

@@ -437,7 +437,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		// childSinks map once and delete the cheap per-agent maps per child.
 		svc.Output.ForgetChildSinks(agentID)
 		svc.Output.CleanupChildAgents(descendants)
-		// A close with no running process still gives it a final status the registry rows
+		// A close with no running process still gives the registry rows a final status
 		// as 'stopped' (a deliberate user action).
 		svc.Output.MarkAgentBackgroundTasksExited(agentID, true)
 	}

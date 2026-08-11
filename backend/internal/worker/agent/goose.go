@@ -99,7 +99,7 @@ func gooseSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
 		RowKey: tc.ToolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
-		// Goose's delegate tool names its task `instructions`, not `prompt`
+		// Goose's delegate tool puts its task text in `instructions`, not `prompt`
 		// (crates/goose/src/agents/platform_extensions/summon.rs). The child
 		// transcript is created later, on the first forwarded tool request, so
 		// applySubagentObservation holds this until then.
@@ -133,13 +133,13 @@ func gooseDelegateInstructions(rawInput json.RawMessage) string {
 // spawn tool_call's final update closes the registry row.
 //
 // The registry row, the EnsureChildAgent linkage, and the closing update all
-// key off the SPAWN toolCallId: the terminal spawn update carries only
+// key off the SPAWN toolCallId: the final spawn update carries only
 // toolCallId, so the row must live under that key, and ChildAgentKey must
 // match it or EnsureChildAgent would open a second row keyed by subagent_id
 // that the close never reaches.
 func gooseSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
 	// Final update on the spawn tool_call itself -> close the registry row.
-	// Goose's terminal spawn update carries no _meta, but the row was created
+	// Goose's final spawn update carries no _meta, but the row was created
 	// (by the tool_call or a tool-request) under this toolCallId, so closing on
 	// the final update is correct. CloseRow is idempotent: a plain tool with
 	// no registry row is a no-op (the upsert path finds no row to close).
@@ -179,7 +179,7 @@ func gooseSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagent
 		return nil
 	}
 	// Key the registry row, the child-agent linkage, AND the closing update off
-	// the SPAWN toolCallId. The terminal spawn update knows only toolCallId, so
+	// the SPAWN toolCallId. The final spawn update knows only toolCallId, so
 	// the row must live under that key; ChildAgentKey must match it too, or
 	// EnsureChildAgent would upsert a SECOND row keyed by subagent_id that the
 	// close never reaches (orphaned Running row). One Goose spawn = one child =

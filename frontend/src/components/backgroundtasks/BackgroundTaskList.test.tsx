@@ -42,21 +42,23 @@ describe('backgroundTaskList', () => {
     expect(container.querySelector(`.${styles.taskSecondary}`)!.contains(dot)).toBe(false)
   })
 
-  // A shell task's title is the command it runs, so it is set as code; every
-  // other title is prose, which hyphenates instead.
-  it('sets a shell row\'s command title in the monospace face', () => {
+  // Code type follows the PROVIDER's claim, not the row's kind. A shell row
+  // whose title is the model's prose -- Claude sends `description || command`,
+  // so most of them are -- must not be set in the monospace face.
+  it('sets a title in the monospace face only when it is a real command', () => {
     const { container } = render(() => (
       <BackgroundTaskList tasks={[
-        row({ rowKey: 'sh', kind: 'shell', title: 'go test ./internal/worker/service/...' }),
+        row({ rowKey: 'cmd', kind: 'shell', title: 'go test ./internal/worker/service/...', titleIsCommand: true }),
+        row({ rowKey: 'prose', kind: 'shell', title: 'Run the worker service tests' }),
         row({ rowKey: 'ag', kind: 'subagent', title: 'Review the diff' }),
       ]}
       />
     ))
-    const titles = container.querySelectorAll(`.${styles.taskTitle}`)
-    const shell = [...titles].find(t => t.textContent?.includes('go test'))!
-    const agent = [...titles].find(t => t.textContent?.includes('Review'))!
-    expect(shell.className).toContain(styles.taskTitleCommand)
-    expect(agent.className).not.toContain(styles.taskTitleCommand)
+    const titleOf = (text: string) =>
+      [...container.querySelectorAll(`.${styles.taskTitle}`)].find(t => t.textContent?.includes(text))!
+    expect(titleOf('go test').className).toContain(styles.taskTitleCommand)
+    expect(titleOf('Run the worker').className).not.toContain(styles.taskTitleCommand)
+    expect(titleOf('Review').className).not.toContain(styles.taskTitleCommand)
   })
 
   it('renders the end label for a terminal row instead of activity', () => {
@@ -156,7 +158,7 @@ describe('backgroundTaskList', () => {
     expect(staticRow.size).toBe(clickable.size + 1)
   })
 
-  // The registry is already scoped to one root agent, so naming the parent on
+  // The registry is already scoped to one root agent, so a parent label on
   // every row was noise. Removed -- and a row that still carries a
   // parentAgentId must not resurrect it.
   it('never renders a "via <parent>" chip', () => {
@@ -185,26 +187,29 @@ describe('backgroundTaskList', () => {
     ))
     const dots = [...container.querySelectorAll('[data-testid="bg-task-status-dot"]')]
     expect(dots).toHaveLength(statuses.length)
-    // In progress, succeeded, and failed are three DISTINCT colors; the two
-    // in-progress states share one, and a crash is colored like a failure.
+    // Queued, running, succeeded, and failed are DISTINCT; a crash is colored
+    // like a failure. Queued differs from running because running's only extra
+    // signal is the pulse, which is suppressed under reduced motion -- so
+    // sharing one dot made the two identical for the readers who cannot see it.
     const cls = (i: number) => dots[i].className
-    expect(cls(0)).toBe(cls(1)) // pending === running
+    expect(cls(0)).not.toBe(cls(1)) // pending differs from running
     expect(cls(2)).not.toBe(cls(0)) // completed differs from in-progress
     expect(cls(3)).not.toBe(cls(0)) // failed differs from in-progress
     expect(cls(3)).not.toBe(cls(2)) // failed differs from completed
     expect(cls(5)).toBe(cls(3)) // interrupted is colored like a failure
     expect(cls(4)).not.toBe(cls(3)) // an explicit stop is not a failure
+    expect(cls(0)).not.toBe(cls(2)) // queued differs from completed
   })
 
-  // Color alone cannot tell failed from interrupted, so the dot names its state.
-  it('names the status on the dot for anyone who cannot use the color', () => {
+  // Color alone cannot tell failed from interrupted, so the dot states its status.
+  it('states the status on the dot for anyone who cannot use the color', () => {
     const { container } = render(() => (
       <BackgroundTaskList tasks={[row({ rowKey: 'a', status: 'interrupted' })]} />
     ))
     expect(container.querySelector('[aria-label="Interrupted"]')).not.toBeNull()
   })
 
-  // Claude names a background shell's command as its `description`, which is
+  // Claude sends a background shell's command as its `description`, which is
   // already the row's title, so echoing it below said the same thing twice.
   it('drops a secondary line that just repeats the title', () => {
     const { container } = render(() => (

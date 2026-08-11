@@ -48,7 +48,7 @@ export const countChip = style({
   'fontSize': 'var(--text-8)',
   // fontWeight and lineHeight are declared, not inherited. Oat's `@layer base`
   // button rule sets both on every <button>, and an unlayered vanilla-extract
-  // class only overrides the properties it names -- so leaving these out would
+  // class only overrides the properties it lists -- so leaving these out would
   // render the counters at --font-medium on a taller line box, beside a token
   // count that is a <span> at the normal weight.
   'fontWeight': 'var(--font-normal)',

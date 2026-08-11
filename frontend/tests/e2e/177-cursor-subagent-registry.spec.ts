@@ -11,7 +11,7 @@ import { CURSOR_E2E_SKIP_REASON, cursorTest, expect } from './cursor-fixtures'
 import {
   expectRegistryOnlySubagentEnds,
   expectRegistrySectionAbsent,
-  waitForRegistryRow,
+  requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
@@ -29,7 +29,9 @@ cursorTest.describe('Cursor subagent registry', () => {
     await sendMessage(page, 'Delegate this to a subagent: reply with the single word PONG.')
     await waitForAgentIdle(page, 180_000)
 
-    const row = await waitForRegistryRow(page)
+    // The model may choose not to spawn; skip the spawn-dependent assertions
+    // rather than fail on a real LLM's discretion.
+    const row = await requireRegistryRow(cursorTest, page)
 
     // Regression guard: the row's testid/data attributes must never contain a
     // control character (the embedded-newline toolCallId quirk is sanitized in

@@ -71,7 +71,7 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 			childAgentID, err = a.sink.EnsureChildAgent(spawnSpan, threadID, title)
 			if err != nil {
 				slog.Warn("codex collab ensure child failed", "thread", threadID, "error", err)
-			} else if prompt := a.takeCollabPrompt(threadID); prompt != "" {
+			} else if prompt := a.collabChildPrompts.take(threadID); prompt != "" {
 				// The transcript exists now, so open it on the spawn prompt.
 				if err := a.sink.PersistChildPrompt(childAgentID, prompt); err != nil {
 					slog.Warn("codex collab persist prompt failed", "thread", threadID, "error", err)
@@ -144,26 +144,22 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage) bool {
 		Status:     status,
 	}); err != nil {
 		slog.Warn("codex subAgentActivity upsert failed", "thread", act.AgentThreadID, "error", err)
+		return true
+	}
+	// An upsert cannot CLEAR a field: a blank one means "keep", so the row would
+	// still read "paused" after the subagent resumed. `started` is exactly that
+	// transition, so the activity line is set through the primitive that writes
+	// it unconditionally. Same monotonic guard, so this cannot resurrect a row
+	// that already ended.
+	if activity == "" {
+		if err := a.sink.UpdateBackgroundTaskStatus(act.AgentThreadID, status, ""); err != nil {
+			slog.Warn("codex subAgentActivity clear activity failed", "thread", act.AgentThreadID, "error", err)
+		}
 	}
 	return true
 }
 
 // --- Child index (collabThreadSpans repurposed as EnsureChildAgent backing) ---
-
-// parseCollabSpawnPrompt extracts the prompt from a collabAgentToolCall item
-// (the spawnAgent tool's prompt field), used as the child tab/registry title.
-func parseCollabSpawnPrompt(item json.RawMessage) string {
-	if len(item) == 0 {
-		return ""
-	}
-	var s struct {
-		Prompt string `json:"prompt"`
-	}
-	if json.Unmarshal(item, &s) != nil {
-		return ""
-	}
-	return s.Prompt
-}
 
 // collabSpanForThread returns the owning spawnAgent span id for a child thread,
 // or "" when the thread is unknown to the index.
@@ -193,38 +189,7 @@ func (a *CodexAgent) removeCollabChildIndex(threadID string) {
 	if a.collabChildTitles != nil {
 		delete(a.collabChildTitles, threadID)
 	}
-	if a.collabChildPrompts != nil {
-		delete(a.collabChildPrompts, threadID)
-	}
-}
-
-// rememberCollabPrompt records a spawn's full prompt for a child thread. The
-// spawn item names the receiver threads but the child transcript does not exist
-// until agentsStates reports the thread, so the prompt waits here. First write
-// wins: a later collab tool call on the same thread (send/wait) carries no
-// prompt, and a re-reported spawn repeats the same one.
-func (a *CodexAgent) rememberCollabPrompt(threadID, prompt string) {
-	if threadID == "" || prompt == "" {
-		return
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.collabChildPrompts == nil {
-		a.collabChildPrompts = make(map[string]string)
-	}
-	if _, ok := a.collabChildPrompts[threadID]; !ok {
-		a.collabChildPrompts[threadID] = prompt
-	}
-}
-
-// takeCollabPrompt removes and returns a child thread's remembered spawn
-// prompt, or "" when none was seen.
-func (a *CodexAgent) takeCollabPrompt(threadID string) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	prompt := a.collabChildPrompts[threadID]
-	delete(a.collabChildPrompts, threadID)
-	return prompt
+	a.collabChildPrompts.forget(threadID)
 }
 
 // collabChildTitle returns a best-effort title for a child thread (the first

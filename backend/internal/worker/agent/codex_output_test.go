@@ -694,7 +694,7 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	assert.Equal(t, "cmd-1", childMessages[1].SpanID, "then the child's own command")
 }
 
-func TestHandleCodexOutput_WaitCompletedClosesTerminalSubagentSpan(t *testing.T) {
+func TestHandleCodexOutput_WaitCompletedClosesFinalSubagentSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -743,7 +743,7 @@ func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
 	require.Contains(t, sink.ClosedSpans(), "call-3", "closeAgent span closes at completion")
 }
 
-func TestHandleCodexOutput_WaitCompletedClosesOnlyTerminalReceivers(t *testing.T) {
+func TestHandleCodexOutput_WaitCompletedClosesOnlyFinalReceivers(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -1589,7 +1589,7 @@ func TestHandleCodexOutput_TurnBoundariesResetThinkingTokens(t *testing.T) {
 }
 
 // TestCodexCollabStatusToRegistry_ResumableInterrupted verifies that a Codex
-// collab "interrupted" status maps to a NON-terminal registry state. An
+// collab "interrupted" status maps to a NON-final registry state. An
 // interrupted child is resumable (resumeAgent restarts it), so it must not
 // collapse to the final StatusInterrupted -- the registry's monotonic-final
 // guard would then absorb the later "running" upsert on resume and leave the row
@@ -1601,7 +1601,7 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 	cases := []struct {
 		status       string
 		wantStatus   bgtask.Status
-		wantTerminal bool
+		wantFinal    bool
 		wantNonBlank bool
 	}{
 		{"running", bgtask.StatusRunning, false, false},
@@ -1610,21 +1610,21 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 		{"errored", bgtask.StatusFailed, true, false},
 		{"notFound", bgtask.StatusFailed, true, false},
 		{"shutdown", bgtask.StatusStopped, true, false},
-		// The fix: interrupted stays Running (resumable), NOT terminal.
+		// The fix: interrupted stays Running (resumable), NOT final.
 		{"interrupted", bgtask.StatusRunning, false, true},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.status, func(t *testing.T) {
 			t.Parallel()
-			gotStatus, gotTerminal, gotActivity := codexCollabStatusToRegistry(tc.status)
+			gotStatus, gotFinal, gotActivity := codexCollabStatusToRegistry(tc.status)
 			assert.Equal(t, tc.wantStatus, gotStatus)
-			assert.Equal(t, tc.wantTerminal, gotTerminal)
+			assert.Equal(t, tc.wantFinal, gotFinal)
 			if tc.wantNonBlank {
 				assert.NotEmpty(t, gotActivity, "resumable interrupted carries a paused activity line")
 			}
 			// The mapped status must NOT be terminal for a resumable interrupt.
-			if !tc.wantTerminal {
+			if !tc.wantFinal {
 				assert.False(t, gotStatus.IsFinished(), "%s must not map to a final status", tc.status)
 			}
 		})
@@ -1632,7 +1632,7 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 }
 
 // TestCodexSubAgentActivity_InterruptedStaysRunning verifies the
-// subAgentActivity "interrupted" kind upserts a Running row (not terminal
+// subAgentActivity "interrupted" kind upserts a Running row (not final
 // StatusInterrupted), so a later "started" activity can resume it.
 func TestCodexSubAgentActivity_InterruptedStaysRunning(t *testing.T) {
 	t.Parallel()

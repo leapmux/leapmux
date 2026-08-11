@@ -2,11 +2,17 @@ import type { EditorState } from '@milkdown/prose/state'
 import { Plugin, PluginKey } from '@milkdown/prose/state'
 import { $prose } from '@milkdown/utils'
 
-/** A contiguous run of text carrying one link mark, and that mark's href. */
+/** A contiguous run of text carrying one link mark, and that mark's attributes. */
 export interface LinkRange {
   from: number
   to: number
   href: string
+  /**
+   * The clicked mark's full attribute set. The schema declares `title` beside
+   * `href`, and a pasted `[docs](url "The docs")` carries one, so an edit that
+   * rebuilt the mark from `href` alone would drop the title with nothing said.
+   */
+  attrs: Record<string, unknown>
 }
 
 /**
@@ -23,7 +29,15 @@ export function linkRangeAt(state: EditorState, pos: number): LinkRange | null {
     return null
 
   const $pos = state.doc.resolve(pos)
-  const mark = linkType.isInSet($pos.marks())
+  // Resolve the mark from the node the position is INSIDE, not from
+  // `$pos.marks()`. At a text-node boundary (textOffset 0) `marks()` reports the
+  // marks of the node BEFORE the position, so a click on the first character of
+  // a link that follows plain text found no link and the popover refused to
+  // open -- and, at the end of a trailing link, it found one for a click in the
+  // empty space past it. `nodeAfter` is the containing node's remainder when the
+  // position is mid-node and the next node at a boundary, so one expression
+  // answers both, and it is null at the block end where there is no link.
+  const mark = $pos.nodeAfter ? linkType.isInSet($pos.nodeAfter.marks) : null
   if (!mark)
     return null
 
@@ -50,7 +64,7 @@ export function linkRangeAt(state: EditorState, pos: number): LinkRange | null {
   for (let i = index + 1; i < runs.length && runs[i]!.from === to; i++)
     to = runs[i]!.to
 
-  return { from, to, href: String(mark.attrs.href ?? '') }
+  return { from, to, href: String(mark.attrs.href ?? ''), attrs: mark.attrs }
 }
 
 /** What the link popover needs from a click on a link. */
@@ -60,6 +74,70 @@ export interface LinkClickHandlers {
   setLinkPopoverOpen: (open: boolean) => void
   getLinkPopoverOpen: () => boolean
   getLinkRange: () => LinkRange | null
+}
+
+/**
+ * What Mod-K acts on, or null when it should do nothing.
+ *
+ * Two cases, and the SELECTION decides which:
+ *
+ *  - A non-empty selection is a request to link THAT text, so the range is the
+ *    selection and the href starts EMPTY. Applying then overrides whatever link
+ *    marks the selection already spans -- `applyLinkHref` clears the range
+ *    before it marks it -- so selecting across a link and giving a new URL
+ *    replaces it rather than leaving two.
+ *  - A bare caret inside a link is a request to edit THAT link, so the range is
+ *    the whole run and the href is its current one. The run, not the containing
+ *    text node: another mark splits one link into several nodes.
+ *
+ * A caret outside a link has nothing to link and nothing to edit, so Mod-K falls
+ * through untouched. Split out of the plugin because this decision is the whole
+ * behaviour, and a ProseMirror keydown handler is not reachable from a unit test.
+ */
+export function linkShortcutTarget(state: EditorState): LinkRange | null {
+  if (!state.schema.marks.link)
+    return null
+
+  const { from, to, empty } = state.selection
+  // The caret case: edit the link it sits in, if any.
+  if (empty)
+    return linkRangeAt(state, from)
+
+  // The selection case: link the selected text, starting from an EMPTY href. A
+  // selection that spans a block boundary cannot carry one mark, so it is left
+  // alone rather than silently linking part of it.
+  if (!state.doc.resolve(from).sameParent(state.doc.resolve(to)))
+    return null
+  return { from, to, href: '', attrs: {} }
+}
+
+export function createLinkShortcutPlugin(handlers: LinkClickHandlers) {
+  return $prose(() => new Plugin({
+    key: new PluginKey('link-shortcut'),
+    props: {
+      handleKeyDown(view, event) {
+        const isModK = (event.key === 'k' || event.key === 'K')
+          && (event.metaKey || event.ctrlKey)
+          && !event.shiftKey && !event.altKey
+        if (!isModK)
+          return false
+
+        const range = linkShortcutTarget(view.state)
+        if (!range)
+          return false
+
+        event.preventDefault()
+        handlers.setLinkRange(range)
+        // Next frame, for the same reason the click path defers: opening a
+        // `popover="auto"` from inside the event that is still propagating lets
+        // the browser's own dismiss pass close it again in the same gesture, so
+        // the panel never appears. Deferring puts `showPopover()` after this
+        // keydown has finished.
+        requestAnimationFrame(() => handlers.setLinkPopoverOpen(true))
+        return true
+      },
+    },
+  }))
 }
 
 /**

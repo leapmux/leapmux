@@ -1014,6 +1014,20 @@ describe('nestSubagentTabs', () => {
     ])
   })
 
+  // The case the test above misses: an AGENT tab holding that id as well. Keyed
+  // by a bare id, the terminal resolved to the AGENT's node, so the forest held
+  // that node twice (two identical <For> keys) and the terminal row vanished.
+  it('keeps an agent and a terminal that share an id as two distinct rows', () => {
+    const agent = makeTab({ id: 'dup', type: TabType.AGENT })
+    const term = makeTab({ id: 'dup', type: TabType.TERMINAL })
+    const nodes = nestSubagentTabs([agent, term])
+
+    expect(nodes).toHaveLength(2)
+    expect(nodes[0]!.tab).toBe(agent)
+    expect(nodes[1]!.tab).toBe(term)
+    expect(nodes[0]!.tab).not.toBe(nodes[1]!.tab)
+  })
+
   // Impossible from the worker, but attaching both ends of a cycle would
   // recurse forever in the renderer, so both must stay roots.
   it('breaks a parent cycle instead of nesting it', () => {

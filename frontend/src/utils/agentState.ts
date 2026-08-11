@@ -146,11 +146,10 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
     if (category.kind === 'result_divider' || category.kind === 'unsupported_provider')
       return false
     // The subagent-end divider is a subagent transcript's closing boundary:
-    // the worker writes exactly one, when that subagent's registry row goes
-    // terminal, and nothing follows it. Without this the scan would walk past
-    // it (it is a notification, so isNonProgressInner would just keep going),
-    // reach the subagent's last real message, and report a finished subagent as
-    // still working.
+    // the worker writes exactly one, when that subagent's registry row reaches a
+    // final status, and nothing follows it. `subagent_ended` is not a
+    // non-progress type, so without this guard the scan stops AT this message
+    // and reports a finished subagent as still working.
     if (getInnerMessageType(parsed) === NOTIFICATION_TYPE.SubagentEnded)
       return false
     // context_cleared in a notification-thread row means the agent
@@ -181,9 +180,12 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
  * keeps the indicator up even when the parent turn has ended -- a running
  * subagent/shell means the agent is still working. `finished` HIDES it and
  * stops there: for a child tab the registry row is the authoritative record of
- * that subagent's life, so it outranks the message-history heuristic, which
+ * that subagent's life, so it outranks the MESSAGE-HISTORY heuristic, which
  * reports "working" whenever the transcript's last message is not the closing
- * divider (an interrupt notice, a tool result, a divider write that failed).
+ * divider (an interrupt notice, a tool result, a divider write that failed). It
+ * does NOT outrank live evidence of a turn in flight -- streaming text, or the
+ * provider's own turn check -- because a steerable subagent accepts a new
+ * message after its row is final and the row never reopens.
  * `unknown` means the registry has no row to answer with, and the heuristic
  * decides. Todo counts deliberately do NOT appear here (a nonzero todo count
  * alone must not show the indicator).
@@ -202,15 +204,19 @@ export function shouldShowThinkingIndicator(
     return false
   if (work === 'active')
     return true
-  // Before `streamingText`: a finished subagent can still hold a stale tail
-  // from the turn that ended, and the registry row is the better witness.
-  if (work === 'finished')
-    return false
   if (streamingText)
     return true
   const plugin = pluginFor(agent.agentProvider)
   const override = plugin?.hasActiveTurn?.(agent, sessionInfo)
   if (override !== null && override !== undefined)
     return override
+  // A finished registry row outranks the MESSAGE HISTORY, but not live evidence
+  // of a turn in flight. A steerable subagent -- Codex re-registers a collab
+  // child on any later tool call -- can be sent a new message after its row went
+  // final, and the row never reopens. Placing this ahead of `streamingText` and
+  // the provider's own turn check meant that turn ran with no thinking indicator
+  // and, because the same predicate gates Interrupt, no way to cancel it.
+  if (work === 'finished')
+    return false
   return isAgentWorking(msgs)
 }

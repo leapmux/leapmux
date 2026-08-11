@@ -757,7 +757,7 @@ func (h *OutputHandler) CleanupChildAgents(childIDs []string) {
 }
 
 // cleanupChildMaps deletes the cheap per-agent maps for one child. Shared by
-// CleanupChildAgents (root close, many children) and CleanupChild (a single
+// CleanupChildAgents (root close, many children) and CleanupChildAgent (a single
 // child's closing update driven from a provider's OutputSink). Does NOT touch
 // rootSinks/bgtasks: those are keyed by root owner and are reaped on root close.
 func (h *OutputHandler) cleanupChildMaps(childID string) {
@@ -1011,7 +1011,7 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 }
 
 // PersistTurnEnd persists the universal turn-end divider envelope and
-// fires the git-status auto-broadcast. Each provider's terminal
+// fires the git-status auto-broadcast. Each provider's final
 // envelope (Claude type:"result", Codex turn/completed, ACP prompt
 // response, Pi agent_end) routes here, so the side effect is explicit
 // at the call site. Runs BroadcastGitStatus on a goroutine so the
@@ -1020,22 +1020,34 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 func (s *agentOutputSink) PersistTurnEnd(content []byte, span agent.SpanInfo) error {
 	// Exactly ONE divider closes a subagent transcript, in EITHER arrival order.
 	//
-	// The registry side already yields to a provider that forwards its own
-	// closing envelope (see childTranscriptAlreadyEnded). This is the other
-	// half: the two events are independent, and when the registry row goes
-	// final FIRST -- Claude's task_notification can arrive before the forwarded
-	// result -- the neutral divider is already there, and persisting this one on
-	// top would stack two rules saying the same thing. The neutral divider
-	// carries the finished status, so the transcript still closes honestly; only
-	// the result's duration and error detail are lost, which beats a duplicate.
+	// The two events are independent -- Claude's task_notification can reach the
+	// registry before its forwarded result reaches here -- so whichever arrives
+	// first CLAIMS the close, and the loser stands down. This side draws the
+	// richer divider (the duration, and on failure the error label and detail),
+	// so when it wins the transcript keeps that; when the registry won, its
+	// neutral divider already carries the finished status and the transcript
+	// still closes honestly.
+	//
+	// Claimed only for a turn end that actually ENDS the subagent, not every
+	// turn: a Codex collab child draws a turn-end divider at the end of every
+	// turn and then accepts another.
 	//
 	// Child sinks only (agentID != rootAgentID). A root turn end is not a
-	// subagent boundary and must not pay a read per turn.
-	if s.agentID != s.rootAgentID && s.h.childTranscriptEndsWithSubagentDivider(s.agentID) {
-		return nil
-	}
-	if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker); err != nil {
-		return err
+	// subagent boundary and must not claim anything.
+	//
+	// Only the PERSIST is suppressed. The turn genuinely ended, so the turn-end
+	// event and the git-status refresh below still owe the client their work:
+	// the event drives the completion sound and the off-screen tab's notification
+	// dot, and the refresh re-reads a working tree the subagent just edited.
+	// Returning here would drop both, nondeterministically, on whichever arrival
+	// order won.
+	endsSubagent := s.agentID != s.rootAgentID &&
+		agent.ProviderFor(s.agentProvider).EndsSubagentTranscript(content)
+	duplicateDivider := endsSubagent && !s.h.claimSubagentTranscriptClose(s.h.bgTaskCtx(), s.agentID)
+	if !duplicateDivider {
+		if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker); err != nil {
+			return err
+		}
 	}
 	count, ok := agent.ProviderFor(s.agentProvider).TurnEndToolUses(content)
 	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
@@ -1537,7 +1549,7 @@ func casPersistAgentOptions(ctx context.Context, q *db.Queries, agentID, expecte
 	}
 	// Narrow stale clears against this final re-read too, so the unconditional write below can't
 	// delete a key a concurrent writer set that this delta never legitimately cleared. This is the
-	// terminal attempt, so the narrowed delta isn't carried forward -- only its merge is written.
+	// final attempt, so the narrowed delta isn't carried forward -- only its merge is written.
 	_, base, newOptions := narrowedOptionDelta(dbAgent.Options, refresh)
 	if newOptions == base {
 		return base, false, nil
@@ -2053,7 +2065,7 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 			}
 		} else if len(cache.Rows) >= todoevents.MaxTodos {
 			// At cap: evict the oldest finished row (completed or
-			// deleted) to make room for the new task. When no terminal
+			// deleted) to make room for the new task. When no finished
 			// row exists, drop the new task and log so operators see
 			// the cap pressure.
 			evicted, err := h.evictOldestFinishedLocked(ctx, agentID, cache)
@@ -2151,16 +2163,13 @@ func (h *OutputHandler) applyTodoEvent(agentID string, ev todoevents.Event) ([]t
 // Returns false (with no error) when no finished row exists; the caller drops
 // the incoming event in that case. Logs the eviction for operator visibility.
 // Caller must hold the cache's mutex.
+//
+// agent_todos is a SINGLE-pool registry (todoOps sets no bucketOf), so "" names
+// its one pool.
 func (h *OutputHandler) evictOldestFinishedLocked(ctx context.Context, agentID string, cache *agentTodoCache) (bool, error) {
-	// Capture the to-be-evicted row for the log before the generic deletes it.
-	evictIdx := slices.IndexFunc(cache.Rows, func(r cachedTodo) bool {
-		return r.item.Status.IsFinished()
-	})
-	if evictIdx < 0 {
-		return false, nil
-	}
-	evicted := cache.Rows[evictIdx]
-	evictedHappened, err := cache.evictOldestFinishedLocked(ctx, agentID)
+	// The generic returns the row it deleted, so the log names that row rather
+	// than one a second scan here picked out.
+	evicted, evictedHappened, err := cache.evictOldestFinishedInBucketLocked(ctx, agentID, "")
 	if err != nil {
 		return false, err
 	}
@@ -2277,7 +2286,8 @@ func (h *OutputHandler) todoCache(agentID string) *agentTodoCache {
 // every cache instance shares the same type-specific behaviour. Mirrors bgTaskOps.
 func (h *OutputHandler) todoOps() registryOps[cachedTodo] {
 	return registryOps[cachedTodo]{
-		listRows: func(ctx context.Context, ownerID string, limit int32) ([]seedEntry[cachedTodo], error) {
+		// agent_todos is a SINGLE-pool registry, so `bucket` is always "".
+		listRows: func(ctx context.Context, ownerID, _ string, limit int32) ([]seedEntry[cachedTodo], error) {
 			rows, err := h.queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{
 				AgentID: ownerID,
 				Limit:   int64(limit),

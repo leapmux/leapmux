@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -385,25 +386,38 @@ func (s *testSink) PersistChildPrompt(childAgentID, prompt string) error {
 	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, SpanInfo{})
 }
 
+// testFakeEndedAt is the instant the fake stamps on an active -> final
+// transition. A fixed value, because the fake models WHETHER ended_at is set,
+// not when: an assertion that the stamp is absent for a non-final status was
+// vacuously true while nothing ever set it.
+var testFakeEndedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
 func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
 	if s.bgTasks == nil {
 		s.bgTasks = make(map[string]bgtask.Item)
 	}
-	item := s.bgTasks[task.RowKey]
-	item.RowKey = task.RowKey
-	item.Kind = task.Kind
-	if task.ChildAgentID != "" {
-		item.ChildAgentID = task.ChildAgentID
+	// task.ToItem().PreservingBlanksFrom(existing), the SAME pair the production
+	// applier uses. Neither half may be hand-written here: the projection so a
+	// new field on Upsert reaches this fake too, and the merge so blank-means-keep
+	// holds for every descriptive field, not just the child id. A partial upsert
+	// (Claude's task_notification carries only status + description) blanked the
+	// Title against this fake while production preserved it, so a test that
+	// asserted the real contract failed against correct code.
+	existing := s.bgTasks[task.RowKey]
+	item := task.ToItem().PreservingBlanksFrom(existing)
+	// A final status is absorbing, as in the registry: a replayed non-final
+	// upsert must not resurrect a row that already ended. Without this the fake
+	// was MORE permissive than production, so a test pinning the guard failed
+	// against code that has it.
+	if existing.Status.IsFinished() && !item.Status.IsFinished() {
+		item.Status = existing.Status
+		item.EndedAt = existing.EndedAt
 	}
-	item.ParentAgentID = task.ParentAgentID
-	item.GroupKey = task.GroupKey
-	item.GroupLabel = task.GroupLabel
-	item.Title = task.Title
-	item.Description = task.Description
-	item.ActiveForm = task.ActiveForm
-	item.Status = task.Status
+	if !existing.Status.IsFinished() && item.Status.IsFinished() && item.EndedAt.IsZero() {
+		item.EndedAt = testFakeEndedAt
+	}
 	s.bgTasks[task.RowKey] = item
 	return nil
 }
@@ -412,6 +426,14 @@ func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Statu
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
 	if item, ok := s.bgTasks[rowKey]; ok {
+		// Monotonic and absorbing, as in the registry: a late or replayed
+		// non-final update must not resurrect a finished row.
+		if item.Status.IsFinished() && !status.IsFinished() {
+			return nil
+		}
+		if !item.Status.IsFinished() && status.IsFinished() {
+			item.EndedAt = testFakeEndedAt
+		}
 		item.Status = status
 		item.ActiveForm = activeForm
 		s.bgTasks[rowKey] = item
@@ -423,7 +445,13 @@ func (s *testSink) CloseBackgroundTask(rowKey string, status bgtask.Status) erro
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
 	if item, ok := s.bgTasks[rowKey]; ok {
+		// First close wins, as in the registry: a re-close cannot relabel a row
+		// that already ended.
+		if item.Status.IsFinished() {
+			return nil
+		}
 		item.Status = status
+		item.EndedAt = testFakeEndedAt
 		s.bgTasks[rowKey] = item
 	}
 	return nil

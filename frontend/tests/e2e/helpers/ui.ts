@@ -800,9 +800,9 @@ export async function clickBranchMenuItem(page: Page, row: Locator, itemName: st
 /**
  * Wait for the in-flight settings indicator to clear.
  *
- * The spinner moved into the composer's status bar with the rest of the
- * settings surface. The bar is on by default, so the marker is present unless a
- * test switches it off.
+ * The marker rides the composer's always-present `[+]` trigger, NOT the status
+ * bar: the bar is a preference that menu can switch off, which would otherwise
+ * take the only in-flight feedback with it.
  */
 export async function waitForSettingsIdle(page: Page) {
   await expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
@@ -811,14 +811,24 @@ export async function waitForSettingsIdle(page: Page) {
 /**
  * Wait until the agent has reported its option catalog.
  *
- * The composer renders a settings chip only for a group that exists and offers
- * at least one option, so the model chip's PRESENCE is the app's own marker
- * that the catalog landed -- nothing invented for the tests. A freshly opened
- * tab shows no model chip at all for as long as its agent takes to hand over
- * its groups, so any assertion about a chip's content has to wait for this.
+ * Waits on the `[+]` menu's model submenu, not the status-bar chip: the chip
+ * lives inside a surface the "Show status bar" preference removes, so a spec
+ * that switches the bar off would block here until the global timeout.
+ *
+ * The submenu exists only for a group that exists and offers at least one
+ * option, so its PRESENCE is the app's own marker that the catalog landed --
+ * nothing invented for the tests. A freshly opened tab shows no model group at
+ * all for as long as its agent takes to hand over its groups, so any assertion
+ * about a model's name has to wait for this.
  */
 export async function waitForSettingsHydrated(page: Page) {
-  await expect(page.locator('[data-testid="composer-model-trigger"]')).toBeVisible()
+  const plus = page.locator('[data-testid="composer-plus-trigger"]')
+  await expect(plus).toBeVisible()
+  await expect(async () => {
+    await ensureExpanded(plus)
+    await expect(settingsGroupTrigger(page, 'model')).toBeVisible()
+  }).toPass()
+  await closeComposerMenus(page)
 }
 
 /**

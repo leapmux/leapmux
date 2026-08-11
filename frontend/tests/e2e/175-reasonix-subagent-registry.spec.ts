@@ -1,7 +1,7 @@
 import {
   expectRegistryOnlySubagentEnds,
   expectRegistrySectionAbsent,
-  tryWaitForRegistryRow,
+  requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
 /**
@@ -28,10 +28,9 @@ reasonixTest.describe('Reasonix subagent registry', () => {
     await sendMessage(page, 'Use your task tool to spawn one subagent whose prompt is: reply with the single word PONG. Report what it said.')
 
     // The model may choose not to spawn; skip the spawn-dependent assertions.
-    const row = await tryWaitForRegistryRow(page)
-    reasonixTest.skip(!row, 'model did not spawn a subagent')
+    const row = await requireRegistryRow(reasonixTest, page)
     const r = row!
 
-    await expectRegistryOnlySubagentEnds(page, r, { bestEffort: true })
+    await expectRegistryOnlySubagentEnds(page, r)
   })
 })

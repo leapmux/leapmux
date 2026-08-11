@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -76,7 +77,7 @@ func TestEnsureChildAgent_RegistryRowLinksChild(t *testing.T) {
 	assert.Equal(t, childID, rows[0].ChildAgentID, "registry row links to the child agent id")
 }
 
-// TestCleanupChildAgent_ReclaimsPerChildState verifies a terminal child close
+// TestCleanupChildAgent_ReclaimsPerChildState verifies a final child close
 // reclaims the per-child service state (span tracker, cached child sink) so a
 // long-running root that cycles many subagents does not accumulate a stale
 // entry per closed child. The child AGENT row and transcript survive.
@@ -98,7 +99,7 @@ func TestCleanupChildAgent_ReclaimsPerChildState(t *testing.T) {
 	sink.CleanupChildAgent(childID)
 
 	_, _, spanLoaded = svc.Output.trackers.get(childID)
-	assert.False(t, spanLoaded, "child span tracker reclaimed on terminal close")
+	assert.False(t, spanLoaded, "child span tracker reclaimed on final close")
 	// The child AGENT row and its transcript survive (only in-memory caches are reclaimed).
 	child, err := svc.Queries.GetAgentByID(ctx, childID)
 	require.NoError(t, err, "child agent row survives the in-memory cleanup")
@@ -282,7 +283,7 @@ func TestCleanupChildAgent_OrphanedTrackerPointerIsBenign(t *testing.T) {
 	retainedChildSink := sink.ChildSink(childID).(*agentOutputSink)
 	retainedChildSink.OpenSpan("item-1", "span-1")
 
-	// Terminal close reaps the registry entry and prunes the cached child sink
+	// Final close reaps the registry entry and prunes the cached child sink
 	// from the direct parent in O(1).
 	rootSink.CleanupChildAgent(childID)
 	_, _, ok := svc.Output.trackers.get(childID)
@@ -330,7 +331,7 @@ func TestCleanupChildAgent_PrunesChildSinkFromDirectParent(t *testing.T) {
 	closedSink := sink.ChildSink(closedID).(*agentOutputSink)
 	survivingSink := sink.ChildSink(survivingID).(*agentOutputSink)
 
-	// Terminal close of one child prunes ONLY that child's cached sink.
+	// Final close of one child prunes ONLY that child's cached sink.
 	sink.CleanupChildAgent(closedID)
 
 	rootSink.childMu.Lock()
@@ -443,7 +444,7 @@ func TestCleanupChildAgent_ReChildSinkGetsFreshTracker(t *testing.T) {
 	first := sink.ChildSink(childID).(*agentOutputSink)
 	firstTracker := first.tracker
 
-	// Terminal close: registry entry deleted, cached sink pruned.
+	// Final close: registry entry deleted, cached sink pruned.
 	rootSink.CleanupChildAgent(childID)
 	_, _, ok := svc.Output.trackers.get(childID)
 	require.False(t, ok, "registry entry deleted by cleanup")
@@ -687,6 +688,53 @@ func TestSubagentEndDivider_ExactlyOneInEitherArrivalOrder(t *testing.T) {
 	})
 }
 
+// The claim is what makes "exactly one divider" hold, so it must hold when both
+// writers run CONCURRENTLY -- the case the old last-message probes could not
+// cover, because each side read before either wrote.
+func TestSubagentEndDivider_ConcurrentWritersProduceOne(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	result := []byte(`{"type":"result","duration_ms":12}`)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		assert.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	}()
+	go func() {
+		defer wg.Done()
+		assert.NoError(t, sink.ChildSink(childID).PersistTurnEnd(result, agent.SpanInfo{}))
+	}()
+	wg.Wait()
+
+	msgs := transcriptMessages(t, svc, childID)
+	require.Len(t, msgs, 1, "the claim admits exactly one writer, whichever won the race")
+}
+
+// A REPEATED final status update must not write a second divider. The two
+// guards in applyBackgroundTaskStatus exclude an already-final row only when the
+// incoming status is non-final, or when BOTH the status and the activeForm
+// repeat -- and Claude sends exactly the case that slips through: a
+// summary-bearing final update followed by a bare one.
+func TestSubagentEndDivider_RepeatedFinalStatusWritesOnlyOne(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusCompleted, "wrote the summary"))
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusCompleted, ""))
+
+	msgs := transcriptMessages(t, svc, childID)
+	require.Len(t, msgs, 1, "only the active -> final transition owes a divider")
+	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+}
+
 // A ROOT turn end is not a subagent boundary: it must never be suppressed, and
 // it must not pay the child-transcript read that the suppression needs.
 func TestPersistTurnEnd_RootTurnEndIsNeverSuppressed(t *testing.T) {
@@ -701,7 +749,7 @@ func TestPersistTurnEnd_RootTurnEndIsNeverSuppressed(t *testing.T) {
 }
 
 // applyBackgroundTaskClose reports changed=true only on the first
-// pending/running -> terminal transition, and the DB's own status guard makes
+// pending/running -> final transition, and the DB's own status guard makes
 // that hold across a restart -- so a re-close cannot stack a second divider.
 func TestCloseBackgroundTask_DividerIsWrittenOnce(t *testing.T) {
 	t.Parallel()

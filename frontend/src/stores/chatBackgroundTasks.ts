@@ -20,6 +20,15 @@ export interface BackgroundTaskItem {
   groupKey?: string
   groupLabel?: string
   title: string
+  /**
+   * Whether `title` is a verbatim shell command rather than prose, so the row
+   * can set it as code. Only a provider that hands the command over ITSELF
+   * reports it: an ACP terminal/create carries the command and nothing else,
+   * while Claude's task_started carries `description || command`, so a Claude
+   * shell row's title is prose whenever the model wrote any and nothing says
+   * which it was. False is the safe answer.
+   */
+  titleIsCommand?: boolean
   description?: string
   activity: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
@@ -50,6 +59,7 @@ export function protoBackgroundTaskToStore(t: ProtoBackgroundTaskItem): Backgrou
     groupKey: t.groupKey || undefined,
     groupLabel: t.groupLabel || undefined,
     title: t.title,
+    titleIsCommand: t.titleIsCommand || undefined,
     description: t.description || undefined,
     activity: t.activeForm,
     status: normalizeBackgroundTaskStatus(t.status),
@@ -73,6 +83,28 @@ function normalizeBackgroundTaskStatus(s: BackgroundTaskStatus): BackgroundTaskI
       return 'interrupted'
     default:
       return 'pending'
+  }
+}
+
+/**
+ * Narrow a background-task status WIRE string to the union.
+ *
+ * The worker persists the subagent-end divider with the same four final wire
+ * strings the registry uses (`bgtask.StatusWire`), so the divider's renderer
+ * narrows through here rather than re-listing them. `normalizeBackgroundTaskStatus`
+ * cannot serve: it maps the proto ENUM, not the JSON string.
+ */
+export function backgroundTaskStatusFromWire(s: string): BackgroundTaskItem['status'] | undefined {
+  switch (s) {
+    case 'pending':
+    case 'running':
+    case 'completed':
+    case 'failed':
+    case 'stopped':
+    case 'interrupted':
+      return s
+    default:
+      return undefined
   }
 }
 
@@ -130,7 +162,7 @@ export function subagentWorkState(childAgentId: string, rootTasks: BackgroundTas
  *
  * A root owns the registry, so it sees every descendant's row -- that roll-up
  * is what the chip on a root tab has always meant. A child sees only the rows
- * IT spawned (`parentAgentId` names the immediate parent), which excludes its
+ * IT spawned (`parentAgentId` identifies the immediate parent), which excludes its
  * own row by construction: that row belongs to its parent. Without the scoping
  * a subagent tab read its PARENT's count, siblings and itself included.
  */
@@ -153,7 +185,7 @@ export function rootWorkState(rootTasks: BackgroundTaskItem[]): TabWorkState {
   return countActiveBackgroundTasks(rootTasks) > 0 ? 'active' : 'unknown'
 }
 
-// backgroundTaskStatusLabel names a status in full. The row shows status as a
+// backgroundTaskStatusLabel spells a status out in full. The row shows status as a
 // colored dot, so this is what the dot's tooltip (and its accessible name)
 // says -- the color alone cannot distinguish failed from interrupted, or
 // pending from running.

@@ -112,7 +112,3 @@ export const cardNarrow = style({
 export const cardMedium = style({
   width: '400px',
 })
-
-export const cardWide = style({
-  width: '440px',
-})

@@ -121,7 +121,7 @@ describe('focusedBranchAction ref', () => {
     expect(ref.tabs.map(t => t.id)).toEqual(['a', 'b'])
   })
 
-  it('names the branch from the same source it counts the tabs by', () => {
+  it('identifies the branch from the same source it counts the tabs by', () => {
     // The regression this shape exists to prevent. `stampBranchOnTabs` rewrites
     // the flat `gitBranch` after a branch change and leaves `agentGitStatus`
     // alone, and the worker re-broadcasts the nested copy only at turn end -- so

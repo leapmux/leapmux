@@ -36,7 +36,7 @@ func TestKindWireRoundTrip(t *testing.T) {
 	assert.Equal(t, KindSubagent, KindFromWire("nope"))
 }
 
-func TestStatusIsTerminal(t *testing.T) {
+func TestStatusIsFinished(t *testing.T) {
 	finished := []Status{StatusCompleted, StatusFailed, StatusStopped, StatusInterrupted}
 	active := []Status{StatusPending, StatusRunning}
 	for _, s := range finished {

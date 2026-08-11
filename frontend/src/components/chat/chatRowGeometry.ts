@@ -56,12 +56,19 @@ export interface HeightKeyInputs {
   contentVersion: number
   /** Whether a renderable command stream is present for the row. */
   hasCommandStream: boolean
+  /**
+   * Whether the row was classified as part of a SUBAGENT's own transcript. The
+   * flag re-classifies a forwarded row between a collapsed "Prompt" card and a
+   * full user message -- two very different heights -- and it flips when the
+   * tab's parent link hydrates, so the measurement must re-key with it.
+   */
+  isChildTranscript: boolean
 }
 
 export function buildHeightKey(inputs: HeightKeyInputs): string {
   const toolUseRevision = `${inputs.toolUseRevisionKey.length}:${inputs.toolUseRevisionKey}`
   const toolResultRevision = `${inputs.toolResultRevisionKey.length}:${inputs.toolResultRevisionKey}`
-  return `${inputs.seq}|${inputs.hasToolUseSibling ? 's' : ''}|${inputs.toolUseContentVersion}|${toolUseRevision}|${inputs.hasToolResultSibling ? 'r' : ''}|${inputs.toolResultContentVersion}|${toolResultRevision}|${inputs.uiVersion}|${inputs.contentVersion}|${inputs.hasCommandStream ? 'c' : ''}`
+  return `${inputs.seq}|${inputs.hasToolUseSibling ? 's' : ''}|${inputs.toolUseContentVersion}|${toolUseRevision}|${inputs.hasToolResultSibling ? 'r' : ''}|${inputs.toolResultContentVersion}|${toolResultRevision}|${inputs.uiVersion}|${inputs.contentVersion}|${inputs.hasCommandStream ? 'c' : ''}|${inputs.isChildTranscript ? 'k' : ''}`
 }
 
 /**

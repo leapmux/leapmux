@@ -1,7 +1,7 @@
 import {
   expectRegistryOnlySubagentEnds,
   expectRegistrySectionAbsent,
-  tryWaitForRegistryRow,
+  requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
 /**
@@ -9,7 +9,7 @@ import { sendMessage } from './helpers/ui'
  *
  * OpenCode's ACP bridge forwards no child-session content, so this is
  * registry-only: a running row with the spawn title while the subagent works,
- * a terminal end label on completion, no clickable row, and no child agent
+ * a final end label on completion, no clickable row, and no child agent
  * rows on the worker.
  */
 import { OPENCODE_E2E_SKIP_REASON, opencodeTest } from './opencode-fixtures'
@@ -29,12 +29,11 @@ opencodeTest.describe('OpenCode subagent registry', () => {
 
     // Registry row appears (subagent, running while it works). The model may
     // choose not to spawn; in that case skip the spawn-dependent assertions.
-    const row = await tryWaitForRegistryRow(page)
-    opencodeTest.skip(!row, 'model did not spawn a subagent')
+    const row = await requireRegistryRow(opencodeTest, page)
     const r = row!
 
     // Registry-only tail: final end label (best-effort -- this spec does not
     // wait for idle first), section persists, row not clickable, no child agent.
-    await expectRegistryOnlySubagentEnds(page, r, { bestEffort: true })
+    await expectRegistryOnlySubagentEnds(page, r)
   })
 })

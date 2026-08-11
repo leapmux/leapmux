@@ -1945,6 +1945,12 @@ func TestHandleOutput_TaskStartedLocalBashUpsertsShellNoChild(t *testing.T) {
 	// is already the title. Copying it into Description too rendered the row's
 	// secondary line as a verbatim echo of its own title.
 	assert.Empty(t, row.Description, "description must not echo the title")
+	// NOT a command, although this row IS a shell. BashTool sends
+	// `description || command`, so the title is the model's prose whenever it
+	// wrote any and the raw command when it did not -- and task_started forwards
+	// only that one resolved string, so nothing on the wire says which. Claiming
+	// "command" here would set prose in the monospace face.
+	assert.False(t, row.TitleIsCommand, "Claude cannot tell its shell title from prose")
 	// No child transcript pre-created for a shell.
 	assert.Equal(t, "", row.ChildAgentID, "local_bash must not EnsureChildAgent")
 }

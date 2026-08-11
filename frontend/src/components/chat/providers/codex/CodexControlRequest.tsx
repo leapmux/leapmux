@@ -223,9 +223,12 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
     sendCodexDecision(props.request.agentId, props.onRespond, props.request.requestId, decision)
   }
 
-  const handleBypassPermissions = () => {
-    // Accept the current request, then switch to bypass mode.
-    sendCodexDecision(props.request.agentId, props.onRespond, props.request.requestId, 'accept')
+  // Accept the current request, then switch to bypass mode. The accept is
+  // AWAITED first: the worker dispatches the two concurrently, and a mode change
+  // the provider cannot take live relaunches the agent, killing the session
+  // before an un-awaited accept reaches it.
+  const handleBypassPermissions = async () => {
+    await sendCodexDecision(props.request.agentId, props.onRespond, props.request.requestId, 'accept')
     if (props.bypassPermissionMode)
       props.onPermissionModeChange?.(props.bypassPermissionMode)
   }

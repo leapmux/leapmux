@@ -97,7 +97,7 @@ describe('genericToolActions', () => {
     expect(decoded.response.response.updatedInput).toEqual({ command: 'ls' })
   })
 
-  it('sends allow response and changes permission mode when bypass is clicked', () => {
+  it('sends allow response and changes permission mode when bypass is clicked', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const onPermissionModeChange = vi.fn()
     const request = makeRequest('req-42', 'agent-7')
@@ -114,7 +114,9 @@ describe('genericToolActions', () => {
       />
     ))
 
-    fireEvent.click(screen.getByTestId('control-bypass-btn'))
+    // The handler AWAITS the allow before switching the mode, so the assertion
+    // waits for that microtask -- ordering is the point of the fix.
+    await fireEvent.click(screen.getByTestId('control-bypass-btn'))
 
     // Verify allow response was sent
     expect(onRespond).toHaveBeenCalledOnce()

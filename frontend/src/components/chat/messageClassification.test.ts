@@ -399,6 +399,56 @@ describe('classifyMessage', () => {
     const result = classifyMessage(input({}))
     expect(result.kind).toBe('unknown')
   })
+
+  // -- worker-authored notifications ----------------------------------------
+
+  // The worker writes the subagent-end divider itself, so no agent wire format
+  // carries it and no provider plugin can classify it. These pin that it is
+  // classified before dispatch, for every provider: a miss here renders the
+  // divider as raw JSON in the subagent's own transcript.
+  describe('worker-authored notification', () => {
+    const divider = { type: 'subagent_ended', status: 'completed' }
+
+    it.each([
+      ['Claude', AgentProvider.CLAUDE_CODE],
+      ['Codex', AgentProvider.CODEX],
+      ['Pi', AgentProvider.PI],
+      ['OpenCode', AgentProvider.OPENCODE],
+      ['Cursor', AgentProvider.CURSOR],
+      ['Goose', AgentProvider.GOOSE],
+    ])('classifies subagent_ended as a notification for %s', (_name, provider) => {
+      const result = classifyMessage(input(divider, null, provider))
+      expect(result.kind).toBe('notification')
+      expect(result.kind === 'notification' && result.messages).toEqual([divider])
+    })
+
+    it('carries every final status through unchanged', () => {
+      for (const status of ['completed', 'failed', 'stopped', 'interrupted']) {
+        const parent = { type: 'subagent_ended', status }
+        const result = classifyMessage(input(parent))
+        expect(result.kind === 'notification' && result.messages).toEqual([parent])
+      }
+    })
+
+    // The branch is scoped to the types the worker authors, never to the whole
+    // NOTIFICATION_TYPE vocabulary: Codex suppresses its own `agent_error` for a
+    // turn it already reported, and a blanket membership test placed ahead of
+    // plugin.classify would render that hidden row again.
+    it('leaves an agent-emitted type to the provider plugin', () => {
+      const result = classifyMessage(
+        input({ type: 'agent_error', error: 'Codex turn failed' }, null, AgentProvider.CODEX),
+      )
+      expect(result.kind).toBe('hidden')
+    })
+
+    // A wrapper means a consolidated thread, and the plugins resolve those
+    // first. Guarding on `!wrapper` keeps that precedence.
+    it('yields to a notification thread wrapper', () => {
+      const result = classifyMessage(input(divider, wrapper({ type: 'interrupted' })))
+      expect(result.kind).toBe('notification')
+      expect(result.kind === 'notification' && result.messages).toEqual([{ type: 'interrupted' }])
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------

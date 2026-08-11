@@ -292,7 +292,7 @@ func cursorSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation 
 
 // cursorSubagentFromToolCallUpdate maps Cursor's task tool_call status
 // transitions to finished registry rows. The final update fires for EVERY
-// terminal tool_call (not just spawns); a plain tool (isBackground absent) is
+// finished tool_call (not just spawns); a plain tool (isBackground absent) is
 // a close-only observation so it does not create a spurious row. A background
 // task carries an activity line and upserts before closing.
 func cursorSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {

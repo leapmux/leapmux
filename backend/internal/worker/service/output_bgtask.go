@@ -12,7 +12,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
-	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -33,19 +33,20 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 		endedAt = r.EndedAt.Time
 	}
 	return bgtask.Item{
-		RowKey:        r.RowKey,
-		ChildAgentID:  r.ChildAgentID,
-		ParentAgentID: r.ParentAgentID,
-		Kind:          bgtask.KindFromWire(r.Kind),
-		GroupKey:      r.GroupKey,
-		GroupLabel:    r.GroupLabel,
-		Title:         r.Title,
-		Description:   r.Description,
-		ActiveForm:    r.ActiveForm,
-		Status:        bgtask.StatusFromWire(r.Status),
-		CreatedAt:     r.CreatedAt.Time,
-		UpdatedAt:     r.UpdatedAt.Time,
-		EndedAt:       endedAt,
+		RowKey:         r.RowKey,
+		ChildAgentID:   r.ChildAgentID,
+		ParentAgentID:  r.ParentAgentID,
+		Kind:           bgtask.KindFromWire(r.Kind),
+		GroupKey:       r.GroupKey,
+		GroupLabel:     r.GroupLabel,
+		Title:          r.Title,
+		TitleIsCommand: ptrconv.Int64ToBool(r.TitleIsCommand),
+		Description:    r.Description,
+		ActiveForm:     r.ActiveForm,
+		Status:         bgtask.StatusFromWire(r.Status),
+		CreatedAt:      r.CreatedAt.Time,
+		UpdatedAt:      r.UpdatedAt.Time,
+		EndedAt:        endedAt,
 	}
 }
 
@@ -53,9 +54,10 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 // queries so every cache instance shares the same type-specific behaviour.
 func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 	return registryOps[bgtask.Item]{
-		listRows: func(ctx context.Context, ownerID string, limit int32) ([]seedEntry[bgtask.Item], error) {
-			rows, err := h.queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
+		listRows: func(ctx context.Context, ownerID, bucket string, limit int32) ([]seedEntry[bgtask.Item], error) {
+			rows, err := h.queries.ListAgentBackgroundTasksByKindNewestFirst(ctx, db.ListAgentBackgroundTasksByKindNewestFirstParams{
 				OwnerAgentID: ownerID,
+				Kind:         bucket,
 				Limit:        int64(limit),
 			})
 			if err != nil {
@@ -66,6 +68,14 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 				entries[i] = seedEntry[bgtask.Item]{item: bgItemFromRow(r), seq: r.Seq}
 			}
 			return entries, nil
+		},
+		reclaimFinishedBelowSeq: func(ctx context.Context, ownerID, bucket string, seq int64) error {
+			_, err := h.queries.DeleteFinishedAgentBackgroundTasksBelowSeq(ctx, db.DeleteFinishedAgentBackgroundTasksBelowSeqParams{
+				OwnerAgentID: ownerID,
+				Kind:         bucket,
+				Seq:          seq,
+			})
+			return err
 		},
 		keyOf:  func(r bgtask.Item) string { return r.RowKey },
 		setKey: func(r *bgtask.Item, key string) { r.RowKey = key },
@@ -84,10 +94,8 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 		// otherwise evict every finished subagent, and the subagent rows are the
 		// ones carrying a transcript worth reopening.
 		bucketOf: func(r bgtask.Item) string { return bgtask.KindWire(r.Kind) },
-		// int32 conversion, not an untyped constant: MaxTasksTotal derives from
-		// len(Kinds), which is typed int.
-		seedLimit: int32(bgtask.MaxTasksTotal),
-		label:     "background tasks",
+		buckets:  bgtask.KindWires(),
+		label:    "background tasks",
 	}
 }
 
@@ -235,13 +243,20 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 			cache.Rows[idx].EndedAt = now
 		}
 	}
+	// Read the row's PRIOR status before the write overwrites it: the divider is
+	// owed to the active -> final transition alone.
+	wasFinished := cache.Rows[idx].Status.IsFinished()
 	cache.Rows[idx].Status = status
 	cache.Rows[idx].ActiveForm = activeForm
 	cache.Rows[idx].UpdatedAt = now
-	// The guards above already excluded an already-final row, so reaching here
-	// with a final status IS the active -> final transition for this row.
+	// The guards above exclude an already-final row only when the incoming status
+	// is non-final, or when BOTH the status and the activeForm repeat. A second
+	// final update carrying the same status and a different activeForm reaches
+	// here -- Claude sends exactly that, a summary-bearing update followed by a
+	// bare one -- so the transition is tested against the prior status rather
+	// than assumed. Reporting the child twice writes the closing divider twice.
 	var endedChildID string
-	if status.IsFinished() {
+	if !wasFinished && status.IsFinished() {
 		endedChildID = cache.Rows[idx].ChildAgentID
 	}
 	return registryChange{
@@ -597,61 +612,32 @@ func (s *agentOutputSink) PersistChildPrompt(childAgentID, prompt string) error 
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
 }
 
-// childTranscriptAlreadyEnded reports whether the child's last message already
-// closes the transcript, because the provider forwarded the subagent's own
-// closing envelope into it. Reads the DB rather than an in-memory flag so it
-// holds across a worker restart.
+// claimSubagentTranscriptClose reports whether THIS caller owns the closing
+// divider for a subagent transcript.
 //
-// Answers false on a read error -- a missing divider is a worse outcome than a
-// duplicated one -- but logs first, at debug for the empty-transcript case
-// (sql.ErrNoRows, which is normal for a subagent that never spoke) and at warn
-// for anything else. Without the log a row whose content byte is wrong
-// decompresses badly on every close and stacks a duplicate divider forever,
-// with the duplicate as the only symptom anyone can see.
-func (h *OutputHandler) childTranscriptAlreadyEnded(ctx context.Context, childAgentID string, provider leapmuxv1.AgentProvider) bool {
-	last, err := h.queries.GetLatestMessageByAgentID(ctx, childAgentID)
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			slog.Warn("subagent end divider: read child transcript head failed", "child", childAgentID, "error", err)
-		}
-		return false
-	}
-	raw, err := msgcodec.Decompress(last.Content, last.ContentCompression)
-	if err != nil {
-		slog.Warn("subagent end divider: decompress child transcript head failed", "child", childAgentID, "error", err)
-		return false
-	}
-	return agent.ProviderFor(provider).EndsSubagentTranscript(raw)
-}
-
-// childTranscriptEndsWithSubagentDivider reports whether the child's last
-// message is the worker's own neutral subagent-end divider.
+// Exactly one divider closes a transcript, and TWO independent writers can end
+// one: the registry (whichever applier moved the row into a final status) and
+// the child's own turn end (a provider that forwards its subagent's closing
+// envelope, like Claude's result). Either can arrive first.
 //
-// The mirror of childTranscriptAlreadyEnded, for the opposite arrival order: it
-// lets a provider's forwarded closing envelope stand down when the registry
-// already closed the transcript. Answers false on a read error, which risks a
-// duplicate rather than a missing divider -- the same trade, in the same
-// direction, as the check it mirrors.
-func (h *OutputHandler) childTranscriptEndsWithSubagentDivider(childAgentID string) bool {
-	last, err := h.queries.GetLatestMessageByAgentID(h.bgTaskCtx(), childAgentID)
+// A durable INSERT decides it, rather than each side reading the transcript's
+// last message and inferring what the other did. Two reasons the probes could
+// not: both writers persist AFTER releasing the cache mutex, so two goroutines
+// could each read "not ended" and each write; and each probe cost a DB read
+// plus a zstd decompress, the turn-end one on EVERY child turn rather than only
+// the last. The claim also survives a worker restart, which is when a content
+// probe is least able to guess.
+//
+// Fails OPEN on a DB error: a missing divider leaves a transcript that never
+// visibly ends, with a thinking indicator that never resolves, which is worse
+// than a duplicated rule.
+func (h *OutputHandler) claimSubagentTranscriptClose(ctx context.Context, childAgentID string) bool {
+	rows, err := h.queries.ClaimSubagentTranscriptClose(ctx, childAgentID)
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			slog.Warn("child turn end: read child transcript head failed", "child", childAgentID, "error", err)
-		}
-		return false
+		slog.Warn("claim subagent transcript close", "child", childAgentID, "error", err)
+		return true
 	}
-	raw, err := msgcodec.Decompress(last.Content, last.ContentCompression)
-	if err != nil {
-		slog.Warn("child turn end: decompress child transcript head failed", "child", childAgentID, "error", err)
-		return false
-	}
-	var envelope struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return false
-	}
-	return envelope.Type == agent.NotificationTypeSubagentEnded
+	return rows > 0
 }
 
 // persistSubagentEndDivider writes the divider that closes a child transcript.
@@ -682,12 +668,12 @@ func (h *OutputHandler) persistSubagentEndDivider(childAgentID string, status bg
 		return
 	}
 	// Exactly ONE divider closes a subagent transcript. A provider that forwards
-	// its subagent's own closing envelope (Claude's result) has already drawn
-	// one, and that one is richer -- it carries the duration, and on failure the
-	// error label and detail. Stacking the neutral divider under it would say the
-	// same thing twice. A subagent stopped before it could forward a result does
-	// not end here, so it still gets the neutral divider.
-	if h.childTranscriptAlreadyEnded(ctx, childAgentID, child.AgentProvider) {
+	// its subagent's own closing envelope (Claude's result) draws a richer one --
+	// it carries the duration, and on failure the error label and detail -- so it
+	// claims first when it gets there first, and this neutral divider stands
+	// down. A subagent stopped before it could forward a result never claims, so
+	// it still gets this one.
+	if !h.claimSubagentTranscriptClose(ctx, childAgentID) {
 		return
 	}
 	content, err := json.Marshal(map[string]string{
@@ -841,6 +827,43 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 		cache.Mu.Unlock()
 		return err
 	}
+	// (owner_agent_id, row_key) is the PRIMARY KEY, so a rename onto an OCCUPIED
+	// key fails the UPDATE. That collision is reachable: a session history replay
+	// re-creates the spawn row under the toolCallId while the pre-restart row
+	// already sits, closed, under the session id. Letting the UPDATE fail left the
+	// re-created row Running for the life of the process, which pinned the
+	// parent's thinking indicator. The row already at newKey is the complete one --
+	// it carries the lifecycle that reached the rename -- so the DUPLICATE at
+	// oldKey loses and is deleted.
+	occupied, err := s.h.queries.CountAgentBackgroundTasksByRowKey(ctx, db.CountAgentBackgroundTasksByRowKeyParams{
+		OwnerAgentID: s.rootAgentID,
+		RowKey:       newKey,
+	})
+	if err != nil {
+		cache.Mu.Unlock()
+		return err
+	}
+	if occupied > 0 {
+		if oldKey == newKey {
+			cache.Mu.Unlock()
+			return nil
+		}
+		if _, err := s.h.queries.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
+			OwnerAgentID: s.rootAgentID,
+			RowKey:       oldKey,
+		}); err != nil {
+			cache.Mu.Unlock()
+			return err
+		}
+		if cache.dropRowLocked(oldKey) {
+			pendingBroadcast = cache.snapshot()
+		}
+		cache.Mu.Unlock()
+		if pendingBroadcast != nil {
+			s.h.broadcastBackgroundTasks(s.rootAgentID, pendingBroadcast)
+		}
+		return nil
+	}
 	if _, err := s.h.queries.RenameAgentBackgroundTask(ctx, db.RenameAgentBackgroundTaskParams{
 		RowKey:       newKey,
 		OwnerAgentID: s.rootAgentID,
@@ -878,19 +901,8 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	// One ms-floored instant for the DB write and the cache, so a warm-cache
 	// read matches a cold-start read (no Go-time.Now-vs-SQLite drift).
 	now := nowMillis()
-	merged := bgtask.Item{
-		RowKey:        task.RowKey,
-		ChildAgentID:  task.ChildAgentID,
-		ParentAgentID: task.ParentAgentID,
-		Kind:          task.Kind,
-		GroupKey:      task.GroupKey,
-		GroupLabel:    task.GroupLabel,
-		Title:         task.Title,
-		Description:   task.Description,
-		ActiveForm:    task.ActiveForm,
-		Status:        task.Status,
-		UpdatedAt:     now,
-	}
+	merged := task.ToItem()
+	merged.UpdatedAt = now
 	if idx >= 0 {
 		existing := cache.Rows[idx]
 		merged.CreatedAt = existing.CreatedAt
@@ -925,7 +937,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	} else if bucket := bgtask.KindWire(merged.Kind); cache.atCapForBucket(bucket) {
 		// Scoped to the incoming row's kind, so making room for a shell never
 		// deletes a subagent (and the reverse).
-		evicted, err := cache.evictOldestFinishedInBucketLocked(ctx, rootAgentID, bucket)
+		_, evicted, err := cache.evictOldestFinishedInBucketLocked(ctx, rootAgentID, bucket)
 		if err != nil {
 			return registryChange{}, err
 		}
@@ -951,7 +963,7 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 				}
 			}
 			if evictIdx >= 0 {
-				if _, err := cache.evictAtLocked(ctx, rootAgentID, evictIdx); err != nil {
+				if _, _, err := cache.evictAtLocked(ctx, rootAgentID, evictIdx); err != nil {
 					return registryChange{}, err
 				}
 			} else {
@@ -972,18 +984,19 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 		merged.EndedAt = now
 	}
 	if err := h.queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
-		OwnerAgentID:  rootAgentID,
-		RowKey:        task.RowKey,
-		Seq:           cache.nextSeq,
-		Kind:          bgtask.KindWire(merged.Kind),
-		ChildAgentID:  merged.ChildAgentID,
-		ParentAgentID: merged.ParentAgentID,
-		GroupKey:      merged.GroupKey,
-		GroupLabel:    merged.GroupLabel,
-		Title:         merged.Title,
-		Description:   merged.Description,
-		ActiveForm:    merged.ActiveForm,
-		Status:        bgtask.StatusWire(merged.Status),
+		OwnerAgentID:   rootAgentID,
+		RowKey:         task.RowKey,
+		Seq:            cache.nextSeq,
+		Kind:           bgtask.KindWire(merged.Kind),
+		ChildAgentID:   merged.ChildAgentID,
+		ParentAgentID:  merged.ParentAgentID,
+		GroupKey:       merged.GroupKey,
+		GroupLabel:     merged.GroupLabel,
+		Title:          merged.Title,
+		TitleIsCommand: ptrconv.BoolToInt64(merged.TitleIsCommand),
+		Description:    merged.Description,
+		ActiveForm:     merged.ActiveForm,
+		Status:         bgtask.StatusWire(merged.Status),
 		// created_at binds on INSERT only (the ON CONFLICT UPDATE does not touch
 		// it); updated_at binds on both. Both derive from the same `now` so the
 		// cache and the persisted row agree to the millisecond.

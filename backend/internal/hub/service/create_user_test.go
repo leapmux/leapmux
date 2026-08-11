@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -95,6 +96,57 @@ func TestCreateUser_SeedsTheDefaultSections(t *testing.T) {
 	got, err := st.WorkspaceSections().ListByUserID(ctx, userid.MustNew(user.ID))
 	require.NoError(t, err)
 	assert.Len(t, got, sections.Count, "signup seeds every default section")
+}
+
+// failingSectionsStore fails every WorkspaceSections().Create, leaving every
+// other operation to the real store. It exists to fail INSIDE the transaction
+// but AFTER the user row is written, which is the only shape that exercises the
+// rollback: a duplicate username aborts at the first statement, so nothing has
+// been written for the transaction to undo.
+type failingSectionsStore struct {
+	store.Store
+}
+
+func (s failingSectionsStore) RunInTransaction(ctx context.Context, fn func(store.Store) error) error {
+	return s.Store.RunInTransaction(ctx, func(tx store.Store) error {
+		return fn(failingSectionsStore{Store: tx})
+	})
+}
+
+func (s failingSectionsStore) WorkspaceSections() store.WorkspaceSectionStore {
+	return failingSectionStore{WorkspaceSectionStore: s.Store.WorkspaceSections()}
+}
+
+type failingSectionStore struct {
+	store.WorkspaceSectionStore
+}
+
+func (failingSectionStore) Create(context.Context, store.CreateWorkspaceSectionParams) error {
+	return errors.New("injected section failure")
+}
+
+// A failure while seeding the sections must roll the USER ROW back with them:
+// the two writes share one transaction precisely so a user can never exist
+// without a sidebar.
+func TestCreateUser_SectionFailureRollsBackTheUserRow(t *testing.T) {
+	t.Parallel()
+
+	st := setupCreateUserTestDB(t)
+	ctx := context.Background()
+
+	hash, err := password.Hash("testpass")
+	require.NoError(t, err)
+	_, err = CreateUser(ctx, failingSectionsStore{Store: st}, CreateUserParams{
+		Username:     "rollback",
+		PasswordHash: hash,
+		DisplayName:  "Rollback",
+		PasswordSet:  true,
+	})
+	require.Error(t, err, "the injected section failure must surface")
+
+	users, err := st.Users().Count(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), users, "the user row rolled back with the sections")
 }
 
 // The sections go in the SAME transaction as the user row, so a failure after

@@ -1,8 +1,8 @@
 import type { Accessor, Component, Setter } from 'solid-js'
 import { createEffect } from 'solid-js'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { FilterableListbox } from '~/components/common/FilterableListbox'
 import { LANGUAGES } from '~/lib/languages'
-import { FilterableListbox } from '../settingsShared'
 import * as styles from './MarkdownEditor.css'
 
 export interface CodeLanguagePopoverProps {

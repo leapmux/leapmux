@@ -21,7 +21,6 @@ function renderMenu(opts: {
   groups?: AvailableOptionGroup[]
   provider?: AgentProvider
   values?: Record<string, string>
-  disabled?: boolean
   disabledReason?: string
   canAttach?: boolean
   agentInfo?: boolean
@@ -43,7 +42,6 @@ function renderMenu(opts: {
       onSettingChange={onSettingChange}
       onAttachFile={onAttachFile}
       canAttach={opts.canAttach ?? true}
-      disabled={opts.disabled}
       disabledReason={opts.disabledReason}
       settingsLoading={opts.settingsLoading}
       branchName={opts.branchName}
@@ -137,7 +135,7 @@ describe('composerPlusMenu', () => {
   it('disables attach and the settings submenus when the composer accepts no input', async () => {
     const { onSettingChange } = renderMenu({
       groups: [group('model', 'Model', 10, ['opus', 'sonnet'])],
-      disabled: true,
+      disabledReason: 'This subagent doesn\'t accept messages.',
     })
 
     expect(screen.getByTestId('composer-attach-file')).toBeDisabled()
@@ -151,25 +149,28 @@ describe('composerPlusMenu', () => {
     // to the hint above the box. A reason invented here would be a third copy
     // that drifts -- a subagent tab would read "subagent" in the box and
     // "agent" in this menu.
-    renderMenu({ disabled: true, disabledReason: 'This subagent doesn\'t accept messages.' })
+    renderMenu({ disabledReason: 'This subagent doesn\'t accept messages.' })
 
     expect(screen.getByTestId('composer-attach-file'))
       .toHaveAttribute('title', 'This subagent doesn\'t accept messages.')
   })
 
-  it('invents no reason of its own when the caller gives none', () => {
-    // The menu applies no fallback: AgentEditorPanel resolves ONE reason and
-    // hands every surface the same resolved string, so a default applied here
-    // could only be a second copy that drifts from the box beside it.
-    renderMenu({ disabled: true })
+  it('leaves attach live when no reason is given', () => {
+    // The reason IS the disabled flag, so "dead with nothing to say" cannot be
+    // expressed. The menu also applies no fallback of its own: AgentEditorPanel
+    // resolves ONE reason and hands every surface the same resolved string, so a
+    // default invented here could only be a second copy that drifts.
+    renderMenu({})
 
-    expect(screen.getByTestId('composer-attach-file')).not.toHaveAttribute('title')
+    const attach = screen.getByTestId('composer-attach-file')
+    expect(attach).toBeEnabled()
+    expect(attach).not.toHaveAttribute('title')
   })
 
   it('prefers the disabled reason over the control-request reason', () => {
     // A disabled composer during a control request is still disabled; the
     // narrower "unavailable during a control request" would understate it.
-    renderMenu({ disabled: true, canAttach: false, disabledReason: 'No input here.' })
+    renderMenu({ canAttach: false, disabledReason: 'No input here.' })
 
     expect(screen.getByTestId('composer-attach-file'))
       .toHaveAttribute('title', 'No input here.')
@@ -177,7 +178,7 @@ describe('composerPlusMenu', () => {
 
   it('keeps the view toggles live on a disabled composer', async () => {
     // They are local display preferences, not agent settings.
-    const { onToggleStatusBar } = renderMenu({ disabled: true })
+    const { onToggleStatusBar } = renderMenu({ disabledReason: 'This subagent doesn\'t accept messages.' })
 
     await fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /Show status bar/, hidden: true }))
     expect(onToggleStatusBar).toHaveBeenCalledTimes(1)
@@ -263,6 +264,14 @@ describe('composerPlusMenu', () => {
     const noSessionItems = renderMenu({ groups: [group('model', 'Model', 10)] })
     expect(countAdjacentRules(noSessionItems.container)).toBe(0)
     expect(screen.queryByTestId('composer-plus-branch')).toBeNull()
+
+    // The case the two above miss: a fresh tab before its first status push has
+    // NOTHING between the attach item and the view toggles, so both fencing
+    // rules used to render back to back.
+    cleanup()
+    const bare = renderMenu()
+    expect(countAdjacentRules(bare.container)).toBe(0)
+    expect(bare.container.querySelectorAll('hr')).toHaveLength(0)
   })
 
   it('disables both branch actions when the Worker is unreachable, and says why', () => {

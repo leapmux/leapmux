@@ -41,7 +41,7 @@ import {
   createTabKeyPlugin,
 } from '~/lib/editor/keyboardPlugins'
 import { createLazyShikiParser } from '~/lib/editor/lazyShikiParser'
-import { createLinkClickPlugin } from '~/lib/editor/linkPlugin'
+import { createLinkClickPlugin, createLinkShortcutPlugin } from '~/lib/editor/linkPlugin'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
 
 // One Oniguruma-backed highlighter shared across all editor mounts. Created
@@ -181,6 +181,7 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
   const listItemEnterPlugin = createListItemEnterPlugin(opts.pluginRefs)
   const codeLangPlugin = createCodeLangPlugin(opts.codeLangHandlers)
   const linkClickPlugin = createLinkClickPlugin(opts.linkClickHandlers)
+  const linkShortcutPlugin = createLinkShortcutPlugin(opts.linkClickHandlers)
   const listDeleteFixPlugin = createListDeleteFixPlugin()
   const codeSpanEscapePlugin = createCodeSpanEscapePlugin()
   const markdownPastePlugin = createMarkdownPastePlugin()
@@ -300,6 +301,7 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
     .use(suppressTextSubstitutionPlugin)
     .use(codeLangPlugin)
     .use(linkClickPlugin)
+    .use(linkShortcutPlugin)
     .use(linkBoundaryPlugin)
     .use(linkInputRule)
     .use(hrInputRule)

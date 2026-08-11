@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -114,13 +115,13 @@ func TestBgTask_UpdateStatusFinalStampsEndedAt(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, 1)
 	assert.Equal(t, "completed", rows[0].Status)
-	assert.True(t, rows[0].EndedAt.Valid, "terminal status update stamps ended_at")
+	assert.True(t, rows[0].EndedAt.Valid, "final status update stamps ended_at")
 }
 
 // TestBgTask_UpdateStatusMonotonicOnFinal verifies that a non-final
 // status update on an already-finished row does NOT resurrect it. A late or
 // replayed task_progress (carrying Running) arriving after a close must leave
-// the row terminal, or it pins the parent's thinking indicator forever.
+// the row final, or it pins the parent's thinking indicator forever.
 func TestBgTask_UpdateStatusMonotonicOnFinal(t *testing.T) {
 	t.Parallel()
 
@@ -133,7 +134,7 @@ func TestBgTask_UpdateStatusMonotonicOnFinal(t *testing.T) {
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "late progress"))
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "completed", rows[0].Status, "terminal row stays terminal")
+	assert.Equal(t, "completed", rows[0].Status, "finished row stays finished")
 	assert.True(t, rows[0].EndedAt.Valid, "ended_at stays stamped")
 }
 
@@ -154,7 +155,7 @@ func TestBgTask_UpsertMonotonicOnFinal(t *testing.T) {
 	}))
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "interrupted", rows[0].Status, "replayed running upsert does not resurrect a terminal row")
+	assert.Equal(t, "interrupted", rows[0].Status, "replayed running upsert does not resurrect a finished row")
 	assert.True(t, rows[0].EndedAt.Valid, "ended_at stays stamped")
 }
 
@@ -222,13 +223,13 @@ func TestBgTask_CloseStampsEndedAt(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, 1)
 	assert.Equal(t, "completed", rows[0].Status)
-	assert.True(t, rows[0].EndedAt.Valid, "terminal close stamps ended_at")
+	assert.True(t, rows[0].EndedAt.Valid, "final close stamps ended_at")
 }
 
-// TestBgTask_CloseIsIdempotentOnTerminalRow verifies a second close on an
+// TestBgTask_CloseIsIdempotentOnFinishedRow verifies a second close on an
 // already-finished row is a no-op (CloseAgentBackgroundTask only closes active
 // rows). The ended_at and status must not change.
-func TestBgTask_CloseIsIdempotentOnTerminalRow(t *testing.T) {
+func TestBgTask_CloseIsIdempotentOnFinishedRow(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupBgTaskTest(t)
@@ -244,15 +245,15 @@ func TestBgTask_CloseIsIdempotentOnTerminalRow(t *testing.T) {
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusFailed))
 	rows = listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "completed", rows[0].Status, "first terminal status wins")
+	assert.Equal(t, "completed", rows[0].Status, "first final status wins")
 	assert.Equal(t, endedAt, rows[0].EndedAt, "ended_at must not change on re-close")
 }
 
-func TestBgTask_CapEvictsOldestTerminal(t *testing.T) {
+func TestBgTask_CapEvictsOldestFinished(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupBgTaskTest(t)
-	// Seed MaxTasks rows: the first is completed (oldest terminal), the rest running.
+	// Seed MaxTasks rows: the first is completed (oldest finished), the rest running.
 	for i := 1; i <= bgtask.MaxTasks; i++ {
 		status := bgtask.StatusRunning
 		if i == 1 {
@@ -277,15 +278,15 @@ func TestBgTask_CapEvictsOldestTerminal(t *testing.T) {
 	for _, r := range rows {
 		keys[r.RowKey] = struct{}{}
 	}
-	assert.NotContains(t, keys, "task-1", "oldest terminal row evicted")
+	assert.NotContains(t, keys, "task-1", "oldest finished row evicted")
 	assert.Contains(t, keys, "task-new")
 }
 
-func TestBgTask_CapNoTerminalEvictsOldestActive(t *testing.T) {
+func TestBgTask_CapNoFinishedRowEvictsOldestActive(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupBgTaskTest(t)
-	// Seed MaxTasks running rows — nothing terminal for eviction to take.
+	// Seed MaxTasks running rows — no finished row for eviction to take.
 	for i := 1; i <= bgtask.MaxTasks; i++ {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 			RowKey: fmt.Sprintf("task-%d", i),
@@ -308,7 +309,7 @@ func TestBgTask_CapNoTerminalEvictsOldestActive(t *testing.T) {
 	for _, r := range rows {
 		keys[r.RowKey] = struct{}{}
 	}
-	assert.NotContains(t, keys, "task-1", "oldest active row evicted at cap with no terminal row")
+	assert.NotContains(t, keys, "task-1", "oldest active row evicted at cap with no finished row")
 	assert.Contains(t, keys, "task-new", "new row linked")
 }
 
@@ -431,6 +432,37 @@ func TestBgTask_RenameIsNoOpForMissingRow(t *testing.T) {
 	// Renaming a key that was never inserted is a no-op (no row created).
 	require.NoError(t, sink.RenameBackgroundTask("absent", "whatever"))
 	assert.Empty(t, listRows())
+}
+
+// TestBgTask_RenameOntoOccupiedKeyDropsTheDuplicate covers the session-replay
+// collision. (owner_agent_id, row_key) is the PRIMARY KEY, so a rename onto an
+// occupied key fails the UPDATE. That is reachable: a replay re-creates the
+// spawn row under the toolCallId while the pre-restart row already sits, closed,
+// under the session id. The failed rename used to leave the re-created row
+// Running for the life of the process, which pinned the parent's thinking
+// indicator. The row already at newKey wins; the duplicate at oldKey is dropped.
+func TestBgTask_RenameOntoOccupiedKeyDropsTheDuplicate(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupBgTaskTest(t)
+	// The completed row from before the restart, already re-keyed to the session id.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "sess-stable", Kind: bgtask.KindSubagent, Title: "spawn", Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.CloseBackgroundTask("sess-stable", bgtask.StatusCompleted))
+	// The replay re-creates the spawn row under the toolCallId.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "spawn-key", Kind: bgtask.KindSubagent, Title: "spawn", Status: bgtask.StatusRunning,
+	}))
+	require.Len(t, listRows(), 2)
+
+	// The replayed final update renames onto the occupied key.
+	require.NoError(t, sink.RenameBackgroundTask("spawn-key", "sess-stable"))
+
+	rows := listRows()
+	require.Len(t, rows, 1, "the duplicate is dropped rather than left Running")
+	assert.Equal(t, "sess-stable", rows[0].RowKey)
+	assert.Equal(t, "completed", rows[0].Status, "the surviving row keeps its final status")
 }
 
 // TestBgTask_RenameOnColdCacheRekeysDBRow verifies the rename seeds the cache
@@ -717,7 +749,7 @@ func TestBgTask_ShellPoolEvictsShellsOnly(t *testing.T) {
 	for _, r := range rows {
 		keys[r.RowKey] = struct{}{}
 	}
-	assert.NotContains(t, keys, "shell-1", "the shell pool evicted its own oldest terminal row")
+	assert.NotContains(t, keys, "shell-1", "the shell pool evicted its own oldest finished row")
 	assert.Contains(t, keys, "agent-keep", "the subagent pool is untouched")
 	assert.Contains(t, keys, "shell-new")
 }
@@ -752,7 +784,101 @@ func TestBgTask_SeedLoadsEveryKindPool(t *testing.T) {
 	svc.Output.CleanupAgent("agent-1")
 	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Len(t, loaded, bgtask.MaxTasksTotal, "the seed covers both pools")
+	assert.Len(t, loaded, bgtask.MaxTasks*len(bgtask.Kinds), "the seed covers both pools, each to its own cap")
+}
+
+// A pool is seeded to ITS OWN cap, so a burst in one pool cannot starve another.
+// Under one global window, an owner whose newest rows are all shells seeded an
+// EMPTY subagent pool -- and the subagent rows are the ones carrying a
+// transcript worth reopening.
+func TestBgTask_SeedFillsEachPoolDespiteSkew(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+
+	// A few subagents FIRST, then a full pool of newer shells on top of them.
+	const subagents = 3
+	for i := 1; i <= subagents; i++ {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("agent-%03d", i), Kind: bgtask.KindSubagent,
+			Title: "a", Status: bgtask.StatusCompleted,
+		}))
+	}
+	for i := 1; i <= bgtask.MaxTasks; i++ {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			RowKey: fmt.Sprintf("shell-%03d", i), Kind: bgtask.KindShell,
+			Title: "s", Status: bgtask.StatusCompleted,
+		}))
+	}
+
+	// Drop the warm cache so the next read seeds from the DB.
+	svc.Output.CleanupAgent("agent-1")
+	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
+	require.NoError(t, err)
+
+	var gotSubagents int
+	for _, r := range loaded {
+		if r.Kind == bgtask.KindSubagent {
+			gotSubagents++
+		}
+	}
+	assert.Equal(t, subagents, gotSubagents,
+		"every subagent row survives, although newer shells fill their own pool")
+}
+
+// The seed RECLAIMS the finished rows its window leaves behind. Eviction only
+// deletes a row the cache holds, so surplus left outside the window was neither
+// shown nor deleted: invisible in the sidebar, and growing without limit.
+func TestBgTask_SeedReclaimsFinishedSurplus(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	// Push the shell pool past its cap with FINISHED rows, writing straight to
+	// the DB so in-memory eviction does not trim them first -- which is exactly
+	// the state a soft-cap overflow leaves behind across a restart.
+	const overflow = 5
+	now := nowMillis()
+	for i := 1; i <= bgtask.MaxTasks+overflow; i++ {
+		require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
+			OwnerAgentID: "agent-1",
+			RowKey:       fmt.Sprintf("shell-%03d", i),
+			Seq:          int64(i),
+			Kind:         "shell",
+			Title:        "s",
+			Status:       "completed",
+			CreatedAt:    sqltime.NewSQLiteTime(now),
+			UpdatedAt:    sqltime.NewSQLiteTime(now),
+		}))
+	}
+	before, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
+		OwnerAgentID: "agent-1", Limit: 1000,
+	})
+	require.NoError(t, err)
+	require.Len(t, before, bgtask.MaxTasks+overflow, "the DB holds the surplus before the seed")
+
+	_, err = svc.Output.LoadBackgroundTasks(ctx, "agent-1")
+	require.NoError(t, err)
+
+	after, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
+		OwnerAgentID: "agent-1", Limit: 1000,
+	})
+	require.NoError(t, err)
+	assert.Len(t, after, bgtask.MaxTasks, "the seed reclaimed the finished surplus")
 }
 
 // The cap is a SOFT bound: applyBackgroundTaskUpsertLocked exceeds it rather
@@ -778,25 +904,25 @@ func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// Fill the subagent pool with ACTIVE rows that each carry a child, which is
-	// the state that makes the cap soft: eviction refuses to orphan them. Go
-	// past MaxTasksTotal so the seed's LIMIT genuinely has to choose.
+	// the state that makes the cap soft: eviction refuses to orphan them. Go past
+	// the pool's cap so the seed's LIMIT genuinely has to choose.
 	const overflow = 8
-	newest := fmt.Sprintf("agent-%03d", bgtask.MaxTasksTotal+overflow)
-	for i := 1; i <= bgtask.MaxTasksTotal+overflow; i++ {
+	newest := fmt.Sprintf("agent-%03d", bgtask.MaxTasks+overflow)
+	for i := 1; i <= bgtask.MaxTasks+overflow; i++ {
 		rowKey := fmt.Sprintf("agent-%03d", i)
 		_, err := sink.EnsureChildAgent(fmt.Sprintf("span-%03d", i), rowKey, "SCAN")
 		require.NoError(t, err)
 	}
 	total, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
 	require.NoError(t, err)
-	require.Greater(t, len(total), bgtask.MaxTasksTotal,
+	require.Greater(t, len(total), bgtask.MaxTasks,
 		"the soft cap must actually be exceeded, or this test proves nothing")
 
 	// Drop the warm cache so the next read seeds from the DB.
 	svc.Output.CleanupAgent("agent-1")
 	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
 	require.NoError(t, err)
-	require.Len(t, loaded, bgtask.MaxTasksTotal)
+	require.Len(t, loaded, bgtask.MaxTasks)
 
 	keys := make([]string, len(loaded))
 	for i, r := range loaded {

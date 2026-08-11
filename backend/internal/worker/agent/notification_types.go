@@ -54,7 +54,7 @@ const (
 	// writes exactly one into a child transcript when that subagent's
 	// background-task row reaches a final status, so the subagent tab shows
 	// WHERE it stopped and WHY instead of a thinking indicator that never
-	// resolves. Carries a `status` field holding the registry's terminal wire
+	// resolves. Carries a `status` field holding the registry's final wire
 	// status (completed / failed / stopped / interrupted). Provider-neutral:
 	// the registry close is the one moment every provider agrees a subagent is
 	// over, including the ones whose child transcript simply stops.

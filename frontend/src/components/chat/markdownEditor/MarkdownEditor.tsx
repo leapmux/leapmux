@@ -282,15 +282,15 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
     }
   }
 
+  // ONE effect for the three decoration-visible props, so a change that moves
+  // two of them -- switching to a read-only subagent flips `disabled` and
+  // `disabledPlaceholder` together -- dispatches one empty transaction instead
+  // of three. Each dispatch re-applies every plugin's state and re-diffs the
+  // decorations (placeholder, code-language labels, syntax highlight), and the
+  // earlier ones ran against refs the later effects had not assigned yet.
   createEffect(() => {
     disabledRef = props.disabled ?? false
-    forceDecorationUpdate()
-  })
-  createEffect(() => {
     placeholderRef = props.placeholder ?? 'Send a message...'
-    forceDecorationUpdate()
-  })
-  createEffect(() => {
     disabledPlaceholderRef = props.disabledPlaceholder ?? ''
     forceDecorationUpdate()
   })
@@ -539,6 +539,15 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         }
         catch { /* editor may not be ready */ }
       }
+
+      // Close both popovers BEFORE the document is replaced. Each holds absolute
+      // positions into the OUTGOING document, and this component is reused across
+      // draft keys, so a popover left open would act on a document its positions
+      // no longer describe -- writing an href onto unrelated text, or throwing.
+      setLinkPopoverOpen(false)
+      setLinkRange(null)
+      setCodeLangPopoverOpen(false)
+      setCodeLangNodePos(-1)
 
       // Load draft for the new key and replace editor content.
       const draft = newDraftKey ? loadDraft(newDraftKey) : { content: '', cursor: -1 }

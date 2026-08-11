@@ -84,7 +84,7 @@ const dotPulse = keyframes({
  * line -- every line below it, and the secondary line in the block underneath,
  * run the full width.
  *
- * 8px matches the workers section's dot (workerSection.css.ts), so the two
+ * 8px matches the workers section's dot (~/components/workers/workerSection.css.ts), so the two
  * sidebar sections read as one vocabulary.
  */
 export const statusDot = style({
@@ -104,12 +104,20 @@ export const statusDot = style({
 export const statusDotActive = style({
   'background': 'var(--primary)',
   '@media': {
-    // Motion is the in-progress signal, so it is opt-out, not opt-in: a reader
-    // who suppresses motion still gets the colour and the accessible name.
+    // Motion is the RUNNING signal, so it is opt-out, not opt-in. It cannot be
+    // the only signal, though: a reader who suppresses motion sees a static dot,
+    // which is why queued carries its own shape below rather than sharing this
+    // colour.
     '(prefers-reduced-motion: no-preference)': {
       animation: `${dotPulse} 2s ease-in-out infinite`,
     },
   },
+})
+// Queued: a hollow ring in the same colour as running. The distinction survives
+// with motion suppressed, where the pulse above does not.
+export const statusDotPending = style({
+  background: 'transparent',
+  boxShadow: 'inset 0 0 0 1.5px var(--primary)',
 })
 export const statusDotSuccess = style({ background: 'var(--success)' })
 export const statusDotDanger = style({ background: 'var(--danger)' })

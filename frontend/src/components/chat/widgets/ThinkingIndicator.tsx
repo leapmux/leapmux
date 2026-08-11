@@ -57,8 +57,9 @@ export interface ThinkingIndicatorProps {
   backgroundTaskCount?: number
   /**
    * The background-task list for the popover (active + past), scoped the same
-   * way as backgroundTaskCount. When that count is > 0 and this is supplied,
-   * the chip is a popover trigger.
+   * way as backgroundTaskCount. The COUNT alone decides whether the chip shows
+   * and opens a popover, so a caller that reports a count must supply the
+   * matching list or the popover opens empty.
    */
   backgroundTasks?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
@@ -506,7 +507,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       ),
     },
     {
-      // `countTokens` (not the raw prop) gates the count: it tracks the live
+      // `countTokens` (not the raw prop) controls the count: it tracks the live
       // estimate while the indicator is visible, then holds the last value for
       // ROW_FADE_MS so the count fades out WITH the collapsing row instead of
       // popping -- and unmounts after, so a stale estimate can't keep it (or
@@ -600,10 +601,13 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
               {verbSpan(false, charsB, highlightPosB)}
             </span>
             {/* The counters that trail the verb, in render order.
-                A CONSTANT array driven by <For>, so the rows are created once:
-                a predicate flip toggles the <Show> INSIDE a row and never
-                re-mounts ThinkingTokenCount (which would restart its odometer
-                roll) or a DropdownMenu (which would close an open popover).
+                A CONSTANT array driven by <For>, so each counter owns its own
+                <Show>: a predicate flip re-creates only THAT counter and leaves
+                its neighbours mounted, so a neighbour's DropdownMenu keeps an
+                open popover and a neighbour's ThinkingTokenCount keeps its
+                odometer. (A counter's own flip does dispose and rebuild it --
+                <Show> is not keyed -- so the token count restarts its roll when
+                it reappears at the start of a turn.)
 
                 The separator rule lives here, once, derived from position: draw
                 a leading middot when any EARLIER counter is showing. Spelling it

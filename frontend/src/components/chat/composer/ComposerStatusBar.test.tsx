@@ -25,7 +25,7 @@ function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
   } as unknown as AgentInfo
 }
 
-function renderBar(a: AgentInfo | undefined, extra: { disabled?: boolean, branchDisabledReason?: string } = {}) {
+function renderBar(a: AgentInfo | undefined, extra: { disabledReason?: string, branchDisabledReason?: string } = {}) {
   return render(() => (
     <ComposerStatusBar
       agent={a}
@@ -90,7 +90,7 @@ describe('composerStatusBar', () => {
   it('disables every chip when the composer accepts no input', async () => {
     renderBar(
       agent({ optionGroups: [group('model', 'Model', ['opus', 'sonnet'])] } as Partial<AgentInfo>),
-      { disabled: true },
+      { disabledReason: 'This subagent doesn\'t accept messages.' },
     )
 
     expect(screen.getByTestId('composer-model-sonnet')).toBeDisabled()

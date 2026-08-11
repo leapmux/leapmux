@@ -394,8 +394,18 @@ describe('shouldShowThinkingIndicator', () => {
         .toBe(false)
     })
 
-    it('hides it even with a stale streaming tail from the turn that ended', () => {
+    // The row outranks the message history, NOT live evidence of a turn. A
+    // steerable subagent (Codex re-registers a collab child on a later tool
+    // call) takes a new message after its row went final, and the row never
+    // reopens -- so the turn the user just started must still show the indicator,
+    // and must still offer Interrupt, which the same predicate gates.
+    it('shows it again when a finished subagent starts streaming a new turn', () => {
       expect(shouldShowThinkingIndicator(makeAgent(), {}, [], 'half a sentence', 0, 'finished'))
+        .toBe(true)
+    })
+
+    it('still hides it for a finished row with no live turn', () => {
+      expect(shouldShowThinkingIndicator(makeAgent(), {}, interruptedTail, '', 0, 'finished'))
         .toBe(false)
     })
   })
@@ -409,7 +419,7 @@ describe('shouldShowThinkingIndicator', () => {
 })
 
 // A subagent transcript is closed by the worker's subagent-end divider (written
-// when that subagent's registry row goes terminal). It is a notification, so
+// when that subagent's registry row reaches a final status). It is a notification, so
 // without an explicit stop the backwards scan would step over it, reach the
 // subagent's last real message, and report a finished subagent as still working.
 describe('isAgentWorking: the subagent-end divider', () => {
@@ -424,7 +434,7 @@ describe('isAgentWorking: the subagent-end divider', () => {
     ])).toBe(false)
   })
 
-  it('reports not working for every terminal status', () => {
+  it('reports not working for every final status', () => {
     for (const status of ['completed', 'failed', 'stopped', 'interrupted']) {
       expect(isAgentWorking([
         makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'working' })),

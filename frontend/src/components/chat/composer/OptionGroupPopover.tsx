@@ -32,11 +32,14 @@ export interface OptionGroupPopoverProps {
   /** Dispatch a change for this axis. */
   onChange?: (change: ProviderSettingChange) => void
   /**
-   * Whether the composer accepts changes at all. A disabled composer (a
-   * non-steerable subagent) must not dispatch a settings change, so the
-   * options render read-only.
+   * Why the composer accepts no changes at all, when it does not. Its PRESENCE
+   * is what disables the options, so a dead surface can never render without
+   * saying why. The caller resolves the sentence once and every surface shows
+   * that one string -- the `[+]` menu's attach item, the editor's placeholder,
+   * and each settings submenu -- instead of each inventing its own wording for
+   * the same condition.
    */
-  disabled?: boolean
+  disabledReason?: string
   /** Renders the button that opens the popover. */
   trigger: (triggerProps: DropdownTriggerProps, view: OptionGroupTriggerView) => JSX.Element
   /** Class for the popover panel. */
@@ -96,10 +99,12 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
 
   // A group the agent controls, or a composer that accepts no input at all,
   // both render the options read-only — the reasons differ, so the tooltip does.
-  const readOnly = () => props.disabled || !group()?.mutable
+  // The composer-wide reason comes from the caller, which resolved it once for
+  // every surface; only the per-group reason is this component's to write.
+  const readOnly = () => !!props.disabledReason || !group()?.mutable
   const readOnlyReason = () => {
-    if (props.disabled)
-      return 'This agent does not accept setting changes'
+    if (props.disabledReason)
+      return props.disabledReason
     return group()?.mutable ? undefined : 'This setting is controlled by the agent'
   }
 

@@ -251,7 +251,7 @@ describe('backgroundTaskStatusLabel', () => {
     expect(backgroundTaskStatusLabel('running')).toBe('Running')
   })
 
-  it('reuses the terminal end labels', () => {
+  it('reuses the final end labels', () => {
     expect(backgroundTaskStatusLabel('completed')).toBe('Completed')
     expect(backgroundTaskStatusLabel('failed')).toBe('Failed')
     expect(backgroundTaskStatusLabel('stopped')).toBe('Stopped')

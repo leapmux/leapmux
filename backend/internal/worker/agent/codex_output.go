@@ -424,7 +424,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		if collab := parseCollabToolCall(item); collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
 				a.registerCollabReceiver(receiverID, itemID)
-				a.rememberCollabPrompt(receiverID, collab.Prompt)
+				a.collabChildPrompts.remember(receiverID, collab.Prompt)
 			}
 		}
 	case "reasoning":
@@ -507,10 +507,10 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		if collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
 				a.registerCollabReceiver(receiverID, itemID)
-				a.rememberCollabPrompt(receiverID, collab.Prompt)
+				a.collabChildPrompts.remember(receiverID, collab.Prompt)
 			}
 			if collab.Tool == "spawnAgent" {
-				if sp := parseCollabSpawnPrompt(item); sp != "" {
+				if sp := collab.Prompt; sp != "" {
 					for _, rid := range collab.ReceiverThreadIds {
 						a.recordCollabChildTitle(rid, sp)
 					}

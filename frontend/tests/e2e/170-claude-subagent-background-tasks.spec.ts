@@ -15,9 +15,11 @@ import { expect, test } from './fixtures'
 import {
   backgroundTasksSection,
   expectRegistrySectionAbsent,
-  expectRowBecomesTerminal,
+  expectRowBecomesFinal,
   expectSectionPersists,
   listAgents,
+  openChildTabFromRow,
+  requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage, waitForAgentIdle } from './helpers/ui'
 
@@ -33,15 +35,24 @@ test.describe('Claude subagent background tasks', () => {
     // 1. Precondition: no registry section yet.
     await expectRegistrySectionAbsent(page)
 
-    // 2. Spawn a subagent with a recognizable marker.
+    // 2. Spawn a subagent.
+    //
+    // The subagent's job is to WRITE something, with no shell in it anywhere.
+    // Asking it to `echo` a marker gave the model a one-line shortcut it took
+    // every time -- it ran the echo itself as a background Bash, produced a
+    // SHELL row instead of a subagent one, and the spec skipped on every run
+    // while covering nothing. A task Bash cannot do removes the shortcut. The
+    // prompt is directive about the TOOL as well, since the outcome alone did
+    // not imply it.
     const MARKER = 'SUBAGENT-MARKER-1'
-    await sendMessage(page, `Use the Task tool to spawn a subagent (general-purpose) that runs \`echo ${MARKER}\` with Bash, then reports the output. Wait for the subagent to finish.`)
+    await sendMessage(page, `You MUST use the Task tool. Spawn exactly one general-purpose subagent and give it this prompt verbatim: "Write two sentences about the ocean, then end your reply with the token ${MARKER}." Do not answer it yourself and do not use Bash. Wait for the subagent to finish, then tell me what it wrote.`)
     await waitForAgentIdle(page, 180_000)
 
-    // 3. Sidebar: section + a subagent row.
+    // 3. Sidebar: section + a subagent row. The model may choose not to spawn
+    //    one at all, which is its discretion rather than a defect here, so the
+    //    spawn-dependent assertions skip rather than fail.
+    const row = await requireRegistryRow(test, page)
     await expect(backgroundTasksSection(page)).toBeVisible()
-    const row = page.locator('[data-testid="bg-task-row"]:visible[data-kind="subagent"]').first()
-    await expect(row).toBeVisible()
 
     // A clickable row is a <button>, which Oat's base button rule renders at
     // var(--font-medium). The row must override that and stay at the normal
@@ -53,18 +64,12 @@ test.describe('Claude subagent background tasks', () => {
     //    at task_started; the child-agent-id propagates via the next broadcast).
     await expect.poll(async () => await row.getAttribute('data-child-agent-id')).not.toBe('')
 
-    // 5. Open the tab from the sidebar row.
-    const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
-    await row.click()
+    // 5. Open the tab from the sidebar row. The helper asserts the agent-tab
+    //    count grew by exactly one and returns the new tab's id.
+    const childTabId = await openChildTabFromRow(page, row)
 
-    // 6. The agent-tab count increments by exactly 1.
-    await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
-
-    // 7. Worker-backed: the child agent exists with parent linkage + a
-    //    non-empty spawn span id. Read the child's tab id from the DOM (the
-    //    newly-opened tab) and query the worker directly for it.
-    const childTabId = await page.locator('[data-testid="tab"][data-tab-type="agent"]').nth(tabsBefore).getAttribute('data-tab-id') ?? ''
-    expect(childTabId).not.toBe('')
+    // 6. Worker-backed: the child agent exists with parent linkage + a
+    //    non-empty spawn span id. Query the worker directly for that tab id.
     let child: { id: string, parentAgentId: string, spawnSpanId: string } | null = null
     await expect.poll(async () => {
       const agents = await listAgents(hubUrl, adminToken, workerId, [childTabId])
@@ -78,26 +83,28 @@ test.describe('Claude subagent background tasks', () => {
     expect(child!.spawnSpanId).not.toBe('')
 
     // 8. Completion: the row becomes terminal; the section persists.
-    await expectRowBecomesTerminal(page, row, 'Completed')
+    await expectRowBecomesFinal(page, row)
     await expectSectionPersists(page)
   })
 
   test('background shell appears as a non-clickable shell row', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace
     await sendMessage(page, 'Run `sleep 3 && echo BG-MARKER` with Bash run_in_background=true, then read the output with TaskOutput.')
-    await waitForAgentIdle(page, 180_000)
+
+    // Wait for the ROW, not for the agent to go idle. A running background task
+    // keeps the thinking indicator up on purpose -- an active registry row IS
+    // the agent still working -- so waiting for idle here races the very thing
+    // the test is about, and times out whenever the shell outlives the turn.
+    // The row is the observable this test wants anyway.
+    //
+    // Tolerate the model not honoring run_in_background: without a background
+    // shell there is no row to assert on, which is its discretion, not a defect.
+    const shellRow = await requireRegistryRow(test, page, 'shell')
 
     await expect(backgroundTasksSection(page)).toBeVisible()
-    // If the model honored run_in_background, a shell row exists and is not
-    // clickable (no child-agent-id). Tolerate the model not honoring it: assert
-    // only when a shell row is present.
-    const shellRow = page.locator('[data-testid="bg-task-row"]:visible[data-kind="shell"]').first()
-    const present = await shellRow.isVisible().catch(() => false)
-    if (present) {
-      await expect(shellRow).toHaveAttribute('data-child-agent-id', '')
-      // A static row is a <div>. It must render at the same weight as the
-      // clickable <button> row that spec 170's first test pins.
-      await expect(shellRow).toHaveCSS('font-weight', '400')
-    }
+    await expect(shellRow!).toHaveAttribute('data-child-agent-id', '')
+    // A static row is a <div>. It must render at the same weight as the
+    // clickable <button> row that this spec's first test pins.
+    await expect(shellRow!).toHaveCSS('font-weight', '400')
   })
 })

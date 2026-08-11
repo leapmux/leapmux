@@ -135,8 +135,7 @@ type acpBase struct {
 	// the registry RowKey. Guarded by subagentPromptMu; entries are spent when
 	// the child is created and dropped when the row closes, so a provider that
 	// never links a child cannot grow it without bound.
-	subagentPromptMu sync.Mutex
-	subagentPrompts  map[string]string
+	subagentPrompts pendingPrompts
 	// modelIDNormalizer, when set, rewrites model ids parsed from configOptions
 	// (e.g. Cursor's auto<->default[] aliasing) before they reach availableModels.
 	modelIDNormalizer func(string) string
@@ -393,7 +392,7 @@ func (b *acpBase) ClearContext() (string, bool) {
 	// it is held for the life of the agent process -- and if the new session
 	// ever reuses the tool-call id, it would open the next transcript on the
 	// previous session's instruction. Codex clears its equivalent map here too.
-	b.clearSubagentPrompts()
+	b.subagentPrompts.clear()
 
 	b.sink.UpdateSessionID(sessionID)
 
@@ -1552,7 +1551,7 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
-			slog.Error("persist terminal acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
+			slog.Error("persist final acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
 		}
 		if b.subagentFromToolCall != nil {
 			b.applySubagentObservation(b.subagentFromToolCall(tc))
@@ -1628,85 +1627,6 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	}
 }
 
-// acpPromptString renders a spawn tool's `prompt` argument as text.
-//
-// It is declared json.RawMessage by the detectors because its shape is the
-// SPAWN DISCRIMINATOR (presence, not value), and the shape varies: OpenCode and
-// Kilo send a plain string (packages/opencode/src/tool/task.ts), while a
-// content-block array is the natural ACP spelling and costs nothing to accept.
-// Anything else renders as "" rather than as a JSON dump the user would have to
-// read through.
-func acpPromptString(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
-		return text
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return ""
-	}
-	var parts []string
-	for _, b := range blocks {
-		if b.Text != "" {
-			parts = append(parts, b.Text)
-		}
-	}
-	return strings.Join(parts, "\n\n")
-}
-
-// rememberSubagentPrompt stores a spawn's prompt under its registry row key.
-// First write wins: a later observation for the same row that re-reports the
-// prompt must not replace the spawn's own text.
-//
-// Only a provider that LATER reports a ChildAgentKey can ever spend one, since
-// takeSubagentPrompt runs on the observation that creates the child transcript.
-// Goose is that provider: its spawn tool_call carries the instructions and the
-// child key arrives on a separate observation, which is the whole reason this
-// map exists. A detector that sets Prompt without such a path stores a string
-// nothing reads, so the registry-only providers deliberately leave it empty.
-func (b *acpBase) rememberSubagentPrompt(rowKey, prompt string) {
-	b.subagentPromptMu.Lock()
-	defer b.subagentPromptMu.Unlock()
-	if b.subagentPrompts == nil {
-		b.subagentPrompts = make(map[string]string)
-	}
-	if _, ok := b.subagentPrompts[rowKey]; !ok {
-		b.subagentPrompts[rowKey] = prompt
-	}
-}
-
-// takeSubagentPrompt removes and returns the remembered prompt for rowKey, or
-// "" when none was recorded.
-func (b *acpBase) takeSubagentPrompt(rowKey string) string {
-	b.subagentPromptMu.Lock()
-	defer b.subagentPromptMu.Unlock()
-	prompt := b.subagentPrompts[rowKey]
-	delete(b.subagentPrompts, rowKey)
-	return prompt
-}
-
-// forgetSubagentPrompt drops an unspent prompt for a row that closed.
-func (b *acpBase) forgetSubagentPrompt(rowKey string) {
-	b.subagentPromptMu.Lock()
-	defer b.subagentPromptMu.Unlock()
-	delete(b.subagentPrompts, rowKey)
-}
-
-// clearSubagentPrompts drops every unspent prompt. Called when the session is
-// replaced, because the rows those prompts belong to die with it and no
-// closing observation will arrive to drop them one by one.
-func (b *acpBase) clearSubagentPrompts() {
-	b.subagentPromptMu.Lock()
-	defer b.subagentPromptMu.Unlock()
-	clear(b.subagentPrompts)
-}
-
 // applySubagentObservation translates a provider hook's neutral observation
 // into registry sink calls (and, for Goose, a best-effort child-transcript
 // persist). A nil observation is a no-op. The shared ACP final-status map
@@ -1727,7 +1647,7 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 	// observation leaves it empty (the linkage persists in the registry row from
 	// spawn time, and the cleanup defers to root close for that path).
 	if obs.Prompt != "" {
-		b.rememberSubagentPrompt(obs.RowKey, obs.Prompt)
+		b.subagentPrompts.remember(obs.RowKey, obs.Prompt)
 	}
 	childAgentID := ""
 	if obs.ChildAgentKey != "" && obs.Mode != acpModeCloseOnly && obs.RenameFrom == "" {
@@ -1740,7 +1660,7 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 		// PersistChildPrompt is a no-op once the transcript has a message, so a
 		// repeated observation cannot duplicate it.
 		if childAgentID != "" {
-			if prompt := b.takeSubagentPrompt(obs.RowKey); prompt != "" {
+			if prompt := b.subagentPrompts.take(obs.RowKey); prompt != "" {
 				if err := b.sink.PersistChildPrompt(childAgentID, prompt); err != nil {
 					slog.Warn("acp subagent prompt persist failed", "provider", b.providerName, "row_key", obs.RowKey, "error", err)
 				}
@@ -1783,9 +1703,9 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 		// the new key and RenameFrom is the one the prompt sits under. Forgetting
 		// only obs.RowKey deletes a key that was never inserted and leaves the
 		// spawn's entry to accumulate for the life of the process.
-		b.forgetSubagentPrompt(obs.RowKey)
+		b.subagentPrompts.forget(obs.RowKey)
 		if obs.RenameFrom != "" {
-			b.forgetSubagentPrompt(obs.RenameFrom)
+			b.subagentPrompts.forget(obs.RenameFrom)
 		}
 		// Rename the spawn row to the final key first, so one row tracks the
 		// whole lifecycle. A no-op when RenameFrom is empty or matches RowKey.

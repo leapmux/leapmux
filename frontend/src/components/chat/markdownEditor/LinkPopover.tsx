@@ -12,7 +12,11 @@ export interface LinkPopoverProps {
   setOpen: Setter<boolean>
   /** The clicked link run, or null when none is selected. */
   range: Accessor<LinkRange | null>
-  /** The clicked anchor element, for positioning. */
+  /**
+   * The element to position the popover against -- the editor WRAPPER, never the
+   * clicked `<a>`. ProseMirror owns the anchor and redraws it on every document
+   * change, so positioning from it leaves a detached node and a zero-sized rect.
+   */
   anchorRef: Accessor<HTMLElement | undefined>
   /** Save a new URL for the current run. */
   onApply: (href: string) => void
@@ -48,17 +52,25 @@ export const LinkPopover: Component<LinkPopoverProps> = (props) => {
     })
   })
 
-  // Saving applies the URL and leaves the popover OPEN, so the user can see the
-  // value that took and reach the remove button without a second click.
+  // Saving applies the URL and DISMISSES the popover -- the same way Remove
+  // does, and the same way Enter in the field does, since it submits this form.
+  // The edit is finished at that point, so leaving the panel over the text the
+  // user just linked only hides the result.
   //
-  // It also avoids a browser-level trap. Oat animates a popover's close with
-  // `display` and `overlay` in `allow-discrete`, so the element stays in the top
-  // layer for 150ms afterwards. This popover sits over its own trigger, so a
-  // click that closes it and immediately reopens it lands inside that window:
-  // `showPopover()` then re-enters an element the browser is still removing from
-  // the top layer, and the popover comes back BELOW the page, where the chat
-  // transcript intercepts every click meant for its buttons.
-  const submit = () => props.onApply(href())
+  // Apply BEFORE closing: `applyLinkHref` focuses the editor, and doing that
+  // while the panel is still open would light-dismiss it mid-write.
+  //
+  // The close is safe here even though Oat animates it with `display` and
+  // `overlay` in `allow-discrete`, which keeps the element in the top layer for
+  // 150ms: the trap that window creates needs a close IMMEDIATELY FOLLOWED BY A
+  // REOPEN (`showPopover()` re-entering an element the browser is still
+  // removing, which lands the panel below the page). Nothing reopens it here --
+  // only a fresh click on a link or a fresh Mod-K does, both of which are a
+  // separate gesture.
+  const submit = () => {
+    props.onApply(href())
+    props.setOpen(false)
+  }
 
   return (
     <DropdownMenu

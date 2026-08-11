@@ -24,3 +24,31 @@ export const NOTIFICATION_TYPE = {
 } as const
 
 export type NotificationType = typeof NOTIFICATION_TYPE[keyof typeof NOTIFICATION_TYPE]
+
+/**
+ * The types the WORKER synthesizes, as opposed to the ones an agent emits.
+ *
+ * A worker-authored notification is provider-neutral by construction: no agent
+ * produces it, so no provider plugin can recognize it from its own wire format.
+ * `classifyMessage` therefore classifies these once, before it dispatches to a
+ * plugin. Adding a type here and to `NOTIFICATION_TYPE` is the whole
+ * registration; a per-provider table cannot be left half-updated.
+ *
+ * Add a type here ONLY when the worker is its sole writer. An agent-emitted type
+ * stays out, because a plugin may legitimately suppress or reshape one.
+ */
+const WORKER_AUTHORED_NOTIFICATION_TYPES: ReadonlySet<string> = new Set([
+  NOTIFICATION_TYPE.SubagentEnded,
+])
+
+/**
+ * True when `parentObject` is a worker-authored notification envelope. The
+ * worker persists these as standalone rows, so the caller checks that the row
+ * carries no notification-thread wrapper before it asks.
+ */
+export function isWorkerAuthoredNotification(parentObject: unknown): boolean {
+  if (typeof parentObject !== 'object' || parentObject === null)
+    return false
+  const type = (parentObject as { type?: unknown }).type
+  return typeof type === 'string' && WORKER_AUTHORED_NOTIFICATION_TYPES.has(type)
+}

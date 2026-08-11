@@ -6,6 +6,7 @@ import type { ChannelStatus } from '~/stores/workerChannelStatus.store'
 import { create } from '@bufbuild/protobuf'
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { actionSlot, actionSlotResting } from '~/components/tree/sidebarActions.css'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { WorkerSchema } from '~/generated/leapmux/v1/worker_pb'
 import { createTunnelStore } from '~/stores/tunnel.store'
@@ -61,7 +62,7 @@ function renderSection(opts?: {
     })
   }
 
-  render(() => (
+  const { container } = render(() => (
     <TunnelProvider store={tunnelStore}>
       <WorkerSectionContent
         workers={workers}
@@ -73,7 +74,7 @@ function renderSection(opts?: {
     </TunnelProvider>
   ))
 
-  return { onAddTunnel, onDeregister }
+  return { onAddTunnel, onDeregister, container }
 }
 
 describe('workerSectionContent', () => {
@@ -115,6 +116,39 @@ describe('workerSectionContent', () => {
   it('renders worker name from workerInfo', () => {
     renderSection()
     expect(screen.getAllByText('test-worker').length).toBeGreaterThanOrEqual(1)
+  })
+
+  // The status dot rests where the three-dot trigger appears, so the row's
+  // right edge stays put when the trigger fades in on hover. The swap itself is
+  // a stylesheet rule (jsdom loads none), so what is asserted here is the
+  // structure it depends on: both live in ONE actionSlot cell, and the dot
+  // carries the resting class the rule keys off.
+  it('rests the status dot in the same slot as the context-menu trigger', () => {
+    const { container } = renderSection()
+
+    const slot = container.querySelector(`.${actionSlot}`)
+    expect(slot).toBeTruthy()
+
+    const dot = slot!.querySelector('[data-status]')
+    expect(dot).toBeTruthy()
+    expect(dot!.className).toContain(actionSlotResting)
+
+    // Same cell, not side by side: a sibling pair is what keeps the row from
+    // widening when the trigger appears.
+    const trigger = slot!.querySelector('button[aria-expanded]')
+    expect(trigger).toBeTruthy()
+    expect(dot!.parentElement).toBe(trigger!.closest(`.${actionSlot}`))
+  })
+
+  // The dot shares a cell with the trigger, and an element at `opacity: 0` still
+  // hit-tests -- so a faded dot in front of the trigger makes a visible
+  // three-dot menu refuse to open. jsdom resolves no stylesheet, so this asserts
+  // the class that carries `pointer-events: none` rather than the computed
+  // value; the CSS rule lives with the class in sidebarActions.css.ts.
+  it('keeps the status dot out of the trigger\'s hit area', () => {
+    const { container } = renderSection()
+    const dot = container.querySelector(`.${actionSlot} [data-status]`)!
+    expect(dot.className).toContain(actionSlotResting)
   })
 
   it('shows dash when workerInfo is null', () => {

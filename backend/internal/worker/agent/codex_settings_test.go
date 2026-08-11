@@ -472,11 +472,12 @@ func TestCodexDefaultEffortsRankOrder(t *testing.T) {
 			"codexDefaultEfforts is the menu order: %q ranks above %q, so it must come first", tiers[i-1].Id, e.Id)
 	}
 
-	// Every tier carries a label, since the same slice answers codexEffortName.
-	// A tier absent from the slice falls through to its raw lowercase id.
+	// Every tier carries a label, and it is the SHARED table's label -- the live
+	// catalog resolves the same way, so the two paths cannot spell one tier two
+	// ways.
 	for _, e := range codexDefaultEfforts {
 		assert.NotEmpty(t, e.Name, "effort %q needs a display name", e.Id)
-		assert.Equal(t, e.Name, codexEffortName(e.Id))
+		assert.Equal(t, effortLabel(e.Id), e.Name, "effort %q must take the shared label", e.Id)
 		assert.NotEqual(t, e.Id, e.Name, "effort %q must carry a display label, not its raw id", e.Id)
 	}
 
@@ -496,10 +497,9 @@ func TestCodexDefaultEffortsRankOrder(t *testing.T) {
 }
 
 // The live CLI (codex-cli 0.147.0) reports an "ultra" reasoning effort above
-// "max" on every current model. codexEffortName is the label source for the
-// live path as well as the static fallback, so a tier missing from
-// codexDefaultEfforts renders as its raw lowercase id beside its capitalized
-// siblings, and effortRank sorts it into the unranked tail.
+// "max" on every current model. A tier missing from codexDefaultEfforts leaves
+// the static fallback offering a menu the running session does not, and
+// effortRank sorts it into the unranked tail.
 func TestCodexOffersUltraEffort(t *testing.T) {
 	var ultra *EffortInfo
 	for _, e := range codexDefaultEfforts {
@@ -508,7 +508,10 @@ func TestCodexOffersUltraEffort(t *testing.T) {
 		}
 	}
 	require.NotNil(t, ultra, "the live CLI reports an \"ultra\" tier; the fallback catalog must offer it too")
-	assert.Equal(t, "Ultra", codexEffortName("ultra"), "an unlisted tier falls through to its raw id")
+	assert.Equal(t, "Ultra", ultra.Name, "the tier carries its shared label")
+	// A tier the CLI ships before this catalog catches up still renders
+	// capitalized, not as a raw lowercase id beside its siblings.
+	assert.Equal(t, "Turbo", effortLabel("turbo"), "an unlisted tier is capitalized, not raw")
 
 	ultraRank, ok := effortRankOf("ultra")
 	require.True(t, ok, "effortRank must rank \"ultra\" or it sorts after every ranked value")

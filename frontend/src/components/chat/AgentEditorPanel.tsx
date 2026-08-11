@@ -41,21 +41,17 @@ import { useChatAttachments } from './useChatAttachments'
 import { useEditorMinHeight } from './useEditorMinHeight'
 import { ContextUsageGrid } from './widgets/ContextUsageGrid'
 
-/**
- * The reason assumed when a disabled composer names none.
- *
- * It lives HERE, in the component that resolves it, rather than in the editor's
- * keyboard-plugin module: this panel is the one place that answers "why is this
- * composer dead", and every surface that states it takes the resolved string.
- */
-export const DEFAULT_DISABLED_PLACEHOLDER = 'Connection to the agent was lost.'
-
 export interface AgentEditorPanelProps {
   agentId: string
   agent?: AgentInfo
-  disabled?: boolean
-  /** Single-line hint rendered when the composer is disabled (e.g. a non-steerable subagent). */
-  disabledHint?: string
+  /**
+   * Why the composer accepts no input, when it does not (e.g. a non-steerable
+   * subagent). Its PRESENCE is what disables the composer, so a dead box with no
+   * stated reason is unrepresentable -- and every surface that states it (the
+   * editor's placeholder, the `[+]` menu's attach item, each settings submenu)
+   * shows this one resolved string rather than inventing its own wording.
+   */
+  disabledReason?: string
   onSendMessage: (content: string, attachments?: FileAttachment[]) => void
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
@@ -123,7 +119,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // There is no separate note above the box. The placeholder sits INSIDE the
   // box the reason is about, so a note above it repeated the same sentence a
   // few pixels higher.
-  const disabledReason = () => props.disabledHint || DEFAULT_DISABLED_PLACEHOLDER
+  const disabled = () => !!props.disabledReason
   const preferences = usePreferences()
 
   const att = useChatAttachments({
@@ -363,8 +359,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
             controlRequestId: ctrl.activeControlRequest()?.requestId,
           }}
           onSend={ctrl.activeControlRequest() ? ctrl.handleControlSend : ctrl.handleSend}
-          disabled={props.disabled}
-          disabledPlaceholder={disabledReason()}
+          disabled={disabled()}
+          disabledPlaceholder={props.disabledReason}
           onTogglePlanMode={ctrl.togglePlanMode}
           requestedHeight={editorMinHeightSignal()}
           maxHeight={editorHeight.maxEditorHeight()}
@@ -436,8 +432,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               onSettingChange={props.onSettingChange}
               onAttachFile={() => fileInputRef?.click()}
               canAttach={!ctrl.activeControlRequest()}
-              disabled={props.disabled}
-              disabledReason={disabledReason()}
+              disabledReason={props.disabledReason}
               settingsLoading={props.settingsLoading}
               branchName={props.agent?.gitStatus?.branch || undefined}
               onChangeBranch={() => props.onChangeBranch?.()}
@@ -508,7 +503,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                       </Show>
                       <button
                         type="button"
-                        disabled={(!hasContent() && attachments().length === 0) || props.disabled || sending()}
+                        disabled={(!hasContent() && attachments().length === 0) || disabled() || sending()}
                         onClick={() => {
                           startSending()
                           triggerSend?.()
@@ -534,7 +529,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           onChangeBranch={() => props.onChangeBranch?.()}
           onDeleteBranch={() => props.onDeleteBranch?.()}
           branchDisabledReason={props.branchDisabledReason}
-          disabled={props.disabled}
+          disabledReason={props.disabledReason}
           infoTrigger={info.showInfoTrigger() ? renderAgentInfoTrigger : undefined}
         />
       </Show>

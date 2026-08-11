@@ -21,7 +21,7 @@ interface BackgroundTaskListProps {
   class?: string
 }
 
-/** The status palette: in progress, succeeded, failed. */
+/** The status palette: queued, in progress, succeeded, failed. */
 function statusDotClass(status: BackgroundTaskItem['status']): string {
   switch (status) {
     case 'completed':
@@ -33,6 +33,12 @@ function statusDotClass(status: BackgroundTaskItem['status']): string {
       return styles.statusDotDanger
     case 'stopped':
       return styles.statusDotMuted
+    // A queued task is drawn as a hollow ring, not a filled dot. Running is the
+    // only state that pulses, and the pulse is suppressed under reduced motion --
+    // so sharing one filled dot made a queued task and a running one identical
+    // for exactly the readers who cannot use the animation.
+    case 'pending':
+      return styles.statusDotPending
     default:
       return styles.statusDotActive
   }
@@ -90,10 +96,12 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   const rowTitle = (item: BackgroundTaskItem): string =>
     item.title || item.description || item.rowKey
 
-  // A shell row's title is the COMMAND it runs, so it is set as code. Every
-  // other row's title is prose and hyphenates.
+  // Code type only for a title the PROVIDER says is a verbatim command. Not
+  // every shell row has one: Claude sends `description || command`, so its
+  // title is the model's prose whenever it wrote any, and setting that in the
+  // monospace face reads worse than setting a command in the normal one.
   const titleClass = (item: BackgroundTaskItem): string =>
-    item.kind === 'shell'
+    item.titleIsCommand
       ? `${styles.taskTitle} ${styles.taskTitleCommand}`
       : styles.taskTitle
 

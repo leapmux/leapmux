@@ -14,6 +14,7 @@ import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { isCompactBoundary, parseBoundaryMeta, toTokenCount } from '~/lib/messageParser'
 import { NOTIFICATION_TYPE } from '~/lib/notificationTypes'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
+import { backgroundTaskStatusFromWire } from '~/stores/chatBackgroundTasks'
 import { spinner } from '~/styles/animations.css'
 import {
   controlResponseMessage,
@@ -174,10 +175,12 @@ function NotificationDivider(props: { text: string, loading?: boolean, icon?: Lu
  * The glyph is this divider's own. The Background tasks list carries the same
  * states as a COLOUR on one constant dot rather than as a glyph per state, so
  * there is no shared glyph vocabulary to match; the shared reading comes from
- * the label, which names the same four outcomes.
+ * the label, which lists the same four outcomes.
  */
 function subagentEndedEntry(m: Record<string, unknown>): ThreadEntry[] {
-  const status = pickString(m, 'status')
+  // Narrowed through the store's wire reader, so the four final statuses are
+  // spelled out in one place rather than re-listed here.
+  const status = backgroundTaskStatusFromWire(pickString(m, 'status') ?? '')
   switch (status) {
     case 'completed':
       return [{ kind: 'divider', text: 'Subagent completed', icon: Check }]

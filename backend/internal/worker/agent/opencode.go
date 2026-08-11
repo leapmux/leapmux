@@ -136,22 +136,18 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 // keep the close from leaking it as a Running row.
 func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
 	if tcu.Status != "completed" && tcu.Status != "failed" && tcu.Status != "cancelled" {
-		// Not terminal: this is where Kilo first reveals the spawn shape (its
+		// Not final: this is where Kilo first reveals the spawn shape (its
 		// tool_call carries `rawInput: {}`), so run the same detection here.
 		// Without it a Kilo spawn produced no registry row at all -- the
 		// final update below then closed a row that was never opened.
 		//
-		// A spawn-shaped update that arrives AFTER the terminal one re-creates
-		// the row: the final update renames the key to the child session id,
-		// so this upsert finds nothing under the toolCallId and inserts a fresh
-		// Running row that no later event closes. Two things keep that off the
-		// live path -- readOutput dispatches notifications inline on one
-		// goroutine, so the transport neither reorders nor duplicates, and a
-		// `session/load` history replay redelivers the final update too, which
-		// renames and closes the re-created row again. The gap is a replay that
-		// is truncated before its final update; closing it needs the registry
-		// to remember retired keys, which is not worth the state until such a
-		// replay is observed.
+		// A spawn-shaped update that arrives AFTER the final one re-creates the
+		// row under the toolCallId, because the final update already renamed the
+		// original to the child session id. A `session/load` history replay then
+		// redelivers the final update, whose rename collides with the surviving
+		// session-id row. RenameBackgroundTask resolves that collision by dropping
+		// the re-created duplicate, so the replay converges on one row instead of
+		// leaving a Running row that no later event closes.
 		return openCodeSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput)
 	}
 	// The terminal rawOutput may carry the child session id under metadata.

@@ -155,6 +155,73 @@ func TestClaude_TaskStartedForAShellPersistsNoPrompt(t *testing.T) {
 	assert.Empty(t, tasks[0].ChildAgentID, "a shell task never gets a child transcript")
 }
 
+// A task_notification carries an output_file for a Task SUBAGENT too, not only
+// for a background shell -- so the upsert that records it must not decide the
+// kind on its own. Hardcoding KindShell there rewrote every subagent's row into
+// a shell one, which cost the row its clickable transcript: the sidebar showed
+// a shell entry for a subagent that had a child tab waiting behind it.
+func TestClaude_TaskNotificationWithOutputFileKeepsTheSubagentKind(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-1",
+		"tool_use_id": "tu-spawn",
+		"task_type": "local_agent",
+		"description": "Write two sentences about the ocean",
+		"prompt": "Write two sentences about the ocean."
+	}`))
+	require.Len(t, sink.BackgroundTasks(), 1)
+	require.Equal(t, bgtask.KindSubagent, sink.BackgroundTasks()[0].Kind)
+
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_notification",
+		"task_id": "task-1",
+		"tool_use_id": "tu-spawn",
+		"status": "completed",
+		"output_file": "/tmp/task-1.log"
+	}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind, "the notification must not rewrite the kind")
+	assert.Equal(t, "/tmp/task-1.log", tasks[0].Description)
+}
+
+// The same upsert on a real shell keeps ITS kind, so a row this call resurrects
+// after an eviction still lands in the shell cap pool rather than the subagent
+// one it would get from an unspecified kind.
+func TestClaude_TaskNotificationWithOutputFileKeepsTheShellKind(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-1",
+		"tool_use_id": "tu-shell",
+		"task_type": "local_bash",
+		"description": "npm test"
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_notification",
+		"task_id": "task-1",
+		"tool_use_id": "tu-shell",
+		"status": "completed",
+		"output_file": "/tmp/shell.log"
+	}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindShell, tasks[0].Kind)
+}
+
 // A replayed task_started (a re-attach after a worker restart) must not stack a
 // second copy of the prompt on top of the transcript it already introduced.
 func TestClaude_ReplayedTaskStartedDoesNotDuplicateThePrompt(t *testing.T) {

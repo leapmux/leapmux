@@ -550,23 +550,21 @@ func (svc *Service) RestoreState() {
 	// the same stamp (the in-memory caches do not exist yet at boot, so there is
 	// no cache/DB drift to guard here -- this is purely for uniform labeling).
 	bootNow := nowMillis()
-	// Read the child transcripts BEFORE the sweep: afterwards those rows are no
-	// longer active and the query returns nothing. Each one gets a closing
-	// divider below, for the same reason the exit sweep writes one -- a subagent
-	// cut off by a worker restart would otherwise show an 'interrupted' row in
-	// the sidebar beside a transcript that just stops, and the tab would keep a
-	// thinking indicator that never resolves.
-	endedChildIDs, err := svc.Queries.ListActiveChildAgentIDs(bgCtx())
-	if err != nil {
-		slog.Warn("list active child agents for boot sweep failed", "error", err)
-	}
-	if n, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
+	// The sweep REPORTS the child transcripts it ended, so the divider list and
+	// the write are one statement. Each transcript gets a closing divider below,
+	// for the same reason the exit sweep writes one -- a subagent cut off by a
+	// worker restart would otherwise show an 'interrupted' row in the sidebar
+	// beside a transcript that just stops, and the tab would keep a thinking
+	// indicator that never resolves. When the sweep fails nothing moved, so
+	// nothing is owed a divider and a later boot finds the rows still active.
+	endedChildIDs, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
 		EndedAt:   sqltime.SQLiteNullTimeOf(bootNow),
 		UpdatedAt: sqltime.NewSQLiteTime(bootNow),
-	}); err != nil {
+	})
+	if err != nil {
 		slog.Warn("mark active background tasks interrupted failed", "error", err)
-	} else if n > 0 {
-		slog.Info("marked background tasks interrupted on boot", "count", n)
+	} else if len(endedChildIDs) > 0 {
+		slog.Info("marked background tasks interrupted on boot", "count", len(endedChildIDs))
 		svc.Output.WriteSubagentEndDividers(endedChildIDs, bgtask.StatusInterrupted)
 	}
 	svc.Output.restoreAutoContinueSchedules()
@@ -574,7 +572,7 @@ func (svc *Service) RestoreState() {
 
 // HandleAgentProcessExit is the ExitHandler body: it clears the exited
 // process's pending control requests (so request_ids bound to it don't reappear
-// stale on resume) and gives it a final status its background-task registry (stopped on an
+// stale on resume) and gives its background-task registry a final status (stopped on an
 // explicit Stop, interrupted on a crash). It fires for every exit including a
 // relaunch's old-process stop; stopAndWait serializes this hook before a new
 // process registers, so fresh spawns can never be clobbered.

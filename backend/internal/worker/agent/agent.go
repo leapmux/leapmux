@@ -297,7 +297,7 @@ type OutputSink interface {
 	PersistChildPrompt(childAgentID, prompt string) error
 
 	// CleanupChildAgent releases the per-child service state (span tracker,
-	// todos cache, cached child sink) for a child that has reached a terminal
+	// todos cache, cached child sink) for a child that has reached a final
 	// state. A provider calls this once a subagent closes for good so a
 	// long-running root that cycles many children does not accumulate a stale
 	// SpanTracker + sink ref per closed child until the root itself closes.

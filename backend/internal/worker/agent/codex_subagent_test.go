@@ -43,12 +43,12 @@ func TestCodex_CollabPromptHeldUntilTheChildExists(t *testing.T) {
 	t.Parallel()
 
 	a := &CodexAgent{}
-	a.rememberCollabPrompt("thread-1", "Write the essay.")
-	assert.Equal(t, "Write the essay.", a.collabChildPrompts["thread-1"])
+	a.collabChildPrompts.remember("thread-1", "Write the essay.")
+	assert.Equal(t, "Write the essay.", a.collabChildPrompts.peek("thread-1"))
 
 	// Spent once, so a second child creation cannot repeat it.
-	assert.Equal(t, "Write the essay.", a.takeCollabPrompt("thread-1"))
-	assert.Empty(t, a.takeCollabPrompt("thread-1"))
+	assert.Equal(t, "Write the essay.", a.collabChildPrompts.take("thread-1"))
+	assert.Empty(t, a.collabChildPrompts.take("thread-1"))
 }
 
 // The spawn's own prompt wins; the later collab tools (send/wait) on the same
@@ -57,30 +57,30 @@ func TestCodex_CollabPromptFirstWriteWins(t *testing.T) {
 	t.Parallel()
 
 	a := &CodexAgent{}
-	a.rememberCollabPrompt("thread-1", "first")
-	a.rememberCollabPrompt("thread-1", "second")
-	a.rememberCollabPrompt("thread-1", "")
-	assert.Equal(t, "first", a.collabChildPrompts["thread-1"])
+	a.collabChildPrompts.remember("thread-1", "first")
+	a.collabChildPrompts.remember("thread-1", "second")
+	a.collabChildPrompts.remember("thread-1", "")
+	assert.Equal(t, "first", a.collabChildPrompts.peek("thread-1"))
 }
 
 func TestCodex_CollabPromptIgnoresEmptyInput(t *testing.T) {
 	t.Parallel()
 
 	a := &CodexAgent{}
-	a.rememberCollabPrompt("", "x")
-	a.rememberCollabPrompt("thread-1", "")
-	assert.Empty(t, a.collabChildPrompts)
+	a.collabChildPrompts.remember("", "x")
+	a.collabChildPrompts.remember("thread-1", "")
+	assert.Zero(t, a.collabChildPrompts.count())
 }
 
 // A terminal child drops its remembered prompt along with the rest of its index
 // entries, so a long session that cycles subagents cannot accumulate them.
-func TestCodex_CollabPromptDroppedOnTerminalChild(t *testing.T) {
+func TestCodex_CollabPromptDroppedOnFinalChild(t *testing.T) {
 	t.Parallel()
 
 	a := &CodexAgent{}
-	a.rememberCollabPrompt("thread-1", "Write the essay.")
+	a.collabChildPrompts.remember("thread-1", "Write the essay.")
 	a.removeCollabChildIndex("thread-1")
-	assert.Empty(t, a.collabChildPrompts)
+	assert.Zero(t, a.collabChildPrompts.count())
 }
 
 // The spawn item's prompt reaches the index through the parse.

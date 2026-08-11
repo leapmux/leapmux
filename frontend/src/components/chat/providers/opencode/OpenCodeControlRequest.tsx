@@ -147,9 +147,12 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
     sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)
   }
 
-  const handleBypassPermissions = () => {
-    // Allow once, then switch to bypass mode.
-    sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, 'once')
+  // Allow once, then switch to bypass mode. The allow is AWAITED first: the
+  // worker dispatches the two concurrently, and a mode change the provider
+  // cannot take live relaunches the agent, killing the session before an
+  // un-awaited allow reaches it.
+  const handleBypassPermissions = async () => {
+    await sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, 'once')
     if (props.bypassPermissionMode)
       props.onPermissionModeChange?.(props.bypassPermissionMode)
   }

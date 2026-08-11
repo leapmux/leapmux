@@ -41,14 +41,13 @@ export interface ComposerPlusMenuProps {
    * so the settings submenus, the provider actions, and attach all honour it.
    * The view toggles below stay live: they are local preferences.
    */
-  disabled?: boolean
   /**
-   * Why the composer accepts no input, shown on the disabled attach item.
+   * Why the composer accepts no input, when it does not. Its PRESENCE is what
+   * disables the attach item and every settings submenu, so a dead item with no
+   * stated reason is unrepresentable.
    *
-   * Pass the SAME string the panel gives the editor as its disabled
-   * placeholder, so the box, the hint above it, and this menu state one reason
-   * and cannot disagree. Both surfaces apply the same fallback to the same
-   * input, so an absent reason still resolves identically.
+   * It is the SAME string the panel gives the editor as its disabled
+   * placeholder, so the box and this menu state one reason and cannot disagree.
    */
   disabledReason?: string
   /**
@@ -121,8 +120,15 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   // Provider-declared action buttons (e.g. Codex "Bypass permissions").
   const actions = createMemo<ProviderSettingsAction[]>(() => pluginFor(props.agentProvider)?.settingsActions ?? [])
 
+  // Whether anything renders BETWEEN the attach item and the view toggles. Both
+  // rules that fence that region are drawn only when it is non-empty: a fresh
+  // tab before its first status push has no groups, no branch, no agent info and
+  // no provider actions, and two unconditional rules then landed side by side.
+  const hasMiddleSection = () =>
+    groupIds().length > 0 || !!props.branchName || !!props.agentInfo || actions().length > 0
+
   const attachDisabledReason = () => {
-    if (props.disabled)
+    if (props.disabledReason)
       return props.disabledReason
     return props.canAttach ? undefined : 'Attach is unavailable during a control request'
   }
@@ -152,7 +158,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
       <button
         role="menuitem"
         data-testid="composer-attach-file"
-        disabled={!props.canAttach || props.disabled}
+        disabled={!props.canAttach || !!props.disabledReason}
         title={attachDisabledReason()}
         onClick={() => props.onAttachFile()}
       >
@@ -160,7 +166,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
         Attach file…
       </button>
 
-      <hr />
+      <Show when={hasMiddleSection()}><hr /></Show>
 
       {/* Keyed by group id, not by the group object: the worker re-broadcasts
           the whole catalog on every status push, so the group the user is
@@ -173,7 +179,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             optionGroups={props.optionGroups}
             optionValues={props.optionValues}
             onChange={props.onSettingChange}
-            disabled={props.disabled}
+            disabledReason={props.disabledReason}
           />
         )}
       </For>
@@ -249,7 +255,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             <button
               role="menuitem"
               data-testid={action.testId}
-              disabled={props.disabled || Object.entries(action.sets).every(
+              disabled={!!props.disabledReason || Object.entries(action.sets).every(
                 ([k, v]) => resolvedCurrent(props.optionGroups, props.optionValues, k) === v,
               )}
               onClick={() => props.onSettingChange?.({ sets: { ...action.sets } })}
@@ -260,7 +266,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
         </For>
       </Show>
 
-      <hr />
+      <Show when={hasMiddleSection()}><hr /></Show>
 
       <DropdownMenuCheckableItem
         kind="checkbox"
@@ -289,7 +295,8 @@ function PlusGroupSubmenu(props: {
   optionGroups: AvailableOptionGroup[] | undefined
   optionValues: Record<string, string>
   onChange?: (change: ProviderSettingChange) => void
-  disabled?: boolean
+  /** Why the composer accepts no changes; its presence disables the options. */
+  disabledReason?: string
 }): JSX.Element {
   return (
     <OptionGroupPopover
@@ -297,7 +304,7 @@ function PlusGroupSubmenu(props: {
       optionGroups={props.optionGroups}
       optionValues={props.optionValues}
       onChange={props.onChange}
-      disabled={props.disabled}
+      disabledReason={props.disabledReason}
       popoverClass={styles.subPopover}
       // The status-bar chip renders the SAME group with the same per-option
       // test ids, so a locator for an option matches twice. A name on this popover

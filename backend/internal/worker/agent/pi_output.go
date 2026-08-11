@@ -260,10 +260,7 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 	// (src/nested-tools.ts); a non-subagent tool simply has none.
 	if prompt := piExtractPrompt(env.Input); prompt != "" {
 		a.mu.Lock()
-		if a.toolCallPrompts == nil {
-			a.toolCallPrompts = make(map[string]string)
-		}
-		a.toolCallPrompts[env.ToolCallID] = prompt
+		a.toolCallPrompts.remember(env.ToolCallID, prompt)
 		a.mu.Unlock()
 	}
 
@@ -364,10 +361,9 @@ func (a *PiAgent) handlePiToolExecutionEnd(raw []byte) {
 	// pi-subagents extension: parse the result details for final status, or
 	// a background re-key. The row key may change from toolCallId to
 	// details.agentId here (the agent id surfaces only at completion).
-	piApplySubagentEnd(a.sink, env.Result, env.ToolCallID, a.toolCallTitle(env.ToolCallID), a.toolCallPrompt(env.ToolCallID))
+	piApplySubagentEnd(a.sink, env.Result, env.ToolCallID, a.toolCallTitle(env.ToolCallID), a.toolCallPrompts.take(env.ToolCallID))
 	a.mu.Lock()
 	delete(a.toolCallDescriptions, env.ToolCallID)
-	delete(a.toolCallPrompts, env.ToolCallID)
 	a.mu.Unlock()
 }
 
@@ -459,14 +455,6 @@ func (a *PiAgent) toolCallTitle(toolCallID string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.toolCallDescriptions[toolCallID]
-}
-
-// toolCallPrompt returns the whole spawn prompt recorded at
-// tool_execution_start (empty when the tool carried none).
-func (a *PiAgent) toolCallPrompt(toolCallID string) string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.toolCallPrompts[toolCallID]
 }
 
 // piExtractDescription pulls a human label out of a tool_execution_start input.

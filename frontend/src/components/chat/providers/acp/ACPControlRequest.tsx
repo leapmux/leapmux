@@ -67,11 +67,14 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
     sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)
   }
 
-  const handleBypassPermissions = () => {
+  // Await the allow BEFORE switching the mode: the worker dispatches the two
+  // concurrently, and a mode change the provider cannot take live relaunches the
+  // agent, which kills the session before an un-awaited allow reaches it.
+  const handleBypassPermissions = async () => {
     const allowOptionId = defaultAllowOptionId(props.request.payload)
     if (!allowOptionId)
       return
-    sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, allowOptionId)
+    await sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, allowOptionId)
     if (props.bypassPermissionMode)
       props.onPermissionModeChange?.(props.bypassPermissionMode)
   }

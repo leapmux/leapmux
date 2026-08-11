@@ -143,17 +143,23 @@ function parentAgentIdOf(tab: Tab): string | undefined {
  * decides it. Pure: it reads only the fields above and allocates a fresh forest.
  */
 export function nestSubagentTabs(tabs: readonly Tab[]): TabNode[] {
-  const nodeById = new Map<string, TabNode>()
+  // Keyed by the composite tabKey, not by a bare id. `tabKey` is namespaced by
+  // TYPE precisely because an AGENT and a TERMINAL tab can share an id, and a
+  // parent link only ever names an AGENT -- so a bare-id lookup let a non-agent
+  // tab resolve to the agent's node, push it into the forest twice, and drop the
+  // non-agent row entirely.
+  const agentNodeKey = (id: string) => tabKey({ type: TabType.AGENT, id } as Tab)
+  const nodeByKey = new Map<string, TabNode>()
   for (const tab of tabs) {
     if (isAgentTab(tab))
-      nodeById.set(tab.id, { tab, children: [] })
+      nodeByKey.set(tabKey(tab), { tab, children: [] })
   }
 
   // True when walking up from `from` reaches `targetId`. Guards against a
   // parent cycle: the worker cannot produce one (parent_agent_id is a DAG
   // rooted at a main agent), but attaching both ends of a cycle would recurse
   // forever in the renderer, so a suspect link demotes the tab to a root
-  // instead. The visited set also bounds a chain that repeats for any reason.
+  // instead. The visited set also limits a chain that repeats for any reason.
   const reaches = (from: TabNode, targetId: string): boolean => {
     const seen = new Set<string>()
     let id = parentAgentIdOf(from.tab)
@@ -161,7 +167,7 @@ export function nestSubagentTabs(tabs: readonly Tab[]): TabNode[] {
       if (id === targetId)
         return true
       seen.add(id)
-      const next = nodeById.get(id)
+      const next = nodeByKey.get(agentNodeKey(id))
       id = next ? parentAgentIdOf(next.tab) : undefined
     }
     return false
@@ -169,9 +175,9 @@ export function nestSubagentTabs(tabs: readonly Tab[]): TabNode[] {
 
   const roots: TabNode[] = []
   for (const tab of tabs) {
-    const node = nodeById.get(tab.id) ?? { tab, children: [] }
+    const node = nodeByKey.get(tabKey(tab)) ?? { tab, children: [] }
     const parentId = parentAgentIdOf(tab)
-    const parent = parentId ? nodeById.get(parentId) : undefined
+    const parent = parentId ? nodeByKey.get(agentNodeKey(parentId)) : undefined
     if (parent && parent !== node && !reaches(parent, tab.id))
       parent.children.push(node)
     else
@@ -1024,7 +1030,12 @@ export function buildTree(
     const branchName = tab.gitBranch || null
     const workerId = tab.workerId ?? ''
     const gitToplevel = tab.gitToplevel ?? ''
-    const key = branchKey(branchName, workerId, gitToplevel)
+    // Through the shared function, not a second copy of its body. This IS the
+    // "the sidebar groups its tree by it" caller tabBranchKey's own doc names,
+    // and the composer's delete-branch dialog collects its tab list by the same
+    // function -- a second membership test here would let the dialog report a
+    // different set of affected tabs than the tree shows.
+    const key = tabBranchKey(tab)
     let bucket = entry.branches.get(key)
     if (!bucket) {
       // Tabs are bucketed by (branchName, workerId, gitToplevel), so

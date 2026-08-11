@@ -142,8 +142,8 @@ test.describe('Markdown Editor links', () => {
     await expect(editor).toBeVisible()
     await editor.click()
 
-    // The markdown input rule is the only way to CREATE a link now that the
-    // formatting toolbar is gone.
+    // Typed markdown is one of the two ways to create a link; Mod-K over a
+    // selection is the other (covered below).
     await page.keyboard.type('[docs](https://old.test)')
     const link = editor.locator('a')
     await expect(link).toHaveAttribute('href', 'https://old.test')
@@ -162,6 +162,92 @@ test.describe('Markdown Editor links', () => {
     await page.locator('[data-testid="link-url-submit"]').click()
     await expect(editor.locator('a')).toHaveAttribute('href', 'https://new.test')
     await expect(editor.locator('a')).toHaveCount(1)
+    // The edit is finished, so the panel goes away rather than sitting over the
+    // text it just changed.
+    await expect(page.locator('[data-testid="link-popover"]')).toBeHidden()
+  })
+
+  test('Enter in the URL field applies and dismisses the popover', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    await page.keyboard.type('[docs](https://old.test)')
+    await editor.locator('a').click()
+    const url = page.locator('[data-testid="link-url-input"]')
+    await expect(url).toBeVisible()
+
+    // Enter submits the form -- the same path the Save button takes.
+    await url.fill('https://typed.test')
+    await url.press('Enter')
+
+    await expect(editor.locator('a')).toHaveAttribute('href', 'https://typed.test')
+    await expect(page.locator('[data-testid="link-popover"]')).toBeHidden()
+  })
+
+  test('mod+K links the selected text', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    // Select-all rather than a run of Shift+ArrowLeft: the arrow presses race
+    // ProseMirror's input handling and drop some, which silently narrows the
+    // selection. WHICH range a partial selection resolves to is pinned exactly
+    // by linkPlugin.test.ts (`linkShortcutTarget`); this spec covers the wiring.
+    await page.keyboard.type('design doc')
+    await page.keyboard.press('ControlOrMeta+a')
+
+    // The popover opens EMPTY: a selection is a request to link that text, not
+    // to edit an existing URL.
+    await page.keyboard.press('ControlOrMeta+k')
+    const url = page.locator('[data-testid="link-url-input"]')
+    await expect(url).toBeVisible()
+    await expect(url).toHaveValue('')
+
+    await url.fill('https://x.test')
+    await page.locator('[data-testid="link-url-submit"]').click()
+
+    const link = editor.locator('a')
+    await expect(link).toHaveCount(1)
+    await expect(link).toHaveAttribute('href', 'https://x.test')
+    await expect(link).toHaveText('design doc')
+    await expect(page.locator('[data-testid="link-popover"]')).toBeHidden()
+  })
+
+  test('mod+K on a caret in a link edits that link, and over it overrides it', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+    await expect(editor).toBeVisible()
+    await editor.click()
+
+    await page.keyboard.type('[docs](https://old.test)')
+    await expect(editor.locator('a')).toHaveAttribute('href', 'https://old.test')
+
+    // A bare CARET inside the link: the popover opens on its current URL.
+    await editor.locator('a').click()
+    await page.locator('[data-testid="link-url-input"]').press('Escape')
+    await editor.locator('a').click()
+    await page.keyboard.press('ControlOrMeta+k')
+    const url = page.locator('[data-testid="link-url-input"]')
+    await expect(url).toBeVisible()
+    await expect(url).toHaveValue('https://old.test')
+    await url.press('Escape')
+
+    // A SELECTION spanning the link: the popover opens empty, and applying
+    // OVERRIDES the link rather than leaving the text carrying two.
+    await editor.click()
+    await page.keyboard.press('ControlOrMeta+a')
+    await page.keyboard.press('ControlOrMeta+k')
+    await expect(url).toBeVisible()
+    await expect(url).toHaveValue('')
+
+    await url.fill('https://new.test')
+    await page.locator('[data-testid="link-url-submit"]').click()
+    await expect(editor.locator('a')).toHaveCount(1)
+    await expect(editor.locator('a')).toHaveAttribute('href', 'https://new.test')
+    await expect(page.locator('[data-testid="link-popover"]')).toBeHidden()
   })
 
   test('a link can be unmade, keeping its text', async ({ page, authenticatedWorkspace }) => {
@@ -181,7 +267,7 @@ test.describe('Markdown Editor links', () => {
     await expect(editor).toContainText('docs')
   })
 
-  test('saving keeps the popover open, so remove is one click away', async ({ page, authenticatedWorkspace }) => {
+  test('saving dismisses the popover, and it reopens cleanly afterwards', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
@@ -194,12 +280,14 @@ test.describe('Markdown Editor links', () => {
     await url.fill('https://new.test')
     await page.locator('[data-testid="link-url-submit"]').click()
     await expect(editor.locator('a')).toHaveAttribute('href', 'https://new.test')
+    await expect(page.locator('[data-testid="link-popover"]')).toBeHidden()
 
-    // Still open, showing the value that took. Closing here would force a
-    // reopen, and a popover anchored over its own trigger cannot be reopened
-    // inside Oat's 150ms close transition: `showPopover()` re-enters an element
-    // the browser is still removing from the top layer, and it comes back below
-    // the page where the transcript intercepts its buttons.
+    // Reopening is a SEPARATE gesture, so it is outside Oat's 150ms close
+    // transition -- the window in which `showPopover()` would re-enter an
+    // element the browser is still removing from the top layer and bring the
+    // panel back BELOW the page, where the transcript swallows its buttons.
+    // This asserts the reopened panel is usable, not merely present.
+    await editor.locator('a').click()
     await expect(url).toBeVisible()
     await expect(url).toHaveValue('https://new.test')
 

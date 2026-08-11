@@ -69,7 +69,7 @@ export const comboboxItemHighlighted = style({
  * weight is the only marker of the current selection there.
  */
 export const comboboxItemSelected = style({
-  fontWeight: 600,
+  fontWeight: 'var(--font-bold)',
 })
 
 /**

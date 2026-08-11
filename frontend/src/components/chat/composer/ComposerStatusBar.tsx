@@ -24,10 +24,12 @@ export interface ComposerStatusBarProps {
   /** Why the branch actions are unusable (e.g. worker offline). */
   branchDisabledReason?: string
   /**
-   * Whether the composer accepts input at all (false for a non-steerable
-   * subagent). The chips dispatch real settings RPCs, so they must honour it.
+   * Why the composer accepts no input at all, when it does not (a non-steerable
+   * subagent). The chips dispatch real settings RPCs, so they must honour it —
+   * and its PRESENCE is what disables them, so a dead chip always states the
+   * same reason the rest of the composer states.
    */
-  disabled?: boolean
+  disabledReason?: string
   /**
    * Renders the right-cluster info trigger (ContextUsage + RateLimit popover).
    * Omit when the agent has nothing to show.
@@ -76,7 +78,7 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
             optionGroups={props.agent?.optionGroups}
             optionValues={props.optionValues}
             onChange={props.onSettingChange}
-            disabled={props.disabled}
+            disabledReason={props.disabledReason}
             testIdPrefix="composer-model"
           />
         </Show>
@@ -86,7 +88,7 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
             optionGroups={props.agent?.optionGroups}
             optionValues={props.optionValues}
             onChange={props.onSettingChange}
-            disabled={props.disabled}
+            disabledReason={props.disabledReason}
             optional
             testIdPrefix="composer-effort"
           />
@@ -97,7 +99,7 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
             optionGroups={props.agent?.optionGroups}
             optionValues={props.optionValues}
             onChange={props.onSettingChange}
-            disabled={props.disabled}
+            disabledReason={props.disabledReason}
             optional
             testIdPrefix="composer-mode"
           />

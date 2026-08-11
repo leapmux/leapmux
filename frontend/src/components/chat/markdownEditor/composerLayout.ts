@@ -1,5 +1,5 @@
 import type { DocStats } from './editorSetup'
-import { createComputed, createSignal, onCleanup } from 'solid-js'
+import { batch, createComputed, createMemo, createSignal, onCleanup } from 'solid-js'
 
 /**
  * The right padding the collapsed layout falls back to before the action row is
@@ -144,18 +144,26 @@ export function createComposerLayout(refs: ComposerLayoutRefs): ComposerLayout {
   // same microtask as the document change -- BEFORE the browser paints.
   // createEffect defers past paint, which shows a two-line flash before the
   // expanded layout takes over.
-  createComputed(() => {
+  // The measurement is its OWN memo, keyed only on the document. Folding it into
+  // the decision below re-ran the clone-and-measure whenever the ACTION SLOT
+  // resized -- the Interrupt button appearing while the user is not typing -- to
+  // re-measure text that had not changed. Text width does not depend on the row's
+  // width, so the two belong in separate reactive scopes.
+  const textWidth = createMemo(() => {
     const stats = docStats()
-    // Multi-line or non-paragraph content always expands, whatever its width.
-    // Return before measuring: the width cannot change the answer, and measuring
-    // forces a synchronous layout.
-    if (stats.multiLine) {
+    // -1 means "no measurement needed": multi-line content expands whatever its
+    // width, and measuring forces a synchronous layout.
+    return stats.multiLine ? -1 : measureContentWidth(stats.text)
+  })
+
+  createComputed(() => {
+    const width = textWidth()
+    if (width < 0) {
       setContentExpanded(true)
       return
     }
-    const textWidth = measureContentWidth(stats.text)
     const availWidth = collapsedAvailableWidth()
-    setContentExpanded(prev => textWidth > availWidth - (prev ? COLLAPSE_MARGIN_PX : EXPAND_MARGIN_PX))
+    setContentExpanded(prev => width > availWidth - (prev ? COLLAPSE_MARGIN_PX : EXPAND_MARGIN_PX))
   })
 
   const observe = () => {
@@ -167,13 +175,28 @@ export function createComposerLayout(refs: ComposerLayoutRefs): ComposerLayout {
       // actually rendered rather than a hardcoded size.
       const measureSlot = () => {
         const right = Number.parseFloat(getComputedStyle(slot).right) || 0
-        setRightPad(slot.offsetWidth + right)
-        setActionsHeight(slot.offsetHeight)
+        // Batched: setRightPad feeds the expand decision, so an unbatched write
+        // re-enters that computed BETWEEN the two reads below and dirties layout
+        // in the middle of a read sequence.
+        batch(() => {
+          setRightPad(slot.offsetWidth + right)
+          setActionsHeight(slot.offsetHeight)
+        })
       }
       measureSlot()
-      const observer = new ResizeObserver(measureSlot)
+      // rAF-coalesced for the same reason the row's observer below is: a
+      // ResizeObserver fires on every frame of a transition, and each callback
+      // here does a getComputedStyle plus two offset reads.
+      let slotFrame = 0
+      const observer = new ResizeObserver(() => {
+        cancelAnimationFrame(slotFrame)
+        slotFrame = requestAnimationFrame(measureSlot)
+      })
       observer.observe(slot)
-      onCleanup(() => observer.disconnect())
+      onCleanup(() => {
+        cancelAnimationFrame(slotFrame)
+        observer.disconnect()
+      })
     }
 
     const row = refs.row()

@@ -102,6 +102,14 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		a.taskToolUse[ev.TaskID] = ev.ToolUseID
 		a.toolUseTask[ev.ToolUseID] = ev.TaskID
 	}
+	if a.taskKind == nil {
+		a.taskKind = make(map[string]bgtask.Kind)
+	}
+	startedKind := bgtask.KindSubagent
+	if ev.TaskType == "local_bash" {
+		startedKind = bgtask.KindShell
+	}
+	a.taskKind[ev.TaskID] = startedKind
 	// A final result that arrived before this (reordered) task_started left
 	// a pending close keyed by the spawn span. Take it now and close the row
 	// this upsert is about to open, so the row cannot leak Running.
@@ -115,21 +123,24 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	}
 	a.mu.Unlock()
 
-	kind := bgtask.KindSubagent
-	if ev.TaskType == "local_bash" {
-		kind = bgtask.KindShell
-	}
+	kind := startedKind
 	groupKey, groupLabel := a.workflowGroup(ev)
 
 	// Some task_started events omit description but carry the spawn prompt;
 	// fall back to the prompt's first line so the row never has an empty title.
 	//
-	// For a local_bash task the description IS the command (verified against
-	// 2.1.220: task_started ships description="sleep 2 && echo BG-MARKER" and no
-	// prompt), so the command is already this row's title. Description is left
-	// unset here: copying the title into it rendered the row's secondary line as
-	// a verbatim echo of its own title. task_notification later fills it with
-	// the shell's output_file, which is something the title does not say.
+	// For a local_bash task the description is what the row shows, and it is
+	// left out of Description here: copying the title into it rendered the row's
+	// secondary line as a verbatim echo of its own title. task_notification
+	// later fills it with the shell's output_file, which the title does not say.
+	//
+	// TitleIsCommand stays FALSE for it. BashTool sends `description || command`
+	// (src/tools/BashTool/BashTool.tsx), and task_started forwards only that one
+	// resolved string (src/utils/task/framework.ts) -- so the title is the
+	// model's prose whenever it wrote any, the raw command when it did not, and
+	// nothing on the wire says which. Prose set in the monospace face reads
+	// worse than a command set in the normal one, so the ambiguous case takes
+	// the normal one.
 	title := ev.Description
 	if title == "" {
 		title = bgtask.FirstLine(ev.Prompt)
@@ -213,17 +224,18 @@ func (a *ClaudeCodeAgent) handleClaudeTaskNotification(ev *claudeTaskEnvelope) {
 	if err := a.sink.UpdateBackgroundTaskStatus(ev.TaskID, status, summary); err != nil {
 		slog.Warn("claude task_notification status update failed", "task_id", ev.TaskID, "error", err)
 	}
-	// Carry the shell's output_file in the description for later inspection.
-	// Kind is set explicitly: only a shell task reports an output_file, and an
-	// upsert that omits the Kind sends KindUnspecified, which KindWire maps onto
-	// "subagent". If the shell's row was already evicted this upsert recreates
-	// it, and without the Kind it would be recreated in the SUBAGENT cap pool --
-	// letting a shell push a finished subagent out of the pool that per-kind
-	// eviction exists to protect.
+	// Carry the output_file in the description for later inspection.
+	//
+	// The kind comes from the INDEX, not from a guess here. task_notification
+	// carries no task_type, and it fires for Task subagents as well as shells --
+	// so hardcoding KindShell rewrote every subagent's row into a shell one,
+	// which cost it its clickable transcript. Omitting the kind entirely is also
+	// wrong: KindUnspecified would file a re-created row (one this upsert
+	// resurrects after an eviction) in the SUBAGENT cap pool whatever it is.
 	if ev.OutputFile != "" {
 		_ = a.sink.UpsertBackgroundTask(bgtask.Upsert{
 			RowKey:      ev.TaskID,
-			Kind:        bgtask.KindShell,
+			Kind:        a.kindForTask(ev.TaskID),
 			Description: ev.OutputFile,
 			Status:      status,
 		})
@@ -325,7 +337,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	}
 
 	if msgType == claudeMsgTypeResult {
-		// The subagent's terminal result. Also drives the registry as a
+		// The subagent's final result. Also drives the registry as a
 		// fallback when no task_notification arrived.
 		if err := childSink.PersistTurnEnd(content, spanInfo); err != nil {
 			slog.Warn("claude route subagent turn-end failed", "child", childID, "error", err)
@@ -341,7 +353,7 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 			// via the result without a task_notification would otherwise leak).
 			a.forgetTaskIndex(taskID)
 		} else {
-			// task_started has not arrived yet (a reorder): remember the terminal
+			// task_started has not arrived yet (a reorder): remember the final
 			// status keyed by the spawn span so the late task_started can close
 			// the row it opens. Without this, task_started upserts a Running row
 			// that nothing ever closes (the result already passed through).
@@ -416,6 +428,18 @@ func (a *ClaudeCodeAgent) forgetTaskIndex(taskID string) {
 		delete(a.taskToolUse, taskID)
 		delete(a.toolUseTask, tuid)
 	}
+	delete(a.taskKind, taskID)
+}
+
+// kindForTask returns what task_started said this task is, or KindUnspecified
+// when the index has no entry -- a task_started this process never saw (a
+// resume) or one already forgotten. The registry's blank-means-keep rule then
+// preserves whatever kind the row already carries, which is the right answer
+// for an existing row and the only honest one for a task nothing described.
+func (a *ClaudeCodeAgent) kindForTask(taskID string) bgtask.Kind {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.taskKind[taskID]
 }
 
 // recordPendingTaskEnd remembers a final status for a Task subagent whose

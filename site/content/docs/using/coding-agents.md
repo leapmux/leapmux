@@ -207,17 +207,16 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 
 **Claude Code** — Extended Thinking, Effort, Model, Fast Mode, Output Style, Permission Mode.
 
-- Default model **Opus (1M context)** (`opus[1m]`); also offered: Opus, Sonnet, Sonnet (1M context), Haiku.
+- Default model **Opus (1M context)** (`opus[1m]`); also offered: Fable 5, Sonnet, Sonnet (1M context), Haiku.
 - Effort tiers depend on the model:
-  - **Opus** and **Opus (1M context)** offer the full set: Auto, Ultracode, Max, Extra High, High, Medium, Low.
-  - **Sonnet** and **Sonnet (1M context)** offer Auto, Max, High, Medium, Low (no Ultracode or Extra High).
+  - **Fable 5**, **Opus (1M context)**, **Sonnet**, and **Sonnet (1M context)** offer the full set: Auto, Ultracode, Max, Extra High, High, Medium, Low.
   - **Haiku** has no effort tiers at all — the effort selector is hidden entirely when Haiku is the model, and the Worker never sends an effort flag for Haiku.
 - Permission modes: **Default** (the default), **Plan Mode**, **Accept Edits**, **Bypass Permissions**, **Don't Ask**, **Auto Mode**.
 
 **Codex** — Fast Mode, Reasoning Effort, Model, Workflow, Network Access, Sandbox, Approval Policy, plus a **Bypass permissions** item.
 
 - Default model **GPT-5.4** (`gpt-5.4`); also offered: gpt-5.4-mini, gpt-5.3-codex, gpt-5.2-codex, gpt-5.2, gpt-5.1-codex-max, gpt-5.1-codex-mini.
-- Effort tiers: Auto, Max, Extra High, High, Medium, Low, Minimal, None.
+- Effort tiers: Auto, Ultra, Max, Extra High, High, Medium, Low, Minimal, None.
 - Approval Policy: **Full Auto** (`never`), **Suggest & Approve** (`on-request`, the default), **Auto-edit** (`untrusted`).
 - Sandbox defaults to **Workspace Write** (also Full Access / Read Only); Network defaults to **Restricted** (also Enabled).
 - The **Bypass permissions** item sets network = enabled, sandbox = full access, and approval = Full Auto in one click.

@@ -7,7 +7,7 @@ import "strings"
 //
 // Which ids a provider offers IS provider-specific, and so are the
 // DESCRIPTIONS: Claude's mirror the CLI's own /effort copy, Codex's come from
-// the live model/list response, and each `auto` sentinel names its own agent.
+// the live model/list response, and each `auto` sentinel identifies its own agent.
 // The LABEL is not -- "xhigh" reads "Extra High" whoever offers it. Before this
 // table claude.go, codex.go and pi_settings.go each spelled it out and cursor.go
 // special-cased it to "XHigh", so the four could disagree and did: correcting

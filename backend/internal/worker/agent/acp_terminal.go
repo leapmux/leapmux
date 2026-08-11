@@ -377,16 +377,22 @@ func (b *acpBase) terminalCreate(id json.RawMessage, rawParams json.RawMessage) 
 
 	// Upsert before starting the waiters/reply so CloseBackgroundTask on a
 	// fast-exiting command cannot land before the Running row exists.
+	// terminal/create carries the command and nothing else -- there is no
+	// description field for it to be confused with -- so this title IS the
+	// command, and the client can set it as code. The "shell" fallback is not,
+	// which is why the flag tracks the branch rather than the row's kind.
 	title := bgtask.FirstLine(params.Command)
+	titleIsCommand := title != ""
 	if title == "" {
 		title = "shell"
 	}
 	if err := b.sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey:        termID,
-		Kind:          bgtask.KindShell,
-		ParentAgentID: b.agentID,
-		Title:         title,
-		Status:        bgtask.StatusRunning,
+		RowKey:         termID,
+		Kind:           bgtask.KindShell,
+		ParentAgentID:  b.agentID,
+		Title:          title,
+		TitleIsCommand: titleIsCommand,
+		Status:         bgtask.StatusRunning,
 	}); err != nil {
 		slog.Warn("acp terminal upsert failed", "agent_id", b.agentID, "terminal_id", termID, "error", err)
 	}

@@ -12,7 +12,7 @@ import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../../src/
 import { expect } from '../fixtures'
 import { getTestChannel } from './api'
 
-const TERMINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
+const FINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
 
 /** Locator for the Background tasks section header (right sidebar). */
 export function backgroundTasksSection(page: Page): Locator {
@@ -88,6 +88,44 @@ export async function tryWaitForRegistryRow(page: Page, kind: 'subagent' | 'shel
 }
 
 /**
+ * Wait for a registry row, or SKIP the spec when the model chose not to spawn.
+ *
+ * The nine specs that drive a real model all need this same three-line dance, so
+ * it lives here once rather than being pasted a tenth time. Takes the spec's own
+ * `test` object (each provider suite extends its own fixtures) and returns a
+ * non-null row, so the caller needs no `!`.
+ */
+export async function requireRegistryRow(
+  test: { skip: (condition: boolean, description: string) => void },
+  page: Page,
+  kind: 'subagent' | 'shell' = 'subagent',
+): Promise<Locator> {
+  const row = await tryWaitForRegistryRow(page, kind)
+  test.skip(!row, kind === 'shell'
+    ? 'model did not run the command'
+    : 'model did not spawn a subagent')
+  return row!
+}
+
+/**
+ * Open a subagent's transcript from its sidebar row and return the new tab's id.
+ *
+ * Counting the agent tabs, clicking, asserting the count grew by one, and
+ * reading the id off the newly-rendered tab is the same five statements in every
+ * spec that opens a child, and the id must come from the rendered tab strip --
+ * the hub's tab list is empty throughout these runs.
+ */
+export async function openChildTabFromRow(page: Page, row: Locator): Promise<string> {
+  const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+  const tabsBefore = await agentTabs.count()
+  await row.click()
+  await expect(agentTabs).toHaveCount(tabsBefore + 1)
+  const childTabId = await agentTabs.nth(tabsBefore).getAttribute('data-tab-id') ?? ''
+  expect(childTabId).not.toBe('')
+  return childTabId
+}
+
+/**
  * Resolve a visible registry row matching the filter. Returns the row locator.
  * Throws (via expect) if no match is found within the default timeout.
  */
@@ -112,20 +150,33 @@ export async function expectRegistryRow(page: Page, filter: RowFilter): Promise<
   return row.first()
 }
 
+/** The end label the row shows for each final status. */
+const END_LABELS: Record<string, string> = {
+  completed: 'Completed',
+  failed: 'Failed',
+  stopped: 'Stopped',
+  interrupted: 'Interrupted',
+}
+
 /**
- * Poll until the row is in a terminal status and its secondary line shows one
- * of the end labels ('Completed' | 'Failed' | 'Stopped' | 'Interrupted').
+ * Poll until the row reaches a final status, then assert its secondary line
+ * shows THAT status's end label.
+ *
+ * The label is derived from the status the poll settled on, never hardcoded: a
+ * subagent that legitimately ends Stopped or Failed is still a subagent that
+ * ended, and demanding 'Completed' turned those runs into failures that named
+ * the wrong thing.
  */
-export async function expectRowBecomesTerminal(page: Page, row: Locator, label?: string): Promise<void> {
+export async function expectRowBecomesFinal(page: Page, row: Locator): Promise<void> {
+  let settled: string | null = null
   await expect.poll(async () => {
     const status = await row.getAttribute('data-status')
-    return TERMINAL_STATUSES.includes(status as typeof TERMINAL_STATUSES[number])
-      ? status
-      : null
+    settled = FINAL_STATUSES.includes(status as typeof FINAL_STATUSES[number]) ? status : null
+    return settled
   }).not.toBeNull()
-  if (label) {
+  const label = END_LABELS[settled ?? '']
+  if (label)
     await expect(row.filter({ hasText: label })).toBeVisible()
-  }
 }
 
 /**
@@ -155,21 +206,16 @@ export async function expectRowNotClickable(page: Page, row: Locator): Promise<v
  * original version turned out to assert nothing -- lands in one place instead
  * of being pasted a sixth time by the next provider spec.
  *
- * `bestEffort` covers the specs that do NOT wait for the agent to go idle
- * first: their row can still be settling when the tail runs, so a missed
- * final status is logged rather than failed. The specs that DO wait
- * (waitForAgentIdle) leave it off and assert strictly.
+ * Every caller asserts the final status strictly. `expectRowBecomesFinal` is an
+ * `expect.poll` under the global timeout, so it IS the wait a still-settling row
+ * needs -- demoting it to a warning for the specs that do not call
+ * waitForAgentIdle first meant a row that never finished passed five of them.
  */
 export async function expectRegistryOnlySubagentEnds(
   page: Page,
   row: Locator,
-  opts: { bestEffort?: boolean } = {},
 ): Promise<void> {
-  const reachedTerminal = expectRowBecomesTerminal(page, row, 'Completed')
-  if (opts.bestEffort)
-    await reachedTerminal.catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
-  else
-    await reachedTerminal
+  await expectRowBecomesFinal(page, row)
   await expectSectionPersists(page)
   await expectRowNotClickable(page, row)
   await expectNoChildAgents(page)

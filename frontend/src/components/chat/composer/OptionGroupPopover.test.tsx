@@ -29,7 +29,7 @@ function renderPopover(opts: {
       optionGroups={opts.groups ?? [group({ options: [{ id: 'opus', name: 'Opus' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'opus' })]}
       optionValues={opts.values ?? {}}
       onChange={onChange}
-      disabled={opts.disabled}
+      disabledReason={opts.disabled ? 'This subagent doesn\'t accept messages.' : undefined}
       popoverTestId={opts.popoverTestId}
       trigger={(triggerProps, view) => (
         <button data-testid="trigger" {...triggerProps}>
@@ -85,13 +85,16 @@ describe('optionGroupPopover', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it('does not dispatch when the composer itself is disabled', async () => {
+  it('does not dispatch when the composer itself is disabled, and shows the CALLER\'s reason', async () => {
     // A non-steerable subagent: the group is mutable, but the composer accepts
-    // no input, so a settings RPC must not leave the client.
+    // no input, so a settings RPC must not leave the client. The sentence is the
+    // caller's, not this component's -- the `[+]` menu's attach item and the
+    // editor's placeholder show the same one, and inventing a second wording here
+    // made one open menu disagree with itself.
     const { onChange } = renderPopover({ disabled: true })
     const item = screen.getByTestId('model-sonnet')
     expect(item).toBeDisabled()
-    expect(item).toHaveAttribute('title', 'This agent does not accept setting changes')
+    expect(item).toHaveAttribute('title', 'This subagent doesn\'t accept messages.')
     await fireEvent.click(item)
     expect(onChange).not.toHaveBeenCalled()
   })

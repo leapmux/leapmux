@@ -10,10 +10,10 @@
 import { expect, GOOSE_E2E_SKIP_REASON, gooseTest } from './goose-fixtures'
 import {
   expectRegistrySectionAbsent,
-  expectRowBecomesTerminal,
+  expectRowBecomesFinal,
   expectSectionPersists,
   listAgents,
-  tryWaitForRegistryRow,
+  requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
 
@@ -34,8 +34,7 @@ gooseTest.describe('Goose subagent registry', () => {
     await sendMessage(page, 'Use your delegate/subagent tool to spawn a subagent that runs a shell command `echo goose-done` and tells you the result.')
 
     // The model may choose not to spawn; skip the spawn-dependent assertions.
-    const row = await tryWaitForRegistryRow(page)
-    gooseTest.skip(!row, 'model did not spawn a subagent')
+    const row = await requireRegistryRow(gooseTest, page)
     const r = row!
 
     // The row links to a tool-request transcript (child-agent-id) when Goose
@@ -73,7 +72,7 @@ gooseTest.describe('Goose subagent registry', () => {
       await expect(page.getByText(noMessages, { exact: true })).toHaveCount(0)
     }
 
-    await expectRowBecomesTerminal(page, r, 'Completed').catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
+    await expectRowBecomesFinal(page, r)
     await expectSectionPersists(page)
 
     // Worker-backed: a child agent exists with a parent when Goose linked one.

@@ -376,7 +376,7 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	ctx := context.Background()
 	svc, d, childID, rootID := setupChildAgentTest(t)
 
-	// Seed an ACTIVE registry row under the root so the 'stopped' terminalization
+	// Seed an ACTIVE registry row under the root so the 'stopped' final-status write
 	// is observable. setupChildAgentTest already inserted the spawn row via
 	// EnsureChildAgent; assert it is present and active, then add a second
 	// running shell row to exercise a non-subagent active row too.
@@ -425,21 +425,21 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 	assert.True(t, childAfter.ClosedAt.Valid,
 		"closing the root must stamp closed_at on every descendant child too")
 
-	// Every background-task row owned by the root is now terminal, and the
+	// Every background-task row owned by the root is now final, and the
 	// previously-active rows are 'stopped' (the explicit-close disposition).
 	rowsAfter, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
 		OwnerAgentID: rootID, Limit: 100,
 	})
 	require.NoError(t, err)
 	require.Len(t, rowsAfter, len(rowsBefore),
-		"rows are retained (not deleted) -- only terminalized")
+		"rows are retained (not deleted) -- only given a final status")
 	for _, r := range rowsAfter {
 		status := bgtask.StatusFromWire(r.Status)
 		assert.True(t, status.IsFinished(),
-			"row %s must be terminal after root close, got %s", r.RowKey, r.Status)
+			"row %s must be final after root close, got %s", r.RowKey, r.Status)
 		if r.RowKey == "bg-shell-1" {
 			assert.Equal(t, bgtask.StatusStopped, status,
-				"the active shell row must be terminalized as 'stopped' (explicit close)")
+				"the active shell row must be given a final status as 'stopped' (explicit close)")
 		}
 	}
 }

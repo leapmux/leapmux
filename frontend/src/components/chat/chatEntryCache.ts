@@ -87,6 +87,19 @@ export interface EntryFreshness {
   toolResultSiblingContentVersion: number
   /** Stable token for the paired tool_result identity/seq/content version. */
   toolResultSiblingRevisionKey: string
+  /**
+   * Whether these messages were a SUBAGENT's own transcript at classify time. The
+   * flag decides whether a forwarded `parent_tool_use_id` row is the prompt SENT
+   * to a subagent (the parent's view) or an ordinary message INSIDE it, so a row
+   * classified under the wrong value renders as the collapsed "Prompt" card
+   * forever.
+   *
+   * It is not constant for the life of a view: a subagent tab is placed before
+   * `listAgents` hydrates its `parentAgentId`, and the child's own messages are
+   * subscribed immediately, so a row can be classified in that window. Tracking it
+   * here rebuilds those rows when the link lands.
+   */
+  isChildTranscript: boolean
 }
 
 /**
@@ -130,6 +143,7 @@ export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): st
     uiVersion,
     contentVersion: entry.freshness.contentVersion,
     hasCommandStream: entry.freshness.hasCommandStream,
+    isChildTranscript: entry.freshness.isChildTranscript,
   })
 }
 
@@ -193,9 +207,11 @@ export interface ClassifiedEntryCacheDeps {
   /** Show otherwise-hidden messages (the debug preference). */
   showHiddenMessages: () => boolean
   /**
-   * Whether these messages are a SUBAGENT's own transcript. Constant for the
-   * life of a view (a tab is a child or it is not), so it is NOT a freshness
-   * dimension -- an entry can never need re-classifying because it changed.
+   * Whether these messages are a SUBAGENT's own transcript. Read REACTIVELY: a
+   * subagent tab is placed before `listAgents` hydrates its `parentAgentId`, and
+   * the child's own message stream starts immediately, so this reads false for
+   * the rows that arrive in that window and flips true when the link lands. It IS
+   * a freshness dimension for exactly that reason.
    */
   isChildTranscript?: () => boolean
 }
@@ -271,6 +287,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
       hasToolResultSibling: hasToolResultSiblingOf(msg, kind),
       toolResultSiblingContentVersion: toolResultContentVersion,
       toolResultSiblingRevisionKey: revisionKeyOf(toolResultRevision) || (toolResultContentVersion === 0 ? '' : `legacy:${toolResultContentVersion}`),
+      isChildTranscript: deps.isChildTranscript?.() ?? false,
     }
   }
   /**

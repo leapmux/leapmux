@@ -644,10 +644,10 @@ export function createCodeSpanEscapePlugin() {
               return false
             const $check = state.doc.resolve(checkPos)
             const nb = $check.nodeBefore
-            if (!nb || !nb.marks.some(m => m.type.name === 'inlineCode'))
+            if (!nb || !nb.marks.some(m => m.type === codeMarkType))
               return false
             const na = $check.nodeAfter
-            if (na && na.marks.some(m => m.type.name === 'inlineCode'))
+            if (na && na.marks.some(m => m.type === codeMarkType))
               return false
             return true
           }
@@ -659,12 +659,12 @@ export function createCodeSpanEscapePlugin() {
           const isCodeLeftBoundary = (checkPos: number) => {
             const $check = state.doc.resolve(checkPos)
             const na = $check.nodeAfter
-            if (!na || !na.marks.some(m => m.type.name === 'inlineCode'))
+            if (!na || !na.marks.some(m => m.type === codeMarkType))
               return false
             const nb = $check.nodeBefore
             if (!nb)
               return false
-            if (nb.marks.some(m => m.type.name === 'inlineCode'))
+            if (nb.marks.some(m => m.type === codeMarkType))
               return false
             return true
           }
@@ -675,15 +675,15 @@ export function createCodeSpanEscapePlugin() {
           // the backtick input rule which sets storedMarks to []).
           const effectivelyOutside = pluginState === 'outside'
             || (state.storedMarks !== null
-              && !state.storedMarks.some(m => m.type.name === 'inlineCode')
-              && $from.marks().some(m => m.type.name === 'inlineCode'))
+              && !state.storedMarks.some(m => m.type === codeMarkType)
+              && $from.marks().some(m => m.type === codeMarkType))
 
           // === ArrowRight ===
           if (event.key === 'ArrowRight') {
             if (pluginState === 'outside') {
               // At the left boundary "outside": toggle back to inside code
               const na = $pos.nodeAfter
-              if (na && na.marks.some(m => m.type.name === 'inlineCode')) {
+              if (na && na.marks.some(m => m.type === codeMarkType)) {
                 event.preventDefault()
                 const tr = state.tr
                 tr.addStoredMark(codeMarkType.create())
@@ -700,8 +700,8 @@ export function createCodeSpanEscapePlugin() {
             // At the left boundary from plain text (no code marks):
             // create a virtual stop and toggle to inside code.
             const isAtLeftBoundaryFromPlain = isCodeLeftBoundary(pos)
-              && !$from.marks().some(m => m.type.name === 'inlineCode')
-              && !state.storedMarks?.some(m => m.type.name === 'inlineCode')
+              && !$from.marks().some(m => m.type === codeMarkType)
+              && !state.storedMarks?.some(m => m.type === codeMarkType)
             if (isAtLeftBoundaryFromPlain) {
               event.preventDefault()
               const tr = state.tr
@@ -712,7 +712,7 @@ export function createCodeSpanEscapePlugin() {
             }
 
             // Check if cursor currently has the inlineCode mark
-            const codeMark = $from.marks().find(m => m.type.name === 'inlineCode')
+            const codeMark = $from.marks().find(m => m.type === codeMarkType)
             if (!codeMark)
               return false
 
@@ -753,7 +753,7 @@ export function createCodeSpanEscapePlugin() {
           const isInsideAtLeftBoundary = pluginState !== 'outside'
             && isCodeLeftBoundary(pos)
             && state.storedMarks !== null
-            && state.storedMarks.some(m => m.type.name === 'inlineCode')
+            && state.storedMarks.some(m => m.type === codeMarkType)
           if (isInsideAtLeftBoundary) {
             event.preventDefault()
             const tr = state.tr.setSelection(TextSelection.create(state.doc, pos))
@@ -767,7 +767,7 @@ export function createCodeSpanEscapePlugin() {
           // if pos-1 is a left boundary and cursor currently has inlineCode,
           // move there and explicitly set stored marks to stay in code.
           const isMovingToLeftBoundary = isCodeLeftBoundary(pos - 1)
-            && $from.marks().some(m => m.type.name === 'inlineCode')
+            && $from.marks().some(m => m.type === codeMarkType)
           if (isMovingToLeftBoundary) {
             event.preventDefault()
             const tr = state.tr.setSelection(TextSelection.create(state.doc, pos - 1))
