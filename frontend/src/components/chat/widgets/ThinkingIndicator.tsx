@@ -508,25 +508,22 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             </g>
           </svg>
           <span class={styles.verbRow}>
-            {/* The counters LEAD the row and the verb trails them, so it reads
-                "<tokens> · <background tasks> · <to-dos> <verb>…". Every counter
+            {/* The verb LEADS the row and the counters trail it, so it reads
+                "<verb>… <background tasks> · <to-dos> · <tokens>". Every counter
                 is optional, so each one draws its own leading `·` only when
-                something already precedes it — a separator baked into a
-                counter's own text would dangle whenever its neighbour is gone. */}
-            {/* `countTokens` (not the raw prop) gates the count: it tracks the
-                live estimate while the indicator is visible, then holds the last
-                value for ROW_FADE_MS so the count fades out WITH the collapsing
-                row instead of popping — and unmounts after, so a stale estimate
-                can't keep it (or its roll effects) alive in a collapsed row. */}
-            <Show when={showTokens()}>
-              <ThinkingTokenCount tokens={countTokens()!} />
-            </Show>
+                another counter already precedes it — a separator baked into a
+                counter's own text would dangle whenever its neighbour is gone.
+                The verb is outside that chain: the row's own gap divides it from
+                the first counter, so no `·` sits between them. */}
+            <span class={styles.verbStack} data-testid="thinking-verb">
+              {/* Stable baseline anchor — see baselineStrut in the CSS. */}
+              <span class={styles.baselineStrut} aria-hidden="true">{' '}</span>
+              {verbSpan(true, charsA, highlightPosA)}
+              {verbSpan(false, charsB, highlightPosB)}
+            </span>
             {/* Background tasks: shown while there are active subagents/shells.
                 Clicking opens a popover with the full registry. */}
             <Show when={showBgTasks()}>
-              <Show when={showTokens()}>
-                <span class={styles.countSeparator} aria-hidden="true">·</span>
-              </Show>
               <DropdownMenu
                 as="div"
                 class="card"
@@ -551,7 +548,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             {/* To-dos: shown when there is at least one non-deleted todo. Renders
                 done/total; clicking opens the existing TodoList. */}
             <Show when={showTodos()}>
-              <Show when={showTokens() || showBgTasks()}>
+              <Show when={showBgTasks()}>
                 <span class={styles.countSeparator} aria-hidden="true">·</span>
               </Show>
               <DropdownMenu
@@ -571,12 +568,17 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
                 <TodoList todos={props.todos ?? []} />
               </DropdownMenu>
             </Show>
-            <span class={styles.verbStack} data-testid="thinking-verb">
-              {/* Stable baseline anchor — see baselineStrut in the CSS. */}
-              <span class={styles.baselineStrut} aria-hidden="true">{' '}</span>
-              {verbSpan(true, charsA, highlightPosA)}
-              {verbSpan(false, charsB, highlightPosB)}
-            </span>
+            {/* `countTokens` (not the raw prop) gates the count: it tracks the
+                live estimate while the indicator is visible, then holds the last
+                value for ROW_FADE_MS so the count fades out WITH the collapsing
+                row instead of popping — and unmounts after, so a stale estimate
+                can't keep it (or its roll effects) alive in a collapsed row. */}
+            <Show when={showTokens()}>
+              <Show when={showBgTasks() || showTodos()}>
+                <span class={styles.countSeparator} aria-hidden="true">·</span>
+              </Show>
+              <ThinkingTokenCount tokens={countTokens()!} />
+            </Show>
           </span>
         </div>
       </div>

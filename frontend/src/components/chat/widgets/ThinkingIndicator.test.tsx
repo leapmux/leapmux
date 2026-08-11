@@ -201,9 +201,10 @@ describe('thinking indicator chips', () => {
     expect(queryByTestId('thinking-todos-chip')).toBeNull()
   })
 
-  // The row reads "<tokens> · <background tasks> · <to-dos> <verb>...": the
-  // counters lead, middot-separated, and the rotating verb trails them.
-  it('orders the counters before the verb, separated by middots', () => {
+  // The row reads "<verb>... <background tasks> · <to-dos> · <tokens>": the
+  // rotating verb leads, and the counters trail it, middot-separated. The verb
+  // is outside the separator chain, so leading it adds no middot of its own.
+  it('orders the verb before the counters, separated by middots', () => {
     const todos: TodoItem[] = [{ content: 'a', status: 'pending', activeForm: '' }]
     const { getByTestId, getByText } = renderChips({ thinkingTokens: 500, backgroundTaskCount: 2, todos })
     // The odometer is aria-hidden; getByText finds the screen-reader copy.
@@ -213,12 +214,27 @@ describe('thinking indicator chips', () => {
     const verb = getByTestId('thinking-verb')
     const before = (a: Element, b: Element) =>
       !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
-    expect(before(tokens, bg)).toBe(true)
+    expect(before(verb, bg)).toBe(true)
     expect(before(bg, todo)).toBe(true)
-    expect(before(todo, verb)).toBe(true)
+    expect(before(todo, tokens)).toBe(true)
     // Exactly two separators for three counters.
     const dots = (getByTestId('thinking-indicator').textContent ?? '').split('\u00B7').length - 1
     expect(dots).toBe(2)
+  })
+
+  // Tokens sits LAST in the chain now, so it owns the separator that its
+  // predecessor would otherwise dangle when the middle counter is absent.
+  it('draws one separator between the two counters that remain', () => {
+    const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTaskCount: 2 })
+    const dots = (getByTestId('thinking-indicator').textContent ?? '').split('·').length - 1
+    expect(dots).toBe(1)
+  })
+
+  // The last counter in the chain must still draw nothing when it is alone --
+  // the case a "separator before every counter but the first" rule gets wrong.
+  it('draws no separator when only the token count is present', () => {
+    const { getByTestId } = renderChips({ thinkingTokens: 500 })
+    expect(getByTestId('thinking-indicator').textContent).not.toContain('·')
   })
 
   // A missing neighbour must not leave a dangling separator.
