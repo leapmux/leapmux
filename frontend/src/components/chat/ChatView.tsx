@@ -202,9 +202,7 @@ export interface AgentLifecycleProps {
   startupMessage?: string
   /** Human-readable label for the agent provider (e.g. "Claude Code"). */
   providerLabel?: string
-  /** Active background-task count (keeps the indicator up + drives the chip). */
-  backgroundTaskCount?: number
-  /** Full registry for the chip popover. */
+  /** Full registry (active + past) for the chip and the popover it opens. */
   backgroundTasks?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
   /** The agent's to-do list for the todos chip + popover. */
@@ -1180,7 +1178,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     visible={props.agentLifecycle?.agentWorking ?? false}
                     thinkingTokens={props.agentLifecycle?.thinkingTokens}
                     paused={props.tabActive === false}
-                    backgroundTaskCount={props.agentLifecycle?.backgroundTaskCount}
                     backgroundTasks={props.agentLifecycle?.backgroundTasks}
                     onOpenSubagent={props.agentLifecycle?.onOpenSubagent}
                     todos={props.agentLifecycle?.todos}

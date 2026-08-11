@@ -234,6 +234,52 @@ export function rootAgentIdFor(
 }
 
 /**
+ * Every agent tab BELOW `agentId` in the parent chain, deepest first.
+ *
+ * A child agent tab owns no process: it is a transcript the parent's provider
+ * feeds, and the registry resolves it through the root. So it cannot outlive
+ * the tab that spawned it in any useful way -- with the parent gone, the tab
+ * strip keeps a transcript nothing can add to, and `nestSubagentTabs` promotes
+ * it to a top-level row that claims a lineage the user can no longer see.
+ * Closing a parent therefore closes its whole subtree.
+ *
+ * Deepest first, so each tab closes before the parent that placed it. Grandchildren
+ * are included: the walk follows the chain rather than one level of it.
+ *
+ * `agentId` itself is never in the result -- the caller closes that one. A cycle
+ * cannot come off the wire (parent_agent_id is a DAG rooted at a main agent),
+ * but the visited set makes the walk finish anyway rather than recurse forever.
+ */
+export function descendantAgentTabs(tabs: readonly Tab[], agentId: string): AgentTab[] {
+  const childrenByParent = new Map<string, AgentTab[]>()
+  for (const tab of tabs) {
+    if (tab.type !== TabType.AGENT || !tab.parentAgentId)
+      continue
+    const siblings = childrenByParent.get(tab.parentAgentId)
+    if (siblings)
+      siblings.push(tab)
+    else
+      childrenByParent.set(tab.parentAgentId, [tab])
+  }
+
+  const out: AgentTab[] = []
+  const visited = new Set<string>([agentId])
+  // Depth-first, appending each tab AFTER its own descendants, so the result
+  // reads deepest first.
+  const walk = (parentId: string) => {
+    for (const child of childrenByParent.get(parentId) ?? []) {
+      if (visited.has(child.id))
+        continue
+      visited.add(child.id)
+      walk(child.id)
+      out.push(child)
+    }
+  }
+  walk(agentId)
+  return out
+}
+
+/**
  * Whether an agent tab accepts a user message (its composer is enabled). Roots
  * always accept. Children accept only when their feeding provider can steer a
  * subagent conversation (acceptsMessages === true); a non-steerable child is a

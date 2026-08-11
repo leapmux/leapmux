@@ -1,6 +1,7 @@
 /// <reference types="vitest/globals" />
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { popoverCard } from '~/styles/popover.css'
 import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from './DropdownMenu'
 
 // jsdom does not implement the native Popover API.
@@ -103,6 +104,40 @@ describe('dropdownMenu', () => {
     expect(refEl).toHaveAttribute('data-testid', 'popover-ref-test')
   })
 
+  /**
+   * A card popover is a `div` AND the `popoverCard` class, and a call site that
+   * applied one without the other is what produced both popover bugs this
+   * component's `as` doc records. `card` supplies the class itself, so the pair
+   * cannot come apart at a fifth call site.
+   */
+  it('renders as="card" as a div that carries popoverCard itself', () => {
+    render(() => (
+      <DropdownMenu trigger={<button>Open</button>} as="card" data-testid="card-popover">
+        <span>rows</span>
+      </DropdownMenu>
+    ))
+    const popover = screen.getByTestId('card-popover')
+    expect(popover.tagName).toBe('DIV')
+    expect(popover.className).toBe(popoverCard)
+  })
+
+  // ...and it takes the panel dismiss rule with it: a click on a row reads it or
+  // selects its text, so the card must stay open.
+  it('keeps an as="card" popover open on a content click', async () => {
+    render(() => (
+      <DropdownMenu trigger={<button>Open</button>} as="card" data-testid="card-popover">
+        <span data-testid="card-row">a row</span>
+      </DropdownMenu>
+    ))
+    await fireEvent.click(screen.getByText('Open'))
+    const popover = screen.getByTestId('card-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('card-row'))
+
+    expect(hide).not.toHaveBeenCalled()
+  })
+
   it('renders as="div" instead of menu', () => {
     render(() => (
       <DropdownMenu
@@ -132,9 +167,11 @@ describe('dropdownMenu', () => {
     expect(popover.tagName).toBe('MENU')
   })
 
-  it('keeps the Escape + outside-click dismiss handlers on the as="div" popover (Dynamic swap)', () => {
+  it('keeps the Escape dismiss handler on the as="div" popover (Dynamic swap)', () => {
     // The menu/div branches were collapsed into a single <Dynamic>; the dismiss
-    // handlers must survive the swap on the non-default `div` tag, not just `menu`.
+    // handlers must survive the swap on the non-default `div` tag, not just
+    // `menu`. Escape dismisses BOTH tags -- only the click handler reads the tag
+    // (see the content-click suite below).
     const hide = vi.spyOn(HTMLElement.prototype, 'hidePopover')
     render(() => (
       <DropdownMenu trigger={<button>Open</button>} as="div" data-testid="dyn-div">
@@ -145,10 +182,6 @@ describe('dropdownMenu', () => {
     expect(popover.tagName).toBe('DIV')
 
     popover.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    expect(hide).toHaveBeenCalled()
-    hide.mockClear()
-
-    popover.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(hide).toHaveBeenCalled()
     hide.mockRestore()
   })
@@ -307,7 +340,90 @@ describe('dropdownMenu nested-submenu dismiss', () => {
     const popover = screen.getByTestId('plain-popover')
     const hide = vi.spyOn(popover, 'hidePopover')
 
+    await fireEvent.click(screen.getByTestId('plain-trigger'))
     await fireEvent.click(screen.getByTestId('plain-item'))
+    expect(hide).toHaveBeenCalled()
+  })
+
+  it('does not hide a second time when the item already closed the popover', async () => {
+    // The item's own handler runs first. hidePopover() on a popover that is not
+    // showing throws InvalidStateError in a browser, and the jsdom stub returns
+    // early instead -- so the call COUNT is what this can assert. One call is
+    // the item's own; a second would be the throw.
+    let popoverEl: HTMLElement | undefined
+    render(() => (
+      <DropdownMenu
+        id="self-closing-menu"
+        data-testid="self-closing-popover"
+        popoverRef={(el) => { popoverEl = el }}
+        trigger={triggerProps => <button data-testid="self-closing-trigger" {...triggerProps}>Open</button>}
+      >
+        <button
+          role="menuitem"
+          data-testid="self-closing-item"
+          onClick={() => popoverEl?.hidePopover()}
+        >
+          Item
+        </button>
+      </DropdownMenu>
+    ))
+
+    await fireEvent.click(screen.getByTestId('self-closing-trigger'))
+    const hide = vi.spyOn(screen.getByTestId('self-closing-popover'), 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('self-closing-item'))
+    expect(hide).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('dropdownMenu content-click dismiss', () => {
+  it('does not dismiss a div popover when its content is clicked', async () => {
+    // A `div` popover is a panel of content. Dismissing on a click would make
+    // its text unselectable: the press starts the selection and the release
+    // closes the popover under it.
+    render(() => (
+      <DropdownMenu
+        as="div"
+        id="card-popover-menu"
+        data-testid="card-popover"
+        trigger={triggerProps => <button data-testid="card-trigger" {...triggerProps}>Open</button>}
+      >
+        <span data-testid="card-text">Session ID</span>
+        <button data-testid="card-copy">Copy</button>
+      </DropdownMenu>
+    ))
+
+    const popover = screen.getByTestId('card-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('card-trigger'))
+    await fireEvent.click(screen.getByTestId('card-text'))
+    expect(hide).not.toHaveBeenCalled()
+
+    // Not even a button inside it: a card's buttons act on the card (copy a
+    // value), so they must leave it open too.
+    await fireEvent.click(screen.getByTestId('card-copy'))
+    expect(hide).not.toHaveBeenCalled()
+  })
+
+  it('dismisses a menu popover when its content is clicked', async () => {
+    // The other half of the same rule: a `menu` popover is a list of commands,
+    // so it still closes behind the click that runs one.
+    render(() => (
+      <DropdownMenu
+        id="content-menu"
+        data-testid="content-menu-popover"
+        trigger={triggerProps => <button data-testid="content-menu-trigger" {...triggerProps}>Open</button>}
+      >
+        <button role="menuitem" data-testid="content-menu-item">Item</button>
+      </DropdownMenu>
+    ))
+
+    const popover = screen.getByTestId('content-menu-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('content-menu-trigger'))
+    await fireEvent.click(screen.getByTestId('content-menu-item'))
     expect(hide).toHaveBeenCalled()
   })
 })

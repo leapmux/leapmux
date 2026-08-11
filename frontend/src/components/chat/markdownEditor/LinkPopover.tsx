@@ -74,6 +74,8 @@ export const LinkPopover: Component<LinkPopoverProps> = (props) => {
 
   return (
     <DropdownMenu
+      // A form, not a menu: typing in the field, saving, and removing are all
+      // clicks inside it, and a menu popover would dismiss on each one.
       as="div"
       anchorRef={props.anchorRef}
       open={props.open}
@@ -81,10 +83,6 @@ export const LinkPopover: Component<LinkPopoverProps> = (props) => {
       class={styles.linkPopover}
       data-testid="link-popover"
       aria-label="Edit link"
-      // A form, not a menu: typing in the field, saving, and removing are all
-      // clicks inside it, and the menu default would dismiss the popover on
-      // each one.
-      closeOnContentClick={false}
       onToggle={(open) => {
         if (!open)
           props.setOpen(false)

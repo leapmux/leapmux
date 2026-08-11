@@ -321,6 +321,27 @@ type OutputSink interface {
 // Agent is the interface that all coding agent providers must implement.
 type Agent interface {
 	AgentID() string
+	// SendInput delivers a user message and returns once it is DELIVERED --
+	// never when the resulting turn ends. Every provider states delivery the
+	// same way, whatever its wire protocol:
+	//
+	//   - A protocol with no acknowledgement (Claude, over stdin): the write to
+	//     the process IS the delivery. Return once it lands.
+	//   - A protocol that acknowledges (Codex's `turn/started`): return on the
+	//     ack, or report the delivery unconfirmed after a bounded wait. Send the
+	//     request itself without waiting on its response, because a protocol
+	//     whose response arrives at TURN END answers a different question.
+	//
+	// Nothing here may block for the length of a turn. The worker acks the
+	// client's RPC and broadcasts the user's message only after this returns, so
+	// a provider that waits for the turn makes the browser -- whose deadline is
+	// far shorter -- label a delivered message "Failed to deliver", and shows
+	// every watcher the assistant's reply before the message that caused it.
+	// It also parks the caller's goroutine, and any lifecycle work behind it,
+	// for the same span.
+	//
+	// A turn-level failure is reported afterwards, out of band, through the
+	// provider's own error notification -- not by holding this call open.
 	SendInput(content string, attachments []*leapmuxv1.Attachment) error
 	SendRawInput(data []byte) error
 	Stop()

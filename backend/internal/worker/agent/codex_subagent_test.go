@@ -10,6 +10,50 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
+// Codex's ACK for a `turn/start` is the `turn/started` notification, and
+// `sendTurnStart` waits on exactly that.
+//
+// The turn/start RESPONSE cannot serve: Codex answers it when the turn ENDS,
+// minutes or hours later. Waiting on it held the worker's RPC ack and the
+// user-message broadcast for the whole turn, so the browser -- whose deadline is
+// 15s -- labelled a message it had already delivered "Failed to deliver".
+func TestCodex_TurnStartedIsTheAckThatReleasesASend(t *testing.T) {
+	t.Parallel()
+	ack := make(chan struct{})
+	a := &CodexAgent{turnStartAck: ack}
+	a.threadID = "t-1"
+	a.sink = noopSink{}
+
+	a.handleTurnStarted(json.RawMessage(`{"threadId":"t-1","turn":{"id":"turn-1"}}`))
+
+	select {
+	case <-ack:
+	default:
+		t.Fatal("turn/started must release the waiting send")
+	}
+	assert.Nil(t, a.turnStartAck, "the waiter is cleared, so a later turn cannot close it twice")
+	assert.Equal(t, "turn-1", a.turnID, "and the turn id it carries is what makes the next send steer")
+}
+
+// A CHILD's turn/started must not release the primary send: it belongs to a
+// collab subagent thread, and the main thread has not accepted anything yet.
+func TestCodex_AChildTurnStartedDoesNotReleaseTheSend(t *testing.T) {
+	t.Parallel()
+	ack := make(chan struct{})
+	a := &CodexAgent{turnStartAck: ack}
+	a.threadID = "t-main"
+	a.sink = noopSink{}
+
+	a.handleTurnStarted(json.RawMessage(`{"threadId":"t-child","turn":{"id":"turn-child"}}`))
+
+	select {
+	case <-ack:
+		t.Fatal("a child's turn must not acknowledge the main thread's send")
+	default:
+	}
+	assert.NotNil(t, a.turnStartAck, "the main send is still waiting")
+}
+
 // TestCodex_SendChildInputUnknownThreadReturnsRetryable verifies that when the
 // owner process is running but its in-memory collab index does not know the
 // thread (empty after a worker restart), SendChildInput wraps the failure in

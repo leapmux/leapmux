@@ -203,6 +203,70 @@ func TestRouteSubagentMessage_ToolUsePersistsBeforeItsSpanOpens(t *testing.T) {
 	assert.Equal(t, []string{"tu-bash"}, child.ClosedSpans())
 }
 
+// A FOREGROUND Task echoes its own spawn prompt back as a forwarded user
+// envelope, and `PersistChildPrompt` already wrote that prompt at task_started.
+// Persisting the echo too opened the transcript on two identical prompts.
+//
+// The CLI emits the echo only on its synchronous path: before the run loop it
+// yields one extra progress event whose whole purpose is to hand the prompt to
+// its own UI. A backgrounded Task takes the async path and emits nothing of the
+// kind, which is why only a foreground subagent showed the duplicate.
+func TestRouteSubagentMessage_DropsTheEchoedSpawnPrompt(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	// The echo: a user envelope carrying prose, not a tool_result.
+	agent.HandleOutput([]byte(`{
+		"type": "user",
+		"parent_tool_use_id": "spawn-1",
+		"message": {
+			"role": "user",
+			"content": [{"type": "text", "text": "Review the diff."}]
+		}
+	}`))
+
+	child, ok := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.True(t, ok)
+	assert.Empty(t, child.Messages(),
+		"the spawn prompt is written once, at task_started, not again from the echo")
+}
+
+// ...and the filter must not swallow a real one. Every genuine forwarded user
+// envelope carries the child's own tool_result, because inside its run loop the
+// CLI forwards a message only when it holds a tool_use or a tool_result block.
+func TestRouteSubagentMessage_KeepsAUserEnvelopeCarryingAToolResult(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	agent := newTestAgent(sink)
+
+	agent.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "spawn-1",
+		"message": {
+			"role": "assistant",
+			"content": [{"type": "tool_use", "id": "tu-1", "name": "Read", "input": {}}]
+		}
+	}`))
+	agent.HandleOutput([]byte(`{
+		"type": "user",
+		"parent_tool_use_id": "spawn-1",
+		"message": {
+			"role": "user",
+			"content": [{"type": "tool_result", "tool_use_id": "tu-1", "content": "ok"}]
+		}
+	}`))
+
+	child, ok := sink.ChildSink("child-of-spawn-1").(*testSink)
+	require.True(t, ok)
+	msgs := child.Messages()
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "tu-1", msgs[1].SpanID)
+	assert.True(t, msgs[1].Closing, "the tool_result still closes its span")
+}
+
 // A subagent's plain assistant text carries no span of its own, so it must
 // persist with the child's currently-open spans intact: an in-flight tool span
 // keeps drawing its rail past the text row.

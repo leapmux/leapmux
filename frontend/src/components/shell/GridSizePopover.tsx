@@ -23,7 +23,12 @@ interface GridSizePopoverProps {
   open: Accessor<boolean>
   /** Anchor element accessor. */
   anchor: Accessor<HTMLElement | null | undefined>
-  /** Called with the chosen dimensions; the popover does not close itself. */
+  /**
+   * Called with the chosen dimensions. The popover closes ITSELF right after,
+   * from both paths that select a size -- a grid cell and the Create button --
+   * so the host must not close it again: `hidePopover()` on a popover that is
+   * not showing throws `InvalidStateError`.
+   */
   onSelect: (rows: number, cols: number) => void
   /** Called when the user dismisses the popover (Escape, outside click). */
   onClose: () => void
@@ -159,11 +164,7 @@ export const GridSizePopover: Component<GridSizePopoverProps> = (props) => {
           }}
         </Index>
       </div>
-      {/* Stop click propagation so the wrapper's auto-dismiss-on-click
-          doesn't fire while the user interacts with the manual-entry
-          inputs. The Create button still bubbles its click so clicking
-          Create selects + closes in one step. */}
-      <div class={styles.manualEntry} onClick={e => e.stopPropagation()}>
+      <div class={styles.manualEntry}>
         <input
           class={styles.manualInput}
           type="number"
@@ -192,11 +193,9 @@ export const GridSizePopover: Component<GridSizePopoverProps> = (props) => {
           class="small"
           data-testid="grid-size-create-button"
           disabled={!isManualValid()}
-          onClick={(e) => {
-            // Don't let the wrapper's auto-dismiss intercept; we close
-            // explicitly after onSelect runs so the parent sees a valid
-            // post-select state on the close-toggle.
-            e.stopPropagation()
+          onClick={() => {
+            // Close AFTER onSelect runs, so the parent sees a valid post-select
+            // state on the close-toggle.
             commitManual()
             popoverEl?.hidePopover()
           }}

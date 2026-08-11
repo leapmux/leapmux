@@ -262,6 +262,17 @@ var claudeTaskStatusMap = map[string]bgtask.Status{
 	"stopped":   bgtask.StatusStopped,
 }
 
+// hasToolResultBlock reports whether a forwarded user envelope carries the
+// child's own tool_result, which is what every genuine one carries.
+func hasToolResultBlock(env *messageEnvelope) bool {
+	for _, block := range env.ContentBlocks() {
+		if block.Type == "tool_result" && block.ToolUseID != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // routeSubagentMessage persists a forwarded subagent envelope into the child's
 // OWN transcript. Every forwarded envelope -- assistant text/thinking, the
 // child's own tool_use, its tool_result, and the child's result -- carries the
@@ -270,6 +281,24 @@ var claudeTaskStatusMap = map[string]bgtask.Status{
 // mapping (a reorder), EnsureChildAgent still creates the child keyed by the
 // spawn span. The parent span tracker is never touched for these messages.
 func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, env *messageEnvelope) {
+	// A forwarded USER envelope that carries no tool_result is the spawn prompt
+	// coming back, and `PersistChildPrompt` already wrote it at task_started.
+	//
+	// A FOREGROUND Task emits it: before its run loop, the CLI yields one extra
+	// progress event whose whole purpose is to hand the prompt to its own UI, and
+	// that event carries the prompt as a user message. A backgrounded Task takes
+	// the async path and emits nothing of the kind, which is why only a
+	// foreground subagent opened its transcript on two identical prompts.
+	//
+	// Nothing else can arrive this way. Inside the run loop the CLI forwards a
+	// message only when it holds a tool_use or a tool_result block, so every
+	// other forwarded user envelope is a tool_result; and a Claude subagent
+	// cannot be steered (only Codex implements ChildSteerer), so no typed user
+	// message reaches a child transcript either.
+	if msgType == claudeMsgTypeUser && !hasToolResultBlock(env) {
+		return
+	}
+
 	spawnSpanID := env.ParentToolUseID
 	taskID := a.taskIDForToolUse(spawnSpanID)
 

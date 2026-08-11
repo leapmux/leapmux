@@ -411,14 +411,43 @@ func dbCloseFailureMessage(tabType leapmuxv1.TabType) string {
 // delegation token stayed UNREVOKED for the life of the worker process. This
 // commit made that offline path the normal one, which is what turned a
 // discrepancy into a leak.
-func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) *leapmuxv1.CloseTabResult {
+// Returns the close result and the agent's DESCENDANT subagent ids, at any
+// depth and in no particular order (the query walks the tree breadth-first, so
+// a parent comes BEFORE its own children). An agent id is also its tab id, so
+// the caller retires those tabs alongside the one it closed -- see
+// CloseAgentResponse.descendant_agent_ids for why they cannot outlive it, and
+// for the filter every caller must apply.
+//
+// For a ROOT the list is read AFTER the teardown, and that is the point. The
+// provider keeps creating child rows while it drains: `EnsureChildAgent` fires
+// from the stdout scan loop, and `StopAgent` returns only once that loop is
+// done. A list captured at entry therefore misses a subagent spawned during the
+// drain -- which would then never have its per-agent maps freed, never be
+// reported to a client, and never be reaped, because the orphan reconciler
+// walks roots only. One read after the teardown answers both consumers, and
+// replaces the second recursive walk this function used to run.
+//
+// A child close reads its own list early: it runs no teardown at all. That
+// close is UI-only, but the child's own subagents still go with it.
+func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1.WorktreeAction, linkPolicy worktreeLinkPolicy) (*leapmuxv1.CloseTabResult, []string) {
+	// Assigned by rootClose below for a root, and by the child branch for a
+	// child. Read in the return statement, which runs after closeTabCommon.
+	var descendants []string
+
 	// A virtual child agent (a subagent transcript): closing its tab is
 	// UI-only. Run NO teardown, stamp NO closed_at, and return an empty
 	// successful result. Transcript + registry survive (they live under the
 	// root); reopening the tab re-hydrates from the still-open row.
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err == nil && dbAgent.ParentAgentID.Valid {
-		return &leapmuxv1.CloseTabResult{}
+		childDescendants, derr := svc.Queries.ListDescendantAgentIDs(bgCtx(), sql.NullString{String: agentID, Valid: true})
+		if derr != nil {
+			// Only the caller's tab cleanup is lost, and an orphaned subagent tab
+			// is recoverable (the user closes it).
+			slog.Warn("close agent: list descendants failed", "agent", agentID, "err", derr)
+			childDescendants = nil
+		}
+		return &leapmuxv1.CloseTabResult{}, childDescendants
 	}
 
 	rootTeardown := func() {
@@ -427,7 +456,6 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		// the root row would orphan child rows (they have no worktree_tabs link
 		// and are invisible to the reconciler). Free each child's span
 		// tracker/caches alongside the row teardown.
-		descendants, _ := svc.Queries.ListDescendantAgentIDs(bgCtx(), sql.NullString{String: agentID, Valid: true})
 		svc.Agents.StopAgent(agentID)
 		svc.Output.ClearAgentRuntimeState(agentID)
 		svc.agentCleanups.run(agentID)
@@ -436,7 +464,10 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		// roots) on a root close); the root is known here, so clear its whole
 		// childSinks map once and delete the cheap per-agent maps per child.
 		svc.Output.ForgetChildSinks(agentID)
-		svc.Output.CleanupChildAgents(descendants)
+		// The per-child maps are freed in rootClose, which is where the child
+		// list is read -- see this function's doc. ForgetChildSinks stays here
+		// because it is keyed by the ROOT and needs no list at all.
+		//
 		// A close with no running process still gives the registry rows a final status
 		// as 'stopped' (a deliberate user action).
 		svc.Output.MarkAgentBackgroundTasksExited(agentID, true)
@@ -450,6 +481,15 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		if err != nil {
 			return false, err
 		}
+		// The tree minus its root IS the descendant list, so this one walk
+		// serves both the in-memory cleanup and the ids reported to the caller.
+		descendants = make([]string, 0, len(ids))
+		for _, id := range ids {
+			if id != agentID {
+				descendants = append(descendants, id)
+			}
+		}
+		svc.Output.CleanupChildAgents(descendants)
 		var anyRetired bool
 		// Continue past a transient error on one id so a single failed
 		// CloseAgent does not orphan the remaining descendants. The orphan
@@ -482,7 +522,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		linkPolicy,
 		rootTeardown,
 		rootClose,
-	)
+	), descendants
 }
 
 // closeTerminalTabCommon is the terminal mirror of closeAgentTabCommon. Note it
@@ -527,6 +567,9 @@ func (svc *Service) closeTabForConvergence(
 	const action = leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED
 	switch tabType {
 	case leapmuxv1.TabType_TAB_TYPE_AGENT:
+		// The descendant ids go unused: a convergence close has no client to
+		// report them to, and the CRDT tab records are already gone -- that IS
+		// what drove this close.
 		svc.closeAgentTabCommon(userID, tabID, action, linkPolicy)
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 		svc.closeTerminalTabCommon(userID, tabID, action, linkPolicy)

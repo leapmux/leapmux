@@ -54,6 +54,16 @@ const (
 	CodexServiceTierFast = "fast"
 )
 
+// How long a `turn/start` waits for its `turn/started` ack before it reports
+// the delivery unconfirmed.
+//
+// Bounds the DELIVERY, not the turn. Codex emits `turn/started` as soon as it
+// accepts the request, so this only has to cover the process being busy, not
+// any model work. It is well inside the client's own RPC deadline, so an
+// unacknowledged send surfaces as a stated failure rather than as the client
+// giving up on a message the worker did deliver.
+const turnStartAckTimeout = 10 * time.Second
+
 // StringOrDefault returns value if non-empty, otherwise fallback.
 func StringOrDefault(value, fallback string) string {
 	if value != "" {
@@ -72,8 +82,13 @@ type CodexAgent struct {
 	sink       OutputSink
 
 	// Codex-specific state.
-	threadID          string // from thread/start response
-	turnID            string // currently active turn ID
+	threadID string // from thread/start response
+	turnID   string // currently active turn ID
+	// Closed by the `turn/started` notification, which is Codex's ACK that it
+	// accepted a `turn/start`. Non-nil only while a start is waiting for that
+	// ack. The turn/start RESPONSE cannot serve as the ack: Codex answers it
+	// when the TURN ENDS, minutes or hours later.
+	turnStartAck      chan struct{}
 	approvalPolicy    string // Codex approval policy (stored as-is from DB)
 	sandboxPolicy     string // Codex sandbox policy (e.g. "workspace-write")
 	networkAccess     string // Codex network access ("restricted" or "enabled")
@@ -511,27 +526,52 @@ func (a *CodexAgent) sendTurnStart(
 		return fmt.Errorf("marshal turn/start params: %w", err)
 	}
 
-	// No timeout: the turn unblocks via response, process exit, or ctx
-	// cancel. Codex turns can legitimately run minutes-to-hours; a wall-
-	// clock cap would just kill long-running work.
-	resp, err := a.sendRequest("turn/start", paramsJSON, 0)
-	if err != nil {
-		return fmt.Errorf("turn/start: %w", err)
-	}
+	// SendInput must return when the message is DELIVERED, never when the turn
+	// ends -- see the Agent interface. Codex answers `turn/start` only at turn
+	// end ("minutes-to-hours" is its own description), so waiting on that
+	// response would hold the caller for the whole turn: the worker would
+	// withhold the RPC ack and the user-message broadcast until then, and the
+	// browser, whose deadline is far shorter, would label a message it had
+	// already delivered "Failed to deliver".
+	//
+	// The ack is the `turn/started` notification instead. Register for it BEFORE
+	// the request goes out, or a fast agent can answer before we are listening.
+	ack := make(chan struct{})
+	a.mu.Lock()
+	a.turnStartAck = ack
+	a.mu.Unlock()
 
-	// Extract turn ID from response.
-	var turnResult struct {
-		Turn struct {
-			ID string `json:"id"`
-		} `json:"turn"`
-	}
-	if err := json.Unmarshal(resp, &turnResult); err == nil && turnResult.Turn.ID != "" {
+	// No timeout on the request itself: it resolves at turn end, and a wall-clock
+	// cap would kill long-but-legitimate work. Nothing waits on it, so a turn
+	// that runs for hours costs one parked goroutine and no held lock.
+	go func() {
+		if _, err := a.sendRequest("turn/start", paramsJSON, 0); err != nil {
+			slog.Error("codex turn/start failed", "agent_id", a.agentID, "error", err)
+			a.sink.PersistLeapMuxNotification(map[string]any{
+				"type":  NotificationTypeAgentError,
+				"error": err.Error(),
+			})
+		}
+	}()
+
+	select {
+	case <-ack:
+		// Codex accepted the turn. `turn/started` also set turnID, which is what
+		// makes the next send steer this turn rather than start another.
+		return nil
+	case <-a.processDone:
+		return fmt.Errorf("turn/start: agent exited before it accepted the turn")
+	case <-time.After(turnStartAckTimeout):
+		// Delivery is UNCONFIRMED, not failed: the request is on its way and the
+		// turn may still start. Report it so the user sees an unacknowledged
+		// send rather than a silent one, and stop waiting either way.
 		a.mu.Lock()
-		a.turnID = turnResult.Turn.ID
+		if a.turnStartAck == ack {
+			a.turnStartAck = nil
+		}
 		a.mu.Unlock()
+		return fmt.Errorf("turn/start: no turn/started within %s", turnStartAckTimeout)
 	}
-
-	return nil
 }
 
 // sendTurnSteer steers the active turn with additional user input.

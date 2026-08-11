@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
-import { render } from '@solidjs/testing-library'
+import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { motion } from '~/styles/tokens'
@@ -138,9 +138,24 @@ describe('thinking indicator token count', () => {
 describe('thinking indicator chips', () => {
   const realRaf = globalThis.requestAnimationFrame
 
+  function bgTask(over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem {
+    return {
+      kind: over.kind ?? 'subagent',
+      title: over.title ?? 'T',
+      activity: over.activity ?? '',
+      status: over.status ?? 'running',
+      ...over,
+    }
+  }
+
+  /** N running rows, the shape that makes the chip read "N background tasks". */
+  function running(n: number): BackgroundTaskItem[] {
+    return Array.from({ length: n }, (_, i) => bgTask({ rowKey: `r${i}`, status: 'running' }))
+  }
+
   function renderChips(props: {
-    backgroundTaskCount?: number
     backgroundTasks?: BackgroundTaskItem[]
+    onOpenSubagent?: (item: BackgroundTaskItem) => void
     todos?: TodoItem[]
     thinkingTokens?: number
   }) {
@@ -156,19 +171,115 @@ describe('thinking indicator chips', () => {
   }
 
   it('labels the bg-tasks counter rather than showing a bare number', () => {
-    const { getByTestId, queryByTestId } = renderChips({ backgroundTaskCount: 2 })
+    const { getByTestId, queryByTestId } = renderChips({ backgroundTasks: running(2) })
     expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('2 background tasks')
     expect(queryByTestId('bg-tasks-popover')).toBeInTheDocument()
   })
 
   it('uses the singular noun for a single background task', () => {
-    const { getByTestId } = renderChips({ backgroundTaskCount: 1 })
+    const { getByTestId } = renderChips({ backgroundTasks: running(1) })
     expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('1 background task')
   })
 
-  it('hides the bg-tasks chip when count is zero', () => {
-    const { queryByTestId } = renderChips({ backgroundTaskCount: 0 })
+  it('hides the bg-tasks chip when the registry is empty', () => {
+    const { queryByTestId } = renderChips({ backgroundTasks: [] })
     expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
+  })
+
+  // A caller that has no registry to report at all (a tab whose root has none)
+  // omits the prop entirely; the count must read 0, not throw.
+  it('hides the bg-tasks chip when no registry is supplied', () => {
+    const { queryByTestId } = renderChips({})
+    expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
+  })
+
+  // The count is the work IN PROGRESS, not the size of the registry. Finished
+  // rows stay in the list -- the popover is where a user reads what a subagent
+  // did -- so counting them left the chip saying "3 background tasks" beside a
+  // registry where nothing ran.
+  it('counts only pending and running rows', () => {
+    const { getByTestId } = renderChips({
+      backgroundTasks: [
+        bgTask({ rowKey: 'a', status: 'running' }),
+        bgTask({ rowKey: 'b', status: 'pending' }),
+        bgTask({ rowKey: 'c', status: 'completed' }),
+        bgTask({ rowKey: 'd', status: 'failed' }),
+        bgTask({ rowKey: 'e', status: 'stopped' }),
+        bgTask({ rowKey: 'f', status: 'interrupted' }),
+      ],
+    })
+    expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('2 background tasks')
+  })
+
+  it('hides the bg-tasks chip once every row has finished', () => {
+    const { queryByTestId } = renderChips({
+      backgroundTasks: [
+        bgTask({ rowKey: 'a', status: 'completed' }),
+        bgTask({ rowKey: 'b', status: 'interrupted' }),
+      ],
+    })
+    expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
+  })
+
+  // The chip and the popover read ONE list, so a positive count can never open
+  // an empty popover -- the failure a separate count prop invited.
+  it('opens a popover holding every row the registry carries, finished included', () => {
+    const { getByTestId } = renderChips({
+      backgroundTasks: [
+        bgTask({ rowKey: 'a', status: 'running', title: 'Still going' }),
+        bgTask({ rowKey: 'b', status: 'completed', title: 'Already done' }),
+      ],
+    })
+    const popover = getByTestId('bg-tasks-popover')
+    expect(getByTestId('thinking-bg-tasks-chip')).toHaveTextContent('1 background task')
+    expect(popover.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(2)
+  })
+
+  // A menu closes on any click inside it, because every click in a menu is an
+  // activation. This popover holds a kind tab bar, where a click is part of
+  // READING the list -- so the popover would dismiss itself on the very click
+  // that filters it, and the filter would be unusable.
+  it('stays open when the user picks a kind tab', async () => {
+    const { getByTestId } = renderChips({ backgroundTasks: running(2) })
+    const popover = getByTestId('bg-tasks-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(getByTestId('bg-task-filter-shell'))
+
+    expect(hide).not.toHaveBeenCalled()
+    expect(getByTestId('bg-task-filter-shell')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  // Opening a subagent IS an activation: its tab takes over, so a popover left
+  // open would cover the transcript the click just opened.
+  it('closes when the user opens a subagent from a row', async () => {
+    const onOpenSubagent = vi.fn()
+    const { getByTestId, container } = renderChips({
+      backgroundTasks: [bgTask({ rowKey: 'a', status: 'running', childAgentId: 'c1' })],
+      onOpenSubagent,
+    })
+    const popover = getByTestId('bg-tasks-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(container.querySelector('[data-testid="bg-task-row"]')!)
+
+    expect(hide).toHaveBeenCalled()
+    expect(onOpenSubagent).toHaveBeenCalledOnce()
+    expect(onOpenSubagent.mock.calls[0][0].rowKey).toBe('a')
+  })
+
+  /**
+   * The list renders a subagent row as a BUTTON on the strength of the handler
+   * being present, so the popover must pass one only when its own host did.
+   * Wrapping unconditionally gave a host that supplies nothing a row that looks
+   * clickable, dismisses the popover, and does nothing.
+   */
+  it('renders a static row when the host supplies no way to open a subagent', () => {
+    const { container } = renderChips({
+      backgroundTasks: [bgTask({ rowKey: 'a', status: 'running', childAgentId: 'c1' })],
+    })
+    const row = container.querySelector('[data-testid="bg-task-row"]')!
+    expect(row.tagName).toBe('DIV')
   })
 
   it('renders the todos counter as done/total plus a noun', () => {
@@ -206,7 +317,7 @@ describe('thinking indicator chips', () => {
   // is outside the separator chain, so leading it adds no middot of its own.
   it('orders the verb before the counters, separated by middots', () => {
     const todos: TodoItem[] = [{ content: 'a', status: 'pending', activeForm: '' }]
-    const { getByTestId, getByText } = renderChips({ thinkingTokens: 500, backgroundTaskCount: 2, todos })
+    const { getByTestId, getByText } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2), todos })
     // The odometer is aria-hidden; getByText finds the screen-reader copy.
     const tokens = getByText('500 tokens')
     const bg = getByTestId('thinking-bg-tasks-chip')
@@ -225,7 +336,7 @@ describe('thinking indicator chips', () => {
   // Tokens sits LAST in the chain now, so it owns the separator that its
   // predecessor would otherwise dangle when the middle counter is absent.
   it('draws one separator between the two counters that remain', () => {
-    const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTaskCount: 2 })
+    const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2) })
     const dots = (getByTestId('thinking-indicator').textContent ?? '').split('·').length - 1
     expect(dots).toBe(1)
   })
@@ -239,7 +350,7 @@ describe('thinking indicator chips', () => {
 
   // A missing neighbour must not leave a dangling separator.
   it('draws no separator when only one counter is present', () => {
-    const { getByTestId } = renderChips({ backgroundTaskCount: 2 })
+    const { getByTestId } = renderChips({ backgroundTasks: running(2) })
     expect(getByTestId('thinking-indicator').textContent).not.toContain('\u00B7')
   })
 })

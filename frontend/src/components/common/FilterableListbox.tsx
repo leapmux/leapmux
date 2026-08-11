@@ -190,6 +190,11 @@ export function FilterableListbox(props: {
           }}
         </For>
       </div>
+      {/* Keep a click on the filter field to itself. A row IS an item, so its
+          click must reach the host popover and dismiss it, but a MENU popover
+          dismisses on every click it sees -- and this listbox sits in one
+          (each option group's popover). Without this the first click on the
+          field closed the menu before the user could type. */}
       <div class={styles.comboboxControl} onClick={e => e.stopPropagation()}>
         <input
           class={styles.comboboxInput}

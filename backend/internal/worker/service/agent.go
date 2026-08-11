@@ -264,8 +264,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// the tab from the UI. The AgentStartup goroutine's trailing
 			// rollback work is tracked separately by
 			// AgentStartup.WaitForInFlight and drained in Shutdown.
-			result := svc.closeAgentTabCommon(userID.String(), agentID, r.GetWorktreeAction(), dropWorktreeLink)
-			sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{Result: result})
+			result, descendants := svc.closeAgentTabCommon(userID.String(), agentID, r.GetWorktreeAction(), dropWorktreeLink)
+			sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{
+				Result:             result,
+				DescendantAgentIds: descendants,
+			})
 		})
 
 	// SendAgentMessage persists the user message, forwards it to the agent

@@ -932,10 +932,20 @@ describe('tabView', () => {
           expect(held?.tileId, 'held at its last known tile').toBe(harness.rootTileId)
           expect(view.forWorkspace(harness.workspaceId).map(t => t.id)).toEqual(['a1'])
 
-          // And the metadata sweep, keyed on the raw record set, spares it.
+          // And the metadata sweep, keyed on the raw record set, spares it: the
+          // tab is still LIVE, so nothing retires its row.
           const state = harness.pending.state.speculativeState
           expect(hlcIsZero(state.tabs.a1.tombstoneAt), 'not tombstoned').toBe(true)
-          metadata.retainOnly(liveTabIds(state))
+          expect(liveTabIds(state).has('a1'), 'an unresolvable tab is still live').toBe(true)
+          // The sweep's real question, transcribed: retire every row the CRDT
+          // has no live record for. Passing an EMPTY set instead would assert
+          // nothing -- `dropTabs` returns early on one, so the expectations
+          // below would hold for any implementation, including one that
+          // retired this tab.
+          const live = liveTabIds(state)
+          metadata.dropTabs(new Set(
+            Object.keys(metadata.state.byTabId).filter(id => !live.has(id)),
+          ))
           expect(metadata.get('a1')?.title, 'title survives the sweep').toBe('Mine')
           expect(metadata.get('a1')?.screen).toEqual(new Uint8Array([1, 2, 3]))
           dispose()

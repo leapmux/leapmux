@@ -297,6 +297,11 @@ export const infoRows = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-1)',
+  // Every row is behind a `Show`, so an agent with no session id, no branch and
+  // no rate-limit row would otherwise render a card narrower than the `[+]` menu
+  // it hangs off. The floor belongs to the CONTENT, not to the shared popover
+  // class: the to-do and background-task cards size to their own rows.
+  minWidth: '240px',
 })
 
 export const rateLimitCountdown = style({

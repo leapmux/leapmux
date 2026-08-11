@@ -93,6 +93,22 @@ message InspectLastTabCloseResponse {
   // re-deriving one. Only populated on the responses that can prompt (the
   // fast paths answer should_prompt=false, where no push is offered).
   string working_dir = 18;
+  // Every subagent BELOW an AGENT tab, at any depth, in no particular order.
+  // Empty for every other tab type.
+  //
+  // Reported HERE, and not only on CloseAgentResponse, so a client can tombstone
+  // the subtree in the SAME batch as the tab it is closing, with the children
+  // ahead of their parent. A client that learns the ids only from the close
+  // response must tombstone the parent first, and every peer then briefly
+  // promotes the orphaned children to top-level rows claiming a lineage the user
+  // can no longer see -- which for a worktree-removing close lasts as long as
+  // the teardown.
+  //
+  // These are agent ROWS, and a row exists for every subagent the provider ever
+  // spawned -- not only the ones someone opened a tab for. A client MUST retire
+  // only the ids it holds a live tab record for; tombstoning an id the CRDT has
+  // never seen is rejected, and the rejection is fatal for the whole batch.
+  repeated string descendant_agent_ids = 19;
 }
 
 message PushBranchRequest {

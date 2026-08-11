@@ -95,6 +95,7 @@ describe('filterableListbox', () => {
     // reuse, e.g. the always-mounted code-language popover resets it on open).
     const input = screen.getByTestId('f-filter')
     await fireEvent.input(input, { target: { value: 'ban' } })
+    // eslint-disable-next-line solid/reactivity -- an assertion reads the value once; there is nothing to re-run.
     expect(filter()).toBe('ban')
 
     // ...and the controlled value drives which rows render.

@@ -53,6 +53,8 @@ export interface SidebarElementsOpts {
   activeTodos: TodoItem[]
   showBackgroundTasks: boolean
   activeBackgroundTasks: BackgroundTaskItem[]
+  /** The worker could not answer for this root's registry. */
+  activeBackgroundTasksFailed: boolean
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
   termOps: ReturnType<typeof useTerminalOperations>
   /** Signal bumped on agent turn-end; drives directory tree refresh. */

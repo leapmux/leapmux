@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -581,6 +582,68 @@ func TestBgTask_LoadSeedsCacheFromDB(t *testing.T) {
 	require.Len(t, items, 1)
 	assert.Equal(t, "seeded", items[0].RowKey)
 	assert.Equal(t, "seeded row", items[0].Title)
+}
+
+// The registry's final status on a process exit rides on the ExitHandler the
+// worker installs (bootstrap's SetOnExit -> Service.HandleAgentProcessExit).
+// That handler is where "the process behind this work is gone" becomes a status
+// on the rows, and nothing else asserted it -- so a change that stopped calling
+// it would leave every in-flight subagent and shell row 'running' forever: the
+// sidebar shows work that is not happening, and the parent tab keeps a thinking
+// indicator that an active row is enough to pin.
+func TestBgTask_ProcessExitGivesEveryActiveRowAFinalStatus(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	statusOf := func(rowKey string) string {
+		t.Helper()
+		rows, err := svc.Queries.ListAgentBackgroundTasksNewestFirst(ctx, db.ListAgentBackgroundTasksNewestFirstParams{
+			OwnerAgentID: "agent-1", Limit: 1000,
+		})
+		require.NoError(t, err)
+		for _, r := range rows {
+			if r.RowKey == rowKey {
+				return r.Status
+			}
+		}
+		t.Fatalf("no row %q", rowKey)
+		return ""
+	}
+
+	// Both kinds, plus a row that already ended: a crash must end the work in
+	// flight and leave the finished row's own outcome alone.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "sub", Kind: bgtask.KindSubagent, Title: "review the diff", Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "shell", Kind: bgtask.KindShell, Title: "npm test", Status: bgtask.StatusPending,
+	}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "done", Kind: bgtask.KindSubagent, Title: "already finished", Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.CloseBackgroundTask("done", bgtask.StatusCompleted))
+
+	// A crash: the work did not stop, it was cut off.
+	svc.HandleAgentProcessExit("agent-1", 1, errors.New("boom"), false)
+	assert.Equal(t, "interrupted", statusOf("sub"), "a running subagent row ends when its process dies")
+	assert.Equal(t, "interrupted", statusOf("shell"), "a queued shell row ends too -- it will never run")
+	assert.Equal(t, "completed", statusOf("done"), "a row that already ended keeps its own outcome")
+
+	// An explicit stop is a deliberate user action, not a failure.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "later", Kind: bgtask.KindShell, Title: "sleep 60", Status: bgtask.StatusRunning,
+	}))
+	svc.HandleAgentProcessExit("agent-1", 0, nil, true)
+	assert.Equal(t, "stopped", statusOf("later"))
+	assert.Equal(t, "interrupted", statusOf("sub"), "the earlier exit's verdict is not rewritten")
 }
 
 func TestBgTask_MarkExitedStoppedVsInterrupted(t *testing.T) {

@@ -47,7 +47,7 @@ import { createStableKeys } from '~/lib/keyedRows'
 import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
-import { chipTasksFor, countActiveBackgroundTasks, rootWorkState, subagentWorkState } from '~/stores/chatBackgroundTasks'
+import { chipTasksFor, rootWorkState, subagentWorkState } from '~/stores/chatBackgroundTasks'
 import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/tab.helpers'
@@ -782,8 +782,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // `agentLifecycle` below is a plain object literal, so Solid treats
             // it as ONE reactive unit: every read re-evaluates every field,
             // including `thinkingTokens`, which streams many deltas per turn.
-            // Calling this twice there walked the parent chain and re-filtered
-            // the whole registry twice per delta, and each fresh array identity
+            // Without the memo, every delta walked the parent chain and
+            // re-filtered the whole registry, and each fresh array identity
             // defeated BackgroundTaskList's own sort-and-group memo.
             const chipTasks = createMemo(() => chipTasksForTab(agentId))
 
@@ -869,7 +869,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       startupError: agent()?.startupError,
                       startupMessage: agent()?.startupMessage,
                       providerLabel: agentProviderLabel(agent()?.agentProvider),
-                      backgroundTaskCount: countActiveBackgroundTasks(chipTasks()),
                       backgroundTasks: chipTasks(),
                       onOpenSubagent: onOpenBackgroundTask,
                       todos: todosFor(agentId),

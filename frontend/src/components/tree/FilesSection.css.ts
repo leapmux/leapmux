@@ -7,38 +7,6 @@ export const wrapper = style({
   overflow: 'hidden',
 })
 
-export const tabBar = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: '1px',
-  padding: '0 var(--space-2)',
-  borderBottom: '1px solid var(--border)',
-  flexShrink: 0,
-  fontSize: 'var(--text-8)',
-  backgroundColor: 'inherit',
-})
-
-export const tabButton = style({
-  all: 'unset',
-  boxSizing: 'border-box',
-  cursor: 'pointer',
-  padding: 'var(--space-1) var(--space-2)',
-  color: 'var(--muted-foreground)',
-  borderBottom: '2px solid transparent',
-  transition: 'color 0.1s, border-color 0.1s',
-  whiteSpace: 'nowrap',
-  selectors: {
-    '&:hover': {
-      color: 'var(--foreground)',
-    },
-  },
-})
-
-export const tabButtonActive = style({
-  color: 'var(--foreground)',
-  borderBottomColor: 'var(--primary)',
-})
-
 export const toolbar = style({
   display: 'flex',
   alignItems: 'center',

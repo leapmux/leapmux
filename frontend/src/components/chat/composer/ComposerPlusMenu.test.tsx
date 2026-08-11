@@ -1,7 +1,9 @@
 import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { popoverCard } from '~/styles/popover.css'
 import { ComposerPlusMenu } from './ComposerPlusMenu'
 import '~/components/chat/providers'
 
@@ -57,6 +59,78 @@ function renderMenu(opts: {
   ))
   return { ...rendered, onSettingChange, onAttachFile, onToggleEnterMode, onToggleStatusBar, onChangeBranch, onDeleteBranch }
 }
+
+describe('composerPlusMenu structure freeze', () => {
+  /**
+   * A fresh tab has no groups, no branch, no agent info and no provider actions
+   * until its first status push. When that push lands while the menu is OPEN, it
+   * inserts every one of those rows ABOVE the two toggles at the bottom -- so a
+   * pointer already aimed at "Send with Enter" lands on whatever slid into its
+   * place, and one of those is a provider action that applies a setting at once.
+   *
+   * The same hazard `OptionGroupPopover` freezes one level down.
+   */
+  it('does not move a row under the pointer when a status push lands mid-open', async () => {
+    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([])
+    const [branch, setBranch] = createSignal<string | undefined>(undefined)
+    render(() => (
+      <ComposerPlusMenu
+        optionGroups={groups()}
+        optionValues={{}}
+        onSettingChange={vi.fn()}
+        onAttachFile={vi.fn()}
+        canAttach
+        branchName={branch()}
+        enterKeyMode={() => 'cmd-enter-sends'}
+        onToggleEnterMode={vi.fn()}
+        showStatusBar={() => true}
+        onToggleStatusBar={vi.fn()}
+      />
+    ))
+
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    const rowIds = () => screen.getAllByRole('menuitem', { hidden: true })
+      .concat(screen.getAllByRole('menuitemcheckbox', { hidden: true }))
+      .map(el => el.getAttribute('data-testid'))
+    const before = rowIds()
+
+    // The first status push: a catalog AND a branch, both at once.
+    setGroups([group('model', 'Model', 1, ['sonnet'])])
+    setBranch('feature/x')
+    await Promise.resolve()
+
+    expect(rowIds(), 'the open menu keeps the shape the user aimed at').toEqual(before)
+  })
+
+  // ...and the freeze is released on close, so the next open is current.
+  it('shows the new rows the next time it opens', async () => {
+    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([])
+    render(() => (
+      <ComposerPlusMenu
+        optionGroups={groups()}
+        optionValues={{}}
+        onSettingChange={vi.fn()}
+        onAttachFile={vi.fn()}
+        canAttach
+        enterKeyMode={() => 'cmd-enter-sends'}
+        onToggleEnterMode={vi.fn()}
+        showStatusBar={() => true}
+        onToggleStatusBar={vi.fn()}
+      />
+    ))
+
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    setGroups([group('model', 'Model', 1, ['sonnet'])])
+    await Promise.resolve()
+    expect(screen.queryByTestId('composer-group-model'), 'frozen while open').toBeNull()
+
+    // Close, then open again: the freeze is released on close.
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    await Promise.resolve()
+    expect(screen.getByTestId('composer-group-model')).toBeInTheDocument()
+  })
+})
 
 describe('composerPlusMenu', () => {
   it('lists the settings submenus in backend order', () => {
@@ -197,6 +271,32 @@ describe('composerPlusMenu', () => {
   it('omits the agent-info item when there is nothing to show', () => {
     renderMenu()
     expect(screen.queryByTestId('composer-agent-info')).toBeNull()
+  })
+
+  it('shows the agent-info rows on the shared card surface, not a menu', () => {
+    // The same card also opens from the status bar's context-usage trigger, and
+    // the two insets drifted apart while each call site set its own padding.
+    // `popoverCard` is the single source both now use.
+    //
+    // The tag matters as much as the class: a `div` popover keeps a click on a
+    // row, so the user can select the text in it, while a `menu` popover
+    // dismisses on that click.
+    renderMenu({ agentInfo: true })
+
+    const popover = screen.getByTestId('composer-agent-info-popover')
+    expect(popover.className).toBe(popoverCard)
+    expect(popover.tagName).toBe('DIV')
+  })
+
+  it('keeps the agent-info card open when a row is clicked', async () => {
+    renderMenu({ agentInfo: true })
+
+    const popover = screen.getByTestId('composer-agent-info-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('composer-agent-info'))
+    await fireEvent.click(screen.getByTestId('agent-info-rows'))
+    expect(hide).not.toHaveBeenCalled()
   })
 
   it('marks an in-flight settings change on the trigger, and only while it is in flight', () => {

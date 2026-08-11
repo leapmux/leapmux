@@ -216,13 +216,13 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
     //
     // Order matters, and so does `captureScreen: false`. `emitRemoveTab`
     // applies to `speculativeState` synchronously and bumps `pendingVersion`,
-    // so Solid flushes `liveTabIdSet` and the `retainOnly` sweep before the
+    // so Solid flushes `liveTabIdSet` and the `dropTabs` sweep before the
     // next statement runs. Disposing after it would fire the screen sink for
-    // a tab the sweep had just reclaimed, re-creating its metadata row —
-    // carrying a full serialized scrollback — with nothing left to evict it
-    // until some other tab happened to be created or closed. Capturing at all
-    // is pointless here: the tab is being destroyed, so the bytes have no
-    // future reader.
+    // a tab the sweep had just reclaimed. The sink writes through
+    // `patchExisting`, so that write is now a no-op rather than a resurrected
+    // row — but the order still stands, because a no-op capture is a full
+    // buffer serialization thrown away. Capturing at all is pointless here:
+    // the tab is destroyed, so the bytes have no future reader.
     disposeTerminalInstance(terminalId, { captureScreen: false })
     emitRemoveTab(TabType.TERMINAL, terminalId)
 

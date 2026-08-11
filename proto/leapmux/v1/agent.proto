@@ -131,6 +131,25 @@ message CloseAgentRequest {
 // for why partial failures are returned in-band rather than as RPC errors.
 message CloseAgentResponse {
   CloseTabResult result = 1;
+  // Every subagent BELOW the closed agent, at any depth, in NO particular
+  // order. An agent id is also its tab id, so a client retires those tabs
+  // alongside the one it closed.
+  //
+  // The worker answers because only it holds the parent chain: a child agent is
+  // a transcript the parent's process feeds, so with the parent gone nothing can
+  // add to it and the tab claims a lineage the user can no longer see. Read
+  // BEFORE any teardown, and reported for a child close too -- that close is
+  // UI-only, but the child's own subagents still go with it.
+  //
+  // A client that needs a bottom-up order must sort for itself: the query walks
+  // the tree breadth-first and returns a parent BEFORE its own children. Order
+  // does not matter to a tombstone, which is last-writer-wins per tab id.
+  //
+  // These are agent ROWS, and a row exists for every subagent the provider ever
+  // spawned -- not only the ones someone opened a tab for. A client MUST retire
+  // only the ids it holds a live tab record for; tombstoning an id the CRDT has
+  // never seen is rejected, and it takes the whole batch with it.
+  repeated string descendant_agent_ids = 2;
 }
 
 message ListAgentsRequest {

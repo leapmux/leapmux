@@ -43,6 +43,7 @@ import { printConsoleBanner } from '~/lib/systemInfo'
 import { isWorkerKnownOnline, onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
+import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
@@ -371,7 +372,13 @@ export const AppShell: Component = () => {
   // store graph — the same seam as `setCRDTBridge`. Every teardown path routes
   // through `disposeTerminalInstance`, so a workspace switch, a tab close, a
   // cross-workspace move and a floating-window close all preserve the buffer.
-  setTerminalScreenSink((tabId, screen) => tabMetadata.patch(tabId, { screen }))
+  // `patchExisting`, not `patch`: this fires from `disposeTerminalInstance`, and
+  // the view's unmount defers that to a microtask -- so for a terminal closed on
+  // another device it runs AFTER the sweep already reclaimed the row. Creating
+  // the row again would strand a full serialized scrollback that nothing can
+  // ever retire, because the sweep retires an id once and it can never be live
+  // again.
+  setTerminalScreenSink((tabId, screen) => tabMetadata.patchExisting(tabId, { screen }))
   onCleanup(() => setTerminalScreenSink(null))
 
   // Workspace & section loading
@@ -802,7 +809,17 @@ export const AppShell: Component = () => {
   const activeBackgroundTasks = createMemo(() =>
     activeRootAgentId() ? chatStore.backgroundTasks.get(activeRootAgentId()!) : [],
   )
-  const showBackgroundTasks = createMemo(() => activeBackgroundTasks().length > 0)
+  // Whether the worker could not answer for this root's registry. Keeps a
+  // FAILURE distinguishable from an empty registry: the section is hidden when
+  // empty, so without this a worker that cannot read the table takes the whole
+  // section off screen with nothing to say why -- which is what a database
+  // missing a column did.
+  const activeBackgroundTasksFailed = createMemo(() =>
+    activeRootAgentId() ? chatStore.backgroundTasks.loadFailed(activeRootAgentId()!) : false,
+  )
+  const showBackgroundTasks = createMemo(() =>
+    shouldShowBackgroundTasksSection(activeBackgroundTasks(), activeBackgroundTasksFailed()),
+  )
   // Open a subagent tab from a Background tasks row. Built once here and shared
   // with the sidebar section + the ThinkingIndicator popover (via sidebarOpts).
   const onOpenBackgroundTask = (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => {
@@ -839,8 +856,8 @@ export const AppShell: Component = () => {
     if (workspace.activeWorkspaceId() !== deletedId)
       return
     // No store to clear: the workspace's tabs leave the projection when the hub
-    // tombstones them, and their metadata is swept by `retainOnly` on the next
-    // tick. Only the selection pointer has to be dropped explicitly.
+    // tombstones them, and `useMetadataSweep` reclaims their metadata on the
+    // next tick. Only the selection pointer has to be dropped explicitly.
     // A null id clears the selection, which is what surfaces the
     // "Create a new workspace..." empty state once the last one is gone.
     switchWorkspace(nextWorkspaceId)
@@ -994,6 +1011,7 @@ export const AppShell: Component = () => {
     get activeTodos() { return activeTodos() },
     get showBackgroundTasks() { return showBackgroundTasks() },
     get activeBackgroundTasks() { return activeBackgroundTasks() },
+    get activeBackgroundTasksFailed() { return activeBackgroundTasksFailed() },
     onOpenBackgroundTask: item => onOpenBackgroundTask(item),
     termOps,
     gitStatusStore: gitFileStatusStore,

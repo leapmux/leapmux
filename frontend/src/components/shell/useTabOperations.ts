@@ -25,7 +25,7 @@ import { createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
 import { basename } from '~/lib/paths'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
+import { descendantAgentTabs, resolveOptimisticGitInfo, tabKey } from '~/stores/tab.helpers'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import { focusTile, removeEmptyFloatingWindow } from './tileLifecycle'
@@ -377,6 +377,49 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
   }
 
   /**
+   * Close every subagent tab below `tab`, deepest first.
+   *
+   * A child agent tab is a transcript its parent's provider feeds, and it owns
+   * no process of its own -- so once the parent tab is gone there is nothing
+   * that can add to it, and the sidebar promotes it to a top-level row claiming
+   * a lineage the user can no longer see.
+   *
+   * LOCAL ONLY: no per-child CloseAgent RPC. A child close is UI-only on the
+   * worker (`closeAgentTabCommon` returns before any teardown for a row with a
+   * parent), and the ONE RPC the clicked tab fires already stamps `closed_at`
+   * over the whole subtree, so a call per child would cost one round trip each
+   * to do nothing. Each child still gets the full local ladder -- the store
+   * reclamation `retireAgentTabLocally` owns, the tombstone, and the two layout
+   * steps -- which is what an `emitRemoveTab` on its own would skip.
+   *
+   * Deepest first, so each tab goes before the one that placed it and the
+   * parent's own close is the one that finds the tile empty.
+   *
+   * Called from the COMMIT phase only, so a cancelled worktree prompt leaves
+   * the whole subtree open.
+   */
+  const closeSubagentTabsUnder = (tab: Tab) => {
+    if (tab.type !== TabType.AGENT)
+      return
+    for (const child of descendantAgentTabs(view.all(), tab.id)) {
+      // Isolated per child, for the same reason `closeWorktreeTabs` isolates
+      // its own closes: these are synchronous store and layout mutations, and
+      // this runs one statement before the CLICKED tab's close. An unguarded
+      // throw here would skip that close entirely, leaving the tab the user
+      // asked to close on screen with nothing to say why.
+      try {
+        agentOps.retireAgentTabLocally(child.id)
+        emitRemoveTab(TabType.AGENT, child.id)
+        migrateFocusAfterTabClose(child.tileId)
+        removeEmptyFloatingWindowForTile(child.tileId)
+      }
+      catch (err) {
+        showWarnToast('Failed to close subagent tab', err)
+      }
+    }
+  }
+
+  /**
    * Close a tab. Returns true on success, false if the user cancelled the
    * last-tab/worktree confirmation prompt or an error aborted the close.
    * Auto-removes the parent floating window if this close empties it.
@@ -401,6 +444,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     if (tab.type === TabType.AGENT && (tab as AgentTab).parentAgentId) {
       addClosingTabKey(key)
       try {
+        // Its own subagents go with it, for the same reason a root's do.
+        closeSubagentTabsUnder(tab)
         await closeTabWithAction(tab, WorktreeAction.KEEP)
         return true
       }
@@ -499,6 +544,12 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // hub unregister. closeTabWithAction owns both halves for AGENT,
     // TERMINAL, and FILE (cross-workspace included), so handleTabClose
     // only has to forward the user's worktreeAction choice.
+    //
+    // The subagents go first so the parent's close is the LAST one, and
+    // therefore the one that finds the tile empty: each close prunes an emptied
+    // floating window, and a parent that went first would prune the window its
+    // own children still sit in.
+    closeSubagentTabsUnder(tab)
     closeTabWithAction(tab, worktreeAction)
     return true
   }

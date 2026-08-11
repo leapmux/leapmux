@@ -8,10 +8,12 @@ import {
   backgroundTaskStatusLabel,
   chipTasksFor,
   countActiveBackgroundTasks,
+  filterBackgroundTasksByKind,
   groupBackgroundTasks,
   isActiveBackgroundTaskStatus,
   protoBackgroundTaskToStore,
   rootWorkState,
+  shouldShowBackgroundTasksSection,
   sortBackgroundTasks,
   subagentWorkState,
 } from '~/stores/chatBackgroundTasks'
@@ -256,5 +258,76 @@ describe('backgroundTaskStatusLabel', () => {
     expect(backgroundTaskStatusLabel('failed')).toBe('Failed')
     expect(backgroundTaskStatusLabel('stopped')).toBe('Stopped')
     expect(backgroundTaskStatusLabel('interrupted')).toBe('Interrupted')
+  })
+})
+
+/**
+ * The kind filter behind the list's All / Subagents / Shell tabs. A registry
+ * that mixes subagents with background shells reads as one undifferentiated
+ * list, and the two are looked for separately.
+ */
+describe('filterBackgroundTasksByKind', () => {
+  const mixed = [
+    item({ rowKey: 'a', kind: 'subagent' }),
+    item({ rowKey: 's', kind: 'shell' }),
+    item({ rowKey: 'b', kind: 'subagent' }),
+  ]
+
+  it('returns every row for `all`', () => {
+    expect(filterBackgroundTasksByKind(mixed, 'all').map(t => t.rowKey)).toEqual(['a', 's', 'b'])
+  })
+
+  it('returns only the rows of the named kind', () => {
+    expect(filterBackgroundTasksByKind(mixed, 'subagent').map(t => t.rowKey)).toEqual(['a', 'b'])
+    expect(filterBackgroundTasksByKind(mixed, 'shell').map(t => t.rowKey)).toEqual(['s'])
+  })
+
+  it('keeps the input order within a kind', () => {
+    const many = [
+      item({ rowKey: 's1', kind: 'shell' }),
+      item({ rowKey: 'a1', kind: 'subagent' }),
+      item({ rowKey: 's2', kind: 'shell' }),
+    ]
+    expect(filterBackgroundTasksByKind(many, 'shell').map(t => t.rowKey)).toEqual(['s1', 's2'])
+  })
+
+  // `all` hands the same array back, so the identity an upstream memo
+  // established survives -- the list's sort-and-group memo keys off it.
+  it('returns the input array itself for `all`', () => {
+    expect(filterBackgroundTasksByKind(mixed, 'all')).toBe(mixed)
+  })
+
+  it('returns an empty array when no row has that kind', () => {
+    expect(filterBackgroundTasksByKind([item({ rowKey: 'a', kind: 'subagent' })], 'shell')).toEqual([])
+    expect(filterBackgroundTasksByKind([], 'all')).toEqual([])
+  })
+})
+
+/**
+ * Whether the Background tasks section belongs on screen.
+ *
+ * The failure arm is the one worth pinning: the section is hidden when the
+ * registry is empty, so a worker that cannot answer used to render exactly like
+ * an agent that had run nothing -- and the section left the screen with only a
+ * warn in the worker log to explain it.
+ */
+describe('shouldShowBackgroundTasksSection', () => {
+  it('shows the section for any row, finished ones included', () => {
+    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'running' })], false)).toBe(true)
+    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'completed' })], false)).toBe(true)
+  })
+
+  it('hides the section for an empty registry that loaded fine', () => {
+    expect(shouldShowBackgroundTasksSection([], false)).toBe(false)
+  })
+
+  it('shows the section when the load failed, so the failure can say so', () => {
+    expect(shouldShowBackgroundTasksSection([], true)).toBe(true)
+  })
+
+  // A failure with rows still shows: the rows are what the user came for, and
+  // the flag only decides visibility, never what replaces the content.
+  it('shows the section when the load failed and rows survive', () => {
+    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a' })], true)).toBe(true)
   })
 })

@@ -157,4 +157,151 @@ describe('optionGroupPopover', () => {
 
     expect(screen.getByTestId('model-sonnet')).toBe(before)
   })
+
+  it('holds the option list still while the popover is open', async () => {
+    // A push can change the SET of options, not only their objects: the worker
+    // inserts the CLI's resolved model at its canonical slot, and the live CLI
+    // catalog replaces the static fallback wholesale shortly after an agent
+    // starts. An insert ABOVE the row the user is aiming at slides that row down
+    // by its own height between the hit test and the click, and the option that
+    // took its place is what gets applied -- a click on "Opus (1M context)"
+    // launched Fable 5, the row directly above it.
+    const [groups, setGroups] = createSignal([
+      group({ options: [{ id: 'opus[1m]', name: 'Opus (1M context)' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' }),
+    ])
+    const onChange = vi.fn()
+    render(() => (
+      <OptionGroupPopover
+        groupId="model"
+        optionGroups={groups()}
+        optionValues={{}}
+        onChange={onChange}
+        trigger={triggerProps => <button data-testid="trigger" {...triggerProps} />}
+      />
+    ))
+
+    await fireEvent.click(screen.getByTestId('trigger'))
+
+    const rowIds = () => screen.getAllByRole('menuitemradio', { hidden: true })
+      .map(el => el.getAttribute('data-testid'))
+    expect(rowIds()).toEqual(['model-opus[1m]', 'model-sonnet'])
+
+    // The push that moves the rows: a model lands ABOVE the two already listed.
+    const withFable = [
+      { id: 'fable[1m]', name: 'Fable 5' },
+      { id: 'opus[1m]', name: 'Opus (1M context)' },
+      { id: 'sonnet', name: 'Sonnet' },
+    ]
+    setGroups([group({ options: withFable, currentValue: 'sonnet' })])
+    await Promise.resolve()
+
+    // Still the list the user opened, in the order they saw it.
+    expect(rowIds()).toEqual(['model-opus[1m]', 'model-sonnet'])
+    // And the row still dispatches the value it shows.
+    await fireEvent.click(screen.getByTestId('model-opus[1m]'))
+    expect(onChange).toHaveBeenCalledWith({ sets: { model: 'opus[1m]' } })
+
+    // Closing releases the freeze: the next open shows the new model.
+    await fireEvent.click(screen.getByTestId('trigger'))
+    await Promise.resolve()
+    expect(rowIds()).toEqual(['model-fable[1m]', 'model-opus[1m]', 'model-sonnet'])
+  })
+
+  /**
+   * The other half of the freeze. Holding the list still stops a row sliding
+   * under the pointer, but the same push that ADDS an option can REMOVE one --
+   * the live CLI catalog replaces the static fallback wholesale, so a fallback
+   * model it does not carry disappears. The frozen row for it is still rendered
+   * and still wired, and applying it would relaunch the agent on an id the
+   * provider rejects: the failure the freeze exists to prevent, from the other
+   * direction.
+   */
+  it('does not apply a frozen option the live catalog withdrew', async () => {
+    const [groups, setGroups] = createSignal([
+      group({ options: [{ id: 'legacy', name: 'Legacy' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' }),
+    ])
+    const onChange = vi.fn()
+    render(() => (
+      <OptionGroupPopover
+        groupId="model"
+        optionGroups={groups()}
+        optionValues={{}}
+        onChange={onChange}
+        trigger={triggerProps => <button data-testid="trigger" {...triggerProps} />}
+      />
+    ))
+
+    await fireEvent.click(screen.getByTestId('trigger'))
+    expect(screen.getByTestId('model-legacy')).toBeInTheDocument()
+
+    // The live catalog lands and does not carry `legacy`.
+    setGroups([group({ options: [{ id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' })])
+    await Promise.resolve()
+
+    // The frozen row is still on screen -- that is what the freeze does.
+    await fireEvent.click(screen.getByTestId('model-legacy'))
+    expect(onChange, 'a withdrawn option relaunches nothing').not.toHaveBeenCalled()
+
+    // ...while a row the catalog still offers applies as usual.
+    await fireEvent.click(screen.getByTestId('model-sonnet'))
+    expect(onChange).toHaveBeenCalledWith({ sets: { model: 'sonnet' } })
+  })
+
+  it('fills an empty list that opened before its catalog arrived', async () => {
+    // The freeze holds a list STILL; it must not hold a list EMPTY. A group whose
+    // options have not landed yet has nothing to keep in place, and freezing on
+    // the empty list would leave the menu blank until the user closed it again.
+    const [groups, setGroups] = createSignal([group({ options: [] })])
+    render(() => (
+      <OptionGroupPopover
+        groupId="model"
+        optionGroups={groups()}
+        optionValues={{}}
+        onChange={() => {}}
+        trigger={triggerProps => <button data-testid="trigger" {...triggerProps} />}
+      />
+    ))
+
+    await fireEvent.click(screen.getByTestId('trigger'))
+    expect(screen.queryByRole('menuitemradio', { hidden: true })).toBeNull()
+
+    setGroups([group({ options: [{ id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' })])
+    await Promise.resolve()
+
+    expect(screen.getByTestId('model-sonnet')).toBeInTheDocument()
+  })
+
+  it('keeps the trigger label live while the list is frozen', async () => {
+    // Only the MENU freezes. The chip is what the user reads to see which model
+    // is running, so a settled value that arrives while the menu is open has to
+    // reach it -- freezing the label would leave the chip contradicting the
+    // agent for as long as the menu stayed open.
+    const [groups, setGroups] = createSignal([
+      group({ options: [{ id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' }),
+    ])
+    render(() => (
+      <OptionGroupPopover
+        groupId="model"
+        optionGroups={groups()}
+        optionValues={{}}
+        onChange={() => {}}
+        trigger={(triggerProps, view) => (
+          <button data-testid="trigger" {...triggerProps}>{view.currentLabel}</button>
+        )}
+      />
+    ))
+
+    await fireEvent.click(screen.getByTestId('trigger'))
+    expect(screen.getByTestId('trigger')).toHaveTextContent('Sonnet')
+
+    setGroups([group({
+      options: [{ id: 'sonnet', name: 'Sonnet' }, { id: 'opus[1m]', name: 'Opus (1M context)' }],
+      currentValue: 'opus[1m]',
+    })])
+    await Promise.resolve()
+
+    expect(screen.getByTestId('trigger')).toHaveTextContent('Opus (1M context)')
+    // ...and the frozen menu still shows the rows the user opened.
+    expect(screen.queryByTestId('model-opus[1m]')).toBeNull()
+  })
 })

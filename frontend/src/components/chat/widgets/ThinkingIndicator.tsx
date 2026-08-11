@@ -3,10 +3,10 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
-import { bgPopoverClass } from '~/components/backgroundtasks/BackgroundTaskList.css'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { TodoList } from '~/components/todo/TodoList'
 import { pluralize } from '~/lib/plural'
+import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
 import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
@@ -43,23 +43,19 @@ export interface ThinkingIndicatorProps {
    */
   thinkingTokens?: number
   /**
-   * Active background-task count (pending+running subagents/shells) for THIS
-   * tab's own work: every descendant for a root, and only what it spawned for a
-   * subagent tab -- never the subagent's own row, which belongs to its parent.
-   * When > 0 a small chip renders beside the verb; clicking it opens a popover
-   * listing those tasks.
+   * The background-task registry rows (active AND past) for THIS tab's own
+   * work: every descendant for a root, and only what it spawned for a subagent
+   * tab -- never the subagent's own row, which belongs to its parent.
+   *
+   * The chip's count is derived from this list rather than passed beside it, so
+   * the number on the chip is always the number of ACTIVE rows the popover it
+   * opens can show. A separate count prop let the two disagree, and an empty
+   * popover behind a positive count is the failure that shape invites.
    *
    * It does NOT decide whether the indicator is visible. That is
    * shouldShowThinkingIndicator's `work` argument, which for a child tab reads
    * the child's OWN row -- a different question, and the reason a finished
    * subagent stopped spinning while its siblings ran.
-   */
-  backgroundTaskCount?: number
-  /**
-   * The background-task list for the popover (active + past), scoped the same
-   * way as backgroundTaskCount. The COUNT alone decides whether the chip shows
-   * and opens a popover, so a caller that reports a count must supply the
-   * matching list or the popover opens empty.
    */
   backgroundTasks?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
@@ -220,6 +216,11 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     cacheAngle(props.id, state.angle)
   }, seedAngleRad)
 
+  // The bg-tasks popover element, so opening a subagent can dismiss it. The
+  // popover opts out of the menu's own close-on-content-click (its tab bar is
+  // not an activation), which makes this the only thing that closes it on a
+  // row click.
+  let bgTasksPopoverEl: HTMLElement | undefined
   let expandRafId = 0
   let tickRafId = 0
   let rotateIntervalId: ReturnType<typeof setInterval> | undefined
@@ -274,10 +275,16 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     return `${done}/${pluralize(total, 'to-do')}`
   })
 
+  // The chip counts the rows that are still PENDING OR RUNNING. A finished row
+  // stays in the list -- the popover is where a user reads what a subagent did
+  // -- but it is not work in progress, so counting it would leave the chip
+  // saying "3 background tasks" for a registry where nothing runs.
+  const activeBgTaskCount = createMemo(() => countActiveBackgroundTasks(props.backgroundTasks ?? []))
+
   // Which counters the verb row shows. Named because each one is also read by
   // its successor to decide whether to draw a leading `·`.
   const showTokens = () => countTokens() !== undefined
-  const showBgTasks = () => (props.backgroundTaskCount ?? 0) > 0
+  const showBgTasks = () => activeBgTaskCount() > 0
   const showTodos = () => todoCount().total > 0
 
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
@@ -462,23 +469,39 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       show: showBgTasks,
       render: () => (
         <DropdownMenu
-          as="div"
-          class="card"
+          // A list to read, not a set of commands: the kind tab bar switches
+          // what it shows, and a tab click must not take the list away. Opening
+          // a subagent IS an activation, so that handler closes the popover
+          // itself -- see the wrapper below.
+          as="card"
           data-testid="bg-tasks-popover"
+          popoverRef={(el) => { bgTasksPopoverEl = el }}
           trigger={triggerProps => (
             <button
               class={styles.countChip}
               data-testid="thinking-bg-tasks-chip"
               {...triggerProps}
             >
-              {pluralize(props.backgroundTaskCount ?? 0, 'background task')}
+              {pluralize(activeBgTaskCount(), 'background task')}
             </button>
           )}
         >
           <BackgroundTaskList
+            variant="popover"
             tasks={props.backgroundTasks ?? []}
-            onOpenSubagent={props.onOpenSubagent}
-            class={bgPopoverClass}
+            // Wrapped only when the host actually supplies a handler. The list
+            // renders a subagent row as a BUTTON on the strength of this prop
+            // being present, so an always-defined wrapper would give a host
+            // that passes nothing a row that looks clickable, dismisses the
+            // popover, and does nothing.
+            onOpenSubagent={props.onOpenSubagent
+              ? (item) => {
+                  // The subagent's tab takes over from here, so leaving the
+                  // popover open would cover the transcript the click opened.
+                  bgTasksPopoverEl?.hidePopover()
+                  props.onOpenSubagent?.(item)
+                }
+              : undefined}
           />
         </DropdownMenu>
       ),
@@ -489,8 +512,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       show: showTodos,
       render: () => (
         <DropdownMenu
-          as="div"
-          class="card"
+          as="card"
           data-testid="todo-list-popover"
           trigger={triggerProps => (
             <button

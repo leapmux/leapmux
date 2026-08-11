@@ -112,6 +112,47 @@ export function isActiveBackgroundTaskStatus(s: BackgroundTaskItem['status']): b
   return s === 'pending' || s === 'running'
 }
 
+/**
+ * Whether the Background tasks section belongs on screen.
+ *
+ * ANY row keeps it alive, finished ones included -- reading what a subagent did
+ * after it ended is a first-class use case, so this is the registry's size, not
+ * its active count.
+ *
+ * A failed LOAD keeps it alive too, and that half is the one worth stating: the
+ * section is hidden when the registry is empty, so a worker that cannot answer
+ * renders identically to an agent that has run nothing, and the section leaves
+ * the screen with nothing to say why. A worker database missing a column did
+ * exactly that, and the only trace was a warn in the worker log.
+ *
+ * Here rather than inline in the shell, so the rule sits with the registry's
+ * other rules and can be tested without mounting AppShell.
+ */
+export function shouldShowBackgroundTasksSection(
+  tasks: BackgroundTaskItem[],
+  loadFailed: boolean,
+): boolean {
+  return tasks.length > 0 || loadFailed
+}
+
+/**
+ * Which kind of row the background-task list shows: one kind, or every kind.
+ *
+ * Derived from the row's own `kind` rather than spelled out, so a third kind
+ * reaches the filter (and its tab) by adding it to `BackgroundTaskItem` alone.
+ */
+export type BackgroundTaskKindFilter = 'all' | BackgroundTaskItem['kind']
+
+// filterBackgroundTasksByKind returns the rows the given tab shows. `all`
+// returns the input array itself, so the identity a memo upstream established
+// survives the filter.
+export function filterBackgroundTasksByKind(
+  items: BackgroundTaskItem[],
+  filter: BackgroundTaskKindFilter,
+): BackgroundTaskItem[] {
+  return filter === 'all' ? items : items.filter(it => it.kind === filter)
+}
+
 // countActiveBackgroundTasks returns the number of pending/running rows -- the
 // figure the rail badge and the ThinkingIndicator chip render.
 export function countActiveBackgroundTasks(items: BackgroundTaskItem[]): number {

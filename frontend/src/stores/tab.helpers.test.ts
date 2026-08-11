@@ -7,7 +7,7 @@ import { AgentGitStatusSchema, AgentInfoSchema, AgentProvider, AgentStatus, Avai
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -890,6 +890,86 @@ describe('rootAgentIdFor', () => {
       ['gc', { type: TabType.AGENT, id: 'gc', workspaceId: 'ws-1', parentAgentId: 'c', rootAgentId: 'root-1' }],
     ])
     expect(rootAgentIdFor((id: string) => tabs.get(id), 'gc')).toBe('root-1')
+  })
+})
+
+/**
+ * `descendantAgentTabs` is what makes a subagent tab close with the tab that
+ * spawned it. A child owns no process, so a subtree left behind is a set of
+ * transcripts nothing can add to, hanging off a parent row that is gone.
+ */
+describe('descendantAgentTabs', () => {
+  const agent = (id: string, parentAgentId?: string): Tab =>
+    ({ type: TabType.AGENT, id, workspaceId: 'ws-1', parentAgentId } as Tab)
+  const ids = (tabs: readonly Tab[], id: string) => descendantAgentTabs(tabs, id).map(t => t.id)
+
+  it('returns nothing for an agent with no children', () => {
+    expect(ids([agent('root'), agent('other')], 'root')).toEqual([])
+  })
+
+  it('returns nothing for an empty tab list', () => {
+    expect(descendantAgentTabs([], 'root')).toEqual([])
+  })
+
+  it('returns every child of the agent', () => {
+    const tabs = [agent('root'), agent('c1', 'root'), agent('c2', 'root')]
+    expect(new Set(ids(tabs, 'root'))).toEqual(new Set(['c1', 'c2']))
+  })
+
+  // Deepest first, so each tab closes before the one that placed it.
+  it('returns a grandchild before its own parent', () => {
+    const tabs = [agent('root'), agent('c1', 'root'), agent('gc', 'c1')]
+    expect(ids(tabs, 'root')).toEqual(['gc', 'c1'])
+  })
+
+  it('never includes the agent itself', () => {
+    const tabs = [agent('root'), agent('c1', 'root')]
+    expect(ids(tabs, 'root')).not.toContain('root')
+  })
+
+  it('returns only what is below the given agent, not a sibling branch', () => {
+    const tabs = [agent('root'), agent('a'), agent('c1', 'root'), agent('c2', 'a')]
+    expect(ids(tabs, 'root')).toEqual(['c1'])
+  })
+
+  // A child whose parent is not in the list is not this agent's descendant. It
+  // stays open, matching what the sidebar draws for it -- a top-level row.
+  it('ignores a child whose parent is absent from the list', () => {
+    expect(ids([agent('root'), agent('orphan', 'gone')], 'root')).toEqual([])
+  })
+
+  // A TERMINAL and an AGENT tab can share an id, and only an AGENT is ever a
+  // parent, so a non-agent tab must never be swept in as one.
+  it('never returns a non-agent tab', () => {
+    const tabs = [
+      agent('root'),
+      agent('c1', 'root'),
+      { type: TabType.TERMINAL, id: 'c1', workspaceId: 'ws-1' } as Tab,
+    ]
+    const result = descendantAgentTabs(tabs, 'root')
+    expect(result).toHaveLength(1)
+    expect(result[0].type).toBe(TabType.AGENT)
+  })
+
+  // The worker cannot produce a cycle (parent_agent_id is a DAG rooted at a main
+  // agent), but a walk that recursed forever would hang the close, so the guard
+  // has to hold regardless.
+  it('terminates on a cycle rather than recursing forever', () => {
+    // root -> a -> b, and b claims a as its child again. The revisit of `a` is
+    // what the visited set has to catch; without it the walk never returns.
+    const tabs = [agent('root'), agent('a', 'root'), agent('b', 'a')]
+    const cyclic = [...tabs, { type: TabType.AGENT, id: 'a', workspaceId: 'ws-1', parentAgentId: 'b' } as Tab]
+    expect(ids(cyclic, 'root')).toEqual(['b', 'a'])
+  })
+
+  it('terminates when a tab names itself as its own parent', () => {
+    // Asked about `self`, the walk finds `self` among its own children. The
+    // visited set is seeded with the starting id, so it stops there.
+    expect(ids([agent('self', 'self')], 'self')).toEqual([])
+  })
+
+  it('returns nothing for an id no tab carries', () => {
+    expect(ids([agent('root'), agent('c1', 'root')], 'ghost')).toEqual([])
   })
 })
 

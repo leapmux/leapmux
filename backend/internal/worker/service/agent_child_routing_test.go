@@ -443,3 +443,138 @@ func TestCloseAgentOnRootClosesDescendantsAndMarksTasksStopped(t *testing.T) {
 		}
 	}
 }
+
+// TestCloseAgentReportsDescendantTabsToTheCaller verifies CloseAgent tells the
+// caller which subagent tabs went with the one it closed.
+//
+// An agent id IS its tab id, and only the worker holds the parent chain, so a
+// client cannot work this out for itself: the CRDT's TabRecord carries no
+// parent link. Without the answer, `leapmux control tab close <root>` retires
+// the root and leaves every subagent tab behind -- a transcript nothing can add
+// to, hanging off a parent row that is gone.
+func TestCloseAgentReportsDescendantTabsToTheCaller(t *testing.T) {
+	t.Parallel()
+
+	svc, d, childID, rootID := setupChildAgentTest(t)
+
+	// A grandchild, so the answer is the whole subtree rather than one level.
+	childSink := svc.Output.NewSink(childID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	grandchildID, err := childSink.EnsureChildAgent("spawn-span-2", "row-key-2", "grandchild task")
+	require.NoError(t, err)
+	require.NotEmpty(t, grandchildID)
+
+	w := newTestWriter()
+	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: rootID}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.CloseAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.ElementsMatch(t, []string{childID, grandchildID}, resp.GetDescendantAgentIds(),
+		"every subagent below the closed agent is reported, at any depth")
+	assert.NotContains(t, resp.GetDescendantAgentIds(), rootID,
+		"the closed agent itself is the caller's own tab, not a descendant")
+}
+
+// The subtree is reported by the INSPECT too, and that is what lets a client
+// order the tombstones.
+//
+// A client that learns the ids only from CloseAgent must tombstone the parent
+// first, because it has nothing else to go on until the response lands. Every
+// peer then briefly promotes the orphaned children to top-level rows claiming a
+// lineage the user can no longer see -- and for a close that removes a worktree,
+// "briefly" is the whole teardown. Reported here, the client submits children
+// and parent in one ordered batch before any of that starts.
+func TestInspectLastTabCloseReportsTheSubtreeSoAClientCanOrderIt(t *testing.T) {
+	t.Parallel()
+
+	svc, d, childID, rootID := setupChildAgentTest(t)
+	childSink := svc.Output.NewSink(childID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	grandchildID, err := childSink.EnsureChildAgent("spawn-span-2", "row-key-2", "grandchild task")
+	require.NoError(t, err)
+
+	w := newTestWriter()
+	dispatch(d, "InspectLastTabClose", &leapmuxv1.InspectLastTabCloseRequest{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabId:   rootID,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.InspectLastTabCloseResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.ElementsMatch(t, []string{childID, grandchildID}, resp.GetDescendantAgentIds(),
+		"every subagent below the tab, at any depth, before the close runs")
+	assert.NotContains(t, resp.GetDescendantAgentIds(), rootID,
+		"the tab being closed is the caller's own, not a descendant")
+}
+
+// Only an AGENT tab owns subagents. Answering for any other type would hand the
+// client ids to tombstone that belong to nothing.
+func TestInspectLastTabCloseReportsNoSubtreeForANonAgentTab(t *testing.T) {
+	t.Parallel()
+
+	_, d, _, rootID := setupChildAgentTest(t)
+
+	w := newTestWriter()
+	dispatch(d, "InspectLastTabClose", &leapmuxv1.InspectLastTabCloseRequest{
+		TabType: leapmuxv1.TabType_TAB_TYPE_TERMINAL,
+		TabId:   rootID,
+	}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.InspectLastTabCloseResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Empty(t, resp.GetDescendantAgentIds())
+}
+
+// The child close is UI-only on the worker -- no teardown, no closed_at -- but
+// the child's OWN subagents still go with its tab, so the report is owed there
+// too. This is the branch that returns before any teardown runs.
+func TestCloseAgentOnChildStillReportsItsOwnDescendants(t *testing.T) {
+	t.Parallel()
+
+	svc, d, childID, _ := setupChildAgentTest(t)
+	childSink := svc.Output.NewSink(childID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	grandchildID, err := childSink.EnsureChildAgent("spawn-span-2", "row-key-2", "grandchild task")
+	require.NoError(t, err)
+
+	w := newTestWriter()
+	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: childID}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.CloseAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Equal(t, []string{grandchildID}, resp.GetDescendantAgentIds())
+
+	// ...and the child close is still UI-only: no closed_at on the child row.
+	childRow, err := svc.Queries.GetAgentByID(context.Background(), childID)
+	require.NoError(t, err)
+	assert.False(t, childRow.ClosedAt.Valid, "a child close stamps no closed_at")
+}
+
+// An agent with no subagents reports none, rather than a one-element list
+// that holds its own id -- a caller that tombstoned that would close the tab twice.
+func TestCloseAgentReportsNoDescendantsForALeafAgent(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "leaf-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+
+	w := newTestWriter()
+	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "leaf-1"}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.CloseAgentResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	assert.Empty(t, resp.GetDescendantAgentIds())
+}

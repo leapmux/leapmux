@@ -287,7 +287,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   // `info`/`props`/`modelContextWindow`, so it needs no props of its own.
   const AgentInfoTrigger: Component = () => (
     <DropdownMenu
-      as="div"
+      // A card of labelled rows. `card` carries the surface with it, so this
+      // and the `[+]` menu's copy of the same card cannot inset their rows
+      // differently.
+      as="card"
       trigger={triggerProps => (
         <button
           class={styles.infoTrigger}
@@ -311,7 +314,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           </Show>
         </button>
       )}
-      class="card"
       data-testid="agent-info-popover"
     >
       {agentInfoRows()}

@@ -82,9 +82,47 @@ test.describe('Claude subagent background tasks', () => {
     expect(child!.parentAgentId).not.toBe('')
     expect(child!.spawnSpanId).not.toBe('')
 
-    // 8. Completion: the row becomes terminal; the section persists.
+    // 8. Completion: the row reaches a final status; the section persists.
     await expectRowBecomesFinal(page, row)
     await expectSectionPersists(page)
+
+    // 9. The registry's kind tabs. A subagent row lives under Subagents and not
+    //    under Shell, and All shows it again. Only a real spawn puts a row in
+    //    the section at all, which is why this rides on this test rather than
+    //    standing alone.
+    const kindTab = (key: string) => page.locator(`[data-testid="bg-task-filter-${key}"]:visible`)
+    await expect(kindTab('all')).toHaveAttribute('aria-selected', 'true')
+    await kindTab('subagent').click()
+    await expect(row).toBeVisible()
+    await kindTab('shell').click()
+    await expect(row).not.toBeVisible()
+    await kindTab('all').click()
+    await expect(row).toBeVisible()
+
+    // 10. Closing the parent tab takes its subagent tab with it. The child is a
+    //     transcript the parent's process feeds, so left behind it is a tab
+    //     nothing can add to. The worktree prompt is the parent's own and may or
+    //     may not appear here (it depends on the working dir's git state), so
+    //     answer it when it does.
+    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
+    const parentTab = page.locator(
+      `[data-testid="tab"][data-tab-type="agent"]:not([data-tab-id="${childTabId}"])`,
+    ).first()
+    await parentTab.locator('[data-testid="tab-close"]').dispatchEvent('click')
+
+    // Wait for whichever the inspect produces -- the prompt, or the close going
+    // straight through -- rather than reading visibility before either lands.
+    const closeDialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close Last Tab' }) })
+    await expect.poll(async () =>
+      await closeDialog.count() > 0 || await agentTabs.count() === 0,
+    ).toBe(true)
+    if (await closeDialog.count() > 0) {
+      await closeDialog.getByRole('button', { name: 'Close anyway' }).click()
+      await closeDialog.getByRole('button', { name: 'Confirm?' }).click()
+    }
+
+    await expect(page.locator(`[data-testid="tab"][data-tab-id="${childTabId}"]`)).toHaveCount(0)
+    await expect(agentTabs).toHaveCount(0)
   })
 
   test('background shell appears as a non-clickable shell row', async ({ authenticatedWorkspace, page }) => {

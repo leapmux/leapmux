@@ -1,5 +1,5 @@
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
-import { render } from '@solidjs/testing-library'
+import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
 import * as styles from '~/components/backgroundtasks/BackgroundTaskList.css'
@@ -14,11 +14,30 @@ function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): Background
   }
 }
 
+/**
+ * Render the sidebar variant. `variant` is required, so every case states which
+ * surface it is; the popover variant differs only in its own sizing classes,
+ * which jsdom cannot see, so the behaviour cases all use the sidebar one.
+ */
+function renderList(props: {
+  tasks: BackgroundTaskItem[]
+  onOpenSubagent?: (item: BackgroundTaskItem) => void
+}) {
+  return render(() => (
+    <BackgroundTaskList variant="sidebar" tasks={props.tasks} onOpenSubagent={props.onOpenSubagent} />
+  ))
+}
+
+/** The rows region alone, without the kind tab bar's own labels. */
+function rowsText(container: HTMLElement): string {
+  return container.querySelector('[role="tabpanel"]')!.textContent ?? ''
+}
+
 describe('backgroundTaskList', () => {
   it('renders a status glyph + title + activity for a running subagent', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList tasks={[row({ rowKey: 't1', title: 'Spawned agent', status: 'running', activity: 'running Bash', childAgentId: 'c1' })]} />
-    ))
+    const { container } = renderList({
+      tasks: [row({ rowKey: 't1', title: 'Spawned agent', status: 'running', activity: 'running Bash', childAgentId: 'c1' })],
+    })
     const el = container.querySelector('[data-testid="bg-task-row"]') as HTMLElement
     expect(el).toBeTruthy()
     expect(el.dataset.status).toBe('running')
@@ -32,9 +51,9 @@ describe('backgroundTaskList', () => {
   // it float to the right end of the title's first line while the secondary
   // line below runs the full width.
   it('puts the status dot inside the title, not beside it', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList tasks={[row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })]} />
-    ))
+    const { container } = renderList({
+      tasks: [row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })],
+    })
     const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
     const title = container.querySelector(`.${styles.taskTitle}`)!
     expect(title.contains(dot)).toBe(true)
@@ -46,14 +65,13 @@ describe('backgroundTaskList', () => {
   // whose title is the model's prose -- Claude sends `description || command`,
   // so most of them are -- must not be set in the monospace face.
   it('sets a title in the monospace face only when it is a real command', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList tasks={[
+    const { container } = renderList({
+      tasks: [
         row({ rowKey: 'cmd', kind: 'shell', title: 'go test ./internal/worker/service/...', titleIsCommand: true }),
         row({ rowKey: 'prose', kind: 'shell', title: 'Run the worker service tests' }),
         row({ rowKey: 'ag', kind: 'subagent', title: 'Review the diff' }),
-      ]}
-      />
-    ))
+      ],
+    })
     const titleOf = (text: string) =>
       [...container.querySelectorAll(`.${styles.taskTitle}`)].find(t => t.textContent?.includes(text))!
     expect(titleOf('go test').className).toContain(styles.taskTitleCommand)
@@ -61,35 +79,30 @@ describe('backgroundTaskList', () => {
     expect(titleOf('Review').className).not.toContain(styles.taskTitleCommand)
   })
 
-  it('renders the end label for a terminal row instead of activity', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList tasks={[row({ rowKey: 't1', status: 'failed' })]} />
-    ))
+  it('renders the end label for a finished row instead of activity', () => {
+    const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'failed' })] })
     expect(container.textContent).toContain('Failed')
   })
 
   it('renders a group header when rows carry a groupKey', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList tasks={[
+    const { container } = renderList({
+      tasks: [
         row({ rowKey: 'free', status: 'running' }),
         row({ rowKey: 'g1', status: 'running', groupKey: 'wf:x', groupLabel: 'my workflow' }),
-      ]}
-      />
-    ))
+      ],
+    })
     expect(container.textContent).toContain('my workflow')
   })
 
   it('fires onOpenSubagent only for subagent rows with a childAgentId', () => {
     const onOpen = vi.fn()
-    const { container } = render(() => (
-      <BackgroundTaskList
-        tasks={[
-          row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' }),
-          row({ rowKey: 'shell', status: 'running', kind: 'shell' }),
-        ]}
-        onOpenSubagent={onOpen}
-      />
-    ))
+    const { container } = renderList({
+      tasks: [
+        row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' }),
+        row({ rowKey: 'shell', status: 'running', kind: 'shell' }),
+      ],
+      onOpenSubagent: onOpen,
+    })
     const rows = container.querySelectorAll('[data-testid="bg-task-row"]')
     expect(rows).toHaveLength(2)
     // The subagent row is a button; the shell row is a div.
@@ -104,9 +117,9 @@ describe('backgroundTaskList', () => {
   })
 
   it('does not render a button when onOpenSubagent is absent', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList tasks={[row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' })]} />
-    ))
+    const { container } = renderList({
+      tasks: [row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' })],
+    })
     const el = container.querySelector('[data-testid="bg-task-row"]') as HTMLElement
     expect(el.tagName).toBe('DIV')
   })
@@ -114,15 +127,13 @@ describe('backgroundTaskList', () => {
   // The clickable and static rows are built from one shared attribute bag, so
   // the registry attributes the E2E specs select on cannot drift between them.
   it('puts the same registry attributes on the clickable and the static row', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList
-        tasks={[
-          row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' }),
-          row({ rowKey: 'shell', status: 'running', kind: 'shell' }),
-        ]}
-        onOpenSubagent={vi.fn()}
-      />
-    ))
+    const { container } = renderList({
+      tasks: [
+        row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' }),
+        row({ rowKey: 'shell', status: 'running', kind: 'shell' }),
+      ],
+      onOpenSubagent: vi.fn(),
+    })
     const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
     expect(rows.map(el => el.tagName)).toEqual(['BUTTON', 'DIV'])
     expect(rows.map(el => el.getAttribute('data-status'))).toEqual(['running', 'running'])
@@ -138,15 +149,13 @@ describe('backgroundTaskList', () => {
   // class is the only part a unit test can see; E2E 170 asserts the weight that
   // the browser resolves.
   it('gives the clickable and the static row the same style classes', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList
-        tasks={[
-          row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' }),
-          row({ rowKey: 'shell', status: 'running', kind: 'shell' }),
-        ]}
-        onOpenSubagent={vi.fn()}
-      />
-    ))
+    const { container } = renderList({
+      tasks: [
+        row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' }),
+        row({ rowKey: 'shell', status: 'running', kind: 'shell' }),
+      ],
+      onOpenSubagent: vi.fn(),
+    })
     const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
     const classesOf = (el: Element) => new Set(el.className.split(/\s+/).filter(Boolean))
     const clickable = classesOf(rows[0])
@@ -162,12 +171,10 @@ describe('backgroundTaskList', () => {
   // every row was noise. Removed -- and a row that still carries a
   // parentAgentId must not resurrect it.
   it('never renders a "via <parent>" chip', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList
-        tasks={[row({ rowKey: 'agent', status: 'running', childAgentId: 'c1', parentAgentId: 'root-1' })]}
-        onOpenSubagent={vi.fn()}
-      />
-    ))
+    const { container } = renderList({
+      tasks: [row({ rowKey: 'agent', status: 'running', childAgentId: 'c1', parentAgentId: 'root-1' })],
+      onOpenSubagent: vi.fn(),
+    })
     expect(container.textContent).not.toContain('via')
   })
 
@@ -182,9 +189,7 @@ describe('backgroundTaskList', () => {
       'stopped',
       'interrupted',
     ]
-    const { container } = render(() => (
-      <BackgroundTaskList tasks={statuses.map(status => row({ rowKey: status, status }))} />
-    ))
+    const { container } = renderList({ tasks: statuses.map(status => row({ rowKey: status, status })) })
     const dots = [...container.querySelectorAll('[data-testid="bg-task-status-dot"]')]
     expect(dots).toHaveLength(statuses.length)
     // Queued, running, succeeded, and failed are DISTINCT; a crash is colored
@@ -203,30 +208,169 @@ describe('backgroundTaskList', () => {
 
   // Color alone cannot tell failed from interrupted, so the dot states its status.
   it('states the status on the dot for anyone who cannot use the color', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList tasks={[row({ rowKey: 'a', status: 'interrupted' })]} />
-    ))
+    const { container } = renderList({ tasks: [row({ rowKey: 'a', status: 'interrupted' })] })
     expect(container.querySelector('[aria-label="Interrupted"]')).not.toBeNull()
   })
 
   // Claude sends a background shell's command as its `description`, which is
   // already the row's title, so echoing it below said the same thing twice.
   it('drops a secondary line that just repeats the title', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList
-        tasks={[row({ rowKey: 'sh', kind: 'shell', status: 'running', title: 'npm test', description: 'npm test' })]}
-      />
-    ))
-    expect(container.textContent).toBe('npm test')
+    const { container } = renderList({
+      tasks: [row({ rowKey: 'sh', kind: 'shell', status: 'running', title: 'npm test', description: 'npm test' })],
+    })
+    expect(rowsText(container)).toBe('npm test')
   })
 
   it('keeps a secondary line that adds something the title does not say', () => {
-    const { container } = render(() => (
-      <BackgroundTaskList
-        tasks={[row({ rowKey: 'sh', kind: 'shell', status: 'running', title: 'npm test', activity: 'installing deps' })]}
-      />
+    const { container } = renderList({
+      tasks: [row({ rowKey: 'sh', kind: 'shell', status: 'running', title: 'npm test', activity: 'installing deps' })],
+    })
+    expect(rowsText(container)).toContain('npm test')
+    expect(rowsText(container)).toContain('installing deps')
+  })
+})
+
+/**
+ * The kind tabs. A registry that mixes subagents with background shells reads
+ * as one undifferentiated list, and the two are looked for separately: a
+ * subagent row is a transcript to open, a shell row is a command to check on.
+ */
+describe('backgroundTaskList kind tabs', () => {
+  const mixed = [
+    row({ rowKey: 'agent', kind: 'subagent', title: 'Review the diff', childAgentId: 'c1' }),
+    row({ rowKey: 'shell', kind: 'shell', title: 'npm test' }),
+  ]
+
+  it('shows every kind on the All tab', () => {
+    const { container, getByTestId } = renderList({ tasks: mixed })
+    expect(getByTestId('bg-task-filter-all')).toHaveAttribute('aria-selected', 'true')
+    expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(2)
+  })
+
+  it('shows only subagent rows on the Subagents tab', () => {
+    const { container, getByTestId } = renderList({ tasks: mixed })
+    fireEvent.click(getByTestId('bg-task-filter-subagent'))
+    const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    expect(rows.map(el => el.getAttribute('data-kind'))).toEqual(['subagent'])
+    expect(rowsText(container)).toContain('Review the diff')
+    expect(rowsText(container)).not.toContain('npm test')
+  })
+
+  it('shows only shell rows on the Shell tab', () => {
+    const { container, getByTestId } = renderList({ tasks: mixed })
+    fireEvent.click(getByTestId('bg-task-filter-shell'))
+    const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    expect(rows.map(el => el.getAttribute('data-kind'))).toEqual(['shell'])
+  })
+
+  // An empty tab must say so. Rendering nothing leaves a blank box that reads
+  // as a rendering fault rather than as "there are none of these".
+  it('states that a tab with no rows is empty, per kind', () => {
+    const { container, getByTestId } = renderList({ tasks: [row({ rowKey: 'agent', kind: 'subagent' })] })
+    fireEvent.click(getByTestId('bg-task-filter-shell'))
+    expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(0)
+    expect(rowsText(container)).toBe('No shell commands')
+
+    fireEvent.click(getByTestId('bg-task-filter-subagent'))
+    expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(1)
+  })
+
+  it('states that an empty registry is empty on the All tab', () => {
+    const { container } = renderList({ tasks: [] })
+    expect(rowsText(container)).toBe('No background tasks')
+  })
+
+  // The tabs swap the region below them, so each one must point at the region
+  // it actually swaps -- and two mounts on screen at once may not share an id.
+  it('gives each mount its own panel id, and points its tabs at it', () => {
+    const { getByTestId, container } = renderList({ tasks: mixed })
+    const panelId = container.querySelector('[role="tabpanel"]')!.id
+    expect(panelId).toBeTruthy()
+    expect(getByTestId('bg-task-filter-all')).toHaveAttribute('aria-controls', panelId)
+
+    const second = renderList({ tasks: mixed })
+    expect(second.container.querySelector('[role="tabpanel"]')!.id).not.toBe(panelId)
+  })
+
+  // A group header belongs to the rows under it. Filtering to a kind whose rows
+  // are all in one group must not leave the OTHER group's header behind.
+  it('drops a group whose rows the filter removed', () => {
+    const { container, getByTestId } = renderList({
+      tasks: [
+        row({ rowKey: 'a', kind: 'subagent', groupKey: 'wf:x', groupLabel: 'my workflow' }),
+        row({ rowKey: 's', kind: 'shell', title: 'npm test' }),
+      ],
+    })
+    expect(rowsText(container)).toContain('my workflow')
+    fireEvent.click(getByTestId('bg-task-filter-shell'))
+    expect(rowsText(container)).not.toContain('my workflow')
+  })
+})
+
+/**
+ * A registry that could not be LOADED must not read as an empty one.
+ *
+ * The sidebar section is hidden when the registry is empty, so "no answer"
+ * rendering as "no tasks" removed the whole section from the screen. A worker
+ * database missing a column did exactly that: the only trace was a warn log.
+ */
+describe('backgroundTaskList load failure', () => {
+  function renderFailed(tasks: BackgroundTaskItem[]) {
+    return render(() => (
+      <BackgroundTaskList variant="sidebar" tasks={tasks} loadFailed />
     ))
-    expect(container.textContent).toContain('npm test')
-    expect(container.textContent).toContain('installing deps')
+  }
+
+  it('says the load failed instead of saying there are none', () => {
+    const { container, queryByTestId } = renderFailed([])
+    expect(rowsText(container)).toContain('Could not load background tasks')
+    expect(rowsText(container)).not.toContain('No background tasks')
+    expect(queryByTestId('bg-task-load-failed')).not.toBeNull()
+    expect(queryByTestId('bg-task-empty')).toBeNull()
+  })
+
+  it('marks the empty box as an emptiness when nothing failed', () => {
+    const { queryByTestId } = renderList({ tasks: [] })
+    expect(queryByTestId('bg-task-empty')).not.toBeNull()
+    expect(queryByTestId('bg-task-load-failed')).toBeNull()
+  })
+
+  // A failure that still has rows to show (a stale registry the client kept)
+  // renders the rows: the message stands in for MISSING content, never over it.
+  it('still renders the rows it has', () => {
+    const { container, queryByTestId } = renderFailed([
+      row({ rowKey: 'a', title: 'Review the diff' }),
+    ])
+    expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(1)
+    expect(queryByTestId('bg-task-load-failed')).toBeNull()
+  })
+
+  // With NOTHING to show, the failure is the right answer on every tab: the
+  // registry could not be read, so no kind of row can be claimed to be absent.
+  it('overrides the per-kind empty message on every tab when it has no rows', () => {
+    const { container, getByTestId } = renderFailed([])
+    fireEvent.click(getByTestId('bg-task-filter-shell'))
+    expect(rowsText(container)).toContain('Could not load background tasks')
+  })
+
+  /**
+   * ...but a failure that still HAS rows must not claim the registry is
+   * unreadable on a tab that is merely empty of its own kind.
+   *
+   * A failed load leaves the rows it already had (`applyLatestPage` records the
+   * failure without wiping them), so this state is reachable: the user sees two
+   * subagents on All, clicks Shell, and would be told the worker could not be
+   * read -- about a registry the same mount is showing two clicks away.
+   */
+  it('keeps the per-kind empty message on a tab whose kind has no rows', () => {
+    const { container, queryByTestId, getByTestId } = renderFailed([
+      row({ rowKey: 'a', title: 'Review the diff', kind: 'subagent' }),
+    ])
+    fireEvent.click(getByTestId('bg-task-filter-shell'))
+
+    expect(rowsText(container)).toContain('No shell commands')
+    expect(rowsText(container)).not.toContain('Could not load background tasks')
+    expect(queryByTestId('bg-task-empty')).not.toBeNull()
+    expect(queryByTestId('bg-task-load-failed')).toBeNull()
   })
 })

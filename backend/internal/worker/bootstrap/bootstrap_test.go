@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"database/sql"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -305,6 +306,52 @@ func TestWire_PerformsEveryStepBothEntryPointsRelyOn(t *testing.T) {
 	// Construction must not have left the always-non-nil fields nil.
 	assert.NotNil(t, w.Service.PrivateEvents)
 	assert.NotNil(t, w.Service.FileTabPaths)
+}
+
+// TestWire_InstallsTheAgentExitHandler pins the one call that gives a dead
+// process's background-task rows a final status.
+//
+// It fails silently if dropped, which is why it needs a guard of its own rather
+// than a test that calls HandleAgentProcessExit directly: without the handler,
+// every in-flight subagent and shell row stays 'running' after a crash, the
+// sidebar keeps showing work that is not happening, and the parent tab keeps a
+// thinking indicator an active row pins -- with no error anywhere to trace back
+// to the missing wiring.
+func TestWire_InstallsTheAgentExitHandler(t *testing.T) {
+	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, workerdb.Migrate(context.Background(), sqlDB))
+
+	key, err := noiseutil.GenerateCompositeKeypair()
+	require.NoError(t, err)
+
+	client := hub.New("http://127.0.0.1:0")
+	t.Cleanup(client.Stop)
+
+	// A non-nil check would prove nothing: the manager is constructed carrying a
+	// logging placeholder, so the field is never nil. Only its REPLACEMENT says
+	// the service-aware handler was installed.
+	placeholder := reflect.ValueOf(client.AgentManager().ExitHandlerForTest()).Pointer()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	w := Wire(Params{
+		Ctx:            ctx,
+		Client:         client,
+		DB:             sqlDB,
+		CompositeKey:   key,
+		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+		WorkerID:       "worker-1",
+		Name:           "test",
+		HomeDir:        t.TempDir(),
+		DataDir:        t.TempDir(),
+	})
+	t.Cleanup(w.Shutdown)
+
+	assert.NotEqual(t, placeholder,
+		reflect.ValueOf(client.AgentManager().ExitHandlerForTest()).Pointer(),
+		"a dead agent must be able to give its background-task rows a final status")
 }
 
 // TestWiring_ShutdownFlushesTheOutboundQueue pins the pairing that used to be

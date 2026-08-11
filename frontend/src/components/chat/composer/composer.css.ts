@@ -1,5 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { popoverBase } from '~/styles/popover.css'
+import { popoverColumnClamp } from '~/styles/popover.css'
 import { chipBase } from '~/styles/shared.css'
 import { breakpoints } from '~/styles/tokens'
 
@@ -85,28 +85,30 @@ export const axisChipLabel = style({
 // --- Popovers ---
 
 /**
- * The shared card surface for every composer popover: the positioning reset
- * plus the background, border, radius, shadow, and viewport clamp.
+ * The shared surface for every composer MENU popover: its own background,
+ * border, radius and shadow, over the positioning reset and viewport clamp that
+ * `popoverColumnClamp` in `~/styles/popover.css.ts` supplies. The clamp lives
+ * there because the card popovers need the identical one, and two copies of it
+ * drift.
  *
  * Each popover below composes this and adds only what genuinely differs — its
- * stacking order, its minimum width, and its padding. Padding differs by
- * CONTENT, not by decoration: a menu list pads by `--space-1` because its items
- * carry their own padding, while a content card needs real inset.
+ * stacking order and its minimum width. Each one pads by `--space-1`, the gutter
+ * around items that carry their own padding.
+ *
+ * A popover whose content is a CARD does not belong here. It uses the shared
+ * `popoverCard` class from `~/styles/popover.css`, which insets the content by
+ * Oat's own card padding.
  */
-const popoverCard = style([popoverBase, {
-  flexDirection: 'column',
+const composerMenuPopover = style([popoverColumnClamp, {
   backgroundColor: 'var(--background)',
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
   boxShadow: 'var(--shadow-large)',
-  maxWidth: 'calc(100vw - var(--space-4) * 2)',
-  maxHeight: 'calc(100vh - var(--space-6) * 2)',
-  overflowY: 'auto',
 }])
 
 // A chip's popover hosts OptionGroupMenuItems (radio menu items, or a
 // filterable listbox once the group exceeds the searchable threshold).
-export const axisPopover = style([popoverCard, {
+export const axisPopover = style([composerMenuPopover, {
   padding: 'var(--space-1)',
   zIndex: 300,
   minWidth: '200px',
@@ -134,7 +136,7 @@ export const plusButton = style({
   },
 })
 
-export const plusPopover = style([popoverCard, {
+export const plusPopover = style([composerMenuPopover, {
   padding: 'var(--space-1)',
   zIndex: 300,
   minWidth: '220px',
@@ -164,20 +166,13 @@ export const subTriggerLabel = style({
   whiteSpace: 'nowrap',
 })
 
-export const subPopover = style([popoverCard, {
+export const subPopover = style([composerMenuPopover, {
   padding: 'var(--space-1)',
   zIndex: 310,
   minWidth: '200px',
 }])
 
-/**
- * The `[+]` ▸ "Agent info" submenu. Its content is a card of labelled rows, not
- * a list of menu items, so it needs real inset padding -- the `--space-1` the
- * menu popovers use is the gutter around items that pad themselves, and it
- * leaves free-standing rows flush against the border.
- */
-export const infoPopover = style([popoverCard, {
-  padding: 'var(--space-3)',
-  zIndex: 310,
-  minWidth: '240px',
-}])
+// The `[+]` menu's "Agent info" submenu has no style here. Its content is a card
+// of labelled rows rather than a list of menu items, so it uses the shared
+// `popoverCard` class from `~/styles/popover.css` -- the same one the status
+// bar's copy of that card uses, which is what keeps the two insets equal.

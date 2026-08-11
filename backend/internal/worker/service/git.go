@@ -417,6 +417,22 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			sendInternalError(sender, err.Error())
 			return
 		}
+		// The subagent tabs that go with this one, so a client can tombstone the
+		// subtree in the SAME batch as the tab, children first. Attached here
+		// rather than inside inspectLastTabClose because that function has five
+		// early returns, and this answer is the same on every one of them.
+		//
+		// Best-effort: a failure costs the batched ordering, not the close. The
+		// CloseAgent response reports the list again, so a client still retires
+		// the subtree -- just a round trip later.
+		if r.GetTabType() == leapmuxv1.TabType_TAB_TYPE_AGENT {
+			ids, derr := svc.Queries.ListDescendantAgentIDs(ctx, sql.NullString{String: r.GetTabId(), Valid: true})
+			if derr != nil {
+				slog.Warn("inspect last tab close: list descendants failed", "tab_id", r.GetTabId(), "error", derr)
+			} else {
+				resp.DescendantAgentIds = ids
+			}
+		}
 		traceTabClosePhase("inspect", r.GetTabId(), "handler_end")
 		sendProtoResponse(sender, resp)
 	})

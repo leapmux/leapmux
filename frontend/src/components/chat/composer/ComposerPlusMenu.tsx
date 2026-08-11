@@ -6,7 +6,7 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import Paperclip from 'lucide-solid/icons/paperclip'
 import Plus from 'lucide-solid/icons/plus'
-import { createMemo, For, Show } from 'solid-js'
+import { createMemo, createSignal, For, Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
 import { hasOptions, resolvedCurrent } from '~/components/chat/settingsGroups'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
@@ -113,19 +113,73 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   // Only the ids drive the submenu list, so a catalog re-broadcast that leaves
   // the set of groups unchanged produces an identical array and `For` keeps
   // every submenu's DOM. Each submenu resolves its own group from the catalog.
-  const groupIds = createMemo(() => sortedGroups(props.optionGroups).map(g => g.id), undefined, {
+  const liveGroupIds = createMemo(() => sortedGroups(props.optionGroups).map(g => g.id), undefined, {
     equals: shallowEqualArrays,
   })
 
   // Provider-declared action buttons (e.g. Codex "Bypass permissions").
-  const actions = createMemo<ProviderSettingsAction[]>(() => pluginFor(props.agentProvider)?.settingsActions ?? [])
+  const liveActions = createMemo<ProviderSettingsAction[]>(() => pluginFor(props.agentProvider)?.settingsActions ?? [])
+
+  const [open, setOpen] = createSignal(false)
+
+  /**
+   * Everything that decides WHICH ROWS EXIST, held still while the menu is open.
+   *
+   * The menu is drawn from live props, and the first status push after a fresh
+   * tab supplies groups, a branch, agent info and provider actions all at once
+   * -- each of which inserts rows ABOVE the two toggles at the bottom. A pointer
+   * already aimed at "Send with Enter" then lands on whatever slid into its
+   * place, and one of those is a provider action that applies a setting the
+   * moment it is clicked.
+   *
+   * Reading `open()` FIRST and returning `prev` without touching any live source
+   * is what freezes it: that run subscribes to `open` alone, so no push can
+   * re-run this memo until the menu closes.
+   *
+   * ONE snapshot rather than a memo per field, because the fields are not
+   * independent -- `hasMiddleSection` fences the region they share, so a mix of
+   * fresh and stale values could draw a rule around nothing.
+   *
+   * Frozen even when EMPTY, unlike the option list in `./OptionGroupPopover`.
+   * There, freezing an empty list would leave the menu blank with nothing else
+   * in it; here the attach item and both toggles are always drawn, so an empty
+   * middle section is a complete menu -- and a menu opened before its first push
+   * is exactly the case that reported this. The trade is one open of staleness.
+   *
+   * Only the STRUCTURE is frozen. Labels, checked state, the disabled reason and
+   * the spinner keep reading live, because staleness THERE would be its own bug.
+   */
+  interface MenuStructure {
+    groupIds: string[]
+    actions: ProviderSettingsAction[]
+    branchName?: string
+    agentInfo?: () => JSX.Element
+  }
+  const structure = createMemo<MenuStructure>((prev) => {
+    if (open() && prev !== undefined)
+      return prev
+    return {
+      groupIds: liveGroupIds(),
+      actions: liveActions(),
+      branchName: props.branchName,
+      agentInfo: props.agentInfo,
+    }
+  })
+
+  const groupIds = () => structure().groupIds
+  const actions = () => structure().actions
+  const branchName = () => structure().branchName
+  const agentInfo = () => structure().agentInfo
 
   // Whether anything renders BETWEEN the attach item and the view toggles. Both
   // rules that fence that region are drawn only when it is non-empty: a fresh
   // tab before its first status push has no groups, no branch, no agent info and
   // no provider actions, and two unconditional rules then landed side by side.
+  //
+  // Derived from the HELD values, so the rules and the rows they fence cannot
+  // disagree about what is drawn.
   const hasMiddleSection = () =>
-    groupIds().length > 0 || !!props.branchName || !!props.agentInfo || actions().length > 0
+    groupIds().length > 0 || !!branchName() || !!agentInfo() || actions().length > 0
 
   const attachDisabledReason = () => {
     if (props.disabledReason)
@@ -135,6 +189,9 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
 
   return (
     <DropdownMenu
+      // Drives the structure freeze above: the rows may not change shape under
+      // a pointer that is already aimed at one of them.
+      onToggle={setOpen}
       trigger={triggerProps => (
         <Tooltip text={props.settingsLoading ? 'Applying a settings change…' : 'Add, settings, and more'} ariaLabel>
           <button
@@ -189,7 +246,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
           its usage. Guarded on BOTH sides, so an agent that reports no option
           groups, or none of the session items, cannot leave this rule stranded
           against the one above or below it. */}
-      <Show when={groupIds().length > 0 && (props.branchName || props.agentInfo)}>
+      <Show when={groupIds().length > 0 && (branchName() || agentInfo())}>
         <hr />
       </Show>
 
@@ -197,7 +254,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
           status bar that normally hosts it is a preference this menu can switch
           off, and the only other route is the sidebar — which is itself hidden
           behind a toggle on a narrow layout. Same menu items, same guard. */}
-      <Show when={props.branchName}>
+      <Show when={branchName()}>
         {branch => (
           <BranchContextMenu
             onChangeBranch={props.onChangeBranch ?? (() => {})}
@@ -226,7 +283,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
         )}
       </Show>
 
-      <Show when={props.agentInfo}>
+      <Show when={agentInfo()}>
         {rows => (
           <DropdownMenu
             trigger={triggerProps => (
@@ -240,7 +297,11 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
                 <Icon icon={ChevronRight} size="xs" />
               </button>
             )}
-            class={styles.infoPopover}
+            // A card of labelled rows, not a list of items: `card` keeps a
+            // click on a row (or a drag across it, to select the text) from
+            // closing the card, and carries the same surface the status bar's
+            // copy of this card uses.
+            as="card"
             data-testid="composer-agent-info-popover"
           >
             {rows()()}

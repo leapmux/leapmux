@@ -15,7 +15,10 @@ export const container = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
-  padding: 'var(--space-2) 0',
+  // The 24px compass already stands well clear of the line above and below it,
+  // so a full --space-2 on each side left the indicator floating in the
+  // transcript. Half that keeps it a distinct row without the gap.
+  padding: 'var(--space-1) 0',
   color: 'var(--primary)',
 })
 

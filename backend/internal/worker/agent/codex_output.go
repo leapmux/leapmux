@@ -138,6 +138,12 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 			return
 		}
 		a.mu.Lock()
+		// Codex ACCEPTED the turn. This is what `sendTurnStart` waits on: the
+		// turn/start response does not arrive until the turn ends.
+		if a.turnStartAck != nil {
+			close(a.turnStartAck)
+			a.turnStartAck = nil
+		}
 		a.turnID = notif.Turn.ID
 		a.turnToolUses = 0
 		a.turnSawPlan = false
