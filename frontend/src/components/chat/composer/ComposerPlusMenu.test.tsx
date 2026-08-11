@@ -2,6 +2,7 @@ import type { AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
+import { DEFAULT_DISABLED_PLACEHOLDER } from '~/lib/editor/keyboardPlugins'
 import { ComposerPlusMenu } from './ComposerPlusMenu'
 import '~/components/chat/providers'
 
@@ -22,6 +23,7 @@ function renderMenu(opts: {
   provider?: AgentProvider
   values?: Record<string, string>
   disabled?: boolean
+  disabledReason?: string
   canAttach?: boolean
   agentInfo?: boolean
   settingsLoading?: boolean
@@ -43,6 +45,7 @@ function renderMenu(opts: {
       onAttachFile={onAttachFile}
       canAttach={opts.canAttach ?? true}
       disabled={opts.disabled}
+      disabledReason={opts.disabledReason}
       settingsLoading={opts.settingsLoading}
       branchName={opts.branchName}
       onChangeBranch={onChangeBranch}
@@ -138,12 +141,39 @@ describe('composerPlusMenu', () => {
       disabled: true,
     })
 
-    const attach = screen.getByTestId('composer-attach-file')
-    expect(attach).toBeDisabled()
-    expect(attach).toHaveAttribute('title', 'This agent does not accept messages')
+    expect(screen.getByTestId('composer-attach-file')).toBeDisabled()
 
     await fireEvent.click(screen.getByTestId('model-sonnet'))
     expect(onSettingChange).not.toHaveBeenCalled()
+  })
+
+  it('states the caller\'s disabled reason, not one of its own', () => {
+    // The panel feeds the SAME string to the editor's disabled placeholder and
+    // to the hint above the box. A reason invented here would be a third copy
+    // that drifts -- a subagent tab would read "subagent" in the box and
+    // "agent" in this menu.
+    renderMenu({ disabled: true, disabledReason: 'This subagent doesn\'t accept messages.' })
+
+    expect(screen.getByTestId('composer-attach-file'))
+      .toHaveAttribute('title', 'This subagent doesn\'t accept messages.')
+  })
+
+  it('falls back to the same default the editor uses when no reason is given', () => {
+    // Both surfaces resolve `reason || DEFAULT_DISABLED_PLACEHOLDER` from the
+    // same input, so an absent reason cannot make them disagree either.
+    renderMenu({ disabled: true })
+
+    expect(screen.getByTestId('composer-attach-file'))
+      .toHaveAttribute('title', DEFAULT_DISABLED_PLACEHOLDER)
+  })
+
+  it('prefers the disabled reason over the control-request reason', () => {
+    // A disabled composer during a control request is still disabled; the
+    // narrower "unavailable during a control request" would understate it.
+    renderMenu({ disabled: true, canAttach: false, disabledReason: 'No input here.' })
+
+    expect(screen.getByTestId('composer-attach-file'))
+      .toHaveAttribute('title', 'No input here.')
   })
 
   it('keeps the view toggles live on a disabled composer', async () => {

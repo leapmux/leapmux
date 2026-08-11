@@ -425,6 +425,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               onAttachFile={() => fileInputRef?.click()}
               canAttach={!ctrl.activeControlRequest()}
               disabled={props.disabled}
+              disabledReason={props.disabledHint}
               settingsLoading={props.settingsLoading}
               branchName={props.agent?.gitStatus?.branch || undefined}
               onChangeBranch={() => props.onChangeBranch?.()}

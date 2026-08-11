@@ -14,6 +14,7 @@ import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { BranchContextMenu } from '~/components/workspace/BranchContextMenu'
+import { DEFAULT_DISABLED_PLACEHOLDER } from '~/lib/editor/keyboardPlugins'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { formatShortcut } from '~/lib/shortcuts/display'
 import * as styles from './composer.css'
@@ -42,6 +43,15 @@ export interface ComposerPlusMenuProps {
    * The view toggles below stay live: they are local preferences.
    */
   disabled?: boolean
+  /**
+   * Why the composer accepts no input, shown on the disabled attach item.
+   *
+   * Pass the SAME string the panel gives the editor as its disabled
+   * placeholder, so the box, the hint above it, and this menu state one reason
+   * and cannot disagree. Both surfaces apply the same fallback to the same
+   * input, so an absent reason still resolves identically.
+   */
+  disabledReason?: string
   /**
    * Whether a settings change is in flight. A model or effort change relaunches
    * the session and takes seconds, and every settings surface flips its label
@@ -114,7 +124,7 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
 
   const attachDisabledReason = () => {
     if (props.disabled)
-      return 'This agent does not accept messages'
+      return props.disabledReason || DEFAULT_DISABLED_PLACEHOLDER
     return props.canAttach ? undefined : 'Attach is unavailable during a control request'
   }
 
