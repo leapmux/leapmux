@@ -172,6 +172,44 @@ type SpanInfo struct {
 	// as a scroll-rail jump target. Zero value (MARK_TYPE_UNSPECIFIED) leaves the
 	// row unmarked, so existing SpanInfo{...} literals need no change.
 	MarkType leapmuxv1.MarkType
+	// NoSpan marks a row that carries a SpanID but deliberately owns no span --
+	// a subagent spawn. Its SpanColor of 0 is the ANSWER, not a gap to fill, so
+	// the persist path must not substitute the connector's color for it. Without
+	// this the spawn card takes a rail color that matches no rail anywhere,
+	// whenever its ParentSpanID happens to name a span that is still open.
+	NoSpan bool
+}
+
+// openToolSpan persists a tool call's opening row and opens its span.
+//
+// A call that spawns a subagent owns no span: it reserves no color and opens
+// nothing, so it draws no rail and its card takes the neutral border. It still
+// records its span type, which a provider's closing message reads back.
+//
+// Each provider decides `spawns` itself, from its own wire shape -- that
+// decision must not move into shared code. What lives here is the ORDER the
+// decision drives, which every provider needs identically: reserve before the
+// persist so the row carries the color its rail will use, persist before the
+// open so the row sits at the parent's depth, record the type either way.
+//
+// The parent span id is empty at every call site: a provider's tool calls are
+// flat in the transcript that holds them.
+//
+// A failed persist is logged by the caller and does NOT stop the span from
+// opening, which is what each of these call sites did before.
+func openToolSpan(sink OutputSink, content []byte, spanID, spanType string, spawns bool) error {
+	var spanColor int32
+	if !spawns {
+		spanColor = sink.ReserveSpanColor(spanID, "")
+	}
+	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, SpanInfo{
+		SpanID: spanID, SpanType: spanType, SpanColor: spanColor, NoSpan: spawns,
+	})
+	sink.SetSpanType(spanID, spanType)
+	if !spawns {
+		sink.OpenSpan(spanID, "")
+	}
+	return err
 }
 
 type AutoContinueReason string
@@ -222,15 +260,13 @@ type OutputSink interface {
 	// specific side effects are explicit at the call site.
 	PersistTurnEnd(content []byte, span SpanInfo) error
 	OpenSpan(spanID string, parentSpanID string)
+	// CloseSpan frees a span's column. The recorded span type SURVIVES it (only
+	// ResetSpans clears types), because a provider's closing message reads that
+	// type back through GetSpanType. A provider that states a spawn only AFTER
+	// its tool call started (Kilo's first in-progress tool_call_update, Claude's
+	// task_started for a Workflow run) calls this to give back the span it
+	// already opened, while the call itself keeps running.
 	CloseSpan(spanID string)
-	// DiscardSpan removes an open span WITHOUT ending it: the tool call keeps
-	// running, but no later message connects to its column and no message draws
-	// its rail. A subagent spawn owns no span, and a provider that states the
-	// spawn only AFTER the tool call started (Kilo's first in-progress
-	// tool_call_update, Claude's task_started for a Workflow run) calls this to
-	// take back the span it already opened. Unlike CloseSpan it keeps the
-	// recorded span type, which the closing message still reads back.
-	DiscardSpan(spanID string)
 	ResetSpans()
 	SetSpanType(spanID, spanType string)
 	GetSpanType(spanID string) string

@@ -130,8 +130,17 @@ func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 	if err := json.Unmarshal(tc.RawInput, &input); err != nil {
 		return nil
 	}
-	// Spawn shape = a prompt (optionally a description). No subagent_type.
-	if len(input.Prompt) == 0 && input.Description == "" {
+	// Spawn shape = a prompt (optionally a description). No subagent_type, so
+	// the prompt is the ONLY discriminator Reasonix supplies and it is required.
+	// Accepting a description alone made every ordinary tool that carries one a
+	// spawn, which now costs that tool its span as well as adding a false
+	// sidebar row.
+	//
+	// The raw form is tested, not the length: an absent prompt gives no bytes,
+	// but an explicit `null` gives four and an empty string gives two, and
+	// neither of those is a prompt.
+	switch string(input.Prompt) {
+	case "", "null", `""`:
 		return nil
 	}
 	title := tc.Title
@@ -150,5 +159,6 @@ func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 		RowKey: tc.ToolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
+		Spawns: true,
 	}
 }

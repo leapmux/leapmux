@@ -23,7 +23,7 @@
  */
 import { expect, test } from './fixtures'
 import { requireRegistryRow } from './helpers/subagentRegistry'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 /** The Claude Agent tool's result header: "Agent <id> completed". */
 const AGENT_RESULT_HEADER = /Agent \S+ (completed|failed|launched asynchronously)/
@@ -60,8 +60,14 @@ test.describe('subagent spawn has no span', () => {
 
     // Its tool_use card -- the row titled with the subagent type -- draws none
     // either. Before the change this row was the one that opened the rail.
+    //
+    // Restricted to an AGENT row: the prompt above contains the literal
+    // "general-purpose", so the user's own message row matches AGENT_TYPE too,
+    // and it sits FIRST. Without this filter the assertion reads that row,
+    // which never draws a rail, and passes however the spawn card renders.
     const spawnCardRow = page
       .locator('[data-span-columns]:visible')
+      .filter({ has: page.locator(ASSISTANT_BUBBLE_SELECTOR) })
       .filter({ hasText: AGENT_TYPE })
       .first()
     await expect(spawnCardRow).toBeVisible()

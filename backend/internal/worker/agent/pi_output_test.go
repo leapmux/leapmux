@@ -274,6 +274,11 @@ func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 	endRaw := []byte(`{"type":"tool_execution_end","toolCallId":"call-1","toolName":"bash","result":{"content":[{"type":"text","text":"file1\nfile2\n"}],"details":{"exitCode":0}},"isError":false}`)
 
 	handlePiOutput(a, parseLine(startRaw))
+	// SetSpanType is recorded at the start, and asserted here rather than at the
+	// end of the test: the close below ends the span, and an ended span forgets
+	// its type.
+	assert.Equal(t, "bash", sink.GetSpanType("call-1"))
+
 	handlePiOutput(a, parseLine(updateRaw))
 	handlePiOutput(a, parseLine(endRaw))
 
@@ -299,9 +304,6 @@ func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 	assert.Equal(t, "file1\n", string(chunk.Content))
 	assert.Equal(t, 1, sink.StreamEndCount())
 	assert.Equal(t, "call-1", sink.LastStreamEnd())
-
-	// SetSpanType recorded.
-	assert.Equal(t, "bash", sink.GetSpanType("call-1"))
 
 	// Tool count incremented.
 	a.mu.Lock()

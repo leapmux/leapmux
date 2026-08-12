@@ -1118,7 +1118,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                   */}
                                   <Show
                                     when={parsedSpanLines.length > 0}
-                                    fallback={<div data-span-columns="0" style={{ 'margin-left': `${NO_SPAN_MARGIN}px` }}>{bubble}</div>}
+                                    fallback={<div data-span-columns={parsedSpanLines.length} style={{ 'margin-left': `${NO_SPAN_MARGIN}px` }}>{bubble}</div>}
                                   >
                                     <div class={styles.messageRow} data-span-columns={parsedSpanLines.length}>
                                       <SpanLines lines={parsedSpanLines} />

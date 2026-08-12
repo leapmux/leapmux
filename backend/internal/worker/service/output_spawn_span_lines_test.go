@@ -120,6 +120,46 @@ func TestSpawnInsideAnOpenSpanDrawsExactlyOneColumn(t *testing.T) {
 	assert.Equal(t, "tu-read", closing[0].SpanID)
 }
 
+// A spawn row's span_color of 0 is its ANSWER, not a gap. When the row sits
+// under a span that is still open, the connector-colour fallback would fill it
+// in and tint the spawn card with a colour no rail anywhere draws. NoSpan opts
+// the row out of that fallback.
+func TestSpawnRowUnderAnOpenParentKeepsTheNeutralColor(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, w := setupTestService(t)
+	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+
+	readColor := sink.ReserveSpanColor("tu-read", "")
+	require.NotZero(t, readColor)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		[]byte(`{"type":"assistant"}`),
+		agent.SpanInfo{SpanID: "tu-read", SpanType: "Read", SpanColor: readColor}))
+	sink.OpenSpan("tu-read", "")
+
+	// The spawn row names the open Read as its parent and owns no span.
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		[]byte(`{"type":"assistant"}`),
+		agent.SpanInfo{SpanID: "tu-spawn", SpanType: "Agent", ParentSpanID: "tu-read", NoSpan: true}))
+
+	// An ordinary row with no span of its own still inherits, which is what the
+	// fallback exists for (a tool_result inside its own open span).
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		[]byte(`{"type":"user"}`),
+		agent.SpanInfo{SpanID: "tu-read", SpanType: "Read", Closing: true}))
+
+	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
+		AgentID: "agent-1", Seq: 0, Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	assert.Equal(t, int64(0), rows[1].SpanColor,
+		"the spawn card takes the neutral border although its parent span is open")
+	assert.Equal(t, int64(readColor), rows[2].SpanColor,
+		"a row that does own its span still inherits the connector colour")
+}
+
 // Live deltas are suppressed while any span is open. A spawn opens none, so the
 // parent keeps streaming for the whole subagent run.
 func TestStreamChunksFlowWhileASpawnRunsAndStopWhileASpanIsOpen(t *testing.T) {
@@ -128,15 +168,37 @@ func TestStreamChunksFlowWhileASpawnRunsAndStopWhileASpanIsOpen(t *testing.T) {
 	svc, _, w := setupTestService(t)
 	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
-	// A spawn is running: nothing is open, so the delta reaches the watcher.
+	// A spawn runs: nothing is open, so the delta reaches the watcher.
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		[]byte(`{"type":"assistant"}`),
 		agent.SpanInfo{SpanID: "tu-spawn", SpanType: "Agent"}))
 	sink.BroadcastStreamChunk([]byte("while the subagent runs"), "", "")
 
-	// An ordinary tool span opens: deltas are suppressed again.
+	// An ordinary tool span opens: the agent's free-form text waits for it.
 	sink.OpenSpan("tu-read", "")
 	sink.BroadcastStreamChunk([]byte("while a tool runs"), "", "")
 
 	assert.Equal(t, []string{"while the subagent runs"}, streamChunkDeltas(t, w))
+}
+
+// A tool's OWN output streams while that tool runs. It is emitted while its span
+// is open by construction, so gating it on "any span open" dropped every one:
+// per-tool live output never reached the UI, for any provider.
+func TestStreamChunksOfARunningToolReachTheWatcher(t *testing.T) {
+	t.Parallel()
+
+	svc, _, w := setupTestService(t)
+	sink := setupAgentWithWatcher(t, svc, w, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+
+	sink.OpenSpan("tu-bash", "")
+	sink.BroadcastStreamChunk([]byte("bash output"), "tu-bash", "")
+	// A second concurrent tool streams its own output too.
+	sink.OpenSpan("tu-grep", "")
+	sink.BroadcastStreamChunk([]byte("grep output"), "tu-grep", "")
+	// The agent's free-form text still waits while a tool runs.
+	sink.BroadcastStreamChunk([]byte("agent prose"), "", "")
+	// So does a chunk naming a span that never opened.
+	sink.BroadcastStreamChunk([]byte("spawn output"), "tu-spawn", "")
+
+	assert.Equal(t, []string{"bash output", "grep output"}, streamChunkDeltas(t, w))
 }

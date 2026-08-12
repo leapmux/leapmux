@@ -126,6 +126,7 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 		RowKey: toolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
+		Spawns: true,
 	}
 }
 
@@ -135,7 +136,7 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 // The spawn row was opened under the toolCallId, so SpawnRowKey carries it to
 // keep the close from leaking it as a Running row.
 func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
-	if tcu.Status != "completed" && tcu.Status != "failed" && tcu.Status != "cancelled" {
+	if !acpStatusIsFinal(tcu.Status) {
 		// Not final: this is where Kilo first reveals the spawn shape (its
 		// tool_call carries `rawInput: {}`), so run the same detection here.
 		// Without it a Kilo spawn produced no registry row at all -- the

@@ -425,19 +425,8 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		// transcripts.
 		collab := parseCollabToolCall(item)
 		spawns := collab != nil && collab.Tool == codexCollabToolSpawnAgent
-		var spanColor int32
-		if !spawns {
-			spanColor = a.sink.ReserveSpanColor(itemID, "")
-		}
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
-			SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
-		}); err != nil {
+		if err := openToolSpan(a.sink, params, itemID, itemType, spawns); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
-		}
-		// The span type is recorded either way: item/completed reads it back.
-		a.sink.SetSpanType(itemID, itemType)
-		if !spawns {
-			a.sink.OpenSpan(itemID, "")
 		}
 		if collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
@@ -1091,14 +1080,9 @@ func (a *CodexAgent) persistItemCompletedChild(childID string, params json.RawMe
 func persistToolItemStarted(sink OutputSink, params json.RawMessage, itemType, itemID, agentID string) {
 	switch itemType {
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
-		spanColor := sink.ReserveSpanColor(itemID, "")
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
-			SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
-		}); err != nil {
+		if err := openToolSpan(sink, params, itemID, itemType, false); err != nil {
 			slog.Error("codex persist item/started", "agent_id", agentID, "type", itemType, "error", err)
 		}
-		sink.SetSpanType(itemID, itemType)
-		sink.OpenSpan(itemID, "")
 	}
 }
 

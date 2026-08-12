@@ -65,12 +65,6 @@ const (
 	acpUpdateConfigOptionUpdate      = "config_option_update"
 )
 
-// acpToolKindExecute is the ACP tool_call kind for running a command. A
-// provider's spawn detector must never strip the span off one of these: a
-// backgrounded shell is an ordinary tool span, not a subagent spawn, and it
-// keeps its rail even when the detector fires on it.
-const acpToolKindExecute = "execute"
-
 // acpPendingInput holds a user message queued while a prompt is in flight.
 type acpPendingInput struct {
 	content     string
@@ -119,8 +113,8 @@ const (
 	modeChannelPrimaryAgent
 )
 
-// acpBase extends jsonrpcBase with fields and methods shared by all ACP
-// agents (OpenCodeAgent, CopilotCLIAgent, CursorCLIAgent) but not CodexAgent.
+// acpBase extends jsonrpcBase with fields and methods shared by every ACP agent
+// (OpenCode, Kilo, Cursor, Copilot, Goose, Reasonix) but not CodexAgent.
 type acpBase struct {
 	jsonrpcBase
 	sink               OutputSink
@@ -129,11 +123,15 @@ type acpBase struct {
 	// subagentFromToolCall / subagentFromToolCallUpdate are optional
 	// provider-specific hooks that translate a tool_call / tool_call_update
 	// into a neutral acpSubagentObservation driving the background-task
-	// registry (and, for Goose, a best-effort tool-request transcript). nil
-	// for providers that surface no subagent activity over ACP (Cursor,
-	// Copilot) -- the plumbing is inert. Membership is decided per provider in
-	// its configure (the registration site), keeping provider-specific
+	// registry (and, for Goose, a best-effort tool-request transcript). nil for
+	// a provider that surfaces no subagent activity over ACP (Copilot) -- the
+	// plumbing is then inert. Membership is decided per provider in its
+	// configure (the registration site), keeping provider-specific
 	// names/shapes out of this shared file.
+	//
+	// A hook may not be a pure function of its envelope: Cursor binds both to
+	// its agent, because the closing update cannot tell a backgrounded task
+	// from a backgrounded shell without what the spawn recorded.
 	subagentFromToolCall       func(tc acpToolCallEnvelope) *acpSubagentObservation
 	subagentFromToolCallUpdate func(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation
 	// subagentPrompts holds each spawn's prompt until the child transcript that
@@ -190,14 +188,20 @@ type acpBase struct {
 	// as internal pseudo-agents to hide from the picker (OpenCode's
 	// compaction/title/summary). Applied wherever the primary-agent list is built.
 	primaryAgentHiddenFilter func(string) bool
-	reapplySettings          func()                // called by ClearContext after session/new to re-apply model, mode, etc.
-	refreshFromSession       func(json.RawMessage) // called by ClearContext after reapplySettings to sync state from the session response
-	sessionID                string
-	workingDir               string
-	model                    string
-	permissionMode           string
-	currentPrimaryAgent      string
-	availableModels          []*ModelInfo
+	// spawnSpansReleased holds the tool calls whose span was already given back
+	// by the late-spawn path, so a re-reported spawn does not re-run the release
+	// on every update. Keyed by toolCallId, dropped when the call ends and
+	// cleared with the session. Guarded by mu.
+	spawnSpansReleased  map[string]struct{}
+	clearProviderState  func()                // called by ClearContext to drop provider state keyed by the OUTGOING session's tool-call ids
+	reapplySettings     func()                // called by ClearContext after session/new to re-apply model, mode, etc.
+	refreshFromSession  func(json.RawMessage) // called by ClearContext after reapplySettings to sync state from the session response
+	sessionID           string
+	workingDir          string
+	model               string
+	permissionMode      string
+	currentPrimaryAgent string
+	availableModels     []*ModelInfo
 	// modelsFieldInfos holds the models reported through the SessionModelState
 	// `models` field at the last full session response (handshake or ClearContext).
 	// A runtime config_option_update carries only the configOptions `model` select,
@@ -399,6 +403,16 @@ func (b *acpBase) ClearContext() (string, bool) {
 	// ever reuses the tool-call id, it would open the next transcript on the
 	// previous session's instruction. Codex clears its equivalent map here too.
 	b.subagentPrompts.clear()
+	// Same for the late-spawn notes: they are keyed by the OUTGOING session's
+	// tool-call ids, which will never report again.
+	b.mu.Lock()
+	clear(b.spawnSpansReleased)
+	b.mu.Unlock()
+	// A provider that keys its own state by tool-call id has the same exposure,
+	// for the same reason, so it clears that state here.
+	if b.clearProviderState != nil {
+		b.clearProviderState()
+	}
 
 	b.sink.UpdateSessionID(sessionID)
 
@@ -1519,6 +1533,16 @@ type acpSubagentObservation struct {
 	// CloseRow true => give a final status to the row after the upsert (Status carries
 	// the final status).
 	CloseRow bool
+	// Spawns true => this tool call STARTS a subagent, so it owns no span: the
+	// subagent's output lands in its own child transcript, and a rail held open
+	// for the whole run only pushes every concurrent tool one column right.
+	//
+	// Only a detector that recognizes its provider's spawn payload sets this. A
+	// progress observation, a tool-request observation, and a closing
+	// observation all leave it false, because each one describes a row that
+	// already exists. The provider states the fact; shared code must not infer
+	// it from which registry fields happen to be filled.
+	Spawns bool
 	// Mode selects close-only vs upsert. Defaults to acpModeUpsert (zero value);
 	// set acpModeCloseOnly explicitly when the observation carries no descriptive
 	// fields and should close an existing row without creating one.
@@ -1561,7 +1585,7 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 
 	// Tool calls that arrive already final (completed/failed/cancelled)
 	// are persisted as closing spans immediately — no open/close cycle.
-	if tc.Status == "completed" || tc.Status == "failed" || tc.Status == "cancelled" {
+	if acpStatusIsFinal(tc.Status) {
 		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 			SpanID: tc.ToolCallID, SpanType: spanType, Closing: true,
 		}); err != nil {
@@ -1574,21 +1598,9 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 	// A subagent spawn owns no span: its output lands in its own child
 	// transcript, so a rail held open for the whole subagent run only pushes
 	// every concurrent tool one column right.
-	spawns := acpObservationIsSpawn(obs) && spanType != acpToolKindExecute
-	var spanColor int32
-	if !spawns {
-		spanColor = b.sink.ReserveSpanColor(tc.ToolCallID, "")
-	}
-	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
-		SpanID: tc.ToolCallID, SpanType: spanType, SpanColor: spanColor,
-	}); err != nil {
+	spawns := acpObservationIsSpawn(obs)
+	if err := openToolSpan(b.sink, update, tc.ToolCallID, spanType, spawns); err != nil {
 		slog.Error("persist acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "error", err)
-	}
-	// The span type is recorded either way: the closing tool_call_update reads
-	// it back to persist span_type.
-	b.sink.SetSpanType(tc.ToolCallID, spanType)
-	if !spawns {
-		b.sink.OpenSpan(tc.ToolCallID, "")
 	}
 	b.applySubagentObservation(obs)
 }
@@ -1610,13 +1622,26 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		if obs := b.subagentFromToolCallUpdate(tcu); obs != nil {
 			b.applySubagentObservation(obs)
 			// A spawn recognized only HERE already opened a span at its
-			// tool_call, so take that span back now. Kilo is why: it opens the
+			// tool_call, so give that span back now. Kilo is why: it opens the
 			// spawn with `rawInput: {}` and fills the spawn shape only on the
-			// first in-progress update. A no-op for every provider whose
-			// detector already fired at the tool_call, and for a shell, whose
-			// span must survive a detector that misfires on it.
-			if acpObservationIsSpawn(obs) && b.sink.GetSpanType(tcu.ToolCallID) != acpToolKindExecute {
-				b.sink.DiscardSpan(tcu.ToolCallID)
+			// first in-progress update. CloseSpan frees the column although the
+			// subagent keeps running; the recorded span type survives it, so the
+			// closing arm below still persists the real kind.
+			//
+			// Only before the final status. Freeing the column removes it from
+			// the active set, so the closing arm would find nothing to mark
+			// connector_end: the rail drawn for the whole call would stop
+			// mid-transcript instead of ending. A spawn learned that late keeps
+			// its span and closes it once, below.
+			//
+			// Only ONCE per tool call. The detector re-runs on every update, and
+			// a provider that echoes its rawInput re-reports the spawn on each
+			// one; without the note every later update would take the tracker
+			// mutex and re-scan the active set to remove a span that is already
+			// gone, for the whole subagent run.
+			if !acpStatusIsFinal(tcu.Status) && acpObservationIsSpawn(obs) &&
+				b.markSpawnSpanReleased(tcu.ToolCallID) {
+				b.sink.CloseSpan(tcu.ToolCallID)
 			}
 		}
 	}
@@ -1642,6 +1667,7 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		b.turnToolUses++
 		b.mu.Unlock()
 		b.clearCumulativeDelta(tcu.ToolCallID)
+		b.forgetSpawnSpanReleased(tcu.ToolCallID)
 
 		spanType := b.sink.GetSpanType(tcu.ToolCallID)
 		if spanType == "" {
@@ -1657,23 +1683,21 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	}
 }
 
-// acpObservationIsSpawn reports whether an observation announces a subagent
-// that is starting or running, as opposed to one that only ends a row or one
-// that describes a shell. It tracks the condition under which
-// applySubagentObservation upserts a running registry row, so the span decision
-// and the registry decision cannot drift: a close-only observation (Goose's and
-// Cursor's closing hooks fire for EVERY tool_call) and a rename+close (OpenCode
-// learns the child session id on the final update) both operate on a row that
-// already exists, and neither says "this tool call spawns a subagent".
+// acpObservationIsSpawn reports whether an observation announces that this tool
+// call STARTS a subagent. Each provider's detector states the fact directly, so
+// shared code reads one field instead of inferring the answer from which
+// registry fields happen to be filled.
 //
-// A KindShell observation (Cursor's backgrounded non-task tools) is a
-// background process with no transcript, so it keeps its span like any other
-// tool. A blank kind means subagent, matching the default that
-// applySubagentObservation applies.
+// The earlier inference asked whether the observation upserts a RUNNING row,
+// which is a different question and gave the wrong answer: Goose's
+// subagent_tool_request update reports on a subagent that already runs, upserts
+// a running row, and so read as a spawn -- which took the span away from the
+// tool call it rode on.
+//
+// The RowKey guard stays: an observation that names no row writes nothing, so
+// it must not take a span either.
 func acpObservationIsSpawn(obs *acpSubagentObservation) bool {
-	return obs != nil && obs.RowKey != "" &&
-		obs.Mode != acpModeCloseOnly && obs.RenameFrom == "" &&
-		obs.Kind != bgtask.KindShell
+	return obs != nil && obs.RowKey != "" && obs.Spawns
 }
 
 // applySubagentObservation translates a provider hook's neutral observation
@@ -1776,6 +1800,38 @@ func (b *acpBase) applySubagentObservation(obs *acpSubagentObservation) {
 			b.sink.CleanupChildAgent(childAgentID)
 		}
 	}
+}
+
+// markSpawnSpanReleased records that this tool call's span was given back, and
+// reports whether THIS call is the one that did it. Only the first caller gets
+// true, so the release runs once however many times the detector re-reports the
+// spawn.
+func (b *acpBase) markSpawnSpanReleased(toolCallID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.spawnSpansReleased == nil {
+		b.spawnSpansReleased = make(map[string]struct{})
+	}
+	if _, done := b.spawnSpansReleased[toolCallID]; done {
+		return false
+	}
+	b.spawnSpansReleased[toolCallID] = struct{}{}
+	return true
+}
+
+// forgetSpawnSpanReleased drops the note when the tool call ends, mirroring the
+// per-tool-call cleanup of cumulativeBroadcast beside it.
+func (b *acpBase) forgetSpawnSpanReleased(toolCallID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.spawnSpansReleased, toolCallID)
+}
+
+// acpStatusIsFinal reports whether an ACP tool_call status ends the call. These
+// are the three statuses acpFinalStatus below maps; a tool call that reaches one
+// of them sends no further update.
+func acpStatusIsFinal(s string) bool {
+	return s == "completed" || s == "failed" || s == "cancelled"
 }
 
 // acpFinalStatus maps an ACP tool_call status to the registry final

@@ -463,3 +463,70 @@ func TestPiNonReasoningEffortsUseSharedLabels(t *testing.T) {
 		assert.Equal(t, effortLabel(tier.Id), tier.Name, "effort %q must use the shared label", tier.Id)
 	}
 }
+
+// ClearContext replaces the session, so every note keyed by the OUTGOING
+// session's tool-call ids must go with it. A surviving note would classify a
+// backgrounded shell in the NEW session as a subagent, if that session ever
+// reused the id.
+//
+// Driven through the real ClearContext rather than by calling the hook
+// directly, because the wiring -- Cursor registering clearProviderState, and
+// acpBase invoking it -- is the part that can silently go missing.
+func TestCursorClearContextDropsTheTaskToolNotes(t *testing.T) {
+	t.Parallel()
+
+	agent, _ := newCursorAgentForRPCWithResponder(t, func(method string) json.RawMessage {
+		if method == acpMethodSessionNew {
+			return json.RawMessage(`{"sessionId": "session-2"}`)
+		}
+		return json.RawMessage(`{}`)
+	})
+	agent.sink = &testSink{}
+	agent.subagentFromToolCall = agent.spawnObservation
+	agent.subagentFromToolCallUpdate = agent.finishedObservation
+	agent.clearProviderState = agent.clearTaskToolCalls
+
+	// A task tool call is in flight when the user clears the context.
+	agent.handleToolCall(json.RawMessage(`{"toolCallId":"call-task","kind":"other","title":"Task: go","rawInput":{"_toolName":"task"}}`))
+	agent.mu.Lock()
+	before := len(agent.taskToolCalls)
+	agent.mu.Unlock()
+	require.Equal(t, 1, before, "the in-flight task left a note")
+
+	sessionID, ok := agent.ClearContext()
+	require.True(t, ok)
+	require.Equal(t, "session-2", sessionID)
+
+	agent.mu.Lock()
+	after := len(agent.taskToolCalls)
+	agent.mu.Unlock()
+	assert.Zero(t, after, "the outgoing session's notes went with it")
+}
+
+// The same clear must not run when the session was NOT replaced: a failed
+// session/new leaves the old session live, and its in-flight task calls still
+// report against the notes.
+func TestCursorFailedClearContextKeepsTheTaskToolNotes(t *testing.T) {
+	t.Parallel()
+
+	agent, _ := newCursorAgentForRPC(t)
+	agent.sink = &testSink{}
+	agent.subagentFromToolCall = agent.spawnObservation
+	agent.clearProviderState = agent.clearTaskToolCalls
+	agent.handleToolCall(json.RawMessage(`{"toolCallId":"call-task","kind":"other","title":"Task: go","rawInput":{"_toolName":"task"}}`))
+
+	// A cancelled context makes session/new fail, so the session survives.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	agent.ctx = ctx
+	agent.processDone = make(chan struct{})
+	close(agent.processDone)
+
+	_, ok := agent.ClearContext()
+	require.False(t, ok, "session/new must fail without a live agent")
+
+	agent.mu.Lock()
+	after := len(agent.taskToolCalls)
+	agent.mu.Unlock()
+	assert.Equal(t, 1, after, "the session was not replaced, so the note still applies")
+}

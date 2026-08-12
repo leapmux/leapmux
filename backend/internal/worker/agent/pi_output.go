@@ -267,22 +267,13 @@ func (a *PiAgent) handlePiToolExecutionStart(raw []byte) {
 	// A subagent spawn owns no span, so it reserves no color either. The
 	// subagent's output lands in its own child transcript, so a rail held open
 	// for the whole run only pushes every concurrent tool one column right.
+	//
+	// Pi never reads the recorded span type back -- tool_execution_end carries
+	// its own toolName -- but openToolSpan records it for every provider, so a
+	// closing message that DOES read it (Claude, ACP) finds it.
 	spawns := env.ToolName == PiToolAgent
-	var spanColor int32
-	if !spawns {
-		spanColor = a.sink.ReserveSpanColor(env.ToolCallID, "")
-	}
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, SpanInfo{
-		SpanID:    env.ToolCallID,
-		SpanType:  env.ToolName,
-		SpanColor: spanColor,
-	}); err != nil {
+	if err := openToolSpan(a.sink, raw, env.ToolCallID, env.ToolName, spawns); err != nil {
 		slog.Error("pi persist tool_execution_start", "agent_id", a.agentID, "error", err)
-	}
-	// The span type is recorded either way: tool_execution_end reads it back.
-	a.sink.SetSpanType(env.ToolCallID, env.ToolName)
-	if !spawns {
-		a.sink.OpenSpan(env.ToolCallID, "")
 	}
 }
 

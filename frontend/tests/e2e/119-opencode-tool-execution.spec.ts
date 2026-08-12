@@ -18,7 +18,7 @@ opencodeTest.describe('OpenCode Tool Execution', () => {
     // regression this test was added to catch.
     //
     // data-span-columns is the count of rails on one row; a row that draws none
-    // reports "0". The previous locator here named two data-testids that no
+    // reports "0". The previous locator here specified two data-testids that no
     // component has ever emitted, so it could only pass while the whole spec
     // was skipped.
     const railedRows = page.locator('[data-span-columns]:not([data-span-columns="0"]):visible')
