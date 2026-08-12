@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { POPOVER_CARD_PADDING } from '~/styles/popoverTokens'
 
 /**
  * The base class a `popover="auto"` element needs when it is positioned by JS (an
@@ -65,18 +66,67 @@ export const popoverColumnClamp = style([popoverBase, {
 }])
 
 /**
+ * The inset a card gives its content when it FLOATS over the reader's work.
+ *
+ * Oat's own `card` rule pads by `var(--space-6)` on each side. That suits a card that IS the
+ * page -- the login, signup, and setup forms, which fill a centred column and are the only
+ * thing on screen. It is too much for a card that opens OVER that work. The reader takes a
+ * popover in at a glance and dismisses it, and a 24px edge on each side pushes its rows apart
+ * and its content toward the edge of the screen. So a floating card takes the compact inset
+ * instead: the one the chat rail's message-preview card already used.
+ *
+ * Declared as its own class, not folded into `popoverColumnClamp`, because that class also
+ * carries the composer's MENU popovers, whose items pad themselves.
+ *
+ * It beats Oat's padding by LAYER, not by specificity -- the two selectors are both (0,1,0), so
+ * specificity ties. Oat declares `@layer theme,base,components,animations,utilities` and puts
+ * `.card` in `components`; this class is unlayered, and unlayered author CSS outranks every
+ * author layer. `~/styles/global.css.ts` records the same mechanic for the menu-item rules.
+ *
+ * The value itself lives in `~/styles/popoverTokens.ts`, a plain `.ts` file, because the e2e run
+ * measures this inset and Playwright cannot import a `.css.ts` module. One declaration, two
+ * readers, no restatement to drift.
+ */
+export const popoverCardPadding = style({
+  padding: POPOVER_CARD_PADDING,
+})
+
+/**
+ * The whole surface of a card that FLOATS over the reader's work: Oat's card fill, border and
+ * radius, the compact inset above, and the lift that separates it from the page.
+ *
+ * One class, because the app kept re-deriving this surface by hand and the copies drifted. The
+ * chat rail's preview card and `~/components/common/Tooltip.css.ts` each wrote out the same
+ * border, radius, shadow, colour, line height and inset -- and disagreed on the one that matters
+ * most: the tooltip filled `var(--card)` while the rail's card filled `var(--background)`, so the
+ * only floating surface in the app painted the page colour was separated from the transcript
+ * behind it by a 1px border alone. That is hardest to see in dark theme, where the two tokens are
+ * a shade apart.
+ *
+ * The shadow is NOT Oat's `--shadow-small`. That token is the subtle lift of a card sitting IN the
+ * page; a card floating OVER it needs a shadow the reader reads as depth, which is the value both
+ * hand-rolled copies had already converged on.
+ *
+ * Composes Oat's `card` as a plain class name (vanilla-extract accepts one in a style list), so
+ * the fill, the border and the radius follow Oat rather than being restated here.
+ */
+export const floatingCardSurface = style(['card', popoverCardPadding, {
+  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+  lineHeight: 1.4,
+}])
+
+/**
  * The class list for a popover whose content is a CARD -- labelled rows, a list,
  * a panel -- and not a list of menu items. Apply it whole:
  * `<DropdownMenu as="div" class={popoverCard}>`.
  *
- * It is a class LIST, and both parts are load-bearing. Oat's own `card` rule
- * supplies the inset (`var(--space-6)` on each side), so every card popover uses
- * the standard card padding and follows Oat if that value changes -- two
- * surfaces of the SAME card cannot drift apart, which is what the agent-info
- * card did while each call site set its own padding. `popoverColumnClamp` adds
- * what a popover needs on top of a card: the positioning reset and the viewport
- * clamp.
+ * It is a class LIST, and every part is load-bearing. Oat's own `card` rule supplies the
+ * surface (background, border, radius, shadow). `popoverCardPadding` supplies the inset, so
+ * every card popover insets its content the same way -- two surfaces of the SAME card cannot
+ * drift apart, which is what the agent-info card did while each call site set its own padding.
+ * `popoverColumnClamp` adds what a popover needs on top of a card: the positioning reset and
+ * the viewport clamp.
  *
  * Exported as one string so that no call site can apply half of it.
  */
-export const popoverCard = `card ${popoverColumnClamp}`
+export const popoverCard = `card ${popoverColumnClamp} ${popoverCardPadding}`

@@ -1,10 +1,14 @@
 import { style } from '@vanilla-extract/css'
+import { floatingCardSurface } from '~/styles/popover.css'
 
-export const tooltip = style({
+// The fill, border, radius, inset, shadow and line height come from `floatingCardSurface` in
+// `~/styles/popover.css.ts` -- the same class the chat rail's preview card carries, so the app's
+// two floating surfaces cannot drift apart again. Only what is genuinely a TOOLTIP's own is left
+// here: where it sits, how wide it grows, how its text wraps, and that it never takes a pointer.
+export const tooltip = style([floatingCardSurface, {
   position: 'fixed',
   margin: 0,
   inset: 'unset',
-  padding: 'var(--space-2) var(--space-3)',
   fontSize: 'var(--text-8)',
   // Short button labels stay one line; long content (e.g. Claude
   // TaskCreate descriptions) soft-wraps at `maxWidth`. We need to
@@ -15,13 +19,7 @@ export const tooltip = style({
   // preferred size and lets `max-width` clamp it.
   width: 'max-content',
   maxWidth: 'min(28rem, calc(100vw - var(--space-4)))',
-  lineHeight: 1.4,
   whiteSpace: 'normal',
   overflowWrap: 'anywhere',
-  background: 'var(--card)',
-  color: 'var(--foreground)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
   pointerEvents: 'none',
-})
+}])

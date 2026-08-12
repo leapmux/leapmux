@@ -134,6 +134,32 @@ export function distFromBottom(el: HTMLDivElement): number {
   return el.scrollHeight - el.scrollTop - el.clientHeight
 }
 
+/**
+ * Slack (px) for "can this scroller still move that way?". Sub-pixel layout (fractional
+ * device pixel ratio, browser zoom) leaves a fraction of a pixel of travel on a scroller that
+ * already sits at its limit, so a strict `> 0` test reports room that the reader cannot use.
+ * A whole pixel is the smallest movement anybody can see, and it matches the slack the sibling
+ * edge tests above take.
+ */
+export const SCROLL_ROOM_TOLERANCE_PX = 1
+
+/**
+ * True when `el` can still scroll a whole pixel in the direction of `deltaY` (negative is up).
+ *
+ * The test an INNER scroller applies to decide whether it keeps a wheel or lets the outer one
+ * have it. The two directions read DIFFERENT room: a scroller at its bottom has none left
+ * downward and its whole travel upward, so one formula for both would either trap the wheel at
+ * an end or hand the outer scroller a wheel the inner one could still use. Only the SIGN of
+ * `deltaY` is read, so a line-mode or page-mode wheel needs no `deltaMode` conversion first.
+ *
+ * Lives here with distFromBottom and maxScrollTopOf, so the "how far can this scroll" formulas
+ * stay in one place rather than being re-derived inside an event handler.
+ */
+export function hasScrollRoom(el: HTMLElement, deltaY: number): boolean {
+  const room = deltaY < 0 ? el.scrollTop : el.scrollHeight - el.clientHeight - el.scrollTop
+  return room >= SCROLL_ROOM_TOLERANCE_PX
+}
+
 /** Fraction of the viewport height that counts as the "near the top" band. */
 const NEAR_TOP_BAND_RATIO = 0.5
 

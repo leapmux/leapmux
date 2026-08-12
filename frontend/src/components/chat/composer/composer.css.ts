@@ -98,8 +98,8 @@ export const axisChipLabel = style([clippedText, {
  * around items that carry their own padding.
  *
  * A popover whose content is a CARD does not belong here. It uses the shared
- * `popoverCard` class from `~/styles/popover.css`, which insets the content by
- * Oat's own card padding.
+ * `popoverCard` class from `~/styles/popover.css.ts`, which carries Oat's card
+ * surface and the compact inset every floating card shares.
  */
 const composerMenuPopover = style([popoverColumnClamp, {
   backgroundColor: 'var(--background)',
@@ -172,5 +172,5 @@ export const subPopover = style([composerMenuPopover, {
 
 // The `[+]` menu's "Agent info" submenu has no style here. Its content is a card
 // of labelled rows rather than a list of menu items, so it uses the shared
-// `popoverCard` class from `~/styles/popover.css` -- the same one the status
+// `popoverCard` class from `~/styles/popover.css.ts` -- the same one the status
 // bar's copy of that card uses, which is what keeps the two insets equal.

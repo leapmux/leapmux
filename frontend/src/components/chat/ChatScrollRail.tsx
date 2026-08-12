@@ -18,7 +18,7 @@ import {
   railYToSeq,
 } from './chatScrollRailGeometry'
 import { createRailMetrics } from './chatScrollRailMetrics'
-import { dotLabel, DotPreview } from './ChatScrollRailPreview'
+import { DOT_PREVIEW_CARD_ID, dotLabel, DotPreviewCard } from './ChatScrollRailPreview'
 
 // ---------------------------------------------------------------------------
 // Seq-space scroll rail
@@ -30,7 +30,8 @@ import { dotLabel, DotPreview } from './ChatScrollRailPreview'
 //   - chatScrollRailGeometry -- pure seq<->pixel math, the thumb rect, and dot clustering.
 //   - createThumbDrag        -- the pointer-capture drag lifecycle.
 //   - createDragReleaseHold  -- pins the thumb at its release fraction until the seek settles.
-//   - ChatScrollRailPreview  -- the dot hover/scrub tooltip presentation.
+//   - createDotPreview       -- which dot the one preview card describes, and when it opens/closes.
+//   - ChatScrollRailPreview  -- the dot hover/scrub preview card itself.
 //
 // EVERY press on the rail starts a drag, whatever it lands on and whatever the pointer type.
 // A press on the track or a dot ALSO jumps at once, then scrubs on from the pressed point if
@@ -84,7 +85,7 @@ export interface ChatScrollRailProps {
    * ORTHOGONAL to `hidden`: that one is the scrollbar-OWNER decision and unmounts the
    * rail, while this one is paint-only and must NEVER unmount it -- an unmount would
    * disconnect the rail's ResizeObserver, cancel a live thumb drag, and rebuild every
-   * dot's tooltip on each transition. The resulting `railIdle` class fades the rail on
+   * dot on each transition. The resulting `railIdle` class fades the rail on
    * EVERY screen/pointer; only the touch-safety `pointer-events: none` it also carries
    * is coarse-only.
    */
@@ -172,7 +173,7 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   // layout keeps the SAME array reference: maxSeq ticks up on every persisted row during a
   // streaming turn, but on a long conversation a +1 seq shift rounds to the same clusters, so
   // recomputing would otherwise hand <For> a fresh array each frame and tear down + rebuild
-  // every dot's tooltip (3 effects + 5 listeners each) for no visual change.
+  // every dot button (and the listeners on each) for no visual change.
   const dots = createMemo<DotCluster[]>(
     // props.rail is a ChatRailData -- a structural superset of RailRange -- so pass it straight
     // through as the range rather than re-flattening {minSeq, maxSeq} (which the two would then
@@ -185,13 +186,24 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   // The dot-preview state machine (which dot the single popover describes, its placement, and when
   // to warm its preview) extracted into its own unit alongside createRailMetrics /
   // createDragReleaseHold / createThumbDrag, so this component owns only the wiring + render.
-  const { activeDot, popoverTopPx, setHoverDot } = createDotPreview({
+  // The open card's measured height, reported by the card itself. The card's Y is clamped against
+  // it (see cardTopPx), so the clamp holds a SHORT card near its own dot instead of pushing every
+  // card half the max-height cap away from the dot it points at.
+  const [cardHeightPx, setCardHeightPx] = createSignal(0)
+
+  const { activeDot, cardTopPx, openDot, closeSoon, abandonDot, focusDot, blurDot, closeNow } = createDotPreview({
     dots,
     drag,
     railHeight,
     thumbHeightPx: thumbHeightNow,
+    cardHeightPx,
     warmPreview: seq => props.warmPreview?.(seq),
   })
+
+  // A press inside the preview card is live, so the card owns the pointer and the dots stand down
+  // (see the dot's pointer handlers). Not a signal: nothing renders from it, and the dot handlers
+  // that read it run outside any tracking scope.
+  let cardPressed = false
 
   const cancelActiveDrag = () => {
     const cleanup = dragCleanup
@@ -205,7 +217,10 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     railResizeObserver = undefined
     railEl = undefined
     setRailHeight(0)
-    setHoverDot(null)
+    // No close delay here: the rail is going away, so there is no card left to move onto. The
+    // press lock needs no reset: the card clears it from its own cleanup as it unmounts, which
+    // keeps the card the single owner of its press lifecycle.
+    closeNow()
   }
 
   const setRailRef = (el: HTMLDivElement) => {
@@ -408,7 +423,14 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
       // The grab became a scrub: the reader took manual control of the thumb, so this press's own
       // jump (issued a moment ago, possibly still fetching) is stale and must not land under them.
       // The settle seeks drive the view from here on.
-      onEngage: () => props.onSeekInterrupt?.(),
+      onEngage: () => {
+        props.onSeekInterrupt?.()
+        // The press started ON a dot, so the pointer channel holds that dot, and the captured drag
+        // fires no pointerleave to release it. Drop it now that the gesture owns the card: the
+        // scrub target describes the card from here, and without this the card springs back to the
+        // pressed dot the moment the drag ends -- pointing at a dot the reader scrubbed away from.
+        abandonDot()
+      },
       onRelease: releaseDrag,
       // The pointer lifecycle ended (release/cancel/unmount): free the "drag active" guard so
       // the next grab can start. Fires before onRelease, so the release's preview-hold is intact.
@@ -639,24 +661,54 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
               data-mark-type={d.type}
               data-count={d.count}
               aria-label={dotLabel(d)}
+              // The open card describes the dot it belongs to, so a screen reader reads the
+              // message preview and not just "Your message" -- the same shape Tooltip.tsx uses (a
+              // stable id on the surface, aria-describedby on the target only while it is up).
+              // Matched on the SEQ, because a re-anchor hands over a fresh cluster for the same
+              // dot, and only for the dot the card actually describes: a scrub target outranks a
+              // focused dot, so the focused one must not claim a card that moved elsewhere.
+              aria-describedby={activeDot()?.seq === d.seq ? DOT_PREVIEW_CARD_ID : undefined}
               style={{ top: `${d.topPx}px` }}
-              // Set/clear the active dot so the shared popover opens immediately on hover AND
-              // keyboard focus (the warm effect on activeDot fills it in).
-              onPointerEnter={() => setHoverDot(d)}
-              onPointerLeave={() => setHoverDot(null)}
-              onFocus={() => setHoverDot(d)}
-              onBlur={() => setHoverDot(null)}
+              // Open the shared card immediately on hover AND keyboard focus (the warm effect on
+              // activeDot fills it in). A pointer LEAVING only starts the close delay, which is
+              // the window the reader crosses to reach the card; another dot opened in the
+              // meantime cancels it. Focus is its own channel with no delay, and it TAKES the card
+              // from the pointer, so tabbing along the dots is not masked by a parked cursor. See
+              // POINTER_CLOSE_DELAY_MS.
+              //
+              // Both pointer handlers stand down while a press inside the card is live. The card
+              // sits a gutter away from these dots, so selecting to the end of a line drags the
+              // pointer across them; re-targeting the card there would swap its body under the
+              // reader's own selection and collapse it.
+              onPointerEnter={() => {
+                if (!cardPressed)
+                  openDot(d)
+              }}
+              onPointerLeave={() => {
+                if (!cardPressed)
+                  closeSoon()
+              }}
+              onFocus={() => focusDot(d)}
+              onBlur={() => blurDot()}
               onPointerDown={e => onDotPointerDown(e, d)}
               onKeyDown={e => onDotKeyDown(e, d.seq)}
             />
           )}
         </For>
-        {/* ONE preview popover for the active dot (hover/focus OR scrub) -- never two. */}
+        {/* ONE preview card for the active dot (hover/focus OR scrub) -- never two. */}
         <Show when={activeDot()}>
           {d => (
-            <div class={styles.previewPopover} data-testid="chat-scroll-rail-preview" style={{ top: `${popoverTopPx()}px` }}>
-              <DotPreview previewFor={() => props.previewFor?.(d().seq)} markType={d().type} count={d().count} />
-            </div>
+            <DotPreviewCard
+              topPx={cardTopPx()}
+              dot={d()}
+              previewFor={seq => props.previewFor?.(seq)}
+              // The card holds ITSELF open while the reader is on it, and re-declares the dot it
+              // shows -- so a card that a scrub opened stays when the scrub ends.
+              onHoldStart={() => openDot(d())}
+              onHoldEnd={closeSoon}
+              onPressChange={(down) => { cardPressed = down }}
+              onHeightChange={setCardHeightPx}
+            />
           )}
         </Show>
       </div>

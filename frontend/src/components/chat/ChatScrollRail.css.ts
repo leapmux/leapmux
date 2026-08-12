@@ -1,14 +1,19 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { floatingCardSurface } from '~/styles/popover.css'
 
 // Fixed px here are scrollbar-like dimensions (rail/thumb/dot widths, thumb radius),
 // NOT spacing-scale values -- see CLAUDE.md. The top/bottom insets use the spacing scale.
 
 /**
- * Max height of the preview popover (px). Exported so ChatScrollRail's vertical clamp (which
- * keeps a near-edge popover from clipping against the overflow-hidden wrapper) reads the SAME
- * value the CSS enforces, rather than a hand-synced literal that could drift from this one.
+ * Max height of the preview card (px): the point at which a long preview stops growing the card
+ * and starts scrolling inside it.
+ *
+ * The cap only. The vertical clamp in `cardTopPx` (`./chatDotPreview.ts`) deliberately does NOT
+ * read this: it clamps against the card's MEASURED height, because most previews are far shorter
+ * than the cap and clamping them as though they were 200px tall pushed a one-line card up to
+ * ~90px away from the dot it describes.
  */
-export const PREVIEW_POPOVER_MAX_H_PX = 200
+const PREVIEW_CARD_MAX_H_PX = 200
 
 /** Width of the rail overlay column (a touch wider than the 8px native scrollbar). */
 const RAIL_WIDTH_PX = 10
@@ -157,16 +162,25 @@ export const dot = style({
   boxShadow: '0 0 0 1px var(--background)',
   transition: 'background-color 0.12s ease',
   selectors: {
-    // Recolor on hover so the dot the tooltip describes is visually distinct.
+    // Recolor on hover so the dot the preview card describes is visually distinct.
     '&:hover': {
       backgroundColor: 'var(--accent)',
     },
   },
 })
 
-// Coarse-pointer (touch) hit expander: a transparent ~24px circle centred on the 6px dot,
-// so a finger tap within range still hits the button. A pseudo-element leaves the dot's
-// visual fill + ring at 6px (unlike padding, which would enlarge them or the box-shadow).
+/**
+ * Diameter (px) of the coarse-pointer hit circle around a dot. Exported because the scrub-preview
+ * range in `./chatDotPreview.ts` is derived from it rather than hand-synced: a finger presses
+ * anywhere inside this circle, and the preview card that press opens is resolved by distance from
+ * the dot's rail-Y, so a range narrower than this circle's radius leaves a rim of the hit area
+ * that jumps but shows no preview. Same reason PREVIEW_CARD_MAX_H_PX is exported above.
+ */
+export const DOT_COARSE_HIT_PX = 24
+
+// Coarse-pointer (touch) hit expander: a transparent circle centred on the 6px dot, so a finger
+// tap within range still hits the button. A pseudo-element leaves the dot's visual fill + ring at
+// 6px (unlike padding, which would enlarge them or the box-shadow).
 globalStyle(`${dot}::before`, {
   '@media': {
     '(pointer: coarse)': {
@@ -175,8 +189,8 @@ globalStyle(`${dot}::before`, {
       top: '50%',
       left: '50%',
       transform: 'translate(-50%, -50%)',
-      width: '24px',
-      height: '24px',
+      width: `${DOT_COARSE_HIT_PX}px`,
+      height: `${DOT_COARSE_HIT_PX}px`,
       borderRadius: '50%',
     },
   },
@@ -192,23 +206,23 @@ export const dotCluster = style({
   boxShadow: '0 0 0 1px var(--background), 0 0 0 2.5px var(--primary)',
 })
 
-/** Small muted header in a cluster's tooltip: how many messages it stands for. */
+/** Small muted header in a cluster's preview card: how many messages it stands for. */
 export const dotPreviewCount = style({
-  fontSize: '0.75rem',
+  fontSize: 'var(--text-8)',
   opacity: 0.7,
   marginBottom: 'var(--space-1)',
 })
 
-/** Placeholder line shown in the dot tooltip while its preview is being fetched. */
+/** Placeholder line shown in the dot's preview card while its preview is still in flight. */
 export const dotPreviewLoading = style({
   opacity: 0.7,
   fontStyle: 'italic',
 })
 
 /**
- * Wraps the markdown-rendered preview inside the dot tooltip. The markdown renderer
+ * Wraps the markdown-rendered preview inside the dot's preview card. The markdown renderer
  * emits block elements (paragraphs, blockquotes, lists) with their own vertical
- * margins; strip the outer ones so the preview sits flush against the tooltip padding.
+ * margins; strip the outer ones so the preview sits flush against the card's inset.
  */
 export const dotPreviewMarkdown = style({})
 
@@ -221,26 +235,52 @@ globalStyle(`${dotPreviewMarkdown} > * > :last-child`, { marginBottom: 0 })
 /**
  * The single live preview card shown to the LEFT of the rail for the ACTIVE dot -- whether
  * it's hovered/focused or under the dragging thumb (scrub). One element for both cases, so a
- * hover and a scrub can never show two popovers at once. Its top is set inline (clamped to
+ * hover and a scrub can never show two cards at once. Its top is set inline (clamped to
  * the rail so it never clips against the overflow-hidden wrapper); translateY(-50%) centres
- * it on that Y. Non-interactive so it never intercepts a drag or a click.
+ * it on that Y.
+ *
+ * The card is INTERACTIVE on a fine pointer: the reader moves onto it to select or to scroll its
+ * text, and the close delay in createDotPreview buys them the time to get there. It is inert on a
+ * COARSE pointer, for the same reason railIdle goes inert there. A touch has no hover, so the card
+ * outlives by that delay the gesture that opened it, and a 280px interactive card lying over the
+ * message list would swallow the reader's next tap. A finger reads the card during the scrub and
+ * dismisses it by lifting; it never moves onto it. DotPreviewCard keeps the card's own pointer and
+ * wheel traffic off the rail's handlers, which is what makes the fine-pointer case safe.
+ *
+ * The cost of that reach is that an open card is a hit target: on a fine pointer it covers up to
+ * 280x200px of the message list, and a click there lands on the card rather than on the message
+ * under it. That is the trade a reachable card makes -- the card cannot both accept the reader's
+ * selection drag and pass their click through -- and the close delay bounds it: move off the card
+ * and the region accepts clicks again a moment later.
+ *
+ * Its whole surface -- Oat's card fill, border and radius, the compact inset, and the lift that
+ * separates it from the transcript -- comes from the shared `floatingCardSurface` in
+ * `~/styles/popover.css.ts`, the same class `~/components/common/Tooltip.css.ts` carries. Every
+ * one of those declarations used to be written out here, and the copies had already drifted: this
+ * card filled `var(--background)` while every other floating surface filled `var(--card)`, so the
+ * one card that lay OVER the reader's work was the one painted the page's own colour.
  */
-export const previewPopover = style({
-  position: 'absolute',
-  right: 'calc(100% + var(--space-2))',
-  transform: 'translateY(-50%)',
-  width: 'max-content',
-  maxWidth: '280px',
-  maxHeight: `${PREVIEW_POPOVER_MAX_H_PX}px`,
-  overflowY: 'auto',
-  padding: 'var(--space-2) var(--space-3)',
-  borderRadius: '6px',
-  backgroundColor: 'var(--background)',
-  border: '1px solid var(--border)',
-  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-  fontSize: '0.8125rem',
-  lineHeight: 1.4,
-  color: 'var(--text)',
-  pointerEvents: 'none',
-  zIndex: 20,
-})
+export const previewCard = style([floatingCardSurface, {
+  'position': 'absolute',
+  'right': 'calc(100% + var(--space-2))',
+  'transform': 'translateY(-50%)',
+  'width': 'max-content',
+  'maxWidth': '280px',
+  'maxHeight': `${PREVIEW_CARD_MAX_H_PX}px`,
+  'overflowY': 'auto',
+  // On Oat's type scale, and on the same step as the app's other floating surface. The 0.8125rem
+  // this used to specify sat between two steps of that scale and matched nothing else.
+  'fontSize': 'var(--text-8)',
+  'zIndex': 20,
+  'pointerEvents': 'auto',
+  // The rail sets user-select:none (so a thumb drag never selects text) and cursor:pointer, and
+  // both inherit into this card. Undo them here: the card's text is meant to be read, selected,
+  // and copied, and the card itself is not a control.
+  'userSelect': 'text',
+  'cursor': 'auto',
+  '@media': {
+    '(pointer: coarse)': {
+      pointerEvents: 'none',
+    },
+  },
+}])
