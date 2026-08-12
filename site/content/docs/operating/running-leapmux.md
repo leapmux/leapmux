@@ -47,7 +47,7 @@ Solo mode accepts a subset of the Hub's flags plus an `--encryption-mode` flag f
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
-Solo also accepts the SQLite, chunked-reassembly, message-size, and timeout tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`, `-max-message-size`, `-api-timeout-seconds`, `-agent-startup-timeout-seconds`, `-worktree-create-timeout-seconds`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those.
+Solo also accepts the SQLite, chunked-reassembly, message-size, and timeout tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`, `-max-message-size`, `-api-timeout`, `-agent-startup-timeout`, `-worktree-create-timeout`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those.
 
 > **Note:** `--public-url` is **not** available in solo mode. If you set `public_url` by any means, solo mode rejects it with `public_url is not supported in solo mode`. Reverse-proxy fronting is a job for `hub` or `dev`.
 
@@ -71,6 +71,7 @@ A fresh Hub has no users and (by default) sign-up disabled. To allow accounts to
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
 | `-signup-enabled` | `false` | Allow user sign-up |
 | `-email-verification-required` | `false` | Require email verification on sign-up (needs SMTP configured) |
+| `-session-duration` | `7d` | How long a session stays valid after the user's last request; each request slides the expiry forward |
 | `-storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
 | `-log-level` | `info` | Log level |
 | `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
@@ -122,13 +123,13 @@ leapmux dev -listen :4327
 
 Because dev mode uses real authentication, it bootstraps its first admin through the `/setup` flow rather than auto-authenticating. The in-process Worker's auto-registration is deferred until that first admin signs up; until then the log shows *"dev mode: deferring worker auto-registration until first admin signs up via /setup"*. Open the URL, complete `/setup` to create the admin, and the bundled Worker comes online.
 
-Dev mode accepts the same flags as solo, plus `--public-url` and `--session-duration-seconds`, which solo does not have. The most important dev flags:
+Dev mode accepts the same flags as solo, plus `--public-url` and `--session-duration`, which solo does not have. The most important dev flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `-listen` | `:4327` | TCP listen address |
 | `-public-url` | empty | Public base URL when behind a reverse proxy |
-| `-session-duration-seconds` | `691200` (8 days) | Session lifetime after the user's last request; shorten it to exercise the signed-out path |
+| `-session-duration` | `7d` | Session lifetime after the user's last request; shorten it to exercise the signed-out path, as in `-session-duration 5m`, which is the minimum ([duration syntax](/docs/operating/configuration/#duration-values)) |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/dev`) | Data directory |
 | `-log-level` | `info` | Log level |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |

@@ -88,10 +88,10 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New(0)
-	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
+	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return cfg.APITimeout })
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 

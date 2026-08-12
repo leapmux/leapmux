@@ -357,7 +357,7 @@ func (svc *Service) agentStartupTimeout() time.Duration {
 	if svc.AgentStartupTimeout > 0 {
 		return svc.AgentStartupTimeout
 	}
-	return time.Duration(config.DefaultAgentStartupTimeoutSeconds) * time.Second
+	return config.DefaultAgentStartupTimeout
 }
 
 // agentAPITimeout returns the configured API timeout, or the default if not set.

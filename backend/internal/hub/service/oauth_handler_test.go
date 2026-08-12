@@ -335,7 +335,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	oauthHandler.RegisterRoutes(mux)
 
 	// Register AuthService ConnectRPC routes.
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
@@ -467,7 +467,7 @@ func TestCompleteOAuthSignup_UsesConfiguredSessionDuration(t *testing.T) {
 
 	const configured = 90 * time.Minute
 	_, client, st, ks, cfg := setupOAuthTestServerWithAuthService(t)
-	cfg.SessionDurationSeconds = int(configured / time.Second)
+	cfg.SessionDuration = configured
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
 
@@ -484,7 +484,7 @@ func TestCompleteOAuthSignup_UsesConfiguredSessionDuration(t *testing.T) {
 	sessionID := sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
 	sess, err := st.Sessions().GetByID(context.Background(), sessionID)
 	require.NoError(t, err)
-	assert.WithinDuration(t, before.Add(configured), sess.ExpiresAt, time.Minute)
+	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 }
 
 func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T) {

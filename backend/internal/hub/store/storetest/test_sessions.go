@@ -299,6 +299,36 @@ func (s *Suite) testSessions(t *testing.T) {
 		assert.WithinDuration(t, newExpiry, after2.ExpiresAt, time.Second)
 	})
 
+	// An expired session must stay expired. The Hub serves a validated session
+	// from an in-memory cache for a short window, so a request can reach Touch
+	// after the row expired; without the expiry predicate that request would
+	// slide the dead session forward, and the re-issued cookie would hand the
+	// caller a live session again.
+	t.Run("touch does not revive an expired session", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "touch-expired-user")
+
+		sessID := id.Generate()
+		require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+			ID:        sessID,
+			UserID:    userid.MustNew(user.ID),
+			ExpiresAt: time.Now().Add(-time.Minute),
+			UserAgent: "test-agent",
+			IPAddress: "127.0.0.1",
+		}))
+
+		n, err := st.Sessions().Touch(ctx, store.TouchSessionParams{
+			ID:           sessID,
+			ExpiresAt:    time.Now().Add(48 * time.Hour),
+			LastActiveAt: time.Now().Add(time.Minute),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), n, "an expired session must match no row")
+
+		_, err = st.Sessions().ValidateWithUser(ctx, sessID)
+		assert.ErrorIs(t, err, store.ErrNotFound, "the session must still be dead after the touch")
+	})
+
 	t.Run("touch non-existent", func(t *testing.T) {
 		st := s.NewStore(t)
 

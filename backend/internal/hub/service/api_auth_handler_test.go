@@ -140,7 +140,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	// AuthContextRegistry is needed by the handler to evict revoked bearers; we
 	// don't run it through the interceptor, so just construct the bare
 	// interceptor for its cache side-effect and stop the sweeper.
-	_, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 
 	mux := http.NewServeMux()
@@ -1923,7 +1923,7 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	_, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 
 	verifier, challenge := pkceVerifierAndChallenge()

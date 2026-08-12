@@ -88,16 +88,6 @@ var unverifiedAllowedProcedures = map[string]bool{
 // revocation (logout) evicts the entry immediately via AuthContextRegistry.Evict.
 const sessionCacheTTL = 30 * time.Second
 
-// MinSessionDuration is the shortest session the Hub can honestly enforce.
-//
-// A validated session stays in the in-memory cache for sessionCacheTTL, so a
-// request is served up to that long after the session expired. At twice the
-// cache TTL that overshoot is a small share of the session's life. Below it,
-// "expired" stops describing when the user is signed out. The Hub configuration
-// rejects a configured duration under this rather than accept a policy it
-// cannot keep.
-const MinSessionDuration = 2 * sessionCacheTTL
-
 // cachedSession holds a validated UserInfo with its cache time and the
 // revocation sequence observed before validation. Cache reads compare that
 // sequence only with marks for the same session, bearer, or user, so unrelated
@@ -169,10 +159,12 @@ type authInterceptor struct {
 	emailVerificationRequired bool
 	soloUser                  *UserInfo
 	tokenValidator            *TokenValidator
-	// sessionDuration is InterceptorOptions.SessionDuration, resolved through
-	// sessionLifetime by the constructor. slideDuration resolves it again rather
-	// than trusting that, because the package's own tests build this struct
-	// directly and a zero there must mean the default, not a five-minute session.
+	// sessionDuration is InterceptorOptions.SessionDuration exactly as the caller
+	// gave it, so zero still means "unset" here. Every reader resolves it through
+	// sessionLifetime. One rule, applied at each read, rather than a value that a
+	// reader has to know the history of: the package's own tests build this
+	// struct directly, and a zero there must mean the default and not an
+	// instantly expired session.
 	sessionDuration time.Duration
 	// state holds the shared caches, lease registry, and revocation ledger.
 	// Its revocationGen is the monotonic ordering clock shared by validation
@@ -188,20 +180,25 @@ type authInterceptor struct {
 	bearerFlight singleflight.Group
 }
 
-// InterceptorOptions carries what the auth interceptor needs. Every field is
-// optional; the zero value gives cookie-only multi-user auth with the default
-// session duration.
+// InterceptorOptions carries what the auth interceptor needs. Store is what a
+// working interceptor requires; every other field is optional, and the rest of
+// the zero value gives cookie-only multi-user auth with the default session
+// duration.
 //
 // A struct rather than a parameter list: the settings are three flags of the
 // same shape (two bools and a duration) whose meaning no call site would state,
 // and a transposed pair compiles and then authenticates wrongly.
 type InterceptorOptions struct {
+	// Store validates a session cookie and a bearer credential. A nil Store
+	// gives an interceptor that can do neither, which is useful only for the
+	// AuthContextRegistry that the constructor returns beside it -- a request
+	// that presents a cookie reaches the store and panics.
 	Store store.Store
 	// SoloUser enables solo mode, in which every request is automatically
 	// authenticated as that user. Nil gives normal multi-user auth.
 	SoloUser *UserInfo
 	// TokenValidator accepts Authorization: Bearer lmx_... credentials alongside
-	// the cookie path. Nil keeps cookie-only behaviour.
+	// the cookie path. Nil keeps cookie-only behavior.
 	TokenValidator *TokenValidator
 	// SecureCookies selects the __Host- prefixed cookie name, which the Hub uses
 	// behind TLS.
@@ -230,7 +227,7 @@ func NewInterceptor(opts InterceptorOptions) (connect.Interceptor, *AuthContextR
 		emailVerificationRequired: opts.EmailVerificationRequired,
 		soloUser:                  opts.SoloUser,
 		tokenValidator:            opts.TokenValidator,
-		sessionDuration:           sessionLifetime(opts.SessionDuration),
+		sessionDuration:           opts.SessionDuration,
 		state:                     state,
 	}
 	sweepCtx, cancel := context.WithCancel(context.Background())
@@ -728,13 +725,24 @@ func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		ctx, refresh, err := a.authenticate(ctx, req.Spec().Procedure, req.Header().Get("Cookie"), req.Header().Get("Authorization"))
 		if err != nil {
-			return nil, err
+			// authenticate rejects an authenticated request too -- an unverified
+			// user reaches the email-verification gate after the slide committed --
+			// so this rejection carries the cookie for the same reason the handler's
+			// does below.
+			return nil, refresh.applyToError(err, a.secureCookie)
 		}
 		resp, err := next(ctx, req)
-		// A failed call answers with a connect.Error and no response to hang a
-		// header on. The DB row already slid, so the next call that succeeds
-		// carries the cookie.
-		if err != nil || resp == nil {
+		if err != nil {
+			// A failed call has no response to hang a header on, but a
+			// connect.Error carries its own metadata, and connect-go merges that
+			// into the response header before it writes the status. Without this
+			// arm a client whose calls keep failing -- a permission denial, a
+			// validation error, a procedure that is briefly unwell -- slides the
+			// row on every request and is still signed out at the login deadline,
+			// because the throttle gives the cookie no other request to ride.
+			return nil, refresh.applyToError(err, a.secureCookie)
+		}
+		if resp == nil {
 			return resp, err
 		}
 		refresh.applyTo(resp.Header(), a.secureCookie)
@@ -749,13 +757,15 @@ func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		ctx, refresh, err := a.authenticate(ctx, conn.Spec().Procedure, conn.RequestHeader().Get("Cookie"), conn.RequestHeader().Get("Authorization"))
+		// Before the handler runs, not after: the response header of a stream
+		// goes out with the first message, and a long-lived stream sends that
+		// message long before it returns. The write happens on the rejection path
+		// too, because a stream carries an error in its body and not in the
+		// header, so the header is the only place a cookie can travel either way.
+		refresh.applyTo(conn.ResponseHeader(), a.secureCookie)
 		if err != nil {
 			return err
 		}
-		// Before the handler runs, not after: the response header of a stream
-		// goes out with the first message, and a long-lived stream sends that
-		// message long before it returns.
-		refresh.applyTo(conn.ResponseHeader(), a.secureCookie)
 		return next(ctx, conn)
 	}
 }
@@ -811,8 +821,14 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 
 	ctx = WithUser(ctx, userInfo)
 
+	// The refresh travels with the rejection, not only with a success. The slide
+	// above already committed to the row, and the throttle then blocks every
+	// other request for a whole window, so a user whose calls are refused here --
+	// an unverified user waiting to verify, whose every non-allowlisted procedure
+	// is denied -- would slide the row again and again and never receive a cookie
+	// for it.
 	if err := a.enforceEmailVerification(procedure, userInfo); err != nil {
-		return ctx, noRefresh, err
+		return ctx, refresh, err
 	}
 
 	return ctx, refresh, nil
@@ -1036,21 +1052,26 @@ func (a *authInterceptor) bearerRevoked(key bearerCacheKeyParts, user *UserInfo,
 		userRevokedAfter(&a.state.userRevocations, user, validationGen)
 }
 
+// sessionTouchThreshold caps how long the Hub waits before it slides a session
+// again. touchThreshold shortens it for a session whose whole life is shorter,
+// so this constant is the ceiling and not the interval itself.
 const sessionTouchThreshold = 5 * time.Minute
 
-// slideDuration is the expiry that a touch writes. The extra
-// sessionTouchThreshold keeps the promise that the configured session duration
-// makes. A request inside the throttle window writes nothing, so an expiry of
-// exactly now + sessionDuration would end the session up to
-// sessionTouchThreshold before that duration passed since the last request. It
-// is also the longest that a session row can outlive its last touch, which is
-// the span the cache sweep cutoffs measure.
+// touchThreshold is this interceptor's slide interval. It is also the longest
+// that a session row can outlive its last touch, which is the span the mark
+// sweep cutoff measures.
+func (a *authInterceptor) touchThreshold() time.Duration {
+	return touchThreshold(a.sessionDuration)
+}
+
+// slideDuration is how far past now a touch writes the expiry. See
+// sessionExpiry, which the login path uses for the same span.
 func (a *authInterceptor) slideDuration() time.Duration {
-	return sessionLifetime(a.sessionDuration) + sessionTouchThreshold
+	return sessionLifetime(a.sessionDuration) + a.touchThreshold()
 }
 
 // touchSession slides the session expiry to now + slideDuration if the last
-// touch was more than sessionTouchThreshold ago. An in-memory map gates the
+// touch was more than touchThreshold ago. An in-memory map gates the
 // check so that most requests skip the DB call entirely — only the first
 // request after the threshold elapses hits SQLite.
 //
@@ -1062,27 +1083,35 @@ func (a *authInterceptor) slideDuration() time.Duration {
 // one session duration after the login however active they were.
 func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, user *UserInfo) time.Time {
 	now := time.Now()
+	threshold := a.touchThreshold()
 	if v, ok := a.state.lastTouch.Load(sessionID); ok {
-		if now.Sub(v.(time.Time)) < sessionTouchThreshold {
+		if now.Sub(v.(time.Time)) < threshold {
 			return time.Time{}
 		}
 	}
 
+	// Record the attempt before the UPDATE runs, and whatever the UPDATE
+	// answers: lastTouch is the per-process DB rate-limiter. A zero-row match
+	// means the session was already touched within the threshold, and an error
+	// means the store is unwell -- in both cases the next request must wait
+	// rather than retry at once, which a store that keeps failing would turn
+	// into one UPDATE for every authenticated request.
+	a.state.lastTouch.Store(sessionID, now)
+
 	newExpiry := now.Add(a.slideDuration()).UTC()
-	threshold := now.Add(-sessionTouchThreshold).UTC()
 	rows, err := a.store.Sessions().Touch(ctx, store.TouchSessionParams{
 		ID:           sessionID,
 		ExpiresAt:    newExpiry,
-		LastActiveAt: threshold,
+		LastActiveAt: now.Add(-threshold).UTC(),
 	})
 	if err != nil {
+		// Nothing above this call reports the failure, and the caller cannot
+		// tell it apart from a throttled request. Log it, or a store that
+		// refuses every touch signs each user out at their login deadline with
+		// no operator-visible cause.
+		slog.WarnContext(ctx, "failed to slide session expiry", "error", err)
 		return time.Time{}
 	}
-	// Record the attempt regardless of whether a row matched: lastTouch is the
-	// per-process DB rate-limiter, and a zero-row match means the session was
-	// already touched within the threshold, so the next request should still
-	// wait before retrying the UPDATE.
-	a.state.lastTouch.Store(sessionID, now)
 	if rows == 0 {
 		// The conditional UPDATE (WHERE last_active_at < threshold) matched no
 		// row, so the DB expiry was NOT advanced -- most commonly on a freshly
@@ -1124,11 +1153,15 @@ const touchSweepInterval = 10 * time.Minute
 
 // sweepCachesOnce removes stale entries from the lastTouch, session, and bearer
 // caches and from the revocation/invalidation mark maps. Touch entries older
-// than slideDuration are removed since those sessions have expired -- that
-// span, not the session duration alone, is the longest a session row can
-// outlive its last touch. Session and bearer cache entries older than sessionCacheTTL
-// are removed to avoid unbounded growth, and revocation/invalidation marks older
-// than slideDuration are swept under revocationMu.
+// than touchThreshold are removed because the throttle is the only thing that
+// reads them, and it treats an entry older than one window as absent: the
+// deletion changes no decision, and holding the entry for the session's whole
+// life retains one map entry per session that the process ever authenticated.
+// Session and bearer cache entries older than sessionCacheTTL are removed to
+// avoid unbounded growth, and revocation/invalidation marks older than
+// slideDuration are swept under revocationMu -- those must outlive the request
+// snapshots that they invalidate, which is the session's life and not the
+// throttle window.
 //
 // The session/bearer cache SCAN runs lock-free (like lastTouch and bearerExpiries
 // above) so the O(cache size) walk does not stall every hot-path acquirer of
@@ -1137,7 +1170,7 @@ const touchSweepInterval = 10 * time.Minute
 // delete is unconditional -- see below).
 func (a *authInterceptor) sweepCachesOnce() {
 	now := time.Now()
-	touchCutoff := now.Add(-a.slideDuration())
+	touchCutoff := now.Add(-a.touchThreshold())
 	a.state.lastTouch.Range(func(key, value any) bool {
 		if value.(time.Time).Before(touchCutoff) {
 			a.state.deleteStaleLastTouch(key, value)

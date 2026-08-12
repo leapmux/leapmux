@@ -36,7 +36,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
@@ -109,7 +109,7 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{SoloMode: true}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
@@ -168,7 +168,7 @@ func setupInterceptorTestServerWithBearerSupport(t *testing.T) (leapmuxv1connect
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
@@ -301,7 +301,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
@@ -578,9 +578,9 @@ func setupSessionDurationTestServer(t *testing.T, sessionDuration time.Duration)
 
 	hubtestutil.CreateTestAdmin(t, st)
 
-	cfg := &config.Config{SessionDurationSeconds: int(sessionDuration / time.Second)}
+	cfg := &config.Config{SessionDuration: sessionDuration}
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st, SessionDuration: cfg.SessionDuration()})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SessionDuration: cfg.SessionDuration})
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
@@ -634,7 +634,7 @@ func backdateLastActive(t *testing.T, st store.Store, sessionID string) {
 }
 
 // A slide must re-issue the cookie. The cookie carries its own Expires, so a
-// browser drops it at the deadline the login named however far the row slid --
+// browser drops it at the deadline the login set however far the row slid --
 // which would sign an active user out one session duration after the login.
 //
 // The configured duration, not the default, is what both ends must carry.
@@ -681,7 +681,7 @@ func TestLogin_UsesConfiguredSessionDuration(t *testing.T) {
 
 	sess, err := st.Sessions().GetByID(context.Background(), token)
 	require.NoError(t, err)
-	assert.WithinDuration(t, before.Add(configured), sess.ExpiresAt, time.Minute)
+	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 }
 
 // An unconfigured Hub issues the default, so an operator who sets nothing gets
@@ -694,7 +694,7 @@ func TestLogin_UnconfiguredUsesDefaultSessionDuration(t *testing.T) {
 
 	sess, err := st.Sessions().GetByID(context.Background(), token)
 	require.NoError(t, err)
-	assert.WithinDuration(t, before.Add(auth.DefaultSessionDuration), sess.ExpiresAt, time.Minute)
+	hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, sess.ExpiresAt)
 }
 
 // The throttle governs the cookie too: a request that writes no row must not

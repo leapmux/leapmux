@@ -71,7 +71,7 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
 
-	h := NewOAuthHandler(st, &config.Config{SessionDurationSeconds: int(configured / time.Second)}, ks)
+	h := NewOAuthHandler(st, &config.Config{SessionDuration: configured}, ks)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/auth/oauth/test/callback", nil)
@@ -84,7 +84,7 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	require.Equal(t, http.StatusFound, rec.Code)
 	parsed, err := http.ParseSetCookie(rec.Header().Get("Set-Cookie"))
 	require.NoError(t, err, "the callback must set a session cookie")
-	assert.WithinDuration(t, before.Add(configured), parsed.Expires, time.Minute)
+	hubtestutil.AssertSessionLifetime(t, before, configured, parsed.Expires)
 
 	sess, err := st.Sessions().GetByID(context.Background(), parsed.Value)
 	require.NoError(t, err)

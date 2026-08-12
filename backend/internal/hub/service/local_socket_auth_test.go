@@ -87,7 +87,7 @@ func TestLocalSocket_MultiUser_RejectsUnauthenticated(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	client := newUnixSocketAuthClient(t, st, interceptor)
 
 	// No cookie, no bearer — multi-user hub on a unix socket must reject.
@@ -104,7 +104,7 @@ func TestLocalSocket_SoloMode_AutoAuths(t *testing.T) {
 	soloUser, err := auth.LoadSoloUser(context.Background(), st)
 	require.NoError(t, err)
 
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
 	client := newUnixSocketAuthClient(t, st, interceptor)
 
 	resp, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
@@ -127,7 +127,7 @@ func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
 	tv, err := auth.NewTokenValidator(st, pepper)
 	require.NoError(t, err)
 
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	client := newUnixSocketAuthClient(t, st, interceptor)
 
 	u, err := st.Users().GetByUsername(context.Background(), "admin")
@@ -160,7 +160,7 @@ func TestLocalSocket_MultiUser_RejectsRevokedBearer(t *testing.T) {
 	tv, err := auth.NewTokenValidator(st, pepper)
 	require.NoError(t, err)
 
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	client := newUnixSocketAuthClient(t, st, interceptor)
 
 	u, err := st.Users().GetByUsername(context.Background(), "admin")

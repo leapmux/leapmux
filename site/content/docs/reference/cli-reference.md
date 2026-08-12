@@ -51,6 +51,8 @@ Notes on dispatch:
 
 > **Tip:** Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). This chapter uses the single-hyphen form, matching the binary's help output.
 
+> **Durations.** Every flag whose default is shown as a duration (`7d`, `10s`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts, as in `-session-duration 1w2d`. A bare number is a count of **seconds**, so `-api-timeout 10` means ten seconds. See [Duration values](/docs/operating/configuration/#duration-values).
+
 ## solo
 
 Run a Hub and a Worker in one process on loopback, with no login (every request is auto-authenticated as the admin). See [Running LeapMux](/docs/operating/running-leapmux/#solo-mode) for details.
@@ -68,9 +70,9 @@ leapmux solo [flags]
 | `-storage-sqlite-max-conns` | `4` | SQLite max open connections |
 | `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel (for the bundled Worker) |
 | `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
-| `-api-timeout-seconds` | `10` | General API timeout |
-| `-agent-startup-timeout-seconds` | `300` | Agent startup timeout |
-| `-worktree-create-timeout-seconds` | `60` | Worktree creation timeout |
+| `-api-timeout` | `10s` | General API timeout |
+| `-agent-startup-timeout` | `5m` | Agent startup timeout |
+| `-worktree-create-timeout` | `1m` | Worktree creation timeout |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` (for the bundled Worker) |
 | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
@@ -105,7 +107,7 @@ This table lists the most common flags. The full set — including all PostgreSQ
 |------|---------|---------|
 | `-signup-enabled` | `false` | Enable user sign-up |
 | `-email-verification-required` | `false` | Require email verification on sign-up (needs `-smtp-host`) |
-| `-session-duration-seconds` | `691200` (8 days) | How long a session stays valid after the user's last request; each request slides the expiry forward |
+| `-session-duration` | `7d` | How long a session stays valid after the user's last request; each request slides the expiry forward |
 
 **SMTP options**
 
@@ -122,9 +124,9 @@ This table lists the most common flags. The full set — including all PostgreSQ
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-api-timeout-seconds` | `10` | General API timeout |
-| `-agent-startup-timeout-seconds` | `300` | Agent startup timeout |
-| `-worktree-create-timeout-seconds` | `60` | Worktree creation timeout |
+| `-api-timeout` | `10s` | General API timeout |
+| `-agent-startup-timeout` | `5m` | Agent startup timeout |
+| `-worktree-create-timeout` | `1m` | Worktree creation timeout |
 | `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
 
 **Storage options**
@@ -180,8 +182,8 @@ leapmux worker -hub https://hub.example.com
 |------|---------|---------|
 | `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel |
 | `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
-| `-agent-startup-timeout-seconds` | `300` | Agent startup timeout |
-| `-api-timeout-seconds` | `10` | JSON-RPC request timeout |
+| `-agent-startup-timeout` | `5m` | Agent startup timeout |
+| `-api-timeout` | `10s` | JSON-RPC request timeout |
 
 **SQLite database options**
 
@@ -231,7 +233,7 @@ Dev mode uses the **same flag set as solo**, with two additions:
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `-public-url` | empty | Public base URL when behind a reverse proxy |
-| `-session-duration-seconds` | `691200` (8 days) | How long a session stays valid after the user's last request. Solo has no session to expire, so the flag is dev-only; shorten it to exercise the signed-out path. |
+| `-session-duration` | `7d` | How long a session stays valid after the user's last request. Solo has no session to expire, so the flag is dev-only; shorten it to exercise the signed-out path (the minimum is `5m`). |
 
 The other differences from solo: the default `-listen` is `:4327` (all interfaces), the config/data location is `~/.config/leapmux/dev/`, and the bundled Worker's auto-registration is deferred until the first admin completes `/setup`.
 

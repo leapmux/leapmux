@@ -107,6 +107,31 @@ export LEAPMUX_HUB_PUBLIC_URL="https://hub.example.com"
 leapmux hub
 ```
 
+## Duration values
+
+Every key that holds a duration — `session_duration`, each timeout, and each database pool setting, in both the Hub and the Worker — takes the same spellings.
+
+| Unit | Meaning | Example |
+| --- | --- | --- |
+| `ns`, `us`, `ms` | Nanoseconds, microseconds, milliseconds | `500ms` |
+| `s`, `m`, `h` | Seconds, minutes, hours | `90s`, `30m`, `2h` |
+| `d` | Days (24 hours) | `7d` |
+| `w` | Weeks (7 days) | `2w` |
+
+Parts combine, in any order: `1h30m`, `1w2d`, `2d12h`.
+
+**A bare number is a count of seconds.** That is what these keys took before they had units, so `api_timeout: 10` still means ten seconds and an existing config file keeps working. A number only means seconds when it is the whole value — `1d30` is rejected rather than read as a day and thirty seconds.
+
+The same spellings work everywhere a key can be set: the config file, the environment variable, and the CLI flag. `0` means "use the default" for the Hub and Worker timeouts, and "leave the database driver's own default alone" for the pool settings.
+
+A value that cannot be read, or one past roughly 292 years (the largest duration LeapMux can represent), fails at startup naming the key, rather than silently becoming a duration nobody meant.
+
+```yaml
+session_duration: 7d
+api_timeout: 10s
+agent_startup_timeout: 5m
+```
+
 ## Listen addresses
 
 LeapMux uses two kinds of listen addresses.
@@ -163,11 +188,13 @@ Env prefix: `LEAPMUX_HUB_`. Defaults shown are the built-in values. Each key's C
 
 ### Auth options
 
+`session_duration` takes a unit suffix; see [Duration values](#duration-values).
+
 | Config key | Default | Meaning |
 | --- | --- | --- |
 | `signup_enabled` | `false` | Enable user sign-up. |
 | `email_verification_required` | `false` | Require email verification on sign-up. Requires `smtp_host`. |
-| `session_duration_seconds` | `691200` (8 days) | How long a session stays valid after the user's last request. Each request slides the expiry forward, so this is an idle timeout, not a cap on how long a signed-in user may stay signed in. `0` means the default; a value under `60` is rejected. |
+| `session_duration` | `7d` | How long a session stays valid after the user's last request. Each request slides the expiry forward, so this is an idle timeout, not a cap on how long a signed-in user may stay signed in. `0` means the default; a value under `5m` is rejected, because the Hub serves a validated session from an in-memory cache for a short window and cannot enforce a shorter policy honestly. |
 
 See [Accounts & Authentication](/docs/using/accounts/) for the sign-up/verification flows, and [Authentication Providers](/docs/operating/authentication-providers/) for OAuth/OIDC.
 
@@ -192,11 +219,13 @@ The TLS modes:
 
 ### Timeout and limit options
 
+Every timeout below takes a unit suffix; see [Duration values](#duration-values).
+
 | Config key | Default | Meaning |
 | --- | --- | --- |
-| `api_timeout_seconds` | `10` | General API timeout in seconds (`<=0` falls back to 10). |
-| `agent_startup_timeout_seconds` | `300` | Agent startup timeout in seconds (`<=0` falls back to 300). |
-| `worktree_create_timeout_seconds` | `60` | Worktree creation timeout in seconds (`<=0` falls back to 60). |
+| `api_timeout` | `10s` | General API timeout. `0` means the default. |
+| `agent_startup_timeout` | `5m` | Agent startup timeout. `0` means the default. |
+| `worktree_create_timeout` | `1m` | Worktree creation timeout. `0` means the default. |
 | `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Clients derive the reassembled send/receive ceiling as this plus 64 KiB of envelope headroom — the wire field on `OpenChannel` / `OpenChannelResponse` is the payload budget, not the reassembled ceiling. Must be between one Noise plaintext chunk (~64 KiB) and 64 MiB when set. Effective per channel is `min(hub, worker)`. Clients (browser, CLI tunnel) do not configure this — they adopt the payload budget from `OpenChannel`. |
 | `relay_queue_memory_budget` | `0` | Bytes the Hub's browser channel relays may queue between them (`0` = auto-size). See [Outbound queue memory](#outbound-queue-memory). |
 | `worker_queue_memory_budget` | `0` | Bytes the Hub's Worker connections may queue between them (`0` = auto-size). See [Outbound queue memory](#outbound-queue-memory). |
@@ -380,12 +409,14 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 
 ### Timeout and limit options
 
+Every timeout below takes a unit suffix; see [Duration values](#duration-values).
+
 | Config key | Default | Meaning |
 | --- | --- | --- |
 | `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel (`0` = 4 default). |
 | `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Negotiated per channel as `min(hub, worker)`; the reassembled ceiling is this plus 64 KiB of envelope headroom. |
-| `agent_startup_timeout_seconds` | `300` | Agent startup timeout in seconds (`<=0` falls back to 300). |
-| `api_timeout_seconds` | `10` | JSON-RPC request timeout in seconds (`<=0` falls back to 10). |
+| `agent_startup_timeout` | `5m` | Agent startup timeout. `0` means the default. |
+| `api_timeout` | `10s` | JSON-RPC request timeout. `0` means the default. |
 
 ### SQLite database options
 
@@ -459,14 +490,16 @@ storage:
 
 These three share the same driver, config block layout, and pool defaults. Only the config-block name and the flag prefix differ: `storage.postgres.*` / `--storage-postgres-*`, `storage.cockroachdb.*` / `--storage-cockroachdb-*`, `storage.yugabytedb.*` / `--storage-yugabytedb-*`.
 
+Every duration below takes a unit suffix; see [Duration values](#duration-values).
+
 | Config key (under `storage.<name>`) | Default | Meaning |
 | --- | --- | --- |
 | `dsn` | *(empty, required)* | Connection string (URL form). |
 | `max_conns` | `25` | Maximum open connections. |
 | `min_conns` | `5` | Minimum pool connections kept alive. |
-| `conn_max_lifetime_seconds` | `3600` | Connection max lifetime in seconds. |
-| `max_conn_idle_time_seconds` | `300` | Max idle time per connection in seconds. |
-| `health_check_period_seconds` | `30` | Pool health-check period in seconds. |
+| `conn_max_lifetime` | `1h` | Connection max lifetime. |
+| `max_conn_idle_time` | `5m` | Max idle time per connection. |
+| `health_check_period` | `30s` | Pool health-check period. |
 
 DSN formats (the `dsn` is parsed as a connection URL):
 
@@ -482,9 +515,9 @@ storage:
     dsn: "postgres://leapmux:secret@db.internal:5432/leapmux?sslmode=require"
     max_conns: 25
     min_conns: 5
-    conn_max_lifetime_seconds: 3600
-    max_conn_idle_time_seconds: 300
-    health_check_period_seconds: 30
+    conn_max_lifetime: 1h
+    max_conn_idle_time: 5m
+    health_check_period: 30s
 ```
 
 > **Tip:** `sslmode=disable` is fine for local testing but you should use `sslmode=require` (or stronger) for any networked database. CockroachDB and YugabyteDB use the same config block shape — just set `type: cockroachdb` / `type: yugabytedb` and fill in `storage.cockroachdb` / `storage.yugabytedb`.
@@ -493,13 +526,15 @@ storage:
 
 MySQL and TiDB share the MySQL driver, config layout, and pool defaults. Prefixes are `storage.mysql.*` / `--storage-mysql-*` and `storage.tidb.*` / `--storage-tidb-*`.
 
+Every duration below takes a unit suffix; see [Duration values](#duration-values).
+
 | Config key (under `storage.<name>`) | Default | Meaning |
 | --- | --- | --- |
 | `dsn` | *(empty, required)* | Connection string (go-sql-driver DSN). |
 | `max_conns` | `25` | Maximum open connections. |
 | `max_idle_conns` | `5` | Maximum idle connections. |
-| `conn_max_lifetime_seconds` | `3600` | Connection max lifetime in seconds. |
-| `conn_max_idle_time_seconds` | `300` | Max idle time per connection in seconds. |
+| `conn_max_lifetime` | `1h` | Connection max lifetime. |
+| `conn_max_idle_time` | `5m` | Max idle time per connection. |
 
 DSN formats:
 
@@ -514,8 +549,8 @@ storage:
     dsn: "leapmux:secret@tcp(db.internal:3306)/leapmux?parseTime=true"
     max_conns: 25
     max_idle_conns: 5
-    conn_max_lifetime_seconds: 3600
-    conn_max_idle_time_seconds: 300
+    conn_max_lifetime: 1h
+    conn_max_idle_time: 5m
 ```
 
 > **Warning:** MySQL and TiDB DSNs **must** include `parseTime=true`, or time columns will fail to decode. For TiDB, the store best-effort enables foreign-key support on connect (a no-op on real MySQL, which already enforces them).
@@ -545,7 +580,7 @@ log_level: info
 
 signup_enabled: true
 email_verification_required: true
-session_duration_seconds: 86400   # sign an idle user out after a day
+session_duration: 1d              # sign an idle user out after a day
 
 smtp_host: "smtp.example.com"
 smtp_port: 587

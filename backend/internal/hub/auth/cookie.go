@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"errors"
 	"net/http"
 	"time"
+
+	"connectrpc.com/connect"
 )
 
 const (
@@ -43,22 +46,68 @@ type sessionRefresh struct {
 	expiresAt time.Time
 }
 
-// applyTo writes the refreshed session cookie into h, unless the handler wrote a
-// Set-Cookie of its own.
+// applyTo writes the refreshed session cookie into h, unless the handler already
+// wrote a session cookie of its own.
 //
-// Skipping a handler-written cookie is what makes the refresh safe to run on
-// every response. A browser applies several Set-Cookie headers for one name in
-// order and keeps the last, so a refresh appended after Logout's clearing cookie
-// leaves a live session cookie in the browser -- the user stays signed in. The
-// handlers that write this cookie (login, sign-up, OAuth signup completion, the
-// OAuth callback, logout) each name the session that the response established,
-// and that is always newer than the slide the interceptor observed on the way
-// in.
+// Standing back from a handler's own cookie is what makes the refresh safe to
+// run on every response. A browser applies several Set-Cookie headers for one
+// name in order and keeps the last, so a refresh appended after Logout's
+// clearing cookie leaves a live session cookie in the browser -- the user stays
+// signed in. The handlers that write this cookie (login, sign-up, OAuth signup
+// completion, the OAuth callback, logout) each specify the session that the
+// response established, and that is always newer than the slide the interceptor
+// observed on the way in.
+//
+// The test is the cookie's NAME, not the presence of any cookie at all. A
+// browser keeps the last cookie per name, so only a cookie of this name can
+// overwrite this one. A guard that stood back from every Set-Cookie would stop
+// refreshing the session on the first response that also carried an unrelated
+// cookie, silently and with nothing to point at the cause.
 func (r sessionRefresh) applyTo(h http.Header, secure bool) {
-	if r.sessionID == "" || len(h.Values("Set-Cookie")) > 0 {
+	if r.sessionID == "" {
 		return
 	}
+	name := cookieName(secure)
+	for _, line := range h.Values("Set-Cookie") {
+		c, err := http.ParseSetCookie(line)
+		// An unparseable cookie counts as a collision. The handler wrote
+		// something this code cannot read, and losing one refresh costs a
+		// throttle window, where overwriting a cookie meant for the browser
+		// could sign a user in again after a logout.
+		if err != nil || c.Name == name {
+			return
+		}
+	}
 	h.Add("Set-Cookie", BuildSessionCookie(r.sessionID, r.expiresAt, secure).String())
+}
+
+// applyToError writes the refreshed session cookie into err's metadata and
+// returns the error to answer with.
+//
+// A ConnectRPC unary handler that fails has no response to carry a header, but
+// connect-go merges a *connect.Error's metadata into the response header before
+// it writes the status, so the cookie still reaches the browser.
+//
+// An error of any other type passes through untouched, and loses this one
+// refresh. Wrapping it to give it metadata would decide its status code here,
+// and connect.CodeOf answers CodeUnknown for a context.Canceled that connect-go
+// itself reports as CodeCanceled -- so the wrapper would change what the client
+// sees for every cancelled request that happened to slide. The cookie is worth
+// less than the code: the row already slid, and the next slide re-issues it.
+//
+// A stream cannot use this: connect-go puts a stream error's metadata in the
+// body trailer, where a browser ignores Set-Cookie. WrapStreamingHandler writes
+// the cookie to the response header instead.
+func (r sessionRefresh) applyToError(err error, secure bool) error {
+	if err == nil || r.sessionID == "" {
+		return err
+	}
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return err
+	}
+	r.applyTo(connectErr.Meta(), secure)
+	return err
 }
 
 // ClearSessionCookie creates a cookie that clears the session.

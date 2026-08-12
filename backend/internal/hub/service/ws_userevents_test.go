@@ -72,7 +72,7 @@ func newDelegationBearer(t *testing.T, st store.Store, userID string) delegation
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	_, sessionCache := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	_, sessionCache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sessionCache.Stop)
 
 	tokenID := id.Generate()

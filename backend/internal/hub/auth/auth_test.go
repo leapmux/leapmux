@@ -66,7 +66,7 @@ func TestLogin_StampsTheGivenLifetime(t *testing.T) {
 	before := time.Now()
 	token, _, expiresAt, err := auth.Login(ctx, st, "testuser", "password123", lifetime)
 	require.NoError(t, err)
-	assert.WithinDuration(t, before.Add(lifetime), expiresAt, time.Minute)
+	hubtestutil.AssertSessionLifetime(t, before, lifetime, expiresAt)
 
 	sess, err := st.Sessions().GetByID(ctx, token)
 	require.NoError(t, err)
@@ -91,7 +91,7 @@ func TestCreateSession_NonPositiveLifetimeFallsBackToDefault(t *testing.T) {
 			before := time.Now()
 			_, expiresAt, err := auth.CreateSession(ctx, st, userID, lifetime)
 			require.NoError(t, err)
-			assert.WithinDuration(t, before.Add(auth.DefaultSessionDuration), expiresAt, time.Minute)
+			hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, expiresAt)
 		})
 	}
 
@@ -101,7 +101,7 @@ func TestCreateSession_NonPositiveLifetimeFallsBackToDefault(t *testing.T) {
 		before := time.Now()
 		_, expiresAt, err := auth.CreateSession(ctx, st, userID, time.Hour)
 		require.NoError(t, err)
-		assert.WithinDuration(t, before.Add(time.Hour), expiresAt, time.Minute)
+		hubtestutil.AssertSessionLifetime(t, before, time.Hour, expiresAt)
 	})
 }
 

@@ -33,7 +33,7 @@ func newBearerAuthHub(
 ) (leapmuxv1connect.AuthServiceClient, *auth.AuthContextRegistry) {
 	t.Helper()
 	mux := http.NewServeMux()
-	interceptor, cache := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: validator})
+	interceptor, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: validator})
 	t.Cleanup(cache.Stop)
 	authService := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(cache, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authService, connect.WithInterceptors(interceptor))
@@ -155,7 +155,7 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	_, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 
 	closer := &fakeCloser{}

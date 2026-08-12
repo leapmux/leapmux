@@ -48,7 +48,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
 	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	opts := connect.WithInterceptors(interceptor)
@@ -103,7 +103,7 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
@@ -566,7 +566,7 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(auth.InterceptorOptions{Store: st, EmailVerificationRequired: true})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, EmailVerificationRequired: true})
 	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 
@@ -835,7 +835,7 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
 	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{})
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
@@ -1110,7 +1110,7 @@ func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
 	}}
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
 	userSvc := service.NewUserService(hooked, testConfig(), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))

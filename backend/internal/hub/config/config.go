@@ -153,44 +153,48 @@ const (
 	// genuinely want more set the key.
 	MaxQueueMemoryBudget = 8 << 30 // 8 GiB
 
-	DefaultAPITimeoutSeconds            = 10
-	DefaultAgentStartupTimeoutSeconds   = 300
-	DefaultWorktreeCreateTimeoutSeconds = 60
-
-	// DefaultSessionDurationSeconds is the default for session_duration_seconds.
-	// Derived from auth.DefaultSessionDuration rather than written again here,
-	// so the flag default and the value the auth package falls back to are one
-	// number.
-	DefaultSessionDurationSeconds = int(auth.DefaultSessionDuration / time.Second)
-	// MinSessionDurationSeconds is the shortest session an operator may
-	// configure. Derived from auth.MinSessionDuration, which states the reason:
-	// the Hub serves a validated session from an in-memory cache for a short
-	// window, so a shorter session outlives its own expiry by a large share of
-	// its life.
-	MinSessionDurationSeconds = int(auth.MinSessionDuration / time.Second)
+	// The timeout defaults. Each is the value that its flag registers and the
+	// value that applyDurationDefaults restores when a source leaves the key at
+	// zero, so each default is one number and not one per reader.
+	//
+	// The session duration is not here: auth.DefaultSessionDuration is the one
+	// default, because the auth package also has to answer for a session that a
+	// caller mints with no configured lifetime.
+	DefaultAPITimeout            = 10 * time.Second
+	DefaultAgentStartupTimeout   = 5 * time.Minute
+	DefaultWorktreeCreateTimeout = time.Minute
 )
 
 // Config holds the hub's runtime configuration.
 type Config struct {
-	Listen                       string `koanf:"listen"`
-	LocalListen                  string `koanf:"local_listen"`
-	PublicURL                    string `koanf:"public_url"`
-	DataDir                      string `koanf:"data_dir"`
-	DevFrontend                  string `koanf:"dev_frontend"`
-	LogLevel                     string `koanf:"log_level"`
-	SignupEnabled                bool   `koanf:"signup_enabled"`
-	EmailVerificationRequired    bool   `koanf:"email_verification_required"`
-	SessionDurationSeconds       int    `koanf:"session_duration_seconds"`
-	SmtpHost                     string `koanf:"smtp_host"`
-	SmtpPort                     int    `koanf:"smtp_port"`
-	SmtpUsername                 string `koanf:"smtp_username"`
-	SmtpPassword                 string `koanf:"smtp_password"`
-	SmtpFromAddress              string `koanf:"smtp_from_address"`
-	SmtpTLSMode                  string `koanf:"smtp_tls_mode"` // See SmtpTLSMode* constants for valid values.
-	APITimeoutSeconds            int    `koanf:"api_timeout_seconds"`
-	AgentStartupTimeoutSeconds   int    `koanf:"agent_startup_timeout_seconds"`
-	WorktreeCreateTimeoutSeconds int    `koanf:"worktree_create_timeout_seconds"`
-	MaxMessageSize               int    `koanf:"max_message_size"`
+	Listen                    string `koanf:"listen"`
+	LocalListen               string `koanf:"local_listen"`
+	PublicURL                 string `koanf:"public_url"`
+	DataDir                   string `koanf:"data_dir"`
+	DevFrontend               string `koanf:"dev_frontend"`
+	LogLevel                  string `koanf:"log_level"`
+	SignupEnabled             bool   `koanf:"signup_enabled"`
+	EmailVerificationRequired bool   `koanf:"email_verification_required"`
+	SmtpHost                  string `koanf:"smtp_host"`
+	SmtpPort                  int    `koanf:"smtp_port"`
+	SmtpUsername              string `koanf:"smtp_username"`
+	SmtpPassword              string `koanf:"smtp_password"`
+	SmtpFromAddress           string `koanf:"smtp_from_address"`
+	SmtpTLSMode               string `koanf:"smtp_tls_mode"` // See SmtpTLSMode* constants for valid values.
+	// The durations below, and every other duration key, accept a unit suffix
+	// and read a bare number as seconds -- see internalconfig.ParseDuration.
+	// LoadWithOptions resolves a zero to the matching Default* constant, so a
+	// loaded Config always carries a usable value and no reader repeats the
+	// fallback.
+	//
+	// SessionDuration is how long a session stays valid after the user's last
+	// request. Each authenticated request slides the expiry forward, so it is an
+	// idle timeout and not a cap on how long a signed-in user may stay signed in.
+	SessionDuration       time.Duration `koanf:"session_duration"`
+	APITimeout            time.Duration `koanf:"api_timeout"`
+	AgentStartupTimeout   time.Duration `koanf:"agent_startup_timeout"`
+	WorktreeCreateTimeout time.Duration `koanf:"worktree_create_timeout"`
+	MaxMessageSize        int           `koanf:"max_message_size"`
 	// The queue budgets are int64, not int, for the reason sendq.PoolConfig
 	// states about its own Capacity: MaxQueueMemoryBudget is 8 GiB, which does
 	// not fit an int on a 32-bit build. Typed narrower here, an operator's
@@ -275,61 +279,52 @@ type SQLiteConfig struct {
 // PostgresConfig holds PostgreSQL-specific storage configuration.
 // Also used by CockroachDB and YugabyteDB (wire-compatible).
 type PostgresConfig struct {
-	DSN                      string `koanf:"dsn"`                         // Connection string (required).
-	MaxConns                 int    `koanf:"max_conns"`                   // Maximum open connections. Default: 25.
-	MinConns                 int    `koanf:"min_conns"`                   // Minimum pool connections kept alive. Default: 5.
-	ConnMaxLifetimeSeconds   int    `koanf:"conn_max_lifetime_seconds"`   // Maximum connection lifetime. Default: 3600.
-	MaxConnIdleTimeSeconds   int    `koanf:"max_conn_idle_time_seconds"`  // Maximum idle time per connection. Default: 300.
-	HealthCheckPeriodSeconds int    `koanf:"health_check_period_seconds"` // Pool health check period. Default: 30.
+	DSN      string `koanf:"dsn"`       // Connection string (required).
+	MaxConns int    `koanf:"max_conns"` // Maximum open connections. Default: 25.
+	MinConns int    `koanf:"min_conns"` // Minimum pool connections kept alive. Default: 5.
+	// The pool durations keep their own meaning for zero -- leave the driver
+	// default alone -- so applyDurationDefaults does not touch them.
+	ConnMaxLifetime   time.Duration `koanf:"conn_max_lifetime"`   // Maximum connection lifetime. Default: 1h.
+	MaxConnIdleTime   time.Duration `koanf:"max_conn_idle_time"`  // Maximum idle time per connection. Default: 5m.
+	HealthCheckPeriod time.Duration `koanf:"health_check_period"` // Pool health check period. Default: 30s.
 }
 
 // MySQLConfig holds MySQL-specific storage configuration.
 // Also used by TiDB (wire-compatible).
 type MySQLConfig struct {
-	DSN                    string `koanf:"dsn"`                        // Connection string (required).
-	MaxConns               int    `koanf:"max_conns"`                  // Maximum open connections. Default: 25.
-	MaxIdleConns           int    `koanf:"max_idle_conns"`             // Maximum idle connections. Default: 5.
-	ConnMaxLifetimeSeconds int    `koanf:"conn_max_lifetime_seconds"`  // Maximum connection lifetime. Default: 3600.
-	ConnMaxIdleTimeSeconds int    `koanf:"conn_max_idle_time_seconds"` // Maximum idle time per connection. Default: 300.
+	DSN          string `koanf:"dsn"`            // Connection string (required).
+	MaxConns     int    `koanf:"max_conns"`      // Maximum open connections. Default: 25.
+	MaxIdleConns int    `koanf:"max_idle_conns"` // Maximum idle connections. Default: 5.
+	// Zero leaves the driver default alone -- see PostgresConfig.
+	ConnMaxLifetime time.Duration `koanf:"conn_max_lifetime"`  // Maximum connection lifetime. Default: 1h.
+	ConnMaxIdleTime time.Duration `koanf:"conn_max_idle_time"` // Maximum idle time per connection. Default: 5m.
 }
 
-// SessionDuration returns how long a user session stays valid after the user's
-// last request. Each authenticated request slides the expiry forward, so this
-// is an idle timeout and not a cap on how long a signed-in user may stay signed
-// in.
-func (c *Config) SessionDuration() time.Duration {
-	v := c.SessionDurationSeconds
-	if v <= 0 {
-		v = DefaultSessionDurationSeconds
+// applyDurationDefaults restores the default for each timeout that a source
+// left at zero, so every reader of a loaded Config finds a usable value and
+// none of them repeats the fallback.
+//
+// A source reaches zero two ways: it omits the key, and the defaults map has
+// already answered; or it writes an explicit 0, which the operator docs define
+// as "the default". A negative value never arrives here, because Validate
+// rejects it first.
+//
+// The storage pool durations are deliberately absent. Zero has its own meaning
+// there -- leave the driver default alone -- and the pool code tests for it.
+func (c *Config) applyDurationDefaults() {
+	for _, d := range []struct {
+		target   *time.Duration
+		fallback time.Duration
+	}{
+		{&c.SessionDuration, auth.DefaultSessionDuration},
+		{&c.APITimeout, DefaultAPITimeout},
+		{&c.AgentStartupTimeout, DefaultAgentStartupTimeout},
+		{&c.WorktreeCreateTimeout, DefaultWorktreeCreateTimeout},
+	} {
+		if *d.target == 0 {
+			*d.target = d.fallback
+		}
 	}
-	return time.Duration(v) * time.Second
-}
-
-// APITimeout returns the general API timeout as a duration.
-func (c *Config) APITimeout() time.Duration {
-	v := c.APITimeoutSeconds
-	if v <= 0 {
-		v = DefaultAPITimeoutSeconds
-	}
-	return time.Duration(v) * time.Second
-}
-
-// AgentStartupTimeout returns the agent startup/resume timeout as a duration.
-func (c *Config) AgentStartupTimeout() time.Duration {
-	v := c.AgentStartupTimeoutSeconds
-	if v <= 0 {
-		v = DefaultAgentStartupTimeoutSeconds
-	}
-	return time.Duration(v) * time.Second
-}
-
-// WorktreeCreateTimeout returns the worktree creation timeout as a duration.
-func (c *Config) WorktreeCreateTimeout() time.Duration {
-	v := c.WorktreeCreateTimeoutSeconds
-	if v <= 0 {
-		v = DefaultWorktreeCreateTimeoutSeconds
-	}
-	return time.Duration(v) * time.Second
 }
 
 // The Resolve*QueueMemoryBudget accessors return the bytes each outbound queue
@@ -652,6 +647,20 @@ func boolFlag(name, koanfKey, category, usage string, def bool) flagDef {
 	return flagDef{name: name, koanfKey: koanfKey, category: category, usage: usage, value: def}
 }
 
+// durationFlag registers a duration, not an int of seconds. The flag then takes
+// the same spellings that the config file and the environment variable take,
+// and the seconds count that the key carried before keeps working as the
+// bare-number form. usage gains the syntax, so -help states it at each flag.
+func durationFlag(name, koanfKey, category, usage string, def time.Duration) flagDef {
+	return flagDef{
+		name:     name,
+		koanfKey: koanfKey,
+		category: category,
+		usage:    usage + ". " + internalconfig.UnitSyntax,
+		value:    def,
+	}
+}
+
 // register defines this flag on fs. The default arm panics rather than skipping:
 // a kind nothing handles used to mean the flag silently vanished from -help and
 // from the defaults map, with no compile or test signal, which is exactly how
@@ -666,6 +675,10 @@ func (fd flagDef) register(fs *flag.FlagSet) {
 		fs.Int64(fd.name, v, fd.usage)
 	case bool:
 		fs.Bool(fd.name, v, fd.usage)
+	case time.Duration:
+		// The FlagProvider reads a set flag back through Value.String(), so the
+		// destination only has to outlive this call, not be reachable from here.
+		fs.Var(internalconfig.NewDurationFlag(new(time.Duration), v), fd.name, fd.usage)
 	default:
 		panic(fmt.Sprintf("config: flag %q has an unsupported default type %T", fd.name, fd.value))
 	}
@@ -759,16 +772,16 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		strFlag("dsn", "dsn", "", "{name} connection string", ""),
 		intFlag("max-conns", "max_conns", "", "{name} maximum open connections", 25),
 		intFlag("min-conns", "min_conns", "", "{name} minimum pool connections kept alive", 5),
-		intFlag("conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "", "{name} connection max lifetime in seconds", 3600),
-		intFlag("max-conn-idle-time-seconds", "max_conn_idle_time_seconds", "", "{name} max idle time per connection in seconds", 300),
-		intFlag("health-check-period-seconds", "health_check_period_seconds", "", "{name} pool health check period in seconds", 30),
+		durationFlag("conn-max-lifetime", "conn_max_lifetime", "", "{name} connection max lifetime", time.Hour),
+		durationFlag("max-conn-idle-time", "max_conn_idle_time", "", "{name} max idle time per connection", 5*time.Minute),
+		durationFlag("health-check-period", "health_check_period", "", "{name} pool health check period", 30*time.Second),
 	}
 	mysqlBaseFlags := []flagDef{
 		strFlag("dsn", "dsn", "", "{name} connection string", ""),
 		intFlag("max-conns", "max_conns", "", "{name} maximum open connections", 25),
 		intFlag("max-idle-conns", "max_idle_conns", "", "{name} maximum idle connections", 5),
-		intFlag("conn-max-lifetime-seconds", "conn_max_lifetime_seconds", "", "{name} connection max lifetime in seconds", 3600),
-		intFlag("conn-max-idle-time-seconds", "conn_max_idle_time_seconds", "", "{name} max idle time per connection in seconds", 300),
+		durationFlag("conn-max-lifetime", "conn_max_lifetime", "", "{name} connection max lifetime", time.Hour),
+		durationFlag("conn-max-idle-time", "conn_max_idle_time", "", "{name} max idle time per connection", 5*time.Minute),
 	}
 
 	allFlags := []flagDef{
@@ -780,16 +793,16 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		strFlag("log-level", "log_level", "Server options", "log level (debug, info, warn, error)", defaultLogLevel),
 		boolFlag("signup-enabled", "signup_enabled", "Auth options", "enable user sign-up", false),
 		boolFlag("email-verification-required", "email_verification_required", "Auth options", "require email verification on sign-up", false),
-		intFlag("session-duration-seconds", "session_duration_seconds", "Auth options", "how long a session stays valid after the user's last request, in seconds; each request slides the expiry forward", DefaultSessionDurationSeconds),
+		durationFlag("session-duration", "session_duration", "Auth options", "how long a session stays valid after the user's last request; each request slides the expiry forward", auth.DefaultSessionDuration),
 		strFlag("smtp-host", "smtp_host", "SMTP options", "SMTP server host", ""),
 		intFlag("smtp-port", "smtp_port", "SMTP options", "SMTP server port", 587),
 		strFlag("smtp-username", "smtp_username", "SMTP options", "SMTP username", ""),
 		strFlag("smtp-password", "smtp_password", "SMTP options", "SMTP password", ""),
 		strFlag("smtp-from-address", "smtp_from_address", "SMTP options", "SMTP from address", ""),
 		strFlag("smtp-tls-mode", "smtp_tls_mode", "SMTP options", "SMTP TLS mode ("+validSmtpTLSModes+")", SmtpTLSModeSTARTTLS),
-		intFlag("api-timeout-seconds", "api_timeout_seconds", "Timeout and limit options", "general API timeout in seconds", DefaultAPITimeoutSeconds),
-		intFlag("agent-startup-timeout-seconds", "agent_startup_timeout_seconds", "Timeout and limit options", "agent startup timeout in seconds", DefaultAgentStartupTimeoutSeconds),
-		intFlag("worktree-create-timeout-seconds", "worktree_create_timeout_seconds", "Timeout and limit options", "worktree creation timeout in seconds", DefaultWorktreeCreateTimeoutSeconds),
+		durationFlag("api-timeout", "api_timeout", "Timeout and limit options", "general API timeout", DefaultAPITimeout),
+		durationFlag("agent-startup-timeout", "agent_startup_timeout", "Timeout and limit options", "agent startup timeout", DefaultAgentStartupTimeout),
+		durationFlag("worktree-create-timeout", "worktree_create_timeout", "Timeout and limit options", "worktree creation timeout", DefaultWorktreeCreateTimeout),
 		intFlag("max-message-size", "max_message_size", "Timeout and limit options", "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom", 0),
 		int64Flag("relay-queue-memory-budget", "relay_queue_memory_budget", "Timeout and limit options", "bytes the Hub's browser channel relays may queue between them (0 = auto-size from the process memory limit)", int64(0)),
 		int64Flag("worker-queue-memory-budget", "worker_queue_memory_budget", "Timeout and limit options", "bytes the Hub's Worker connections may queue between them (0 = auto-size from the process memory limit)", int64(0)),
@@ -873,7 +886,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		return nil, true, nil
 	}
 
-	k := koanf.New(".")
+	k := koanf.New(internalconfig.Delim)
 	fp := internalconfig.NewFlagProvider(fs, fieldMap)
 
 	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_HUB_", fp); err != nil {
@@ -881,9 +894,13 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	}
 
 	var cfg Config
-	if err := k.Unmarshal("", &cfg); err != nil {
+	if err := internalconfig.Unmarshal(k, &cfg); err != nil {
 		return nil, false, fmt.Errorf("unmarshal config: %w", err)
 	}
+
+	// Resolve the timeouts before anything reads one. A negative survives this
+	// step untouched, so Validate still sees what the operator wrote.
+	cfg.applyDurationDefaults()
 
 	// Validate --local-listen early: malformed values should surface at
 	// startup with a clear error rather than failing later inside Serve.
@@ -1052,28 +1069,18 @@ func (c *Config) Validate() error {
 
 // validateSessionDuration rejects a session lifetime nobody meant.
 //
-// Zero means "use the default". Flag parsing writes the default number itself,
-// so a zero reaches this only from a config built in code, and SessionDuration
-// reads it as the default there too. A negative is not a shorter session, so it
-// fails loudly rather than being silently read as the default. A value under
-// MinSessionDurationSeconds signs users out later than it promises; see
-// auth.MinSessionDuration. There is no upper bound: a long session is a policy
-// an operator may hold, and the slide makes it an idle timeout rather than an
-// unbounded credential.
+// The rule itself lives in auth.ValidateSessionDuration, next to the two
+// constants that set the floor. This adds only the key name, which auth cannot
+// know.
+//
+// Zero reaches this only from a Config built in code, because
+// applyDurationDefaults already replaced a loaded zero with the default.
 func (c *Config) validateSessionDuration() error {
-	switch {
-	case c.SessionDurationSeconds < 0:
-		return fmt.Errorf("session_duration_seconds must not be negative, got %d (0 = default)",
-			c.SessionDurationSeconds)
-	case c.SessionDurationSeconds == 0:
+	if c.SessionDuration == 0 {
 		return nil
-	case c.SessionDurationSeconds < MinSessionDurationSeconds:
-		return fmt.Errorf(
-			"session_duration_seconds must be 0 (default) or at least %d, got %d: "+
-				"the Hub serves a validated session from an in-memory cache for a "+
-				"short window, so a shorter session stays usable for a large share "+
-				"of its own life",
-			MinSessionDurationSeconds, c.SessionDurationSeconds)
+	}
+	if err := auth.ValidateSessionDuration(c.SessionDuration); err != nil {
+		return fmt.Errorf("session_duration: %w", err)
 	}
 	return nil
 }

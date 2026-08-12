@@ -56,6 +56,11 @@ type touchRecordingSessionStore struct {
 	// session was touched within the threshold). Default false = one row
 	// matched.
 	touchMissed bool
+	// touchErr simulates a store that cannot answer, and touchCalls counts how
+	// often the UPDATE was attempted -- which is what tells a retry storm apart
+	// from a throttled request.
+	touchErr   error
+	touchCalls int
 }
 
 func (s *touchRecordingSessionStore) ValidateWithUser(context.Context, string) (*store.SessionWithUser, error) {
@@ -64,6 +69,10 @@ func (s *touchRecordingSessionStore) ValidateWithUser(context.Context, string) (
 
 func (s *touchRecordingSessionStore) Touch(_ context.Context, p store.TouchSessionParams) (int64, error) {
 	s.touched = p
+	s.touchCalls++
+	if s.touchErr != nil {
+		return 0, s.touchErr
+	}
 	if s.touchMissed {
 		return 0, nil
 	}
@@ -291,7 +300,7 @@ func TestAuthenticateUsesTouchedSessionExpiry(t *testing.T) {
 	touchedAt, atOK := user.CredentialExpiresAt.At()
 	require.True(t, atOK)
 	assert.True(t, touchedAt.After(oldExpiry))
-	// The refreshed cookie must name the same session and the same slid expiry
+	// The refreshed cookie must carry the same session and the same slid expiry
 	// the row now carries, or the browser's copy expires before the row does.
 	assert.Equal(t, sessionRefresh{sessionID: "session", expiresAt: sessions.touched.ExpiresAt}, refresh)
 }

@@ -840,8 +840,8 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 			// 0 (the default) lets the worker apply channelwire.DefaultMaxIncompleteChunked.
 			MaxIncompleteChunked: parseInt(p.hubCfg.Extras["max_incomplete_chunked"], 0),
 			MaxMessageSize:       p.hubCfg.MaxMessageSize,
-			AgentStartupTimeout:  p.hubCfg.AgentStartupTimeout(),
-			APITimeout:           p.hubCfg.APITimeout(),
+			AgentStartupTimeout:  p.hubCfg.AgentStartupTimeout,
+			APITimeout:           p.hubCfg.APITimeout,
 			EncryptionMode:       workerconfig.ParseEncryptionMode(p.hubCfg.Extras["encryption_mode"]),
 			UseLoginShell:        parseBool(p.hubCfg.Extras["use_login_shell"], true),
 			RegisteredBy:         state.RegisteredBy,
@@ -1132,8 +1132,8 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 // machine's memory limit, which is almost always the right answer on a laptop,
 // and a config file still reaches them for the rare case it is not.
 //
-// session-duration-seconds is dev-only, alongside public-url, because solo mode
-// has no session to expire: its interceptor authenticates every request as the
+// session-duration is dev-only, alongside public-url, because solo mode has no
+// session to expire: its interceptor authenticates every request as the
 // synthetic local user and mints no session row. Dev mode runs the full
 // sign-up-and-cookie path, so the flag is the one place a short session is
 // worth asking for -- testing the signed-out path needs minutes, not days.
@@ -1141,12 +1141,12 @@ func defaultCLIFlags(devMode bool) []string {
 	flags := []string{
 		"listen", "data-dir", "dev-frontend",
 		"storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size",
-		"api-timeout-seconds", "agent-startup-timeout-seconds", "worktree-create-timeout-seconds",
+		"api-timeout", "agent-startup-timeout", "worktree-create-timeout",
 		"log-level",
 		"max-connections-per-user", "max-workers-per-user",
 	}
 	if devMode {
-		flags = append(flags, "public-url", "session-duration-seconds")
+		flags = append(flags, "public-url", "session-duration")
 	}
 	return flags
 }

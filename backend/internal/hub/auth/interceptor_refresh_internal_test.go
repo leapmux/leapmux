@@ -30,6 +30,35 @@ func slidingInterceptor(t *testing.T, sessionDuration time.Duration) *authInterc
 	}
 }
 
+// A store that cannot answer must not be asked again on the very next request.
+// touchSession records the throttle BEFORE it runs the UPDATE, so a store that
+// refuses every touch costs one attempt per throttle window; recording it after
+// the error return would have made every authenticated request retry, turning a
+// database hiccup into a write storm against the database that is already
+// unwell.
+func TestTouchSession_StoreErrorIsThrottledLikeAnySlide(t *testing.T) {
+	sessions := &touchRecordingSessionStore{
+		row: &store.SessionWithUser{
+			UserID: "user", Username: "user",
+			CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(time.Minute),
+		},
+		touchErr: errors.New("database is down"),
+	}
+	a := &authInterceptor{
+		store:           sessionValidationOverrideStore{sessions: sessions},
+		state:           &authState{},
+		sessionDuration: 36 * time.Hour,
+	}
+
+	first := a.touchSession(context.Background(), "session", nil)
+	second := a.touchSession(context.Background(), "session", nil)
+
+	assert.True(t, first.IsZero(), "a failed touch slid nothing")
+	assert.True(t, second.IsZero())
+	assert.Equal(t, 1, sessions.touchCalls,
+		"the second request must wait out the throttle rather than retry the failing UPDATE")
+}
+
 func cookieRequest() connect.AnyRequest {
 	req := connect.NewRequest(&struct{}{})
 	req.Header().Set("Cookie", CookieName+"=session")
@@ -76,20 +105,74 @@ func TestWrapStreamingHandler_UnauthenticatedWritesNoCookie(t *testing.T) {
 	assert.Empty(t, conn.ResponseHeader().Values("Set-Cookie"))
 }
 
-// A handler that fails answers with a connect.Error and no response to hang a
-// header on. The slide already reached the store, so the refresh is dropped
-// rather than forced onto a nil response -- and the handler's error reaches the
-// caller unchanged.
-func TestWrapUnary_HandlerErrorDropsRefresh(t *testing.T) {
+// A handler that fails has no response to hang a header on, but a connect.Error
+// carries metadata that connect-go merges into the response header. The slide
+// already reached the store, so the cookie travels with the rejection -- a
+// client whose calls keep failing would otherwise slide the row on every request
+// and still be signed out at the login deadline, because the throttle gives the
+// cookie no other request to ride.
+func TestWrapUnary_HandlerErrorStillCarriesRefresh(t *testing.T) {
 	a := slidingInterceptor(t, 36*time.Hour)
 	handlerErr := connect.NewError(connect.CodeInternal, errors.New("boom"))
 
+	before := time.Now()
 	resp, err := a.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
 		return nil, handlerErr
 	})(context.Background(), cookieRequest())
 
-	require.ErrorIs(t, err, handlerErr)
+	require.ErrorIs(t, err, handlerErr, "the handler's error must reach the caller unchanged")
 	assert.Nil(t, resp)
+
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr)
+	assert.Equal(t, connect.CodeInternal, connectErr.Code())
+	parsed, parseErr := http.ParseSetCookie(connectErr.Meta().Get("Set-Cookie"))
+	require.NoError(t, parseErr, "a failed call must still carry the refreshed cookie")
+	assert.Equal(t, "session", parsed.Value)
+	assert.True(t, parsed.Expires.After(before.Add(36*time.Hour)))
+}
+
+// The same for a rejection the interceptor itself issues after the slide
+// committed. An unverified user waiting to verify has every non-allowlisted
+// procedure denied, and the slide runs before that gate -- so without this the
+// row would keep moving while the browser's cookie stayed at the login
+// deadline, for as long as the user kept being refused.
+func TestWrapUnary_EmailVerificationDenialCarriesRefresh(t *testing.T) {
+	a := slidingInterceptor(t, 36*time.Hour)
+	a.emailVerificationRequired = true
+
+	resp, err := a.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return nil, errors.New("the handler must not run")
+	})(context.Background(), cookieRequest())
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr)
+	parsed, parseErr := http.ParseSetCookie(connectErr.Meta().Get("Set-Cookie"))
+	require.NoError(t, parseErr, "the denial must carry the cookie for the slide it already made")
+	assert.Equal(t, "session", parsed.Value)
+}
+
+// A request the interceptor refuses BEFORE it authenticates anything must not
+// hand back a cookie. There is no slide to report, and a cookie on an
+// unauthenticated answer would be a session the caller never presented.
+func TestWrapUnary_UnauthenticatedWritesNoCookie(t *testing.T) {
+	a := slidingInterceptor(t, 36*time.Hour)
+
+	resp, err := a.WrapUnary(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return nil, errors.New("the handler must not run")
+	})(context.Background(), connect.NewRequest(&struct{}{}))
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr)
+	assert.Empty(t, connectErr.Meta().Get("Set-Cookie"))
 }
 
 // A handler that returns neither a response nor an error is a contract

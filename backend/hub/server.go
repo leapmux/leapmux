@@ -302,7 +302,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	logQueueMemoryBudgets(slog.Default(), queueBasis,
 		relayBudget, workerBudget, userEventsBudget)
-	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
+	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return cfg.APITimeout })
 
 	apiTokenPepper := ks.Pepper()
 	tokenValidator, tvErr := auth.NewTokenValidator(st, apiTokenPepper[:])
@@ -316,7 +316,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		TokenValidator:            tokenValidator,
 		SecureCookies:             cfg.SecureCookies,
 		EmailVerificationRequired: cfg.EmailVerificationRequired,
-		SessionDuration:           cfg.SessionDuration(),
+		SessionDuration:           cfg.SessionDuration,
 	})
 	acquired.authContexts = authContexts
 	// Let a sliding cookie session (and a rotated bearer, via the credential
@@ -336,7 +336,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	connectOpts := connectOptions(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
-		auth.NewTimeoutInterceptor(cfg.APITimeout),
+		auth.NewTimeoutInterceptor(func() time.Duration { return cfg.APITimeout }),
 		authInterceptor,
 	)
 

@@ -32,7 +32,7 @@ import (
 
 func newTestAuthContexts(t *testing.T) *auth.AuthContextRegistry {
 	t.Helper()
-	_, registry := auth.NewInterceptor(auth.InterceptorOptions{})
+	_, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{})
 	t.Cleanup(registry.Stop)
 	return registry
 }
@@ -426,7 +426,7 @@ func TestChannelRelay_BearerRevocationClosesLiveConnection(t *testing.T) {
 	hubtestutil.CreateTestAdmin(t, st)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	_, cache := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	_, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(cache.Stop)
 
 	cm := channelmgr.New(0)

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/knadh/koanf/maps"
 	"github.com/knadh/koanf/v2"
 )
 
@@ -150,6 +151,10 @@ func ExtractConfigFlag(args []string, defaultPath string) string {
 	return defaultPath
 }
 
+// Delim is the koanf path separator. Every koanf instance in this repo takes
+// it, and FlagProvider splits a nested key on it, so the two cannot disagree.
+const Delim = "."
+
 // FlagProvider is a koanf.Provider that reads only explicitly-set flags from a FlagSet.
 // Unlike basicflag, it uses fs.Visit (not fs.VisitAll) so default values are not loaded.
 type FlagProvider struct {
@@ -169,6 +174,14 @@ func (f *FlagProvider) ReadBytes() ([]byte, error) {
 }
 
 // Read returns a map of only explicitly-set flags mapped to their koanf keys.
+//
+// The result is nested, not a flat map of dotted keys. koanf.Load does not
+// split a key on the delimiter -- only a provider that takes one, such as
+// confmap, does -- so a flat "storage.postgres.dsn" would land as a top-level
+// key whose name merely contains dots. Get would still find it, because the
+// lookup index is flat either way, and Unmarshal would not, because it walks
+// the nested map, where "storage" holds only what the defaults put there. Every
+// storage flag then parsed, reported no error, and was ignored.
 func (f *FlagProvider) Read() (map[string]interface{}, error) {
 	out := make(map[string]interface{})
 	f.fs.Visit(func(fl *flag.Flag) {
@@ -178,7 +191,7 @@ func (f *FlagProvider) Read() (map[string]interface{}, error) {
 		}
 		out[key] = fl.Value.String()
 	})
-	return out, nil
+	return maps.Unflatten(out, Delim), nil
 }
 
 // ResolveDataDir resolves a relative data_dir against the config file's directory.

@@ -26,9 +26,9 @@ func sessionFromCookie(t *testing.T, setCookie string) string {
 
 func testConfig() *config.Config {
 	return &config.Config{
-		APITimeoutSeconds:            config.DefaultAPITimeoutSeconds,
-		AgentStartupTimeoutSeconds:   config.DefaultAgentStartupTimeoutSeconds,
-		WorktreeCreateTimeoutSeconds: config.DefaultWorktreeCreateTimeoutSeconds,
+		APITimeout:            config.DefaultAPITimeout,
+		AgentStartupTimeout:   config.DefaultAgentStartupTimeout,
+		WorktreeCreateTimeout: config.DefaultWorktreeCreateTimeout,
 	}
 }
 

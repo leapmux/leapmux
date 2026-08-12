@@ -533,9 +533,9 @@ func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leap
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetTimeoutsResponse{
-		ApiTimeoutSeconds:            int32(s.cfg.APITimeout().Seconds()),
-		AgentStartupTimeoutSeconds:   int32(s.cfg.AgentStartupTimeout().Seconds()),
-		WorktreeCreateTimeoutSeconds: int32(s.cfg.WorktreeCreateTimeout().Seconds()),
+		ApiTimeoutSeconds:            int32(s.cfg.APITimeout.Seconds()),
+		AgentStartupTimeoutSeconds:   int32(s.cfg.AgentStartupTimeout.Seconds()),
+		WorktreeCreateTimeoutSeconds: int32(s.cfg.WorktreeCreateTimeout.Seconds()),
 	}), nil
 }
 

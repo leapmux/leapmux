@@ -3,6 +3,7 @@ package notifier
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,7 +56,7 @@ func TestSendOrQueue_OfflineWorkerPersistsToQueue(t *testing.T) {
 	// conn == nil is the offline case.
 	reg := &fakeRegistry{}
 	cfg := &config.Config{}
-	n := New(st, reg, workermgr.NewPendingRequests(cfg.APITimeout), cfg)
+	n := New(st, reg, workermgr.NewPendingRequests(func() time.Duration { return cfg.APITimeout }), cfg)
 
 	err := n.SendOrQueue(ctx, worker, leapmuxv1.NotificationType_NOTIFICATION_TYPE_UNSPECIFIED,
 		`{"hello":"world"}`, &leapmuxv1.ConnectResponse{})
@@ -91,7 +92,7 @@ func TestSendDeregister_MarksDeregisteringAndDoesNotClear(t *testing.T) {
 
 	reg := &fakeRegistry{} // offline, so the notification queues
 	cfg := &config.Config{}
-	n := New(st, reg, workermgr.NewPendingRequests(cfg.APITimeout), cfg)
+	n := New(st, reg, workermgr.NewPendingRequests(func() time.Duration { return cfg.APITimeout }), cfg)
 
 	require.NoError(t, n.SendDeregister(ctx, worker))
 

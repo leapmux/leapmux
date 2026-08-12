@@ -58,11 +58,11 @@ func Open(cfg config.MySQLConfig) (store.Store, error) {
 	if cfg.MaxIdleConns > 0 {
 		sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
 	}
-	if cfg.ConnMaxLifetimeSeconds > 0 {
-		sqlDB.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetimeSeconds) * time.Second)
+	if cfg.ConnMaxLifetime > 0 {
+		sqlDB.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 	}
-	if cfg.ConnMaxIdleTimeSeconds > 0 {
-		sqlDB.SetConnMaxIdleTime(time.Duration(cfg.ConnMaxIdleTimeSeconds) * time.Second)
+	if cfg.ConnMaxIdleTime > 0 {
+		sqlDB.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
 	}
 
 	if err := sqlDB.Ping(); err != nil {

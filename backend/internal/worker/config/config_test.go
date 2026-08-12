@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
@@ -127,6 +128,73 @@ log_level: "warn"
 	})
 }
 
+// The Worker's two timeouts take the same spellings as the Hub's, from every
+// source. They are registered separately from the Hub's, so nothing but a test
+// keeps the two flag sets speaking the same language.
+func TestTimeoutDurations(t *testing.T) {
+	t.Run("default when unset", func(t *testing.T) {
+		cfg, _, err := Load(nil)
+		require.NoError(t, err)
+		assert.Equal(t, DefaultAgentStartupTimeout, cfg.AgentStartupTimeout)
+		assert.Equal(t, DefaultAPITimeout, cfg.APITimeout)
+	})
+
+	t.Run("an explicit zero means the default", func(t *testing.T) {
+		cfg, _, err := Load([]string{"-agent-startup-timeout", "0", "-api-timeout", "0"})
+		require.NoError(t, err)
+		assert.Equal(t, DefaultAgentStartupTimeout, cfg.AgentStartupTimeout,
+			"a zero timeout would make every agent handshake fail at once")
+		assert.Equal(t, DefaultAPITimeout, cfg.APITimeout)
+	})
+
+	for _, c := range []struct {
+		text string
+		want time.Duration
+	}{
+		// A bare number is the seconds count this key took before it had units.
+		{"600", 10 * time.Minute},
+		{"90s", 90 * time.Second},
+		{"10m", 10 * time.Minute},
+		{"2h", 2 * time.Hour},
+		{"1d", 24 * time.Hour},
+	} {
+		t.Run("flag "+c.text, func(t *testing.T) {
+			cfg, _, err := Load([]string{"-agent-startup-timeout", c.text})
+			require.NoError(t, err)
+			assert.Equal(t, c.want, cfg.AgentStartupTimeout)
+		})
+
+		t.Run("config file "+c.text, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "worker.yaml")
+			require.NoError(t, os.WriteFile(path, []byte("agent_startup_timeout: "+c.text+"\n"), 0o644))
+			cfg, _, err := Load([]string{"-config", path})
+			require.NoError(t, err)
+			assert.Equal(t, c.want, cfg.AgentStartupTimeout)
+		})
+
+		t.Run("env "+c.text, func(t *testing.T) {
+			t.Setenv("LEAPMUX_WORKER_AGENT_STARTUP_TIMEOUT", c.text)
+			cfg, _, err := Load(nil)
+			require.NoError(t, err)
+			assert.Equal(t, c.want, cfg.AgentStartupTimeout)
+		})
+	}
+
+	t.Run("rejects a value that is not a duration", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "worker.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("api_timeout: 30x\n"), 0o644))
+		_, _, err := Load([]string{"-config", path})
+		require.Error(t, err, "a typed unit must fail at startup, not read as zero")
+	})
+
+	t.Run("rejects a value past the representable range", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "worker.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("api_timeout: 18446744075\n"), 0o644))
+		_, _, err := Load([]string{"-config", path})
+		require.Error(t, err, "an out-of-range value must fail rather than wrap")
+	})
+}
+
 func TestLoadRejectsPositionalArguments(t *testing.T) {
 	cases := []struct {
 		name string
@@ -169,11 +237,11 @@ func TestWorkerHelpGroupsOptions(t *testing.T) {
 	// noisy churn. Assert that the section header is followed by *some*
 	// flag instead.
 	assert.Contains(t, output, "\nWorker options:\n\n  -")
-	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -agent-startup-timeout-seconds int")
+	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -agent-startup-timeout duration")
 	assert.Contains(t, output, "\nSQLite database options:\n\n  -db-cache-size int")
 	assert.Contains(t, output, "  -data-dir string")
 	assert.Contains(t, output, "  -hub string")
-	assert.Contains(t, output, "  -api-timeout-seconds int")
+	assert.Contains(t, output, "  -api-timeout duration")
 	assert.Contains(t, output, "  -db-cache-size int")
 }
 

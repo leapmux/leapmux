@@ -358,7 +358,7 @@ func TestHubHelpGroupsStorageOptions(t *testing.T) {
 	for i := 1; i < len(sections); i++ {
 		assert.Less(t, strings.Index(output, sections[i-1]), strings.Index(output, sections[i]))
 	}
-	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -agent-startup-timeout-seconds int")
+	assert.Contains(t, output, "\nTimeout and limit options:\n\n  -agent-startup-timeout duration")
 	assert.Contains(t, output, "\nStorage common options:\n\n  -storage-type string")
 	assert.Contains(t, output, "\nSQLite storage options:\n\n  -storage-sqlite-cache-size int")
 }
@@ -1274,7 +1274,7 @@ func TestSessionDuration(t *testing.T) {
 	t.Run("defaults to the built-in duration", func(t *testing.T) {
 		cfg, _, err := Load(nil)
 		require.NoError(t, err)
-		assert.Equal(t, auth.DefaultSessionDuration, cfg.SessionDuration(),
+		assert.Equal(t, auth.DefaultSessionDuration, cfg.SessionDuration,
 			"an operator who sets nothing must get the documented lifetime")
 	})
 
@@ -1282,31 +1282,87 @@ func TestSessionDuration(t *testing.T) {
 	// a missing fieldMap entry, a koanf tag that does not match the key, and an
 	// env-name mismatch all present as "the value I set was ignored".
 	t.Run("is settable from the command line", func(t *testing.T) {
-		cfg, _, err := Load([]string{"-session-duration-seconds", "3600"})
+		cfg, _, err := Load([]string{"-session-duration", "1h"})
 		require.NoError(t, err)
-		assert.Equal(t, time.Hour, cfg.SessionDuration())
+		assert.Equal(t, time.Hour, cfg.SessionDuration)
 	})
 
 	t.Run("is settable from the config file", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "hub.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("session_duration_seconds: 3600\n"), 0o644))
+		require.NoError(t, os.WriteFile(path, []byte("session_duration: 1h\n"), 0o644))
 		cfg, _, err := Load([]string{"-config", path})
 		require.NoError(t, err)
-		assert.Equal(t, time.Hour, cfg.SessionDuration())
+		assert.Equal(t, time.Hour, cfg.SessionDuration)
 	})
 
 	t.Run("is settable from the environment", func(t *testing.T) {
-		t.Setenv("LEAPMUX_HUB_SESSION_DURATION_SECONDS", "3600")
+		t.Setenv("LEAPMUX_HUB_SESSION_DURATION", "1h")
 		cfg, _, err := Load(nil)
 		require.NoError(t, err)
-		assert.Equal(t, time.Hour, cfg.SessionDuration())
+		assert.Equal(t, time.Hour, cfg.SessionDuration)
+	})
+
+	// Every duration key reads a unit suffix and reads a bare number as
+	// seconds, from every source. The bare number is what the key took before
+	// it had units, and an operator who carried that spelling over must get the
+	// same session they had.
+	t.Run("reads every spelling from every source", func(t *testing.T) {
+		for _, c := range []struct {
+			text string
+			want time.Duration
+		}{
+			{"3600", time.Hour},
+			{"1h", time.Hour},
+			{"90m", 90 * time.Minute},
+			{"7d", 7 * 24 * time.Hour},
+			{"2w", 14 * 24 * time.Hour},
+		} {
+			t.Run("flag "+c.text, func(t *testing.T) {
+				cfg, _, err := Load([]string{"-session-duration", c.text})
+				require.NoError(t, err)
+				assert.Equal(t, c.want, cfg.SessionDuration)
+			})
+
+			t.Run("file "+c.text, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "hub.yaml")
+				require.NoError(t, os.WriteFile(path, []byte("session_duration: "+c.text+"\n"), 0o644))
+				cfg, _, err := Load([]string{"-config", path})
+				require.NoError(t, err)
+				assert.Equal(t, c.want, cfg.SessionDuration)
+			})
+
+			t.Run("env "+c.text, func(t *testing.T) {
+				t.Setenv("LEAPMUX_HUB_SESSION_DURATION", c.text)
+				cfg, _, err := Load(nil)
+				require.NoError(t, err)
+				assert.Equal(t, c.want, cfg.SessionDuration)
+			})
+		}
+	})
+
+	t.Run("rejects a value that is not a duration", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "hub.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("session_duration: 30x\n"), 0o644))
+		_, _, err := Load([]string{"-config", path})
+		require.Error(t, err, "a typed unit must fail at startup, not read as zero")
+	})
+
+	// The whole reason this key parses rather than multiplies: a seconds count
+	// large enough to overflow an int64 of nanoseconds used to wrap, and the
+	// operator who asked for a very long session silently got a very short one.
+	t.Run("rejects a value past the representable range", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "hub.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("session_duration: 18446744075\n"), 0o644))
+		_, _, err := Load([]string{"-config", path})
+		require.Error(t, err, "an out-of-range value must fail rather than wrap")
 	})
 
 	t.Run("zero reads as the default", func(t *testing.T) {
-		cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDurationSeconds: 0}
+		cfg, _, err := Load([]string{"-session-duration", "0"})
+		require.NoError(t, err)
 		assert.NoError(t, cfg.Validate())
-		assert.Equal(t, auth.DefaultSessionDuration, cfg.SessionDuration())
+		assert.Equal(t, auth.DefaultSessionDuration, cfg.SessionDuration)
 	})
 
 	// Below the floor the Hub cannot honestly enforce the value it was given:
@@ -1314,21 +1370,105 @@ func TestSessionDuration(t *testing.T) {
 	// of a few seconds is served well past its own expiry. That fails at
 	// startup naming the key rather than as a mystery at runtime.
 	t.Run("rejects a duration under the floor", func(t *testing.T) {
-		for _, tooShort := range []int{1, 30, MinSessionDurationSeconds - 1} {
-			cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDurationSeconds: tooShort}
+		for _, tooShort := range []time.Duration{time.Second, 30 * time.Second, auth.MinSessionDuration - 1} {
+			cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDuration: tooShort}
 			err := cfg.Validate()
-			require.Error(t, err, "duration %d must be rejected", tooShort)
-			assert.Contains(t, err.Error(), "session_duration_seconds")
+			require.Error(t, err, "duration %s must be rejected", tooShort)
+			assert.Contains(t, err.Error(), "session_duration")
 		}
 
-		ok := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDurationSeconds: MinSessionDurationSeconds}
+		ok := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDuration: auth.MinSessionDuration}
 		assert.NoError(t, ok.Validate(), "the minimum itself must be allowed")
 	})
 
 	t.Run("rejects a negative rather than reading it as the default", func(t *testing.T) {
-		cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDurationSeconds: -1}
+		cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDuration: -time.Second}
 		err := cfg.Validate()
 		require.Error(t, err, "a sign typo must not silently restore the default")
-		assert.Contains(t, err.Error(), "session_duration_seconds")
+		assert.Contains(t, err.Error(), "session_duration")
 	})
+}
+
+// TestDurationOptionsShareTheParser pins the property that made this one
+// change rather than four: every duration key takes the same spellings. A key
+// that a later change registers with fs.Int again would read "5m" as a parse
+// error and "3600" as 3600 nanoseconds.
+func TestDurationOptionsShareTheParser(t *testing.T) {
+	cfg, _, err := Load([]string{
+		"-session-duration", "2h",
+		"-api-timeout", "45s",
+		"-agent-startup-timeout", "10m",
+		"-worktree-create-timeout", "90",
+		"-storage-postgres-conn-max-lifetime", "1d",
+		"-storage-mysql-conn-max-idle-time", "30s",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2*time.Hour, cfg.SessionDuration)
+	assert.Equal(t, 45*time.Second, cfg.APITimeout)
+	assert.Equal(t, 10*time.Minute, cfg.AgentStartupTimeout)
+	assert.Equal(t, 90*time.Second, cfg.WorktreeCreateTimeout, "a bare number is still seconds")
+	assert.Equal(t, 24*time.Hour, cfg.Storage.Postgres.ConnMaxLifetime)
+	assert.Equal(t, 30*time.Second, cfg.Storage.MySQL.ConnMaxIdleTime)
+}
+
+// A flag whose koanf key is nested must reach the config. Every storage flag is
+// nested, and each one parsed, reported no error, and was then dropped: the
+// provider handed koanf a flat "storage.postgres.dsn", which is a top-level key
+// whose name contains dots, and Unmarshal walks the nested map instead.
+func TestNestedFlagsReachTheConfig(t *testing.T) {
+	cfg, _, err := Load([]string{
+		"-storage-type", "postgres",
+		"-storage-postgres-dsn", "postgres://example/db",
+		"-storage-postgres-max-conns", "77",
+		"-storage-sqlite-path", "/tmp/hub.db",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, StorageTypePostgres, cfg.Storage.Type)
+	assert.Equal(t, "postgres://example/db", cfg.Storage.Postgres.DSN)
+	assert.Equal(t, 77, cfg.Storage.Postgres.MaxConns)
+	assert.Equal(t, "/tmp/hub.db", cfg.Storage.SQLite.Path)
+
+	// A nested flag must still lose to nothing else: the default fills what the
+	// command line left alone.
+	assert.Equal(t, 5, cfg.Storage.Postgres.MinConns)
+}
+
+// TestTimeoutsDefaultWhenUnset covers the keys whose read-time fallback this
+// change removed: the loader now resolves them, so a caller that reads the
+// field directly must still find a usable timeout.
+func TestTimeoutsDefaultWhenUnset(t *testing.T) {
+	cfg, _, err := Load(nil)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultAPITimeout, cfg.APITimeout)
+	assert.Equal(t, DefaultAgentStartupTimeout, cfg.AgentStartupTimeout)
+	assert.Equal(t, DefaultWorktreeCreateTimeout, cfg.WorktreeCreateTimeout)
+
+	// An explicit zero means the default too, and never "no timeout at all",
+	// which would make every context deadline expire at once.
+	zeroed, _, err := Load([]string{"-api-timeout", "0", "-agent-startup-timeout", "0"})
+	require.NoError(t, err)
+	assert.Equal(t, DefaultAPITimeout, zeroed.APITimeout)
+	assert.Equal(t, DefaultAgentStartupTimeout, zeroed.AgentStartupTimeout)
+}
+
+// The database pool durations keep their own meaning for zero -- leave the
+// driver's own default alone -- so the timeout resolver must not touch them.
+// The pool code tests for zero (`if cfg.ConnMaxLifetime > 0`), so filling one in
+// here would silently start pinning a lifetime the operator never asked for.
+func TestPoolDurationsKeepTheirOwnZero(t *testing.T) {
+	cfg, _, err := Load([]string{
+		"-storage-postgres-conn-max-lifetime", "0",
+		"-storage-mysql-conn-max-idle-time", "0",
+	})
+	require.NoError(t, err)
+	assert.Zero(t, cfg.Storage.Postgres.ConnMaxLifetime,
+		"an explicit zero must reach the pool as zero, not as the default")
+	assert.Zero(t, cfg.Storage.MySQL.ConnMaxIdleTime)
+
+	// The flag default still applies when the operator sets nothing, so zero
+	// only ever arrives because someone asked for it.
+	unset, _, err := Load(nil)
+	require.NoError(t, err)
+	assert.Equal(t, time.Hour, unset.Storage.Postgres.ConnMaxLifetime)
+	assert.Equal(t, 5*time.Minute, unset.Storage.MySQL.ConnMaxIdleTime)
 }

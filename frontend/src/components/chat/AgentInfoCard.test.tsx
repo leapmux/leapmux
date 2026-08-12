@@ -68,6 +68,67 @@ describe('agent info card session ID row', () => {
   })
 })
 
+// The Directory and Plan File rows abbreviate the worker's home directory to
+// `~` for reading, and copy the absolute path for pasting. Both halves need
+// pinning, and the display half especially: tildify returns its input unchanged
+// when homeDir is absent, so losing the home directory degrades to a full path
+// that still looks perfectly plausible on screen.
+describe('agent info card path rows', () => {
+  const HOME = '/Users/me'
+
+  function withPaths(fields: Partial<AgentInfo>): AgentInfo {
+    return { agentProvider: AgentProvider.CLAUDE_CODE, agentSessionId: 'sid', ...fields } as AgentInfo
+  }
+
+  beforeEach(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    })
+  })
+
+  it('abbreviates the working directory but copies the absolute path', () => {
+    const workingDir = `${HOME}/projects/app`
+    render(() => <InfoCardContent agent={withPaths({ workingDir, homeDir: HOME })} />)
+
+    expect(screen.getByTestId('info-row-directory')).toHaveTextContent('~/projects/app')
+    expect(screen.getByTestId('info-row-directory')).not.toHaveTextContent(HOME)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy directory path' }))
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(workingDir)
+  })
+
+  it('abbreviates the plan file path but copies the absolute path', () => {
+    const planFilePath = `${HOME}/projects/app/PLAN.md`
+    render(() => (
+      <InfoCardContent
+        agent={withPaths({ workingDir: `${HOME}/projects/app`, homeDir: HOME })}
+        agentSessionInfo={{ planFilePath }}
+      />
+    ))
+
+    expect(screen.getByTestId('info-row-plan-file')).toHaveTextContent('~/projects/app/PLAN.md')
+    expect(screen.getByTestId('info-row-plan-file')).not.toHaveTextContent(HOME)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy plan file path' }))
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(planFilePath)
+  })
+
+  // Not a repeat of tildify's own cases (paths.test.ts covers the abbreviation
+  // itself). This is the wiring: the card must hand the worker's home directory
+  // to tildify rather than call it with nothing, and a worker that reported no
+  // home directory must still show a usable path.
+  it('shows the absolute path when the worker reported no home directory', () => {
+    const workingDir = `${HOME}/projects/app`
+    render(() => <InfoCardContent agent={withPaths({ workingDir })} />)
+
+    expect(screen.getByTestId('info-row-directory')).toHaveTextContent(workingDir)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy directory path' }))
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(workingDir)
+  })
+})
+
 describe('agent info card rate-limit rows', () => {
   // Unix seconds in the future, for a deterministically-positive reset countdown.
   const future = (secs: number): number => Math.floor(Date.now() / 1000) + secs

@@ -333,7 +333,7 @@ func hasIdentityParam(useridAlias string, identityStructs map[string]bool, param
 	return false
 }
 
-// identityStructTypes returns the package's struct type names that name a
+// identityStructTypes returns the package's struct type names that declare a
 // caller identity in a field of their own.
 //
 // One level deep, deliberately. The shape this must catch is the options struct
@@ -442,17 +442,8 @@ func carriesUserInfo(expr ast.Expr) bool {
 	}
 }
 
-// TestCarriesUserID_KeysOnTheImportedIdentifier pins the alias resolution that
-// decides which declarations this net can even see.
-//
-// Keying on the literal identifier "userid" meant a file spelling
-// `uid "…/internal/util/userid"` took every predicate it declares outside the
-// net at once -- and the only thing that would have complained is the table's
-// own stale-entry half, which fires solely because those names happen to be
-// listed today. A NEW predicate in such a file would have been born
-// unclassified and green.
 // TestIdentityStructTypes_ScopesToOptionsStructs pins the boundary the scan
-// draws: a struct that names an identity in a field of its own is in, and a
+// draws: a struct that declares an identity in a field of its own is in, and a
 // type that merely holds internal state that eventually holds one is out.
 //
 // Both halves are load-bearing. Without the first, moving a *UserInfo parameter
@@ -466,9 +457,9 @@ func TestIdentityStructTypes_ScopesToOptionsStructs(t *testing.T) {
 
 	carries := identityStructTypes(t, dir)
 
-	assert.True(t, carries["InterceptorOptions"], "it names SoloUser *UserInfo")
-	assert.True(t, carries["HTTPAuthOpts"], "it names SoloUser *UserInfo")
-	assert.True(t, carries["UserInfo"], "it names ID userid.UserID")
+	assert.True(t, carries["InterceptorOptions"], "it declares SoloUser *UserInfo")
+	assert.True(t, carries["HTTPAuthOpts"], "it declares SoloUser *UserInfo")
+	assert.True(t, carries["UserInfo"], "it declares ID userid.UserID")
 	assert.False(t, carries["AuthContextRegistry"], "it reaches a *UserInfo only through internal state")
 	assert.False(t, carries["SessionMeta"], "it carries a user agent and an IP address, no identity")
 }
@@ -500,6 +491,15 @@ func TestCarriesNamedStruct(t *testing.T) {
 	})
 }
 
+// TestCarriesUserID_KeysOnTheImportedIdentifier pins the alias resolution that
+// decides which declarations this net can even see.
+//
+// Keying on the literal identifier "userid" meant a file spelling
+// `uid "…/internal/util/userid"` took every predicate it declares outside the
+// net at once -- and the only thing that would have complained is the table's
+// own stale-entry half, which fires solely because those names happen to be
+// listed today. A NEW predicate in such a file would have been born
+// unclassified and green.
 func TestCarriesUserID_KeysOnTheImportedIdentifier(t *testing.T) {
 	for name, tc := range map[string]struct {
 		alias string

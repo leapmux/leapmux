@@ -148,27 +148,27 @@ func TestDevModeAddsPublicURL(t *testing.T) {
 func TestDevModeAddsSessionDuration(t *testing.T) {
 	t.Parallel()
 
-	assert.Contains(t, defaultCLIFlags(true), "session-duration-seconds")
-	assert.NotContains(t, defaultCLIFlags(false), "session-duration-seconds")
+	assert.Contains(t, defaultCLIFlags(true), "session-duration")
+	assert.NotContains(t, defaultCLIFlags(false), "session-duration")
 
 	cfg, _, err := hubconfig.LoadWithOptions(
-		[]string{"--session-duration-seconds=3600"}, testLoadOptions(t, true))
+		[]string{"--session-duration=1h"}, testLoadOptions(t, true))
 	require.NoError(t, err, "dev must accept the session duration as a CLI flag")
-	assert.Equal(t, time.Hour, cfg.SessionDuration())
+	assert.Equal(t, time.Hour, cfg.SessionDuration)
 
 	_, _, err = hubconfig.LoadWithOptions(
-		[]string{"--session-duration-seconds=3600"}, testLoadOptions(t, false))
+		[]string{"--session-duration=1h"}, testLoadOptions(t, false))
 	require.Error(t, err, "solo must not offer a flag it has no session to apply it to")
 
 	// The key stays reachable where the flag is not, the same contract the
 	// queue budgets hold: CLIFlags decides only what earns a line in --help.
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("session_duration_seconds: 3600\n"), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte("session_duration: 1h\n"), 0o600))
 	opts := testLoadOptions(t, false)
 	opts.DefaultConfigFile = path
 	cfg, _, err = hubconfig.LoadWithOptions(nil, opts)
 	require.NoError(t, err)
-	assert.Equal(t, time.Hour, cfg.SessionDuration())
+	assert.Equal(t, time.Hour, cfg.SessionDuration)
 }
 
 func TestListenIsNonLoopback(t *testing.T) {

@@ -56,10 +56,10 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New(0)
-	pendingReqs := workermgr.NewPendingRequests(testConfig().APITimeout)
+	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return testConfig().APITimeout })
 
 	mux := http.NewServeMux()
-	_, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, sc)

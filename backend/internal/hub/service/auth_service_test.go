@@ -35,7 +35,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, closers ...auth.C
 	st := hubtestutil.OpenTestStore(t)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	var closer auth.CredentialChannelCloser
@@ -216,7 +216,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 	const configured = 90 * time.Minute
 	signUp := func(t *testing.T, cfg *config.Config, username string) (*connect.Response[leapmuxv1.SignUpResponse], store.Store, string) {
 		t.Helper()
-		cfg.SessionDurationSeconds = int(configured / time.Second)
+		cfg.SessionDuration = configured
 		client, st := setupAuthTestServer(t, cfg)
 		resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 			Username:    username,
@@ -232,7 +232,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 		t.Helper()
 		sess, err := st.Sessions().GetByID(context.Background(), sessionID)
 		require.NoError(t, err)
-		assert.WithinDuration(t, before.Add(configured), sess.ExpiresAt, time.Minute)
+		hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 	}
 
 	t.Run("sign-up", func(t *testing.T) {
@@ -259,7 +259,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 	t.Run("login", func(t *testing.T) {
 		t.Parallel()
 		cfg := testConfig()
-		cfg.SessionDurationSeconds = int(configured / time.Second)
+		cfg.SessionDuration = configured
 		client, st := setupAuthTestServer(t, cfg)
 
 		before := time.Now()
@@ -322,7 +322,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
 	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
@@ -521,7 +521,7 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st, EmailVerificationRequired: emailVerificationRequired})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, EmailVerificationRequired: emailVerificationRequired})
 	opts := connect.WithInterceptors(interceptor)
 
 	cfg := testConfig()
@@ -803,7 +803,7 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: wrapped})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: wrapped})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(wrapped, testConfig(), auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
@@ -949,7 +949,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	// No solo user is seeded — the test asserts that AuthService rejects setup
 	// signup in solo mode at the service layer, independent of the interceptor.
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
