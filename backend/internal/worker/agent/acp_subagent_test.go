@@ -339,16 +339,99 @@ func TestACP_CursorSubagentFromToolCallUpdate_FinalCloses(t *testing.T) {
 	}
 }
 
-func TestACP_CursorSubagentFromToolCallUpdate_BackgroundNotesActivity(t *testing.T) {
+// A backgrounded call that is NOT the task tool is a shell. The neutral layer
+// defaults a blank kind to Subagent, so leaving it blank put a shell in the
+// sidebar under a Bot icon, in the subagent filter tab, labelled with its raw
+// toolCallId.
+func TestACP_CursorSubagentFromToolCallUpdate_BackgroundShellIsAShellRow(t *testing.T) {
 	tcu := acpToolCallUpdateEnvelope{
 		ToolCallID: "call-bg-0",
+		Title:      "npm run dev",
 		Status:     "completed",
+		RawInput:   json.RawMessage(`{"_toolName":"shell","command":"npm run dev"}`),
 		RawOutput:  json.RawMessage(`{"durationMs":5000,"isBackground":true}`),
 	}
 	obs := cursorSubagentFromToolCallUpdate(tcu)
 	if assert.NotNil(t, obs) {
 		assert.Equal(t, "background task", obs.Activity)
+		assert.Equal(t, bgtask.KindShell, obs.Kind, "a backgrounded shell is not a subagent")
+		assert.Equal(t, "npm run dev", obs.Title,
+			"this update is the row's only event, so it must carry the label")
+		assert.Equal(t, acpModeUpsert, obs.Mode)
+		assert.True(t, obs.CloseRow)
 	}
+}
+
+// Cursor does not always echo the input on an update. With nothing to say it
+// was the task tool, a backgrounded call is still a shell -- that is the case
+// this bug was reported for.
+func TestACP_CursorSubagentFromToolCallUpdate_BackgroundWithoutInputIsAShellRow(t *testing.T) {
+	tcu := acpToolCallUpdateEnvelope{
+		ToolCallID: "call-bg-1",
+		Status:     "completed",
+		RawOutput:  json.RawMessage(`{"isBackground":true}`),
+	}
+	obs := cursorSubagentFromToolCallUpdate(tcu)
+	if assert.NotNil(t, obs) {
+		assert.Equal(t, bgtask.KindShell, obs.Kind)
+	}
+}
+
+// A backgrounded TASK tool is still a subagent. Its kind and title stay blank
+// so Item.PreservingBlanksFrom keeps what the spawn observation already wrote:
+// setting them here would flip the row to a shell and overwrite its trimmed
+// title with the raw "Task: ..." string.
+func TestACP_CursorSubagentFromToolCallUpdate_BackgroundTaskStaysASubagent(t *testing.T) {
+	tcu := acpToolCallUpdateEnvelope{
+		ToolCallID: "call-abc-0",
+		Title:      "Task: build the feature",
+		Status:     "completed",
+		RawInput:   json.RawMessage(`{"_toolName":"task","prompt":"do it"}`),
+		RawOutput:  json.RawMessage(`{"isBackground":true}`),
+	}
+	obs := cursorSubagentFromToolCallUpdate(tcu)
+	if assert.NotNil(t, obs) {
+		assert.Equal(t, "background task", obs.Activity)
+		assert.Equal(t, bgtask.KindUnspecified, obs.Kind, "blank keeps the spawn row's kind")
+		assert.Empty(t, obs.Title, "blank keeps the spawn row's trimmed title")
+	}
+}
+
+// A finished FOREGROUND tool creates no row at all, so it must not carry a kind
+// that a stray upsert could write.
+func TestACP_CursorSubagentFromToolCallUpdate_ForegroundCarriesNoKind(t *testing.T) {
+	tcu := acpToolCallUpdateEnvelope{
+		ToolCallID: "call-fg-0",
+		Title:      "Read file",
+		Status:     "completed",
+		RawOutput:  json.RawMessage(`{"isBackground":false}`),
+	}
+	obs := cursorSubagentFromToolCallUpdate(tcu)
+	if assert.NotNil(t, obs) {
+		assert.Equal(t, acpModeCloseOnly, obs.Mode)
+		assert.Equal(t, bgtask.KindUnspecified, obs.Kind)
+		assert.Empty(t, obs.Title)
+	}
+}
+
+func TestACP_CursorToolCallIsTaskTool(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, cursorToolCallIsTaskTool(json.RawMessage(`{"_toolName":"task"}`)))
+	assert.False(t, cursorToolCallIsTaskTool(json.RawMessage(`{"_toolName":"shell"}`)))
+	assert.False(t, cursorToolCallIsTaskTool(json.RawMessage(`{}`)))
+	assert.False(t, cursorToolCallIsTaskTool(json.RawMessage(`not json`)))
+	assert.False(t, cursorToolCallIsTaskTool(nil), "an absent input is not known to be the task tool")
+}
+
+func TestACP_CursorToolCallRanInBackground(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, cursorToolCallRanInBackground(json.RawMessage(`{"isBackground":true}`)))
+	assert.False(t, cursorToolCallRanInBackground(json.RawMessage(`{"isBackground":false}`)))
+	assert.False(t, cursorToolCallRanInBackground(json.RawMessage(`{}`)))
+	assert.False(t, cursorToolCallRanInBackground(json.RawMessage(`not json`)))
+	assert.False(t, cursorToolCallRanInBackground(nil))
 }
 
 func TestACP_CursorSubagentFromToolCallUpdate_InProgressReturnsNil(t *testing.T) {
@@ -937,4 +1020,76 @@ func TestACP_CursorClosingUpdateDoesNotDiscardAPlainToolSpan(t *testing.T) {
 
 	assert.Empty(t, sink.DiscardedSpans(), "a close-only observation discards nothing")
 	assert.Equal(t, []string{"call-read"}, sink.ClosedSpans(), "the span closes normally")
+}
+
+// End to end through the neutral layer: a Cursor background shell lands in the
+// registry as a SHELL row with a readable title, not as a subagent.
+func TestACP_CursorBackgroundShellLandsAsAShellRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{
+		sink:                       sink,
+		subagentFromToolCall:       cursorSubagentFromToolCall,
+		subagentFromToolCallUpdate: cursorSubagentFromToolCallUpdate,
+	}
+
+	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-sh","kind":"execute","title":"npm run dev","rawInput":{"_toolName":"shell","command":"npm run dev"}}`))
+	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-sh","status":"completed","title":"npm run dev","rawInput":{"_toolName":"shell"},"rawOutput":{"isBackground":true}}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "call-sh", tasks[0].RowKey)
+	assert.Equal(t, bgtask.KindShell, tasks[0].Kind,
+		"a backgrounded shell must not render under the Bot icon in the subagent tab")
+	assert.Equal(t, "npm run dev", tasks[0].Title,
+		"without a title the sidebar falls back to the raw toolCallId")
+	assert.False(t, tasks[0].TitleIsCommand,
+		"Cursor's title is a label, not a verbatim command, so it stays in the normal face")
+	assert.Empty(t, tasks[0].ChildAgentID, "a shell has no transcript to open")
+
+	// A shell is an ordinary tool span: it opens one and closes it normally.
+	// Two guards keep it that way here -- the kind is not a spawn, and an
+	// `execute` tool call is exempt anyway. TestACP_ObservationIsSpawnExcludesAShell
+	// isolates the first one.
+	assert.Empty(t, sink.DiscardedSpans(), "a shell row is not a spawn")
+	assert.Equal(t, []string{"call-sh"}, sink.ClosedSpans())
+}
+
+// The task tool's row survives its own closing update: still a subagent, still
+// carrying the trimmed title the spawn gave it.
+func TestACP_CursorTaskRowStaysASubagentThroughItsClose(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{
+		sink:                       sink,
+		subagentFromToolCall:       cursorSubagentFromToolCall,
+		subagentFromToolCallUpdate: cursorSubagentFromToolCallUpdate,
+	}
+
+	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-task","kind":"other","title":"Task: build the feature","rawInput":{"_toolName":"task","prompt":"do it"}}`))
+	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-task","status":"completed","title":"Task: build the feature","rawInput":{"_toolName":"task"},"rawOutput":{"isBackground":true}}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
+	assert.Equal(t, "build the feature", tasks[0].Title,
+		"the closing update must not overwrite the spawn's trimmed title")
+	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+}
+
+// A shell observation is not a spawn, so it never reaches DiscardSpan.
+func TestACP_ObservationIsSpawnExcludesAShell(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, acpObservationIsSpawn(&acpSubagentObservation{
+		RowKey: "call-sh", Kind: bgtask.KindShell, Status: bgtask.StatusCompleted,
+	}), "a shell is a background process with no transcript, so it keeps its span")
+	assert.True(t, acpObservationIsSpawn(&acpSubagentObservation{
+		RowKey: "call-task", Kind: bgtask.KindSubagent,
+	}))
+	assert.True(t, acpObservationIsSpawn(&acpSubagentObservation{
+		RowKey: "call-task",
+	}), "a blank kind means subagent, matching applySubagentObservation's default")
 }

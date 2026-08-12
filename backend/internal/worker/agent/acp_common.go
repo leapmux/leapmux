@@ -1658,16 +1658,22 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 }
 
 // acpObservationIsSpawn reports whether an observation announces a subagent
-// that is starting or running, as opposed to one that only ends a row. It is
-// the exact condition under which applySubagentObservation upserts a running
-// registry row, so the span decision and the registry decision cannot drift:
-// a close-only observation (Goose's and Cursor's closing hooks fire for EVERY
-// tool_call) and a rename+close (OpenCode learns the child session id on the
-// final update) both operate on a row that already exists, and neither says
-// "this tool call spawns a subagent".
+// that is starting or running, as opposed to one that only ends a row or one
+// that describes a shell. It tracks the condition under which
+// applySubagentObservation upserts a running registry row, so the span decision
+// and the registry decision cannot drift: a close-only observation (Goose's and
+// Cursor's closing hooks fire for EVERY tool_call) and a rename+close (OpenCode
+// learns the child session id on the final update) both operate on a row that
+// already exists, and neither says "this tool call spawns a subagent".
+//
+// A KindShell observation (Cursor's backgrounded non-task tools) is a
+// background process with no transcript, so it keeps its span like any other
+// tool. A blank kind means subagent, matching the default that
+// applySubagentObservation applies.
 func acpObservationIsSpawn(obs *acpSubagentObservation) bool {
 	return obs != nil && obs.RowKey != "" &&
-		obs.Mode != acpModeCloseOnly && obs.RenameFrom == ""
+		obs.Mode != acpModeCloseOnly && obs.RenameFrom == "" &&
+		obs.Kind != bgtask.KindShell
 }
 
 // applySubagentObservation translates a provider hook's neutral observation
