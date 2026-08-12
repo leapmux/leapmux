@@ -95,8 +95,19 @@ globalStyle('body', {
 // Kill iOS Safari's rubber-band overscroll on the page itself.
 // `overscroll-behavior` alone isn't enough on iOS WebKit — the bounce
 // is dispatched below that layer. `touch-action: none` on html+body
-// refuses the pan gesture entirely at the page level; inner scroll
-// regions opt back in (e.g. messageList → `pan-y`).
+// refuses the pan gesture entirely at the page level.
+//
+// Inner scroll regions still pan, and need NO opt-in to: the browser
+// resolves a touch's allowed behaviour against the ancestors up to the
+// element that will handle the gesture, which for a touch inside the
+// chat list is that list, not the page. So a nested `overflow: auto`
+// region — the message list, a code block that scrolls sideways — keeps
+// its own pan. Setting `touch-action` on those regions would only take
+// panning away (`pan-y` on the message list would freeze the horizontal
+// scroll of every code block and table inside it), so none of them does.
+// The one element that DOES set it sets it to refuse: the scroll rail
+// (`touchAction: 'none'`, see ~/components/chat/ChatScrollRail.css.ts),
+// so a finger dragging its thumb scrubs instead of panning the list.
 globalStyle('html, body', {
   overscrollBehavior: 'none',
   touchAction: 'none',

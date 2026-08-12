@@ -9,6 +9,7 @@ import { SCRUB_WARM_DEBOUNCE_MS } from './chatDotPreview'
 import { resolveScrollbarOwner } from './chatRailPolicy'
 import { ChatScrollRail } from './ChatScrollRail'
 import * as styles from './ChatScrollRail.css'
+import { SCRUB_SEEK_DEBOUNCE_MS } from './chatScrollRailDrag'
 import { rowStartSeqs } from './chatScrollRailGeometry'
 
 // jsdom does no layout, so clientHeight is 0 everywhere. Force a fixed viewport height
@@ -344,7 +345,7 @@ describe('chatscrollrail', () => {
     expect(onJumpToSeq).toHaveBeenCalledWith(3n)
   })
 
-  it('fires onSeekInterrupt on a thumb grab (abandon a prior seek) but NOT on a track click', () => {
+  it('fires onSeekInterrupt on every grab, and again once the press becomes a scrub', () => {
     HTMLElement.prototype.setPointerCapture = vi.fn()
     installImmediateRaf()
     const onSeekInterrupt = vi.fn()
@@ -353,14 +354,315 @@ describe('chatscrollrail', () => {
     ))
     const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
     rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
-    // A track click (below the thumb at 0..24) supersedes any pending seek via its own jump,
-    // so it must NOT also fire onSeekInterrupt.
+    // Every press is a grab now, so every press abandons a PRIOR release's still-fetching
+    // out-of-window seek -- it must not land and yank the viewport under this gesture.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
-    expect(onSeekInterrupt).not.toHaveBeenCalled()
-    // A thumb grab (on the thumb at y=12) is manual control: abandon a prior release's
-    // still-fetching out-of-window seek so it can't yank the viewport mid-scrub.
-    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 2 }))
     expect(onSeekInterrupt).toHaveBeenCalledTimes(1)
+    // Dragging past the slop abandons a second seek: the one THIS press just issued, which the
+    // reader has now scrubbed away from.
+    rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
+    expect(onSeekInterrupt).toHaveBeenCalledTimes(2)
+    // Engaging is one-way: later moves do not keep re-firing it.
+    rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 150, pointerId: 1 }))
+    expect(onSeekInterrupt).toHaveBeenCalledTimes(2)
+  })
+
+  it('a track press jumps to the pressed point AND scrubs on from there', () => {
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const previewScrollTo = vi.fn()
+    const onJumpToSeq = vi.fn()
+    const { container } = render(() => <ChatScrollRail {...baseProps({ previewScrollTo, onJumpToSeq })} />)
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    // Press the bare track near the bottom (the thumb spans 0..24) -> jump to seq 5 at once.
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
+    expect(onJumpToSeq).toHaveBeenCalledWith(5n)
+    // The thumb centres UNDER the press (top = 360 - half the 24px thumb), rather than holding a
+    // within-thumb offset the way a thumb grab does -- the reader pressed a position.
+    const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
+    expect(thumb.style.top).toBe('348px')
+    // Without lifting: the same press now scrubs. This is the gesture a finger has no way to
+    // spend two presses on.
+    previewScrollTo.mockClear()
+    rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
+    expect(thumb.style.top).toBe('188px') // follows the pointer
+    expect(previewScrollTo).toHaveBeenCalledWith(200) // seq 3 is in-window -> live-scroll
+    // The release lands on the scrubbed-to position, not on the pressed one.
+    rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
+    expect(onJumpToSeq).toHaveBeenLastCalledWith(3n)
+    expect(onJumpToSeq).toHaveBeenCalledTimes(2)
+  })
+
+  it('a track press released without a scrub seeks exactly once', () => {
+    // The press already jumped. A second seek from the release would fetch the same page twice.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const onJumpToSeq = vi.fn()
+    const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
+    // A finger drifts a pixel or two as it lifts; that is still a tap, not a scrub.
+    rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 363, pointerId: 1 }))
+    rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 363, pointerId: 1 }))
+    expect(onJumpToSeq).toHaveBeenCalledTimes(1)
+    expect(onJumpToSeq).toHaveBeenCalledWith(5n)
+    // And the thumb stays on the point the press jumped to, rather than sliding to the drift.
+    const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
+    expect(thumb.style.top).toBe('348px')
+  })
+
+  it('holds a tapped thumb until the PRESS jump lands, without seeking again', async () => {
+    // A tap fires no release seek, so the hold has to pin the thumb on the press's own jump
+    // instead. Without that, the thumb would snap back to its pre-tap position the instant the
+    // finger lifts and then jump again when the fetch landed -- two moves for one tap.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    let landSeek!: (scrolled: boolean) => void
+    const onJumpToSeq = vi.fn(() => new Promise<boolean>((r) => {
+      landSeek = r
+    }))
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({ onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} />
+    ))
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    // Tap the track: press and release on the same pixel.
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
+    rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 360, pointerId: 1 }))
+    const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
+    expect(thumb.className).toContain(styles.thumbDragging) // pinned while the fetch is in flight
+    expect(thumb.style.top).toBe('348px') // and pinned on the TAPPED point
+    expect(onJumpToSeq).toHaveBeenCalledTimes(1) // the release added no second seek
+    // The pin SURVIVES the settle a resolved seek would have cleared on: it is waiting for the
+    // press's fetch, not clearing itself the moment the pointer lifted.
+    await tick()
+    expect(thumb.className).toContain(styles.thumbDragging)
+    // The press's own seek resolves, so the pin hands off rather than sticking forever.
+    landSeek(false)
+    await tick()
+    expect(thumb.className).not.toContain(styles.thumbDragging)
+    expect(onJumpToSeq).toHaveBeenCalledTimes(1)
+  })
+
+  it('hands the thumb off ONE FRAME after a seek that reports it scrolled', async () => {
+    // A seek that scrolled is followed by a landing, so the pin must survive until the
+    // metrics-derived thumb has caught up to it -- one animation frame. Clearing on the seek's
+    // microtask instead would flash the thumb back for that frame.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    // A DEFERRED rAF: the hold's hand-off frame must be observable as a separate step.
+    const rafQueue: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => rafQueue.push(cb))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    const flushRaf = () => rafQueue.splice(0).forEach(cb => cb(0))
+    const onJumpToSeq = vi.fn(() => Promise.resolve(true)) // the landing scrolled
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({ onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} />
+    ))
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    // Grab the thumb and release far away: the release position alone engages the scrub.
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+    rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
+    const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
+    expect(thumb.className).toContain(styles.thumbDragging)
+    await tick()
+    // The seek resolved, but the hand-off waits for the frame -- unlike a seek that scrolled
+    // NOWHERE, which clears on the spot (covered by its own test below).
+    expect(thumb.className).toContain(styles.thumbDragging)
+    flushRaf()
+    expect(thumb.className).not.toContain(styles.thumbDragging)
+  })
+
+  it('clears the pinned thumb when a seek REJECTS, instead of sticking in the dragging state', async () => {
+    // A rejected jump (the fetch failed, the tab went away mid-flight) resolves the hold's
+    // hand-off to "did not scroll". Without that the thumb would stay pinned at the release
+    // position for the rest of the session, and the rejection would go unhandled.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const onJumpToSeq = vi.fn(() => Promise.reject(new Error('fetch failed')))
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({ onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} />
+    ))
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    // A TAP on the track: the hold waits on the PRESS's seek, which is the one that rejects.
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
+    rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 360, pointerId: 1 }))
+    const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
+    expect(thumb.className).toContain(styles.thumbDragging)
+    await tick()
+    expect(thumb.className).not.toContain(styles.thumbDragging)
+  })
+
+  it('survives a settle seek that rejects, and keeps scrubbing', async () => {
+    // The settle seek is fire-and-forget -- no hold awaits it -- so it is the one seek whose
+    // rejection nothing else would handle. An unhandled rejection here would surface as a
+    // console error mid-scrub (and fails this suite outright), and the scrub must carry on.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    vi.useFakeTimers()
+    // A DEFERRED rAF (drained by flushRaf), not installImmediateRaf: this test dispatches two
+    // moves, and a synchronous rAF leaves the coalescer's rafId set from its own return value,
+    // which swallows the second push. See the fast-scrub coalescing test below.
+    const rafQueue: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => rafQueue.push(cb))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    const flushRaf = () => rafQueue.splice(0).forEach(cb => cb(0))
+    const onJumpToSeq = vi.fn(() => Promise.reject(new Error('fetch failed')))
+    const previewScrollTo = vi.fn()
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({
+        onJumpToSeq,
+        previewScrollTo,
+        maxSeq: 100_000n,
+        marks: [],
+        windowFirstSeq: 99_000n,
+        windowLastSeq: 100_000n,
+        hasMoreOlder: true,
+      })}
+      />
+    ))
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+    flushRaf()
+    rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
+    flushRaf()
+    vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+    expect(onJumpToSeq).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(0) // let the rejection settle
+    // The scrub is unharmed: the thumb still tracks the pointer.
+    const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
+    const beforeTop = thumb.style.top
+    rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 300, pointerId: 1 }))
+    flushRaf()
+    expect(thumb.style.top).not.toBe(beforeTop)
+  })
+
+  it('still jumps when the browser refuses pointer capture', () => {
+    // The press action stands on its own. A browser that rejects setPointerCapture (an
+    // already-released pointer, a stale id) loses the SCRUB, but a press that stopped jumping
+    // as well would leave the rail with no working press at all.
+    HTMLElement.prototype.setPointerCapture = vi.fn(() => {
+      throw new DOMException('pointer is no longer active', 'NotFoundError')
+    })
+    installImmediateRaf()
+    const onJumpToSeq = vi.fn()
+    const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    expect(() => {
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
+    }).not.toThrow()
+    expect(onJumpToSeq).toHaveBeenCalledWith(5n)
+    // The failed grab also freed the guard, so the NEXT press is not locked out.
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 2 }))
+    expect(onJumpToSeq).toHaveBeenCalledTimes(2)
+  })
+
+  it('a dot press jumps to the dot seq, centres the thumb on the dot, and scrubs on', () => {
+    // On a coarse pointer each dot carries a 24px hit circle, so on a marked conversation most
+    // of the rail is dot rather than track. A dot press that could not scrub would leave a
+    // finger with nowhere to start the gesture.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const onJumpToSeq = vi.fn()
+    const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="2"]') as HTMLElement
+    // Press the dot slightly off its centre (a fingertip is wider than the 6px dot).
+    dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 131, pointerId: 1 }))
+    // The jump takes the dot's OWN seq, not the fraction under the finger.
+    expect(onJumpToSeq).toHaveBeenCalledWith(2n)
+    const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
+    expect(thumb.style.top).toBe('113px') // the dot sits at 125; the thumb centre lands on it
+    // The same press scrubs on to the other dot and lands there.
+    rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 281, pointerId: 1 }))
+    rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 281, pointerId: 1 }))
+    expect(onJumpToSeq).toHaveBeenLastCalledWith(4n)
+  })
+
+  it('a dot press released without a scrub seeks its dot exactly once', () => {
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const onJumpToSeq = vi.fn()
+    const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="2"]') as HTMLElement
+    dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 125, pointerId: 1 }))
+    rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 125, pointerId: 1 }))
+    expect(onJumpToSeq).toHaveBeenCalledTimes(1)
+    expect(onJumpToSeq).toHaveBeenCalledWith(2n)
+  })
+
+  it('opens the dot preview on a dot press, with no hover to open it', () => {
+    // A touch has no hover: the popover must come from the press itself (the thumb lands on the
+    // dot, so the scrub target resolves to it) or a finger would never see a preview.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const previewFor = (seq: bigint) => (seq === 2n ? 'pressed message two' : undefined)
+    const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
+    const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="2"]') as HTMLElement
+    dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 125, pointerId: 1 }))
+    const previews = container.querySelectorAll('[data-testid="chat-scroll-rail-preview"]')
+    expect(previews.length).toBe(1)
+    expect(previews[0]).toHaveTextContent('pressed message two')
+  })
+
+  it('ignores a dot press while a drag is live (no rival seek)', () => {
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const onJumpToSeq = vi.fn()
+    const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    // A first pointer grabs the thumb (spans 0..24) -> a live drag is in progress.
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+    // A SECOND finger lands on a dot mid-drag: without the guard it would fire a rival jump
+    // that races the drag's live-scroll and its release seek.
+    const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="4"]') as HTMLElement
+    dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 275, pointerId: 2 }))
+    expect(onJumpToSeq).not.toHaveBeenCalled()
+  })
+
+  it('seeks an out-of-window position the scrub settles on, so the view follows the thumb', () => {
+    // Out of the loaded window there is nothing to live-scroll to. Without the settle seek the
+    // thumb and the dot preview would move over a transcript that never follows.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    vi.useFakeTimers()
+    installImmediateRaf()
+    const onJumpToSeq = vi.fn()
+    // A long history whose loaded window holds only its tail (seqs 1..5 of 1..100000).
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({
+        onJumpToSeq,
+        maxSeq: 100_000n,
+        marks: [],
+        windowFirstSeq: 99_000n,
+        windowLastSeq: 100_000n,
+        hasMoreOlder: true,
+      })}
+      />
+    ))
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+    onJumpToSeq.mockClear() // the grab itself is a thumb grab: it jumps nowhere
+    rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
+    expect(onJumpToSeq).not.toHaveBeenCalled() // a fly-over must not fetch
+    vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+    // Rail fraction 0.5 over [1, 100000] -> seq 50000ish; assert it landed inside the history
+    // rather than pinning an exact rounding.
+    expect(onJumpToSeq).toHaveBeenCalledTimes(1)
+    const [seq] = onJumpToSeq.mock.calls[0] as [bigint]
+    expect(seq).toBeGreaterThan(49_000n)
+    expect(seq).toBeLessThan(51_000n)
   })
 
   it('ignores a second pointerdown on the track while a thumb-drag is live (no rival seek)', () => {
@@ -876,6 +1178,39 @@ describe('chatscrollrail dot preview popover', () => {
       const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
       fireEvent.focusIn(dot)
       expect(onActivity).toHaveBeenCalledTimes(2)
+    })
+
+    it('reopens the host window when a drag ENDS, so a long scrub still gets a fade tail', () => {
+      // The window the grab opened has a fixed idle timeout, and nothing re-arms it mid-drag: the
+      // pointer is captured (the scroll container sees nothing), the rail's own pointermove
+      // relight is inert while idle() is false, and the drag's live-scroll writes are
+      // programmatic. A touch scrub easily outlasts that timeout, so without a relight at the end
+      // the rail would fade out from under the finger the moment it lifts.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const onActivity = vi.fn()
+      const { container } = render(() => <ChatScrollRail {...baseProps({ onActivity })} />)
+      const rail = railWithRect(container)
+
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+      onActivity.mockClear()
+      rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
+      expect(onActivity).not.toHaveBeenCalled() // no per-move timer churn
+      rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalledTimes(1)
+    })
+
+    it('reopens the host window when a drag is CANCELLED (a system gesture stole the pointer)', () => {
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const onActivity = vi.fn()
+      const { container } = render(() => <ChatScrollRail {...baseProps({ onActivity })} />)
+      const rail = railWithRect(container)
+
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+      onActivity.mockClear()
+      rail.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, clientY: 200, pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalledTimes(1)
     })
 
     it('reopens the host window from a pointermove only while the rail is faded, not on every move', () => {

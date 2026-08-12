@@ -1,5 +1,5 @@
-import { devices } from '@playwright/test'
 import { expect, test } from './fixtures'
+import { COARSE_POINTER_METRICS } from './helpers/touch'
 import { sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
@@ -26,21 +26,6 @@ const LONG_MESSAGE = `Please just reply with "ok". Ignore this filler: ${'the qu
 
 const RAIL = '[data-testid="chat-scroll-rail"]'
 const SCROLLER = '[data-chat-scroll-container="true"]'
-
-/**
- * Pixel 7's device metrics WITHOUT its `defaultBrowserType`, and with a shorter viewport.
- * Playwright refuses a `defaultBrowserType` inside a describe group -- it would force a new
- * worker -- and this suite's only project is already chromium, so the field is both unusable
- * and redundant. The rest is what actually gives Blink a COARSE primary pointer. The height
- * is cut from the device's 915px to 047's 380px: the device is narrower than 720px, so its
- * lines wrap more and one seeded message still overflows comfortably.
- */
-const PIXEL_7_METRICS = {
-  viewport: { width: devices['Pixel 7'].viewport.width, height: 380 },
-  deviceScaleFactor: devices['Pixel 7'].deviceScaleFactor,
-  isMobile: devices['Pixel 7'].isMobile,
-  hasTouch: devices['Pixel 7'].hasTouch,
-} as const
 
 /**
  * Send one tall message so the conversation overflows and the rail takes over scrolling.
@@ -180,13 +165,11 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect.poll(async () => await scroller.evaluate((el: HTMLElement) => el.scrollTop)).toBeGreaterThan(0)
   })
 
-  // Device-metrics emulation is the only way to get `(pointer: coarse)`: Blink derives the
-  // primary pointer type from the mobile viewport, not from `hasTouch`, so a project that
-  // only set hasTouch would look like coverage and be none. Scoped to the one test that
-  // needs it -- `test.use` at describe level takes per-test context options and needs no
-  // change to playwright.config.ts.
+  // Device-metrics emulation is the only way to get `(pointer: coarse)` -- see
+  // COARSE_POINTER_METRICS. Scoped to the one test that needs it: `test.use` at describe level
+  // takes per-test context options and needs no change to playwright.config.ts.
   test.describe('on a coarse pointer', () => {
-    test.use(PIXEL_7_METRICS)
+    test.use(COARSE_POINTER_METRICS)
 
     test('makes the idle rail inert, so its strip cannot swallow a tap', async ({ page, authenticatedWorkspace }) => {
       // With the phone gutters the 22px coarse strip overlaps ~20px of message content. An

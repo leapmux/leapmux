@@ -2,7 +2,7 @@ import type { ThumbDragDeps } from './chatScrollRailDrag'
 import type { PreparedGeometry } from './chatScrollRailGeometry'
 import type { VirtualItem } from './useChatVirtualizer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createThumbDrag } from './chatScrollRailDrag'
+import { createThumbDrag, SCRUB_SEEK_DEBOUNCE_MS } from './chatScrollRailDrag'
 import { prepareGeometry } from './chatScrollRailGeometry'
 
 // A hand-driven rAF so moves flush deterministically: requestAnimationFrame queues the
@@ -44,7 +44,7 @@ function makeRect(): DOMRect {
   return { top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
 }
 
-function setup() {
+function setup(opts: { engageSlopPx?: number } = {}) {
   const el = document.createElement('div')
   el.setPointerCapture = vi.fn()
   el.releasePointerCapture = vi.fn()
@@ -63,12 +63,17 @@ function setup() {
   const grabThumbTopPx = 100
   const setDrag = vi.fn()
   const previewScrollTo = vi.fn()
+  const scrubSeek = vi.fn()
+  const onEngage = vi.fn()
   const onRelease = vi.fn()
   const onEnd = vi.fn()
   const deps: ThumbDragDeps = {
     el,
     rect: makeRect(),
     grabThumbTopPx,
+    // Default 0 -- the thumb-grab case, where the first pixel of travel scrubs. The slop tests
+    // pass their own.
+    engageSlopPx: opts.engageSlopPx ?? 0,
     minSeq: () => state.minSeq,
     maxSeq: () => state.maxSeq,
     windowFirstSeq: () => state.windowFirstSeq,
@@ -77,11 +82,13 @@ function setup() {
     thumbHeightPx: () => state.thumbHeightPx,
     setDrag,
     previewScrollTo,
+    scrubSeek,
+    onEngage,
     onRelease,
     onEnd,
   }
   const handle = createThumbDrag(deps)
-  return { el, handle, state, setDrag, previewScrollTo, onRelease, onEnd }
+  return { el, handle, state, setDrag, previewScrollTo, scrubSeek, onEngage, onRelease, onEnd }
 }
 
 function move(el: HTMLElement, clientY: number) {
@@ -190,7 +197,9 @@ describe('createthumbdrag', () => {
     handle.start(1, 100)
     setDrag.mockClear()
     up(el, 100) // fraction 0.25
-    expect(onRelease).toHaveBeenCalledWith(0.25)
+    // Pressed and released on the same pixel: a TAP, so `engaged` is false and the owner keeps
+    // whatever meaning it gave the press rather than seeking again.
+    expect(onRelease).toHaveBeenCalledWith(0.25, false)
     // The controller does NOT clear the preview on release -- the owner holds it until settle.
     expect(setDrag).not.toHaveBeenCalled()
     // Listeners detached: a later move does nothing.
@@ -203,7 +212,96 @@ describe('createthumbdrag', () => {
     const { el, handle, onRelease } = setup()
     handle.start(1, 100) // grabbed at 0.25
     up(el, 300) // released at 300/400 = 0.75
-    expect(onRelease).toHaveBeenCalledWith(0.75)
+    expect(onRelease).toHaveBeenCalledWith(0.75, true)
+  })
+
+  it('engages off the RELEASE position when the browser coalesced the last move into pointerup', () => {
+    // A pointerup can carry a position no pointermove ever reported. Trusting only the moves
+    // would report this real drag as a tap and drop its seek.
+    const { el, handle, onEngage, onRelease } = setup({ engageSlopPx: 6 })
+    handle.start(1, 100)
+    up(el, 300) // 200px of travel, none of it in a pointermove
+    expect(onRelease).toHaveBeenCalledWith(0.75, true)
+    // onEngage is for a LIVE scrub (it drops the press's own stale seek); a release already
+    // supersedes that seek with its own, so the controller does not fire it here.
+    expect(onEngage).not.toHaveBeenCalled()
+  })
+
+  describe('engage slop', () => {
+    it('drops a move within the slop: no preview, no live-scroll, and the release is a tap', () => {
+      const { el, handle, setDrag, previewScrollTo, onEngage, onRelease } = setup({ engageSlopPx: 6 })
+      handle.start(1, 100)
+      setDrag.mockClear()
+      previewScrollTo.mockClear()
+      move(el, 106) // exactly the slop -- still a tap
+      flushRaf()
+      expect(setDrag).not.toHaveBeenCalled()
+      expect(previewScrollTo).not.toHaveBeenCalled()
+      expect(onEngage).not.toHaveBeenCalled()
+      // The tap reports the PRESS fraction (0.25), not the drifted release position, so the
+      // owner's pinned thumb stays on the point the press acted on.
+      up(el, 104)
+      expect(onRelease).toHaveBeenCalledWith(0.25, false)
+    })
+
+    it('engages once past the slop, then tracks every later move', () => {
+      const { el, handle, setDrag, onEngage, onRelease } = setup({ engageSlopPx: 6 })
+      handle.start(1, 100)
+      setDrag.mockClear()
+      move(el, 107) // one past the slop
+      flushRaf()
+      expect(onEngage).toHaveBeenCalledTimes(1)
+      expect(setDrag).toHaveBeenLastCalledWith(107 / 400)
+      move(el, 300)
+      flushRaf()
+      expect(onEngage).toHaveBeenCalledTimes(1) // engaging is one-way
+      expect(setDrag).toHaveBeenLastCalledWith(0.75)
+      up(el, 300)
+      expect(onRelease).toHaveBeenCalledWith(0.75, true)
+    })
+
+    it('engages on the first move with the default slop of 0 (the thumb grab)', () => {
+      const { el, handle, onEngage, setDrag } = setup()
+      handle.start(1, 100)
+      setDrag.mockClear()
+      move(el, 101) // a single pixel: a thumb must move with the pointer, never wait
+      flushRaf()
+      expect(onEngage).toHaveBeenCalledTimes(1)
+      expect(setDrag).toHaveBeenLastCalledWith(101 / 400)
+    })
+
+    it('drags with the optional deps omitted entirely', () => {
+      // engageSlopPx, scrubSeek and onEngage are all optional. With none of them supplied the
+      // controller must still track and release -- the slop defaults to 0 and an out-of-window
+      // rest simply seeks nothing, rather than calling through an undefined sink.
+      const el = document.createElement('div')
+      el.setPointerCapture = vi.fn()
+      el.releasePointerCapture = vi.fn()
+      const setDrag = vi.fn()
+      const onRelease = vi.fn()
+      const handle = createThumbDrag({
+        el,
+        rect: makeRect(),
+        grabThumbTopPx: 100,
+        minSeq: () => 1n,
+        maxSeq: () => 5n,
+        windowFirstSeq: () => undefined, // every target is out of window: the seek path is live
+        windowLastSeq: () => undefined,
+        prepared: () => prepOf([1n, 2n, 3n, 4n, 5n]),
+        thumbHeightPx: () => 0,
+        setDrag,
+        previewScrollTo: vi.fn(),
+        onRelease,
+      })
+      handle.start(1, 100)
+      expect(() => {
+        move(el, 200)
+        flushRaf()
+      }).not.toThrow()
+      expect(setDrag).toHaveBeenLastCalledWith(0.5) // the default slop of 0 engaged on that move
+      up(el, 200)
+      expect(onRelease).toHaveBeenCalledWith(0.5, true)
+    })
   })
 
   it('abandons the drag on pointercancel: clears the preview and does not release/seek', () => {
@@ -274,5 +372,145 @@ describe('createthumbdrag', () => {
     b.handle.start(1, 100)
     b.handle.cancel()
     expect(b.onEnd).toHaveBeenCalledTimes(1)
+  })
+
+  describe('out-of-window settle seek', () => {
+    // Only setTimeout/clearTimeout are faked: rAF stays the hand-driven stub above, which the
+    // move coalescer needs.
+    beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }))
+    afterEach(() => vi.useRealTimers())
+
+    /** Move the thumb to an out-of-window position and flush the frame it schedules. */
+    function scrubTo(el: HTMLElement, clientY: number) {
+      move(el, clientY)
+      flushRaf()
+    }
+
+    it('seeks the settled seq once the debounce elapses', () => {
+      const { el, handle, state, scrubSeek } = setup()
+      state.windowFirstSeq = 4n // seqs below 4 are out of the loaded window
+      handle.start(1, 100) // grabbed on the resting thumb top: clientY maps 1:1 to the fraction
+      scrubTo(el, 200) // fraction 0.5 -> seq 3, out of window
+      expect(scrubSeek).not.toHaveBeenCalled() // not until the thumb has rested
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+      expect(scrubSeek).toHaveBeenCalledWith(3n)
+    })
+
+    it('never seeks an in-window target -- that path live-scrolls instead', () => {
+      const { el, handle, scrubSeek, previewScrollTo } = setup()
+      handle.start(1, 100)
+      scrubTo(el, 200) // seqF 3, inside the loaded window 1..5
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS * 4)
+      expect(scrubSeek).not.toHaveBeenCalled()
+      expect(previewScrollTo).toHaveBeenCalledWith(200)
+    })
+
+    it('does not arm a seek from the press itself', () => {
+      // The owner decides what a press means (a track/dot press jumps on its own). If the
+      // initial apply armed one too, every out-of-window press would fetch its page twice.
+      const { handle, state, scrubSeek } = setup()
+      state.windowFirstSeq = 4n
+      handle.start(1, 100) // out of window, but no move yet
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS * 4)
+      expect(scrubSeek).not.toHaveBeenCalled()
+    })
+
+    it('restarts the debounce on every move: only the settled position seeks', () => {
+      const { el, handle, state, scrubSeek } = setup()
+      state.windowFirstSeq = 4n
+      handle.start(1, 100)
+      scrubTo(el, 200) // seq 3
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS - 1)
+      scrubTo(el, 100) // seq 2 -- still out of window, and it supersedes the pending seek
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+      expect(scrubSeek).toHaveBeenCalledTimes(1)
+      expect(scrubSeek).toHaveBeenCalledWith(2n)
+    })
+
+    it('drops a pending seek when the thumb scrubs back into the loaded window', () => {
+      const { el, handle, state, scrubSeek } = setup()
+      state.windowFirstSeq = 4n
+      handle.start(1, 100)
+      scrubTo(el, 200) // seq 3, out of window: a seek is armed
+      scrubTo(el, 300) // back in-window (seqF 4): the armed fetch is now for a stale position
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS * 4)
+      expect(scrubSeek).not.toHaveBeenCalled()
+    })
+
+    it('re-tests the window when the timer fires, not only when it was armed', () => {
+      // An earlier seek (or an edge page load) can swap the window during the wait, which makes
+      // this target in-window and the fetch pointless.
+      const { el, handle, state, scrubSeek } = setup()
+      state.windowFirstSeq = 4n
+      handle.start(1, 100)
+      scrubTo(el, 200)
+      state.windowFirstSeq = 1n // the window swapped mid-wait: seq 3 is loaded now
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+      expect(scrubSeek).not.toHaveBeenCalled()
+    })
+
+    it('seeks the same seq only once across two rests', () => {
+      const { el, handle, state, scrubSeek } = setup()
+      state.windowFirstSeq = 4n
+      handle.start(1, 100)
+      scrubTo(el, 200)
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+      expect(scrubSeek).toHaveBeenCalledTimes(1)
+      // A jitter that maps back to the SAME seq (3) must not fetch its page again.
+      scrubTo(el, 201)
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+      expect(scrubSeek).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      ['pointerup', (el: HTMLElement) => up(el, 100)],
+      ['pointercancel', (el: HTMLElement) => el.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, clientY: 100 }))],
+    ])('cancels a pending seek on %s', (_name, end) => {
+      const { el, handle, state, scrubSeek } = setup()
+      state.windowFirstSeq = 4n
+      handle.start(1, 100)
+      scrubTo(el, 200)
+      end(el)
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS * 4)
+      // A release seeks through the owner's own release path; a late duplicate from this timer
+      // would fetch a second page behind it.
+      expect(scrubSeek).not.toHaveBeenCalled()
+    })
+
+    it('seeks when the loaded window is UNKNOWN, rather than scrubbing over a frozen transcript', () => {
+      // No window bounds at all (a conversation whose rows are all optimistic locals, or a
+      // window that has not resolved yet) is the fail-closed case: "outside". The reader must
+      // still get the debounced seek, or the thumb moves over a transcript that never follows.
+      const { el, handle, state, scrubSeek, previewScrollTo } = setup()
+      state.windowFirstSeq = undefined
+      state.windowLastSeq = undefined
+      handle.start(1, 100)
+      scrubTo(el, 200)
+      expect(previewScrollTo).not.toHaveBeenCalled() // nothing loaded to live-scroll to
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+      expect(scrubSeek).toHaveBeenCalledWith(3n)
+    })
+
+    it('seeks nothing when the seq range degenerates between the arm and the fire', () => {
+      // The range is re-read when the timer fires, so a window that goes inverted mid-wait must
+      // fail closed rather than map the fraction onto a range that no longer makes sense.
+      const { el, handle, state, scrubSeek } = setup()
+      state.windowFirstSeq = 4n
+      handle.start(1, 100)
+      scrubTo(el, 200)
+      state.maxSeq = 0n // inverted: maxSeq < minSeq
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+      expect(scrubSeek).not.toHaveBeenCalled()
+    })
+
+    it('cancels a pending seek on cancel() (an unmount mid-scrub)', () => {
+      const { el, handle, state, scrubSeek } = setup()
+      state.windowFirstSeq = 4n
+      handle.start(1, 100)
+      scrubTo(el, 200)
+      handle.cancel()
+      vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS * 4)
+      expect(scrubSeek).not.toHaveBeenCalled()
+    })
   })
 })
