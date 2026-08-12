@@ -57,7 +57,7 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 	pendingReqs := workermgr.NewPendingRequests(testConfig().APITimeout)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
+	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 

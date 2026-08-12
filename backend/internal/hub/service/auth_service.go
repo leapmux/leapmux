@@ -61,7 +61,7 @@ func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
 }
 
 func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.LoginRequest]) (*connect.Response[leapmuxv1.LoginResponse], error) {
-	token, user, expiresAt, err := auth.Login(ctx, s.store, req.Msg.GetUsername(), req.Msg.GetPassword())
+	token, user, expiresAt, err := auth.Login(ctx, s.store, req.Msg.GetUsername(), req.Msg.GetPassword(), s.cfg.SessionDuration())
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +227,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		if mintErr != nil {
 			return nil, mintErr
 		}
-		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, uid)
+		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, uid, s.cfg.SessionDuration())
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
@@ -304,7 +304,7 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*co
 	if err != nil {
 		return nil, err
 	}
-	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID)
+	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID, s.cfg.SessionDuration())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
@@ -571,7 +571,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUID)
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUID, s.cfg.SessionDuration())
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}

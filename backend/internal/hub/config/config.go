@@ -13,6 +13,7 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/leapmux/leapmux/channelwire"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
@@ -155,6 +156,18 @@ const (
 	DefaultAPITimeoutSeconds            = 10
 	DefaultAgentStartupTimeoutSeconds   = 300
 	DefaultWorktreeCreateTimeoutSeconds = 60
+
+	// DefaultSessionDurationSeconds is the default for session_duration_seconds.
+	// Derived from auth.DefaultSessionDuration rather than written again here,
+	// so the flag default and the value the auth package falls back to are one
+	// number.
+	DefaultSessionDurationSeconds = int(auth.DefaultSessionDuration / time.Second)
+	// MinSessionDurationSeconds is the shortest session an operator may
+	// configure. Derived from auth.MinSessionDuration, which states the reason:
+	// the Hub serves a validated session from an in-memory cache for a short
+	// window, so a shorter session outlives its own expiry by a large share of
+	// its life.
+	MinSessionDurationSeconds = int(auth.MinSessionDuration / time.Second)
 )
 
 // Config holds the hub's runtime configuration.
@@ -167,6 +180,7 @@ type Config struct {
 	LogLevel                     string `koanf:"log_level"`
 	SignupEnabled                bool   `koanf:"signup_enabled"`
 	EmailVerificationRequired    bool   `koanf:"email_verification_required"`
+	SessionDurationSeconds       int    `koanf:"session_duration_seconds"`
 	SmtpHost                     string `koanf:"smtp_host"`
 	SmtpPort                     int    `koanf:"smtp_port"`
 	SmtpUsername                 string `koanf:"smtp_username"`
@@ -277,6 +291,18 @@ type MySQLConfig struct {
 	MaxIdleConns           int    `koanf:"max_idle_conns"`             // Maximum idle connections. Default: 5.
 	ConnMaxLifetimeSeconds int    `koanf:"conn_max_lifetime_seconds"`  // Maximum connection lifetime. Default: 3600.
 	ConnMaxIdleTimeSeconds int    `koanf:"conn_max_idle_time_seconds"` // Maximum idle time per connection. Default: 300.
+}
+
+// SessionDuration returns how long a user session stays valid after the user's
+// last request. Each authenticated request slides the expiry forward, so this
+// is an idle timeout and not a cap on how long a signed-in user may stay signed
+// in.
+func (c *Config) SessionDuration() time.Duration {
+	v := c.SessionDurationSeconds
+	if v <= 0 {
+		v = DefaultSessionDurationSeconds
+	}
+	return time.Duration(v) * time.Second
 }
 
 // APITimeout returns the general API timeout as a duration.
@@ -754,6 +780,7 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		strFlag("log-level", "log_level", "Server options", "log level (debug, info, warn, error)", defaultLogLevel),
 		boolFlag("signup-enabled", "signup_enabled", "Auth options", "enable user sign-up", false),
 		boolFlag("email-verification-required", "email_verification_required", "Auth options", "require email verification on sign-up", false),
+		intFlag("session-duration-seconds", "session_duration_seconds", "Auth options", "how long a session stays valid after the user's last request, in seconds; each request slides the expiry forward", DefaultSessionDurationSeconds),
 		strFlag("smtp-host", "smtp_host", "SMTP options", "SMTP server host", ""),
 		intFlag("smtp-port", "smtp_port", "SMTP options", "SMTP server port", 587),
 		strFlag("smtp-username", "smtp_username", "SMTP options", "SMTP username", ""),
@@ -1016,7 +1043,38 @@ func (c *Config) Validate() error {
 	if err := c.validateMaxConnectionsPerUser(); err != nil {
 		return err
 	}
+	if err := c.validateSessionDuration(); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+// validateSessionDuration rejects a session lifetime nobody meant.
+//
+// Zero means "use the default". Flag parsing writes the default number itself,
+// so a zero reaches this only from a config built in code, and SessionDuration
+// reads it as the default there too. A negative is not a shorter session, so it
+// fails loudly rather than being silently read as the default. A value under
+// MinSessionDurationSeconds signs users out later than it promises; see
+// auth.MinSessionDuration. There is no upper bound: a long session is a policy
+// an operator may hold, and the slide makes it an idle timeout rather than an
+// unbounded credential.
+func (c *Config) validateSessionDuration() error {
+	switch {
+	case c.SessionDurationSeconds < 0:
+		return fmt.Errorf("session_duration_seconds must not be negative, got %d (0 = default)",
+			c.SessionDurationSeconds)
+	case c.SessionDurationSeconds == 0:
+		return nil
+	case c.SessionDurationSeconds < MinSessionDurationSeconds:
+		return fmt.Errorf(
+			"session_duration_seconds must be 0 (default) or at least %d, got %d: "+
+				"the Hub serves a validated session from an in-memory cache for a "+
+				"short window, so a shorter session stays usable for a large share "+
+				"of its own life",
+			MinSessionDurationSeconds, c.SessionDurationSeconds)
+	}
 	return nil
 }
 

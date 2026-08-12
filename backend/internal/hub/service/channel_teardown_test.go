@@ -59,7 +59,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	pendingReqs := workermgr.NewPendingRequests(testConfig().APITimeout)
 
 	mux := http.NewServeMux()
-	_, sc := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
+	_, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, sc)

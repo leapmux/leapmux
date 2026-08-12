@@ -63,7 +63,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
+	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 
@@ -1369,7 +1369,7 @@ func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		PasswordSet:  true,
 		IsAdmin:      false,
 	})
-	token, _, _, loginErr := auth.Login(ctx, e.store, "user2", "testpass2")
+	token, _, _, loginErr := auth.Login(ctx, e.store, "user2", "testpass2", auth.DefaultSessionDuration)
 	require.NoError(t, loginErr)
 	return
 }

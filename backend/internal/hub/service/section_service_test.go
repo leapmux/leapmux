@@ -45,7 +45,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	sectionSvc := service.NewSectionService(st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, opts)
 	mux.Handle(path, handler)
@@ -77,7 +77,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	require.NoError(t, err)
 	userID := user.ID
 
-	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &sectionTestEnv{

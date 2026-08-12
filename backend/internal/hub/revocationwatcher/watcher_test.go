@@ -33,7 +33,7 @@ func newBearerAuthHub(
 ) (leapmuxv1connect.AuthServiceClient, *auth.AuthContextRegistry) {
 	t.Helper()
 	mux := http.NewServeMux()
-	interceptor, cache := auth.NewInterceptorWithTokens(st, nil, validator, false, false)
+	interceptor, cache := auth.NewInterceptor(auth.InterceptorOptions{Store: st, TokenValidator: validator})
 	t.Cleanup(cache.Stop)
 	authService := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(cache, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authService, connect.WithInterceptors(interceptor))
@@ -155,7 +155,7 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	_, sc := auth.NewInterceptor(st, nil, false, false)
+	_, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 
 	closer := &fakeCloser{}
@@ -399,7 +399,7 @@ func TestWatcher_PublishesGaplessSeqAndAppliesEvents(t *testing.T) {
 	env := setup(t)
 	apiToken := env.seedAPIToken(t)
 	delegationToken := env.seedDelegationToken(t)
-	sessionID, _, _, err := auth.Login(context.Background(), env.st, "admin", hubtestutil.TestAdminPassword)
+	sessionID, _, _, err := auth.Login(context.Background(), env.st, "admin", hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	_, err = env.st.APITokens().Revoke(context.Background(), apiToken)

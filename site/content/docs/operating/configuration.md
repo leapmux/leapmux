@@ -167,6 +167,7 @@ Env prefix: `LEAPMUX_HUB_`. Defaults shown are the built-in values. Each key's C
 | --- | --- | --- |
 | `signup_enabled` | `false` | Enable user sign-up. |
 | `email_verification_required` | `false` | Require email verification on sign-up. Requires `smtp_host`. |
+| `session_duration_seconds` | `691200` (8 days) | How long a session stays valid after the user's last request. Each request slides the expiry forward, so this is an idle timeout, not a cap on how long a signed-in user may stay signed in. `0` means the default; a value under `60` is rejected. |
 
 See [Accounts & Authentication](/docs/using/accounts/) for the sign-up/verification flows, and [Authentication Providers](/docs/operating/authentication-providers/) for OAuth/OIDC.
 
@@ -544,6 +545,7 @@ log_level: info
 
 signup_enabled: true
 email_verification_required: true
+session_duration_seconds: 86400   # sign an idle user out after a day
 
 smtp_host: "smtp.example.com"
 smtp_port: 587

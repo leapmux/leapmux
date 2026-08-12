@@ -1131,6 +1131,12 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 // The three queue budgets are deliberately NOT here. They auto-size off this
 // machine's memory limit, which is almost always the right answer on a laptop,
 // and a config file still reaches them for the rare case it is not.
+//
+// session-duration-seconds is dev-only, alongside public-url, because solo mode
+// has no session to expire: its interceptor authenticates every request as the
+// synthetic local user and mints no session row. Dev mode runs the full
+// sign-up-and-cookie path, so the flag is the one place a short session is
+// worth asking for -- testing the signed-out path needs minutes, not days.
 func defaultCLIFlags(devMode bool) []string {
 	flags := []string{
 		"listen", "data-dir", "dev-frontend",
@@ -1140,7 +1146,7 @@ func defaultCLIFlags(devMode bool) []string {
 		"max-connections-per-user", "max-workers-per-user",
 	}
 	if devMode {
-		flags = append(flags, "public-url")
+		flags = append(flags, "public-url", "session-duration-seconds")
 	}
 	return flags
 }

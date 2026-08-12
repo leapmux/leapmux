@@ -35,7 +35,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, closers ...auth.C
 	st := hubtestutil.OpenTestStore(t)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
+	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	var closer auth.CredentialChannelCloser
@@ -205,6 +205,73 @@ func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 	assert.Contains(t, setCookie, "HttpOnly")
 }
 
+// Every path that mints a session must stamp the configured duration, not only
+// login. Each one calls CreateSession separately, so one left on the default is
+// a silent split: those users get the built-in lifetime and nothing reports it.
+// The verification-required branch mints its own session (the user needs one to
+// call VerifyEmail), which is why it is exercised apart from the plain sign-up.
+func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
+	t.Parallel()
+
+	const configured = 90 * time.Minute
+	signUp := func(t *testing.T, cfg *config.Config, username string) (*connect.Response[leapmuxv1.SignUpResponse], store.Store, string) {
+		t.Helper()
+		cfg.SessionDurationSeconds = int(configured / time.Second)
+		client, st := setupAuthTestServer(t, cfg)
+		resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+			Username:    username,
+			Password:    "newpass123",
+			DisplayName: "New User",
+			Email:       username + "@example.com",
+		}))
+		require.NoError(t, err)
+		return resp, st, sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+	}
+
+	assertExpiry := func(t *testing.T, st store.Store, sessionID string, before time.Time) {
+		t.Helper()
+		sess, err := st.Sessions().GetByID(context.Background(), sessionID)
+		require.NoError(t, err)
+		assert.WithinDuration(t, before.Add(configured), sess.ExpiresAt, time.Minute)
+	}
+
+	t.Run("sign-up", func(t *testing.T) {
+		t.Parallel()
+		before := time.Now()
+		resp, st, sessionID := signUp(t, testConfigWithSignup(), "newuser")
+		require.False(t, resp.Msg.GetVerificationRequired(), "control: this is the plain branch")
+		assertExpiry(t, st, sessionID, before)
+	})
+
+	t.Run("sign-up with verification required", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfigWithSMTP()
+		cfg.SignupEnabled = true
+		cfg.EmailVerificationRequired = true
+		before := time.Now()
+		resp, st, sessionID := signUp(t, cfg, "unverified")
+		// Without this the subtest would silently repeat the branch above, and
+		// the second CreateSession call site would go unexercised.
+		require.True(t, resp.Msg.GetVerificationRequired(), "this must take the verification branch")
+		assertExpiry(t, st, sessionID, before)
+	})
+
+	t.Run("login", func(t *testing.T) {
+		t.Parallel()
+		cfg := testConfig()
+		cfg.SessionDurationSeconds = int(configured / time.Second)
+		client, st := setupAuthTestServer(t, cfg)
+
+		before := time.Now()
+		resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+			Username: hubtestutil.TestAdminUsername,
+			Password: hubtestutil.TestAdminPassword,
+		}))
+		require.NoError(t, err)
+		assertExpiry(t, st, sessionFromCookie(t, resp.Header().Get("Set-Cookie")), before)
+	})
+}
+
 func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -255,7 +322,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
 	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
@@ -454,7 +521,7 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, emailVerificationRequired)
+	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st, EmailVerificationRequired: emailVerificationRequired})
 	opts := connect.WithInterceptors(interceptor)
 
 	cfg := testConfig()
@@ -496,7 +563,7 @@ func TestVerificationGating_UnverifiedBlocked(t *testing.T) {
 	})
 	// email_verified defaults to 0 in the DB.
 
-	token, _, _, err := auth.Login(context.Background(), st, "unverified", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "unverified", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Try UpdateProfile — should be blocked by verification gating.
@@ -515,7 +582,7 @@ func TestVerificationGating_AdminExempt(t *testing.T) {
 
 	// The bootstrap admin has email_verified=0 by default (no email set).
 	// Verify the admin can still call protected RPCs.
-	adminToken, _, _, err := auth.Login(context.Background(), st, "admin", "admin123")
+	adminToken, _, _, err := auth.Login(context.Background(), st, "admin", "admin123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Admin should be able to call UpdateProfile even with email_verified=0.
@@ -545,7 +612,7 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 	})
 	// email_verified defaults to 0 — but gating is OFF.
 
-	token, _, _, err := auth.Login(context.Background(), st, "nogate", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "nogate", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Unverified user should be able to call UpdateProfile when gating is off.
@@ -623,7 +690,7 @@ func TestVerificationGating_LogoutAllowed(t *testing.T) {
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), st, "logoutgating", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "logoutgating", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Logout should be allowed for unverified users.
@@ -654,7 +721,7 @@ func TestVerificationGating_RequestEmailChangeAllowed(t *testing.T) {
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), st, "emailchangegate", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "emailchangegate", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// RequestEmailChange should be allowed for unverified users
@@ -736,7 +803,7 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(wrapped, nil, false, false)
+	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: wrapped})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(wrapped, testConfig(), auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
@@ -882,7 +949,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	// No solo user is seeded — the test asserts that AuthService rejects setup
 	// signup in solo mode at the service layer, independent of the interceptor.
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
+	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})

@@ -105,6 +105,7 @@ This table lists the most common flags. The full set — including all PostgreSQ
 |------|---------|---------|
 | `-signup-enabled` | `false` | Enable user sign-up |
 | `-email-verification-required` | `false` | Require email verification on sign-up (needs `-smtp-host`) |
+| `-session-duration-seconds` | `691200` (8 days) | How long a session stays valid after the user's last request; each request slides the expiry forward |
 
 **SMTP options**
 
@@ -225,11 +226,12 @@ Run a Hub and a Worker in one process with **real** password authentication — 
 leapmux dev [flags]
 ```
 
-Dev mode uses the **same flag set as solo**, with one addition:
+Dev mode uses the **same flag set as solo**, with two additions:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `-public-url` | empty | Public base URL when behind a reverse proxy |
+| `-session-duration-seconds` | `691200` (8 days) | How long a session stays valid after the user's last request. Solo has no session to expire, so the flag is dev-only; shorten it to exercise the signed-out path. |
 
 The other differences from solo: the default `-listen` is `:4327` (all interfaces), the config/data location is `~/.config/leapmux/dev/`, and the bundled Worker's auto-registration is deferred until the first admin completes `/setup`.
 

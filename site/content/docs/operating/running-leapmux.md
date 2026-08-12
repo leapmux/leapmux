@@ -122,12 +122,13 @@ leapmux dev -listen :4327
 
 Because dev mode uses real authentication, it bootstraps its first admin through the `/setup` flow rather than auto-authenticating. The in-process Worker's auto-registration is deferred until that first admin signs up; until then the log shows *"dev mode: deferring worker auto-registration until first admin signs up via /setup"*. Open the URL, complete `/setup` to create the admin, and the bundled Worker comes online.
 
-Dev mode accepts the same flags as solo, plus `--public-url`, which solo does not have. The most important dev flags:
+Dev mode accepts the same flags as solo, plus `--public-url` and `--session-duration-seconds`, which solo does not have. The most important dev flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `-listen` | `:4327` | TCP listen address |
 | `-public-url` | empty | Public base URL when behind a reverse proxy |
+| `-session-duration-seconds` | `691200` (8 days) | Session lifetime after the user's last request; shorten it to exercise the signed-out path |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/dev`) | Data directory |
 | `-log-level` | `info` | Log level |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |

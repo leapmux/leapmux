@@ -107,7 +107,7 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "agent-live", TileID: "tile", Position: "a0",
 	}))
 
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
 	mux := http.NewServeMux()
 	path, handler := leapmuxv1connect.NewWorkerReconcilerServiceHandler(
 		service.NewWorkerReconcilerService(st), connect.WithInterceptors(interceptor))
@@ -136,7 +136,7 @@ func TestListOwnedTabsForWorker_InterceptorStillRejectsAStranger(t *testing.T) {
 
 	st := hubtestutil.OpenTestStore(t)
 
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, _ := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
 	mux := http.NewServeMux()
 	path, handler := leapmuxv1connect.NewWorkerReconcilerServiceHandler(
 		service.NewWorkerReconcilerService(st), connect.WithInterceptors(interceptor))

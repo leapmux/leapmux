@@ -310,7 +310,14 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		return nil, acquired.close(
 			fmt.Errorf("create token validator: %w", tvErr))
 	}
-	authInterceptor, authContexts := auth.NewInterceptorWithTokens(st, soloUser, tokenValidator, cfg.SecureCookies, cfg.EmailVerificationRequired)
+	authInterceptor, authContexts := auth.NewInterceptor(auth.InterceptorOptions{
+		Store:                     st,
+		SoloUser:                  soloUser,
+		TokenValidator:            tokenValidator,
+		SecureCookies:             cfg.SecureCookies,
+		EmailVerificationRequired: cfg.EmailVerificationRequired,
+		SessionDuration:           cfg.SessionDuration(),
+	})
 	acquired.authContexts = authContexts
 	// Let a sliding cookie session (and a rotated bearer, via the credential
 	// lifecycle) extend its already-open channels' expiry, not just its leases

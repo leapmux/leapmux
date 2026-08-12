@@ -88,6 +88,16 @@ var unverifiedAllowedProcedures = map[string]bool{
 // revocation (logout) evicts the entry immediately via AuthContextRegistry.Evict.
 const sessionCacheTTL = 30 * time.Second
 
+// MinSessionDuration is the shortest session the Hub can honestly enforce.
+//
+// A validated session stays in the in-memory cache for sessionCacheTTL, so a
+// request is served up to that long after the session expired. At twice the
+// cache TTL that overshoot is a small share of the session's life. Below it,
+// "expired" stops describing when the user is signed out. The Hub configuration
+// rejects a configured duration under this rather than accept a policy it
+// cannot keep.
+const MinSessionDuration = 2 * sessionCacheTTL
+
 // cachedSession holds a validated UserInfo with its cache time and the
 // revocation sequence observed before validation. Cache reads compare that
 // sequence only with marks for the same session, bearer, or user, so unrelated
@@ -159,6 +169,11 @@ type authInterceptor struct {
 	emailVerificationRequired bool
 	soloUser                  *UserInfo
 	tokenValidator            *TokenValidator
+	// sessionDuration is InterceptorOptions.SessionDuration, resolved through
+	// sessionLifetime by the constructor. slideDuration resolves it again rather
+	// than trusting that, because the package's own tests build this struct
+	// directly and a zero there must mean the default, not a five-minute session.
+	sessionDuration time.Duration
 	// state holds the shared caches, lease registry, and revocation ledger.
 	// Its revocationGen is the monotonic ordering clock shared by validation
 	// snapshots and identity-scoped revocation/invalidation marks.
@@ -173,31 +188,49 @@ type authInterceptor struct {
 	bearerFlight singleflight.Group
 }
 
+// InterceptorOptions carries what the auth interceptor needs. Every field is
+// optional; the zero value gives cookie-only multi-user auth with the default
+// session duration.
+//
+// A struct rather than a parameter list: the settings are three flags of the
+// same shape (two bools and a duration) whose meaning no call site would state,
+// and a transposed pair compiles and then authenticates wrongly.
+type InterceptorOptions struct {
+	Store store.Store
+	// SoloUser enables solo mode, in which every request is automatically
+	// authenticated as that user. Nil gives normal multi-user auth.
+	SoloUser *UserInfo
+	// TokenValidator accepts Authorization: Bearer lmx_... credentials alongside
+	// the cookie path. Nil keeps cookie-only behaviour.
+	TokenValidator *TokenValidator
+	// SecureCookies selects the __Host- prefixed cookie name, which the Hub uses
+	// behind TLS.
+	SecureCookies bool
+	// EmailVerificationRequired refuses an unverified, non-admin user every
+	// procedure outside the pre-verification allowlist.
+	EmailVerificationRequired bool
+	// SessionDuration is the minimum time a session stays valid after the user's
+	// last request. Zero or less falls back to DefaultSessionDuration.
+	SessionDuration time.Duration
+}
+
 // NewInterceptor creates a ConnectRPC interceptor that validates session cookies
 // and attaches user info to the context. Public procedures (login, worker
-// registration) are exempt from auth checks. Pass a non-nil soloUser to enable
-// solo mode, in which all requests are automatically authenticated as that
-// user; pass nil for normal multi-user auth.
+// registration) are exempt from auth checks.
 //
 // The returned AuthContextRegistry can be used to evict entries from the in-memory
 // touch throttle (e.g., on logout). Call AuthContextRegistry.Stop to terminate the
 // background sweep goroutine.
-func NewInterceptor(st store.Store, soloUser *UserInfo, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *AuthContextRegistry) {
-	return NewInterceptorWithTokens(st, soloUser, nil, secureCookie, emailVerificationRequired)
-}
-
-// NewInterceptorWithTokens is the variant that wires in a TokenValidator
-// so Authorization: Bearer lmx_... credentials are accepted alongside
-// the cookie path. Pass nil for tokenValidator to keep cookie-only
-// behaviour (tests that don't need bearer auth).
-func NewInterceptorWithTokens(st store.Store, soloUser *UserInfo, tokenValidator *TokenValidator, secureCookie bool, emailVerificationRequired bool) (connect.Interceptor, *AuthContextRegistry) {
+func NewInterceptor(opts InterceptorOptions) (connect.Interceptor, *AuthContextRegistry) {
+	st := opts.Store
 	state := &authState{}
 	a := &authInterceptor{
 		store:                     st,
-		secureCookie:              secureCookie,
-		emailVerificationRequired: emailVerificationRequired,
-		soloUser:                  soloUser,
-		tokenValidator:            tokenValidator,
+		secureCookie:              opts.SecureCookies,
+		emailVerificationRequired: opts.EmailVerificationRequired,
+		soloUser:                  opts.SoloUser,
+		tokenValidator:            opts.TokenValidator,
+		sessionDuration:           sessionLifetime(opts.SessionDuration),
 		state:                     state,
 	}
 	sweepCtx, cancel := context.WithCancel(context.Background())
@@ -693,11 +726,19 @@ func (c *AuthContextRegistry) Stop() {
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		ctx, err := a.authenticate(ctx, req.Spec().Procedure, req.Header().Get("Cookie"), req.Header().Get("Authorization"))
+		ctx, refresh, err := a.authenticate(ctx, req.Spec().Procedure, req.Header().Get("Cookie"), req.Header().Get("Authorization"))
 		if err != nil {
 			return nil, err
 		}
-		return next(ctx, req)
+		resp, err := next(ctx, req)
+		// A failed call answers with a connect.Error and no response to hang a
+		// header on. The DB row already slid, so the next call that succeeds
+		// carries the cookie.
+		if err != nil || resp == nil {
+			return resp, err
+		}
+		refresh.applyTo(resp.Header(), a.secureCookie)
+		return resp, nil
 	}
 }
 
@@ -707,10 +748,14 @@ func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 
 func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		ctx, err := a.authenticate(ctx, conn.Spec().Procedure, conn.RequestHeader().Get("Cookie"), conn.RequestHeader().Get("Authorization"))
+		ctx, refresh, err := a.authenticate(ctx, conn.Spec().Procedure, conn.RequestHeader().Get("Cookie"), conn.RequestHeader().Get("Authorization"))
 		if err != nil {
 			return err
 		}
+		// Before the handler runs, not after: the response header of a stream
+		// goes out with the first message, and a long-lived stream sends that
+		// message long before it returns.
+		refresh.applyTo(conn.ResponseHeader(), a.secureCookie)
 		return next(ctx, conn)
 	}
 }
@@ -719,48 +764,58 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 // Public procedures pass through with optional solo-mode user. Authenticated
 // requests are checked for email verification when required. Bearer tokens
 // (Authorization: Bearer lmx_...) are accepted alongside the cookie path.
-func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader, authHeader string) (context.Context, error) {
+//
+// The second result is the session slide that this request caused, which the
+// caller writes to the response as a refreshed cookie. It is the zero value on
+// every path that slides nothing: solo mode, a public procedure, and bearer
+// auth all hold no session cookie to refresh.
+func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader, authHeader string) (context.Context, sessionRefresh, error) {
+	var noRefresh sessionRefresh
+
 	// Solo mode authenticates every procedure -- public or not -- as the
 	// synthetic user and short-circuits the bearer/cookie paths.
 	if a.soloUser != nil {
-		return WithUser(ctx, a.state.currentSyntheticUser(a.soloUser)), nil
+		return WithUser(ctx, a.state.currentSyntheticUser(a.soloUser)), noRefresh, nil
 	}
 
 	if publicProcedures[procedure] {
-		return ctx, nil
+		return ctx, noRefresh, nil
 	}
 
 	if userInfo, ok, err := a.tryAuthenticateBearer(ctx, authHeader); err != nil {
-		return ctx, err
+		return ctx, noRefresh, err
 	} else if ok {
 		ctx = WithUser(ctx, userInfo)
 		if userInfo.Credential.IsDelegation() && !delegationAllowedProcedures[procedure] {
-			return ctx, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("delegation token cannot call this procedure"))
+			return ctx, noRefresh, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("delegation token cannot call this procedure"))
 		}
 		if err := a.enforceEmailVerification(procedure, userInfo); err != nil {
-			return ctx, err
+			return ctx, noRefresh, err
 		}
-		return ctx, nil
+		return ctx, noRefresh, nil
 	}
 
 	token := SessionIDFromHeader(cookieHeader, a.secureCookie)
 	if token == "" {
-		return ctx, connect.NewError(connect.CodeUnauthenticated, nil)
+		return ctx, noRefresh, connect.NewError(connect.CodeUnauthenticated, nil)
 	}
 
 	userInfo, err := a.validateTokenCached(ctx, token)
 	if err != nil {
-		return ctx, err
+		return ctx, noRefresh, err
 	}
-	a.touchSession(ctx, token, userInfo)
+	refresh := noRefresh
+	if slidTo := a.touchSession(ctx, token, userInfo); !slidTo.IsZero() {
+		refresh = sessionRefresh{sessionID: token, expiresAt: slidTo}
+	}
 
 	ctx = WithUser(ctx, userInfo)
 
 	if err := a.enforceEmailVerification(procedure, userInfo); err != nil {
-		return ctx, err
+		return ctx, noRefresh, err
 	}
 
-	return ctx, nil
+	return ctx, refresh, nil
 }
 
 // enforceEmailVerification rejects a request from an unverified, non-admin user
@@ -983,19 +1038,37 @@ func (a *authInterceptor) bearerRevoked(key bearerCacheKeyParts, user *UserInfo,
 
 const sessionTouchThreshold = 5 * time.Minute
 
-// touchSession extends the session expiry by SessionDuration if the last
+// slideDuration is the expiry that a touch writes. The extra
+// sessionTouchThreshold keeps the promise that the configured session duration
+// makes. A request inside the throttle window writes nothing, so an expiry of
+// exactly now + sessionDuration would end the session up to
+// sessionTouchThreshold before that duration passed since the last request. It
+// is also the longest that a session row can outlive its last touch, which is
+// the span the cache sweep cutoffs measure.
+func (a *authInterceptor) slideDuration() time.Duration {
+	return sessionLifetime(a.sessionDuration) + sessionTouchThreshold
+}
+
+// touchSession slides the session expiry to now + slideDuration if the last
 // touch was more than sessionTouchThreshold ago. An in-memory map gates the
 // check so that most requests skip the DB call entirely — only the first
 // request after the threshold elapses hits SQLite.
-func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, user *UserInfo) {
+//
+// Returns the new expiry, or the zero time when nothing slid. The caller
+// re-issues the session cookie with that expiry. The cookie carries its own
+// Expires attribute, so a browser drops it at the deadline that the last
+// Set-Cookie named; without the re-issue the slide extends a row that the
+// browser stops sending a cookie for, and the user is signed out
+// one session duration after the login however active they were.
+func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, user *UserInfo) time.Time {
 	now := time.Now()
 	if v, ok := a.state.lastTouch.Load(sessionID); ok {
 		if now.Sub(v.(time.Time)) < sessionTouchThreshold {
-			return
+			return time.Time{}
 		}
 	}
 
-	newExpiry := now.Add(SessionDuration).UTC()
+	newExpiry := now.Add(a.slideDuration()).UTC()
 	threshold := now.Add(-sessionTouchThreshold).UTC()
 	rows, err := a.store.Sessions().Touch(ctx, store.TouchSessionParams{
 		ID:           sessionID,
@@ -1003,7 +1076,7 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 		LastActiveAt: threshold,
 	})
 	if err != nil {
-		return
+		return time.Time{}
 	}
 	// Record the attempt regardless of whether a row matched: lastTouch is the
 	// per-process DB rate-limiter, and a zero-row match means the session was
@@ -1015,9 +1088,10 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 		// row, so the DB expiry was NOT advanced -- most commonly on a freshly
 		// (re)started Hub whose lastTouch map is empty but whose session was
 		// touched moments ago. Do not slide the in-memory credential / lease /
-		// channel deadlines past the un-advanced DB value; a later touch past
-		// the threshold advances DB and memory together.
-		return
+		// channel deadlines past the un-advanced DB value, and do not re-issue a
+		// cookie for a deadline that the row does not carry; a later touch past
+		// the threshold advances DB, memory, and cookie together.
+		return time.Time{}
 	}
 	// The slid DB expiry is authoritative and finite; carry it as a deadline for
 	// the in-memory credential / lease / channel arms.
@@ -1043,16 +1117,18 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 	if rp := a.state.channelRescheduler.Load(); rp != nil {
 		(*rp).RescheduleExpiryBySession(sessionID, newDeadline)
 	}
+	return newExpiry
 }
 
 const touchSweepInterval = 10 * time.Minute
 
 // sweepCachesOnce removes stale entries from the lastTouch, session, and bearer
 // caches and from the revocation/invalidation mark maps. Touch entries older
-// than SessionDuration are removed since those sessions have expired. Session
-// and bearer cache entries older than sessionCacheTTL are removed to avoid
-// unbounded growth, and revocation/invalidation marks older than SessionDuration
-// are swept under revocationMu.
+// than slideDuration are removed since those sessions have expired -- that
+// span, not the session duration alone, is the longest a session row can
+// outlive its last touch. Session and bearer cache entries older than sessionCacheTTL
+// are removed to avoid unbounded growth, and revocation/invalidation marks older
+// than slideDuration are swept under revocationMu.
 //
 // The session/bearer cache SCAN runs lock-free (like lastTouch and bearerExpiries
 // above) so the O(cache size) walk does not stall every hot-path acquirer of
@@ -1061,7 +1137,7 @@ const touchSweepInterval = 10 * time.Minute
 // delete is unconditional -- see below).
 func (a *authInterceptor) sweepCachesOnce() {
 	now := time.Now()
-	touchCutoff := now.Add(-SessionDuration)
+	touchCutoff := now.Add(-a.slideDuration())
 	a.state.lastTouch.Range(func(key, value any) bool {
 		if value.(time.Time).Before(touchCutoff) {
 			a.state.deleteStaleLastTouch(key, value)
@@ -1124,7 +1200,7 @@ func (a *authInterceptor) sweepCachesOnce() {
 	// uses an unconditional Delete (no CAS), so a lock-free scan could drop a fresh
 	// re-revocation mark stored for the same key in the scan->delete gap -- a
 	// security regression. These maps are also far smaller than the caches.
-	revocationCutoff := now.Add(-SessionDuration)
+	revocationCutoff := now.Add(-a.slideDuration())
 	sweepRevocationMarks(&a.state.sessionRevocations, revocationCutoff)
 	sweepRevocationMarks(&a.state.userRevocations, revocationCutoff)
 	sweepRevocationMarks(&a.state.userInvalidations, revocationCutoff)

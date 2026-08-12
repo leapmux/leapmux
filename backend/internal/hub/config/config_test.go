@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
@@ -1265,5 +1267,68 @@ func TestMaxConnectionsPerUser(t *testing.T) {
 		err := cfg.Validate()
 		require.Error(t, err, "a sign typo must not silently disable the cap")
 		assert.Contains(t, err.Error(), "max_connections_per_user")
+	})
+}
+
+func TestSessionDuration(t *testing.T) {
+	t.Run("defaults to the built-in duration", func(t *testing.T) {
+		cfg, _, err := Load(nil)
+		require.NoError(t, err)
+		assert.Equal(t, auth.DefaultSessionDuration, cfg.SessionDuration(),
+			"an operator who sets nothing must get the documented lifetime")
+	})
+
+	// The same three wiring mistakes each other settable key is pinned against:
+	// a missing fieldMap entry, a koanf tag that does not match the key, and an
+	// env-name mismatch all present as "the value I set was ignored".
+	t.Run("is settable from the command line", func(t *testing.T) {
+		cfg, _, err := Load([]string{"-session-duration-seconds", "3600"})
+		require.NoError(t, err)
+		assert.Equal(t, time.Hour, cfg.SessionDuration())
+	})
+
+	t.Run("is settable from the config file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "hub.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("session_duration_seconds: 3600\n"), 0o644))
+		cfg, _, err := Load([]string{"-config", path})
+		require.NoError(t, err)
+		assert.Equal(t, time.Hour, cfg.SessionDuration())
+	})
+
+	t.Run("is settable from the environment", func(t *testing.T) {
+		t.Setenv("LEAPMUX_HUB_SESSION_DURATION_SECONDS", "3600")
+		cfg, _, err := Load(nil)
+		require.NoError(t, err)
+		assert.Equal(t, time.Hour, cfg.SessionDuration())
+	})
+
+	t.Run("zero reads as the default", func(t *testing.T) {
+		cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDurationSeconds: 0}
+		assert.NoError(t, cfg.Validate())
+		assert.Equal(t, auth.DefaultSessionDuration, cfg.SessionDuration())
+	})
+
+	// Below the floor the Hub cannot honestly enforce the value it was given:
+	// a validated session stays cached in memory for 30 seconds, so a session
+	// of a few seconds is served well past its own expiry. That fails at
+	// startup naming the key rather than as a mystery at runtime.
+	t.Run("rejects a duration under the floor", func(t *testing.T) {
+		for _, tooShort := range []int{1, 30, MinSessionDurationSeconds - 1} {
+			cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDurationSeconds: tooShort}
+			err := cfg.Validate()
+			require.Error(t, err, "duration %d must be rejected", tooShort)
+			assert.Contains(t, err.Error(), "session_duration_seconds")
+		}
+
+		ok := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDurationSeconds: MinSessionDurationSeconds}
+		assert.NoError(t, ok.Validate(), "the minimum itself must be allowed")
+	})
+
+	t.Run("rejects a negative rather than reading it as the default", func(t *testing.T) {
+		cfg := &Config{Listen: ":4327", DataDir: t.TempDir(), SessionDurationSeconds: -1}
+		err := cfg.Validate()
+		require.Error(t, err, "a sign typo must not silently restore the default")
+		assert.Contains(t, err.Error(), "session_duration_seconds")
 	})
 }

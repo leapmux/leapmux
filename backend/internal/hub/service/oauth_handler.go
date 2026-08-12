@@ -294,7 +294,7 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, auth.SessionMeta{
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, h.cfg.SessionDuration(), auth.SessionMeta{
 		UserAgent: r.UserAgent(),
 		IPAddress: r.RemoteAddr,
 	})

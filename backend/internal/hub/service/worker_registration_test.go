@@ -91,7 +91,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 	pendingReqs := workermgr.NewPendingRequests(cfg.APITimeout)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
+	interceptor, sc := auth.NewInterceptor(auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 

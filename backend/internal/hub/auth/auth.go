@@ -15,8 +15,27 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// SessionDuration is the lifetime of a user session.
-const SessionDuration = 24 * time.Hour
+// DefaultSessionDuration is the minimum time a session stays valid after the
+// user's last request, when the operator configures no other value.
+// config.DefaultSessionDurationSeconds derives from it, so the flag default and
+// this one cannot drift.
+//
+// CreateSession sets the first expiry to now + the lifetime that the caller
+// gives, and each later authenticated request slides that expiry forward (see
+// touchSession in interceptor.go). A session therefore ends one lifetime after
+// the last request, not one lifetime after the login.
+const DefaultSessionDuration = 8 * 24 * time.Hour
+
+// sessionLifetime resolves a configured session lifetime. Zero or less falls
+// back to DefaultSessionDuration. One home for that fallback, so the first
+// expiry that CreateSession writes and the slide that the interceptor writes
+// cannot disagree about how long an unconfigured session lives.
+func sessionLifetime(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		return DefaultSessionDuration
+	}
+	return configured
+}
 
 type contextKey int
 
@@ -159,9 +178,10 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 	}, nil
 }
 
-// Login validates credentials and creates a new session token.
+// Login validates credentials and creates a new session token. lifetime is the
+// session's minimum life past the user's last request; see CreateSession.
 // Returns the session ID, user, session expiry time, and any error.
-func Login(ctx context.Context, st store.Store, username, password string) (string, *store.User, time.Time, error) {
+func Login(ctx context.Context, st store.Store, username, password string, lifetime time.Duration) (string, *store.User, time.Time, error) {
 	var zero time.Time
 	user, err := st.Users().GetByUsername(ctx, username)
 	if err != nil {
@@ -227,7 +247,7 @@ func Login(ctx context.Context, st store.Store, username, password string) (stri
 		if !sessMintOK {
 			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
-		sessionID, expiresAt, err = CreateSession(ctx, tx, sessUID)
+		sessionID, expiresAt, err = CreateSession(ctx, tx, sessUID, lifetime)
 		if err != nil {
 			return err
 		}
@@ -255,7 +275,12 @@ type SessionMeta struct {
 
 // CreateSession creates a new user session and returns the session ID and
 // expiry time.
-func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, meta ...SessionMeta) (string, time.Time, error) {
+//
+// lifetime is the session's minimum life past the user's last request. Zero or
+// less falls back to DefaultSessionDuration: a caller that has no configured
+// value must still issue a usable session, not one that expired before the
+// response left the Hub.
+func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, lifetime time.Duration, meta ...SessionMeta) (string, time.Time, error) {
 	// A session for nobody is worse than no session: it would authenticate as a
 	// blank id, which every predicate then has to refuse individually. Refuse to
 	// write the row at all.
@@ -263,7 +288,7 @@ func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, me
 		return "", time.Time{}, fmt.Errorf("create session: user id is required")
 	}
 	sessionID := id.Generate()
-	expiresAt := time.Now().Add(SessionDuration).UTC()
+	expiresAt := time.Now().Add(sessionLifetime(lifetime)).UTC()
 	params := store.CreateSessionParams{
 		ID:        sessionID,
 		UserID:    userID,

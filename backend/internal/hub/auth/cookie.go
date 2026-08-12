@@ -34,6 +34,33 @@ func BuildSessionCookie(sessionID string, expiresAt time.Time, secure bool) *htt
 	}
 }
 
+// sessionRefresh carries a session slide from the auth interceptor to the
+// response, so the cookie's own Expires attribute tracks the slid DB expiry.
+// The zero value means that nothing slid on this request and no cookie is
+// written.
+type sessionRefresh struct {
+	sessionID string
+	expiresAt time.Time
+}
+
+// applyTo writes the refreshed session cookie into h, unless the handler wrote a
+// Set-Cookie of its own.
+//
+// Skipping a handler-written cookie is what makes the refresh safe to run on
+// every response. A browser applies several Set-Cookie headers for one name in
+// order and keeps the last, so a refresh appended after Logout's clearing cookie
+// leaves a live session cookie in the browser -- the user stays signed in. The
+// handlers that write this cookie (login, sign-up, OAuth signup completion, the
+// OAuth callback, logout) each name the session that the response established,
+// and that is always newer than the slide the interceptor observed on the way
+// in.
+func (r sessionRefresh) applyTo(h http.Header, secure bool) {
+	if r.sessionID == "" || len(h.Values("Set-Cookie")) > 0 {
+		return
+	}
+	h.Add("Set-Cookie", BuildSessionCookie(r.sessionID, r.expiresAt, secure).String())
+}
+
 // ClearSessionCookie creates a cookie that clears the session.
 func ClearSessionCookie(secure bool) *http.Cookie {
 	return &http.Cookie{

@@ -193,9 +193,11 @@ When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` 
 
 | Property | Value |
 | --- | --- |
-| Session lifetime | **24 hours** |
+| Session lifetime | **8 days after your last activity** (operators can change this — see [`session_duration_seconds`](/docs/operating/configuration/)) |
 | Cookie name | `leapmux-session` (or `__Host-leapmux-session` when the operator enables secure cookies behind TLS) |
 | Cookie flags | `HttpOnly`, `Path=/`, `SameSite=Lax` |
+
+**The clock runs from your last activity, not from your login.** Every request you make slides the expiry forward and refreshes the cookie, so a session you keep using never runs out. The lifetime is an idle timeout: stay away for the whole period without touching LeapMux and you are signed out.
 
 **Staying signed in.** As long as your session has not expired, reloading the page keeps you logged in — LeapMux restores your session on load. If your session has expired or been revoked, a failed request quietly signs you out (no error is shown); just log in again.
 
