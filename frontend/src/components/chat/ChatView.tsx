@@ -202,12 +202,9 @@ export interface AgentLifecycleProps {
   startupMessage?: string
   /** Human-readable label for the agent provider (e.g. "Claude Code"). */
   providerLabel?: string
-  /** Active background-task count (keeps the indicator up + drives the chip). */
-  backgroundTaskCount?: number
-  /** Full registry for the chip popover. */
+  /** Full registry (active + past) for the chip and the popover it opens. */
   backgroundTasks?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
-  resolveParentLabel?: (agentId: string) => string | undefined
   /** The agent's to-do list for the todos chip + popover. */
   todos?: TodoItem[]
 }
@@ -232,6 +229,14 @@ interface ChatViewProps {
    * restructures (tile split / make-grid / close-grid).
    */
   agentId?: string
+  /**
+   * Whether this view is a SUBAGENT's own transcript rather than the transcript
+   * that spawned it. Reaches the message classifier, where the same wire shape
+   * means different things on the two sides: a user message stamped with the
+   * spawning tool_use id is the prompt sent TO a subagent in the parent, and an
+   * ordinary message inside the child.
+   */
+  isChildTranscript?: boolean
   messages: AgentChatMessage[]
   streamingText: string
   /**
@@ -367,6 +372,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // cache from reusing the pre-update classification when the proxy/seq don't move.
     contentVersionById: id => props.lookups?.getMessageContentVersion?.(id) ?? 0,
     hasNewerMessages: () => !!props.pagination?.hasNewerMessages,
+    isChildTranscript: () => !!props.isChildTranscript,
     showHiddenMessages: () => prefs.showHiddenMessages(),
   })
   const visibleEntries = entries.visibleEntries
@@ -1172,10 +1178,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     visible={props.agentLifecycle?.agentWorking ?? false}
                     thinkingTokens={props.agentLifecycle?.thinkingTokens}
                     paused={props.tabActive === false}
-                    backgroundTaskCount={props.agentLifecycle?.backgroundTaskCount}
                     backgroundTasks={props.agentLifecycle?.backgroundTasks}
                     onOpenSubagent={props.agentLifecycle?.onOpenSubagent}
-                    resolveParentLabel={props.agentLifecycle?.resolveParentLabel}
                     todos={props.agentLifecycle?.todos}
                     onExpandTick={() => {
                       if (scroll.isAtBottomFresh())

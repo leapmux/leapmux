@@ -3,6 +3,7 @@ import type { AppShellDialogStates, ChangeBranchState, DeleteBranchState, KeyPin
 import type { SidebarElementsOpts } from './SidebarElements'
 import type { TabContext } from './tabContext'
 import type { CliPathStatus } from '~/api/platformBridge'
+import type { BranchRef } from '~/components/workspace/WorkspaceTabTree'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import { useLocation, useSearchParams } from '@solidjs/router'
@@ -39,9 +40,10 @@ import { createActiveClientStore } from '~/lib/presence/activeClient'
 import { mountPresenceHeartbeat } from '~/lib/presence/heartbeat'
 import { isMac } from '~/lib/shortcuts/platform'
 import { printConsoleBanner } from '~/lib/systemInfo'
-import { onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
+import { isWorkerKnownOnline, onlineWorkerIdSet, workerOnlineState } from '~/lib/workerLiveness'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
+import { shouldShowBackgroundTasksSection } from '~/stores/chatBackgroundTasks'
 import { createControlStore } from '~/stores/control.store'
 import { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
@@ -166,6 +168,22 @@ export const AppShell: Component = () => {
   const keyPinConfirmDialog = createDialogState<KeyPinConfirmState>()
   const changeBranchDialog = createDialogState<ChangeBranchState>()
   const deleteBranchDialog = createDialogState<DeleteBranchState>()
+  // Both branch surfaces -- the sidebar's branch row and the composer's branch
+  // chip -- open the same dialogs from the same BranchRef, so the adapters are
+  // defined once. A field added to either dialog state then reaches both.
+  const openChangeBranchDialog = (ref: BranchRef) => changeBranchDialog.open({
+    workerId: ref.workerId,
+    gitToplevel: ref.gitToplevel,
+    workspaceId: ref.workspaceId,
+    branchName: ref.branchName,
+    isWorktree: ref.isWorktree,
+  })
+  const openDeleteBranchDialog = (ref: BranchRef) => deleteBranchDialog.open({
+    workerId: ref.workerId,
+    gitToplevel: ref.gitToplevel,
+    branchName: ref.branchName,
+    tabs: ref.tabs,
+  })
   // Set to a `missing` / `mismatch` status when the macOS PATH check should
   // show its dialog. `null` keeps the dialog unmounted (ok / unavailable /
   // not-yet-checked / non-macOS).
@@ -354,7 +372,13 @@ export const AppShell: Component = () => {
   // store graph — the same seam as `setCRDTBridge`. Every teardown path routes
   // through `disposeTerminalInstance`, so a workspace switch, a tab close, a
   // cross-workspace move and a floating-window close all preserve the buffer.
-  setTerminalScreenSink((tabId, screen) => tabMetadata.patch(tabId, { screen }))
+  // `patchExisting`, not `patch`: this fires from `disposeTerminalInstance`, and
+  // the view's unmount defers that to a microtask -- so for a terminal closed on
+  // another device it runs AFTER the sweep already reclaimed the row. Creating
+  // the row again would strand a full serialized scrollback that nothing can
+  // ever retire, because the sweep retires an id once and it can never be live
+  // again.
+  setTerminalScreenSink((tabId, screen) => tabMetadata.patchExisting(tabId, { screen }))
   onCleanup(() => setTerminalScreenSink(null))
 
   // Workspace & section loading
@@ -785,11 +809,17 @@ export const AppShell: Component = () => {
   const activeBackgroundTasks = createMemo(() =>
     activeRootAgentId() ? chatStore.backgroundTasks.get(activeRootAgentId()!) : [],
   )
-  const showBackgroundTasks = createMemo(() => activeBackgroundTasks().length > 0)
-  const resolveAgentTabTitle = (id: string): string | undefined => {
-    const t = tabView.getAgentTab(id)
-    return t?.title
-  }
+  // Whether the worker could not answer for this root's registry. Keeps a
+  // FAILURE distinguishable from an empty registry: the section is hidden when
+  // empty, so without this a worker that cannot read the table takes the whole
+  // section off screen with nothing to say why -- which is what a database
+  // missing a column did.
+  const activeBackgroundTasksFailed = createMemo(() =>
+    activeRootAgentId() ? chatStore.backgroundTasks.loadFailed(activeRootAgentId()!) : false,
+  )
+  const showBackgroundTasks = createMemo(() =>
+    shouldShowBackgroundTasksSection(activeBackgroundTasks(), activeBackgroundTasksFailed()),
+  )
   // Open a subagent tab from a Background tasks row. Built once here and shared
   // with the sidebar section + the ThinkingIndicator popover (via sidebarOpts).
   const onOpenBackgroundTask = (item: { childAgentId?: string, parentAgentId?: string, title?: string }) => {
@@ -826,8 +856,8 @@ export const AppShell: Component = () => {
     if (workspace.activeWorkspaceId() !== deletedId)
       return
     // No store to clear: the workspace's tabs leave the projection when the hub
-    // tombstones them, and their metadata is swept by `retainOnly` on the next
-    // tick. Only the selection pointer has to be dropped explicitly.
+    // tombstones them, and `useMetadataSweep` reclaims their metadata on the
+    // next tick. Only the selection pointer has to be dropped explicitly.
     // A null id clears the selection, which is what surfaces the
     // "Create a new workspace..." empty state once the last one is gone.
     switchWorkspace(nextWorkspaceId)
@@ -911,7 +941,11 @@ export const AppShell: Component = () => {
     },
     settingsLoading,
     onOpenBackgroundTask,
-    resolveParentLabel: resolveAgentTabTitle,
+    branch: {
+      onChangeBranch: openChangeBranchDialog,
+      onDeleteBranch: openDeleteBranchDialog,
+      isWorkerKnownOnline: workerId => isWorkerKnownOnline(workerSection.workers(), workerId),
+    },
   })
 
   useChatAutoFocus(() => tileRenderer.focusedAgentId())
@@ -977,8 +1011,8 @@ export const AppShell: Component = () => {
     get activeTodos() { return activeTodos() },
     get showBackgroundTasks() { return showBackgroundTasks() },
     get activeBackgroundTasks() { return activeBackgroundTasks() },
+    get activeBackgroundTasksFailed() { return activeBackgroundTasksFailed() },
     onOpenBackgroundTask: item => onOpenBackgroundTask(item),
-    resolveAgentTabTitle,
     termOps,
     gitStatusStore: gitFileStatusStore,
     get turnEndTrigger() { return turnEndTrigger() },
@@ -1024,19 +1058,8 @@ export const AppShell: Component = () => {
     // projected yet (the CRDT bootstrap hasn't landed); the tree falls back to
     // a position-only sort.
     getTileOrderForWorkspace: (wsId: string) => layoutStore.tileOrderFor(wsId),
-    onChangeBranch: ref => changeBranchDialog.open({
-      workerId: ref.workerId,
-      gitToplevel: ref.gitToplevel,
-      workspaceId: ref.workspaceId,
-      branchName: ref.branchName,
-      isWorktree: ref.isWorktree,
-    }),
-    onDeleteBranch: ref => deleteBranchDialog.open({
-      workerId: ref.workerId,
-      gitToplevel: ref.gitToplevel,
-      branchName: ref.branchName,
-      tabs: ref.tabs,
-    }),
+    onChangeBranch: openChangeBranchDialog,
+    onDeleteBranch: openDeleteBranchDialog,
   })
 
   // Refresh git status only when workerId or workingDir actually changes

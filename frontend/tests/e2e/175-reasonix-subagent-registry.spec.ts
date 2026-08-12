@@ -1,11 +1,7 @@
 import {
-  agentTabIdsForWorkspace,
-  expectNoChildAgents,
+  expectRegistryOnlySubagentEnds,
   expectRegistrySectionAbsent,
-  expectRowBecomesTerminal,
-  expectRowNotClickable,
-  expectSectionPersists,
-  tryWaitForRegistryRow,
+  requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
 /**
@@ -24,25 +20,17 @@ reasonixTest.describe('Reasonix subagent registry', () => {
   reasonixTest('subagent spawn creates a registry row with no progress or child', async ({
     authenticatedReasonixWorkspace,
     page,
-    leapmuxServer,
   }) => {
     void authenticatedReasonixWorkspace
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = authenticatedReasonixWorkspace.workspaceId
 
     await expectRegistrySectionAbsent(page)
 
     await sendMessage(page, 'Use your task tool to spawn one subagent whose prompt is: reply with the single word PONG. Report what it said.')
 
     // The model may choose not to spawn; skip the spawn-dependent assertions.
-    const row = await tryWaitForRegistryRow(page)
-    reasonixTest.skip(!row, 'model did not spawn a subagent')
+    const row = await requireRegistryRow(reasonixTest, page)
     const r = row!
 
-    await expectRowBecomesTerminal(page, r, 'Completed').catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
-    await expectSectionPersists(page)
-    await expectRowNotClickable(page, r)
-    const tabIds = await agentTabIdsForWorkspace(hubUrl, adminToken, workspaceId)
-    await expectNoChildAgents(hubUrl, adminToken, workerId, tabIds)
+    await expectRegistryOnlySubagentEnds(page, r)
   })
 })

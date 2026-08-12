@@ -15,7 +15,10 @@ export const container = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
-  padding: 'var(--space-2) 0',
+  // The 24px compass already stands well clear of the line above and below it,
+  // so a full --space-2 on each side left the indicator floating in the
+  // transcript. Half that keeps it a distinct row without the gap.
+  padding: 'var(--space-1) 0',
   color: 'var(--primary)',
 })
 
@@ -39,18 +42,40 @@ export const verbRow = style({
   gap: 'var(--space-1)',
 })
 
-// bgTaskChip is the small active-count chip beside the verb. Sits in the
-// baseline-aligned verbRow; a button so it can host the registry popover.
-export const bgTaskChip = style({
-  display: 'inline-flex',
-  alignItems: 'center',
-  fontSize: 'var(--text-7)',
-  fontWeight: 'var(--font-bold)',
-  color: 'var(--primary)',
-  background: 'none',
-  border: 'none',
-  cursor: 'pointer',
-  padding: 0,
+// countChip is a background-task / to-do counter in the verb row. It reads as
+// plain running text next to the thinking-token count, so it copies that
+// count's type (see the `root` rule in ./ThinkingTokenCount.css.ts) rather than
+// looking like a separate badge. Still a button: each one hosts a popover.
+export const countChip = style({
+  'display': 'inline-block',
+  'fontSize': 'var(--text-8)',
+  // fontWeight and lineHeight are declared, not inherited. Oat's `@layer base`
+  // button rule sets both on every <button>, and an unlayered vanilla-extract
+  // class only overrides the properties it lists -- so leaving these out would
+  // render the counters at --font-medium on a taller line box, beside a token
+  // count that is a <span> at the normal weight.
+  'fontWeight': 'var(--font-normal)',
+  'lineHeight': '1.3em',
+  'color': 'var(--muted-foreground)',
+  'fontVariantNumeric': 'tabular-nums',
+  'userSelect': 'none',
+  'whiteSpace': 'nowrap',
+  'background': 'none',
+  'border': 'none',
+  'padding': 0,
+  'cursor': 'pointer',
+  ':hover': {
+    color: 'var(--foreground)',
+  },
+})
+
+// The `·` between two adjacent counters. Its own element (not included in a
+// counter's text) so any counter can be absent without leaving a dangling
+// separator, and so the separator never inherits a counter's hover color.
+export const countSeparator = style({
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  userSelect: 'none',
 })
 
 // verbStack hosts two overlapping verb spans so we can crossfade

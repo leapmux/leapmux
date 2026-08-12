@@ -1,5 +1,35 @@
--- name: ListAgentBackgroundTasks :many
-SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq LIMIT ?;
+-- ListAgentBackgroundTasksNewestFirst loads the cold-start seed for one owner's registry.
+-- DESC is load-bearing: the registry is capped, and eviction drops the OLDEST
+-- final row, so the rows worth holding are the NEWEST ones. An ASC LIMIT hands
+-- back the oldest N instead, which for an owner past the cap means a restart
+-- resurrects finished rows and hides the running subagents -- and derives
+-- nextSeq from a truncated maximum, so the next insert collides with a
+-- surviving seq under UNIQUE (owner_agent_id, seq). The caller reverses the
+-- result to restore ascending seq order.
+-- name: ListAgentBackgroundTasksNewestFirst :many
+SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq DESC LIMIT ?;
+
+-- ListAgentBackgroundTasksByKindNewestFirst is the per-POOL seed. The registry
+-- caps each kind independently, so one global window is the wrong shape: an
+-- owner whose newest N rows are all shells seeds an EMPTY subagent pool, and the
+-- subagent rows are the ones carrying a transcript worth reopening.
+-- name: ListAgentBackgroundTasksByKindNewestFirst :many
+SELECT * FROM agent_background_tasks
+WHERE owner_agent_id = ? AND kind = ?
+ORDER BY seq DESC LIMIT ?;
+
+-- DeleteFinishedAgentBackgroundTasksBelowSeq reclaims the rows a pool's seed
+-- window left behind.
+--
+-- The cap is SOFT: an upsert exceeds it rather than orphan a steerable child, so
+-- a pool can hold more rows than its window admits. Eviction only ever deletes a
+-- row the CACHE holds, so without this pass the surplus is never loaded and
+-- never deleted -- invisible in the sidebar and growing without limit in the DB.
+-- Only FINISHED rows are reclaimed: an active row still names a live child.
+-- name: DeleteFinishedAgentBackgroundTasksBelowSeq :execrows
+DELETE FROM agent_background_tasks
+WHERE owner_agent_id = ? AND kind = ? AND seq < ?
+  AND status IN ('completed','failed','stopped','interrupted');
 
 -- UpsertAgentBackgroundTask inserts a new row or updates an existing one keyed
 -- by (owner_agent_id, row_key). seq is set only on insert (never overwritten on
@@ -12,9 +42,9 @@ SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq LIMIT
 -- name: UpsertAgentBackgroundTask :exec
 INSERT INTO agent_background_tasks (
     owner_agent_id, row_key, seq, kind, child_agent_id, parent_agent_id,
-    group_key, group_label, title, description, active_form, status, created_at, updated_at
+    group_key, group_label, title, title_is_command, description, active_form, status, created_at, updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 ON CONFLICT(owner_agent_id, row_key) DO UPDATE SET
     kind           = excluded.kind,
@@ -23,6 +53,7 @@ ON CONFLICT(owner_agent_id, row_key) DO UPDATE SET
     group_key      = excluded.group_key,
     group_label    = excluded.group_label,
     title          = excluded.title,
+    title_is_command = excluded.title_is_command,
     description    = excluded.description,
     active_form    = excluded.active_form,
     status         = excluded.status,
@@ -36,12 +67,12 @@ UPDATE agent_background_tasks SET
 WHERE owner_agent_id = ? AND row_key = ?;
 
 -- StampAgentBackgroundTaskEndedAt sets ended_at on a row that is already
--- terminal but still has a NULL ended_at. This covers the status-update path:
--- providers call UpdateBackgroundTaskStatus(terminal) then CloseBackgroundTask,
--- but the close early-returns on IsTerminal(), so ended_at was never stamped.
--- The status filter makes this idempotent (only terminal rows qualify), so a
--- transient failure here self-corrects on the next terminal write (or the boot
--- sweep): the status is already terminal in both DB and cache, and a NULL
+-- final but still has a NULL ended_at. This covers the status-update path:
+-- providers call UpdateBackgroundTaskStatus(a final status) then CloseBackgroundTask,
+-- but the close early-returns on IsFinished(), so ended_at was never stamped.
+-- The status filter makes this idempotent (only finished rows qualify), so a
+-- transient failure here self-corrects on the next final-status write (or the boot
+-- sweep): the status is already final in both DB and cache, and a NULL
 -- ended_at reads back as the zero time, matching the cache's untouched value.
 -- Kept as a separate query because sqlc cannot infer the type of a positional
 -- parameter that appears only inside a CASE WHEN condition (a `? IN (...)`
@@ -56,8 +87,8 @@ WHERE owner_agent_id = ? AND row_key = ?
   AND ended_at IS NULL
   AND status IN ('completed','failed','stopped','interrupted');
 
--- CloseAgentBackgroundTask stamps the terminal status and ended_at. The
--- status-IN filter means a terminal row can never be resurrected or re-closed
+-- CloseAgentBackgroundTask stamps the final status and ended_at. The
+-- status-IN filter means a finished row can never be resurrected or re-closed
 -- by a late/duplicate event.
 -- name: CloseAgentBackgroundTask :exec
 UPDATE agent_background_tasks SET
@@ -71,21 +102,28 @@ DELETE FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
 
 -- RenameAgentBackgroundTask re-keys a row (owner_agent_id, old_row_key) to
 -- new_row_key. The row_key is the provider linkage key; a provider that learns
--- the stable child id only on the terminal update (OpenCode: the row opens under
+-- the stable child id only on the final update (OpenCode: the row opens under
 -- the toolCallId and the session id surfaces late) renames so a single row
 -- tracks the whole lifecycle instead of a spawn row + a separately-keyed row.
 -- No status-IN guard: a rename is key-only and applies to any row state.
 -- name: RenameAgentBackgroundTask :execrows
 UPDATE agent_background_tasks SET row_key = ? WHERE owner_agent_id = ? AND row_key = ?;
 
+-- CountAgentBackgroundTasksByRowKey answers "is this key already taken?" for the
+-- rename path. (owner_agent_id, row_key) is the PRIMARY KEY, so a rename onto an
+-- occupied key fails the UPDATE outright rather than overwriting; the caller
+-- checks first and drops the losing row instead.
+-- name: CountAgentBackgroundTasksByRowKey :one
+SELECT COUNT(*) FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
+
 -- GetAgentBackgroundTaskByChildAgentID is the reverse lookup behind
 -- send-to-subagent and interrupt routing: child agent id -> (owner, row_key).
 -- name: GetAgentBackgroundTaskByChildAgentID :one
 SELECT * FROM agent_background_tasks WHERE child_agent_id = ?;
 
--- MarkAgentBackgroundTasksEnded terminalizes every still-active row owned by
--- an agent (used on clean process exit). Returns the affected-row count so the
--- caller can skip the broadcast when nothing moved.
+-- MarkAgentBackgroundTasksEnded gives every still-active row owned by an agent a
+-- final status (used on clean process exit). Returns the affected-row count so
+-- the caller can skip the broadcast when nothing moved.
 -- name: MarkAgentBackgroundTasksEnded :execrows
 UPDATE agent_background_tasks SET
     status     = ?,
@@ -96,9 +134,17 @@ WHERE owner_agent_id = ? AND status IN ('pending','running');
 -- MarkAllActiveAgentBackgroundTasksInterrupted runs at worker boot before any
 -- caches exist: every active row left over from the previous process is
 -- honestly labeled "interrupted" (the worker restarted and cut the task off).
--- name: MarkAllActiveAgentBackgroundTasksInterrupted :execrows
+--
+-- It RETURNS the child transcript of each row it ended, so the boot sweep closes
+-- exactly the transcripts it interrupted. The write is the single source for
+-- both facts: a separate read before the UPDATE could not be repeated after it
+-- (the rows are no longer active), so a failed read followed by a successful
+-- UPDATE would strand every one of those transcripts with no closing divider,
+-- permanently and with no way for a later boot to find them.
+-- name: MarkAllActiveAgentBackgroundTasksInterrupted :many
 UPDATE agent_background_tasks SET
     status     = 'interrupted',
     ended_at   = ?,
     updated_at = ?
-WHERE status IN ('pending','running');
+WHERE status IN ('pending','running')
+RETURNING child_agent_id;

@@ -289,18 +289,41 @@ func TestDecorateCursorModel_DisambiguatesThinkingFastVariants(t *testing.T) {
 	assert.Equal(t, "Composer 2.5 (Fast)", named.DisplayName)
 }
 
-// TestDecorateCursorModel_EffortLevelInName covers the effort-level suffix across the
-// levels Cursor surfaces: xhigh cases as "XHigh", others just capitalize.
+// TestDecorateCursorModel_EffortLevelInName covers the effort-level suffix across
+// the levels Cursor surfaces. The suffix reads the SHARED label table, so an id
+// spells the same here as it does in every other provider's effort picker --
+// "xhigh" used to render "XHigh" only in this one place.
 func TestDecorateCursorModel_EffortLevelInName(t *testing.T) {
 	t.Parallel()
 
 	xhigh := &ModelInfo{Id: "claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]"}
 	decorateCursorModel(xhigh)
-	assert.Equal(t, "Claude Opus 4.7 XHigh", xhigh.DisplayName)
+	assert.Equal(t, "Claude Opus 4.7 "+effortLabel(EffortXHigh), xhigh.DisplayName)
+	assert.Equal(t, "Claude Opus 4.7 Extra High", xhigh.DisplayName)
 
 	opus := &ModelInfo{Id: "claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]"}
 	decorateCursorModel(opus)
 	assert.Equal(t, "Claude Opus 4.8 High", opus.DisplayName)
+
+	// An id no provider declares still reads as a label, not a raw token.
+	unknown := &ModelInfo{Id: "some-model[thinking=true,context=300k,effort=turbo,fast=false]"}
+	decorateCursorModel(unknown)
+	assert.Equal(t, "Some Model Turbo", unknown.DisplayName)
+}
+
+// Every provider that declares an effort id must agree with the shared table on
+// its label. This is the drift the table exists to remove: three files spelled
+// "xhigh" out by hand and a fourth special-cased it.
+func TestEffortLabelsAreSharedAcrossProviders(t *testing.T) {
+	t.Parallel()
+
+	for _, tiers := range [][]*EffortInfo{codexDefaultEfforts, piDefaultEfforts, claudeEffortXHighMax} {
+		for _, tier := range tiers {
+			assert.Equal(t, effortLabel(tier.Id), tier.Name, "effort %q must use the shared label", tier.Id)
+		}
+	}
+	assert.Equal(t, "Extra High", effortLabel(EffortXHigh))
+	assert.Equal(t, "Extra High", cursorEffortLabel("xhigh"))
 }
 
 // TestDecorateCursorModel_EffortAndReasoningCollapseToOne is the [G4/S11] guard: "effort"
@@ -398,4 +421,45 @@ func TestParseCursorContextWindow(t *testing.T) {
 	assert.Equal(t, int64(0), parseCursorContextWindow("99999999999999999999999m"))
 	// Just below the int64 ceiling still converts (no overflow).
 	assert.Equal(t, int64(9_000_000_000_000_000_000), parseCursorContextWindow("9000000000000000000"))
+}
+
+// effortLabel is the one place a reasoning-effort id becomes text. Every
+// provider reads it, so its fallback matters: a level a CLI adds mid-release
+// must still read as a label rather than a raw lowercase token.
+func TestEffortLabel(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "Extra High", effortLabel("xhigh"))
+	assert.Equal(t, "Ultra", effortLabel("ultra"))
+	assert.Equal(t, "Ultracode", effortLabel("ultracode"))
+	assert.Equal(t, "Auto", effortLabel(EffortAuto))
+
+	// Case-insensitive: a CLI reporting "High" or "XHIGH" still resolves.
+	assert.Equal(t, "High", effortLabel("High"))
+	assert.Equal(t, "Extra High", effortLabel("XHIGH"))
+
+	// Unknown id: capitalized, never returned raw.
+	assert.Equal(t, "Turbo", effortLabel("turbo"))
+	assert.Equal(t, "", effortLabel(""))
+}
+
+// effortTier is the shorthand for a provider whose catalog carries no
+// per-level description. It must never invent one, and never skip the label.
+func TestEffortTier(t *testing.T) {
+	t.Parallel()
+
+	tier := effortTier("xhigh")
+	assert.Equal(t, "xhigh", tier.Id)
+	assert.Equal(t, "Extra High", tier.Name)
+	assert.Empty(t, tier.Description)
+}
+
+// The trimmed Pi list is not covered by the catalog sweep above, because it is
+// not one of the three full catalogs.
+func TestPiNonReasoningEffortsUseSharedLabels(t *testing.T) {
+	t.Parallel()
+
+	for _, tier := range piNonReasoningEfforts {
+		assert.Equal(t, effortLabel(tier.Id), tier.Name, "effort %q must use the shared label", tier.Id)
+	}
 }

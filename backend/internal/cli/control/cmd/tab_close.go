@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
+	"github.com/leapmux/leapmux/internal/hub/crdt"
 )
 
 // RunTabClose tombstones a tab via UserCRDT.SubmitOps and dispatches
@@ -129,7 +130,7 @@ func RunTabClose(rawCtx any, args []string) error {
 		// generated getter on a nil message answers the zero value.
 		inspectHint = inspected.GetErrorHint()
 
-		if err := cc.submitOps([]*leapmuxv1.CrdtOp{opTombstoneTab(cc.bs, tt, got.TabID)}); err != nil {
+		if err := cc.submitOps(closeBatchOps(cc.bs, tt, got.TabID, inspected.GetDescendantAgentIds())); err != nil {
 			return err
 		}
 
@@ -139,7 +140,29 @@ func RunTabClose(rawCtx any, args []string) error {
 		// worktree removal). callInnerRPC failures are demoted to envelope
 		// fields so the user sees both the close success and the cleanup
 		// outcome.
-		closeErr := dispatchWorkerClose(callWorker, got, tt, worktreeAction)
+		subagents, closeErr := dispatchWorkerClose(callWorker, got, tt, worktreeAction)
+
+		// Anything the inspect did not already cover. The worker reads the tree
+		// again AFTER its teardown, so this catches a subagent the provider
+		// spawned while it drained -- which the inspect, taken before any of
+		// that, could not have seen.
+		//
+		// The ids the first batch carried are excluded: they are tombstoned
+		// already, and the hub rejects a tombstone for a record whose tile id a
+		// tombstone stripped -- which would fail this whole batch.
+		//
+		// Best-effort: the parent is already tombstoned and its worker-side
+		// teardown already ran, so a rejected batch here must not turn a
+		// completed close into a command failure. It is reported instead.
+		var subagentErr error
+		if ops := subagentTombstoneOps(cc.bs, exceptAlreadySubmitted(subagents, inspected.GetDescendantAgentIds())); len(ops) > 0 {
+			// trySubmitOps, not submitOps: the emitting variant would print an
+			// error envelope over the success this command already earned.
+			// It reports a rejection as an error too, so one branch covers both.
+			if _, _, err := cc.trySubmitOps(ops); err != nil {
+				subagentErr = err
+			}
+		}
 
 		out := map[string]any{
 			"tab_id":     got.TabID,
@@ -154,6 +177,12 @@ func RunTabClose(rawCtx any, args []string) error {
 		}
 		if closeErr != nil {
 			out["worker_close_error"] = closeErr.Error()
+		}
+		if len(subagents) > 0 {
+			out["closed_subagent_tab_ids"] = subagents
+		}
+		if subagentErr != nil {
+			out["subagent_close_error"] = subagentErr.Error()
 		}
 		return control.EmitData(out)
 	})
@@ -266,17 +295,101 @@ func pushBlockedReason(r *leapmuxv1.InspectLastTabCloseResponse) string {
 	return "branch is not pushable"
 }
 
-func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.TabType, action leapmuxv1.WorktreeAction) error {
-	if got.WorkerID == "" {
+// closeBatchOps builds the ops a `tab close` submits: the subagent tabs that go
+// with this one, then the tab itself.
+//
+// The ORDER is the point, and it is why the inspect reports the subtree at all.
+// A client that learned the ids only from the CloseAgent response would have to
+// tombstone the parent first and the children a round trip later; every peer
+// would then promote the orphaned children to top-level rows claiming a lineage
+// the user can no longer see, for as long as the worker teardown takes -- which
+// for a close that removes a worktree is seconds.
+//
+// ONE batch, so the two land together on every peer. `subagentTombstoneOps`
+// keeps only the ids this account holds a live tab for, which is what makes one
+// batch safe: a never-opened subagent would otherwise reject the batch and take
+// the parent's own tombstone down with it.
+func closeBatchOps(bs *CRDTBootstrap, tt leapmuxv1.TabType, tabID string, descendantIDs []string) []*leapmuxv1.CrdtOp {
+	return append(subagentTombstoneOps(bs, descendantIDs), opTombstoneTab(bs, tt, tabID))
+}
+
+// exceptAlreadySubmitted returns the ids in `all` that `submitted` does not
+// hold, preserving order.
+//
+// A `tab close` learns the subtree twice: from the inspect, before the parent's
+// tombstone, and from CloseAgent, after the teardown. The second answer is a
+// superset -- it also holds anything the provider spawned while it drained --
+// so only the difference belongs in the second batch. Re-tombstoning an id the
+// first batch already retired would fail the whole batch, because the hub
+// cannot resolve a workspace for a record whose tile id the first tombstone
+// stripped.
+func exceptAlreadySubmitted(all, submitted []string) []string {
+	if len(submitted) == 0 {
+		return all
+	}
+	seen := make(map[string]struct{}, len(submitted))
+	for _, id := range submitted {
+		seen[id] = struct{}{}
+	}
+	out := make([]string, 0, len(all))
+	for _, id := range all {
+		if _, ok := seen[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// subagentTombstoneOps turns the worker's descendant-agent list into one
+// TombstoneTab op per subagent tab that this account actually HAS.
+//
+// The filter is not an optimization. The worker answers from the `agents`
+// table, where a row exists for every subagent the provider ever spawned --
+// `EnsureChildAgent` creates one on first sight of a spawn span, whether or not
+// anyone opened that transcript as a tab. The hub resolves a tombstone's
+// workspace through the tab record, so an id it has no record for resolves to
+// none and the batch is rejected as UNKNOWN_WORKSPACE -- which is fatal for the
+// WHOLE batch, not just that op. Unfiltered, one never-opened subagent would
+// therefore leave every REAL subagent tab open and report a close failure. An
+// already-tombstoned id fails the same way, so this drops those too.
+//
+// Every id it keeps is an AGENT tab: a subagent IS an agent, and its agent id
+// is its tab id. A different type here would tombstone a terminal or file tab
+// that happens to share the id, which is why this does not take the type from
+// the tab being closed. Separate from the caller so that stays true under test.
+func subagentTombstoneOps(bs *CRDTBootstrap, subagentIDs []string) []*leapmuxv1.CrdtOp {
+	if len(subagentIDs) == 0 {
 		return nil
+	}
+	tabs := bs.State.GetTabs()
+	ops := make([]*leapmuxv1.CrdtOp, 0, len(subagentIDs))
+	for _, id := range subagentIDs {
+		rec, ok := tabs[id]
+		if !ok || rec == nil || !crdt.HLCIsZero(rec.GetTombstoneAt()) {
+			continue
+		}
+		ops = append(ops, opTombstoneTab(bs, leapmuxv1.TabType_TAB_TYPE_AGENT, id))
+	}
+	return ops
+}
+
+// Returns the subagent tabs the close retired underneath an AGENT tab, so the
+// caller can tombstone them in the same command. Empty for every other type.
+func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.TabType, action leapmuxv1.WorktreeAction) ([]string, error) {
+	if got.WorkerID == "" {
+		return nil, nil
 	}
 	switch tt {
 	case leapmuxv1.TabType_TAB_TYPE_AGENT:
-		return call("CloseAgent",
+		resp := &leapmuxv1.CloseAgentResponse{}
+		if err := call("CloseAgent",
 			&leapmuxv1.CloseAgentRequest{AgentId: got.TabID, WorktreeAction: action},
-			&leapmuxv1.CloseAgentResponse{})
+			resp); err != nil {
+			return nil, err
+		}
+		return resp.GetDescendantAgentIds(), nil
 	case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
-		return call("CloseTerminal",
+		return nil, call("CloseTerminal",
 			&leapmuxv1.CloseTerminalRequest{
 				TerminalId:     got.TabID,
 				WorktreeAction: action,
@@ -292,7 +405,7 @@ func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.T
 		// and dispatch nothing, on the belief that the CRDT tombstone was the
 		// whole teardown; it is not, and the frontend's own file-tab close has
 		// always called this RPC.
-		return call("RevokeFileTabPath",
+		return nil, call("RevokeFileTabPath",
 			&leapmuxv1.RevokeFileTabPathRequest{
 				TabId:          got.TabID,
 				WorktreeAction: action,
@@ -301,6 +414,6 @@ func dispatchWorkerClose(call workerCaller, got resolve.Resolved, tt leapmuxv1.T
 	default:
 		// UNSPECIFIED never reaches here -- the caller resolved a concrete tab
 		// before dispatching.
-		return nil
+		return nil, nil
 	}
 }

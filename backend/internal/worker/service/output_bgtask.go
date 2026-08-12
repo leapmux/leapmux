@@ -3,13 +3,16 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -18,7 +21,7 @@ import (
 
 // bgTaskCache is the in-memory mirror of one root agent's background-task
 // registry, built on the shared registryCache mechanics. The type-specific
-// ops (list query, key/terminal/seq extractors, delete query) live in
+// ops (list query, key/finished/seq extractors, delete query) live in
 // bgTaskOps, built once per OutputHandler.
 type bgTaskCache = registryCache[bgtask.Item]
 
@@ -30,19 +33,20 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 		endedAt = r.EndedAt.Time
 	}
 	return bgtask.Item{
-		RowKey:        r.RowKey,
-		ChildAgentID:  r.ChildAgentID,
-		ParentAgentID: r.ParentAgentID,
-		Kind:          bgtask.KindFromWire(r.Kind),
-		GroupKey:      r.GroupKey,
-		GroupLabel:    r.GroupLabel,
-		Title:         r.Title,
-		Description:   r.Description,
-		ActiveForm:    r.ActiveForm,
-		Status:        bgtask.StatusFromWire(r.Status),
-		CreatedAt:     r.CreatedAt.Time,
-		UpdatedAt:     r.UpdatedAt.Time,
-		EndedAt:       endedAt,
+		RowKey:         r.RowKey,
+		ChildAgentID:   r.ChildAgentID,
+		ParentAgentID:  r.ParentAgentID,
+		Kind:           bgtask.KindFromWire(r.Kind),
+		GroupKey:       r.GroupKey,
+		GroupLabel:     r.GroupLabel,
+		Title:          r.Title,
+		TitleIsCommand: ptrconv.Int64ToBool(r.TitleIsCommand),
+		Description:    r.Description,
+		ActiveForm:     r.ActiveForm,
+		Status:         bgtask.StatusFromWire(r.Status),
+		CreatedAt:      r.CreatedAt.Time,
+		UpdatedAt:      r.UpdatedAt.Time,
+		EndedAt:        endedAt,
 	}
 }
 
@@ -50,9 +54,10 @@ func bgItemFromRow(r db.AgentBackgroundTask) bgtask.Item {
 // queries so every cache instance shares the same type-specific behaviour.
 func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 	return registryOps[bgtask.Item]{
-		listRows: func(ctx context.Context, ownerID string, limit int32) ([]seedEntry[bgtask.Item], error) {
-			rows, err := h.queries.ListAgentBackgroundTasks(ctx, db.ListAgentBackgroundTasksParams{
+		listRows: func(ctx context.Context, ownerID, bucket string, limit int32) ([]seedEntry[bgtask.Item], error) {
+			rows, err := h.queries.ListAgentBackgroundTasksByKindNewestFirst(ctx, db.ListAgentBackgroundTasksByKindNewestFirstParams{
 				OwnerAgentID: ownerID,
+				Kind:         bucket,
 				Limit:        int64(limit),
 			})
 			if err != nil {
@@ -64,10 +69,18 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 			}
 			return entries, nil
 		},
+		reclaimFinishedBelowSeq: func(ctx context.Context, ownerID, bucket string, seq int64) error {
+			_, err := h.queries.DeleteFinishedAgentBackgroundTasksBelowSeq(ctx, db.DeleteFinishedAgentBackgroundTasksBelowSeqParams{
+				OwnerAgentID: ownerID,
+				Kind:         bucket,
+				Seq:          seq,
+			})
+			return err
+		},
 		keyOf:  func(r bgtask.Item) string { return r.RowKey },
 		setKey: func(r *bgtask.Item, key string) { r.RowKey = key },
-		isTerminal: func(r bgtask.Item) bool {
-			return r.Status.IsTerminal()
+		isFinished: func(r bgtask.Item) bool {
+			return r.Status.IsFinished()
 		},
 		deleteByKey: func(ctx context.Context, ownerID, key string) error {
 			_, err := h.queries.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
@@ -76,8 +89,13 @@ func (h *OutputHandler) bgTaskOps() registryOps[bgtask.Item] {
 			})
 			return err
 		},
-		cap:   bgtask.MaxTasks,
-		label: "background tasks",
+		cap: bgtask.MaxTasks,
+		// One cap pool per KIND. A run that opens hundreds of shells would
+		// otherwise evict every finished subagent, and the subagent rows are the
+		// ones carrying a transcript worth reopening.
+		bucketOf: func(r bgtask.Item) string { return bgtask.KindWire(r.Kind) },
+		buckets:  bgtask.KindWires(),
+		label:    "background tasks",
 	}
 }
 
@@ -128,11 +146,37 @@ func (h *OutputHandler) LoadBackgroundTasks(ctx context.Context, rootAgentID str
 	return cache.snapshot(), nil
 }
 
+// registryChange reports what one registry mutation did.
+//
+// endedChildID is the whole reason this type exists. Three appliers can move a
+// row from active into a final status -- an upsert that carries a final status,
+// a status update, and a close -- and the provider that owns the row decides
+// which one it uses. Claude and Codex reach the final status through the first
+// two and only then call CloseBackgroundTask; Pi never closes at all. So the
+// close is NOT the moment a subagent is known to be over, and a divider written
+// only from there never fires for those providers. Each applier therefore
+// reports the child transcript that ITS OWN transition just ended, and
+// applyAndBroadcast writes the divider once, for whichever applier it was.
+type registryChange struct {
+	rows []bgtask.Item
+	// changed is false for a no-op (absent row, byte-identical replay, or a
+	// non-final update against an already-final row).
+	changed bool
+	// endedChildID is the child transcript this mutation ended, or "" when the
+	// row stayed active, was already final, carries no child (a shell task), or
+	// nothing changed.
+	endedChildID string
+	// endedStatus is the final status the row landed on, carried with the id so
+	// the divider reports what the applier actually wrote rather than what the
+	// caller asked for (an upsert can keep an existing final status instead).
+	endedStatus bgtask.Status
+}
+
 // applyBackgroundTaskUpsert is the persist-mutate-broadcast for an upsert. It
 // writes the DB row, mutates the cache in place, runs cap-eviction, and
 // broadcasts. A byte-identical replay (same row, same status, same fields)
 // skips BOTH the write and the broadcast.
-func (h *OutputHandler) applyBackgroundTaskUpsert(rootAgentID string, task bgtask.Upsert) ([]bgtask.Item, bool, error) {
+func (h *OutputHandler) applyBackgroundTaskUpsert(rootAgentID string, task bgtask.Upsert) (registryChange, error) {
 	cache := h.bgTaskCache(rootAgentID)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
@@ -142,29 +186,29 @@ func (h *OutputHandler) applyBackgroundTaskUpsert(rootAgentID string, task bgtas
 // applyBackgroundTaskStatus updates a row's status + active_form without
 // closing it (used for running-progress updates). A no-op when the row is
 // absent or the patch is a no-op.
-func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, status bgtask.Status, activeForm string) ([]bgtask.Item, bool, error) {
+func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, status bgtask.Status, activeForm string) (registryChange, error) {
 	ctx := h.bgTaskCtx()
 	cache := h.bgTaskCache(rootAgentID)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
 	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
-		return nil, false, err
+		return registryChange{}, err
 	}
 	idx := cache.indexOf(rowKey)
 	if idx < 0 {
-		return cache.snapshot(), false, nil
+		return registryChange{rows: cache.snapshot()}, nil
 	}
 	existing := cache.Rows[idx]
-	// A terminal status is monotonic and absorbing: a late or replayed
-	// non-terminal status update (a duplicate task_progress, a replayed
+	// A final status is monotonic and absorbing: a late or replayed
+	// non-final status update (a duplicate task_progress, a replayed
 	// running upsert) must not resurrect a row that already reached a
-	// terminal state. Without this guard the row flips back to running and
+	// final state. Without this guard the row flips back to running and
 	// pins the parent's thinking indicator forever (no later close arrives).
-	if existing.Status.IsTerminal() && !status.IsTerminal() {
-		return cache.snapshot(), false, nil
+	if existing.Status.IsFinished() && !status.IsFinished() {
+		return registryChange{rows: cache.snapshot()}, nil
 	}
 	if existing.Status == status && existing.ActiveForm == activeForm {
-		return cache.snapshot(), false, nil
+		return registryChange{rows: cache.snapshot()}, nil
 	}
 	// One ms-floored instant for both the DB write and the in-memory cache, so a
 	// warm-cache read after this transition returns the same stamp a cold-start
@@ -177,51 +221,69 @@ func (h *OutputHandler) applyBackgroundTaskStatus(rootAgentID, rowKey string, st
 		OwnerAgentID: rootAgentID,
 		RowKey:       rowKey,
 	}); err != nil {
-		return nil, false, err
+		return registryChange{}, err
 	}
-	// A terminal transition stamps ended_at. The status-update query does not
+	// A transition into a final status stamps ended_at. The status-update query does not
 	// (sqlc cannot infer the type of a positional parameter inside a CASE WHEN,
 	// so the atomic single-statement form is not generatable), so a dedicated
 	// idempotent query does it. The stamp's WHERE filters `ended_at IS NULL AND
-	// status IN (terminal)`, so it only writes on a genuine transition. On a
+	// status IN (the final statuses)`, so it only writes on a genuine transition. On a
 	// transient DB error the cache leaves EndedAt zero (mirroring the DB's NULL)
 	// and the error propagates so the caller sees the incomplete transition;
-	// the idempotent stamp can be retried by any later terminal update.
-	if status.IsTerminal() {
+	// the idempotent stamp can be retried by any later final update.
+	if status.IsFinished() {
 		if err := h.queries.StampAgentBackgroundTaskEndedAt(ctx, db.StampAgentBackgroundTaskEndedAtParams{
 			EndedAt:      sqltime.SQLiteNullTimeOf(now),
 			OwnerAgentID: rootAgentID,
 			RowKey:       rowKey,
 		}); err != nil {
-			return nil, false, err
+			return registryChange{}, err
 		}
 		if cache.Rows[idx].EndedAt.IsZero() {
 			cache.Rows[idx].EndedAt = now
 		}
 	}
+	// Read the row's PRIOR status before the write overwrites it: the divider is
+	// owed to the active -> final transition alone.
+	wasFinished := cache.Rows[idx].Status.IsFinished()
 	cache.Rows[idx].Status = status
 	cache.Rows[idx].ActiveForm = activeForm
 	cache.Rows[idx].UpdatedAt = now
-	return cache.snapshot(), true, nil
+	// The guards above exclude an already-final row only when the incoming status
+	// is non-final, or when BOTH the status and the activeForm repeat. A second
+	// final update carrying the same status and a different activeForm reaches
+	// here -- Claude sends exactly that, a summary-bearing update followed by a
+	// bare one -- so the transition is tested against the prior status rather
+	// than assumed. Reporting the child twice writes the closing divider twice.
+	var endedChildID string
+	if !wasFinished && status.IsFinished() {
+		endedChildID = cache.Rows[idx].ChildAgentID
+	}
+	return registryChange{
+		rows:         cache.snapshot(),
+		changed:      true,
+		endedChildID: endedChildID,
+		endedStatus:  status,
+	}, nil
 }
 
-// applyBackgroundTaskClose terminalizes a row (stamps ended_at). The query's
-// status-IN('pending','running') guard means a terminal row can never be
-// resurrected or re-closed. A no-op when the row is already terminal.
-func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, status bgtask.Status) ([]bgtask.Item, bool, error) {
+// applyBackgroundTaskClose moves a row into a final status (stamps ended_at).
+// The query's status-IN('pending','running') guard means a final row can never
+// be resurrected or re-closed. A no-op when the row is already final.
+func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, status bgtask.Status) (registryChange, error) {
 	ctx := h.bgTaskCtx()
 	cache := h.bgTaskCache(rootAgentID)
 	cache.Mu.Lock()
 	defer cache.Mu.Unlock()
 	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
-		return nil, false, err
+		return registryChange{}, err
 	}
 	idx := cache.indexOf(rowKey)
 	if idx < 0 {
-		return cache.snapshot(), false, nil
+		return registryChange{rows: cache.snapshot()}, nil
 	}
-	if cache.Rows[idx].Status.IsTerminal() {
-		return cache.snapshot(), false, nil
+	if cache.Rows[idx].Status.IsFinished() {
+		return registryChange{rows: cache.snapshot()}, nil
 	}
 	now := nowMillis()
 	if err := h.queries.CloseAgentBackgroundTask(ctx, db.CloseAgentBackgroundTaskParams{
@@ -231,16 +293,21 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, sta
 		OwnerAgentID: rootAgentID,
 		RowKey:       rowKey,
 	}); err != nil {
-		return nil, false, err
+		return registryChange{}, err
 	}
 	cache.Rows[idx].Status = status
 	cache.Rows[idx].EndedAt = now
 	cache.Rows[idx].UpdatedAt = now
-	return cache.snapshot(), true, nil
+	return registryChange{
+		rows:         cache.snapshot(),
+		changed:      true,
+		endedChildID: cache.Rows[idx].ChildAgentID,
+		endedStatus:  status,
+	}, nil
 }
 
-// MarkAgentBackgroundTasksExited terminalizes every still-active row owned by
-// rootAgentID on process exit: stopped (explicit Stop) -> Stopped, else
+// MarkAgentBackgroundTasksExited gives every still-active row owned by
+// rootAgentID a final status on process exit: stopped (explicit Stop) -> Stopped, else
 // interrupted (crash) -> Interrupted. Skipped entirely when the shutdown latch
 // is set (a shutdown-driven StopAll leaves rows active for the next boot's
 // 'interrupted' sweep). Broadcasts once if anything changed.
@@ -272,12 +339,21 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 		return
 	}
 	changed := false
+	// The children this sweep just ended. Collected here, under the lock, on the
+	// same "was still active" test that decides the write -- so each transcript
+	// gets its closing divider exactly once, for the same reason a registry
+	// mutation does. Without this a subagent whose owner process died would keep
+	// a transcript that simply stops.
+	var endedChildIDs []string
 	for i := range cache.Rows {
-		if !cache.Rows[i].Status.IsTerminal() {
+		if !cache.Rows[i].Status.IsFinished() {
 			cache.Rows[i].Status = status
 			cache.Rows[i].EndedAt = now
 			cache.Rows[i].UpdatedAt = now
 			changed = true
+			if cache.Rows[i].ChildAgentID != "" {
+				endedChildIDs = append(endedChildIDs, cache.Rows[i].ChildAgentID)
+			}
 		}
 	}
 	// Snapshot under the lock; broadcast AFTER release so a slow/stalled gRPC
@@ -287,6 +363,20 @@ func (h *OutputHandler) MarkAgentBackgroundTasksExited(rootAgentID string, stopp
 	cache.Mu.Unlock()
 	if changed {
 		h.broadcastBackgroundTasks(rootAgentID, snapshot)
+	}
+	h.WriteSubagentEndDividers(endedChildIDs, status)
+}
+
+// WriteSubagentEndDividers closes each listed child transcript with the divider
+// carrying status. Exported for the boot sweep in RestoreState, which ends rows
+// straight in the DB across every owner (no caches exist yet at boot) and so
+// cannot go through a registry mutation.
+//
+// The caller must pass only the children whose rows IT just moved into a final
+// status, so each transcript is closed exactly once.
+func (h *OutputHandler) WriteSubagentEndDividers(childAgentIDs []string, status bgtask.Status) {
+	for _, childID := range childAgentIDs {
+		h.persistSubagentEndDivider(childID, status)
 	}
 }
 
@@ -435,13 +525,16 @@ func (s *agentOutputSink) ensureRegistryRowLocked(cache *bgTaskCache, rowKey, ch
 		Title:         title,
 		Status:        bgtask.StatusRunning,
 	}
-	rows, changed, err := s.h.applyBackgroundTaskUpsertLocked(cache, s.rootAgentID, task)
+	// The upsert always carries StatusRunning, so it can never be the active ->
+	// final transition and change.endedChildID is always empty here. Discarding
+	// it is safe for that reason, and for that reason only.
+	change, err := s.h.applyBackgroundTaskUpsertLocked(cache, s.rootAgentID, task)
 	if err != nil {
 		slog.Warn("ensure registry row for child failed", "row_key", rowKey, "error", err)
 		return nil
 	}
-	if changed {
-		return rows
+	if change.changed {
+		return change.rows
 	}
 	return nil
 }
@@ -491,6 +584,134 @@ func (s *agentOutputSink) PersistChildTurnEnd(childAgentID string, content []byt
 	return s.ChildSink(childAgentID).PersistTurnEnd(content, span)
 }
 
+// PersistChildPrompt writes the spawn prompt as the child transcript's first
+// message. See the OutputSink doc for the contract; the emptiness check is what
+// makes it idempotent, and it is deliberately a READ of the child's max seq
+// rather than a flag: a worker restart loses a flag but not the transcript.
+func (s *agentOutputSink) PersistChildPrompt(childAgentID, prompt string) error {
+	if childAgentID == "" || strings.TrimSpace(prompt) == "" {
+		return nil
+	}
+	maxSeq, err := s.h.queries.GetMaxSeqByAgentID(s.h.bgTaskCtx(), childAgentID)
+	if err != nil {
+		return fmt.Errorf("read child transcript head: %w", err)
+	}
+	if maxSeq > 0 {
+		// The subagent already spoke. Prepending is not possible (seq is
+		// append-only) and appending would put the instruction BELOW the work it
+		// asked for, so say nothing.
+		return nil
+	}
+	// The same envelope a typed user message uses, so the renderer needs no new
+	// shape: markdown body, USER source, no span.
+	content, err := json.Marshal(map[string]string{"content": prompt})
+	if err != nil {
+		return fmt.Errorf("marshal child prompt: %w", err)
+	}
+	return s.ChildSink(childAgentID).PersistMessage(
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
+}
+
+// claimSubagentTranscriptClose reports whether THIS caller owns the closing
+// divider for a subagent transcript.
+//
+// Exactly one divider closes a transcript, and TWO independent writers can end
+// one: the registry (whichever applier moved the row into a final status) and
+// the child's own turn end (a provider that forwards its subagent's closing
+// envelope, like Claude's result). Either can arrive first.
+//
+// A durable INSERT decides it, rather than each side reading the transcript's
+// last message and inferring what the other did. Two reasons the probes could
+// not: both writers persist AFTER releasing the cache mutex, so two goroutines
+// could each read "not ended" and each write; and each probe cost a DB read
+// plus a zstd decompress, the turn-end one on EVERY child turn rather than only
+// the last. The claim also survives a worker restart, which is when a content
+// probe is least able to guess.
+//
+// Fails OPEN on a DB error: a missing divider leaves a transcript that never
+// visibly ends, with a thinking indicator that never resolves, which is worse
+// than a duplicated rule.
+func (h *OutputHandler) claimSubagentTranscriptClose(ctx context.Context, childAgentID string) bool {
+	rows, err := h.queries.ClaimSubagentTranscriptClose(ctx, childAgentID)
+	if err != nil {
+		slog.Warn("claim subagent transcript close", "child", childAgentID, "error", err)
+		return true
+	}
+	return rows > 0
+}
+
+// persistSubagentEndDivider writes the divider that closes a child transcript.
+//
+// Unexported and service-internal on purpose: no provider calls it. Every
+// caller reaches it through the ONE registry mutation that moved the row from
+// active into a final status -- an upsert carrying the final status, a status
+// update, or a close, whichever the provider uses -- plus the process-exit
+// sweep and the boot sweep, which end rows no provider will ever close.
+//
+// Called exactly once per row: an applier reports endedChildID only on that
+// transition, and the DB's own status guard makes it hold across a worker
+// restart. A no-op for an empty id (a shell row, a re-close, or a subagent
+// whose provider never linked a transcript).
+//
+// The provider comes from the child's own agent row rather than from a caller:
+// createMessageRow refuses an UNSPECIFIED provider, and the sweeps have no sink
+// to borrow one from. A child row that no longer resolves is skipped -- there
+// is no transcript left to close.
+func (h *OutputHandler) persistSubagentEndDivider(childAgentID string, status bgtask.Status) {
+	if childAgentID == "" {
+		return
+	}
+	ctx := h.bgTaskCtx()
+	child, err := h.queries.GetAgentByID(ctx, childAgentID)
+	if err != nil {
+		slog.Warn("subagent end divider: child agent not found", "child", childAgentID, "error", err)
+		return
+	}
+	// Exactly ONE divider closes a subagent transcript. A provider that forwards
+	// its subagent's own closing envelope (Claude's result) draws a richer one --
+	// it carries the duration, and on failure the error label and detail -- so it
+	// claims first when it gets there first, and this neutral divider stands
+	// down. A subagent stopped before it could forward a result never claims, so
+	// it still gets this one.
+	if !h.claimSubagentTranscriptClose(ctx, childAgentID) {
+		return
+	}
+	content, err := json.Marshal(map[string]string{
+		"type":   agent.NotificationTypeSubagentEnded,
+		"status": bgtask.StatusWire(status),
+	})
+	if err != nil {
+		slog.Warn("marshal subagent end divider", "child", childAgentID, "error", err)
+		return
+	}
+	if err := h.persistAndBroadcast(childAgentID, child.AgentProvider,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, agent.SpanInfo{},
+		h.closingChildTracker(childAgentID)); err != nil {
+		slog.Warn("persist subagent end divider", "child", childAgentID, "error", err)
+	}
+}
+
+// closingChildTracker resolves the child's span tracker for the closing
+// divider WITHOUT registering one.
+//
+// childTracker (getOrCreate) is wrong here. The tab-close teardown runs
+// CleanupChildAgents -- which deletes every descendant's tracker entry -- and
+// only THEN MarkAgentBackgroundTasksExited, which writes a divider per still-
+// active child. A getOrCreate on that path registers a fresh entry for an
+// agent whose root is already gone, and nothing deletes it again, because this
+// root's cleanup pass already ran: it survives until the hourly orphan sweep.
+//
+// So look the entry up read-only. When it is present the divider renders
+// against whatever span rails were still open in that transcript; when the
+// teardown already pruned it, a transient zero tracker gives the same empty
+// rails the registered-but-blank entry would have given, and leaks nothing.
+func (h *OutputHandler) closingChildTracker(childAgentID string) *SpanTracker {
+	if t, _, ok := h.trackers.get(childAgentID); ok {
+		return t
+	}
+	return &SpanTracker{}
+}
+
 // CleanupChildAgent releases the per-child service state for a child that has
 // closed permanently. This sink is the child's DIRECT PARENT: the cached child
 // sink lives in s.childSinks, so prune it here in O(1) instead of scanning
@@ -522,20 +743,30 @@ func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 
 // --- Registry write primitives on the sink ---
 
-// applyAndBroadcast runs a registry mutation and broadcasts the post-mutation
-// snapshot only when it changed. The sanitize+broadcast-on-change contract is
-// shared by every sink registry primitive; centralizing it here means a future
-// mutation can't forget to sanitize its key or skip a broadcast. The apply
-// callback runs with the cache lock held internally (it acquires and releases
-// cache.Mu), so the broadcast runs outside the lock.
-func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentID, key string) (rows []bgtask.Item, changed bool, err error)) error {
-	rows, changed, err := apply(s.rootAgentID, bgtask.SanitizeRowKey(rowKey))
+// applyAndBroadcast runs a registry mutation, broadcasts the post-mutation
+// snapshot when it changed, and writes the closing divider for a child
+// transcript the mutation ended. The sanitize+broadcast+close-the-transcript
+// contract is shared by every sink registry primitive; centralizing it here
+// means a future mutation can't forget to sanitize its key, skip a broadcast,
+// or leave a subagent transcript that simply stops.
+//
+// The apply callback runs with the cache lock held internally (it acquires and
+// releases cache.Mu), so both the broadcast and the divider write run outside
+// the lock -- a slow gRPC consumer or a DB write cannot serialize every other
+// registry op for this root.
+func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentID, key string) (registryChange, error)) error {
+	change, err := apply(s.rootAgentID, bgtask.SanitizeRowKey(rowKey))
 	if err != nil {
 		return err
 	}
-	if changed {
-		s.h.broadcastBackgroundTasks(s.rootAgentID, rows)
+	if change.changed {
+		s.h.broadcastBackgroundTasks(s.rootAgentID, change.rows)
 	}
+	// After the broadcast, so a slow transport cannot delay the DB write. The
+	// applier sets endedChildID only on the active -> final transition, and the
+	// DB's own status guard makes that hold across a worker restart, so this
+	// runs exactly once per row and needs no emptiness check of its own.
+	s.h.persistSubagentEndDivider(change.endedChildID, change.endedStatus)
 	return nil
 }
 
@@ -548,32 +779,27 @@ func (s *agentOutputSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	if task.ParentAgentID == "" {
 		task.ParentAgentID = s.agentID
 	}
-	rows, changed, err := s.h.applyBackgroundTaskUpsert(s.rootAgentID, task)
-	if err != nil {
-		return err
-	}
-	if changed {
-		s.h.broadcastBackgroundTasks(s.rootAgentID, rows)
-	}
-	return nil
+	return s.applyAndBroadcast(task.RowKey, func(root, _ string) (registryChange, error) {
+		return s.h.applyBackgroundTaskUpsert(root, task)
+	})
 }
 
 func (s *agentOutputSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
-	return s.applyAndBroadcast(rowKey, func(root, key string) ([]bgtask.Item, bool, error) {
+	return s.applyAndBroadcast(rowKey, func(root, key string) (registryChange, error) {
 		return s.h.applyBackgroundTaskStatus(root, key, status, activeForm)
 	})
 }
 
 func (s *agentOutputSink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
-	return s.applyAndBroadcast(rowKey, func(root, key string) ([]bgtask.Item, bool, error) {
+	return s.applyAndBroadcast(rowKey, func(root, key string) (registryChange, error) {
 		return s.h.applyBackgroundTaskClose(root, key, status)
 	})
 }
 
 // RenameBackgroundTask atomically re-keys a row from oldKey to newKey under the
-// root owner, preserving status, child linkage, and terminal state. A no-op
+// root owner, preserving status, child linkage, and final state. A no-op
 // when the old row is absent or newKey is empty. Used by ACP providers that
-// learn the stable child id only on the terminal update (OpenCode), so a single
+// learn the stable child id only on the final update (OpenCode), so a single
 // row tracks the whole lifecycle instead of a spawn row orphaned Running while
 // a separately-keyed row closes.
 //
@@ -601,6 +827,43 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 		cache.Mu.Unlock()
 		return err
 	}
+	// (owner_agent_id, row_key) is the PRIMARY KEY, so a rename onto an OCCUPIED
+	// key fails the UPDATE. That collision is reachable: a session history replay
+	// re-creates the spawn row under the toolCallId while the pre-restart row
+	// already sits, closed, under the session id. Letting the UPDATE fail left the
+	// re-created row Running for the life of the process, which pinned the
+	// parent's thinking indicator. The row already at newKey is the complete one --
+	// it carries the lifecycle that reached the rename -- so the DUPLICATE at
+	// oldKey loses and is deleted.
+	occupied, err := s.h.queries.CountAgentBackgroundTasksByRowKey(ctx, db.CountAgentBackgroundTasksByRowKeyParams{
+		OwnerAgentID: s.rootAgentID,
+		RowKey:       newKey,
+	})
+	if err != nil {
+		cache.Mu.Unlock()
+		return err
+	}
+	if occupied > 0 {
+		if oldKey == newKey {
+			cache.Mu.Unlock()
+			return nil
+		}
+		if _, err := s.h.queries.DeleteAgentBackgroundTaskByRowKey(ctx, db.DeleteAgentBackgroundTaskByRowKeyParams{
+			OwnerAgentID: s.rootAgentID,
+			RowKey:       oldKey,
+		}); err != nil {
+			cache.Mu.Unlock()
+			return err
+		}
+		if cache.dropRowLocked(oldKey) {
+			pendingBroadcast = cache.snapshot()
+		}
+		cache.Mu.Unlock()
+		if pendingBroadcast != nil {
+			s.h.broadcastBackgroundTasks(s.rootAgentID, pendingBroadcast)
+		}
+		return nil
+	}
 	if _, err := s.h.queries.RenameAgentBackgroundTask(ctx, db.RenameAgentBackgroundTaskParams{
 		RowKey:       newKey,
 		OwnerAgentID: s.rootAgentID,
@@ -626,65 +889,60 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 // applyBackgroundTaskUpsert, used by EnsureChildAgent's registry re-link path
 // (which already holds the cache lock). It bypasses re-locking to avoid a
 // self-deadlock.
-func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, rootAgentID string, task bgtask.Upsert) ([]bgtask.Item, bool, error) {
+func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, rootAgentID string, task bgtask.Upsert) (registryChange, error) {
 	ctx := h.bgTaskCtx()
 	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
-		return nil, false, err
+		return registryChange{}, err
 	}
 	idx := cache.indexOf(task.RowKey)
+	// Set on the active -> final transition below, so an upsert that carries the
+	// final status writes the closing divider the same way a close does.
+	var endedChildID string
 	// One ms-floored instant for the DB write and the cache, so a warm-cache
 	// read matches a cold-start read (no Go-time.Now-vs-SQLite drift).
 	now := nowMillis()
-	merged := bgtask.Item{
-		RowKey:        task.RowKey,
-		ChildAgentID:  task.ChildAgentID,
-		ParentAgentID: task.ParentAgentID,
-		Kind:          task.Kind,
-		GroupKey:      task.GroupKey,
-		GroupLabel:    task.GroupLabel,
-		Title:         task.Title,
-		Description:   task.Description,
-		ActiveForm:    task.ActiveForm,
-		Status:        task.Status,
-		UpdatedAt:     now,
-	}
+	merged := task.ToItem()
+	merged.UpdatedAt = now
 	if idx >= 0 {
 		existing := cache.Rows[idx]
 		merged.CreatedAt = existing.CreatedAt
 		merged.EndedAt = existing.EndedAt
 		// Preserve descriptive fields the incoming upsert left blank so a partial
-		// upsert cannot blank a previously-set row (a terminal output_file write
+		// upsert cannot blank a previously-set row (a final-status output_file write
 		// would otherwise wipe the title). Status is exempt: callers set it
 		// deliberately, and StatusPending is a valid value, not a sentinel for
 		// "preserve".
 		merged = merged.PreservingBlanksFrom(existing)
-		// A terminal status is monotonic and absorbing: a late or replayed
-		// non-terminal upsert (a duplicate task_started, a replayed running
+		// A final status is monotonic and absorbing: a late or replayed
+		// non-final upsert (a duplicate task_started, a replayed running
 		// row after a worker restart) must not resurrect a row that reached a
-		// terminal state. Drop the non-terminal status and keep the row as-is
+		// final state. Drop the non-final status and keep the row as-is
 		// so the active-form/title refresh still lands, but the row stays
-		// terminal with its ended_at stamp intact.
-		if existing.Status.IsTerminal() && !merged.Status.IsTerminal() {
+		// final with its ended_at stamp intact.
+		if existing.Status.IsFinished() && !merged.Status.IsFinished() {
 			merged.Status = existing.Status
 			merged.EndedAt = existing.EndedAt
-		} else if merged.Status.IsTerminal() && !existing.Status.IsTerminal() {
-			// A transition into a terminal status stamps ended_at.
+		} else if merged.Status.IsFinished() && !existing.Status.IsFinished() {
+			// A transition into a final status stamps ended_at.
 			merged.EndedAt = now
+			endedChildID = merged.ChildAgentID
 		}
 		// The no-op guard compares every field EXCEPT UpdatedAt (which is `now`
 		// on this call and will always differ from the existing stamp). Without
 		// that exclusion a byte-identical replay still rewrites + broadcasts on
 		// every clock tick.
 		if existing.WithUpdatedAt(merged.UpdatedAt) == merged {
-			return cache.snapshot(), false, nil
+			return registryChange{rows: cache.snapshot()}, nil
 		}
-	} else if cache.atCap() {
-		evicted, err := cache.evictOldestTerminalLocked(ctx, rootAgentID)
+	} else if bucket := bgtask.KindWire(merged.Kind); cache.atCapForBucket(bucket) {
+		// Scoped to the incoming row's kind, so making room for a shell never
+		// deletes a subagent (and the reverse).
+		_, evicted, err := cache.evictOldestFinishedInBucketLocked(ctx, rootAgentID, bucket)
 		if err != nil {
-			return nil, false, err
+			return registryChange{}, err
 		}
 		if !evicted {
-			// At the cap with no terminal row to evict. Dropping the new row
+			// At the cap with no finished row to evict. Dropping the new row
 			// would orphan an already-created child agent row (EnsureChildAgent
 			// inserts the child before this upsert links it), leaving an
 			// unopenable transcript. Evict an older row instead. Prefer the
@@ -695,51 +953,57 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 			// is linked to a child transcript, exceed the cap rather than
 			// orphan a steerable child -- the cap is a soft bound to protect
 			// the child-linkage invariant.
-			slog.Warn("background task registry at cap with no terminal row; evicting oldest unlinked active row",
-				"owner", rootAgentID, "row_key", task.RowKey, "cap", bgtask.MaxTasks)
+			slog.Warn("background task registry at cap with no finished row; evicting oldest unlinked active row",
+				"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks)
 			evictIdx := -1
 			for i, r := range cache.Rows {
-				if r.ChildAgentID == "" {
+				if bgtask.KindWire(r.Kind) == bucket && r.ChildAgentID == "" {
 					evictIdx = i
 					break
 				}
 			}
 			if evictIdx >= 0 {
-				if _, err := cache.evictAtLocked(ctx, rootAgentID, evictIdx); err != nil {
-					return nil, false, err
+				if _, _, err := cache.evictAtLocked(ctx, rootAgentID, evictIdx); err != nil {
+					return registryChange{}, err
 				}
 			} else {
 				slog.Warn("background task registry at cap with all active rows linked to children; exceeding cap to avoid orphaning a steerable child",
-					"owner", rootAgentID, "row_key", task.RowKey, "cap", bgtask.MaxTasks)
+					"owner", rootAgentID, "row_key", task.RowKey, "kind", bucket, "cap", bgtask.MaxTasks)
 			}
 		}
 	}
 	if idx < 0 {
 		merged.CreatedAt = now
+		// A row that is born final never had an active phase, so it ends its
+		// child transcript here -- the only transition it will ever have.
+		if merged.Status.IsFinished() {
+			endedChildID = merged.ChildAgentID
+		}
 	}
-	if merged.Status.IsTerminal() && merged.EndedAt.IsZero() {
+	if merged.Status.IsFinished() && merged.EndedAt.IsZero() {
 		merged.EndedAt = now
 	}
 	if err := h.queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
-		OwnerAgentID:  rootAgentID,
-		RowKey:        task.RowKey,
-		Seq:           cache.nextSeq,
-		Kind:          bgtask.KindWire(merged.Kind),
-		ChildAgentID:  merged.ChildAgentID,
-		ParentAgentID: merged.ParentAgentID,
-		GroupKey:      merged.GroupKey,
-		GroupLabel:    merged.GroupLabel,
-		Title:         merged.Title,
-		Description:   merged.Description,
-		ActiveForm:    merged.ActiveForm,
-		Status:        bgtask.StatusWire(merged.Status),
+		OwnerAgentID:   rootAgentID,
+		RowKey:         task.RowKey,
+		Seq:            cache.nextSeq,
+		Kind:           bgtask.KindWire(merged.Kind),
+		ChildAgentID:   merged.ChildAgentID,
+		ParentAgentID:  merged.ParentAgentID,
+		GroupKey:       merged.GroupKey,
+		GroupLabel:     merged.GroupLabel,
+		Title:          merged.Title,
+		TitleIsCommand: ptrconv.BoolToInt64(merged.TitleIsCommand),
+		Description:    merged.Description,
+		ActiveForm:     merged.ActiveForm,
+		Status:         bgtask.StatusWire(merged.Status),
 		// created_at binds on INSERT only (the ON CONFLICT UPDATE does not touch
 		// it); updated_at binds on both. Both derive from the same `now` so the
 		// cache and the persisted row agree to the millisecond.
 		CreatedAt: sqltime.NewSQLiteTime(merged.CreatedAt),
 		UpdatedAt: sqltime.NewSQLiteTime(now),
 	}); err != nil {
-		return nil, false, err
+		return registryChange{}, err
 	}
 	if idx < 0 {
 		cache.Rows = append(cache.Rows, merged)
@@ -747,7 +1011,12 @@ func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, root
 	} else {
 		cache.Rows[idx] = merged
 	}
-	return cache.snapshot(), true, nil
+	return registryChange{
+		rows:         cache.snapshot(),
+		changed:      true,
+		endedChildID: endedChildID,
+		endedStatus:  merged.Status,
+	}, nil
 }
 
 // sqlString converts a Go string to a sql.NullString where "" is NULL and a

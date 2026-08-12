@@ -130,6 +130,10 @@ func TestACPTerminal_CreateWaitOutputRelease(t *testing.T) {
 	assert.Equal(t, bgtask.KindShell, row.Kind)
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.Equal(t, "printf 'hello-acp'", row.Title)
+	// terminal/create carries the command and nothing else, so this title IS the
+	// command and the client may set it as code -- unlike Claude's shell rows,
+	// whose title is `description || command` with no way to tell which.
+	assert.True(t, row.TitleIsCommand, "an ACP terminal title is the command itself")
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
@@ -262,6 +266,33 @@ func TestACPTerminal_UnknownTerminalID(t *testing.T) {
 	assert.EqualValues(t, -32602, errObj["code"])
 }
 
+// An empty command falls back to the literal "shell", which is a label rather
+// than something to run -- so the row must not claim its title is a command.
+func TestACPTerminal_EmptyCommandTitleIsNotACommand(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId": "sess-1",
+		"command":   "",
+		"cwd":       b.workingDir,
+	})
+	resps := rec.wait(t, 1, 3*time.Second)
+	result, ok := resps[0]["result"].(map[string]interface{})
+	if !ok {
+		t.Skip("the agent rejects an empty command outright; there is no row to inspect")
+	}
+	termID, _ := result["terminalId"].(string)
+	require.NotEmpty(t, termID)
+
+	sink.bgTasksMu.Lock()
+	row, found := sink.bgTasks[termID]
+	sink.bgTasksMu.Unlock()
+	require.True(t, found)
+	assert.Equal(t, "shell", row.Title)
+	assert.False(t, row.TitleIsCommand, "the fallback label is not a command")
+}
+
 func TestACPTerminal_RelativeCwdRejected(t *testing.T) {
 	sink := &testSink{}
 	b, rec := newTerminalTestBase(t, sink)
@@ -307,7 +338,7 @@ func TestACPTerminal_ReleaseAllOnStop(t *testing.T) {
 	sink.bgTasksMu.Lock()
 	row := sink.bgTasks[termID]
 	sink.bgTasksMu.Unlock()
-	assert.True(t, row.Status.IsTerminal())
+	assert.True(t, row.Status.IsFinished())
 }
 
 func TestACPTerminal_DefaultCwdFromWorkingDir(t *testing.T) {

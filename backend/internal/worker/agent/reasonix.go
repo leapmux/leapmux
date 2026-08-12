@@ -64,7 +64,7 @@ func StartReasonix(ctx context.Context, opts Options, sink OutputSink) (Agent, e
 			a.refreshFromSession = nil
 			// Registry entry from the spawn tool_call only: Reasonix withholds
 			// ToolProgress from ACP by design, so there is no update hook and
-			// the row stays running until the agent's terminal tool_result
+			// the row stays running until the agent's final tool_result
 			// closes the span (no close signal arrives over ACP for it).
 			// Reasonix's rawInput carries {description, prompt} with NO
 			// subagent_type, so it uses its own shape detector.
@@ -141,6 +141,11 @@ func reasonixSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 	if title == "" {
 		title = "Reasonix subagent"
 	}
+	// No Prompt. Reasonix is registry-only and wires no update hook at all, so
+	// it reports no ChildAgentKey (nothing to spend the prompt on) and produces
+	// no closing observation (nothing to drop it on) -- a remembered prompt here
+	// would be held for the life of the agent process. `prompt` still
+	// discriminates the spawn shape above, by presence.
 	return &acpSubagentObservation{
 		RowKey: tc.ToolCallID,
 		Title:  title,

@@ -64,6 +64,36 @@ describe('gridSizePopover manual entry', () => {
     expect(onSelect).toHaveBeenCalledWith(8, 5)
   })
 
+  it('stays open while the user fills in the manual pair', () => {
+    // The popover is a panel, not a menu, so a click inside it does not dismiss
+    // it -- which is what makes the two fields usable at all. The guarantee used
+    // to be a stopPropagation on this row; it is the popover's `div` tag now, so
+    // this test is what holds it.
+    setup()
+    const popover = screen.getByTestId('grid-size-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    fireEvent.click(screen.getByTestId('grid-size-rows-input'))
+    fireEvent.click(screen.getByTestId('grid-size-cols-input'))
+
+    expect(hide).not.toHaveBeenCalled()
+  })
+
+  it('closes itself when Create commits the pair', () => {
+    // The other half: Create IS an activation, and the panel closes on it from
+    // this handler rather than from the popover's click rule.
+    const { onSelect } = setup()
+    const popover = screen.getByTestId('grid-size-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    fireEvent.input(screen.getByTestId('grid-size-rows-input'), { target: { value: '2' } })
+    fireEvent.input(screen.getByTestId('grid-size-cols-input'), { target: { value: '2' } })
+    fireEvent.click(screen.getByTestId('grid-size-create-button'))
+
+    expect(onSelect).toHaveBeenCalledWith(2, 2)
+    expect(hide).toHaveBeenCalled()
+  })
+
   it('create button is disabled for out-of-range values', () => {
     setup()
     const rowsInput = screen.getByTestId('grid-size-rows-input') as HTMLInputElement

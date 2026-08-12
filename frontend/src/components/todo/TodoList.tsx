@@ -1,8 +1,8 @@
 import type { Component } from 'solid-js'
 import type { TodoItem } from '~/stores/chatTodos'
-import { For } from 'solid-js'
+import { createMemo, For } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
-import { isTerminalTodoStatus, todoDisplayLabel } from '~/stores/chatTodos'
+import { isFinishedTodoStatus, sortTodos, todoDisplayLabel } from '~/stores/chatTodos'
 import { TaskCheckbox } from './TaskCheckbox'
 import * as styles from './TodoList.css'
 
@@ -11,15 +11,18 @@ interface TodoListProps {
 }
 
 export const TodoList: Component<TodoListProps> = (props) => {
+  // Sorted HERE rather than at each call site, so the sidebar section, the
+  // ThinkingIndicator popover, and the chat cards all read in the same order.
+  const ordered = createMemo(() => sortTodos(props.todos))
   return (
     <div class={styles.todoList}>
-      <For each={props.todos}>
+      <For each={ordered()}>
         {(todo) => {
           const row = (
             <div
               class={styles.todoItem}
               classList={{
-                [styles.todoStruck]: isTerminalTodoStatus(todo.status),
+                [styles.todoStruck]: isFinishedTodoStatus(todo.status),
                 [styles.todoInProgress]: todo.status === 'in_progress',
               }}
             >

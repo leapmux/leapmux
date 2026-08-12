@@ -6,6 +6,7 @@ import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from '../../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
+import { ControlActionRow } from '../../controls/ControlActionRow'
 import { sendResponse, toRpcId } from '../../controls/types'
 
 /** Extract OpenCode requestPermission params from the control request payload. */
@@ -146,9 +147,12 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
     sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)
   }
 
-  const handleBypassPermissions = () => {
-    // Allow once, then switch to bypass mode.
-    sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, 'once')
+  // Allow once, then switch to bypass mode. The allow is AWAITED first: the
+  // worker dispatches the two concurrently, and a mode change the provider
+  // cannot take live relaunches the agent, killing the session before an
+  // un-awaited allow reaches it.
+  const handleBypassPermissions = async () => {
+    await sendOpenCodePermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, 'once')
     if (props.bypassPermissionMode)
       props.onPermissionModeChange?.(props.bypassPermissionMode)
   }
@@ -165,11 +169,8 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
   return (
     <Switch
       fallback={(
-        <div class={styles.controlFooter}>
-          <div class={styles.controlFooterLeft}>
-            {props.infoTrigger}
-          </div>
-          <div class={styles.controlFooterRight}>
+        <ControlActionRow
+          primary={(
             <Show
               when={options().length > 0}
               fallback={(
@@ -215,8 +216,8 @@ export const OpenCodeControlActions: Component<ActionsProps> = (props) => {
                 </Show>
               </ButtonGroup>
             </Show>
-          </div>
-        </div>
+          )}
+        />
       )}
     >
       <Match when={isOpenCodeQuestionPayload(props.request.payload)}>

@@ -62,6 +62,12 @@ Both items need the Worker the repository is on: one reads the branch state, the
 
 LeapMux decides this from the Worker list it already has, never by probing the machine — the menu is rebuilt every time the sidebar tree changes, and a network round trip there would show up as lag. A consequence worth knowing: a Worker that has just started, and that the list has not caught up with, is treated as reachable, so its items stay clickable and the action itself reports the failure. Greying out a working action on a stale reading would be the worse mistake.
 
+### The branch chip in the composer
+
+The composer's status bar carries the same menu behind a branch-name chip, so you can change or delete the branch without opening the sidebar. The chip appears only when the focused agent reports a branch, and it opens the identical two items with the identical Worker guard. The tab list the **Delete branch** dialog counts comes from the same branch grouping the sidebar tree uses, so both surfaces report the same affected tabs.
+
+Hiding the status bar (**[+]** ▸ **Show status bar**) hides the chip. The sidebar's branch row keeps both actions.
+
 ## Choosing a branch or worktree when you open a tab
 
 When you open a new agent, a new terminal, or a new workspace against a git repository, the dialog shows a **`Git options`** panel. While LeapMux probes the repository it shows a **Loading branch info** spinner; if the directory is not a git repository or the probe fails, it shows **Git probe failed: *hint*** instead.

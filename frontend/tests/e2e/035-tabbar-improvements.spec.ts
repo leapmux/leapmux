@@ -30,8 +30,13 @@ test.describe('TabBar Improvements', () => {
     await expect(page.locator('[data-testid="agent-info-trigger"]')).toBeVisible()
     await page.locator('[data-testid="agent-info-trigger"]').click()
 
-    await expect(page.locator('[data-testid="agent-info-popover"]')).toBeVisible()
-    const sessionIdValue = page.locator('[data-testid="session-id-value"]')
+    const popover = page.locator('[data-testid="agent-info-popover"]')
+    await expect(popover).toBeVisible()
+    // Scoped to THIS popover. The same card also hangs off the `[+]` menu's
+    // "Agent info" item, and a popover keeps its children mounted while closed,
+    // so both copies of every row are in the DOM at all times -- an unscoped row
+    // locator matches two elements and fails strict mode.
+    const sessionIdValue = popover.locator('[data-testid="session-id-value"]')
     await expect(sessionIdValue).toBeVisible()
     const text = await sessionIdValue.textContent()
     expect(text?.length ?? 0).toBeGreaterThan(0)

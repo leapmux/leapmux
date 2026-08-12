@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
+import { ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Session Resume', () => {
@@ -80,15 +80,12 @@ test.describe('Agent Session Resume', () => {
       // Wait for editor to be visible (worker reconnected)
       await expect(editor).toBeVisible()
 
-      // Switch permission mode to Plan Mode via the settings dropdown
-      const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-      await trigger.click()
-      await expect(page.locator('[data-testid="agent-settings-menu"]')).toBeVisible()
-      await page.locator('[data-testid="permissionMode-plan"]').click()
+      // Switch permission mode to Plan Mode via the settings menu
+      await chooseSettingsOption(page, 'permissionMode-plan')
 
-      // Verify trigger shows Plan Mode — confirms the control request was delivered
-      // after the agent was transparently restarted
-      await expect(trigger).toContainText('Plan Mode')
+      // Verify the mode chip shows Plan Mode — confirms the control request was
+      // delivered after the agent was transparently restarted
+      await expectSettingsChip(page, 'Plan Mode')
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

@@ -5,6 +5,7 @@ import type { OpBuilderCtx } from '~/lib/crdt'
 import {
   ctxFromBridge,
   getCRDTBridge,
+  hlcIsZero,
   newBatch,
   reviveTab,
   setTabPosition,
@@ -71,6 +72,42 @@ export function emitAddTab(tab: {
 
 export function emitRemoveTab(type: TabType, id: string): string | null {
   return emitOps(ctx => [tombstoneTab(ctx, type, id)])
+}
+
+/**
+ * Whether the CRDT holds a LIVE (untombstoned) record for this tab id.
+ *
+ * Reads `speculativeState` rather than the projection, for the same reason
+ * {@link liveTabIds} does: a tab whose tile chain is momentarily unresolvable
+ * leaves the projection while remaining perfectly alive, and a subagent tab
+ * opened moments ago is live in the CRDT before `listAgents` links it to its
+ * parent. Whether a tab EXISTS and where it SITS are different questions.
+ *
+ * The caller is anything holding tab ids from OUTSIDE the CRDT -- the worker's
+ * descendant-agent list is the one today. The hub rejects a batch that
+ * tombstones an id it has no record for (`BATCH_REJECTION_UNKNOWN_WORKSPACE`,
+ * fatal for the WHOLE batch), so an unfiltered list does not merely waste an op:
+ * it takes every real tombstone in the batch down with it.
+ */
+export function hasLiveTabRecord(id: string): boolean {
+  const rec = getCRDTBridge()?.speculativeState()?.tabs[id]
+  return rec !== undefined && hlcIsZero(rec.tombstoneAt)
+}
+
+/**
+ * Tombstone a whole set of tabs in ONE batch.
+ *
+ * A batch is the unit the hub charges for: it dedups the batch id, validates it,
+ * commits it to the journal in its own transaction, and swaps the state once.
+ * One `emitRemoveTab` per id pays all of that per id, so retiring a subagent
+ * subtree of 40 costs 40 journal transactions to say what one batch says. The
+ * CLI's `subagentTombstoneOps` already builds its equivalent as a single batch.
+ *
+ * Returns null for an empty list -- an empty batch is a round trip that says
+ * nothing.
+ */
+export function emitRemoveTabs(type: TabType, ids: readonly string[]): string | null {
+  return emitOps(ctx => ids.map(id => tombstoneTab(ctx, type, id)))
 }
 
 /**

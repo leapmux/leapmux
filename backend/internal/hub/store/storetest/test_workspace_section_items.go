@@ -275,8 +275,12 @@ func (s *Suite) testWorkspaceSectionItems(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "wsi-overwrite-user")
 		wsID := SeedWorkspace(t, st, user.ID, "Overwrite WS")
-		sec1 := seedSection(t, st, user.ID, "Section A", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
-		sec2 := seedSection(t, st, user.ID, "Section B", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_IN_PROGRESS)
+		// Two CUSTOM sections, which is what a user moving a workspace between
+		// their own sections actually has. One user cannot hold two sections of
+		// the same DEFAULT type -- the schema forbids it -- and the pair only
+		// has to be two distinct sections for this test to mean anything.
+		sec1 := seedSection(t, st, user.ID, "Section A", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)
+		sec2 := seedSection(t, st, user.ID, "Section B", leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM)
 
 		// Assign workspace to section A.
 		err := st.WorkspaceSectionItems().Set(ctx, store.SetWorkspaceSectionItemParams{

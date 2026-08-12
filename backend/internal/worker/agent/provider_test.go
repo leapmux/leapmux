@@ -92,6 +92,45 @@ func TestProviderFor_TurnEndToolUses(t *testing.T) {
 	}
 }
 
+// EndsSubagentTranscript decides whether a SUBAGENT transcript already closes
+// itself, so the worker knows whether to add its own subagent-end divider.
+// Only Claude forwards a subagent's final envelope; everyone else must answer
+// false or their child transcripts would end with no divider at all.
+func TestProviderFor_EndsSubagentTranscript(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		provider leapmuxv1.AgentProvider
+		content  string
+		want     bool
+	}{
+		{"claude result", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{"type":"result","duration_ms":12}`, true},
+		{"claude result with error", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{"type":"result","is_error":true}`, true},
+		{"claude assistant", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{"type":"assistant"}`, false},
+		{"claude no type", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{}`, false},
+		{"claude malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{`, false},
+		{"claude empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ``, false},
+		// A result-shaped payload from another provider must NOT suppress that
+		// provider's divider: only Claude actually forwards one.
+		//
+		// Codex is the load-bearing case. It DOES write a child turn-end
+		// divider, but per TURN: a collab child ends a turn and then accepts
+		// another, so a true here would suppress the closing divider for every
+		// child stopped mid-life. The answer is about the SUBAGENT ending, not
+		// the turn.
+		{"codex result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"type":"result"}`, false},
+		{"codex turn completed", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"threadId":"child-1","turn":{"id":"t1","status":"completed"}}`, false},
+		{"pi result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{"type":"result"}`, false},
+		{"opencode result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, `{"type":"result"}`, false},
+		{"goose result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, `{"type":"result"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ProviderFor(tc.provider).EndsSubagentTranscript([]byte(tc.content)))
+		})
+	}
+}
+
 func TestProviderFor_ClaudeClassification(t *testing.T) {
 	t.Parallel()
 

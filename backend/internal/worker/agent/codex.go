@@ -54,6 +54,16 @@ const (
 	CodexServiceTierFast = "fast"
 )
 
+// How long a `turn/start` waits for its `turn/started` ack before it reports
+// the delivery unconfirmed.
+//
+// Bounds the DELIVERY, not the turn. Codex emits `turn/started` as soon as it
+// accepts the request, so this only has to cover the process being busy, not
+// any model work. It is well inside the client's own RPC deadline, so an
+// unacknowledged send surfaces as a stated failure rather than as the client
+// giving up on a message the worker did deliver.
+const turnStartAckTimeout = 10 * time.Second
+
 // StringOrDefault returns value if non-empty, otherwise fallback.
 func StringOrDefault(value, fallback string) string {
 	if value != "" {
@@ -72,8 +82,13 @@ type CodexAgent struct {
 	sink       OutputSink
 
 	// Codex-specific state.
-	threadID          string // from thread/start response
-	turnID            string // currently active turn ID
+	threadID string // from thread/start response
+	turnID   string // currently active turn ID
+	// Closed by the `turn/started` notification, which is Codex's ACK that it
+	// accepted a `turn/start`. Non-nil only while a start is waiting for that
+	// ack. The turn/start RESPONSE cannot serve as the ack: Codex answers it
+	// when the TURN ENDS, minutes or hours later.
+	turnStartAck      chan struct{}
 	approvalPolicy    string // Codex approval policy (stored as-is from DB)
 	sandboxPolicy     string // Codex sandbox policy (e.g. "workspace-write")
 	networkAccess     string // Codex network access ("restricted" or "enabled")
@@ -105,6 +120,10 @@ type CodexAgent struct {
 	// collabChildTitles records the spawn prompt's first line per child thread
 	// (the registry + child tab title). Guarded by mu.
 	collabChildTitles map[string]string
+	// collabChildPrompts records the FULL spawn prompt per child thread (the
+	// title above keeps only its first line). Spent when the child transcript is
+	// created, so the subagent tab opens on the instruction it was given.
+	collabChildPrompts pendingPrompts
 	// childTurnIDs records the active turn id per child thread (for steering).
 	// Guarded by mu. Cleared on child turn/completed.
 	childTurnIDs map[string]string
@@ -376,10 +395,11 @@ func (a *CodexAgent) ClearContext() (string, bool) {
 	a.streamingPlan = false
 	clear(a.reasoningStreamKind)
 	// Clear the collab child index: a new thread means prior child threads are
-	// gone. Entries are otherwise only removed on terminal collab status.
+	// gone. Entries are otherwise only removed on a final collab status.
 	clear(a.collabThreadSpans)
 	clear(a.collabChildItems)
 	clear(a.collabChildTitles)
+	a.collabChildPrompts.clear()
 	clear(a.childTurnIDs)
 	a.mu.Unlock()
 	// The thread was replaced; drop any in-flight thinking-token estimate so it
@@ -506,27 +526,52 @@ func (a *CodexAgent) sendTurnStart(
 		return fmt.Errorf("marshal turn/start params: %w", err)
 	}
 
-	// No timeout: the turn unblocks via response, process exit, or ctx
-	// cancel. Codex turns can legitimately run minutes-to-hours; a wall-
-	// clock cap would just kill long-running work.
-	resp, err := a.sendRequest("turn/start", paramsJSON, 0)
-	if err != nil {
-		return fmt.Errorf("turn/start: %w", err)
-	}
+	// SendInput must return when the message is DELIVERED, never when the turn
+	// ends -- see the Agent interface. Codex answers `turn/start` only at turn
+	// end ("minutes-to-hours" is its own description), so waiting on that
+	// response would hold the caller for the whole turn: the worker would
+	// withhold the RPC ack and the user-message broadcast until then, and the
+	// browser, whose deadline is far shorter, would label a message it had
+	// already delivered "Failed to deliver".
+	//
+	// The ack is the `turn/started` notification instead. Register for it BEFORE
+	// the request goes out, or a fast agent can answer before we are listening.
+	ack := make(chan struct{})
+	a.mu.Lock()
+	a.turnStartAck = ack
+	a.mu.Unlock()
 
-	// Extract turn ID from response.
-	var turnResult struct {
-		Turn struct {
-			ID string `json:"id"`
-		} `json:"turn"`
-	}
-	if err := json.Unmarshal(resp, &turnResult); err == nil && turnResult.Turn.ID != "" {
+	// No timeout on the request itself: it resolves at turn end, and a wall-clock
+	// cap would kill long-but-legitimate work. Nothing waits on it, so a turn
+	// that runs for hours costs one parked goroutine and no held lock.
+	go func() {
+		if _, err := a.sendRequest("turn/start", paramsJSON, 0); err != nil {
+			slog.Error("codex turn/start failed", "agent_id", a.agentID, "error", err)
+			a.sink.PersistLeapMuxNotification(map[string]any{
+				"type":  NotificationTypeAgentError,
+				"error": err.Error(),
+			})
+		}
+	}()
+
+	select {
+	case <-ack:
+		// Codex accepted the turn. `turn/started` also set turnID, which is what
+		// makes the next send steer this turn rather than start another.
+		return nil
+	case <-a.processDone:
+		return fmt.Errorf("turn/start: agent exited before it accepted the turn")
+	case <-time.After(turnStartAckTimeout):
+		// Delivery is UNCONFIRMED, not failed: the request is on its way and the
+		// turn may still start. Report it so the user sees an unacknowledged
+		// send rather than a silent one, and stop waiting either way.
 		a.mu.Lock()
-		a.turnID = turnResult.Turn.ID
+		if a.turnStartAck == ack {
+			a.turnStartAck = nil
+		}
 		a.mu.Unlock()
+		return fmt.Errorf("turn/start: no turn/started within %s", turnStartAckTimeout)
 	}
-
-	return nil
 }
 
 // sendTurnSteer steers the active turn with additional user input.
@@ -890,16 +935,12 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 		// the UI even though the CLI never reports it.
 		raw := m.SupportedReasoningEfforts
 		efforts := make([]*EffortInfo, 0, len(raw)+1)
-		efforts = append(efforts, &EffortInfo{
-			Id:          EffortAuto,
-			Name:        "Auto",
-			Description: "Let Codex decide the appropriate effort",
-		})
+		efforts = append(efforts, codexAutoEffort())
 		for i := len(raw) - 1; i >= 0; i-- {
 			e := raw[i]
 			efforts = append(efforts, &EffortInfo{
 				Id:          e.ReasoningEffort,
-				Name:        codexEffortName(e.ReasoningEffort),
+				Name:        effortLabel(e.ReasoningEffort),
 				Description: e.Description,
 			})
 		}
@@ -938,14 +979,39 @@ func (a *CodexAgent) queryAvailableModels(timeout time.Duration) []*ModelInfo {
 // static fallback. "auto" is a LeapMux-side sentinel: the CLI never reports
 // or accepts it, but selecting it causes LeapMux to omit reasoning_effort
 // so Codex applies its own default.
+//
+// The slice order IS the menu order: optionGroupsForAgent maps it into the
+// option group unchanged, and the frontend renders the options in order. Add a
+// new tier at its rank, never at the end -- codexEffortName looks an entry up
+// by id, so appending satisfies the label lookup while putting the tier in the
+// wrong place in every picker. TestCodexDefaultEffortsRankOrder enforces this
+// against the shared effortRank table, so a misplaced tier fails the build.
+//
+// Every tier the live CLI reports should appear here, so the static fallback
+// offers the same menu the running session does. A tier that is absent is no
+// longer a labeling hazard: both paths resolve their label through effortLabel,
+// so an unlisted id renders capitalized like its siblings rather than raw.
 var codexDefaultEfforts = []*EffortInfo{
-	{Id: EffortAuto, Name: "Auto", Description: "Let Codex decide the appropriate effort"},
-	{Id: "xhigh", Name: "Extra High"},
-	{Id: "high", Name: "High"},
-	{Id: "medium", Name: "Medium"},
-	{Id: "low", Name: "Low"},
-	{Id: "minimal", Name: "Minimal"},
-	{Id: "none", Name: "None"},
+	codexAutoEffort(),
+	effortTier("ultra"),
+	effortTier("max"),
+	effortTier(EffortXHigh),
+	effortTier(EffortHigh),
+	effortTier("medium"),
+	effortTier("low"),
+	effortTier("minimal"),
+	effortTier("none"),
+}
+
+// codexAutoEffort is the LeapMux-side "auto" sentinel. The CLI never reports it,
+// so both the live catalog and the static fallback prepend this one value rather
+// than spelling the label and the description out twice.
+func codexAutoEffort() *EffortInfo {
+	return &EffortInfo{
+		Id:          EffortAuto,
+		Name:        effortLabel(EffortAuto),
+		Description: "Let Codex decide the appropriate effort",
+	}
 }
 
 var codexDefaultModels = []*ModelInfo{
@@ -1062,16 +1128,6 @@ func codexModelDisplayName(id string) string {
 		}
 	}
 	return prefix + parts[0] + " " + strings.Join(suffixParts, " ")
-}
-
-// codexEffortName returns a short human-readable label for a Codex effort ID.
-func codexEffortName(id string) string {
-	for _, e := range codexDefaultEfforts {
-		if e.Id == id {
-			return e.Name
-		}
-	}
-	return id
 }
 
 func (a *CodexAgent) handleOutput(line *parsedLine) {

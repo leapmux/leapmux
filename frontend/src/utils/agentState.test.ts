@@ -339,36 +339,122 @@ describe('shouldShowThinkingIndicator', () => {
     )).toBe(true)
   })
 
-  it('forces visible when there is an active background task, even with no streaming text', () => {
+  it('forces visible when this tab has active work, even with no streaming text', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent(),
       {},
       [],
       '',
       0,
-      2,
+      'active',
     )).toBe(true)
   })
 
-  it('active background task count is ignored when status is not ACTIVE', () => {
+  it('active work is ignored when status is not ACTIVE', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent({ status: AgentStatus.INACTIVE }),
       {},
       [],
       '',
       0,
-      3,
+      'active',
     )).toBe(false)
   })
 
-  it('active background task count is ignored when a control request is pending', () => {
+  it('active work is ignored when a control request is pending', () => {
     expect(shouldShowThinkingIndicator(
       makeAgent(),
       {},
       [],
       '',
       1,
-      3,
+      'active',
     )).toBe(false)
+  })
+
+  // The reason this is a tri-state rather than a count. A finished subagent's
+  // transcript often does NOT end with the closing divider -- an interrupt
+  // notice, a trailing tool result, or a divider write that failed all leave
+  // the message heuristic reporting "working". The registry row is the
+  // authoritative record of that subagent's life, so it wins.
+  describe('a finished subagent', () => {
+    // A user message is a progress signal, so isAgentWorking says "working".
+    const interruptedTail = [
+      makeMsg(MessageSource.USER, rawContent({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+        parent_tool_use_id: 'toolu_1',
+      })),
+    ]
+
+    it('hides the indicator although the transcript looks busy', () => {
+      expect(shouldShowThinkingIndicator(makeAgent(), {}, interruptedTail, '', 0, 'unknown'))
+        .toBe(true)
+      expect(shouldShowThinkingIndicator(makeAgent(), {}, interruptedTail, '', 0, 'finished'))
+        .toBe(false)
+    })
+
+    // The row outranks the message history, NOT live evidence of a turn. A
+    // steerable subagent (Codex re-registers a collab child on a later tool
+    // call) takes a new message after its row went final, and the row never
+    // reopens -- so the turn the user just started must still show the indicator,
+    // and must still offer Interrupt, which the same predicate gates.
+    it('shows it again when a finished subagent starts streaming a new turn', () => {
+      expect(shouldShowThinkingIndicator(makeAgent(), {}, [], 'half a sentence', 0, 'finished'))
+        .toBe(true)
+    })
+
+    it('still hides it for a finished row with no live turn', () => {
+      expect(shouldShowThinkingIndicator(makeAgent(), {}, interruptedTail, '', 0, 'finished'))
+        .toBe(false)
+    })
+  })
+
+  // 'unknown' must not assert a negative: a tab the registry has no row for
+  // still falls through to the heuristic, which is what a plain root turn uses.
+  it('falls through to the message heuristic when the registry cannot answer', () => {
+    const working = [makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'working' }))]
+    expect(shouldShowThinkingIndicator(makeAgent(), {}, working, '', 0, 'unknown')).toBe(true)
+  })
+})
+
+// A subagent transcript is closed by the worker's subagent-end divider (written
+// when that subagent's registry row reaches a final status). It is a notification, so
+// without an explicit stop the backwards scan would step over it, reach the
+// subagent's last real message, and report a finished subagent as still working.
+describe('isAgentWorking: the subagent-end divider', () => {
+  const ended = (status: string) =>
+    makeMsg(MessageSource.LEAPMUX, rawContent({ type: 'subagent_ended', status }))
+
+  it('reports not working once the divider has landed', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageSource.USER, rawContent({ content: 'go' })),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'working' })),
+      ended('completed'),
+    ])).toBe(false)
+  })
+
+  it('reports not working for every final status', () => {
+    for (const status of ['completed', 'failed', 'stopped', 'interrupted']) {
+      expect(isAgentWorking([
+        makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'working' })),
+        ended(status),
+      ])).toBe(false)
+    }
+  })
+
+  it('still reports working when the subagent spoke after the divider', () => {
+    // Not a shape the worker produces, but the scan must answer from the LAST
+    // message rather than from "a divider exists somewhere".
+    expect(isAgentWorking([
+      ended('completed'),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'more' })),
+    ])).toBe(true)
+  })
+
+  it('reports working while the subagent is mid-flight', () => {
+    expect(isAgentWorking([
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'working' })),
+    ])).toBe(true)
   })
 })

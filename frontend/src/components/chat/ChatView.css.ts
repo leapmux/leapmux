@@ -1,5 +1,6 @@
 import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
+import { chipBase } from '~/styles/shared.css'
 import { breakpoints, motion } from '~/styles/tokens'
 
 export const editorResizeHandle = style({
@@ -174,30 +175,39 @@ export const loadingOlderIndicator = style([loadingIndicatorBase, { top: 'var(--
 export const loadingNewerIndicator = style([loadingIndicatorBase, { bottom: 'var(--space-3)' }])
 
 export const inputArea = style({
-  padding: 'var(--space-1) var(--space-3) var(--space-3)',
+  // Bottom padding is space-1 when the status bar is shown beneath, and
+  // space-2 when it's hidden (the status bar's own space-2 bottom padding
+  // then provides the gap to the window edge instead).
+  padding: 'var(--space-1) var(--space-3) var(--space-1)',
   flexShrink: 0,
 })
 
-// disabledHint is the single-line note rendered above a disabled composer (a
-// non-steerable subagent tab). Dim, small, no interaction.
-export const disabledHint = style({
-  fontSize: 'var(--text-7)',
-  color: 'var(--muted-foreground)',
-  padding: '0 0 var(--space-1)',
+globalStyle(`${inputArea}[data-no-status-bar]`, {
+  paddingBottom: 'var(--space-2)',
 })
 
-export const footerBar = style({
-  display: 'flex',
-  justifyContent: 'space-between',
+/**
+ * The composer's action cluster (Interrupt + Send). Rendered in the box's
+ * top-right (collapsed) or bottom-right (expanded) overlay slot, so it's a
+ * plain inline-flex with a small gap; the positioning lives in
+ * the `footerSlot` style in `./markdownEditor/MarkdownEditor.css.ts`.
+ */
+export const actionCluster = style({
+  display: 'inline-flex',
   alignItems: 'center',
-  padding: 'var(--space-1) var(--space-1) var(--space-1) var(--space-3)',
-  backgroundColor: 'var(--background)',
-  flexShrink: 0,
+  gap: 'var(--space-1)',
 })
 
-export const footerBarLeft = style({
-  display: 'flex',
-  alignItems: 'center',
+/**
+ * Text label inside an action button (Interrupt/Send). Hidden below `sm` so
+ * the buttons become icon-only on narrow screens, saving horizontal space.
+ */
+export const actionLabel = style({
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      display: 'none',
+    },
+  },
 })
 
 export const scrollToBottomButton = style({
@@ -235,227 +245,21 @@ export const emptyChat = style({
   color: 'var(--faint-foreground)',
 })
 
-export const settingsTrigger = style({
-  all: 'unset',
-  boxSizing: 'border-box',
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 'var(--space-1)',
-  padding: '2px var(--space-1)',
-  marginBottom: '3px',
-  marginLeft: '-3px',
-  fontSize: 'var(--text-8)',
-  color: 'var(--faint-foreground)',
-  cursor: 'pointer',
-  borderRadius: 'var(--radius-small)',
-  whiteSpace: 'nowrap',
-  userSelect: 'none',
-  selectors: {
-    '&:hover': { color: 'var(--foreground)', backgroundColor: 'var(--card)' },
-    '&[data-disabled]': { opacity: 0.5, cursor: 'default' },
-  },
-})
-
-export const settingsMenu = style({
-  backgroundColor: 'var(--background)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  padding: 'var(--space-4)',
-  zIndex: 300,
-  minWidth: '180px',
-  maxHeight: 'calc(100vh - var(--space-6) * 2)',
-  overflowY: 'auto',
-  boxShadow: 'var(--shadow-large)',
-})
-
-export const settingsMenuWide = style({
-  'minWidth': '460px',
-  '@media': {
-    [`(max-width: ${breakpoints.sm - 1}px)`]: {
-      minWidth: 'auto',
-    },
-  },
-})
-
-export const settingsPanelColumns = style({
-  'display': 'flex',
-  'alignItems': 'flex-start',
-  'gap': 'var(--space-4)',
-  '@media': {
-    [`(max-width: ${breakpoints.sm - 1}px)`]: {
-      flexDirection: 'column',
-      gap: 'var(--space-1)',
-    },
-  },
-})
-
-export const settingsPanelColumn = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--space-4)',
-  flex: 1,
-  minWidth: 0,
-})
-
-export const settingsPanelColumnPrimary = style({
-  flex: 1.2,
-})
-
-export const settingsFieldset = style({
-  position: 'relative',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  padding: 'var(--space-3) var(--space-2) var(--space-2)',
-  minWidth: 0,
-  selectors: {
-    // Read-only group (RadioGroup disabled): mute it and drop the interactive
-    // cursor, following the settingsTrigger &[data-disabled] pattern.
-    '&[data-disabled]': { opacity: 0.5, cursor: 'default' },
-  },
-})
-
-export const settingsFieldsetFirst = style({
-  marginBlockStart: 0,
-})
-
-export const settingsGroupLabel = style({
-  position: 'absolute',
-  top: 0,
-  left: 'var(--space-3)',
-  transform: 'translateY(-50%)',
-  display: 'inline-block',
-  padding: '0 var(--space-2)',
-  fontSize: 'var(--text-8)',
-  fontWeight: 'var(--font-bold)',
-  color: 'var(--muted-foreground)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.05em',
-  whiteSpace: 'nowrap',
-  backgroundColor: 'var(--background)',
-})
-
-export const settingsRadioItem = style({
-  'all': 'unset',
-  'boxSizing': 'border-box',
-  'display': 'flex',
-  'alignItems': 'center',
-  'gap': 'var(--space-2)',
-  'padding': '3px var(--space-2)',
-  'fontSize': 'var(--text-8)',
-  'color': 'var(--foreground)',
-  'cursor': 'pointer',
-  'userSelect': 'none',
-  ':hover': {
-    backgroundColor: 'var(--card)',
-  },
-  'selectors': {
-    // Inside a read-only group, the items are inert: no interactive cursor, no
-    // hover affordance.
-    [`${settingsFieldset}[data-disabled] &`]: { cursor: 'default' },
-    [`${settingsFieldset}[data-disabled] &:hover`]: { backgroundColor: 'transparent' },
-  },
-})
-
-// Searchable select: current value display
-export const searchableSelectCurrent = style({
-  padding: '3px var(--space-2)',
-  fontSize: 'var(--text-8)',
-  color: 'var(--muted-foreground)',
-})
-
-// Searchable select: scrollable list
-export const searchableSelectListbox = style({
-  // Height fits 5 items (compact — selected value + filter input take extra space).
-  // Each item is 1lh tall + 6px vertical padding → calc(1lh + 6px) per item.
-  // Font-size must match items so 1lh resolves to the correct item line-height.
-  fontSize: 'var(--text-8)',
-  minHeight: 'calc((1lh + 6px) * 5)',
-  maxHeight: 'calc((1lh + 6px) * 5)',
-  overflowY: 'auto',
-})
-
-// Searchable select: item
-export const searchableSelectItem = style({
-  'display': 'flex',
-  'alignItems': 'center',
-  'justifyContent': 'space-between',
-  'gap': 'var(--space-2)',
-  'padding': '3px var(--space-2)',
-  'fontSize': 'var(--text-8)',
-  'color': 'var(--foreground)',
-  'cursor': 'pointer',
-  'userSelect': 'none',
-  'whiteSpace': 'nowrap',
-  'borderRadius': 'var(--radius-small)',
-  ':hover': {
-    backgroundColor: 'var(--card)',
-  },
-})
-
-// Searchable select: highlighted item (keyboard navigation)
-export const searchableSelectItemHighlighted = style({
-  backgroundColor: 'var(--muted)',
-})
-
-// Searchable select: currently selected item
-export const searchableSelectItemSelected = style({
-  fontWeight: 'var(--font-bold)',
-})
-
-// Searchable select: secondary text (right-aligned, muted)
-export const searchableSelectItemSecondary = style({
-  fontFamily: 'var(--font-mono)',
-  fontSize: 'var(--text-8)',
-  color: 'var(--muted-foreground)',
-  marginLeft: 'auto',
-  flexShrink: 0,
-})
-
-// Searchable select: filter input container
-export const searchableSelectControl = style({
-  padding: '3px var(--space-2)',
-  borderTop: '1px solid var(--border)',
-  marginTop: 'var(--space-1)',
-})
-
-// Searchable select: filter input
-export const searchableSelectInput = style({
-  'all': 'unset',
-  'boxSizing': 'border-box',
-  'width': '100%',
-  'fontSize': 'var(--text-8)',
-  'color': 'var(--foreground)',
-  '::placeholder': {
-    color: 'var(--faint-foreground)',
-  },
-})
-
-export const footerBarRight = style({
-  display: 'flex',
-  alignItems: 'center',
-  gap: 'var(--space-1)',
-})
-
-export const infoTrigger = style({
-  all: 'unset',
-  boxSizing: 'border-box',
-  display: 'inline-flex',
-  alignItems: 'center',
+export const infoTrigger = style([chipBase, {
   justifyContent: 'center',
   gap: 'var(--space-1)',
   padding: '2px',
   fontSize: 'var(--text-8)',
-  color: 'var(--faint-foreground)',
-  cursor: 'pointer',
-  borderRadius: 'var(--radius-small)',
   vars: {
     '--context-grid-inactive': 'var(--border)',
     '--context-grid-warning': 'var(--warning)',
   },
   selectors: {
-    '&:hover': { color: 'var(--foreground)', backgroundColor: 'var(--card)', vars: { '--context-grid-inactive': 'var(--border)', '--context-grid-warning': 'var(--warning)' } } as Record<string, unknown>,
+    // Restated because chipBase's own hover rule replaces the declaration
+    // block; the grid vars must survive the hover state.
+    '&:hover': { vars: { '--context-grid-inactive': 'var(--border)', '--context-grid-warning': 'var(--warning)' } } as Record<string, unknown>,
   },
-})
+}])
 
 export const infoRow = style({
   display: 'flex',
@@ -483,41 +287,21 @@ export const infoValueText = style({
   wordBreak: 'break-all',
 })
 
-export const infoCopyButton = style({
-  'all': 'unset',
-  'boxSizing': 'border-box',
-  'display': 'inline-flex',
-  'alignItems': 'center',
-  'justifyContent': 'center',
-  'padding': '2px',
-  'cursor': 'pointer',
-  'borderRadius': 'var(--radius-small)',
-  'color': 'var(--faint-foreground)',
-  'flexShrink': 0,
-  ':hover': {
-    color: 'var(--foreground)',
-    backgroundColor: 'var(--card)',
-  },
-})
+export const infoCopyButton = style([chipBase, {
+  justifyContent: 'center',
+  padding: '2px',
+  flexShrink: 0,
+}])
 
 export const infoRows = style({
   display: 'flex',
   flexDirection: 'column',
   gap: 'var(--space-1)',
-})
-
-export const infoSeparator = style({
-  height: '1px',
-  backgroundColor: 'var(--border)',
-  margin: 'var(--space-1) 0',
-})
-
-export const infoContextUsage = style({
-  fontSize: 'var(--text-8)',
-  color: 'var(--foreground)',
-  maxHeight: '300px',
-  overflowY: 'auto',
-  lineHeight: '1.4',
+  // Every row is behind a `Show`, so an agent with no session id, no branch and
+  // no rate-limit row would otherwise render a card narrower than the `[+]` menu
+  // it hangs off. The floor belongs to the CONTENT, not to the shared popover
+  // class: the to-do and background-task cards size to their own rows.
+  minWidth: '240px',
 })
 
 export const rateLimitCountdown = style({

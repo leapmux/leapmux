@@ -10,7 +10,7 @@ import { createMemo, createSignal, For, Show } from 'solid-js'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { Tooltip } from '~/components/common/Tooltip'
 import * as shared from '~/components/tree/sharedTree.css'
-import { sidebarActions } from '~/components/tree/sidebarActions.css'
+import { actionSlot, actionSlotResting, sidebarActions } from '~/components/tree/sidebarActions.css'
 import * as listStyles from '~/components/workspace/workspaceList.css'
 import { useTunnel } from '~/context/TunnelContext'
 import { TunnelContextMenu } from './TunnelContextMenu'
@@ -84,19 +84,24 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                       {workerName()}
                     </span>
                   </Tooltip>
-                  <div
-                    class={`${styles.statusDot} ${statusClass[status()]}`}
-                    data-status={status()}
-                  />
                   <div class={sidebarActions}>
-                    <WorkerContextMenu
-                      workerInfo={props.workerInfo(worker.id)}
-                      autoRegistered={worker.autoRegistered}
-                      hasTunnels={workerTunnels().length > 0}
-                      onAddTunnel={() => props.onAddTunnel(worker)}
-                      onDeleteAllTunnels={() => setDeleteAllTunnelsWorkerId(worker.id)}
-                      onDeregister={() => props.onDeregister(worker)}
-                    />
+                    {/* The dot and the three-dot trigger share one cell: the
+                        dot rests at the row's right edge and the trigger takes
+                        its place on hover, so the row's width never shifts. */}
+                    <div class={actionSlot}>
+                      <div
+                        class={`${styles.statusDot} ${actionSlotResting} ${statusClass[status()]}`}
+                        data-status={status()}
+                      />
+                      <WorkerContextMenu
+                        workerInfo={props.workerInfo(worker.id)}
+                        autoRegistered={worker.autoRegistered}
+                        hasTunnels={workerTunnels().length > 0}
+                        onAddTunnel={() => props.onAddTunnel(worker)}
+                        onDeleteAllTunnels={() => setDeleteAllTunnelsWorkerId(worker.id)}
+                        onDeregister={() => props.onDeregister(worker)}
+                      />
+                    </div>
                   </div>
                 </div>
                 <Show when={tunnel}>

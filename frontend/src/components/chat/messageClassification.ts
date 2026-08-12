@@ -3,6 +3,7 @@ import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { isWorkerAuthoredNotification } from '~/lib/notificationTypes'
 import * as chatStyles from './messageStyles.css'
 import { isPersistedControlResponse } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
@@ -86,6 +87,18 @@ export function classifyMessage(
   // whose first message somehow looks synthetic still classifies as a notification, not this.
   if (!input.wrapper && isPersistedControlResponse(input.parentObject))
     return { kind: 'control_response' }
+
+  // A worker-authored notification is provider-neutral BY CONSTRUCTION: the worker writes it, the
+  // agent never does, so no plugin can recognize it from its own wire format. Classifying it here
+  // makes registering one a single edit; the per-provider tables would each have to add it, and the
+  // one that forgot would render the row as raw JSON.
+  //
+  // Scoped to WORKER_AUTHORED_NOTIFICATION_TYPES, never to NOTIFICATION_TYPE as a whole: most of that
+  // vocabulary is agent-emitted and a plugin may legitimately suppress a member (Codex hides
+  // `agent_error` for a turn it already reported), which a blanket test placed ahead of
+  // plugin.classify would resurrect.
+  if (!input.wrapper && isWorkerAuthoredNotification(input.parentObject))
+    return { kind: 'notification', messages: [input.parentObject] }
 
   return plugin.classify(input, context)
 }

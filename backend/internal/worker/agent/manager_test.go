@@ -127,6 +127,198 @@ func TestManager_SendInputUnknownAgent(t *testing.T) {
 	m := NewManager(nil)
 
 	assert.Error(t, m.SendInput("nonexistent", "hello", nil), "expected error for unknown agent")
+
+	// The error path must release the lifecycle lock. It is taken before the
+	// lookup, so a return that skipped the unlock would leave the agent id locked
+	// forever -- every later send, restart, or auto-start for it would park on a
+	// mutex nobody holds a reason for, and the agent would simply stop responding
+	// with no error anywhere. A second send proves the lock came back.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		assert.Error(t, m.SendInput("nonexistent", "hello again", nil), "expected error for unknown agent")
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second send blocked: the failed send did not release the lifecycle lock")
+	}
+}
+
+// A message that arrives while the agent is restarting must WAIT for the new
+// process, not fail against the old one.
+//
+// The window is a settings change the provider cannot apply live: the service
+// takes the lifecycle lock, stops the old process, and starts a new one. A send
+// that landed in it used to reach the stopped process and come back "agent is
+// stopped" -- the user's message was persisted with a delivery error and the
+// turn never ran, for a relaunch they had no way to see. E2E 045 died on exactly
+// that: the send raced the startup relaunch and the assistant never answered.
+func TestManager_SendInputWaitsForRestartToFinish(t *testing.T) {
+	m := NewManager(nil)
+	ctx := context.Background()
+	const agentID = "s-send-during-restart"
+	opts := Options{
+		AgentID:    agentID,
+		Options:    map[string]string{OptionIDModel: "test"},
+		WorkingDir: t.TempDir(),
+	}
+
+	_, err := m.startAgentWith(ctx, opts, noopSink{}, startMockAgent)
+	require.NoError(t, err, "StartAgent")
+
+	// Open the restart window by hand -- lock held, old process gone, new one not
+	// started -- which is what RestartAgent holds across its stop and its start.
+	unlock := m.LockAgent(agentID)
+	require.True(t, m.StopAndWaitAgent(agentID), "expected the running agent to stop")
+
+	sendErr := make(chan error, 1)
+	go func() {
+		sendErr <- m.SendInput(agentID, "sent while the agent was restarting", nil)
+	}()
+
+	// Nothing can deliver this yet, so the send must still be in flight. A send
+	// that resolves here resolved against no process at all, which is the bug.
+	select {
+	case err := <-sendErr:
+		t.Fatalf("send resolved inside the restart window: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Finish the restart, then release the lock the way the service does.
+	_, err = m.startAgentWith(ctx, opts, noopSink{}, startMockAgent)
+	require.NoError(t, err, "restart")
+	unlock()
+	defer m.StopAgent(agentID)
+
+	select {
+	case err := <-sendErr:
+		assert.NoError(t, err, "the waiting send must land on the restarted agent")
+	case <-time.After(5 * time.Second):
+		t.Fatal("send never completed after the restart finished")
+	}
+}
+
+// A message to a SUBAGENT tab reaches the owner process, so it meets the same
+// restart window a root send does -- and used to fail the same way, with the
+// user's message persisted carrying a delivery error for a relaunch they had no
+// way to see. The wait belongs on every input door into the process, not just
+// the one the root uses.
+func TestManager_SendChildInputWaitsForRestartToFinish(t *testing.T) {
+	m := NewManager(nil)
+	ctx := context.Background()
+	const agentID = "s-child-send-during-restart"
+	opts := Options{
+		AgentID:    agentID,
+		Options:    map[string]string{OptionIDModel: "test"},
+		WorkingDir: t.TempDir(),
+	}
+
+	_, err := m.startAgentWith(ctx, opts, noopSink{}, startMockAgent)
+	require.NoError(t, err, "StartAgent")
+
+	// The restart window, held open by hand the way RestartAgent holds it.
+	unlock := m.LockAgent(agentID)
+	require.True(t, m.StopAndWaitAgent(agentID), "expected the running agent to stop")
+
+	sendErr := make(chan error, 1)
+	go func() {
+		sendErr <- m.SendChildInput(agentID, "child-key", "sent while restarting", nil)
+	}()
+
+	// Nothing can deliver this yet. A send that resolves here resolved against
+	// no process at all, which is the bug.
+	select {
+	case err := <-sendErr:
+		t.Fatalf("child send resolved inside the restart window: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	_, err = m.startAgentWith(ctx, opts, noopSink{}, startMockAgent)
+	require.NoError(t, err, "restart")
+	unlock()
+	defer m.StopAgent(agentID)
+
+	select {
+	case err := <-sendErr:
+		// The mock provider steers no child, so the ERROR is expected. What
+		// matters is that the call got past the lock to a live process at all,
+		// rather than resolving against the one the restart was destroying.
+		assert.ErrorIs(t, err, ErrChildSteeringUnsupported)
+	case <-time.After(5 * time.Second):
+		t.Fatal("child send never completed after the restart finished")
+	}
+}
+
+// The lifecycle lock covers the map READ, never the provider write.
+//
+// A provider's SendInput blocks for as long as the turn takes -- Codex's
+// turn/start has no timeout at all. Holding a lifecycle lock across that would
+// park every restart, /clear, plan execution and auto-start for the agent
+// behind one message, and would defeat mid-turn steering, which needs a second
+// send to reach the provider WHILE the first turn runs.
+func TestManager_SendInputDoesNotHoldTheLifecycleLockAcrossTheWrite(t *testing.T) {
+	m := NewManager(nil)
+	ctx := context.Background()
+	const agentID = "s-send-releases-lock"
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	start := func(ctx context.Context, opts Options, sink OutputSink) (Agent, error) {
+		base, err := mockStart(ctx, opts, sink)
+		if err != nil {
+			return nil, err
+		}
+		return &blockingSendAgent{Agent: base, entered: entered, release: release}, nil
+	}
+	_, err := m.startAgentWith(ctx, Options{
+		AgentID:    agentID,
+		Options:    map[string]string{OptionIDModel: "test"},
+		WorkingDir: t.TempDir(),
+	}, noopSink{}, start)
+	require.NoError(t, err, "StartAgent")
+
+	sendDone := make(chan error, 1)
+	go func() { sendDone <- m.SendInput(agentID, "a message that blocks", nil) }()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the provider write never started")
+	}
+
+	// The write is in flight. A lifecycle operation must still be able to take
+	// the lock -- that is the whole difference between a slow send and a wedged
+	// agent.
+	locked := make(chan struct{})
+	go func() {
+		unlock := m.LockAgent(agentID)
+		close(locked)
+		unlock()
+	}()
+	select {
+	case <-locked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a lifecycle operation blocked behind an in-flight send")
+	}
+
+	close(release)
+	require.NoError(t, <-sendDone)
+}
+
+// blockingSendAgent parks in SendInput until it is released, so a test can hold
+// a provider write open and inspect what the manager does meanwhile. Every
+// other method is the wrapped mock's.
+type blockingSendAgent struct {
+	Agent
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (a *blockingSendAgent) SendInput(string, []*leapmuxv1.Attachment) error {
+	close(a.entered)
+	<-a.release
+	return nil
 }
 
 func TestManager_StopAll(t *testing.T) {

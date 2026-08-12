@@ -93,6 +93,14 @@ const EffortHigh = "high"
 // exit was driven by an explicit Stop (a user interrupt, a relaunch, or a
 // shutdown) rather than a crash. The background-task registry uses stopped to
 // label rows 'stopped' vs 'interrupted'.
+//
+// A handler must NEVER acquire the agent's lifecycle lock, directly or through
+// a Manager method that takes it (SendInput, SendChildInput, RestartAgent,
+// StopAndWaitAgent). It runs on the exit goroutine, and a lifecycle caller is
+// normally waiting for that goroutine to finish while it holds that very lock,
+// so an acquire here deadlocks the agent for the life of the process. Do the
+// work that needs the lock AFTER the lifecycle call returns, the way the
+// plan-execution path does.
 type ExitHandler func(agentID string, exitCode int, err error, stopped bool)
 
 // Options configures a new ClaudeCodeAgent.

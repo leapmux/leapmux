@@ -7,6 +7,7 @@ import { pluralize } from '~/lib/plural'
 import { buildAllowResponse, getToolInput } from '~/utils/controlResponse'
 import * as styles from '../ControlRequestBanner.css'
 import { CollapsibleList } from './CollapsibleList'
+import { ControlActionRow } from './ControlActionRow'
 import { createPlanApprovalState, PlanApprovalCheckboxes } from './PlanApprovalCheckboxes'
 import { sendResponse } from './types'
 
@@ -84,30 +85,29 @@ export const ExitPlanModeActions: Component<ActionsProps> = (props) => {
   }
 
   return (
-    <div class={styles.controlFooter}>
-      <div class={styles.controlFooterLeft}>
-        {props.infoTrigger}
-      </div>
-      <div class={styles.controlFooterRight}>
-        <Show when={!props.hasEditorContent}>
-          <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
-        </Show>
-        <button
-          class="outline"
-          onClick={handleReject}
-          data-testid="plan-reject-btn"
-        >
-          {props.hasEditorContent ? 'Send Feedback' : 'Reject'}
-        </button>
-        <Show when={!props.hasEditorContent}>
+    <ControlActionRow
+      primary={(
+        <>
+          <Show when={!props.hasEditorContent}>
+            <PlanApprovalCheckboxes state={planApproval} bypassPermissionMode={props.bypassPermissionMode} />
+          </Show>
           <button
-            onClick={handleApprove}
-            data-testid="plan-approve-btn"
+            class="outline"
+            onClick={handleReject}
+            data-testid="plan-reject-btn"
           >
-            Approve
+            {props.hasEditorContent ? 'Send Feedback' : 'Reject'}
           </button>
-        </Show>
-      </div>
-    </div>
+          <Show when={!props.hasEditorContent}>
+            <button
+              onClick={handleApprove}
+              data-testid="plan-approve-btn"
+            >
+              Approve
+            </button>
+          </Show>
+        </>
+      )}
+    />
   )
 }

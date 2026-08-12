@@ -1,5 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_PROMPT, expectAssistantAnswer, expectUserMessage, loginViaToken, messageBubbles, openSettingsMenu, openWorkspace, visibleOnly } from './helpers/ui'
+import { ARITHMETIC_PROMPT, expectAssistantAnswer, expectSettingsChip, expectUserMessage, loginViaToken, messageBubbles, openSettingsMenu, openWorkspace, visibleOnly } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Settings and /clear after Worker restart', () => {
@@ -42,30 +42,28 @@ test.describe('Settings and /clear after Worker restart', () => {
       const waitForNotification = (text: string) =>
         expect(visibleOnly(page.getByText(text))).toBeVisible()
 
-      const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-
       // Helper: wait for the settings loading spinner to disappear.
       const waitForSettingsIdle = () =>
         expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
 
       // Step 3: Change permission mode (Default → Plan Mode)
-      await openSettingsMenu(page)
+      await openSettingsMenu(page, 'permissionMode')
       await page.locator('[data-testid="permissionMode-plan"]').click()
 
-      await expect(trigger).toContainText('Plan')
+      await expectSettingsChip(page, 'Plan')
       await waitForNotification('Mode (Default \u2192 Plan Mode)')
       await waitForSettingsIdle()
 
       // Step 4: Change effort (Low → Medium, default overridden via LEAPMUX_CLAUDE_DEFAULT_EFFORT in e2e)
       // Must happen before switching to Haiku, which hides the effort section.
-      await openSettingsMenu(page)
+      await openSettingsMenu(page, 'effort')
       await page.locator('[data-testid="effort-medium"]').click()
 
       await waitForNotification('Effort (Low \u2192 Medium)')
       await waitForSettingsIdle()
 
       // Step 5: Change model (Sonnet → Haiku)
-      await openSettingsMenu(page)
+      await openSettingsMenu(page, 'model')
       await page.locator('[data-testid="model-haiku"]').click()
 
       await waitForNotification('Model (Sonnet \u2192 Haiku)')

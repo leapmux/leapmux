@@ -49,7 +49,7 @@ Open the **New agent** dialog from the workspace, then fill in the fields below 
 | **Resume an existing session** | Optional. Paste a prior Session ID to continue an earlier conversation (see [Resuming a session](#resuming-an-existing-session)). |
 | **Git options** | Appears once a Worker is selected. Lets you start the agent on the current branch, switch branches, create a branch, or create/use a worktree. See [Worktrees & Branches](/docs/using/worktrees-and-branches/). |
 
-> **Note:** The dialog has **no model, effort, or permission-mode fields**. A new agent always starts with the provider's defaults; you change the model, reasoning effort, and permission mode afterward from the in-chat settings dropdown (see [Changing settings mid-session](#changing-settings-mid-session)).
+> **Note:** The dialog has **no model, effort, or permission-mode fields**. A new agent always starts with the provider's defaults; you change the model, reasoning effort, and permission mode afterward from the composer's status-bar chips or its **[+]** menu (see [Changing settings mid-session](#changing-settings-mid-session)).
 
 LeapMux remembers your most recently used provider and pre-selects it (when it is available on the chosen Worker), so you usually only have to pick a directory and click **Create**.
 
@@ -67,24 +67,28 @@ The chat tab has the conversation transcript above and a Markdown editor at the 
 
 ### Composing and sending
 
-The editor is a full Markdown editor with a formatting toolbar. Type your message and send it with the **Send** button (the paper-plane icon) or with the keyboard. While the message is in flight, the Send icon is replaced by a spinner.
+The editor is a full Markdown editor in a single input box. Type your message and send it with the **Send** button (the paper-plane icon) or with the keyboard. While the message is in flight, a spinner replaces the Send icon.
+
+The box starts one line tall, with the **[+]** menu at the left end and the send controls at the right. It expands into a taller layout, with those controls on their own row beneath the text, as soon as the message needs more than one line.
 
 Send is disabled when the editor is empty and there are no attachments.
 
+Markdown shortcuts apply as you type: `**bold**`, `` `code` ``, `# heading`, `- list`, ` ``` ` for a code block, and `[text](url)` for a link. Click a link to open a small editor for its URL, with **Save** and a remove button. Use it whenever a URL is wrong — editing the link's visible text does not change where it points.
+
 #### Enter-key send mode
 
-A toggle in the editor toolbar controls what the **Enter** key does. The two modes are:
+An item in the composer's **[+]** menu controls what the **Enter** key does. The two modes are:
 
 | Mode | Enter | Modifier+Enter |
 | --- | --- | --- |
 | **Enter sends** | Sends the message | (Shift+Enter for a new line) |
 | **Cmd/Ctrl+Enter sends** (default) | Inserts a new line | Cmd+Enter (macOS) / Ctrl+Enter (other platforms) sends |
 
-The default is **Cmd/Ctrl+Enter sends**, so plain Enter adds a newline. Click the mode label in the toolbar to switch; the choice is saved as a [preference](/docs/using/settings/) and persists across sessions.
+The default is **Cmd/Ctrl+Enter sends**, so plain Enter adds a newline. Open the **[+]** menu and click **Send with Cmd/Ctrl+Enter** to switch; the choice is saved as a [preference](/docs/using/settings/) and persists across sessions.
 
 ### Attachments
 
-You can attach files by clicking the upload (paperclip) button, or by pasting or dropping them into the editor. Pending attachments appear in a strip above the editor. What you can attach depends on the provider:
+You can attach files with **[+] > Attach file...**, or by pasting or dropping them into the editor. Pending attachments appear in a strip above the editor. What you can attach depends on the provider:
 
 | Provider | Text | Image | PDF | Other binary |
 | --- | --- | --- | --- | --- |
@@ -183,11 +187,13 @@ Cursor, GitHub Copilot, Goose, OpenCode, Kilo, and Reasonix render a permission 
 
 ## Changing settings mid-session
 
-The editor footer (when no prompt is active) has a settings dropdown showing the agent's current model, an effort icon, and mode. Open it to change the agent's model, reasoning effort, permission mode, and provider-specific options.
+Beneath the editor box is a status bar with one chip per setting axis - the git branch, and the agent's current model, reasoning effort, and mode. Click a chip to change that axis.
+
+The **[+]** menu holds every axis, including the provider-specific options that get no chip, each as a submenu. It also holds **Agent info** (context usage, rate limits, session). You can hide the status bar with **[+] > Show status bar**; the **[+]** menu still reaches everything the bar shows.
 
 > **Note:** Changing the **model** or **effort** restarts the agent process (the change is optimistic and rolls back if it fails). Changing Claude Code's **permission mode** is live — no restart. For Codex and the other providers, a permission-mode change restarts the agent.
 
-The model picker shows radio buttons for up to 7 models and switches to a searchable list above that.
+A picker shows radio items for up to 7 options and switches to a searchable list above that.
 
 ### Reasoning effort and the "Auto" default
 
@@ -199,26 +205,25 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 
 ### Per-provider settings
 
-**Claude Code** — Extended Thinking, Effort, Model (left); Fast Mode, Output Style, Permission Mode (right).
+**Claude Code** — Extended Thinking, Effort, Model, Fast Mode, Output Style, Permission Mode.
 
-- Default model **Opus (1M context)** (`opus[1m]`); also offered: Opus, Sonnet, Sonnet (1M context), Haiku.
+- Default model **Opus (1M context)** (`opus[1m]`); also offered: Fable 5, Sonnet, Sonnet (1M context), Haiku.
 - Effort tiers depend on the model:
-  - **Opus** and **Opus (1M context)** offer the full set: Auto, Ultracode, Max, X-High, High, Medium, Low.
-  - **Sonnet** and **Sonnet (1M context)** offer Auto, Max, High, Medium, Low (no Ultracode or X-High).
+  - **Fable 5**, **Opus (1M context)**, **Sonnet**, and **Sonnet (1M context)** offer the full set: Auto, Ultracode, Max, Extra High, High, Medium, Low.
   - **Haiku** has no effort tiers at all — the effort selector is hidden entirely when Haiku is the model, and the Worker never sends an effort flag for Haiku.
 - Permission modes: **Default** (the default), **Plan Mode**, **Accept Edits**, **Bypass Permissions**, **Don't Ask**, **Auto Mode**.
 
-**Codex** — Fast Mode, Reasoning Effort, Model (left); Workflow, Network Access, Sandbox, Approval Policy, plus a **Bypass permissions** button (right).
+**Codex** — Fast Mode, Reasoning Effort, Model, Workflow, Network Access, Sandbox, Approval Policy, plus a **Bypass permissions** item.
 
 - Default model **GPT-5.4** (`gpt-5.4`); also offered: gpt-5.4-mini, gpt-5.3-codex, gpt-5.2-codex, gpt-5.2, gpt-5.1-codex-max, gpt-5.1-codex-mini.
-- Effort tiers: Auto, Extra High, High, Medium, Low, Minimal, None.
+- Effort tiers: Auto, Ultra, Max, Extra High, High, Medium, Low, Minimal, None.
 - Approval Policy: **Full Auto** (`never`), **Suggest & Approve** (`on-request`, the default), **Auto-edit** (`untrusted`).
 - Sandbox defaults to **Workspace Write** (also Full Access / Read Only); Network defaults to **Restricted** (also Enabled).
-- The **Bypass permissions** button sets network = enabled, sandbox = full access, and approval = Full Auto in one click.
+- The **Bypass permissions** item sets network = enabled, sandbox = full access, and approval = Full Auto in one click.
 
-**Pi** — a single column with **Thinking Level** (effort) and **Model**. Default model **gpt-5.5**. Pi has no permission mode, no plan mode, and no bypass.
+**Pi** — **Thinking Level** (effort) and **Model**. Default model **gpt-5.5**. Pi has no permission mode, no plan mode, and no bypass.
 
-**Other providers** — a single option group plus a model selector. The trigger label reads `<model> · <option>`.
+**Other providers** — a single option group plus a model selector. Each axis gets its own chip, and each chip shows the current value.
 
 | Provider | Default model | Default mode | Notes |
 | --- | --- | --- | --- |

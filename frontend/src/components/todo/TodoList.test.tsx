@@ -81,4 +81,38 @@ describe('todoList', () => {
     expect(todoListEl?.children).toHaveLength(1)
     expect(todoListEl?.children[0].className).toMatch(/todoItem/)
   })
+
+  // Sorting lives in TodoList, so EVERY surface that renders a to-do list --
+  // the sidebar section, the ThinkingIndicator popover, the chat cards -- reads
+  // in the same order without each call site remembering to sort.
+  it('renders in-progress first, then pending, then completed, then deleted', () => {
+    const { container } = render(() => (
+      <TodoList
+        todos={[
+          { id: '1', content: 'done', status: 'completed', activeForm: '' },
+          { id: '2', content: 'gone', status: 'deleted', activeForm: '' },
+          { id: '3', content: 'todo', status: 'pending', activeForm: '' },
+          { id: '4', content: 'now', status: 'in_progress', activeForm: '' },
+        ]}
+      />
+    ))
+    const labels = [...container.querySelectorAll('[data-task-checkbox]')]
+      .map(el => el.closest('div')?.parentElement?.textContent ?? '')
+    expect(labels).toEqual(['now', 'todo', 'done', 'gone'])
+  })
+
+  it('keeps the oldest first inside one status group', () => {
+    const { container } = render(() => (
+      <TodoList
+        todos={[
+          { id: '1', content: 'first', status: 'pending', activeForm: '' },
+          { id: '2', content: 'second', status: 'pending', activeForm: '' },
+          { id: '3', content: 'third', status: 'pending', activeForm: '' },
+        ]}
+      />
+    ))
+    const labels = [...container.querySelectorAll('[data-task-checkbox]')]
+      .map(el => el.closest('div')?.parentElement?.textContent ?? '')
+    expect(labels).toEqual(['first', 'second', 'third'])
+  })
 })

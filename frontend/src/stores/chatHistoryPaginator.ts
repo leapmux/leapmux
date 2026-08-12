@@ -120,6 +120,7 @@ export interface HistoryPaginatorDeps {
   trimNewestEnd: (agentId: string, maxCount: number) => void
   replaceTodos: (agentId: string, protoTodos: ProtoTodoItem[]) => void
   replaceBackgroundTasks: (agentId: string, protoTasks: ProtoBackgroundTaskItem[]) => void
+  markBackgroundTasksLoadFailed: (agentId: string) => void
   loadLocalMessages: (agentId: string) => void
 }
 
@@ -149,6 +150,12 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    * the registry when backgroundTasksLoaded is true. protobuf-es always
    * materializes repeated fields as [], so false says "the query failed" and
    * prevents wiping a populated list/registry.
+   *
+   * A failed REGISTRY load is also recorded, because its section is hidden when
+   * it is empty: without the flag a worker that cannot answer looks exactly like
+   * an agent that has run no background tasks, and the section vanishes with
+   * nothing on screen to say why. The to-do list needs no equivalent -- an
+   * empty to-do list does not hide its section.
    */
   function applyLatestPage(
     agentId: string,
@@ -166,6 +173,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       deps.replaceTodos(agentId, resp.todos)
     if (resp.backgroundTasksLoaded)
       deps.replaceBackgroundTasks(agentId, resp.backgroundTasks)
+    else
+      deps.markBackgroundTasksLoadFailed(agentId)
   }
 
   /** Fetch the latest messages for an agent (initial page load). */
@@ -177,11 +186,29 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
     // could resolve last and clobber the jump's fresher window with the stale
     // initial page.
     await deps.runHistoryFetch(agentId, 'fetchingOlder', async (signal) => {
-      const resp = await listAgentMessages(workerId, {
-        agentId,
-        anchor: MessagePageAnchor.LATEST,
-        limit: MESSAGE_PAGE_SIZE,
-      })
+      let resp
+      try {
+        resp = await listAgentMessages(workerId, {
+          agentId,
+          anchor: MessagePageAnchor.LATEST,
+          limit: MESSAGE_PAGE_SIZE,
+        })
+      }
+      catch (err) {
+        // A REJECTED cold start is the other way the registry cannot be read,
+        // and `applyLatestPage` never runs for it. Without this the flag stays
+        // false and the Background tasks section leaves the screen with nothing
+        // to say why -- the same failure the in-band `backgroundTasksLoaded`
+        // flag closes, arriving through the door next to it.
+        //
+        // Not for an ABORTED fetch: that tab is going away or a fresher fetch
+        // superseded this one, and the superseding fetch writes the real answer.
+        if (!signal.aborted)
+          deps.markBackgroundTasksLoadFailed(agentId)
+        // Re-thrown, so the caller's own "Failed to load chat history" toast
+        // still fires. This records a fact; it does not handle the error.
+        throw err
+      }
       if (signal.aborted)
         return
       // The server ships the authoritative to-do list on the cold-start (LATEST)

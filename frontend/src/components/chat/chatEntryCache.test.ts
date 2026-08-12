@@ -67,6 +67,26 @@ function claudeToolUse(id: string, seq: bigint, spanId: string, toolName = 'Task
   })
 }
 
+/**
+ * A Claude user row forwarded from a subagent. It carries `parent_tool_use_id`,
+ * so it classifies as the prompt SENT to the subagent in the parent's transcript
+ * and as an ordinary user message inside the child's own.
+ */
+function forwardedUserText(id: string, seq: bigint, parentToolUseId: string): AgentChatMessage {
+  return create(AgentChatMessageSchema, {
+    id,
+    source: MessageSource.USER,
+    content: new TextEncoder().encode(JSON.stringify({
+      type: 'user',
+      parent_tool_use_id: parentToolUseId,
+      message: { role: 'user', content: [{ type: 'text', text: 'keep going' }] },
+    })),
+    contentCompression: ContentCompression.NONE,
+    seq,
+    agentProvider: AgentProvider.CLAUDE_CODE,
+  })
+}
+
 /** An optimistic local user row (seq 0n, classifies visible). */
 function localText(id: string, text: string): AgentChatMessage {
   return create(AgentChatMessageSchema, {
@@ -268,6 +288,39 @@ describe('createclassifiedentrycache', () => {
       cache.visibleEntries()
       const after = cache.getEntry('tu1')!
       expect(after.freshness.hasToolResultSibling).toBe(true)
+      expect(after).not.toBe(before)
+      expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
+      dispose()
+    })
+  })
+
+  it('rebuilds a forwarded row when the tab\'s parent link hydrates', () => {
+    createRoot((dispose) => {
+      // A subagent tab is placed BEFORE listAgents hydrates its parentAgentId, and
+      // the child's own messages are subscribed immediately -- so a forwarded row
+      // can be classified while isChildTranscript still reads false. Inside the
+      // child's transcript that row is an ordinary user message; in the parent's it
+      // is the prompt SENT to the subagent. Without this dimension the row froze on
+      // the pre-hydration answer and rendered as a collapsed "Prompt" card forever.
+      const [isChild, setIsChild] = createSignal(false)
+      const messages = [forwardedUserText('fu1', 3n, 'toolu_spawn')]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        hasNewerMessages: () => false,
+        showHiddenMessages: () => false,
+        isChildTranscript: () => isChild(),
+      })
+      cache.visibleEntries()
+      const before = cache.getEntry('fu1')!
+      expect(before.category.kind).toBe('agent_prompt')
+      expect(before.freshness.isChildTranscript).toBe(false)
+      const beforeHeightKey = heightKeyForEntry(before, 0)
+
+      setIsChild(true)
+      cache.visibleEntries()
+      const after = cache.getEntry('fu1')!
+      expect(after.freshness.isChildTranscript).toBe(true)
+      expect(after.category.kind).toBe('user_text')
       expect(after).not.toBe(before)
       expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
       dispose()

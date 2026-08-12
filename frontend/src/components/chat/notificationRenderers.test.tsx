@@ -613,3 +613,40 @@ describe('notificationThreadMetrics (height-estimate body metrics)', () => {
     expect(notificationThreadMetrics([null, 'not-an-object'])).toEqual({ textLength: 0, blockCount: 0 })
   })
 })
+
+// The worker closes a subagent transcript with one subagent_ended notification.
+// It renders as a labelled rule in the turn-end divider style, with the same
+// status glyph the Background tasks list uses for that final status.
+describe('renderNotificationThread: subagent_ended', () => {
+  it('labels a completed subagent', () => {
+    expect(renderText([{ type: 'subagent_ended', status: 'completed' }]))
+      .toContain('Subagent completed')
+  })
+
+  it('labels a failed subagent', () => {
+    expect(renderText([{ type: 'subagent_ended', status: 'failed' }]))
+      .toContain('Subagent failed')
+  })
+
+  it('labels a stopped subagent', () => {
+    expect(renderText([{ type: 'subagent_ended', status: 'stopped' }]))
+      .toContain('Subagent stopped')
+  })
+
+  it('labels an interrupted subagent', () => {
+    expect(renderText([{ type: 'subagent_ended', status: 'interrupted' }]))
+      .toContain('Subagent interrupted')
+  })
+
+  // An unrecognized status still ends the transcript; the label must not invent
+  // an outcome it cannot know.
+  it('falls back to a neutral label for an unknown status', () => {
+    const text = renderText([{ type: 'subagent_ended', status: 'who-knows' }])
+    expect(text).toContain('Subagent ended')
+    expect(text).not.toContain('completed')
+  })
+
+  it('renders as a divider row with a glyph, not plain text', () => {
+    expect(renderHasIcon([{ type: 'subagent_ended', status: 'completed' }])).toBe(true)
+  })
+})

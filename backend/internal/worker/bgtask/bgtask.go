@@ -17,9 +17,15 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
 
-// MaxTasks caps the size of an agent's background-task registry shipped to
-// clients and held in memory. Terminal rows are evicted past this cap (oldest
-// first); active rows are never evicted. Matches the agent_todos guardrail.
+// MaxTasks caps how many rows OF EACH KIND an agent's background-task registry
+// ships to clients and holds in memory. Finished rows are evicted past this cap
+// (oldest first); active rows are never evicted. Matches the agent_todos
+// guardrail.
+//
+// PER KIND, not per registry: a run that opens hundreds of shells would
+// otherwise evict every finished subagent, and the subagent rows are the ones
+// that carry a transcript worth revisiting. Each kind gets its own pool, so a
+// burst of one cannot push out the other.
 const MaxTasks = 64
 
 // SanitizeRowKey strips control characters (bytes < 0x20) from a
@@ -70,6 +76,27 @@ const (
 	KindShell
 )
 
+// Kinds lists every real (non-unspecified) kind, in declaration order. It is the
+// single source of truth for the registry's cap pools: the cold-start seed loads
+// each one to its own cap, so adding a kind here gives it a pool automatically.
+//
+// Add a new kind to BOTH this array and KindWire. KindWire's default arm maps an
+// unrecognized kind onto "subagent", which is the safe answer for a
+// KindUnspecified row but the WRONG pool for a real new kind, so the two must
+// stay in step. KindWires() below is what the seed reads, so a kind missing from
+// KindWire seeds the wrong pool rather than none.
+var Kinds = [...]Kind{KindSubagent, KindShell}
+
+// KindWires returns every pool's wire name, in Kinds order. The registry seeds
+// and caps by this list.
+func KindWires() []string {
+	out := make([]string, len(Kinds))
+	for i, k := range Kinds {
+		out[i] = KindWire(k)
+	}
+	return out
+}
+
 // Status is the canonical background-task status. Zero == pending (friendlier
 // than the proto's UNSPECIFIED). Interrupted is set at worker boot for tasks
 // the previous process left active (an honest "worker restarted" label).
@@ -84,10 +111,10 @@ const (
 	StatusInterrupted
 )
 
-// IsTerminal reports whether s is a terminal status -- one that makes a row
+// IsFinished reports whether s is a final status -- one that makes a row
 // eligible for cap-eviction. Pending and Running rows are never evicted; they
-// only leave through a terminal transition.
-func (s Status) IsTerminal() bool {
+// only leave through a transition into a final status.
+func (s Status) IsFinished() bool {
 	return s == StatusCompleted || s == StatusFailed || s == StatusStopped || s == StatusInterrupted
 }
 
@@ -102,12 +129,19 @@ type Item struct {
 	GroupKey      string
 	GroupLabel    string
 	Title         string
-	Description   string
-	ActiveForm    string
-	Status        Status
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	EndedAt       time.Time // zero == active
+	// TitleIsCommand marks Title as a verbatim shell command rather than prose,
+	// so a client can set it as code. Only a provider that hands the command
+	// over ITSELF may set it: an ACP terminal/create carries the command and
+	// nothing else, while Claude's task_started carries `description ||
+	// command`, so a Claude shell row's title is prose whenever the model wrote
+	// one and nothing on the wire says which it was.
+	TitleIsCommand bool
+	Description    string
+	ActiveForm     string
+	Status         Status
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	EndedAt        time.Time // zero == active
 }
 
 // PreservingBlanksFrom returns a copy of i with each descriptive field that the
@@ -134,6 +168,10 @@ func (i Item) PreservingBlanksFrom(existing Item) Item {
 	}
 	if i.Title == "" {
 		i.Title = existing.Title
+		// The flag describes THIS title, so it travels with it. Preserving one
+		// without the other would label the kept title by the blank upsert's
+		// answer, and set a shell command in prose type (or the reverse).
+		i.TitleIsCommand = existing.TitleIsCommand
 	}
 	if i.Description == "" {
 		i.Description = existing.Description
@@ -155,27 +193,58 @@ type Upsert struct {
 	GroupKey      string
 	GroupLabel    string
 	Title         string
-	Description   string
-	ActiveForm    string
-	Status        Status
+	// See Item.TitleIsCommand. Set it only when the provider handed over the
+	// command itself; a provider that cannot tell prose from a command leaves
+	// it false, because prose in the monospace face reads worse than a command
+	// in the normal one.
+	TitleIsCommand bool
+	Description    string
+	ActiveForm     string
+	Status         Status
+}
+
+// ToItem projects an Upsert onto the Item it describes, leaving the fields the
+// SINK owns (seq, created_at, updated_at, ended_at) at their zero values for
+// the caller to stamp.
+//
+// One projection, so the registry applier and the provider tests' recording
+// sink cannot disagree about what an upsert carries. They each hand-copied the
+// fields before, which meant a new field on Upsert reached production and NOT
+// the fake -- and the provider tests, which assert against the fake, went on
+// passing while the field they were meant to cover never arrived.
+func (u Upsert) ToItem() Item {
+	return Item{
+		RowKey:         u.RowKey,
+		ChildAgentID:   u.ChildAgentID,
+		ParentAgentID:  u.ParentAgentID,
+		Kind:           u.Kind,
+		GroupKey:       u.GroupKey,
+		GroupLabel:     u.GroupLabel,
+		Title:          u.Title,
+		TitleIsCommand: u.TitleIsCommand,
+		Description:    u.Description,
+		ActiveForm:     u.ActiveForm,
+		Status:         u.Status,
+	}
 }
 
 // ToProto converts an in-memory Item to the wire-format proto message.
 func (i Item) ToProto() *leapmuxv1.BackgroundTaskItem {
 	return &leapmuxv1.BackgroundTaskItem{
-		Id:            i.RowKey,
-		Kind:          kindToProto(i.Kind),
-		ChildAgentId:  i.ChildAgentID,
-		ParentAgentId: i.ParentAgentID,
-		GroupKey:      i.GroupKey,
-		GroupLabel:    i.GroupLabel,
-		Title:         i.Title,
-		Description:   i.Description,
-		ActiveForm:    i.ActiveForm,
-		Status:        statusToProto(i.Status),
-		CreatedAt:     formatTime(i.CreatedAt),
-		UpdatedAt:     formatTime(i.UpdatedAt),
-		EndedAt:       formatTime(i.EndedAt),
+		Id:             i.RowKey,
+		Kind:           kindToProto(i.Kind),
+		ChildAgentId:   i.ChildAgentID,
+		ParentAgentId:  i.ParentAgentID,
+		GroupKey:       i.GroupKey,
+		GroupLabel:     i.GroupLabel,
+		Title:          i.Title,
+		TitleIsCommand: i.TitleIsCommand,
+		Description:    i.Description,
+		ActiveForm:     i.ActiveForm,
+		Status:         statusToProto(i.Status),
+		CreatedAt:      formatTime(i.CreatedAt),
+		UpdatedAt:      formatTime(i.UpdatedAt),
+		EndedAt:        formatTime(i.EndedAt),
 	}
 }
 

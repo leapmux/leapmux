@@ -67,9 +67,15 @@ type PiAgent struct {
 
 	// toolCallDescriptions records toolCallId -> description (from the
 	// tool_execution_start input) for the background-task registry title.
-	// Guarded by mu. Cleared per turn (the id space does not repeat within a
-	// turn).
+	// Guarded by mu. An entry is dropped on the matching tool_execution_end,
+	// and the whole map is cleared when the session is replaced.
 	toolCallDescriptions map[string]string
+	// toolCallPrompts records toolCallId -> the spawn's FULL prompt (the
+	// description above is a one-line label). Held until the background re-key
+	// creates the child transcript, so a background Pi subagent's tab opens on
+	// the instruction it was given. Dropped with the description on
+	// tool_execution_end, and cleared when the session is replaced.
+	toolCallPrompts pendingPrompts
 }
 
 // StartPi starts a `pi --mode rpc` process and performs the startup handshake.
@@ -357,6 +363,14 @@ func (a *PiAgent) ClearContext() (string, bool) {
 	a.sessionCostKnown = false
 	a.latestContextUsage = nil
 	a.usageGeneration++
+	// Drop the per-tool-call side tables with the session. tool_execution_end is
+	// their only other removal, and it never arrives for a call the replaced
+	// session was still running -- so without this a spawn prompt is retained for
+	// the life of the process, and a reused tool-call id would open the next
+	// transcript on the previous session's instruction (mirrors
+	// acpBase.ClearContext).
+	clear(a.toolCallDescriptions)
+	a.toolCallPrompts.clear()
 	handle := a.sessionHandleLocked()
 	a.mu.Unlock()
 	// The session was replaced; drop any in-flight thinking-token estimate so it

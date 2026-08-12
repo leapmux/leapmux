@@ -1,6 +1,6 @@
 import type { Locator } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { ARITHMETIC_ANSWER, ARITHMETIC_PROMPT, assistantBubbles, openAgentViaUI, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_ANSWER, ARITHMETIC_PROMPT, assistantBubbles, closeComposerMenus, expectAssistantAnswer, openAgentViaUI, openPlusMenu, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 const HAS_TEXT_RE = /.+/
 
@@ -134,26 +134,28 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 
     // Now click the editor text input area — this should light-dismiss the
     // popover and leave focus in the editor.
-    // The popover may be positioned above the trigger (data-flipped), so
-    // click near the top-right corner of the editor to avoid the popover.
+    //
+    // Click the CENTRE of the text area, not a corner. The composer box
+    // overlays the `[+]` button on the left edge and the Interrupt/Send cluster
+    // on the right edge, both absolutely positioned INSIDE the editor's own
+    // box, so a corner point lands on a button and never reaches the editor —
+    // focus then stays on the body and the assertion below fails for a reason
+    // that has nothing to do with the popover.
     const editorBox = await editor.boundingBox()
     const popoverBox = await popover.boundingBox()
     expect(editorBox).not.toBeNull()
     expect(popoverBox).not.toBeNull()
 
-    // Click at a point inside the editor but outside the popover
-    let clickX = editorBox!.x + editorBox!.width - 20
-    let clickY = editorBox!.y + 10
-    // Make sure click point is outside the popover bounding box
-    if (
-      popoverBox
+    const clickX = editorBox!.x + editorBox!.width / 2
+    const clickY = editorBox!.y + editorBox!.height / 2
+    // The popover is anchored to the status bar below the box, and may flip
+    // above its trigger. Assert rather than dodge: a popover covering the
+    // centre of the text area is itself a layout defect, and silently clicking
+    // somewhere else would hide it.
+    const overlapsPopover = popoverBox
       && clickX >= popoverBox.x && clickX <= popoverBox.x + popoverBox.width
       && clickY >= popoverBox.y && clickY <= popoverBox.y + popoverBox.height
-    ) {
-      // Try top-left corner instead
-      clickX = editorBox!.x + 20
-      clickY = editorBox!.y + 10
-    }
+    expect(overlapsPopover, 'the info popover must not cover the editor text area').toBeFalsy()
     await page.mouse.click(clickX, clickY)
 
     // Wait for the popover to close via light-dismiss
@@ -305,6 +307,121 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
       .toBeLessThanOrEqual(DRIFT_TOLERANCE_PX)
     expect(Math.abs(finalOffset.dy - initialOffset.dy), `vertical drift; ${detail}`)
       .toBeLessThanOrEqual(DRIFT_TOLERANCE_PX)
+  })
+})
+
+/**
+ * The four padding sides of an element, as computed values.
+ *
+ * Runs inside the page, so it must not close over anything in this file.
+ */
+function readPadding(el: Element): string {
+  const style = getComputedStyle(el)
+  return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' ')
+}
+
+/**
+ * Oat's own inset for a card, read from a throwaway element that carries its
+ * `card` class.
+ *
+ * Measured rather than written down: the card popovers are supposed to FOLLOW
+ * Oat's card padding, so a literal `24px` here would keep passing on the day Oat
+ * changes it and the two surfaces silently stop matching the rest of the app.
+ *
+ * Runs inside the page, so it must not close over anything in this file.
+ */
+function resolveOatCardPadding(): string {
+  const probe = document.createElement('div')
+  probe.className = 'card'
+  document.body.append(probe)
+  try {
+    const style = getComputedStyle(probe)
+    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' ')
+  }
+  finally {
+    probe.remove()
+  }
+}
+
+test.describe('agent info card', () => {
+  /**
+   * The card opens from two places -- the status bar's context-usage trigger and
+   * the `[+]` menu's "Agent info" item -- and shows the same rows in both. They
+   * inset those rows differently for as long as each call site sets its own
+   * padding, which is what this asserts against.
+   */
+  test('both surfaces inset the card by Oat\'s card padding', async ({ page, authenticatedWorkspace }) => {
+    await openAgentViaUI(page)
+    await sendMessage(page, ARITHMETIC_PROMPT)
+    await expectAssistantAnswer(page)
+    await waitForAgentIdle(page)
+
+    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
+    await expect(infoTrigger).toBeVisible()
+    await infoTrigger.click()
+    const statusBarCard = page.locator('[data-testid="agent-info-popover"]')
+    await expect(statusBarCard).toBeVisible()
+    const statusBarPadding = await statusBarCard.evaluate(readPadding)
+
+    // One card at a time: the `[+]` menu opens over the status bar, and its own
+    // helper refuses to run with another composer popover still open.
+    await closeComposerMenus(page)
+
+    await openPlusMenu(page)
+    await page.locator('[data-testid="composer-agent-info"]').click()
+    const plusMenuCard = page.locator('[data-testid="composer-agent-info-popover"]')
+    await expect(plusMenuCard).toBeVisible()
+    const plusMenuPadding = await plusMenuCard.evaluate(readPadding)
+
+    const oatCardPadding = await page.evaluate(resolveOatCardPadding)
+    expect(statusBarPadding, 'the status bar\'s card must use Oat\'s card padding').toBe(oatCardPadding)
+    expect(plusMenuPadding, 'the `[+]` menu\'s card must use Oat\'s card padding').toBe(oatCardPadding)
+  })
+
+  /**
+   * The card is text the user reads and copies -- a session id, a directory, a
+   * branch. A popover that closes on a click inside it cannot hold that text: the
+   * press starts a selection and the release takes the popover away.
+   */
+  test('a click inside the card leaves it open, so its text stays selectable', async ({ page, authenticatedWorkspace }) => {
+    await openAgentViaUI(page)
+    await sendMessage(page, ARITHMETIC_PROMPT)
+    await expectAssistantAnswer(page)
+    await waitForAgentIdle(page)
+
+    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
+    await expect(infoTrigger).toBeVisible()
+    await infoTrigger.click()
+    const popover = page.locator('[data-testid="agent-info-popover"]')
+    await expect(popover).toBeVisible()
+
+    const sessionId = popover.locator('[data-testid="session-id-value"]')
+    await expect(sessionId).toBeVisible()
+
+    // A plain click first. `aria-expanded` is the app's OWN statement of whether
+    // the popover is open, and it flips synchronously with the dismiss -- a
+    // visibility check alone would pass on a popover caught mid-fade, which is
+    // exactly the state a dismiss leaves behind for 150ms.
+    await sessionId.click()
+    await expect(infoTrigger).toHaveAttribute('aria-expanded', 'true')
+    await expect(popover).toBeVisible()
+
+    // Then the gesture the click rule exists for: drag across the value and
+    // confirm the selection survives with the card.
+    const box = await sessionId.boundingBox()
+    expect(box).not.toBeNull()
+    const dragY = box!.y + box!.height / 2
+    await page.mouse.move(box!.x + 2, dragY)
+    await page.mouse.down()
+    for (let i = 1; i <= 5; i++) {
+      await page.mouse.move(box!.x + 2 + ((box!.width - 4) * i) / 5, dragY)
+    }
+    await page.mouse.up()
+
+    await expect(infoTrigger).toHaveAttribute('aria-expanded', 'true')
+    await expect(popover).toBeVisible()
+    const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '')
+    expect(selected.length, 'the drag must leave text selected').toBeGreaterThan(0)
   })
 })
 

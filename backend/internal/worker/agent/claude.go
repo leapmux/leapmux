@@ -144,7 +144,15 @@ type ClaudeCodeAgent struct {
 	// task_notification.
 	taskToolUse map[string]string // task_id -> tool_use_id
 	toolUseTask map[string]string // tool_use_id -> task_id
-	// pendingTaskEnd holds a terminal status for a Task subagent whose result
+	// taskKind remembers what task_started said a task IS, because only
+	// task_started carries task_type. A later task_notification has to upsert
+	// the row again (to record a shell's output_file) and would otherwise have
+	// to guess the kind -- guessing "shell" there rewrote every Task subagent's
+	// row into a shell one, since notifications fire for subagents too.
+	// Guarded by a.mu; dropped with the rest of the index on the closing
+	// notification.
+	taskKind map[string]bgtask.Kind // task_id -> kind
+	// pendingTaskEnd holds a final status for a Task subagent whose result
 	// message arrived BEFORE its task_started (a forward of the child's terminal
 	// result can race past a reordered task_started). Keyed by spawn tool_use id
 	// so the late task_started can close the row it just opened. Guarded by a.mu.
@@ -254,6 +262,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		alwaysThinking:         AlwaysThinkingOn,
 		taskToolUse:            make(map[string]string),
 		toolUseTask:            make(map[string]string),
+		taskKind:               make(map[string]bgtask.Kind),
 	}
 
 	TraceStartupPhase(opts.AgentID, "before_exec_start")
@@ -1371,13 +1380,13 @@ func modelSupportsAdaptiveThinking(model string) bool {
 // that references it. OptionGroups()'s model projection hands these out without
 // copying, so the read-only contract extends to its callers.
 var (
-	effortTierAuto      = &EffortInfo{Id: "auto", Name: "Auto", Description: "Let Claude decide the appropriate effort"}
-	effortTierUltracode = &EffortInfo{Id: "ultracode", Name: "Ultracode", Description: "xhigh effort plus standing dynamic-workflow orchestration"}
-	effortTierMax       = &EffortInfo{Id: "max", Name: "Max", Description: "Maximum capability with deepest reasoning"}
-	effortTierXHigh     = &EffortInfo{Id: EffortXHigh, Name: "X-High", Description: "Deeper reasoning than high, just below maximum"}
-	effortTierHigh      = &EffortInfo{Id: EffortHigh, Name: "High", Description: "Comprehensive implementation with extensive testing and documentation"}
-	effortTierMedium    = &EffortInfo{Id: "medium", Name: "Medium", Description: "Balanced approach with standard implementation and testing"}
-	effortTierLow       = &EffortInfo{Id: "low", Name: "Low", Description: "Quick, straightforward implementation with minimal overhead"}
+	effortTierAuto      = &EffortInfo{Id: EffortAuto, Name: effortLabel(EffortAuto), Description: "Let Claude decide the appropriate effort"}
+	effortTierUltracode = &EffortInfo{Id: "ultracode", Name: effortLabel("ultracode"), Description: "xhigh effort plus standing dynamic-workflow orchestration"}
+	effortTierMax       = &EffortInfo{Id: "max", Name: effortLabel("max"), Description: "Maximum capability with deepest reasoning"}
+	effortTierXHigh     = &EffortInfo{Id: EffortXHigh, Name: effortLabel(EffortXHigh), Description: "Deeper reasoning than high, just below maximum"}
+	effortTierHigh      = &EffortInfo{Id: EffortHigh, Name: effortLabel(EffortHigh), Description: "Comprehensive implementation with extensive testing and documentation"}
+	effortTierMedium    = &EffortInfo{Id: "medium", Name: effortLabel("medium"), Description: "Balanced approach with standard implementation and testing"}
+	effortTierLow       = &EffortInfo{Id: "low", Name: effortLabel("low"), Description: "Quick, straightforward implementation with minimal overhead"}
 )
 
 // claudeEffortXHighMax is used by models that support both xhigh and max, plus

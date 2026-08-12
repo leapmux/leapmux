@@ -6,6 +6,7 @@ import {
   isLocalRepoKey,
   repoKeyForLocal,
   repoKeyTooltip,
+  tabBranchKey,
 } from './branchKeys'
 
 describe('branchNameSegment', () => {
@@ -93,5 +94,32 @@ describe('collapseKeyForBranch', () => {
     const a = collapseKeyForBranch('foo', branchKey('bar', 'w', '/p'))
     const b = collapseKeyForBranch('foo:bar', branchKey('', 'w', '/p'))
     expect(a).not.toBe(b)
+  })
+})
+
+describe('tabBranchKey', () => {
+  const tab = (gitBranch?: string, workerId?: string, gitToplevel?: string) => ({ gitBranch, workerId, gitToplevel })
+
+  it('agrees with branchKey for the same triple', () => {
+    // The sidebar groups its tree by this and the composer's branch chip
+    // collects the tabs it hands to the delete dialog by it, so the two must
+    // resolve identically or the dialog reports a different set than the tree
+    // shows.
+    expect(tabBranchKey(tab('main', 'w1', '/repo'))).toBe(branchKey('main', 'w1', '/repo'))
+  })
+
+  it('maps a tab with no branch to the no-branch bucket, not to an empty name', () => {
+    expect(tabBranchKey(tab(undefined, 'w1', '/repo'))).toBe(branchKey(null, 'w1', '/repo'))
+    expect(tabBranchKey(tab('', 'w1', '/repo'))).toBe(branchKey(null, 'w1', '/repo'))
+  })
+
+  it('keeps two clones of one repo on the same branch apart', () => {
+    expect(tabBranchKey(tab('main', 'w1', '/a'))).not.toBe(tabBranchKey(tab('main', 'w1', '/b')))
+    expect(tabBranchKey(tab('main', 'w1', '/a'))).not.toBe(tabBranchKey(tab('main', 'w2', '/a')))
+  })
+
+  it('treats absent workerId and toplevel as empty rather than throwing', () => {
+    expect(tabBranchKey(tab('main'))).toBe(branchKey('main', '', ''))
+    expect(tabBranchKey({})).toBe(branchKey(null, '', ''))
   })
 })

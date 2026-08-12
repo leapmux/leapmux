@@ -10,8 +10,10 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/leapmux/leapmux/internal/hub/mail"
+	"github.com/leapmux/leapmux/internal/hub/sections"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
@@ -37,21 +39,44 @@ type CreateUserParams struct {
 	IsAdmin       bool
 }
 
-// CreateUser creates a user. It returns the created user row.
+// CreateUser creates a user and seeds their default sidebar sections. It
+// returns the created user row.
+//
+// Both writes share ONE transaction, so a user can never exist without the
+// sections. That is what lets ListSections stay a pure read: seeding them
+// there instead was a read-modify-write that nothing serialized, so two
+// concurrent reads for one user each saw an empty list and each wrote a full
+// set, and the sidebar rendered two of every section.
 func CreateUser(ctx context.Context, st store.Store, p CreateUserParams) (*store.User, error) {
 	userID := id.Generate()
 
-	if err := st.Users().Create(ctx, store.CreateUserParams{
-		ID:            userID,
-		Username:      p.Username,
-		PasswordHash:  p.PasswordHash,
-		DisplayName:   p.DisplayName,
-		Email:         p.Email,
-		EmailVerified: p.EmailVerified,
-		PasswordSet:   p.PasswordSet,
-		IsAdmin:       p.IsAdmin,
+	// The sections are keyed by a typed UserID. Refuse an empty id instead of
+	// panicking through MustNew: nothing is written yet, so failing here costs
+	// only the request, and a panic in a signup handler costs the process.
+	sectionOwner, ok := userid.New(userID)
+	if !ok {
+		return nil, fmt.Errorf("create user: generated an empty user id")
+	}
+
+	if err := st.RunInTransaction(ctx, func(tx store.Store) error {
+		if err := tx.Users().Create(ctx, store.CreateUserParams{
+			ID:            userID,
+			Username:      p.Username,
+			PasswordHash:  p.PasswordHash,
+			DisplayName:   p.DisplayName,
+			Email:         p.Email,
+			EmailVerified: p.EmailVerified,
+			PasswordSet:   p.PasswordSet,
+			IsAdmin:       p.IsAdmin,
+		}); err != nil {
+			return fmt.Errorf("create user: %w", err)
+		}
+		if err := sections.InitDefaults(ctx, tx, sectionOwner); err != nil {
+			return fmt.Errorf("init sections: %w", err)
+		}
+		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("create user: %w", err)
+		return nil, err
 	}
 
 	createdUser := &store.User{

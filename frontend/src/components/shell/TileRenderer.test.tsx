@@ -517,3 +517,6 @@ describe('tileRenderer close-tile flow', () => {
     expect(s.view.forTile(rightTileId)).toEqual([])
   })
 })
+
+// The branch-action guard and the ref it produces are one function now, tested
+// beside it in `~/components/workspace/branchActions.test.ts`.

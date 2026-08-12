@@ -1481,6 +1481,7 @@ export function createChatStore() {
     trimNewestEnd: (agentId, maxCount) => baseStore.trimNewestEnd(agentId, maxCount),
     replaceTodos: todos.replace,
     replaceBackgroundTasks: backgroundTasks.replace,
+    markBackgroundTasksLoadFailed: backgroundTasks.markLoadFailed,
     loadLocalMessages: agentId => baseStore.loadLocalMessages(agentId),
   })
 

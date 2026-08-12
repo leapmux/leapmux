@@ -1,37 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 
-export const banner = style({
-  position: 'relative',
-  padding: 'var(--space-4)',
-  borderRadius: 'var(--radius-medium)',
-  border: '1px solid var(--border)',
-  borderLeft: '3px solid var(--warning)',
-  backgroundColor: 'var(--lm-warning-subtle)',
-  alignSelf: 'stretch',
-})
-
-export const bannerTitle = style({
-  fontSize: 'var(--text-7)',
-  fontWeight: 'var(--font-bold)',
-  color: 'var(--foreground)',
-  marginBottom: 'var(--space-2)',
-})
-
-export const bannerContent = style({
-  fontSize: 'var(--text-7)',
-  color: 'var(--foreground)',
-  lineHeight: 1.6,
-  marginBottom: 'var(--space-3)',
-  maxHeight: '300px',
-  overflowY: 'auto',
-})
-
-export const bannerActions = style({
-  display: 'flex',
-  gap: 'var(--space-2)',
-  justifyContent: 'flex-end',
-})
-
 export const questionGroup = style({
   marginBottom: 'var(--space-3)',
 })
@@ -63,12 +31,6 @@ export const optionItem = style({
       backgroundColor: 'var(--card)',
     },
   },
-})
-
-export const optionRadio = style({
-  marginTop: '2px',
-  flexShrink: 0,
-  accentColor: 'var(--primary)',
 })
 
 export const optionContent = style({
@@ -179,24 +141,46 @@ export const controlBannerTitle = style({
   marginBottom: 'var(--space-1)',
 })
 
-// Multi-question footer layout: [Stop] [YOLO]  [Pagination]  [Submit]
+// Control-request action footer: a full-width row below the editor inside the
+// composer box, using a three-zone [secondary | pagination | primary] grid.
+// secondary (Reject/Stop/Stay-in-plan) hugs the left end, the primary action
+// (Allow/Submit/Approve) hugs the right end, and pagination dots center between.
+//
+// NO top border. The line above this row belongs to the composer box, which
+// draws it as `editorSeparator` for every expanded action row -- the compact
+// Interrupt/Send cluster included. A border here as well painted a SECOND line
+// a couple of pixels from the first, because a control request forces the
+// expanded layout and therefore always renders both.
 export const controlFooter = style({
   display: 'grid',
   gridTemplateColumns: '1fr auto 1fr',
   alignItems: 'center',
   gap: 'var(--space-1)',
-  padding: 'var(--space-1) var(--space-1) var(--space-1) var(--space-3)',
+  padding: 'var(--space-1) var(--space-2)',
   backgroundColor: 'var(--background)',
   flexShrink: 0,
-  flex: 1,
+  flexGrow: 1,
   minWidth: 0,
 })
 
+// All three zones pin their own column. Auto-placement would put a zone's column
+// at the mercy of which OTHER zones the caller passed: with `secondary` omitted,
+// an auto-placed centre becomes the first item and lands in column 1, so the
+// pagination would sit inside the left half rather than in the middle.
 export const controlFooterLeft = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
   justifyContent: 'flex-start',
+  gridColumn: 1,
+})
+
+export const controlFooterCentre = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-1)',
+  justifyContent: 'center',
+  gridColumn: 2,
 })
 
 export const controlFooterRight = style({
@@ -236,17 +220,6 @@ export const bannerReason = style({
 export const bannerHint = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none',
-})
-
-// Apply markdown content styling inside the banner
-globalStyle(`${bannerContent} code`, {
-  fontFamily: 'var(--font-mono)',
-  fontVariantLigatures: 'none',
-})
-
-globalStyle(`${bannerContent} pre`, {
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none',
 })

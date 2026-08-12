@@ -10,7 +10,7 @@ import { formatAgentSessionIdForDisplay, useAgentInfoCard } from './AgentInfoCar
 import './providers/claude/plugin'
 import './providers/pi/plugin'
 
-function InfoCardContent(props: { agent: AgentInfo }) {
+function InfoCardContent(props: { agent?: AgentInfo, agentSessionInfo?: AgentSessionInfo }) {
   const { infoHoverCardContent } = useAgentInfoCard(props)
   return <div>{infoHoverCardContent()}</div>
 }
@@ -111,5 +111,53 @@ describe('agent info card rate-limit rows', () => {
     expect(text).toContain('Exceeded')
     expect(text).toContain('resets in')
     expect(text).not.toContain('% used')
+  })
+})
+
+describe('agent info card context row', () => {
+  const usage: AgentSessionInfo['contextUsage'] = {
+    inputTokens: 1000,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+  }
+
+  it('renders the context row from the reported usage', () => {
+    render(() => (
+      <InfoCardContent
+        agent={agent(AgentProvider.CLAUDE_CODE, 'sid')}
+        agentSessionInfo={{ contextUsage: usage }}
+      />
+    ))
+    expect(screen.getByText(/Context/)).toBeInTheDocument()
+  })
+
+  it('renders nothing for the context row when no usage is reported', () => {
+    render(() => (
+      <InfoCardContent agent={agent(AgentProvider.CLAUDE_CODE, 'sid')} agentSessionInfo={{}} />
+    ))
+    expect(screen.queryByText(/Context/)).toBeNull()
+  })
+
+  // Regression: the row's body used to deref `agentSessionInfo!.contextUsage!`
+  // behind a plain <Show>, re-reading the very value the guard had already
+  // resolved. `agentSessionInfo` is re-resolved per read in the shell
+  // (`agentSessionStore.getInfo(focusedAgentId())`), so a focus switch can hand
+  // the guard one agent's info and the body the next agent's -- and the body
+  // then read `usage.contextWindow` off undefined and tripped the error
+  // boundary. The body must consume the value the guard admitted, never re-read
+  // it. The getter below makes that re-read observable: it answers once.
+  it('does not throw when the guarded usage is gone by the time the body reads it', () => {
+    let reads = 0
+    const sessionInfo: AgentSessionInfo = {
+      get contextUsage() {
+        reads += 1
+        return reads === 1 ? usage : undefined
+      },
+    }
+    expect(() => render(() => (
+      <InfoCardContent agent={agent(AgentProvider.CLAUDE_CODE, 'sid')} agentSessionInfo={sessionInfo} />
+    ))).not.toThrow()
+    // The guard consumed one read; a body that re-read would have taken more.
+    expect(reads).toBe(1)
   })
 })

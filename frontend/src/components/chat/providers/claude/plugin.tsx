@@ -112,6 +112,7 @@ function isHiddenClaudeNotification(m: Record<string, unknown>): boolean {
 type ClaudeTypeClassifier = (
   parent: Record<string, unknown>,
   input: ClassificationInput,
+  context?: ClassificationContext,
 ) => MessageCategory
 
 /**
@@ -178,7 +179,7 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
     }
     return { kind: 'unknown' }
   },
-  user(parent, input) {
+  user(parent, input, context) {
     if (input.spanType === CLAUDE_TOOL.ENTER_PLAN_MODE || parent.span_type === CLAUDE_TOOL.ENTER_PLAN_MODE)
       return { kind: 'hidden' }
 
@@ -197,9 +198,14 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
         }
       }
     }
-    // Agent prompt: user message with parent_tool_use_id (prompt sent to sub-agent)
+    // A user message carrying parent_tool_use_id is the prompt sent TO a
+    // subagent -- but only in the transcript that spawned it. Inside the
+    // subagent's OWN transcript every forwarded message carries that same id,
+    // including its interrupt notices and local command output, and none of
+    // those is a prompt. The child's real prompt is persisted separately, as a
+    // plain user message, so nothing here is ever one.
     if (typeof parent.parent_tool_use_id === 'string')
-      return { kind: 'agent_prompt' }
+      return context?.isChildTranscript ? { kind: 'user_text' } : { kind: 'agent_prompt' }
     return { kind: 'unknown' }
   },
 }
@@ -207,7 +213,7 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
 /** Claude Code message classification. */
 function classifyClaudeCodeMessage(
   input: ClassificationInput,
-  _context?: ClassificationContext,
+  context?: ClassificationContext,
 ): MessageCategory {
   const parentObject = input.parentObject
   const wrapper = input.wrapper
@@ -250,7 +256,7 @@ function classifyClaudeCodeMessage(
   if (type) {
     const content = CLAUDE_CONTENT_CLASSIFIERS[type]
     if (content)
-      return content(parentObject, input)
+      return content(parentObject, input, context)
   }
 
   // Plain object with string .content and no .type → user_content (or hidden /

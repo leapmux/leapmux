@@ -7,19 +7,21 @@ import { expect, test } from './fixtures'
  * `src/lib/editor/keyboardPlugins.test.ts`. The list-item shape and Markdown
  * round-trip live in those tests too.
  *
- * What only a real browser can verify is that the toolbar-driven list creation
- * actually wires through Milkdown's commands and that the resulting DOM
- * matches what the chat send-pipeline expects to read. This single smoke
- * exercises that end-to-end path: toolbar click → bullet list → Tab to indent
- * → check the rendered nested list.
+ * What only a real browser can verify is that list creation actually wires
+ * through Milkdown's input rules and that the resulting DOM matches what the
+ * chat send-pipeline expects to read. This single smoke exercises that
+ * end-to-end path: the `- ` input rule → bullet list → Tab to indent → check
+ * the rendered nested list.
  */
 test.describe('Markdown editor input — smoke', () => {
-  test('toolbar bullet list + Tab produces a nested list in the live editor', async ({ page, authenticatedWorkspace }) => {
+  test('the bullet-list input rule + Tab produces a nested list in the live editor', async ({ page, authenticatedWorkspace }) => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
     await editor.click()
-    await page.locator('[data-testid="toolbar-bullet-list"]').click()
+    // `- ` is the bullet-list input rule; the formatting toolbar it replaced
+    // was deleted with the composer rewrite.
+    await page.keyboard.type('- ', { delay: 50 })
     await page.keyboard.type('item 1', { delay: 50 })
     await page.keyboard.press('Enter')
     await page.keyboard.type('item 2', { delay: 50 })

@@ -34,7 +34,7 @@ type Item struct {
 // it instead of removing the row, so the chat thread can keep
 // rendering the deletion event and the sidebar can show the deleted
 // row with a distinct visual. Cap eviction treats StatusCompleted and
-// StatusDeleted as a single "terminal" pool.
+// StatusDeleted as a single "finished" pool.
 type Status int
 
 const (
@@ -44,11 +44,11 @@ const (
 	StatusDeleted
 )
 
-// IsTerminal reports whether s is a terminal status — one that makes a
+// IsFinished reports whether s is a final status — one that makes a
 // row eligible for cap-eviction (Completed | Deleted). Pending and
 // InProgress rows are never evicted; they only leave the list through
 // an explicit Delete event.
-func (s Status) IsTerminal() bool {
+func (s Status) IsFinished() bool {
 	return s == StatusCompleted || s == StatusDeleted
 }
 

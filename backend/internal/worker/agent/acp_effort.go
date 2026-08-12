@@ -58,7 +58,8 @@ var effortRank = map[string]int{
 	"high":  4,
 	"xhigh": 5, "x-high": 5, "very-high": 5, "very_high": 5, "extra-high": 5,
 	"max":       6,
-	"ultracode": 7,
+	"ultra":     7,
+	"ultracode": 8,
 }
 
 // effortRankOf looks up a value's intensity rank case-insensitively. Returns

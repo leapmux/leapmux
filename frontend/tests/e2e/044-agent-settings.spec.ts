@@ -1,69 +1,69 @@
 import { MODEL_NONDETERMINISM_RETRIES } from './helpers/modelRetries'
-import { ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, openAgentViaUI, openSettingsMenu, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
+import { ARITHMETIC_PROMPT, assistantBubbles, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, openAgentViaUI, openPlusMenu, openSettingsMenu, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, settingsBar, settingsGroupTrigger, visibleOnly, waitForSettingsHydrated, waitForSettingsIdle } from './helpers/ui'
 import { expect, restartWorker, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Agent Settings', () => {
   test('default settings on startup', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Default: Sonnet model (overridden via LEAPMUX_CLAUDE_DEFAULT_MODEL in e2e), Default permission mode.
     // Retrying assertions, not a one-shot textContent(): the trigger renders a
     // bare ellipsis until the agent's option groups arrive, so reading it the
     // instant it becomes visible sees "…" and nothing else, forever.
-    await expect(trigger).toContainText('Sonnet')
-    await expect(trigger).toContainText('Default')
+    await expectSettingsChip(page, 'Sonnet')
+    await expectSettingsChip(page, 'Default')
   })
 
   test('switch permission modes', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Switch to Plan Mode (dropdown auto-closes on select)
     await chooseSettingsOption(page, 'permissionMode-plan')
-    await expect(trigger).toContainText('Plan Mode')
+    await expectSettingsChip(page, 'Plan Mode')
     await waitForSettingsIdle(page)
 
     // Switch to Accept Edits
     await chooseSettingsOption(page, 'permissionMode-acceptEdits')
-    await expect(trigger).toContainText('Accept Edits')
+    await expectSettingsChip(page, 'Accept Edits')
     await waitForSettingsIdle(page)
 
     // Switch to Bypass Permissions
     await chooseSettingsOption(page, 'permissionMode-bypassPermissions')
-    await expect(trigger).toContainText('Bypass Permissions')
+    await expectSettingsChip(page, 'Bypass Permissions')
     await waitForSettingsIdle(page)
 
     // Switch to Don't Ask (always available — not plan/admin-gated)
     await chooseSettingsOption(page, 'permissionMode-dontAsk')
-    await expect(trigger).toContainText('Don\'t Ask')
+    await expectSettingsChip(page, 'Don\'t Ask')
     await waitForSettingsIdle(page)
 
     // Switch to Auto Mode if the backend's startup probe surfaced it.
     // Auto mode depends on plan / model / admin-managed settings
     // (see permission-modes docs); if the probe rejected it, the radio
     // is filtered out server-side and this block becomes a no-op.
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'permissionMode')
     const autoOffered = await page.locator('[data-testid="permissionMode-auto"]').isVisible()
     await page.keyboard.press('Escape')
     if (autoOffered) {
       await chooseSettingsOption(page, 'permissionMode-auto')
-      await expect(trigger).toContainText('Auto Mode')
+      await expectSettingsChip(page, 'Auto Mode')
       await waitForSettingsIdle(page)
     }
 
     // Switch back to Default
     await chooseSettingsOption(page, 'permissionMode-default')
-    await expect(trigger).toContainText('Default')
+    await expectSettingsChip(page, 'Default')
   })
 
   test('switch model', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Change model to Haiku (default is Sonnet, dropdown auto-closes on select)
     await chooseSettingsOption(page, 'model-haiku')
-    await expect(trigger).toContainText('Haiku')
+    await expectSettingsChip(page, 'Haiku')
   })
 
   // Nested so the retry budget covers ONLY this test. Its subject -- that a
@@ -76,7 +76,7 @@ test.describe('Agent Settings', () => {
     test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
 
     test('switch to model with bracket characters', async ({ authenticatedWorkspace, page }) => {
-      const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+      const trigger = settingsBar(page)
       await expect(trigger).toBeVisible()
 
       // Switch to Opus[1m] — model name contains brackets that must be
@@ -84,7 +84,7 @@ test.describe('Agent Settings', () => {
       // We use Opus[1m] (not Sonnet[1m]) because the e2e account doesn't have
       // extra-usage billing enabled for Sonnet's 1M context tier.
       await chooseSettingsOption(page, 'model-opus[1m]')
-      await expect(trigger).toContainText('Opus (1M context)')
+      await expectSettingsChip(page, 'Opus (1M context)')
       await waitForSettingsIdle(page)
 
       // Verify agent restarted successfully by sending a message
@@ -104,45 +104,53 @@ test.describe('Agent Settings', () => {
   })
 
   test('switch effort', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Change effort to High (dropdown auto-closes on select)
     await chooseSettingsOption(page, 'effort-high')
     // Dropdown closes; re-open to verify selection
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-high"] input[type="radio"]')).toBeChecked()
     await page.keyboard.press('Escape')
   })
 
   test('effort hidden when haiku selected', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
-    // Default model is Sonnet — effort section should be visible; switch to Haiku
-    await openSettingsMenu(page)
+    // Default model is Sonnet — the effort axis is offered; switch to Haiku.
+    // The composer gives each axis its own `[+]` submenu, so "the axis is not
+    // offered" shows up as the submenu (and its status-bar chip) being absent,
+    // not as an empty section inside one fused menu.
+    const effortSubmenu = settingsGroupTrigger(page, 'effort')
+    const effortChip = page.locator('[data-testid="composer-effort-trigger"]')
+
+    await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
     await chooseSettingsOption(page, 'model-haiku')
-    await expect(trigger).toContainText('Haiku')
+    await expectSettingsChip(page, 'Haiku')
     await waitForSettingsIdle(page)
 
-    // Effort section should be hidden for Haiku
-    await openSettingsMenu(page)
-    await expect(page.locator('[data-testid="effort-high"]')).not.toBeVisible()
+    // Effort is hidden for Haiku, on both surfaces.
+    await openPlusMenu(page)
+    await expect(effortSubmenu).toHaveCount(0)
+    await expect(effortChip).toHaveCount(0)
+    await page.keyboard.press('Escape')
 
     // Switch back to Sonnet — effort should reappear
     await chooseSettingsOption(page, 'model-sonnet')
-    await expect(trigger).toContainText('Sonnet')
+    await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
 
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
     await page.keyboard.press('Escape')
   })
 
   test('the effort menu is the same before and after a model round trip', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace // fixture trigger
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // The CLI reports the same effort levels for every effort-capable model, so
@@ -155,7 +163,7 @@ test.describe('Agent Settings', () => {
     // that belongs to the CLI and changes without us).
     const effortOptions = async (): Promise<string[]> => {
       await waitForSettingsHydrated(page)
-      await openSettingsMenu(page)
+      await openSettingsMenu(page, 'effort')
       await expect(page.locator('[data-testid="effort-auto"]')).toBeVisible()
       const ids = await page.locator('[data-testid^="effort-"]:visible').evaluateAll(els =>
         els.map(el => el.getAttribute('data-testid') ?? ''),
@@ -168,22 +176,22 @@ test.describe('Agent Settings', () => {
     expect(onSonnet, 'Sonnet offers an effort menu').not.toHaveLength(0)
 
     await chooseSettingsOption(page, 'model-opus[1m]')
-    await expect(trigger).toContainText('Opus')
+    await expectSettingsChip(page, 'Opus')
     await waitForSettingsIdle(page)
     expect(await effortOptions(), 'Opus offers the same tiers').toEqual(onSonnet)
 
     await chooseSettingsOption(page, 'model-sonnet')
-    await expect(trigger).toContainText('Sonnet')
+    await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
     expect(await effortOptions(), 'and Sonnet still does on the way back').toEqual(onSonnet)
   })
 
   test('ultracode effort is selectable and keeps the agent working', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace // fixture trigger
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-ultracode"]')).toBeVisible()
     await page.keyboard.press('Escape')
 
@@ -208,14 +216,13 @@ test.describe('Agent Settings', () => {
   })
 
   test('Extended Thinking label reflects model', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
     const onOpt = page.locator('[data-testid="alwaysThinkingEnabled-on"]')
     const offOpt = page.locator('[data-testid="alwaysThinkingEnabled-off"]')
 
     // Default (Sonnet — set via LEAPMUX_CLAUDE_DEFAULT_MODEL) supports
     // adaptive thinking, so the enabled option is labeled "Adaptive".
     // The option ID is always "on"; only the display name varies.
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'alwaysThinkingEnabled')
     await expect(onOpt).toBeVisible()
     await expect(onOpt).toContainText('Adaptive')
     await expect(offOpt).toBeVisible()
@@ -224,45 +231,45 @@ test.describe('Agent Settings', () => {
     // Toggle Off + back on to verify the radio wires through.
     await offOpt.click()
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'alwaysThinkingEnabled')
     await expect(page.locator('[data-testid="alwaysThinkingEnabled-off"] input[type="radio"]')).toBeChecked()
     await onOpt.click()
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'alwaysThinkingEnabled')
     await expect(page.locator('[data-testid="alwaysThinkingEnabled-on"] input[type="radio"]')).toBeChecked()
 
     // Switch to Haiku — no adaptive support, so the enabled option
     // relabels to "On". AgentStatusChange carries fresh option groups, so
     // this happens without a page reload.
     await chooseSettingsOption(page, 'model-haiku')
-    await expect(trigger).toContainText('Haiku')
+    await expectSettingsChip(page, 'Haiku')
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'alwaysThinkingEnabled')
     await expect(onOpt).toContainText('On')
     await expect(onOpt).not.toContainText('Adaptive')
 
     // Switch back to Opus — adaptive support returns.
     await chooseSettingsOption(page, 'model-opus[1m]')
-    await expect(trigger).toContainText('Opus')
+    await expectSettingsChip(page, 'Opus')
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'alwaysThinkingEnabled')
     await expect(onOpt).toContainText('Adaptive')
     await page.keyboard.press('Escape')
   })
 
   test('a supported effort survives a model switch', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace // fixture trigger
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Switch to Opus first, then pick xhigh.
     await chooseSettingsOption(page, 'model-opus[1m]')
-    await expect(trigger).toContainText('Opus')
+    await expectSettingsChip(page, 'Opus')
     await waitForSettingsIdle(page)
 
     await chooseSettingsOption(page, 'effort-xhigh')
     await waitForSettingsIdle(page)
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-xhigh"] input[type="radio"]')).toBeChecked()
     await page.keyboard.press('Escape')
 
@@ -271,10 +278,10 @@ test.describe('Agent Settings', () => {
     // a downgrade to high, which only held while the static catalog wrongly
     // declared Sonnet max-only.
     await chooseSettingsOption(page, 'model-sonnet')
-    await expect(trigger).toContainText('Sonnet')
+    await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
 
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-xhigh"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-xhigh"] input[type="radio"]')).toBeChecked()
     await page.keyboard.press('Escape')
@@ -285,12 +292,12 @@ test.describe('Agent Settings', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Switch to Plan Mode (dropdown auto-closes on select)
     await chooseSettingsOption(page, 'permissionMode-plan')
-    await expect(trigger).toContainText('Plan Mode')
+    await expectSettingsChip(page, 'Plan Mode')
 
     // Wait for the control_response round-trip to complete and DB to update.
     await page.waitForTimeout(3000)
@@ -299,18 +306,18 @@ test.describe('Agent Settings', () => {
     await page.reload()
 
     // Verify Plan Mode is still selected after refresh
-    const triggerAfter = page.locator('[data-testid="agent-settings-trigger"]')
+    const triggerAfter = settingsBar(page)
     await expect(triggerAfter).toBeVisible()
-    await expect(triggerAfter).toContainText('Plan Mode')
+    await expectSettingsChip(page, 'Plan Mode')
   })
 
   test('model persistence across refresh', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Change model to Haiku (default is Sonnet, dropdown auto-closes on select)
     await chooseSettingsOption(page, 'model-haiku')
-    await expect(trigger).toContainText('Haiku')
+    await expectSettingsChip(page, 'Haiku')
 
     // Wait for restart to complete
     await page.waitForTimeout(5000)
@@ -319,9 +326,9 @@ test.describe('Agent Settings', () => {
     await page.reload()
 
     // Verify Haiku is still selected after refresh
-    const triggerAfter = page.locator('[data-testid="agent-settings-trigger"]')
+    const triggerAfter = settingsBar(page)
     await expect(triggerAfter).toBeVisible()
-    await expect(triggerAfter).toContainText('Haiku')
+    await expectSettingsChip(page, 'Haiku')
   })
 
   test('focus returns to editor after mode change', async ({ authenticatedWorkspace, page }) => {
@@ -329,7 +336,7 @@ test.describe('Agent Settings', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Open dropdown and click a mode
@@ -337,57 +344,68 @@ test.describe('Agent Settings', () => {
 
     // Close the dropdown by pressing Escape
     await page.keyboard.press('Escape')
-    await expect(page.locator('[data-testid="agent-settings-menu"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="composer-plus-popover"]')).not.toBeVisible()
 
     // Click the editor and verify it can receive focus
     await editor.click()
     await expect(editor).toBeFocused()
   })
 
-  test('settings restored after worker restart', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
-    const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+  // Nested so the retry budget covers ONLY this test. Its subject -- that Plan
+  // Mode survives a worker restart -- can only be reached by making the
+  // RELAUNCHED agent answer, so it inherits the model's variance: the arithmetic
+  // assertion is on what the model chose to emit, and a turn that narrates
+  // instead settles nothing by waiting. Every other test in this file asserts
+  // app state and must keep failing on the first attempt.
+  // See MODEL_NONDETERMINISM_RETRIES.
+  test.describe('worker restart', () => {
+    test.describe.configure({ retries: MODEL_NONDETERMINISM_RETRIES })
 
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
-    await expect(trigger).toBeVisible()
+    test('settings restored after worker restart', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
+      const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
+      await expect(editor).toBeVisible()
 
-    // Send a message to establish a session ID.
-    await editor.click()
-    await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
-    await page.keyboard.press('Meta+Enter')
+      const trigger = settingsBar(page)
+      await expect(trigger).toBeVisible()
 
-    // Wait for a response (ensures init message and session ID are stored)
-    await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
+      // Send a message to establish a session ID.
+      await editor.click()
+      await page.keyboard.type(SECOND_ARITHMETIC_PROMPT)
+      await page.keyboard.press('Meta+Enter')
 
-    // Switch to Plan Mode (dropdown auto-closes on select)
-    await chooseSettingsOption(page, 'permissionMode-plan')
-    await expect(trigger).toContainText('Plan Mode')
+      // Wait for a response (ensures init message and session ID are stored)
+      await expectAssistantAnswer(page, { answer: SECOND_ARITHMETIC_ANSWER })
 
-    // Wait for the control_response round-trip to complete and DB to update.
-    await page.waitForTimeout(3000)
+      // Switch to Plan Mode (dropdown auto-closes on select)
+      await chooseSettingsOption(page, 'permissionMode-plan')
+      await expectSettingsChip(page, 'Plan Mode')
 
-    // Stop worker
-    await stopWorker()
-    await page.waitForTimeout(3000)
+      // Wait for the control_response round-trip to complete and DB to update.
+      await page.waitForTimeout(3000)
 
-    // Restart worker
-    await restartWorker(separateHubWorker)
+      // Stop worker
+      await stopWorker()
+      await page.waitForTimeout(3000)
 
-    // Wait for the editor to become visible again after worker reconnects
-    await expect(editor).toBeVisible()
+      // Restart worker
+      await restartWorker(separateHubWorker)
 
-    // Send a message to trigger agent re-launch via ensureAgentActive
-    await editor.click()
-    await page.keyboard.type(ARITHMETIC_PROMPT)
-    await page.keyboard.press('Meta+Enter')
+      // Wait for the editor to become visible again after worker reconnects
+      await expect(editor).toBeVisible()
 
-    // 6912 only appears in this response (the warmup answered 3333), so scanning
-    // all bubbles for it is robust to the trailing "Took Ns" meta bubble that
-    // .last() would otherwise race.
-    await expectAssistantAnswer(page)
+      // Send a message to trigger agent re-launch via ensureAgentActive
+      await editor.click()
+      await page.keyboard.type(ARITHMETIC_PROMPT)
+      await page.keyboard.press('Meta+Enter')
 
-    // Verify Plan Mode is still selected after worker restart
-    await expect(trigger).toContainText('Plan Mode')
+      // 6912 only appears in this response (the warmup answered 3333), so scanning
+      // all bubbles for it is robust to the trailing "Took Ns" meta bubble that
+      // .last() would otherwise race.
+      await expectAssistantAnswer(page)
+
+      // Verify Plan Mode is still selected after worker restart
+      await expectSettingsChip(page, 'Plan Mode')
+    })
   })
 
   test('interrupt via control request', async ({ authenticatedWorkspace, page }) => {
@@ -408,19 +426,22 @@ test.describe('Agent Settings', () => {
   })
 
   test('model/effort items not disabled when idle', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
-    // Open dropdown while agent is idle (not streaming)
-    await openSettingsMenu(page)
+    // Each axis has its own `[+]` submenu now, so each one is opened before its
+    // own items are read. The fused menu this replaced showed every axis at
+    // once, which let a single open cover all three.
 
     // Verify all model items are enabled (not disabled) when idle
+    await openSettingsMenu(page, 'model')
     await expect(page.locator('[data-testid="model-haiku"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="model-sonnet"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="model-sonnet\\[1m\\]"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="model-opus\\[1m\\]"]')).not.toHaveAttribute('data-disabled', '')
 
     // Verify effort items are enabled when idle
+    await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-auto"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-low"]')).not.toHaveAttribute('data-disabled', '')
     await expect(page.locator('[data-testid="effort-medium"]')).not.toHaveAttribute('data-disabled', '')
@@ -432,6 +453,7 @@ test.describe('Agent Settings', () => {
     await expect(page.locator('[data-testid="effort-xhigh"]')).not.toHaveAttribute('data-disabled', '')
 
     // Verify permission mode items are enabled when idle
+    await openSettingsMenu(page, 'permissionMode')
     await expect(page.locator('[data-testid="permissionMode-default"]')).not.toHaveAttribute('data-disabled', '')
 
     // Verify "Disabled while running" footnote is NOT visible when idle
@@ -441,12 +463,12 @@ test.describe('Agent Settings', () => {
   })
 
   test('settings change notification appears in chat', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Change model to Haiku (default is Sonnet) — should produce a notification
     await chooseSettingsOption(page, 'model-haiku')
-    await expect(trigger).toContainText('Haiku')
+    await expectSettingsChip(page, 'Haiku')
 
     // Verify the notification bubble appears in chat
     await expect(visibleOnly(page.getByText('Model (Sonnet \u2192 Haiku)'))).toBeVisible()
@@ -467,20 +489,24 @@ test.describe('Agent Settings', () => {
     await toggle('off')
 
     // The bug stranded the baseline on "off" after the on-toggle, making the final
-    // off a silent no-op -- which would leave the notification stuck on the net
-    // "...-> Adaptive" instead. (The notification shows just the new value when the
-    // option had no prior stored value -- see firstSet in notificationRenderers.)
-    await expect(visibleOnly(page.getByText('Extended Thinking (Off)'))).toBeVisible()
-    await expect(visibleOnly(page.getByText('Extended Thinking (Adaptive)'))).toHaveCount(0)
+    // off a silent no-op -- which would leave the net notification on "Adaptive"
+    // instead of "Off". The END state is the subject, so both rendered forms are
+    // accepted: the notification reads a bare "(Off)" when the option had no
+    // prior stored value and "(Adaptive -> Off)" when it did (see firstSet in
+    // notificationRenderers), and which one appears depends on whether the agent
+    // had reported its confirmed baseline before the first toggle landed -- a
+    // race this test neither controls nor is about.
+    await expect(visibleOnly(page.getByText(/Extended Thinking \((?:.* → )?Off\)/))).toBeVisible()
+    await expect(visibleOnly(page.getByText(/Extended Thinking \((?:.* → )?Adaptive\)/))).toHaveCount(0)
   })
 
   test('permission mode change notification appears in chat', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Switch to Plan Mode
     await chooseSettingsOption(page, 'permissionMode-plan')
-    await expect(trigger).toContainText('Plan Mode')
+    await expectSettingsChip(page, 'Plan Mode')
 
     // Verify the notification bubble appears in chat
     await expect(visibleOnly(page.getByText('Mode (Default \u2192 Plan Mode)'))).toBeVisible()
@@ -490,7 +516,7 @@ test.describe('Agent Settings', () => {
     const editor = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await expect(editor).toBeVisible()
 
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Install a MutationObserver to detect even a brief flash of the thinking indicator.
@@ -510,17 +536,17 @@ test.describe('Agent Settings', () => {
 
     // Switch permission mode to Plan Mode
     await chooseSettingsOption(page, 'permissionMode-plan')
-    await expect(trigger).toContainText('Plan Mode')
+    await expectSettingsChip(page, 'Plan Mode')
     await waitForSettingsIdle(page)
 
     // Switch model to Haiku (effort section hidden for Haiku)
     await chooseSettingsOption(page, 'model-haiku')
-    await expect(trigger).toContainText('Haiku')
+    await expectSettingsChip(page, 'Haiku')
     await waitForSettingsIdle(page)
 
     // Switch model back to Sonnet so effort section re-appears, then switch effort to High
     await chooseSettingsOption(page, 'model-sonnet')
-    await expect(trigger).toContainText('Sonnet')
+    await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
 
     await chooseSettingsOption(page, 'effort-high')
@@ -541,12 +567,12 @@ test.describe('Agent Settings', () => {
   })
 
   test('permission mode change in new agent tab targets correct agent', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Verify first agent starts with Default mode
     await waitForSettingsHydrated(page)
-    await expect(trigger).toContainText('Default')
+    await expectSettingsChip(page, 'Default')
 
     // Open a second agent tab
     await openAgentViaUI(page)
@@ -554,11 +580,11 @@ test.describe('Agent Settings', () => {
     // The new tab should also start with Default mode, once its agent has
     // reported an option catalog -- until then the trigger reads "… · Auto".
     await waitForSettingsHydrated(page)
-    await expect(trigger).toContainText('Default')
+    await expectSettingsChip(page, 'Default')
 
     // Switch the new agent to Plan Mode
     await chooseSettingsOption(page, 'permissionMode-plan')
-    await expect(trigger).toContainText('Plan Mode')
+    await expectSettingsChip(page, 'Plan Mode')
     await waitForSettingsIdle(page)
 
     // Verify the notification appears in the new agent's chat (not the first agent's)
@@ -569,24 +595,25 @@ test.describe('Agent Settings', () => {
     await agentTabs.first().click()
 
     // First agent should still be in Default mode
-    await expect(trigger).toContainText('Default')
+    await expectSettingsChip(page, 'Default')
     // And should NOT have the permission mode notification
     await expect(visibleOnly(page.getByText('Mode (Default → Plan Mode)'))).not.toBeVisible()
   })
 
-  test('settings loading indicator on trigger', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+  test('settings loading indicator in the status bar', async ({ authenticatedWorkspace, page }) => {
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
-    // Change model to Haiku (default is Sonnet) — trigger should show spinner briefly
+    // Change model to Haiku (default is Sonnet). The chip label flips
+    // optimistically, so the spinner is the only marker that the change is
+    // still in flight.
     await chooseSettingsOption(page, 'model-haiku')
 
-    // The trigger should show a loading spinner
     const loadingSpinner = page.locator('[data-testid="settings-loading-spinner"]')
     await expect(loadingSpinner).toBeVisible()
 
     // Eventually the spinner disappears after statusChange arrives
     await expect(loadingSpinner).not.toBeVisible()
-    await expect(trigger).toContainText('Haiku')
+    await expectSettingsChip(page, 'Haiku')
   })
 })

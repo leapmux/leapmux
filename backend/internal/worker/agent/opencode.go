@@ -77,6 +77,20 @@ func isHiddenPrimaryAgent(id string) bool {
 // tool-name guessing). Shared by both providers since they run the same ACP
 // layer (Kilo is an OpenCode fork). Returns nil for a non-spawn tool call.
 func openCodeSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
+	return openCodeSpawnObservation(tc.ToolCallID, tc.Title, tc.RawInput)
+}
+
+// openCodeSpawnObservation builds the running row for a spawn-shaped payload,
+// or nil when the payload is not a spawn.
+//
+// Taken from the toolCallId + title + rawInput rather than a whole envelope
+// because the spawn shape does not always arrive on the tool_call: Kilo opens
+// the call with `rawInput: {}` and only fills {description, prompt,
+// subagent_type} on the FIRST in-progress tool_call_update. Both entry points
+// therefore run the same detection, and the registry upsert is keyed by
+// toolCallId, so whichever arrives first opens the row and the other is a
+// no-op.
+func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMessage) *acpSubagentObservation {
 	var input struct {
 		Description  string          `json:"description"`
 		Prompt       json.RawMessage `json:"prompt"`
@@ -85,25 +99,31 @@ func openCodeSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 		// prompt + a type, so detect on the union.
 		SubagentID string `json:"subagentID"`
 	}
-	if len(tc.RawInput) == 0 {
+	if len(rawInput) == 0 {
 		return nil
 	}
-	if err := json.Unmarshal(tc.RawInput, &input); err != nil {
+	if err := json.Unmarshal(rawInput, &input); err != nil {
 		return nil
 	}
 	// Spawn shape requires at least a prompt and a subagent discriminator.
 	if len(input.Prompt) == 0 || (input.SubagentType == "" && input.SubagentID == "") {
 		return nil
 	}
-	title := tc.Title
+	title := callTitle
 	if title == "" {
 		title = input.Description
 	}
 	if title == "" {
 		title = input.SubagentType
 	}
+	// No Prompt. OpenCode and Kilo are registry-only -- they drop child sessions
+	// over ACP, so they never report a ChildAgentKey and no child transcript is
+	// ever created. A remembered prompt can only be spent when a transcript
+	// appears, so setting it here would record a string that is never read and
+	// never released. `prompt` still discriminates the spawn shape above; it is
+	// its presence that matters, not its value.
 	return &acpSubagentObservation{
-		RowKey: tc.ToolCallID,
+		RowKey: toolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
 	}
@@ -111,12 +131,24 @@ func openCodeSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservatio
 
 // openCodeSubagentFromToolCallUpdate closes the registry row on a terminal
 // status, and when rawOutput.metadata.sessionId is present, re-keys the row to
-// the child session id (the metadata surfaces only on the terminal update).
+// the child session id (the metadata surfaces only on the final update).
 // The spawn row was opened under the toolCallId, so SpawnRowKey carries it to
 // keep the close from leaking it as a Running row.
 func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
 	if tcu.Status != "completed" && tcu.Status != "failed" && tcu.Status != "cancelled" {
-		return nil
+		// Not final: this is where Kilo first reveals the spawn shape (its
+		// tool_call carries `rawInput: {}`), so run the same detection here.
+		// Without it a Kilo spawn produced no registry row at all -- the
+		// final update below then closed a row that was never opened.
+		//
+		// A spawn-shaped update that arrives AFTER the final one re-creates the
+		// row under the toolCallId, because the final update already renamed the
+		// original to the child session id. A `session/load` history replay then
+		// redelivers the final update, whose rename collides with the surviving
+		// session-id row. RenameBackgroundTask resolves that collision by dropping
+		// the re-created duplicate, so the replay converges on one row instead of
+		// leaving a Running row that no later event closes.
+		return openCodeSpawnObservation(tcu.ToolCallID, tcu.Title, tcu.RawInput)
 	}
 	// The terminal rawOutput may carry the child session id under metadata.
 	rowKey := tcu.ToolCallID
@@ -129,7 +161,7 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 		}
 		if json.Unmarshal(tcu.RawOutput, &out) == nil && out.Metadata.SessionID != "" {
 			// Rename the spawn row (toolCallId) to the child session id so one
-			// row tracks the lifecycle, then terminalize it.
+			// row tracks the lifecycle, then give a final status to it.
 			rowKey = out.Metadata.SessionID
 			renameFrom = tcu.ToolCallID
 		}
@@ -137,7 +169,7 @@ func openCodeSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubag
 	return &acpSubagentObservation{
 		RowKey:     rowKey,
 		RenameFrom: renameFrom,
-		Status:     acpTerminalStatus(tcu.Status),
+		Status:     acpFinalStatus(tcu.Status),
 		CloseRow:   true,
 		Mode:       acpModeCloseOnly,
 	}

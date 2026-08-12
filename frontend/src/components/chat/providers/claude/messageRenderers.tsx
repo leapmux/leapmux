@@ -45,11 +45,12 @@ export const planExecutionRenderer: MessageContentRenderer = {
 }
 
 /**
- * Handles user messages with string content: {"type":"user","message":{"content":"..."}}
- * This covers local slash command responses (e.g. /context) whose message.content
- * is a plain string rather than an array of content blocks. If the content is
- * wrapped in <local-command-stdout> tags, the inner text is extracted and rendered
- * as markdown.
+ * Handles user messages whose body is text: {"type":"user","message":{"content":...}}
+ * with `content` either a plain string -- local slash command responses such as
+ * /context -- or an array of text content blocks, which is the shape Claude
+ * forwards into a SUBAGENT's own transcript (an interrupt notice, for one). If a
+ * string is wrapped in <local-command-stdout> tags, the inner text is extracted.
+ * Either way the result renders as markdown.
  */
 export const userTextContentRenderer: MessageContentRenderer = {
   render(parsed, context) {
@@ -60,7 +61,12 @@ export const userTextContentRenderer: MessageContentRenderer = {
     if (!isObject(message))
       return null
 
-    const content = message.content
+    const rawContent = message.content
+    if (Array.isArray(rawContent)) {
+      const joined = joinContentParagraphs(rawContent as Array<Record<string, unknown>>, { text: 'text' })
+      return joined ? <MarkdownText text={joined} context={context} /> : null
+    }
+    const content = rawContent
     if (typeof content !== 'string')
       return null
 

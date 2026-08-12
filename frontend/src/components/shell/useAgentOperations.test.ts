@@ -113,6 +113,7 @@ function setup() {
 
   return {
     ...stores,
+    harness,
     agentSessionStore,
     controlStore,
     chatStore,
@@ -652,6 +653,153 @@ describe('useAgentOperations', () => {
           ops.handleAgentClose('nonexistent')
 
           expect(mockCloseAgent).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    /**
+     * The worker holds the parent chain, so its `descendant_agent_ids` is the
+     * authoritative list of subagent tabs that go with this one.
+     *
+     * `handleTabClose` sweeps them optimistically from this client's own tabs,
+     * which is what updates the strip on the click. It cannot see a subagent
+     * tab opened moments ago, though: `openSubagentTab` leaves `parentAgentId`
+     * to `listAgents` hydration, so until that lands the tab looks parentless
+     * and would outlive the agent that fed it.
+     */
+    it('retires the subagent tabs the worker reports under the closed agent', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { view, ops, add } = setup()
+          for (const id of ['a-root', 'a-child', 'a-grandchild']) {
+            const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
+            add({ id, ...protoToAgentTabFields(agent.workerId, agent) })
+            add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
+          }
+          // No parentAgentId on either child: the hydration that would set one
+          // has not landed, which is exactly when the local sweep is blind.
+          expect(view.getAgentTab('a-child')).toBeDefined()
+
+          mockCloseAgent.mockResolvedValueOnce({
+            result: { worktreePath: '', worktreeId: '', failureMessage: '', failureDetail: '' },
+            descendantAgentIds: ['a-grandchild', 'a-child'],
+          } as CloseAgentResponse)
+
+          ops.handleAgentClose('a-root')
+          // The parent goes synchronously; the children wait on the worker.
+          expect(view.getAgentTab('a-root')).toBeUndefined()
+          expect(view.getAgentTab('a-child')).toBeDefined()
+
+          await flush()
+          expect(view.getAgentTab('a-child')).toBeUndefined()
+          expect(view.getAgentTab('a-grandchild')).toBeUndefined()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    /**
+     * The worker answers from the `agents` table, where a row exists for every
+     * subagent the provider ever spawned -- `EnsureChildAgent` creates one on
+     * first sight of a spawn, whether or not anyone opened that transcript.
+     *
+     * The hub resolves a tombstone's workspace THROUGH the tab record, so an id
+     * it has no record for is rejected as UNKNOWN_WORKSPACE, and that rejection
+     * is fatal for the whole batch. Passing the worker's list through unfiltered
+     * therefore does not merely waste an op: it takes the real tombstones with
+     * it, and every genuine subagent tab stays open.
+     */
+    it('retires only the reported ids it holds a live tab for', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { view, ops, add, harness } = setup()
+          for (const id of ['a-root3', 'a-real']) {
+            const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
+            add({ id, ...protoToAgentTabFields(agent.workerId, agent) })
+            add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
+          }
+
+          mockCloseAgent.mockResolvedValueOnce({
+            result: { worktreePath: '', worktreeId: '', failureMessage: '', failureDetail: '' },
+            // `a-never-opened` ran as a subagent but nobody opened its tab.
+            descendantAgentIds: ['a-never-opened', 'a-real'],
+          } as CloseAgentResponse)
+
+          ops.handleAgentClose('a-root3')
+          await flush()
+
+          expect(view.getAgentTab('a-real'), 'the tab that exists is retired').toBeUndefined()
+          // A tombstone for an unknown id does not merely no-op: applying one
+          // MATERIALIZES a record for it. Its absence is the proof no op went.
+          expect(
+            harness.pending.state.speculativeState.tabs['a-never-opened'],
+            'no op is emitted for an id with no tab record',
+          ).toBeUndefined()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    /**
+     * A descendant the optimistic sweep could not see never goes through
+     * `handleTabClose`, so this pass is the ONLY thing that retires it -- and a
+     * bare tombstone would leave its chat-store entry (loaded window, live tail,
+     * command streams, span index, to-dos, pending outbound), its control-store
+     * entry and its attachments allocated for the life of the page. Nothing else
+     * reclaims them: `forgetAgent` has no other caller.
+     */
+    it('reclaims per-agent store state for each subagent it retires', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, add, chatStore, controlStore } = setup()
+          for (const id of ['a-root4', 'a-kid']) {
+            const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
+            add({ id, ...protoToAgentTabFields(agent.workerId, agent) })
+            add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
+          }
+          const clearAgent = vi.spyOn(controlStore, 'clearAgent')
+
+          mockCloseAgent.mockResolvedValueOnce({
+            result: { worktreePath: '', worktreeId: '', failureMessage: '', failureDetail: '' },
+            descendantAgentIds: ['a-kid'],
+          } as CloseAgentResponse)
+
+          ops.handleAgentClose('a-root4')
+          await flush()
+
+          expect(chatStore.forgetAgent).toHaveBeenCalledWith('a-kid')
+          expect(clearAgent).toHaveBeenCalledWith('a-kid')
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // A rejected close reports nothing, and the tab sweep must not throw on the
+    // way past -- `awaitCloseResult` owns the user-facing error.
+    it('retires no subagent tab when the close RPC rejects', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { view, ops, add } = setup()
+          for (const id of ['a-root2', 'a-child2']) {
+            const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
+            add({ id, ...protoToAgentTabFields(agent.workerId, agent) })
+            add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
+          }
+          mockCloseAgent.mockRejectedValueOnce(new Error('worker unreachable'))
+
+          ops.handleAgentClose('a-root2')
+          await flush()
+
+          expect(view.getAgentTab('a-child2'), 'nothing said this tab should go').toBeDefined()
         }
         finally {
           dispose()

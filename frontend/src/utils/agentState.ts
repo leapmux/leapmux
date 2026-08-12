@@ -1,6 +1,7 @@
 import type { AgentChatMessage, AgentInfo } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import type { TabWorkState } from '~/stores/chatBackgroundTasks'
 import { classifyAgentMessage } from '~/components/chat/messageClassification'
 import { allRegisteredProviders, pluginFor } from '~/components/chat/providers/registry'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
@@ -124,7 +125,7 @@ function containsContextCleared(parsed: ParsedMessageContent): boolean {
 /**
  * Whether the agent is still working — the last meaningful (non-notification)
  * message is not a turn-end divider. Turn-end detection is delegated to each
- * provider's plugin, which classifies its terminal envelope (Claude
+ * provider's plugin, which classifies its closing envelope (Claude
  * `type:"result"`, Codex `turn/completed`, ACP `stopReason`, Pi `agent_end`)
  * as `result_divider`.
  */
@@ -143,6 +144,13 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
     // would pin the thinking indicator on a misconfigured / version-skewed agent
     // forever, so it likewise stops the scan as "not working".
     if (category.kind === 'result_divider' || category.kind === 'unsupported_provider')
+      return false
+    // The subagent-end divider is a subagent transcript's closing boundary:
+    // the worker writes exactly one, when that subagent's registry row reaches a
+    // final status, and nothing follows it. `subagent_ended` is not a
+    // non-progress type, so without this guard the scan stops AT this message
+    // and reports a finished subagent as still working.
+    if (getInnerMessageType(parsed) === NOTIFICATION_TYPE.SubagentEnded)
       return false
     // context_cleared in a notification-thread row means the agent
     // restarted with a fresh context and is now idle — stop scanning.
@@ -168,9 +176,18 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
  * idle-but-running tabs don't show as thinking on creation and post-
  * reconnect rehydration is driven by the authoritative session-info.
  *
- * A nonzero `activeBackgroundTaskCount` keeps the indicator up even when the
- * parent turn has ended -- an active subagent/shell means the agent is still
- * working. Todo counts deliberately do NOT appear here (a nonzero todo count
+ * `work` is what the background-task registry can say about THIS tab. `active`
+ * keeps the indicator up even when the parent turn has ended -- a running
+ * subagent/shell means the agent is still working. `finished` HIDES it and
+ * stops there: for a child tab the registry row is the authoritative record of
+ * that subagent's life, so it outranks the MESSAGE-HISTORY heuristic, which
+ * reports "working" whenever the transcript's last message is not the closing
+ * divider (an interrupt notice, a tool result, a divider write that failed). It
+ * does NOT outrank live evidence of a turn in flight -- streaming text, or the
+ * provider's own turn check -- because a steerable subagent accepts a new
+ * message after its row is final and the row never reopens.
+ * `unknown` means the registry has no row to answer with, and the heuristic
+ * decides. Todo counts deliberately do NOT appear here (a nonzero todo count
  * alone must not show the indicator).
  */
 export function shouldShowThinkingIndicator(
@@ -179,13 +196,13 @@ export function shouldShowThinkingIndicator(
   msgs: AgentChatMessage[],
   streamingText: string | undefined,
   pendingControlRequests = 0,
-  activeBackgroundTaskCount = 0,
+  work: TabWorkState = 'unknown',
 ): boolean {
   if (!agent || agent.status !== AgentStatus.ACTIVE)
     return false
   if (pendingControlRequests > 0)
     return false
-  if (activeBackgroundTaskCount > 0)
+  if (work === 'active')
     return true
   if (streamingText)
     return true
@@ -193,5 +210,13 @@ export function shouldShowThinkingIndicator(
   const override = plugin?.hasActiveTurn?.(agent, sessionInfo)
   if (override !== null && override !== undefined)
     return override
+  // A finished registry row outranks the MESSAGE HISTORY, but not live evidence
+  // of a turn in flight. A steerable subagent -- Codex re-registers a collab
+  // child on any later tool call -- can be sent a new message after its row went
+  // final, and the row never reopens. Placing this ahead of `streamingText` and
+  // the provider's own turn check meant that turn ran with no thinking indicator
+  // and, because the same predicate gates Interrupt, no way to cancel it.
+  if (work === 'finished')
+    return false
   return isAgentWorking(msgs)
 }

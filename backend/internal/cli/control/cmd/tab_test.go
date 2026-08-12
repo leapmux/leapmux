@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -541,6 +542,84 @@ func recordingWorkerCaller(calls *[]recordedWorkerCall) workerCaller {
 	}
 }
 
+// replyingWorkerCaller records like the above and also writes a canned reply
+// into the caller's `out` message, so a response field can be asserted.
+func replyingWorkerCaller(calls *[]recordedWorkerCall, reply proto.Message) workerCaller {
+	return func(method string, in, out proto.Message) error {
+		*calls = append(*calls, recordedWorkerCall{method: method, in: in})
+		if reply != nil {
+			proto.Reset(out)
+			proto.Merge(out, reply)
+		}
+		return nil
+	}
+}
+
+// The subagent tabs an agent close retires come from the WORKER: an agent id is
+// also its tab id, and the CRDT's TabRecord carries no parent link, so the CLI
+// cannot derive the subtree itself. Dropping the response on the floor is what
+// left `leapmux control tab close <root>` retiring the root and leaving every
+// subagent tab behind.
+func TestDispatchWorkerClose_AgentReturnsTheSubagentTabsToRetire(t *testing.T) {
+	var calls []recordedWorkerCall
+	subagents, err := dispatchWorkerClose(
+		replyingWorkerCaller(&calls, &leapmuxv1.CloseAgentResponse{
+			DescendantAgentIds: []string{"grandchild-1", "child-1"},
+		}),
+		resolve.Resolved{TabID: "root-1", WorkerID: "w1"},
+		leapmuxv1.TabType_TAB_TYPE_AGENT,
+		leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
+	)
+	require.NoError(t, err)
+	require.Len(t, calls, 1)
+	assert.Equal(t, "CloseAgent", calls[0].method)
+	assert.Equal(t, []string{"grandchild-1", "child-1"}, subagents,
+		"the worker's list rides back out, deepest first, for the caller to tombstone")
+}
+
+// Every other tab type owns no subagents, and neither does a tab whose worker
+// is unknown -- a non-empty answer there would tombstone something at random.
+func TestDispatchWorkerClose_ReportsNoSubagentsForOtherTabs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tabType  leapmuxv1.TabType
+		workerID string
+	}{
+		{"terminal", leapmuxv1.TabType_TAB_TYPE_TERMINAL, "w1"},
+		{"file", leapmuxv1.TabType_TAB_TYPE_FILE, "w1"},
+		{"agent with no worker", leapmuxv1.TabType_TAB_TYPE_AGENT, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []recordedWorkerCall
+			subagents, err := dispatchWorkerClose(
+				recordingWorkerCaller(&calls),
+				resolve.Resolved{TabID: "t-1", WorkerID: tc.workerID},
+				tc.tabType,
+				leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
+			)
+			require.NoError(t, err)
+			assert.Empty(t, subagents)
+		})
+	}
+}
+
+// A failed CloseAgent reports no subagents. The command tombstones whatever
+// this returns, and the ids in a half-filled response describe a close that did
+// not happen.
+func TestDispatchWorkerClose_AgentReportsNoSubagentsWhenTheCloseFails(t *testing.T) {
+	subagents, err := dispatchWorkerClose(
+		func(_ string, _, out proto.Message) error {
+			proto.Merge(out, &leapmuxv1.CloseAgentResponse{DescendantAgentIds: []string{"child-1"}})
+			return errors.New("worker unreachable")
+		},
+		resolve.Resolved{TabID: "root-1", WorkerID: "w1"},
+		leapmuxv1.TabType_TAB_TYPE_AGENT,
+		leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
+	)
+	require.Error(t, err)
+	assert.Empty(t, subagents)
+}
+
 // A FILE tab's teardown is an RPC, not a no-op. `worker_file_tabs` and the
 // worktree_tabs link are worker-side rows that the CRDT tombstone does not
 // touch, and RevokeFileTabPath is what drives the shared closeTabCommon flow
@@ -548,7 +627,7 @@ func recordingWorkerCaller(calls *[]recordedWorkerCall) workerCaller {
 // worktree the user asked to remove simply stays.
 func TestDispatchWorkerClose_FileTabRevokesPathWithAction(t *testing.T) {
 	var calls []recordedWorkerCall
-	err := dispatchWorkerClose(
+	_, err := dispatchWorkerClose(
 		recordingWorkerCaller(&calls),
 		resolve.Resolved{TabID: "file-1", WorkerID: "w1"},
 		leapmuxv1.TabType_TAB_TYPE_FILE,
@@ -581,12 +660,13 @@ func TestDispatchWorkerClose_RoutesPerTabType(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []recordedWorkerCall
-			require.NoError(t, dispatchWorkerClose(
+			_, err := dispatchWorkerClose(
 				recordingWorkerCaller(&calls),
 				resolve.Resolved{TabID: "t-1", WorkerID: tc.workerID},
 				tc.tabType,
 				leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP,
-			))
+			)
+			require.NoError(t, err)
 			if tc.method == "" {
 				assert.Empty(t, calls)
 				return
@@ -595,4 +675,153 @@ func TestDispatchWorkerClose_RoutesPerTabType(t *testing.T) {
 			assert.Equal(t, tc.method, calls[0].method)
 		})
 	}
+}
+
+// stateWithLiveTabs builds a snapshot holding one untombstoned AGENT tab per id.
+func stateWithLiveTabs(ids ...string) *leapmuxv1.UserMaterialized {
+	tabs := make(map[string]*leapmuxv1.TabRecord, len(ids))
+	for _, id := range ids {
+		tabs[id] = &leapmuxv1.TabRecord{TabId: id, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}
+	}
+	return &leapmuxv1.UserMaterialized{Tabs: tabs}
+}
+
+// The tabs a `tab close` retires under an agent are the worker's answer, turned
+// into one TombstoneTab op each.
+//
+// Every one is an AGENT tab: a subagent IS an agent, so its agent id is its tab
+// id. Taking the type from the tab being closed instead would tombstone a
+// terminal or file tab that happens to share the id.
+func TestSubagentTombstoneOps_TombstonesEachIdAsAnAgentTab(t *testing.T) {
+	bs := testBootstrap(stateWithLiveTabs("grandchild-1", "child-1"))
+
+	ops := subagentTombstoneOps(bs, []string{"grandchild-1", "child-1"})
+
+	require.Len(t, ops, 2)
+	cases := make([]string, 0, len(ops))
+	for _, op := range ops {
+		cases = append(cases, opCase(op))
+		body, ok := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneTab)
+		require.True(t, ok, "unexpected op body %T", op.GetBody())
+		assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_AGENT, body.TombstoneTab.GetTabType())
+	}
+	assert.Equal(t, []string{"tombstoneTab:grandchild-1", "tombstoneTab:child-1"}, cases,
+		"the worker's order rides through unchanged")
+}
+
+// The worker answers from the `agents` table, where a row exists for every
+// subagent the provider ever spawned -- `EnsureChildAgent` creates one on first
+// sight of a spawn, whether or not anyone opened that transcript as a tab.
+//
+// The hub resolves a tombstone's workspace THROUGH the tab record, so an id it
+// has no record for is rejected as UNKNOWN_WORKSPACE, and that rejection is
+// fatal for the WHOLE batch. Passing the list through unfiltered would
+// therefore not merely waste an op: one never-opened subagent would take every
+// real tombstone down with it, and `tab close` would leave every subagent tab
+// open while reporting a failure.
+func TestSubagentTombstoneOps_SkipsIdsThisAccountHasNoTabFor(t *testing.T) {
+	bs := testBootstrap(stateWithLiveTabs("child-1"))
+
+	ops := subagentTombstoneOps(bs, []string{"never-opened", "child-1"})
+
+	require.Len(t, ops, 1, "the id with no tab record is dropped, not batched")
+	assert.Equal(t, "tombstoneTab:child-1", opCase(ops[0]))
+}
+
+// An already-tombstoned tab fails the hub's workspace resolution the same way:
+// `applyTombstoneTab` strips the tile id, so the record no longer resolves to a
+// workspace. The browser's optimistic sweep retires these moments earlier, so
+// this is the common case, not an edge one.
+func TestSubagentTombstoneOps_SkipsAnAlreadyTombstonedTab(t *testing.T) {
+	state := stateWithLiveTabs("child-1", "child-2")
+	state.Tabs["child-2"].TombstoneAt = &leapmuxv1.HLC{Physical: 1, ClientId: "peer"}
+	bs := testBootstrap(state)
+
+	ops := subagentTombstoneOps(bs, []string{"child-1", "child-2"})
+
+	require.Len(t, ops, 1)
+	assert.Equal(t, "tombstoneTab:child-1", opCase(ops[0]))
+}
+
+// The tab a `tab close` retires goes LAST, behind its own subagents, in one
+// batch.
+//
+// Order and batching are both load-bearing. A parent tombstoned first -- which
+// is all a client could do if it learned the ids only from the CloseAgent
+// response -- leaves every peer promoting the orphaned children to top-level
+// rows for the length of the worker teardown. Two batches would reopen the same
+// window, narrower.
+func TestCloseBatchOps_RetiresTheSubagentsBeforeTheTabItself(t *testing.T) {
+	bs := testBootstrap(stateWithLiveTabs("root-1", "child-1", "grandchild-1"))
+
+	ops := closeBatchOps(bs, leapmuxv1.TabType_TAB_TYPE_AGENT, "root-1", []string{"grandchild-1", "child-1"})
+
+	cases := make([]string, 0, len(ops))
+	for _, op := range ops {
+		cases = append(cases, opCase(op))
+	}
+	assert.Equal(t, []string{
+		"tombstoneTab:grandchild-1",
+		"tombstoneTab:child-1",
+		"tombstoneTab:root-1",
+	}, cases, "the tab the user closed is the last op in the batch")
+}
+
+// A tab with no subagents still closes -- the batch is just the one op. This is
+// every terminal and file close, and every agent that spawned nothing.
+func TestCloseBatchOps_IsJustTheTabWhenItOwnsNoSubagents(t *testing.T) {
+	bs := testBootstrap(stateWithLiveTabs("t-1"))
+
+	ops := closeBatchOps(bs, leapmuxv1.TabType_TAB_TYPE_TERMINAL, "t-1", nil)
+
+	require.Len(t, ops, 1)
+	assert.Equal(t, "tombstoneTab:t-1", opCase(ops[0]))
+	body, ok := ops[0].GetBody().(*leapmuxv1.CrdtOp_TombstoneTab)
+	require.True(t, ok)
+	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_TERMINAL, body.TombstoneTab.GetTabType(),
+		"the tab keeps its own type; only the subagents are forced to AGENT")
+}
+
+// A never-opened subagent must not take the parent's tombstone with it. The
+// hub cannot resolve a workspace for an id it has no record for and rejects the
+// WHOLE batch, so an unfiltered list would leave the tab the user closed open.
+func TestCloseBatchOps_DropsAnUnopenedSubagentWithoutLosingTheTab(t *testing.T) {
+	bs := testBootstrap(stateWithLiveTabs("root-1", "child-1"))
+
+	ops := closeBatchOps(bs, leapmuxv1.TabType_TAB_TYPE_AGENT, "root-1", []string{"never-opened", "child-1"})
+
+	cases := make([]string, 0, len(ops))
+	for _, op := range ops {
+		cases = append(cases, opCase(op))
+	}
+	assert.Equal(t, []string{"tombstoneTab:child-1", "tombstoneTab:root-1"}, cases)
+}
+
+// The second batch carries only what the first did not.
+//
+// A close learns the subtree twice: from the inspect, before the parent's
+// tombstone, and from CloseAgent, after the teardown. The second answer is a
+// superset. Re-tombstoning an id the first batch retired would fail the WHOLE
+// second batch, because the hub cannot resolve a workspace for a record whose
+// tile id the first tombstone stripped.
+func TestExceptAlreadySubmitted_KeepsOnlyWhatTheFirstBatchMissed(t *testing.T) {
+	// `late` is a child the provider spawned while it drained, which the inspect
+	// (taken before any teardown) could not have seen.
+	assert.Equal(t,
+		[]string{"late"},
+		exceptAlreadySubmitted([]string{"child-1", "child-2", "late"}, []string{"child-1", "child-2"}))
+}
+
+// Nothing submitted yet means everything is still to submit -- the
+// worker-unreachable path, where the inspect reported no ids at all.
+func TestExceptAlreadySubmitted_KeepsEverythingWhenNothingWentFirst(t *testing.T) {
+	assert.Equal(t, []string{"child-1"}, exceptAlreadySubmitted([]string{"child-1"}, nil))
+}
+
+// No subagents means no batch at all -- submitting an empty one would spend a
+// round-trip to say nothing, and the command's success does not depend on it.
+func TestSubagentTombstoneOps_BuildsNothingForAnEmptyList(t *testing.T) {
+	bs := testBootstrap(stateWithLiveTabs())
+	assert.Empty(t, subagentTombstoneOps(bs, nil))
+	assert.Empty(t, subagentTombstoneOps(bs, []string{}))
 }

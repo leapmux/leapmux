@@ -188,8 +188,20 @@ WITH RECURSIVE ancestors AS (
 SELECT ancestors.id FROM ancestors WHERE ancestors.parent_agent_id IS NULL LIMIT 1;
 
 -- ListDescendantAgentIDs walks parent_agent_id DOWN from a root, returning the
--- ids of every virtual child at any depth. Used by root-tab close to clean up
--- child span trackers/caches alongside the row teardown.
+-- ids of every virtual child at any depth, in NO particular order (the CTE is
+-- evaluated breadth-first, so a parent comes before its own children).
+--
+-- Used by the CHILD-tab close path, which runs no teardown and so has nothing
+-- later to read: CloseAgent reports the list to the client as
+-- descendant_agent_ids, and the client retires those tabs. A ROOT close does
+-- not use this query -- it derives the same set from ListAgentTreeIDs below,
+-- AFTER its teardown, so that a subagent spawned during the provider's drain is
+-- included. See closeAgentTabCommon.
+--
+-- Deliberately unfiltered by closed_at: a row exists for every subagent the
+-- provider ever spawned, so the client receives ids for subagents that were
+-- never opened as tabs and for ones closed long ago. Each client MUST filter to
+-- the tabs it actually holds before it tombstones anything.
 -- name: ListDescendantAgentIDs :many
 WITH RECURSIVE descendants AS (
     SELECT a.id AS id FROM agents a WHERE a.parent_agent_id = ?
@@ -199,12 +211,18 @@ WITH RECURSIVE descendants AS (
 SELECT descendants.id FROM descendants;
 
 -- ListAgentTreeIDs returns the root id AND every descendant id (the whole
--- subtree rooted at the given agent). Used by root-tab close to stamp
--- closed_at on the root and all its (virtual) children: the caller iterates
--- this list and runs CloseAgent per id inside one transaction (sqlc cannot
--- parse a recursive CTE inside an UPDATE's IN-subquery, so the close loop
--- lives in Go). CloseAgent's `closed_at IS NULL` guard keeps each step
+-- subtree rooted at the given agent). It is the ONE read a root-tab close
+-- makes, and it serves three consumers: stamping closed_at on the root and all
+-- its (virtual) children, freeing each child's per-agent maps, and reporting
+-- the descendants to the client. The caller iterates this list and runs
+-- CloseAgent per id (sqlc cannot parse a recursive CTE inside an UPDATE's
+-- IN-subquery, so the close loop lives in Go, one statement per id rather than
+-- one transaction). CloseAgent's `closed_at IS NULL` guard keeps each step
 -- idempotent.
+--
+-- Read AFTER the teardown, so it includes a subagent the provider spawned while
+-- it drained. Nothing else would ever reach such a row: the orphan reconciler
+-- lists roots only.
 -- name: ListAgentTreeIDs :many
 WITH RECURSIVE tree AS (
     SELECT a.id AS id FROM agents a WHERE a.id = ?

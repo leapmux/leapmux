@@ -1,23 +1,27 @@
 import { expect, test } from './fixtures'
-import { expectAssistantAnswer, openSettingsMenu, waitForSettingsIdle } from './helpers/ui'
+import { expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSettingsMenu, settingsBar, waitForSettingsIdle } from './helpers/ui'
 
 // The e2e account can't bill Sonnet's 1M-context tier, so this suite uses
 // Opus[1m] instead. The underlying coverage — bracketed model IDs and the
 // settings-change notification — is the same.
-const MODEL_CHANGE_PATTERN = /Model.*Sonnet.*Opus.*1M/
+// Anchored to the notification's own shape, `Model (<from> → <to>)`. A pattern
+// of bare `.*` gaps also matches the composer, whose closed settings popovers
+// keep every option label in the DOM — so `Model`, `Sonnet`, and `Opus (1M
+// context)` all appear inside one element there, in that order.
+const MODEL_CHANGE_PATTERN = /Model \(Sonnet → Opus \(1M context\)\)/
 
 test.describe('1m-context model', () => {
   test('switch to opus[1m] and exchange messages', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // Default model should be Sonnet
-    await expect(trigger).toContainText('Sonnet')
+    await expectSettingsChip(page, 'Sonnet')
 
     // Switch to Opus[1m]
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'model')
     await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
-    await expect(trigger).toContainText('Opus (1M context)')
+    await expectSettingsChip(page, 'Opus (1M context)')
 
     // Verify the settings change notification appears in chat
     await expect(page.getByText(MODEL_CHANGE_PATTERN)).toBeVisible()
@@ -45,7 +49,7 @@ test.describe('1m-context model', () => {
     await expectAssistantAnswer(page, { answer: /\b6\b/ })
 
     // Verify the model is still shown as Opus[1m] after exchanging messages
-    await expect(trigger).toContainText('Opus (1M context)')
+    await expectSettingsChip(page, 'Opus (1M context)')
   })
 
   // Regression for the account-default round-trip: switching from a concrete
@@ -58,33 +62,33 @@ test.describe('1m-context model', () => {
   // exchanged -- the bug is purely in the settings round-trip -- so it stays
   // cheap and off the billable path.
   test('switching to Default resolves to a concrete model with its effort menu', async ({ authenticatedWorkspace, page }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
     // A fresh tab starts on the account default, which resolves to Sonnet.
-    await expect(trigger).toContainText('Sonnet')
+    await expectSettingsChip(page, 'Sonnet')
 
     // Move off the default onto a concrete non-default model.
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'model')
     await page.locator('[data-testid="model-opus\\[1m\\]"]').click()
-    await expect(trigger).toContainText('Opus (1M context)')
+    await expectSettingsChip(page, 'Opus (1M context)')
     await waitForSettingsIdle(page)
 
     // Switch back to "Default (recommended)". The worker relaunches without
     // --model and the CLI resolves the sentinel to the session's concrete model.
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'model')
     await page.locator('[data-testid="model-default"]').click()
     await waitForSettingsIdle(page)
 
     // The trigger settles on a concrete model -- NEVER stuck on the sentinel's
     // "Default (recommended)" label (the reported bug).
-    await expect(trigger).not.toContainText('Default (recommended)')
+    await expectNoSettingsChip(page, 'Default (recommended)')
 
     // ...and the effort group returns with it -- the sentinel carries none, which
     // is exactly why the broken state dropped the effort mark. Both the account
     // default (Sonnet) and a resumed session's model (Opus) offer the "high"
     // tier, so assert on it regardless of which the CLI resolved.
-    await openSettingsMenu(page)
+    await openSettingsMenu(page, 'effort')
     await expect(page.locator('[data-testid="effort-high"]')).toBeVisible()
   })
 })

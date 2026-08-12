@@ -26,7 +26,7 @@ import { base64ToUint8Array } from '~/lib/base64'
 import { getInnerMessage, parseMessageContent } from '~/lib/messageParser'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 import { protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue } from '~/stores/tab.helpers'
-import { emitRemoveTab } from '~/stores/tabOps'
+import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 import '~/components/chat/providers'
 
@@ -474,6 +474,26 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
+  /**
+   * Reclaim every per-agent store entry a closed agent tab leaves behind.
+   *
+   * Separate from the tombstone, because the two have different owners: the
+   * tombstone is one CRDT op that a caller may want to batch with others, and
+   * this is the local state that NOTHING else reclaims. `forgetAgent` has no
+   * other production caller, and the tombstone-driven metadata sweep drops
+   * `tabMetadata` rows only -- so an agent tab that leaves without this call
+   * strands its loaded window, live tail, command streams, span index, to-dos,
+   * streaming text and pending outbound for the life of the page.
+   *
+   * Every path that retires an agent tab must call it: the ordinary close
+   * below, and the descendant sweep that follows the worker's answer.
+   */
+  const retireAgentTabLocally = (agentId: string) => {
+    props.controlStore.clearAgent(agentId)
+    clearAttachments(agentId)
+    props.chatStore.forgetAgent(agentId)
+  }
+
   // Close an agent.
   //
   // All store mutations run synchronously so the UI updates the moment
@@ -484,13 +504,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     const workerId = getAgentWorkerId(agentId)
 
     // Synchronous local cleanup: the tab disappears immediately.
-    props.controlStore.clearAgent(agentId)
-    clearAttachments(agentId)
-    // Reclaim the agent's chat-store state (loaded window, pagination flags, live
-    // tail, command streams, span index, to-dos, streaming text, pending outbound,
-    // saved scroll). The store only trims within a window, never on close, so
-    // without this a long open/close session leaks one entry per agent.
-    props.chatStore.forgetAgent(agentId)
+    retireAgentTabLocally(agentId)
     emitRemoveTab(TabType.AGENT, agentId)
 
     // The TombstoneTab op above is the removal: the tab leaves the projection
@@ -508,7 +522,46 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     // remove the worktree. Partial failures come back as a non-empty
     // failure_message on the response; the resolved result lets the
     // delete-branch flow report the actual worktree outcome.
-    return awaitCloseResult(workerRpc.closeAgent(workerId, { agentId, worktreeAction }), 'Failed to close agent')
+    const rpc = workerRpc.closeAgent(workerId, { agentId, worktreeAction })
+
+    // Retire the subagent tabs the worker reports underneath this one.
+    //
+    // `handleTabClose` already swept them optimistically from this client's own
+    // tabs, which is what makes the strip update on the click rather than a
+    // round-trip later. This is the AUTHORITATIVE pass behind it: the parent
+    // chain lives on the worker, and a subagent tab opened moments ago carries
+    // no `parentAgentId` until `listAgents` hydrates one -- so the optimistic
+    // sweep cannot see it, and the tab would outlive the agent that fed it.
+    // A tombstone is idempotent, so the two passes overlapping costs nothing.
+    //
+    // Errors are the RPC's own, and `awaitCloseResult` below already toasts
+    // them; a second handler would report the same failure twice.
+    //
+    // The rejection handler is the SECOND argument to `then`, not a trailing
+    // `catch`: a trailing one also swallows a throw from the sweep itself, so a
+    // failure half way through would leave the remaining descendant tabs on
+    // screen with no toast and no console trace. This form scopes the swallow
+    // to the RPC's own rejection and lets a sweep error surface.
+    rpc.then((resp) => {
+      // Only the ids this client holds a LIVE tab record for. The worker answers
+      // from the `agents` table, where `EnsureChildAgent` creates a row on first
+      // sight of a spawn -- whether or not anyone ever opened that subagent's
+      // transcript. The hub rejects a tombstone for an id it has no record for,
+      // so an unfiltered list makes the hub reject the batch instead of retiring
+      // the tabs. Filtering on LIVE also drops the ids the optimistic sweep just
+      // tombstoned, which would otherwise be rejected the same way.
+      const ids = (resp.descendantAgentIds ?? []).filter(hasLiveTabRecord)
+      if (ids.length === 0)
+        return
+      for (const id of ids)
+        retireAgentTabLocally(id)
+      // One batch, not one per id: the hub dedups, validates, journals and swaps
+      // state per BATCH, so a per-id loop pays all of that N times to say what
+      // one batch says.
+      emitRemoveTabs(TabType.AGENT, ids)
+    }, () => {})
+
+    return awaitCloseResult(rpc, 'Failed to close agent')
   }
 
   return {
@@ -523,6 +576,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleRetryMessage,
     handleDeleteMessage,
     handleAgentClose,
+    retireAgentTabLocally,
   }
 }
 

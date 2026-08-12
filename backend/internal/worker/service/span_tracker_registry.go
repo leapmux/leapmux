@@ -18,7 +18,7 @@ const (
 	// spanTrackerChild is the kind for a virtual child agent (a subagent
 	// transcript fed by the parent provider's process; it never owns a
 	// process). Created on the first ChildSink(childID); deleted by
-	// CleanupChild / CleanupChildAgents.
+	// CleanupChildAgent / CleanupChildAgents.
 	spanTrackerChild
 )
 
@@ -29,7 +29,7 @@ const (
 // # Lifecycle
 //
 // A child tracker is created on the first ChildSink(childID) call and deleted
-// on CleanupChildAgent(childID) (a single child's terminal close) or
+// on CleanupChildAgent(childID) (a single child's closing update) or
 // CleanupChildAgents (the root-close batch). A root tracker is created on
 // NewSink and deleted on CleanupAgent.
 //
@@ -48,7 +48,7 @@ const (
 // CleanupChildAgent deletes a child's entry, a provider goroutine that retained
 // the child sink may still call OpenSpan/CloseSpan on it. Those calls mutate a
 // GC-retained orphan tracker whose entry is gone from the registry, so no
-// future Snapshot reads the state. This is benign by design: the terminal
+// future Snapshot reads the state. This is benign by design: the final
 // observation that drives cleanup is contractually the last event a provider
 // emits for that child, so late calls are rare and their writes are
 // unobservable. A drain would serialize provider read-loops on cleanup for no

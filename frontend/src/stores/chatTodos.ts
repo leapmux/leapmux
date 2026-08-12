@@ -43,11 +43,39 @@ export function normalizeTodoStatus(raw: unknown): TodoItem['status'] {
 }
 
 /**
- * A todo is in a terminal state — eligible for cap-eviction on the
- *  backend and for strike-through styling in the UI.
+ * A to-do reached a final state — eligible for cap-eviction on the backend and
+ * for strike-through styling in the UI.
  */
-export function isTerminalTodoStatus(status: TodoItem['status']): boolean {
+export function isFinishedTodoStatus(status: TodoItem['status']): boolean {
   return status === 'completed' || status === 'deleted'
+}
+
+// Display order rank for a todo status. Lower sorts first.
+function todoStatusRank(status: TodoItem['status']): number {
+  switch (status) {
+    case 'in_progress':
+      return 0
+    case 'pending':
+      return 1
+    case 'completed':
+      return 2
+    default:
+      // deleted: dropped from the plan entirely, so it sorts below what was
+      // actually finished.
+      return 3
+  }
+}
+
+/**
+ * Order todos for display: what is being worked on, then what is left, then
+ * what is finished, then what was dropped. Returns a NEW array.
+ *
+ * Stable, so within one group the list keeps the order it arrived in -- the
+ * store holds todos in the agent's own seq order, which is creation order, so
+ * that means oldest first.
+ */
+export function sortTodos(todos: TodoItem[]): TodoItem[] {
+  return todos.toSorted((a, b) => todoStatusRank(a.status) - todoStatusRank(b.status))
 }
 
 /**

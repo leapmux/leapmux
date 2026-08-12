@@ -445,3 +445,77 @@ func TestCodexThreadParams(t *testing.T) {
 	_, hasEmptyTier := empty["serviceTier"]
 	assert.False(t, hasEmptyTier, "an empty tier omits serviceTier")
 }
+
+// The static fallback effort list is BOTH the id -> name lookup
+// (codexEffortName) and the ordered menu every codexDefaultModels entry
+// advertises. Only the second role constrains the order, and only the first
+// one fails visibly when it is wrong -- so appending a tier satisfies the
+// label lookup while placing it wrongly in every picker, which is exactly how
+// "max" first landed after "none".
+func TestCodexDefaultEffortsRankOrder(t *testing.T) {
+	// The expected order is DERIVED from the shared effortRank table, not
+	// written out again here. A hand-written list is a third copy of the
+	// ordering, and a tier appended at the end can be added to the list and the
+	// slice in one edit, which is the mistake this test exists to catch.
+	require.NotEmpty(t, codexDefaultEfforts)
+	require.Equal(t, EffortAuto, codexDefaultEfforts[0].Id, "the LeapMux auto sentinel leads the menu")
+
+	tiers := codexDefaultEfforts[1:]
+	for i, e := range tiers {
+		rank, ok := effortRankOf(e.Id)
+		require.True(t, ok, "effort %q is absent from effortRank, so sortEffortOptionsDescending drops it into the unranked tail", e.Id)
+		if i == 0 {
+			continue
+		}
+		prevRank, _ := effortRankOf(tiers[i-1].Id)
+		assert.Greater(t, prevRank, rank,
+			"codexDefaultEfforts is the menu order: %q ranks above %q, so it must come first", tiers[i-1].Id, e.Id)
+	}
+
+	// Every tier carries a label, and it is the SHARED table's label -- the live
+	// catalog resolves the same way, so the two paths cannot spell one tier two
+	// ways.
+	for _, e := range codexDefaultEfforts {
+		assert.NotEmpty(t, e.Name, "effort %q needs a display name", e.Id)
+		assert.Equal(t, effortLabel(e.Id), e.Name, "effort %q must take the shared label", e.Id)
+		assert.NotEqual(t, e.Id, e.Name, "effort %q must carry a display label, not its raw id", e.Id)
+	}
+
+	// The models that advertise the list inherit that order verbatim.
+	want := make([]string, 0, len(codexDefaultEfforts))
+	for _, e := range codexDefaultEfforts {
+		want = append(want, e.Id)
+	}
+	for _, m := range codexDefaultModels {
+		require.NotEmpty(t, m.SupportedEfforts, "model %q advertises no efforts", m.Id)
+		ids := make([]string, 0, len(m.SupportedEfforts))
+		for _, e := range m.SupportedEfforts {
+			ids = append(ids, e.Id)
+		}
+		assert.Equal(t, want, ids, "model %q must offer the tiers in rank order", m.Id)
+	}
+}
+
+// The live CLI (codex-cli 0.147.0) reports an "ultra" reasoning effort above
+// "max" on every current model. A tier missing from codexDefaultEfforts leaves
+// the static fallback offering a menu the running session does not, and
+// effortRank sorts it into the unranked tail.
+func TestCodexOffersUltraEffort(t *testing.T) {
+	var ultra *EffortInfo
+	for _, e := range codexDefaultEfforts {
+		if e.Id == "ultra" {
+			ultra = e
+		}
+	}
+	require.NotNil(t, ultra, "the live CLI reports an \"ultra\" tier; the fallback catalog must offer it too")
+	assert.Equal(t, "Ultra", ultra.Name, "the tier carries its shared label")
+	// A tier the CLI ships before this catalog catches up still renders
+	// capitalized, not as a raw lowercase id beside its siblings.
+	assert.Equal(t, "Turbo", effortLabel("turbo"), "an unlisted tier is capitalized, not raw")
+
+	ultraRank, ok := effortRankOf("ultra")
+	require.True(t, ok, "effortRank must rank \"ultra\" or it sorts after every ranked value")
+	maxRank, ok := effortRankOf("max")
+	require.True(t, ok)
+	assert.Greater(t, ultraRank, maxRank, "\"ultra\" is stronger than \"max\"")
+}

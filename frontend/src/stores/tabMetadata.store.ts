@@ -195,7 +195,15 @@ export type TabMetadata = SharedMeta & AgentMeta & TerminalMeta & StartupMeta & 
 export type { FileDiffBase, FileViewMode }
 
 /**
- * The tab ids a metadata sweep must treat as live.
+ * The tab ids a metadata sweep must treat as live: the CRDT holds an
+ * untombstoned record for them.
+ *
+ * A tombstone is what says the tab is gone. `applyTombstoneTab` REPLACES the
+ * record with a tombstoned one rather than deleting the map key, so
+ * `Object.keys(state.tabs)` alone lists every tab the account ever opened
+ * -- reading that as "still here" made this sweep a no-op and let closed
+ * terminals' `screen` buffers accumulate for the life of the page, the exact
+ * leak its caller exists to prevent.
  *
  * Deliberately the raw `TabRecord` set, NOT the projection's `ownedTabs`. A tab
  * whose tile chain is momentarily unresolvable -- mid-batch during a close's
@@ -208,12 +216,9 @@ export type { FileDiffBase, FileViewMode }
  * Whether a tab EXISTS and where it SITS are different questions. Only the
  * first one may retire its metadata.
  *
- * A tombstone answers the FIRST question, so it must be excluded here.
- * `applyTombstoneTab` REPLACES the record with a tombstoned one rather than
- * deleting the map key, so `Object.keys(state.tabs)` alone still names every
- * tab the account has ever opened -- which made this sweep a no-op and let
- * closed terminals' `screen` buffers accumulate for the life of the page, the
- * exact leak its caller exists to prevent.
+ * NOT-LIVE IS NOT THE SAME AS RETIRED, and that distinction belongs to the
+ * caller -- see {@link useMetadataSweep}. An id this set omits may be a tab the
+ * CRDT has not heard of YET rather than one that went away.
  */
 export function liveTabIds(state: { tabs: Record<string, { tombstoneAt?: HLC } | undefined> }): Set<string> {
   const live = new Set<string>()
@@ -334,7 +339,7 @@ function mruSnapshot(byTabId: Record<string, TabMetadata>): Record<string, numbe
  * Write the MRU stamp map back, deduped against the last value written.
  *
  * Every mutation that changes an `mru` field (`touchMru`) or the live row set
- * (`remove`, `retainOnly`) calls this. The map is small (one entry per tab) and
+ * (`remove`, `dropTabs`) calls this. The map is small (one entry per tab) and
  * `touchMru` is already a no-op at the head, so writes happen only on genuine
  * ordering changes. It additionally skips when nothing carries an `mru` stamp
  * yet — the very first activation writes, a metadata-only `patch` never does.
@@ -392,6 +397,34 @@ export function createTabMetadataStore() {
     },
 
     /**
+     * Merge `fields` into a tab's metadata ONLY when a row already exists.
+     *
+     * The counterpart to `patch` for a writer that fires on the way DOWN. `patch`
+     * creates the row, which is what an open path needs -- it writes the metadata
+     * before the op that creates the tab, and the row must survive that window
+     * (see {@link useMetadataSweep}). A teardown writer has the opposite need: by
+     * the time it runs, the tab may already be retired, and creating the row
+     * again resurrects it permanently, because the sweep retires an id once and
+     * that id can never be live again.
+     *
+     * The terminal screen-capture sink is the writer this exists for. It fires
+     * from `disposeTerminalInstance`, which the view's unmount defers to a
+     * microtask -- so for a terminal closed on another device it runs AFTER the
+     * tombstone already reclaimed the row, and a `patch` there strands a full
+     * serialized scrollback for the life of the page.
+     */
+    patchExisting(tabId: string, fields: TabMetadata) {
+      if (state.byTabId[tabId] === undefined)
+        return
+      setState(produce((s) => {
+        const existing = s.byTabId[tabId]
+        if (!existing)
+          return
+        mergeDefined(existing, fields)
+      }))
+    },
+
+    /**
      * Merge `fields` into every tab whose metadata matches. This is how a branch
      * rename or a worker-offline sweep reaches EVERY workspace at once — under
      * the old split it had to be a per-workspace fan-out across the active store
@@ -415,13 +448,15 @@ export function createTabMetadataStore() {
     },
 
     /**
-     * Drop metadata for every tab id not in `live`.
+     * Drop metadata for every tab id in `retired`.
      *
-     * Pass {@link liveTabIds}, NOT a set built from the projection's
-     * `ownedTabs` — read that function's doc before changing this call. A tab
-     * whose tile chain is momentarily unresolvable leaves the projection while
-     * remaining alive, and sweeping on that signal deletes its title, git
-     * badges and terminal scrollback for good.
+     * States what to DELETE, not what to keep, and that direction is the point:
+     * a row the caller has formed no opinion about is never collateral. The one
+     * caller is {@link useMetadataSweep} -- read its doc before changing this.
+     * "Retired" is neither "not in the projection" (a tab whose tile chain is
+     * momentarily unresolvable leaves the projection while remaining alive) nor
+     * "not live" (a tab whose metadata is written before its creation op is not
+     * live either, and it is about to be).
      *
      * "The worker has answered for this tab" is a field on the row swept here
      * (`hydrated`), deliberately NOT a companion cache keyed by tab id. Such a
@@ -430,12 +465,12 @@ export function createTabMetadataStore() {
      * the FILE hydrator, reading that, would never ask again, stranding the tab
      * with no path for the life of the page.
      */
-    retainOnly(live: Set<string>) {
+    dropTabs(retired: Set<string>) {
+      if (retired.size === 0)
+        return
       setState(produce((s) => {
-        for (const tabId of Object.keys(s.byTabId)) {
-          if (!live.has(tabId))
-            delete s.byTabId[tabId]
-        }
+        for (const tabId of retired)
+          delete s.byTabId[tabId]
       }))
       persistMru(state.byTabId)
     },
@@ -474,32 +509,49 @@ export type TabMetadataStore = ReturnType<typeof createTabMetadataStore>
 /**
  * Drop metadata rows for tabs the CRDT no longer has.
  *
- * Lives here rather than in the shell because both halves it coordinates do —
- * {@link liveTabIds} and `retainOnly` — and the rule binding them ("pass
- * `liveTabIds`, NOT the projection's `ownedTabs`") was previously written out
+ * Lives here rather than in the shell because every half it coordinates does —
+ * {@link liveTabIds} and `dropTabs` — and the rule binding them ("read
+ * `state.tabs`, NOT the projection's `ownedTabs`") was previously written out
  * three times, twice verbatim, because the caller sat in a different module.
  *
  * Nothing else drops these rows: a close is a tombstone, not a store call, and
  * terminal `screen` buffers are the largest thing in here, so without the sweep
  * a long session accumulates the scrollback of every terminal it ever opened.
  *
- * Keyed on the raw TabRecord set, NOT on `projection.ownedTabs`. A tab whose
- * tile chain is momentarily unresolvable — mid-batch during a close's
- * undo-split, or between a Batch frame and the EntityMaterialized frame that
- * creates its new tile — leaves `ownedTabs` while remaining perfectly alive.
- * Sweeping on that signal deletes live state: the tab reappears a tick later
- * with its title, git badges and scrollback gone for good. `state.tabs` says
- * whether a tab exists without asking where it sits.
+ * A row is retired when its tab was LIVE and then stopped being live — never
+ * merely because it is not live now. `seen` is what encodes the difference, and
+ * it is the whole reason this function holds state at all.
  *
- * Gated on the live tab-id SET, not on the raw tick. `crdtState` is
- * `{ equals: false }` and fires on every CRDT batch — ~60/s while a tile or
- * floating window is being dragged, none of which create or tombstone a tab.
- * Without the set-equality memo each of those frames also paid `retainOnly`'s
- * walk over every metadata row. The `liveTabIds` walk itself still runs per
- * tick (nothing cheaper distinguishes "a tombstone landed" from any other op —
- * a tombstone REPLACES the record rather than removing the key, so neither
- * identity nor key count moves), but it is now the only per-tick cost and it
- * feeds a memo that stays quiet until the set actually changes.
+ * Retiring every not-live id instead was a defect. An id absent from
+ * `state.tabs` is not a tab that went away; it is one the CRDT has not heard of
+ * YET. Every open path writes a tab's metadata BEFORE emitting the op that
+ * creates it (`openTabInFocusedTile`, `openSubagentTab`), because the
+ * projection renders the tab synchronously and patching afterwards paints it
+ * untitled. Any effect flush inside that window — and the metadata write itself
+ * causes one, since a store write outside a batch runs the effects a previous
+ * update queued — caught the row of a tab that was about to exist and deleted
+ * it. A file opened from a git filter tab lost `fileViewMode`, `fileDiffBase`
+ * and `fileOpenSource` that way, so it opened as a plain read of the working
+ * copy with no diff-mode toolbar at all; the FILE hydrator then re-fetched the
+ * path, which is why the tab still looked right.
+ *
+ * "Was live, now is not" covers both ways a tab leaves: a tombstone (the
+ * ordinary close), and `EntityRemoved`, which DELETES the record outright when
+ * a workspace moves out of the subscriber's allowed set. Testing for a
+ * tombstone alone would leak every row of the second kind.
+ *
+ * `seen` is pruned as it retires, so it holds the live tabs plus whatever is
+ * in flight rather than every tab of the session.
+ *
+ * The memo compares the live tab-id SET, not the raw tick. `crdtState` is
+ * `{ equals: false }` and fires on every CRDT batch — ~60/s while the user
+ * drags a tile or a floating window, none of which create or retire a tab.
+ * Without the set-equality memo each of those frames also paid a walk over
+ * every metadata row. The `liveTabIds` walk itself still runs per tick (nothing
+ * cheaper distinguishes "a tombstone landed" from any other op — a tombstone
+ * REPLACES the record rather than removing the key, so neither identity nor key
+ * count moves), but it is now the only per-tick cost and it feeds a memo that
+ * stays quiet until the set actually changes.
  *
  * Must be called inside a SolidJS reactive root.
  */
@@ -516,9 +568,41 @@ export function useMetadataSweep(
     { equals: sameKeys },
   )
 
+  // The tab ids the CRDT has reported live at least once. See above: this is
+  // what tells a tab that WENT AWAY from one that has not ARRIVED.
+  //
+  // Seeded with the rows the store already holds, which at construction are the
+  // ones it restored from the persisted MRU map. Those are tabs that WERE live
+  // in an earlier session, so "was live, now is not" is exactly true for them --
+  // and without the seed nothing ever reclaims a row for a tab closed on another
+  // device while this page was away, because an id the CRDT never reports can
+  // never enter this set.
+  const seen = new Set<string>(Object.keys(metadata.state.byTabId))
+
+  // Whether the CRDT has reported a non-empty tab set yet. A cold start
+  // publishes an EMPTY manager and fills it from the server a moment later, so
+  // the seeded ids must not be retired against that first empty state -- every
+  // restored MRU stamp would go, for tabs that are about to arrive.
+  let sawTabs = false
+
   createEffect(() => {
     const live = liveTabIdSet()
-    if (live)
-      metadata.retainOnly(live)
+    if (!live)
+      return
+    if (!sawTabs) {
+      if (live.size === 0)
+        return
+      sawTabs = true
+    }
+    const retired = new Set<string>()
+    for (const tabId of seen) {
+      if (!live.has(tabId))
+        retired.add(tabId)
+    }
+    for (const tabId of retired)
+      seen.delete(tabId)
+    for (const tabId of live)
+      seen.add(tabId)
+    metadata.dropTabs(retired)
   })
 }

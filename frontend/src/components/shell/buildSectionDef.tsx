@@ -86,8 +86,9 @@ export interface SectionDefContext {
   // Background tasks section
   showBackgroundTasks: boolean
   activeBackgroundTasks: BackgroundTaskItem[]
+  /** The worker could not answer for this root's registry. */
+  activeBackgroundTasksFailed: boolean
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
-  resolveAgentTabTitle?: (id: string) => string | undefined
 
   // Workers section
   workers: Worker[]
@@ -253,9 +254,10 @@ export function buildSectionDef(
 
   if (sectionType === SectionType.BACKGROUND_TASKS) {
     // Visible whenever the root has ANY rows (past rows keep the section alive
-    // -- viewing finished subagents is a first-class use case). Hidden only
-    // when the registry is truly empty. The badge counts active
-    // (pending/running) rows.
+    // -- viewing finished subagents is a first-class use case), and whenever the
+    // LOAD FAILED, so a worker that cannot answer says so rather than taking the
+    // section off screen. Hidden only when the registry is truly empty. The
+    // badge counts active (pending/running) rows.
     const activeCount = countActiveBackgroundTasks(ctx.activeBackgroundTasks)
     return {
       id: sectionId,
@@ -270,9 +272,10 @@ export function buildSectionDef(
         : undefined,
       content: () => (
         <BackgroundTaskList
+          variant="sidebar"
           tasks={ctx.activeBackgroundTasks}
+          loadFailed={ctx.activeBackgroundTasksFailed}
           onOpenSubagent={ctx.onOpenBackgroundTask}
-          resolveParentLabel={ctx.resolveAgentTabTitle}
         />
       ),
     }

@@ -217,7 +217,7 @@ type OutputSink interface {
 	PersistNotification(source leapmuxv1.MessageSource, content []byte) (broadcast bool, err error)
 	// PersistTurnEnd persists the agent's turn-end divider envelope and
 	// fires the sink-level git-status auto-broadcast. Each provider's
-	// terminal envelope (Claude type:"result", Codex turn/completed,
+	// closing envelope (Claude type:"result", Codex turn/completed,
 	// ACP prompt response, Pi agent_end) routes here so that turn-end-
 	// specific side effects are explicit at the call site.
 	PersistTurnEnd(content []byte, span SpanInfo) error
@@ -282,8 +282,22 @@ type OutputSink interface {
 	PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span SpanInfo) error
 	PersistChildTurnEnd(childAgentID string, content []byte, span SpanInfo) error
 
+	// PersistChildPrompt writes the spawn prompt as the FIRST message of the
+	// child transcript, so the subagent tab opens on the instruction the
+	// subagent was given instead of on its first reply. Persisted as a USER
+	// message carrying {"content": prompt}, which is the same envelope a typed
+	// message uses -- so it renders as markdown, in full, with no per-provider
+	// shape for the frontend to learn.
+	//
+	// Idempotent by emptiness: a no-op when the child transcript already holds
+	// a message, and when prompt is blank. A re-attach after a worker restart
+	// therefore cannot duplicate the prompt, and a provider that learns the
+	// prompt only AFTER the subagent has started talking does not wedge it
+	// below the transcript it is supposed to introduce.
+	PersistChildPrompt(childAgentID, prompt string) error
+
 	// CleanupChildAgent releases the per-child service state (span tracker,
-	// todos cache, cached child sink) for a child that has reached a terminal
+	// todos cache, cached child sink) for a child that has reached a final
 	// state. A provider calls this once a subagent closes for good so a
 	// long-running root that cycles many children does not accumulate a stale
 	// SpanTracker + sink ref per closed child until the root itself closes.
@@ -297,8 +311,8 @@ type OutputSink interface {
 	UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error
 	CloseBackgroundTask(rowKey string, status bgtask.Status) error
 	// RenameBackgroundTask atomically re-keys a row from oldKey to newKey,
-	// preserving its status, child linkage, and terminal state. Used when a
-	// provider learns the stable child id only on the terminal update (OpenCode:
+	// preserving its status, child linkage, and final state. Used when a
+	// provider learns the stable child id only on the final update (OpenCode:
 	// the row opens under the toolCallId and the session id surfaces late). A
 	// no-op when oldKey is absent or newKey is empty.
 	RenameBackgroundTask(oldKey, newKey string) error
@@ -307,6 +321,27 @@ type OutputSink interface {
 // Agent is the interface that all coding agent providers must implement.
 type Agent interface {
 	AgentID() string
+	// SendInput delivers a user message and returns once it is DELIVERED --
+	// never when the resulting turn ends. Every provider states delivery the
+	// same way, whatever its wire protocol:
+	//
+	//   - A protocol with no acknowledgement (Claude, over stdin): the write to
+	//     the process IS the delivery. Return once it lands.
+	//   - A protocol that acknowledges (Codex's `turn/started`): return on the
+	//     ack, or report the delivery unconfirmed after a bounded wait. Send the
+	//     request itself without waiting on its response, because a protocol
+	//     whose response arrives at TURN END answers a different question.
+	//
+	// Nothing here may block for the length of a turn. The worker acks the
+	// client's RPC and broadcasts the user's message only after this returns, so
+	// a provider that waits for the turn makes the browser -- whose deadline is
+	// far shorter -- label a delivered message "Failed to deliver", and shows
+	// every watcher the assistant's reply before the message that caused it.
+	// It also parks the caller's goroutine, and any lifecycle work behind it,
+	// for the same span.
+	//
+	// A turn-level failure is reported afterwards, out of band, through the
+	// provider's own error notification -- not by holding this call open.
 	SendInput(content string, attachments []*leapmuxv1.Attachment) error
 	SendRawInput(data []byte) error
 	Stop()

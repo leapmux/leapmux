@@ -7,12 +7,13 @@
 // This mirrors the backend's `agent.Provider` interface and `agent.ProviderFor`
 // lookup; each side carries the per-provider hooks its layer needs.
 
+import type { LucideIcon } from 'lucide-solid'
 import type { Component, JSX } from 'solid-js'
 import type { ActionsProps, AskQuestionState, ContentProps, Question } from '../controls/types'
 import type { MessageCategory } from '../messageClassification'
 import type { RenderContext } from '../messageRenderers'
 import type { ControlResponseDeriver } from '../persistedControlResponse'
-import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { AgentSessionInfo, ContextUsageInfo, RateLimitInfo } from '~/stores/agentSession.store'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
@@ -42,25 +43,6 @@ export interface ProviderSettingsAction {
   sets: Record<string, string>
 }
 
-/**
- * Read-only settings state surfaced to the settings panel. `optionGroups`
- * carries every configuration axis (model, effort, permission mode, and
- * provider-specific options) with its available values; `optionValues` carries
- * the current (optimistically updated) selections as one generic map keyed by
- * group id -- no axis is special-cased.
- */
-export interface ProviderSettingsState {
-  disabled?: boolean
-  settingsLoading?: boolean
-  optionValues?: Record<string, string>
-  optionGroups?: AvailableOptionGroup[]
-}
-
-export interface ProviderSettingsPanelProps extends ProviderSettingsState {
-  /** Single dispatcher for any settings panel change. */
-  onChange?: (change: ProviderSettingChange) => void
-}
-
 export interface AttachmentCapabilities {
   text: boolean
   image: boolean
@@ -79,11 +61,23 @@ export interface ClassificationInput extends ParsedMessageContent {
 
 export interface ClassificationContext {
   /**
-   * Whether the message's span has a live command stream right now. The only
-   * context a classifier consults today: a Codex reasoning row with no persisted
-   * summary/content is `assistant_thinking` while streaming, else `hidden`.
+   * Whether the message's span has a live command stream right now: a Codex
+   * reasoning row with no persisted summary/content is `assistant_thinking`
+   * while streaming, else `hidden`.
    */
   hasCommandStream?: boolean
+  /**
+   * Whether these messages are a SUBAGENT's own transcript rather than the
+   * transcript that spawned it.
+   *
+   * The same wire shape means different things on the two sides. A provider
+   * that forwards a subagent's messages into the child transcript stamps every
+   * one of them with the spawning tool_use id, exactly like the prompt the
+   * PARENT sent to that subagent -- so the id alone cannot tell "the prompt to
+   * a subagent" from "an ordinary message inside one", and only the transcript
+   * can. A child transcript has no subagent of its own to prompt.
+   */
+  isChildTranscript?: boolean
 }
 
 /**
@@ -116,7 +110,13 @@ export interface ToolResultMeta {
 export type NotificationThreadEntry
   = | { kind: 'text', text: string }
     | { kind: 'group', groupKey: string, prefix: string, entry: string }
-    | { kind: 'divider', text: string, loading?: boolean }
+    /**
+     * A full-width labelled rule, drawn in the same style as a turn-end
+     * divider. `loading` swaps the glyph for a spinner; `icon` overrides the
+     * default compaction arrow (a subagent-end divider passes one glyph per
+     * outcome). Omit `icon` and the shared renderer picks the compaction arrow.
+     */
+    | { kind: 'divider', text: string, loading?: boolean, icon?: LucideIcon }
 
 /**
  * Provider-neutral data model for a `result_divider` (turn-end) message,

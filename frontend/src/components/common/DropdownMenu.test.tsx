@@ -1,7 +1,8 @@
 /// <reference types="vitest/globals" />
-import { render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { DropdownMenu, DropdownMenuItemContent } from './DropdownMenu'
+import { popoverCard } from '~/styles/popover.css'
+import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from './DropdownMenu'
 
 // jsdom does not implement the native Popover API.
 // Stub the methods so the component can render without errors.
@@ -103,6 +104,40 @@ describe('dropdownMenu', () => {
     expect(refEl).toHaveAttribute('data-testid', 'popover-ref-test')
   })
 
+  /**
+   * A card popover is a `div` AND the `popoverCard` class, and a call site that
+   * applied one without the other is what produced both popover bugs this
+   * component's `as` doc records. `card` supplies the class itself, so the pair
+   * cannot come apart at a fifth call site.
+   */
+  it('renders as="card" as a div that carries popoverCard itself', () => {
+    render(() => (
+      <DropdownMenu trigger={<button>Open</button>} as="card" data-testid="card-popover">
+        <span>rows</span>
+      </DropdownMenu>
+    ))
+    const popover = screen.getByTestId('card-popover')
+    expect(popover.tagName).toBe('DIV')
+    expect(popover.className).toBe(popoverCard)
+  })
+
+  // ...and it takes the panel dismiss rule with it: a click on a row reads it or
+  // selects its text, so the card must stay open.
+  it('keeps an as="card" popover open on a content click', async () => {
+    render(() => (
+      <DropdownMenu trigger={<button>Open</button>} as="card" data-testid="card-popover">
+        <span data-testid="card-row">a row</span>
+      </DropdownMenu>
+    ))
+    await fireEvent.click(screen.getByText('Open'))
+    const popover = screen.getByTestId('card-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('card-row'))
+
+    expect(hide).not.toHaveBeenCalled()
+  })
+
   it('renders as="div" instead of menu', () => {
     render(() => (
       <DropdownMenu
@@ -132,9 +167,11 @@ describe('dropdownMenu', () => {
     expect(popover.tagName).toBe('MENU')
   })
 
-  it('keeps the Escape + outside-click dismiss handlers on the as="div" popover (Dynamic swap)', () => {
+  it('keeps the Escape dismiss handler on the as="div" popover (Dynamic swap)', () => {
     // The menu/div branches were collapsed into a single <Dynamic>; the dismiss
-    // handlers must survive the swap on the non-default `div` tag, not just `menu`.
+    // handlers must survive the swap on the non-default `div` tag, not just
+    // `menu`. Escape dismisses BOTH tags -- only the click handler reads the tag
+    // (see the content-click suite below).
     const hide = vi.spyOn(HTMLElement.prototype, 'hidePopover')
     render(() => (
       <DropdownMenu trigger={<button>Open</button>} as="div" data-testid="dyn-div">
@@ -145,10 +182,6 @@ describe('dropdownMenu', () => {
     expect(popover.tagName).toBe('DIV')
 
     popover.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-    expect(hide).toHaveBeenCalled()
-    hide.mockClear()
-
-    popover.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(hide).toHaveBeenCalled()
     hide.mockRestore()
   })
@@ -249,5 +282,221 @@ describe('dropdownMenu', () => {
     const popover = screen.getByTestId('no-trigger-popover')
     expect(popover).toBeInTheDocument()
     expect(screen.getByText('Content')).toBeInTheDocument()
+  })
+})
+
+describe('dropdownMenu nested-submenu dismiss', () => {
+  it('marks every trigger it renders, so an enclosing popover can recognize one', () => {
+    render(() => (
+      <DropdownMenu
+        id="marks-trigger"
+        trigger={triggerProps => <button data-testid="t" {...triggerProps}>Open</button>}
+      >
+        <button role="menuitem">Item</button>
+      </DropdownMenu>
+    ))
+
+    expect(screen.getByTestId('t')).toHaveAttribute('data-dropdown-trigger')
+  })
+
+  it('does not dismiss itself when the click opens a nested submenu', async () => {
+    // A nested dropdown's trigger is a DOM child of this popover, so without
+    // the guard the parent hides on the very click that opens the submenu --
+    // and hiding a popover hides its descendants with it.
+    render(() => (
+      <DropdownMenu
+        id="parent-menu"
+        data-testid="parent-popover"
+        trigger={triggerProps => <button data-testid="parent-trigger" {...triggerProps}>Open</button>}
+      >
+        <button role="menuitem">Plain item</button>
+        <DropdownMenu
+          id="sub-menu"
+          trigger={triggerProps => <button data-testid="sub-trigger" {...triggerProps}>More</button>}
+        >
+          <button role="menuitem">Nested item</button>
+        </DropdownMenu>
+      </DropdownMenu>
+    ))
+
+    const parent = screen.getByTestId('parent-popover')
+    const hide = vi.spyOn(parent, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('sub-trigger'))
+    expect(hide).not.toHaveBeenCalled()
+  })
+
+  it('still dismisses when the click activates one of its own items', async () => {
+    render(() => (
+      <DropdownMenu
+        id="plain-menu"
+        data-testid="plain-popover"
+        trigger={triggerProps => <button data-testid="plain-trigger" {...triggerProps}>Open</button>}
+      >
+        <button role="menuitem" data-testid="plain-item">Item</button>
+      </DropdownMenu>
+    ))
+
+    const popover = screen.getByTestId('plain-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('plain-trigger'))
+    await fireEvent.click(screen.getByTestId('plain-item'))
+    expect(hide).toHaveBeenCalled()
+  })
+
+  it('does not hide a second time when the item already closed the popover', async () => {
+    // The item's own handler runs first. hidePopover() on a popover that is not
+    // showing throws InvalidStateError in a browser, and the jsdom stub returns
+    // early instead -- so the call COUNT is what this can assert. One call is
+    // the item's own; a second would be the throw.
+    let popoverEl: HTMLElement | undefined
+    render(() => (
+      <DropdownMenu
+        id="self-closing-menu"
+        data-testid="self-closing-popover"
+        popoverRef={(el) => { popoverEl = el }}
+        trigger={triggerProps => <button data-testid="self-closing-trigger" {...triggerProps}>Open</button>}
+      >
+        <button
+          role="menuitem"
+          data-testid="self-closing-item"
+          onClick={() => popoverEl?.hidePopover()}
+        >
+          Item
+        </button>
+      </DropdownMenu>
+    ))
+
+    await fireEvent.click(screen.getByTestId('self-closing-trigger'))
+    const hide = vi.spyOn(screen.getByTestId('self-closing-popover'), 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('self-closing-item'))
+    expect(hide).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('dropdownMenu content-click dismiss', () => {
+  it('does not dismiss a div popover when its content is clicked', async () => {
+    // A `div` popover is a panel of content. Dismissing on a click would make
+    // its text unselectable: the press starts the selection and the release
+    // closes the popover under it.
+    render(() => (
+      <DropdownMenu
+        as="div"
+        id="card-popover-menu"
+        data-testid="card-popover"
+        trigger={triggerProps => <button data-testid="card-trigger" {...triggerProps}>Open</button>}
+      >
+        <span data-testid="card-text">Session ID</span>
+        <button data-testid="card-copy">Copy</button>
+      </DropdownMenu>
+    ))
+
+    const popover = screen.getByTestId('card-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('card-trigger'))
+    await fireEvent.click(screen.getByTestId('card-text'))
+    expect(hide).not.toHaveBeenCalled()
+
+    // Not even a button inside it: a card's buttons act on the card (copy a
+    // value), so they must leave it open too.
+    await fireEvent.click(screen.getByTestId('card-copy'))
+    expect(hide).not.toHaveBeenCalled()
+  })
+
+  it('dismisses a menu popover when its content is clicked', async () => {
+    // The other half of the same rule: a `menu` popover is a list of commands,
+    // so it still closes behind the click that runs one.
+    render(() => (
+      <DropdownMenu
+        id="content-menu"
+        data-testid="content-menu-popover"
+        trigger={triggerProps => <button data-testid="content-menu-trigger" {...triggerProps}>Open</button>}
+      >
+        <button role="menuitem" data-testid="content-menu-item">Item</button>
+      </DropdownMenu>
+    ))
+
+    const popover = screen.getByTestId('content-menu-popover')
+    const hide = vi.spyOn(popover, 'hidePopover')
+
+    await fireEvent.click(screen.getByTestId('content-menu-trigger'))
+    await fireEvent.click(screen.getByTestId('content-menu-item'))
+    expect(hide).toHaveBeenCalled()
+  })
+})
+
+describe('dropdownMenuCheckableItem', () => {
+  it('renders a menuitemcheckbox with aria-checked and a checked indicator', () => {
+    render(() => <DropdownMenuCheckableItem kind="checkbox" label="Show status bar" checked onSelect={() => {}} />)
+
+    const item = screen.getByRole('menuitemcheckbox')
+    expect(item).toHaveAttribute('aria-checked', 'true')
+    const checkbox = screen.getByRole('checkbox', { hidden: true }) as HTMLInputElement
+    expect(checkbox.checked).toBe(true)
+    expect(checkbox).toBeDisabled()
+    expect(checkbox).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByText('Show status bar')).toBeInTheDocument()
+  })
+
+  it('reports the unchecked state through aria-checked, not only the indicator', () => {
+    render(() => <DropdownMenuCheckableItem kind="checkbox" label="Show status bar" checked={false} onSelect={() => {}} />)
+
+    expect(screen.getByRole('menuitemcheckbox')).toHaveAttribute('aria-checked', 'false')
+    expect((screen.getByRole('checkbox', { hidden: true }) as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('renders a menuitemradio for kind="radio"', () => {
+    render(() => <DropdownMenuCheckableItem kind="radio" label="Extra High" checked onSelect={() => {}} />)
+
+    const item = screen.getByRole('menuitemradio')
+    expect(item).toHaveAttribute('aria-checked', 'true')
+    const radio = document.querySelector('input[type="radio"]') as HTMLInputElement
+    expect(radio.checked).toBe(true)
+    expect(radio).toBeDisabled()
+    expect(screen.getByText('Extra High')).toBeInTheDocument()
+  })
+
+  it('calls onSelect when activated', () => {
+    const onSelect = vi.fn()
+    render(() => <DropdownMenuCheckableItem kind="checkbox" label="Toggle" checked={false} onSelect={onSelect} />)
+
+    screen.getByRole('menuitemcheckbox').click()
+    expect(onSelect).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not call onSelect while disabled, and exposes the reason', () => {
+    const onSelect = vi.fn()
+    render(() => (
+      <DropdownMenuCheckableItem
+        kind="radio"
+        label="Opus"
+        checked={false}
+        disabled
+        title="This setting is controlled by the agent"
+        onSelect={onSelect}
+      />
+    ))
+
+    const item = screen.getByRole('menuitemradio')
+    // Assert the MECHANISM, not the absence of a call. The native `disabled`
+    // attribute is what stops activation: jsdom returns from `click()` on a
+    // disabled element, and Solid's delegated click handler skips disabled
+    // nodes too -- so `expect(onSelect).not.toHaveBeenCalled()` after
+    // `item.click()` passes whether or not the component keeps a guard, and
+    // catches nothing. The paired "calls onSelect when activated" test above is
+    // what gives this one its meaning.
+    expect(item).toBeDisabled()
+    expect(item).toHaveAttribute('title', 'This setting is controlled by the agent')
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('keeps the indicator click-through so the whole row is one hit target', () => {
+    render(() => <DropdownMenuCheckableItem kind="checkbox" label="Toggle" checked onSelect={() => {}} />)
+
+    const checkbox = screen.getByRole('checkbox', { hidden: true }) as HTMLInputElement
+    expect(checkbox.style.pointerEvents).toBe('none')
   })
 })

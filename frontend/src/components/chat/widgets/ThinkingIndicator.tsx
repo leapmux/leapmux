@@ -3,9 +3,10 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
-import { bgPopoverClass } from '~/components/backgroundtasks/BackgroundTaskList.css'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { TodoList } from '~/components/todo/TodoList'
+import { pluralize } from '~/lib/plural'
+import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
 import { todoProgress } from '~/stores/chatTodos'
 import { motion } from '~/styles/tokens'
 import { createCompassSimulation } from '../compassPhysics'
@@ -42,18 +43,22 @@ export interface ThinkingIndicatorProps {
    */
   thinkingTokens?: number
   /**
-   * Active background-task count (pending+running subagents/shells). When > 0 a
-   * small chip renders beside the verb; clicking it opens a popover listing the
-   * full registry. Also keeps the indicator visible via shouldShowThinkingIndicator.
-   */
-  backgroundTaskCount?: number
-  /**
-   * The full background-task list for the popover (active + past). When
-   * backgroundTaskCount > 0 and this is supplied, the chip is a popover trigger.
+   * The background-task registry rows (active AND past) for THIS tab's own
+   * work: every descendant for a root, and only what it spawned for a subagent
+   * tab -- never the subagent's own row, which belongs to its parent.
+   *
+   * The chip's count is derived from this list rather than passed beside it, so
+   * the number on the chip is always the number of ACTIVE rows the popover it
+   * opens can show. A separate count prop let the two disagree, and an empty
+   * popover behind a positive count is the failure that shape invites.
+   *
+   * It does NOT decide whether the indicator is visible. That is
+   * shouldShowThinkingIndicator's `work` argument, which for a child tab reads
+   * the child's OWN row -- a different question, and the reason a finished
+   * subagent stopped spinning while its siblings ran.
    */
   backgroundTasks?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
-  resolveParentLabel?: (agentId: string) => string | undefined
   /**
    * The agent's to-do list for the todos chip + popover. Shown when there is at
    * least one non-deleted todo; the chip renders `done/total` and the popover
@@ -211,6 +216,11 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     cacheAngle(props.id, state.angle)
   }, seedAngleRad)
 
+  // The bg-tasks popover element, so opening a subagent can dismiss it. The
+  // popover opts out of the menu's own close-on-content-click (its tab bar is
+  // not an activation), which makes this the only thing that closes it on a
+  // row click.
+  let bgTasksPopoverEl: HTMLElement | undefined
   let expandRafId = 0
   let tickRafId = 0
   let rotateIntervalId: ReturnType<typeof setInterval> | undefined
@@ -255,9 +265,27 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     }
   })
 
-  // {done, total} for the todos chip, recomputed only when the todo list
+  // {done, total} for the to-dos counter, recomputed only when the todo list
   // changes. Deleted todos are excluded from both counts (todoProgress).
   const todoCount = createMemo(() => todoProgress(props.todos ?? []))
+  // "2/5 to-dos". The noun agrees with the TOTAL, not the done count: a list of
+  // one reads "0/1 to-do" whether or not it is finished.
+  const todoCountLabel = createMemo(() => {
+    const { done, total } = todoCount()
+    return `${done}/${pluralize(total, 'to-do')}`
+  })
+
+  // The chip counts the rows that are still PENDING OR RUNNING. A finished row
+  // stays in the list -- the popover is where a user reads what a subagent did
+  // -- but it is not work in progress, so counting it would leave the chip
+  // saying "3 background tasks" for a registry where nothing runs.
+  const activeBgTaskCount = createMemo(() => countActiveBackgroundTasks(props.backgroundTasks ?? []))
+
+  // Which counters the verb row shows. Named because each one is also read by
+  // its successor to decide whether to draw a leading `·`.
+  const showTokens = () => countTokens() !== undefined
+  const showBgTasks = () => activeBgTaskCount() > 0
+  const showTodos = () => todoCount().total > 0
 
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
   // binding can re-pin to the bottom on every frame while the
@@ -430,6 +458,87 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     </span>
   )
 
+  /**
+   * One entry per trailing counter, in render order. Constant for the life of
+   * the component -- see the <For> below for why that matters.
+   */
+  const counters: Array<{ show: () => boolean, render: () => JSX.Element }> = [
+    {
+      // Background tasks: shown while there are active subagents/shells.
+      // Clicking opens a popover with the full registry.
+      show: showBgTasks,
+      render: () => (
+        <DropdownMenu
+          // A list to read, not a set of commands: the kind tab bar switches
+          // what it shows, and a tab click must not take the list away. Opening
+          // a subagent IS an activation, so that handler closes the popover
+          // itself -- see the wrapper below.
+          as="card"
+          data-testid="bg-tasks-popover"
+          popoverRef={(el) => { bgTasksPopoverEl = el }}
+          trigger={triggerProps => (
+            <button
+              class={styles.countChip}
+              data-testid="thinking-bg-tasks-chip"
+              {...triggerProps}
+            >
+              {pluralize(activeBgTaskCount(), 'background task')}
+            </button>
+          )}
+        >
+          <BackgroundTaskList
+            variant="popover"
+            tasks={props.backgroundTasks ?? []}
+            // Wrapped only when the host actually supplies a handler. The list
+            // renders a subagent row as a BUTTON on the strength of this prop
+            // being present, so an always-defined wrapper would give a host
+            // that passes nothing a row that looks clickable, dismisses the
+            // popover, and does nothing.
+            onOpenSubagent={props.onOpenSubagent
+              ? (item) => {
+                  // The subagent's tab takes over from here, so leaving the
+                  // popover open would cover the transcript the click opened.
+                  bgTasksPopoverEl?.hidePopover()
+                  props.onOpenSubagent?.(item)
+                }
+              : undefined}
+          />
+        </DropdownMenu>
+      ),
+    },
+    {
+      // To-dos: shown when there is at least one non-deleted todo. Renders
+      // done/total; clicking opens the existing TodoList.
+      show: showTodos,
+      render: () => (
+        <DropdownMenu
+          as="card"
+          data-testid="todo-list-popover"
+          trigger={triggerProps => (
+            <button
+              class={styles.countChip}
+              data-testid="thinking-todos-chip"
+              {...triggerProps}
+            >
+              {todoCountLabel()}
+            </button>
+          )}
+        >
+          <TodoList todos={props.todos ?? []} />
+        </DropdownMenu>
+      ),
+    },
+    {
+      // `countTokens` (not the raw prop) controls the count: it tracks the live
+      // estimate while the indicator is visible, then holds the last value for
+      // ROW_FADE_MS so the count fades out WITH the collapsing row instead of
+      // popping -- and unmounts after, so a stale estimate can't keep it (or
+      // its roll effects) alive in a collapsed row.
+      show: showTokens,
+      render: () => <ThinkingTokenCount tokens={countTokens()!} />,
+    },
+  ]
+
   return (
     <div
       class={styles.wrapper}
@@ -496,65 +605,49 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
             </g>
           </svg>
           <span class={styles.verbRow}>
-            <span class={styles.verbStack}>
-              {/* Stable baseline anchor — see baselineStrut in the CSS. */}
-              <span class={styles.baselineStrut} aria-hidden="true">{' '}</span>
+            {/* The verb LEADS the row and the counters trail it, so it reads
+                "<verb>… <background tasks> · <to-dos> · <tokens>". Every counter
+                is optional, so each one draws its own leading `·` only when
+                another counter already precedes it — a separator included in a
+                counter's own text would dangle whenever its neighbour is gone.
+                The verb is outside that chain: the row's own gap divides it from
+                the first counter, so no `·` sits between them. */}
+            <span class={styles.verbStack} data-testid="thinking-verb">
+              {/* Stable baseline anchor -- see baselineStrut in the CSS.
+                  A NON-BREAKING space (U+00A0), not an ASCII one: the strut is
+                  the first thing in its box, and white-space processing
+                  collapses a leading ASCII space away entirely, which drops the
+                  box's height to 0 and leaves no baseline to anchor to. */}
+              <span class={styles.baselineStrut} aria-hidden="true">{'\u00A0'}</span>
               {verbSpan(true, charsA, highlightPosA)}
               {verbSpan(false, charsB, highlightPosB)}
             </span>
-            {/* `countTokens` (not the raw prop) gates the count: it tracks the
-                live estimate while the indicator is visible, then holds the last
-                value for ROW_FADE_MS so the count fades out WITH the collapsing
-                row instead of popping — and unmounts after, so a stale estimate
-                can't keep it (or its roll effects) alive in a collapsed row. */}
-            <Show when={countTokens() !== undefined}>
-              <ThinkingTokenCount tokens={countTokens()!} />
-            </Show>
-            {/* Background-tasks chip: shown while there are active subagents/
-                shells. Clicking opens a popover with the full registry. */}
-            <Show when={(props.backgroundTaskCount ?? 0) > 0}>
-              <DropdownMenu
-                as="div"
-                class="card"
-                data-testid="bg-tasks-popover"
-                trigger={triggerProps => (
-                  <button
-                    class={styles.bgTaskChip}
-                    data-testid="thinking-bg-tasks-chip"
-                    {...triggerProps}
-                  >
-                    {props.backgroundTaskCount}
-                  </button>
-                )}
-              >
-                <BackgroundTaskList
-                  tasks={props.backgroundTasks ?? []}
-                  onOpenSubagent={props.onOpenSubagent}
-                  resolveParentLabel={props.resolveParentLabel}
-                  class={bgPopoverClass}
-                />
-              </DropdownMenu>
-            </Show>
-            {/* Todos chip: shown when there is at least one non-deleted todo.
-                Renders done/total; clicking opens the existing TodoList. */}
-            <Show when={todoCount().total > 0}>
-              <DropdownMenu
-                as="div"
-                class="card"
-                data-testid="todo-list-popover"
-                trigger={triggerProps => (
-                  <button
-                    class={styles.bgTaskChip}
-                    data-testid="thinking-todos-chip"
-                    {...triggerProps}
-                  >
-                    {`${todoCount().done}/${todoCount().total}`}
-                  </button>
-                )}
-              >
-                <TodoList todos={props.todos ?? []} />
-              </DropdownMenu>
-            </Show>
+            {/* The counters that trail the verb, in render order.
+                A CONSTANT array driven by <For>, so each counter owns its own
+                <Show>: a predicate flip re-creates only THAT counter and leaves
+                its neighbours mounted, so a neighbour's DropdownMenu keeps an
+                open popover and a neighbour's ThinkingTokenCount keeps its
+                odometer. (A counter's own flip does dispose and rebuild it --
+                <Show> is not keyed -- so the token count restarts its roll when
+                it reappears at the start of a turn.)
+
+                The separator rule lives here, once, derived from position: draw
+                a leading middot when any EARLIER counter is showing. Spelling it
+                per counter meant each one had to name every predecessor
+                (`showBgTasks() || showTodos()` ...), so a fourth counter would
+                have to be added to every later condition -- and forgetting one
+                leaves a dangling `·` or drops one. The verb stays outside the
+                chain: the row's own gap divides it from the first counter. */}
+            <For each={counters}>
+              {(counter, index) => (
+                <Show when={counter.show()}>
+                  <Show when={counters.slice(0, index()).some(earlier => earlier.show())}>
+                    <span class={styles.countSeparator} aria-hidden="true">·</span>
+                  </Show>
+                  {counter.render()}
+                </Show>
+              )}
+            </For>
           </span>
         </div>
       </div>

@@ -20,8 +20,10 @@ import {
   emitMoveTabToWorkspace,
   emitReassignTabsToTile,
   emitRemoveTab,
+  emitRemoveTabs,
   emitReorderTabs,
   emitSetTabPosition,
+  hasLiveTabRecord,
   positionAfterKey,
   positionAtEnd,
 } from './tabOps'
@@ -143,6 +145,66 @@ describe('tabOps', () => {
         const rec = harness.pending.state.speculativeState.tabs.a1
         expect(rec?.tombstoneAt, 'the record carries a tombstone').toBeDefined()
         expect(rec?.tombstoneAt?.physical).not.toBe(0n)
+      })
+    })
+  })
+
+  describe('emitRemoveTabs', () => {
+    /**
+     * A batch is the unit the hub charges for: it dedups the batch id,
+     * validates it, commits it to the journal in its own transaction, and swaps
+     * the state once. Retiring a subagent subtree one `emitRemoveTab` at a time
+     * paid all of that per id.
+     */
+    it('tombstones every id in ONE batch', () => {
+      withTestBridge((harness) => {
+        for (const id of ['a1', 'a2', 'a3'])
+          emitAddTab({ type: TabType.AGENT, id, tileId: harness.rootTileId, position: id })
+        const before = batchCount(harness)
+
+        emitRemoveTabs(TabType.AGENT, ['a1', 'a2', 'a3'])
+
+        expect(batchCount(harness), 'one batch, not three').toBe(before + 1)
+        expect(lastOps(harness)).toHaveLength(3)
+        expect(lastOps(harness).map(op => op.body.case)).toEqual([
+          'tombstoneTab',
+          'tombstoneTab',
+          'tombstoneTab',
+        ])
+        for (const id of ['a1', 'a2', 'a3'])
+          expect(harness.pending.state.speculativeState.tabs[id]?.tombstoneAt).toBeDefined()
+      })
+    })
+
+    // An empty batch is a round trip that says nothing.
+    it('emits nothing for an empty list', () => {
+      withTestBridge((harness) => {
+        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+        const before = batchCount(harness)
+
+        expect(emitRemoveTabs(TabType.AGENT, [])).toBeNull()
+        expect(batchCount(harness)).toBe(before)
+      })
+    })
+  })
+
+  describe('hasLiveTabRecord', () => {
+    /**
+     * The guard on every tab id that arrives from OUTSIDE the CRDT -- today the
+     * worker's descendant-agent list. The hub cannot resolve a workspace for an
+     * id it has no record for, and it rejects the whole batch for it, so an
+     * unfiltered list does not merely waste an op: it takes every real
+     * tombstone in the batch down with it.
+     */
+    it('answers for a live tab, an unknown id, and a tombstoned one', () => {
+      withTestBridge((harness) => {
+        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+
+        expect(hasLiveTabRecord('a1'), 'a tab this account holds').toBe(true)
+        expect(hasLiveTabRecord('never-opened'), 'a subagent nobody opened').toBe(false)
+
+        emitRemoveTab(TabType.AGENT, 'a1')
+        expect(hasLiveTabRecord('a1'), 'a tab already retired').toBe(false)
       })
     })
   })

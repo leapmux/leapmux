@@ -64,6 +64,8 @@ function harness(init: {
   const settleToWindow = vi.fn()
   const resetToEmptyIfStale = vi.fn()
   const applyMessages = vi.fn()
+  const replaceBackgroundTasks = vi.fn()
+  const markBackgroundTasksLoadFailed = vi.fn()
 
   const paginator = createHistoryPaginator({
     state,
@@ -104,11 +106,12 @@ function harness(init: {
     trimOldestEnd,
     trimNewestEnd,
     replaceTodos: vi.fn(),
-    replaceBackgroundTasks: vi.fn(),
+    replaceBackgroundTasks,
+    markBackgroundTasksLoadFailed,
     loadLocalMessages: vi.fn(),
   })
 
-  return { state, setState, paginator, trimNewestEnd, trimOldestEnd, addMessage, applyMessages, settleToWindow, resetToEmptyIfStale }
+  return { state, setState, paginator, trimNewestEnd, trimOldestEnd, addMessage, applyMessages, settleToWindow, resetToEmptyIfStale, replaceBackgroundTasks, markBackgroundTasksLoadFailed }
 }
 
 describe('chathistorypaginator', () => {
@@ -489,5 +492,66 @@ describe('linkwatchsignal', () => {
     const controller = new AbortController()
     expect(() => linkWatchSignal(controller, undefined)).not.toThrow()
     expect(controller.signal.aborted).toBe(false)
+  })
+})
+
+/**
+ * The cold-start page carries the registry, and `background_tasks_loaded=false`
+ * says the worker's query FAILED (a child agent reports loaded=true with an
+ * empty list). The section is hidden when the registry is empty, so treating a
+ * failure as emptiness took the whole section off screen with nothing to say
+ * why -- which a database missing a column did, leaving only a slog.Warn.
+ */
+describe('chathistorypaginator background-task snapshot', () => {
+  beforeEach(() => {
+    listAgentMessages.mockReset()
+  })
+
+  function latestPage(loaded: boolean) {
+    return {
+      messages: [],
+      hasMore: false,
+      todos: [],
+      todosLoaded: true,
+      backgroundTasks: [],
+      backgroundTasksLoaded: loaded,
+    }
+  }
+
+  it('applies the registry when the worker answered', async () => {
+    const h = harness({ messages: [] })
+    listAgentMessages.mockResolvedValue(latestPage(true))
+
+    await h.paginator.loadInitialMessages('w', 'a')
+
+    expect(h.replaceBackgroundTasks).toHaveBeenCalledWith('a', [])
+    expect(h.markBackgroundTasksLoadFailed).not.toHaveBeenCalled()
+  })
+
+  it('records a failure when the worker could not answer', async () => {
+    const h = harness({ messages: [] })
+    listAgentMessages.mockResolvedValue(latestPage(false))
+
+    await h.paginator.loadInitialMessages('w', 'a')
+
+    expect(h.markBackgroundTasksLoadFailed).toHaveBeenCalledWith('a')
+    // ...and the registry is NOT overwritten: an empty repeated field on a
+    // failed query would wipe whatever the client already had.
+    expect(h.replaceBackgroundTasks).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The OTHER way the registry cannot be read. The in-band flag only travels on
+   * a response that arrived; when the call itself rejects, nothing applies the
+   * page at all -- and the section, which is hidden while empty, would leave the
+   * screen with nothing to say why.
+   */
+  it('records a failure when the cold-start call itself rejects', async () => {
+    const h = harness({ messages: [] })
+    listAgentMessages.mockRejectedValue(new Error('worker unreachable'))
+
+    await expect(h.paginator.loadInitialMessages('w', 'a')).rejects.toThrow('worker unreachable')
+
+    expect(h.markBackgroundTasksLoadFailed).toHaveBeenCalledWith('a')
   })
 })

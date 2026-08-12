@@ -55,6 +55,12 @@ interface PreferencesState {
   /** Resolved enter key mode. */
   enterKeyMode: () => EnterKeyMode
   setEnterKeyMode: (value: EnterKeyMode) => void
+  /**
+   * Whether the composer status bar (branch/model/effort/mode +
+   * rate-limit/context chips) is shown beneath the input box. Default on.
+   */
+  showComposerStatusBar: () => boolean
+  setShowComposerStatusBar: (value: boolean) => void
   /** Custom keybinding overrides (account-level, stored in Hub DB). */
   customKeybindings: () => UserKeybindingOverride[]
   setCustomKeybindings: (value: UserKeybindingOverride[]) => void
@@ -258,6 +264,16 @@ export const PreferencesProvider: ParentComponent = (props) => {
     updateBrowserPref('terminalOsNotifications', value || undefined)
   }
 
+  // Default-on preference: undefined and true both mean "shown"; only an
+  // explicit `false` hides the bar. Mirrors the `revealAfterDownload` shape.
+  const [showComposerStatusBar, setShowComposerStatusBarSignal] = createSignal(
+    initialPrefs.showComposerStatusBar !== false,
+  )
+  const setShowComposerStatusBar = (value: boolean) => {
+    setShowComposerStatusBarSignal(value)
+    updateBrowserPref('showComposerStatusBar', value ? undefined : false)
+  }
+
   const [customKeybindings, setCustomKeybindingsSignal] = createSignal<UserKeybindingOverride[]>([])
 
   // --- Resolved values (browser override → account default → hardcoded) ---
@@ -405,6 +421,8 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setBrowserDebugLogging,
       terminalOsNotifications,
       setTerminalOsNotifications,
+      showComposerStatusBar,
+      setShowComposerStatusBar,
       accountTheme,
       accountTerminalTheme,
       accountUiFontCustomEnabled,

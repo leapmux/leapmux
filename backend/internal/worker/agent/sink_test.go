@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"encoding/json"
+	"slices"
+	"strings"
 	"sync"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -37,11 +41,14 @@ type testSink struct {
 	spanTypes         map[string]string
 	openSpans         []testSinkSpanOpen
 	closedSpans       []string
-	resetSpanCount    int
-	statusActives     []string
-	autoSchedules     []AutoContinueSchedule
-	autoCancels       []AutoContinueReason
-	planModeToolUses  sync.Map
+	// liveSpans is the CURRENTLY-open subset of openSpans (a close or a reset
+	// removes entries), mirroring the real SpanTracker's active set.
+	liveSpans        []testSinkSpanOpen
+	resetSpanCount   int
+	statusActives    []string
+	autoSchedules    []AutoContinueSchedule
+	autoCancels      []AutoContinueReason
+	planModeToolUses sync.Map
 	// childSinkMu + children let testSink serve ChildSink as a per-child testSink
 	// so provider tests can assert what got routed into a subagent transcript.
 	childSinkMu sync.Mutex
@@ -71,6 +78,12 @@ type testSinkMessage struct {
 	// distinguish the turn-end divider from regular AGENT messages
 	// without inspecting the inner content.
 	TurnEnd bool
+	// SpansOpenAtPersist snapshots the spans this sink held open at the moment
+	// the message was persisted. The real sink derives a row's span_lines from
+	// exactly that state, so it is the observable that pins the ordering rule:
+	// a tool_use row must persist BEFORE its own span opens (empty span_lines),
+	// and its tool_result must persist WHILE the span is open (connector_end).
+	SpansOpenAtPersist []testSinkSpanOpen
 }
 
 type testSinkStreamChunk struct {
@@ -84,10 +97,19 @@ type testSinkSpanOpen struct {
 	ParentSpanID string
 }
 
+// liveSpansLocked copies the spans currently open on this sink. Must be called
+// with s.mu held.
+func (s *testSink) liveSpansLocked() []testSinkSpanOpen {
+	if len(s.liveSpans) == 0 {
+		return nil
+	}
+	return append([]testSinkSpanOpen(nil), s.liveSpans...)
+}
+
 func (s *testSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, MarkType: span.MarkType})
+	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, MarkType: span.MarkType, SpansOpenAtPersist: s.liveSpansLocked()})
 	return nil
 }
 
@@ -95,15 +117,16 @@ func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = append(s.messages, testSinkMessage{
-		Source:          leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		Content:         append([]byte(nil), content...),
-		ParentSpanID:    span.ParentSpanID,
-		ConnectorSpanID: span.ConnectorSpanID,
-		SpanID:          span.SpanID,
-		SpanType:        span.SpanType,
-		Closing:         span.Closing,
-		MarkType:        span.MarkType,
-		TurnEnd:         true,
+		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		Content:            append([]byte(nil), content...),
+		ParentSpanID:       span.ParentSpanID,
+		ConnectorSpanID:    span.ConnectorSpanID,
+		SpanID:             span.SpanID,
+		SpanType:           span.SpanType,
+		Closing:            span.Closing,
+		MarkType:           span.MarkType,
+		TurnEnd:            true,
+		SpansOpenAtPersist: s.liveSpansLocked(),
 	})
 	return nil
 }
@@ -118,17 +141,26 @@ func (s *testSink) PersistNotification(source leapmuxv1.MessageSource, content [
 func (s *testSink) OpenSpan(spanID string, parentSpanID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.openSpans = append(s.openSpans, testSinkSpanOpen{SpanID: spanID, ParentSpanID: parentSpanID})
+	open := testSinkSpanOpen{SpanID: spanID, ParentSpanID: parentSpanID}
+	s.openSpans = append(s.openSpans, open)
+	// liveSpans mirrors the real SpanTracker's active set (open minus close
+	// minus reset), which is what SpansOpenAtPersist snapshots. openSpans stays
+	// a cumulative log so existing assertions about "was ever opened" hold.
+	s.liveSpans = append(s.liveSpans, open)
 }
 func (s *testSink) CloseSpan(spanID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closedSpans = append(s.closedSpans, spanID)
+	s.liveSpans = slices.DeleteFunc(s.liveSpans, func(o testSinkSpanOpen) bool {
+		return o.SpanID == spanID
+	})
 }
 func (s *testSink) ResetSpans() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resetSpanCount++
+	s.liveSpans = nil
 }
 func (s *testSink) SetSpanType(spanID, spanType string) {
 	s.mu.Lock()
@@ -333,25 +365,59 @@ func (s *testSink) PersistChildTurnEnd(childAgentID string, content []byte, span
 	return cs.PersistTurnEnd(content, span)
 }
 
+// PersistChildPrompt mirrors the real sink's contract: a USER message carrying
+// {"content": prompt}, written only into a child transcript that has no message
+// yet, and skipped for a blank prompt. Tests assert on the child's Messages().
+func (s *testSink) PersistChildPrompt(childAgentID, prompt string) error {
+	if childAgentID == "" || strings.TrimSpace(prompt) == "" {
+		return nil
+	}
+	cs, _ := s.ChildSink(childAgentID).(*testSink)
+	if cs == nil {
+		return nil
+	}
+	if len(cs.Messages()) > 0 {
+		return nil
+	}
+	content, err := json.Marshal(map[string]string{"content": prompt})
+	if err != nil {
+		return err
+	}
+	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, SpanInfo{})
+}
+
+// testFakeEndedAt is the instant the fake stamps on an active -> final
+// transition. A fixed value, because the fake models WHETHER ended_at is set,
+// not when: an assertion that the stamp is absent for a non-final status was
+// vacuously true while nothing ever set it.
+var testFakeEndedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
 func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
 	if s.bgTasks == nil {
 		s.bgTasks = make(map[string]bgtask.Item)
 	}
-	item := s.bgTasks[task.RowKey]
-	item.RowKey = task.RowKey
-	item.Kind = task.Kind
-	if task.ChildAgentID != "" {
-		item.ChildAgentID = task.ChildAgentID
+	// task.ToItem().PreservingBlanksFrom(existing), the SAME pair the production
+	// applier uses. Neither half may be hand-written here: the projection so a
+	// new field on Upsert reaches this fake too, and the merge so blank-means-keep
+	// holds for every descriptive field, not just the child id. A partial upsert
+	// (Claude's task_notification carries only status + description) blanked the
+	// Title against this fake while production preserved it, so a test that
+	// asserted the real contract failed against correct code.
+	existing := s.bgTasks[task.RowKey]
+	item := task.ToItem().PreservingBlanksFrom(existing)
+	// A final status is absorbing, as in the registry: a replayed non-final
+	// upsert must not resurrect a row that already ended. Without this the fake
+	// was MORE permissive than production, so a test pinning the guard failed
+	// against code that has it.
+	if existing.Status.IsFinished() && !item.Status.IsFinished() {
+		item.Status = existing.Status
+		item.EndedAt = existing.EndedAt
 	}
-	item.ParentAgentID = task.ParentAgentID
-	item.GroupKey = task.GroupKey
-	item.GroupLabel = task.GroupLabel
-	item.Title = task.Title
-	item.Description = task.Description
-	item.ActiveForm = task.ActiveForm
-	item.Status = task.Status
+	if !existing.Status.IsFinished() && item.Status.IsFinished() && item.EndedAt.IsZero() {
+		item.EndedAt = testFakeEndedAt
+	}
 	s.bgTasks[task.RowKey] = item
 	return nil
 }
@@ -360,6 +426,14 @@ func (s *testSink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Statu
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
 	if item, ok := s.bgTasks[rowKey]; ok {
+		// Monotonic and absorbing, as in the registry: a late or replayed
+		// non-final update must not resurrect a finished row.
+		if item.Status.IsFinished() && !status.IsFinished() {
+			return nil
+		}
+		if !item.Status.IsFinished() && status.IsFinished() {
+			item.EndedAt = testFakeEndedAt
+		}
 		item.Status = status
 		item.ActiveForm = activeForm
 		s.bgTasks[rowKey] = item
@@ -371,7 +445,13 @@ func (s *testSink) CloseBackgroundTask(rowKey string, status bgtask.Status) erro
 	s.bgTasksMu.Lock()
 	defer s.bgTasksMu.Unlock()
 	if item, ok := s.bgTasks[rowKey]; ok {
+		// First close wins, as in the registry: a re-close cannot relabel a row
+		// that already ended.
+		if item.Status.IsFinished() {
+			return nil
+		}
 		item.Status = status
+		item.EndedAt = testFakeEndedAt
 		s.bgTasks[rowKey] = item
 	}
 	return nil
@@ -630,6 +710,7 @@ func (noopSink) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, Spa
 	return nil
 }
 func (noopSink) PersistChildTurnEnd(string, []byte, SpanInfo) error { return nil }
+func (noopSink) PersistChildPrompt(string, string) error            { return nil }
 func (noopSink) UpsertBackgroundTask(bgtask.Upsert) error           { return nil }
 func (noopSink) UpdateBackgroundTaskStatus(string, bgtask.Status, string) error {
 	return nil

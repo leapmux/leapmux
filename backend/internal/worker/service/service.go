@@ -20,6 +20,8 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -548,20 +550,29 @@ func (svc *Service) RestoreState() {
 	// the same stamp (the in-memory caches do not exist yet at boot, so there is
 	// no cache/DB drift to guard here -- this is purely for uniform labeling).
 	bootNow := nowMillis()
-	if n, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
+	// The sweep REPORTS the child transcripts it ended, so the divider list and
+	// the write are one statement. Each transcript gets a closing divider below,
+	// for the same reason the exit sweep writes one -- a subagent cut off by a
+	// worker restart would otherwise show an 'interrupted' row in the sidebar
+	// beside a transcript that just stops, and the tab would keep a thinking
+	// indicator that never resolves. When the sweep fails nothing moved, so
+	// nothing is owed a divider and a later boot finds the rows still active.
+	endedChildIDs, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
 		EndedAt:   sqltime.SQLiteNullTimeOf(bootNow),
 		UpdatedAt: sqltime.NewSQLiteTime(bootNow),
-	}); err != nil {
+	})
+	if err != nil {
 		slog.Warn("mark active background tasks interrupted failed", "error", err)
-	} else if n > 0 {
-		slog.Info("marked background tasks interrupted on boot", "count", n)
+	} else if len(endedChildIDs) > 0 {
+		slog.Info("marked background tasks interrupted on boot", "count", len(endedChildIDs))
+		svc.Output.WriteSubagentEndDividers(endedChildIDs, bgtask.StatusInterrupted)
 	}
 	svc.Output.restoreAutoContinueSchedules()
 }
 
 // HandleAgentProcessExit is the ExitHandler body: it clears the exited
 // process's pending control requests (so request_ids bound to it don't reappear
-// stale on resume) and terminalizes its background-task registry (stopped on an
+// stale on resume) and gives its background-task registry a final status (stopped on an
 // explicit Stop, interrupted on a crash). It fires for every exit including a
 // relaunch's old-process stop; stopAndWait serializes this hook before a new
 // process registers, so fresh spawns can never be clobbered.
@@ -570,7 +581,7 @@ func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopp
 	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
 }
 
-// Shutdown persists in-memory terminal state to the database so it
+// Shutdown persists in-memory final state to the database so it
 // survives a worker restart. Call this before stopping the terminal
 // manager (which clears in-memory state). Callers must have already
 // stopped dispatching new OpenAgent/OpenTerminal/CloseAgent/CloseTerminal

@@ -130,6 +130,21 @@ CREATE TABLE control_response_answers (
     PRIMARY KEY (agent_id, request_id, claim_token)
 );
 
+-- One row per subagent transcript whose closing divider has been written.
+--
+-- Two independent writers can end a subagent: the registry (whichever applier
+-- moved its row into a final status) and the child's own turn end (a provider
+-- that forwards its own closing envelope). Both must produce exactly ONE
+-- divider, in either arrival order. Comparing the transcript's last message
+-- cannot decide it -- both writers persist AFTER releasing the cache mutex, so
+-- two goroutines can each read "not ended" and each write. This claim is the
+-- decision: the INSERT picks a single winner, and being durable it also holds
+-- across a worker restart, where a content probe would have to read and
+-- decompress the last message to guess.
+CREATE TABLE subagent_transcript_closes (
+    child_agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE
+);
+
 -- Scheduled synthetic auto-continue messages
 CREATE TABLE auto_continue_schedules (
     agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -320,6 +335,10 @@ CREATE TABLE agent_background_tasks (
     group_key       TEXT NOT NULL DEFAULT '', -- workflow/phase grouping key
     group_label     TEXT NOT NULL DEFAULT '', -- human label for the group
     title           TEXT NOT NULL DEFAULT '',
+    -- 1 when `title` is a verbatim shell command rather than prose. Only the
+    -- provider that hands the command over itself can say so; see the
+    -- title_is_command field on the BackgroundTaskItem proto.
+    title_is_command INTEGER NOT NULL DEFAULT 0,
     description     TEXT NOT NULL DEFAULT '',
     active_form     TEXT NOT NULL DEFAULT '', -- live "what it does now" text
     status          TEXT NOT NULL CHECK (status IN ('pending','running','completed','failed','stopped','interrupted')),

@@ -3,7 +3,15 @@ import type { PopoverPositionOptions } from '~/lib/popoverPosition'
 import { createEffect, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
+import { popoverCard } from '~/styles/popover.css'
 import { menuItemContent, menuItemLabel, menuItemShortcut } from '~/styles/shared.css'
+
+/**
+ * Marks a dropdown's trigger element. An enclosing popover's dismiss handler
+ * reads it to tell "the user opened a submenu" from "the user activated an
+ * item", which are otherwise the same click on one of its own descendants.
+ */
+const TRIGGER_ATTR = 'data-dropdown-trigger'
 
 export interface DropdownTriggerProps {
   /** Whether the dropdown is currently open. */
@@ -46,8 +54,29 @@ export interface DropdownMenuProps {
   /** Popover content. */
   'children': JSX.Element
 
-  /** Popover element tag: 'menu' (default) or 'div'. */
-  'as'?: 'menu' | 'div'
+  /**
+   * What the popover IS. This sets both its element and its dismiss rule:
+   *
+   * - `menu` (default) renders a `<menu>` of commands. Every click inside it
+   *   activates an item, so the popover closes behind the click.
+   * - `div` renders a `<div>` of content. A click inside it reads a row, selects
+   *   text, or fills in a control, so the popover STAYS OPEN. Content that is a
+   *   real action closes the popover from its own handler -- through the element
+   *   `popoverRef` captured, or through the `open` accessor -- because only that
+   *   handler knows the action ran.
+   * - `card` is a `div` whose content is a CARD -- labelled rows, a list, a
+   *   panel. It supplies the `popoverCard` class ITSELF, so a call site cannot
+   *   apply the element without the class or the class without the element.
+   *   That pair is exactly what came apart before: the `[+]` menu's agent-info
+   *   card carried the class but stayed a `<menu>`, so it dismissed on every
+   *   click, and the chip popovers carried `as="div"` with a bare `card`, so
+   *   they had no positioning reset and no viewport clamp.
+   *
+   * The element and the dismiss rule are one decision, so they are one prop: a
+   * popover that closes on every click cannot hold selectable text, and a
+   * popover that never closes cannot be a menu.
+   */
+  'as'?: 'menu' | 'div' | 'card'
 
   /** Positioning options. Default: { placement: 'auto' }. */
   'placement'?: PopoverPositionOptions
@@ -63,6 +92,15 @@ export interface DropdownMenuProps {
 
   /** data-testid on the popover element. */
   'data-testid'?: string
+
+  /**
+   * Accessible name for the popover element.
+   *
+   * A `<menu>` of `menuitemradio` items carries no name of its own, so assistive
+   * technology announces the options with nothing that says which axis they
+   * belong to. Set this whenever the items are one named group.
+   */
+  'aria-label'?: string
 
   /** Callback when the popover opens or closes. */
   'onToggle'?: (open: boolean) => void
@@ -81,6 +119,63 @@ export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
         {shortcut => <span class={menuItemShortcut}>{shortcut()}</span>}
       </Show>
     </span>
+  )
+}
+
+export interface DropdownMenuCheckableItemProps {
+  /** `checkbox` for an independent toggle, `radio` for one choice of a set. */
+  'kind': 'checkbox' | 'radio'
+  'label': string
+  'checked': boolean
+  'disabled'?: boolean
+  /** Hover text, typically the reason the item is disabled. */
+  'title'?: string
+  'data-testid'?: string
+  /** Invoked on activation. Not called while `disabled`. */
+  'onSelect': () => void
+}
+
+/**
+ * A menu item carrying a checked state: an OAT checkbox or radio showing that
+ * state, followed by the label.
+ *
+ * The component renders the whole item — the button, its ARIA role, and
+ * `aria-checked` — rather than the indicator alone. The indicator is
+ * display-only (`disabled`, `aria-hidden`, no `onChange`) and therefore invisible
+ * to assistive technology, so a caller that supplied its own `role="menuitem"`
+ * button announced the item with no on/off state at all. Owning the button makes
+ * that mistake impossible.
+ */
+export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps) {
+  return (
+    <button
+      // A <button> defaults to type="submit". This item toggles a preference, so
+      // inside a <form> the default would also submit it. The code this replaced
+      // called preventDefault() for that reason; declaring the type removes the
+      // default action instead of cancelling it at every call site.
+      type="button"
+      role={props.kind === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio'}
+      aria-checked={props.checked}
+      disabled={props.disabled}
+      title={props.title}
+      data-testid={props['data-testid']}
+      // The guard is unreachable while the button carries the native `disabled`
+      // attribute above -- no engine dispatches a click on a disabled element,
+      // and Solid's delegated handler skips disabled nodes as well. It stays
+      // because it becomes load-bearing the moment this item moves to
+      // `aria-disabled` (which menus do, to keep a disabled item focusable), and
+      // a silent switch from "does nothing" to "dispatches a settings change"
+      // is the failure it prevents. No test can cover it; see DropdownMenu.test.
+      onClick={() => {
+        if (!props.disabled)
+          props.onSelect()
+      }}
+    >
+      <span class={menuItemContent}>
+        <input type={props.kind} checked={props.checked} disabled aria-hidden="true" style={{ 'pointer-events': 'none' }} />
+        <span class={menuItemLabel}>{props.label}</span>
+      </span>
+    </button>
   )
 }
 
@@ -105,6 +200,11 @@ export function DropdownMenu(props: DropdownMenuProps) {
 
   const setTriggerRef = (el: HTMLElement) => {
     triggerEl = el
+    // Mark the trigger so an ancestor popover's dismiss handler can recognize
+    // it. A nested dropdown's trigger is a DOM child of the parent popover, so
+    // without this the parent hides itself on the very click that opens the
+    // submenu — and hiding a popover hides its descendants too.
+    el.setAttribute(TRIGGER_ATTR, '')
   }
 
   // Resolve the positioning anchor: for the JSX-element trigger path,
@@ -314,12 +414,13 @@ export function DropdownMenu(props: DropdownMenuProps) {
           handlers) is identical, so render via Dynamic instead of two byte-identical
           branches that could drift. */}
       <Dynamic
-        component={props.as === 'div' ? 'div' : 'menu'}
+        component={props.as === undefined || props.as === 'menu' ? 'menu' : 'div'}
         popover="auto"
         id={menuId}
         ref={popoverRefCallback}
-        class={props.class}
+        class={props.as === 'card' ? (props.class ? `${popoverCard} ${props.class}` : popoverCard) : props.class}
         data-testid={props['data-testid']}
+        aria-label={props['aria-label']}
         onKeyDown={(e: KeyboardEvent) => {
           if (e.key === 'Escape') {
             e.preventDefault()
@@ -328,7 +429,23 @@ export function DropdownMenu(props: DropdownMenuProps) {
         }}
         onClick={(e: MouseEvent) => {
           e.stopPropagation()
-          popoverEl?.hidePopover()
+          // A `div` popover is a panel of content, not a set of commands, so no
+          // click inside it dismisses it -- see `as`. A panel that dismissed on
+          // a click could not hold selectable text: the press starts the
+          // selection and the release closes the popover under it.
+          if (props.as === 'div' || props.as === 'card')
+            return
+          // A click on a nested dropdown's trigger opens that submenu; it must
+          // not also dismiss this popover, which would close the submenu with
+          // it. Every other click inside a menu is an activation, so it closes
+          // the menu as usual.
+          if ((e.target as Element | null)?.closest?.(`[${TRIGGER_ATTR}]`))
+            return
+          // The item's own handler runs first and may have closed this popover
+          // already. `hidePopover()` on a popover that is not showing throws
+          // InvalidStateError, so read the native state before the call.
+          if (popoverEl?.matches(':popover-open'))
+            popoverEl.hidePopover()
         }}
       >
         {props.children}

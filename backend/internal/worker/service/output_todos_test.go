@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,10 +30,14 @@ func setupTodoTest(t *testing.T) (agent.OutputSink, string, func() []db.AgentTod
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	// The seed query returns NEWEST first (it feeds a capped cache, which must
+	// keep the newest rows). Reverse here so assertions read the persisted rows
+	// in ascending seq order, which is the order the cache exposes them in.
 	listRows := func() []db.AgentTodo {
 		t.Helper()
-		rows, err := svc.Queries.ListAgentTodos(ctx, db.ListAgentTodosParams{AgentID: "agent-1", Limit: 1000})
+		rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-1", Limit: 1000})
 		require.NoError(t, err)
+		slices.Reverse(rows)
 		return rows
 	}
 	return sink, "agent-1", listRows
@@ -121,14 +126,14 @@ func TestOutputTodos_TaskCreateInsertsRowAfterResult(t *testing.T) {
 	assert.Equal(t, "pending", rows[0].Status)
 }
 
-// TestOutputTodos_ListAgentTodosOrdersBySeqNumeric drives 12 sequential
-// TaskCreate events and asserts that ListAgentTodos returns rows in
+// TestOutputTodos_ListAgentTodosNewestFirstOrdersBySeqNumeric drives 12 sequential
+// TaskCreate events and asserts that ListAgentTodosNewestFirst returns rows in
 // numeric seq order (seq=2 before seq=10), not a lexicographic order
 // where "10" would precede "2". This is the source-of-truth ordering
 // the sidebar and TaskList cards consume — `cache.snapshot()` walks
 // `cache.rows`, which is seeded from this query and appended-at-tail
 // for incremental inserts.
-func TestOutputTodos_ListAgentTodosOrdersBySeqNumeric(t *testing.T) {
+func TestOutputTodos_ListAgentTodosNewestFirstOrdersBySeqNumeric(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupTodoTest(t)
@@ -468,7 +473,7 @@ func TestOutputTodos_TaskCreateAtCapEvictsOldestCompleted(t *testing.T) {
 
 // TestOutputTodos_TaskCreateAfterEvictionAcrossRestart guards the
 // `nextSeq` re-seed against the post-eviction sparse-seq case. After
-// eviction physically removes the oldest terminal row, the surviving
+// eviction physically removes the oldest finished row, the surviving
 // rows hold a contiguous-from-2 seq range (2..N). A fresh
 // OutputHandler reading those rows must derive nextSeq from the max
 // existing seq (N+1), not `len(rows)+1` (which would collide with
@@ -484,10 +489,14 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
+	// The seed query returns NEWEST first (it feeds a capped cache, which must
+	// keep the newest rows). Reverse here so assertions read the persisted rows
+	// in ascending seq order, which is the order the cache exposes them in.
 	listRows := func() []db.AgentTodo {
 		t.Helper()
-		rows, err := svc.Queries.ListAgentTodos(ctx, db.ListAgentTodosParams{AgentID: "agent-1", Limit: 1000})
+		rows, err := svc.Queries.ListAgentTodosNewestFirst(ctx, db.ListAgentTodosNewestFirstParams{AgentID: "agent-1", Limit: 1000})
 		require.NoError(t, err)
+		slices.Reverse(rows)
 		return rows
 	}
 
@@ -517,7 +526,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 	require.Len(t, listRows(), todoevents.MaxTodos)
 
 	// Trigger eviction by creating a fresh task while at cap. t1
-	// (completed) is the oldest terminal row and gets removed.
+	// (completed) is the oldest finished row and gets removed.
 	use := marshalJSON(t, map[string]any{
 		"type": "assistant",
 		"message": map[string]any{
@@ -618,11 +627,11 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 		"new row's seq must exceed the pre-restart max to avoid UNIQUE collision")
 }
 
-// TestOutputTodos_TaskCreateAtCapNoTerminalDrops verifies that when
+// TestOutputTodos_TaskCreateAtCapNoFinishedRowDrops verifies that when
 // the cap is reached and no completed/deleted rows exist to evict,
 // the new task is dropped silently (with a warn log) and the list
 // stays unchanged.
-func TestOutputTodos_TaskCreateAtCapNoTerminalDrops(t *testing.T) {
+func TestOutputTodos_TaskCreateAtCapNoFinishedRowDrops(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupTodoTest(t)
@@ -671,7 +680,7 @@ func TestOutputTodos_TaskCreateAtCapNoTerminalDrops(t *testing.T) {
 	rows := listRows()
 	require.Len(t, rows, todoevents.MaxTodos)
 	for _, r := range rows {
-		assert.NotEqual(t, "dropme", r.TaskID, "new task should have been dropped — no terminal row to evict")
+		assert.NotEqual(t, "dropme", r.TaskID, "new task should have been dropped — no finished row to evict")
 	}
 }
 
@@ -735,18 +744,18 @@ func TestOutputTodos_TaskUpdateDeletedIsIdempotent(t *testing.T) {
 		"second delete must not rewrite the DB row (updated_at would change)")
 }
 
-// TestOutputTodos_TaskCreateAtCapMixedTerminalEvictsOldest seeds the
+// TestOutputTodos_TaskCreateAtCapMixedFinishedEvictsOldest seeds the
 // cap with a mix of completed and deleted rows scattered across the
 // list and verifies the eviction pool treats them as a single oldest-
 // first pool. Whichever terminal row has the lower seq is the one
 // that gets evicted.
-func TestOutputTodos_TaskCreateAtCapMixedTerminalEvictsOldest(t *testing.T) {
+func TestOutputTodos_TaskCreateAtCapMixedFinishedEvictsOldest(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupTodoTest(t)
 	// Seed MaxTodos rows. Layout:
-	//   index 0  → completed (oldest terminal — should be evicted)
-	//   index 1  → deleted   (younger terminal)
+	//   index 0  → completed (oldest finished — should be evicted)
+	//   index 1  → deleted   (younger finished)
 	//   index 2  → completed
 	//   index 3+ → in_progress
 	tasks := make([]any, todoevents.MaxTodos)
@@ -807,7 +816,7 @@ func TestOutputTodos_TaskCreateAtCapMixedTerminalEvictsOldest(t *testing.T) {
 	for _, r := range rows {
 		taskIDs[r.TaskID] = struct{}{}
 	}
-	assert.NotContains(t, taskIDs, "t1", "oldest terminal (completed t1) should have been evicted")
+	assert.NotContains(t, taskIDs, "t1", "oldest finished (completed t1) should have been evicted")
 	assert.Contains(t, taskIDs, "t2", "younger deleted row (t2) should still be there")
 	assert.Contains(t, taskIDs, "t3", "other completed row (t3) should still be there")
 	assert.Contains(t, taskIDs, "new")
@@ -815,7 +824,7 @@ func TestOutputTodos_TaskCreateAtCapMixedTerminalEvictsOldest(t *testing.T) {
 
 // TestOutputTodos_TaskCreateAtCapEvictsOldestDeleted verifies that
 // the cap-eviction pool also includes deleted (tombstoned) rows. If
-// the oldest terminal row is a deleted one, it's the row that's
+// the oldest finished row is a deleted one, it's the row that's
 // evicted to make room for the new task.
 func TestOutputTodos_TaskCreateAtCapEvictsOldestDeleted(t *testing.T) {
 	t.Parallel()

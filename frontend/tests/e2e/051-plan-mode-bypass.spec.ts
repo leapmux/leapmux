@@ -1,18 +1,18 @@
 import { expect, test } from './fixtures'
 import { ENTER_PLAN_PROMPT, enterAndExitPlanMode, EXIT_PLAN_PROMPT } from './helpers/plan-mode'
-import { sendMessage, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from './helpers/ui'
+import { expectSettingsChip, sendMessage, settingsBar, waitForAgentIdle, waitForControlBanner, waitForSettingsIdle } from './helpers/ui'
 
 test.describe('Plan Mode - Bypass Permissions', () => {
   test('bypass permissions from ExitPlanMode banner', async ({ page, authenticatedWorkspace }) => {
-    const trigger = page.locator('[data-testid="agent-settings-trigger"]')
+    const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
-    await expect(trigger).toContainText('Default')
+    await expectSettingsChip(page, 'Default')
 
     // Step 1: Enter plan mode and write a dummy plan
     await sendMessage(page, ENTER_PLAN_PROMPT)
 
     // Verify dropdown switches to Plan Mode (EnterPlanMode is auto-approved)
-    await expect(trigger).toContainText('Plan Mode')
+    await expectSettingsChip(page, 'Plan Mode')
     await waitForAgentIdle(page)
 
     // Step 2: Exit plan mode (produces control_request banner)
@@ -42,7 +42,7 @@ test.describe('Plan Mode - Bypass Permissions', () => {
 
     // Verify permission mode changed to Bypass Permissions
     await waitForSettingsIdle(page)
-    await expect(trigger).toContainText('Bypass Permissions')
+    await expectSettingsChip(page, 'Bypass Permissions')
   })
 
   test('approve and checkboxes toggle with reject on editor content', async ({ page, authenticatedWorkspace }) => {

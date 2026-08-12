@@ -24,13 +24,13 @@ import (
 // restart: the child thread is paused inside the running owner process and
 // resumeAgent restarts it in the same process, so the same row_key legitimately
 // cycles running -> interrupted -> running. The wire "interrupted" must NOT map
-// to StatusInterrupted: that status is terminal (IsTerminal reports true), so
-// the registry's monotonic-terminal guard would absorb the later "running"
+// to StatusInterrupted: that status is final (IsFinished reports true), so
+// the registry's monotonic-final guard would absorb the later "running"
 // upsert that arrives when resumeAgent resumes the child, leaving the row stuck
 // at Interrupted forever. StatusInterrupted is reserved for the boot sweep that
-// marks tasks left active by a crashed worker (a genuine terminal: a background
+// marks tasks left active by a crashed worker (a genuine ending: a background
 // task never survives a worker restart).
-func codexCollabStatusToRegistry(s string) (status bgtask.Status, terminal bool, activity string) {
+func codexCollabStatusToRegistry(s string) (status bgtask.Status, finished bool, activity string) {
 	switch s {
 	case "pendingInit", "running":
 		return bgtask.StatusRunning, false, ""
@@ -61,7 +61,7 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 		if threadID == "" {
 			continue
 		}
-		status, terminal, activity := codexCollabStatusToRegistry(st.Status)
+		status, finished, activity := codexCollabStatusToRegistry(st.Status)
 		title := a.collabChildTitle(threadID)
 		// Link the registry row to a child transcript when the index knows the
 		// thread (EnsureChildAgent is idempotent).
@@ -71,6 +71,11 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 			childAgentID, err = a.sink.EnsureChildAgent(spawnSpan, threadID, title)
 			if err != nil {
 				slog.Warn("codex collab ensure child failed", "thread", threadID, "error", err)
+			} else if prompt := a.collabChildPrompts.take(threadID); prompt != "" {
+				// The transcript exists now, so open it on the spawn prompt.
+				if err := a.sink.PersistChildPrompt(childAgentID, prompt); err != nil {
+					slog.Warn("codex collab persist prompt failed", "thread", threadID, "error", err)
+				}
 			}
 		}
 		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
@@ -84,7 +89,7 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 		}); err != nil {
 			slog.Warn("codex collab registry upsert failed", "thread", threadID, "error", err)
 		}
-		if terminal {
+		if finished {
 			if err := a.sink.CloseBackgroundTask(threadID, status); err != nil {
 				slog.Warn("codex collab registry close failed", "thread", threadID, "error", err)
 			}
@@ -104,7 +109,7 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 // only; never persisted): {kind: started|interacted|interrupted, agentThreadId}.
 // started→Running, interacted→activity "received input", interrupted→Running
 // with activity "paused" (resumable; see codexCollabStatusToRegistry for why a
-// resumable interrupt must not use the terminal StatusInterrupted).
+// resumable interrupt must not use the final StatusInterrupted).
 func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage) bool {
 	var act struct {
 		Type          string `json:"type"`
@@ -139,26 +144,22 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage) bool {
 		Status:     status,
 	}); err != nil {
 		slog.Warn("codex subAgentActivity upsert failed", "thread", act.AgentThreadID, "error", err)
+		return true
+	}
+	// An upsert cannot CLEAR a field: a blank one means "keep", so the row would
+	// still read "paused" after the subagent resumed. `started` is exactly that
+	// transition, so the activity line is set through the primitive that writes
+	// it unconditionally. Same monotonic guard, so this cannot resurrect a row
+	// that already ended.
+	if activity == "" {
+		if err := a.sink.UpdateBackgroundTaskStatus(act.AgentThreadID, status, ""); err != nil {
+			slog.Warn("codex subAgentActivity clear activity failed", "thread", act.AgentThreadID, "error", err)
+		}
 	}
 	return true
 }
 
 // --- Child index (collabThreadSpans repurposed as EnsureChildAgent backing) ---
-
-// parseCollabSpawnPrompt extracts the prompt from a collabAgentToolCall item
-// (the spawnAgent tool's prompt field), used as the child tab/registry title.
-func parseCollabSpawnPrompt(item json.RawMessage) string {
-	if len(item) == 0 {
-		return ""
-	}
-	var s struct {
-		Prompt string `json:"prompt"`
-	}
-	if json.Unmarshal(item, &s) != nil {
-		return ""
-	}
-	return s.Prompt
-}
 
 // collabSpanForThread returns the owning spawnAgent span id for a child thread,
 // or "" when the thread is unknown to the index.
@@ -174,7 +175,7 @@ func (a *CodexAgent) collabSpanForThread(threadID string) string {
 	return a.collabThreadSpans[threadID]
 }
 
-// removeCollabChildIndex drops a child thread from the index (terminal state).
+// removeCollabChildIndex drops a child thread from the index (it reached a final status).
 // Both the thread->span mapping and the thread->title cache are cleared so a
 // long-lived session that repeatedly spawns and closes subagents does not
 // accumulate stale title entries (collabChildTitles is otherwise only cleared
@@ -188,6 +189,7 @@ func (a *CodexAgent) removeCollabChildIndex(threadID string) {
 	if a.collabChildTitles != nil {
 		delete(a.collabChildTitles, threadID)
 	}
+	a.collabChildPrompts.forget(threadID)
 }
 
 // collabChildTitle returns a best-effort title for a child thread (the first

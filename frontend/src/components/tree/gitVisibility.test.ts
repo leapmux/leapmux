@@ -1,6 +1,5 @@
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import { describe, expect, it } from 'vitest'
-import { nextFilterTab } from './FilesSection'
 import { computeGitVisibility, flatEntryOpenTarget, isPathVisible } from './gitVisibility'
 
 /**
@@ -149,36 +148,5 @@ describe('flatEntryOpenTarget', () => {
 
   it('still opens a FILE whose name resembles a directory entry', () => {
     expect(flatEntryOpenTarget('build', '/repo', unix)).toBe('/repo/build')
-  })
-})
-
-/**
- * The git filter bar is a TAB SET: picking a filter swaps the region below it.
- * role=tab brings a keyboard contract with it — Tab reaches the set, the arrows
- * move within it — which is what this pins.
- */
-describe('nextFilterTab', () => {
-  const keys = ['all', 'changed', 'staged', 'unstaged'] as const
-
-  it('moves forward and backward', () => {
-    expect(nextFilterTab([...keys], 'changed', 'ArrowRight')).toBe('staged')
-    expect(nextFilterTab([...keys], 'changed', 'ArrowLeft')).toBe('all')
-    expect(nextFilterTab([...keys], 'changed', 'ArrowDown')).toBe('staged')
-    expect(nextFilterTab([...keys], 'changed', 'ArrowUp')).toBe('all')
-  })
-
-  it('wraps at both ends', () => {
-    expect(nextFilterTab([...keys], 'unstaged', 'ArrowRight')).toBe('all')
-    expect(nextFilterTab([...keys], 'all', 'ArrowLeft')).toBe('unstaged')
-  })
-
-  it('jumps to the ends with Home and End', () => {
-    expect(nextFilterTab([...keys], 'staged', 'Home')).toBe('all')
-    expect(nextFilterTab([...keys], 'staged', 'End')).toBe('unstaged')
-  })
-
-  it('ignores keys the tab bar does not own', () => {
-    expect(nextFilterTab([...keys], 'staged', 'a')).toBeUndefined()
-    expect(nextFilterTab([...keys], 'staged', 'Enter')).toBeUndefined()
   })
 })

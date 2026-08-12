@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +50,7 @@ func TestACP_SubagentFromToolCall_EmptyInputReturnsNil(t *testing.T) {
 	assert.Nil(t, openCodeSubagentFromToolCall(tc))
 }
 
-func TestACP_SubagentFromToolCallUpdate_TerminalCloses(t *testing.T) {
+func TestACP_SubagentFromToolCallUpdate_FinalStatusCloses(t *testing.T) {
 	tcu := acpToolCallUpdateEnvelope{
 		ToolCallID: "tc-1",
 		Status:     "completed",
@@ -78,7 +79,7 @@ func TestACP_SubagentFromToolCallUpdate_RekeysToSessionID(t *testing.T) {
 }
 
 // TestACP_SubagentFromToolCallUpdate_NoSessionIDKeepsSpawnKey covers the case
-// where the terminal update carries no metadata.sessionId: the close keys off
+// where the final update carries no metadata.sessionId: the close keys off
 // the spawn toolCallId directly, and RenameFrom stays empty (no rename).
 func TestACP_SubagentFromToolCallUpdate_NoSessionIDKeepsSpawnKey(t *testing.T) {
 	tcu := acpToolCallUpdateEnvelope{
@@ -100,11 +101,11 @@ func TestACP_SubagentFromToolCallUpdate_InProgressReturnsNil(t *testing.T) {
 	assert.Nil(t, openCodeSubagentFromToolCallUpdate(tcu))
 }
 
-func TestACP_TerminalStatusMap(t *testing.T) {
-	assert.Equal(t, bgtask.StatusCompleted, acpTerminalStatus("completed"))
-	assert.Equal(t, bgtask.StatusFailed, acpTerminalStatus("failed"))
-	assert.Equal(t, bgtask.StatusStopped, acpTerminalStatus("cancelled"))
-	assert.Equal(t, bgtask.StatusStopped, acpTerminalStatus("unknown"))
+func TestACP_FinalStatusMap(t *testing.T) {
+	assert.Equal(t, bgtask.StatusCompleted, acpFinalStatus("completed"))
+	assert.Equal(t, bgtask.StatusFailed, acpFinalStatus("failed"))
+	assert.Equal(t, bgtask.StatusStopped, acpFinalStatus("cancelled"))
+	assert.Equal(t, bgtask.StatusStopped, acpFinalStatus("unknown"))
 }
 
 func TestACP_GooseSubagentFromToolCallUpdate_ToolRequest(t *testing.T) {
@@ -127,10 +128,10 @@ func TestACP_GooseSubagentFromToolCallUpdate_ToolRequest(t *testing.T) {
 	}
 	obs := gooseSubagentFromToolCallUpdate(tcu)
 	if assert.NotNil(t, obs) {
-		// The registry row, the EnsureChildAgent linkage, AND the terminal close
+		// The registry row, the EnsureChildAgent linkage, AND the closing update
 		// all key off the SPAWN toolCallId. ChildAgentKey must match RowKey, or
 		// EnsureChildAgent would open a second row keyed by subagent_id that the
-		// terminal close (which knows only toolCallId) never reaches.
+		// closing update (which knows only toolCallId) never reaches.
 		assert.Equal(t, "tc-goose", obs.RowKey)
 		assert.Equal(t, "tool: Read", obs.Activity)
 		assert.Equal(t, bgtask.StatusRunning, obs.Status)
@@ -158,11 +159,11 @@ func TestACP_GooseSubagentFromToolCallUpdate_NonSubagentReturnsNil(t *testing.T)
 }
 
 // TestACP_GooseSpawnAndToolRequestProduceOneRow verifies the FOOTGUNS-2 fix: a
-// Goose spawn tool_call followed by tool-request updates and a terminal close
+// Goose spawn tool_call followed by tool-request updates and a closing update
 // collapse to exactly ONE registry row keyed by the spawn toolCallId. Before the
 // fix, EnsureChildAgent was called with the per-request subagent_id (different
 // from the spawn toolCallId), opening a second row keyed by subagent_id that the
-// terminal close (which knows only toolCallId) never reached -- an orphaned
+// closing update (which knows only toolCallId) never reached -- an orphaned
 // Running row that pinned the parent's thinking indicator.
 func TestACP_GooseSpawnAndToolRequestProduceOneRow(t *testing.T) {
 	sink := &testSink{}
@@ -193,7 +194,7 @@ func TestACP_GooseSpawnAndToolRequestProduceOneRow(t *testing.T) {
 	require.Len(t, tasks, 1, "spawn + tool-request produce one row keyed by the spawn toolCallId")
 	assert.Equal(t, "call-spawn", tasks[0].RowKey)
 
-	// Terminal close (which knows only the spawn toolCallId) reaches the row.
+	// Final close (which knows only the spawn toolCallId) reaches the row.
 	closeObs := gooseSubagentFromToolCallUpdate(acpToolCallUpdateEnvelope{
 		ToolCallID: "call-spawn",
 		Status:     "completed",
@@ -203,7 +204,7 @@ func TestACP_GooseSpawnAndToolRequestProduceOneRow(t *testing.T) {
 
 	tasks = sink.BackgroundTasks()
 	require.Len(t, tasks, 1, "still one row after close")
-	assert.True(t, tasks[0].Status.IsTerminal(), "terminal close reached the row")
+	assert.True(t, tasks[0].Status.IsFinished(), "the closing update reached the row")
 }
 
 // TestACP_GooseSubagentToolRequestPayload_SynthesizesMetaWhenEnvelopeLacksIt
@@ -228,10 +229,10 @@ func TestACP_GooseSubagentToolRequestPayload_SynthesizesMetaWhenEnvelopeLacksIt(
 	assert.Contains(t, string(decoded["_meta"]), "Write")
 }
 
-func TestACP_GooseSubagentFromToolCallUpdate_TerminalClosesRow(t *testing.T) {
+func TestACP_GooseSubagentFromToolCallUpdate_FinalClosesRow(t *testing.T) {
 	tcu := acpToolCallUpdateEnvelope{ToolCallID: "tc-x", Status: "completed"}
 	obs := gooseSubagentFromToolCallUpdate(tcu)
-	if assert.NotNil(t, obs, "terminal update closes the registry row") {
+	if assert.NotNil(t, obs, "final update closes the registry row") {
 		assert.True(t, obs.CloseRow)
 		assert.Equal(t, bgtask.StatusCompleted, obs.Status)
 		assert.Equal(t, "tc-x", obs.RowKey)
@@ -324,7 +325,7 @@ func TestACP_CursorSubagentFromToolCall_NonTaskReturnsNil(t *testing.T) {
 	assert.Nil(t, cursorSubagentFromToolCall(tc))
 }
 
-func TestACP_CursorSubagentFromToolCallUpdate_TerminalCloses(t *testing.T) {
+func TestACP_CursorSubagentFromToolCallUpdate_FinalCloses(t *testing.T) {
 	tcu := acpToolCallUpdateEnvelope{
 		ToolCallID: "call-abc-0",
 		Status:     "completed",
@@ -402,7 +403,7 @@ func TestACP_WireDecode_ToolCallUpdateParsesRawOutput(t *testing.T) {
 	assert.Equal(t, "tc-1", tcu.ToolCallID)
 	assert.NotEmpty(t, tcu.RawOutput, "rawOutput must decode -- a tag mismatch leaves this empty")
 	obs := openCodeSubagentFromToolCallUpdate(tcu)
-	if assert.NotNil(t, obs, "OpenCode terminal detector fires on decoded wire payload") {
+	if assert.NotNil(t, obs, "OpenCode final-update detector fires on decoded wire payload") {
 		assert.Equal(t, "child-sess-1", obs.RowKey, "re-keyed to child session id from rawOutput")
 		assert.True(t, obs.CloseRow)
 	}
@@ -441,13 +442,13 @@ func TestACP_WireDecode_GooseMetaParses(t *testing.T) {
 }
 
 // TestACP_ApplySubagentObservation_SpawnRowKeyClosesBothRows verifies that a
-// close observation carrying SpawnRowKey terminalizes the ORIGINAL spawn row
-// TestACP_ApplySubagentObservation_RenameFromCollapsesToOneTerminalRow
+// close observation carrying SpawnRowKey gives it a final status the ORIGINAL spawn row
+// TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow
 // verifies the rename path: a spawn opens a row under the toolCallId, then a
-// terminal update re-keys it to the child session id via RenameFrom. One row
-// tracks the lifecycle and ends terminal; the original spawn key is gone (not
+// final update re-keys it to the child session id via RenameFrom. One row
+// tracks the lifecycle and ends final; the original spawn key is gone (not
 // leaked as a separate Running row).
-func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneTerminalRow(t *testing.T) {
+func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow(t *testing.T) {
 	sink := &testSink{}
 	b := &acpBase{sink: sink}
 
@@ -460,7 +461,7 @@ func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneTerminalRow(t *tes
 	require.Len(t, sink.BackgroundTasks(), 1)
 	assert.Equal(t, bgtask.StatusRunning, sink.BackgroundTasks()[0].Status)
 
-	// Terminal update renames call-123 -> sess-abc, then closes sess-abc.
+	// Final update renames call-123 -> sess-abc, then closes sess-abc.
 	b.applySubagentObservation(&acpSubagentObservation{
 		RowKey:     "sess-abc",
 		RenameFrom: "call-123",
@@ -468,11 +469,11 @@ func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneTerminalRow(t *tes
 		CloseRow:   true,
 	})
 
-	// One row under the renamed key, terminal. The spawn key is gone.
+	// One row under the renamed key, final. The spawn key is gone.
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1, "rename + close collapsed the lifecycle to one row")
 	assert.Equal(t, "sess-abc", tasks[0].RowKey)
-	assert.True(t, tasks[0].Status.IsTerminal(), "renamed row is terminal")
+	assert.True(t, tasks[0].Status.IsFinished(), "renamed row is final")
 }
 
 // TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert verifies that an
@@ -499,12 +500,12 @@ func TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert(t *testing.T) {
 	})
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1, "close-only must not create a new row")
-	assert.True(t, tasks[0].Status.IsTerminal(), "existing row is terminalized")
+	assert.True(t, tasks[0].Status.IsFinished(), "existing row reached a final status")
 }
 
 // TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth verifies that an
 // observation with Mode == acpModeUpsert (default) and CloseRow upserts THEN
-// closes — the behavior when a terminal observation also carries descriptive
+// closes — the behavior when a final observation also carries descriptive
 // fields (e.g. a Cursor background task with an activity line).
 func TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth(t *testing.T) {
 	sink := &testSink{}
@@ -521,5 +522,224 @@ func TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth(t *testing.T) 
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "bg task", tasks[0].Title, "upsert carried the title")
-	assert.True(t, tasks[0].Status.IsTerminal(), "close terminalized the row")
+	assert.True(t, tasks[0].Status.IsFinished(), "the close gave the row a final status")
+}
+
+// The spawn payload carries the prompt, but the child transcript that should
+// open with it is created LATER, on a different observation (Goose learns its
+// child only from the first forwarded tool request). applySubagentObservation
+// holds the prompt across that gap.
+func TestACPSubagentPrompt_HeldFromSpawnUntilTheChildExists(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{sink: sink}
+
+	// 1. Spawn: prompt recorded, no child yet.
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey: "tc-1",
+		Title:  "Goose subagent",
+		Status: bgtask.StatusRunning,
+		Prompt: "Review the diff.",
+	})
+	assert.Equal(t, "Review the diff.", b.subagentPrompts.peek("tc-1"))
+
+	// 2. The observation that links the child spends it.
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey:        "tc-1",
+		ChildAgentKey: "tc-1",
+		Status:        bgtask.StatusRunning,
+	})
+	child, ok := sink.ChildSink("child-of-tc-1").(*testSink)
+	require.True(t, ok)
+	msgs := child.Messages()
+	require.Len(t, msgs, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, msgs[0].Source)
+	assert.JSONEq(t, `{"content":"Review the diff."}`, string(msgs[0].Content))
+	assert.Zero(t, b.subagentPrompts.count(), "spent, so a later observation cannot repeat it")
+}
+
+// A provider that never links a child must not leak the remembered prompt: the
+// row's close drops it.
+func TestACPSubagentPrompt_DroppedWhenTheRowClosesWithNoChild(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{sink: sink}
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey: "tc-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
+	})
+	require.Equal(t, 1, b.subagentPrompts.count())
+
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey: "tc-1", Status: bgtask.StatusCompleted, CloseRow: true, Mode: acpModeCloseOnly,
+	})
+	assert.Zero(t, b.subagentPrompts.count())
+}
+
+// A closing observation that RE-KEYS the row must drop the prompt under the
+// key the spawn used, not under the new one. A provider that learns the child's
+// stable id only on the closing update (OpenCode, Kilo) arrives here with
+// RowKey = the new key and RenameFrom = the spawn key, so forgetting only
+// RowKey deletes an entry that was never inserted and leaves the spawn's own to
+// accumulate for the life of the agent process.
+func TestACPSubagentPrompt_DroppedUnderTheSpawnKeyAfterARename(t *testing.T) {
+	t.Parallel()
+
+	b := &acpBase{sink: &testSink{}}
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey: "call-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
+	})
+	require.Equal(t, 1, b.subagentPrompts.count())
+
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey:     "ses-child",
+		RenameFrom: "call-1",
+		Status:     bgtask.StatusCompleted,
+		CloseRow:   true,
+		Mode:       acpModeCloseOnly,
+	})
+	assert.Zero(t, b.subagentPrompts.count(), "the entry sits under the SPAWN key, not the renamed one")
+}
+
+// Replacing the session drops every unspent prompt: those rows belong to the
+// outgoing session and no closing observation will ever arrive for them, so
+// without this they are held for the life of the agent process.
+func TestACPSubagentPrompt_ClearedWhenTheSessionIsReplaced(t *testing.T) {
+	t.Parallel()
+
+	b := &acpBase{sink: &testSink{}}
+	b.applySubagentObservation(&acpSubagentObservation{
+		RowKey: "tc-1", Title: "task", Status: bgtask.StatusRunning, Prompt: "Do it.",
+	})
+	require.Equal(t, 1, b.subagentPrompts.count())
+
+	b.subagentPrompts.clear()
+	assert.Zero(t, b.subagentPrompts.count())
+}
+
+// The spawn's own text wins: a later observation that re-reports a prompt for
+// the same row must not overwrite it.
+func TestACPSubagentPrompt_FirstWriteWins(t *testing.T) {
+	t.Parallel()
+
+	b := &acpBase{sink: &testSink{}}
+	b.applySubagentObservation(&acpSubagentObservation{RowKey: "tc-1", Prompt: "first", Status: bgtask.StatusRunning})
+	b.applySubagentObservation(&acpSubagentObservation{RowKey: "tc-1", Prompt: "second", Status: bgtask.StatusRunning})
+	assert.Equal(t, "first", b.subagentPrompts.peek("tc-1"))
+}
+
+// Goose is the only ACP provider that opens a child transcript, so it is the
+// only one whose detector reads the spawn's task text. It names that field
+// `instructions` on the delegate tool (summon.rs).
+func TestACPSubagentDetectors_CarryTheSpawnPrompt(t *testing.T) {
+	t.Parallel()
+
+	goose := gooseSubagentFromToolCall(acpToolCallEnvelope{
+		ToolCallID: "tc-1",
+		Title:      "delegate",
+		Meta:       json.RawMessage(`{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}`),
+		RawInput:   json.RawMessage(`{"source":"reviewer","instructions":"Review the diff."}`),
+	})
+	require.NotNil(t, goose)
+	assert.Equal(t, "Review the diff.", goose.Prompt)
+}
+
+// A registry-only provider must leave Prompt EMPTY even when its spawn payload
+// carries one. It never reports a ChildAgentKey, so takeSubagentPrompt never
+// runs and the entry can only be dropped by the closing observation -- which
+// Reasonix does not produce at all (it wires no update hook). Recording a
+// prompt here holds a string for the life of the agent process that nothing
+// will ever read.
+func TestACPSubagentDetectors_RegistryOnlyProvidersRecordNoPrompt(t *testing.T) {
+	t.Parallel()
+
+	// OpenCode / Kilo: `prompt` on the task tool (tool/task.ts). Still the spawn
+	// discriminator -- its PRESENCE is what identifies the shape.
+	oc := openCodeSubagentFromToolCall(acpToolCallEnvelope{
+		ToolCallID: "tc-2",
+		RawInput:   json.RawMessage(`{"description":"scan","prompt":"Find the bug.","subagent_type":"general"}`),
+	})
+	require.NotNil(t, oc, "the prompt field still discriminates the spawn shape")
+	assert.Empty(t, oc.Prompt)
+	assert.Empty(t, oc.ChildAgentKey, "no child transcript means nothing can spend a prompt")
+
+	rx := reasonixSubagentFromToolCall(acpToolCallEnvelope{
+		ToolCallID: "tc-3",
+		RawInput:   json.RawMessage(`{"description":"scan","prompt":"Trace it."}`),
+	})
+	require.NotNil(t, rx)
+	assert.Empty(t, rx.Prompt)
+	assert.Empty(t, rx.ChildAgentKey)
+}
+
+// A spawn payload with no task text must leave Prompt empty rather than
+// inventing one, so PersistChildPrompt writes nothing.
+func TestACPSubagentDetectors_EmptyPromptWhenTheSpawnCarriesNone(t *testing.T) {
+	t.Parallel()
+
+	goose := gooseSubagentFromToolCall(acpToolCallEnvelope{
+		ToolCallID: "tc-1",
+		Meta:       json.RawMessage(`{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}`),
+	})
+	require.NotNil(t, goose)
+	assert.Empty(t, goose.Prompt)
+}
+
+// Kilo opens its spawn tool_call with `rawInput: {}` and only fills the spawn
+// shape on the first IN-PROGRESS tool_call_update (verified against kilo 7.4.20
+// over ACP). Detecting only on the tool_call left the spawn with no registry
+// row at all, and the final update then closed a row that was never opened.
+func TestACP_OpenCodeSpawnDetectedOnTheInProgressUpdate(t *testing.T) {
+	t.Parallel()
+
+	// The tool_call carries nothing to detect on.
+	assert.Nil(t, openCodeSubagentFromToolCall(acpToolCallEnvelope{
+		ToolCallID: "call-1", Title: "task", RawInput: json.RawMessage(`{}`),
+	}))
+
+	// The in-progress update carries the real shape.
+	obs := openCodeSubagentFromToolCallUpdate(acpToolCallUpdateEnvelope{
+		ToolCallID: "call-1",
+		Status:     "in_progress",
+		Title:      "Run echo kilo-done",
+		RawInput:   json.RawMessage(`{"description":"Run echo kilo-done","prompt":"Run it.","subagent_type":"general"}`),
+	})
+	require.NotNil(t, obs)
+	assert.Equal(t, "call-1", obs.RowKey)
+	assert.Equal(t, "Run echo kilo-done", obs.Title)
+	assert.Equal(t, bgtask.StatusRunning, obs.Status)
+	// Registry-only: the prompt discriminates the shape but is not recorded.
+	assert.Empty(t, obs.Prompt)
+	assert.False(t, obs.CloseRow)
+}
+
+// A non-final update on a PLAIN tool must not open a subagent row.
+func TestACP_OpenCodeNonSpawnUpdateIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	assert.Nil(t, openCodeSubagentFromToolCallUpdate(acpToolCallUpdateEnvelope{
+		ToolCallID: "call-1", Status: "in_progress", RawInput: json.RawMessage(`{"command":"ls"}`),
+	}))
+	assert.Nil(t, openCodeSubagentFromToolCallUpdate(acpToolCallUpdateEnvelope{
+		ToolCallID: "call-1", Status: "in_progress",
+	}))
+}
+
+// The final update still closes (and re-keys to the child session id), so
+// adding the spawn arm above did not swallow the close.
+func TestACP_OpenCodeFinalUpdateStillClosesAndRekeys(t *testing.T) {
+	t.Parallel()
+
+	obs := openCodeSubagentFromToolCallUpdate(acpToolCallUpdateEnvelope{
+		ToolCallID: "call-1",
+		Status:     "completed",
+		RawInput:   json.RawMessage(`{"description":"d","prompt":"p","subagent_type":"general"}`),
+		RawOutput:  json.RawMessage(`{"metadata":{"sessionId":"ses-child"}}`),
+	})
+	require.NotNil(t, obs)
+	assert.True(t, obs.CloseRow)
+	assert.Equal(t, "ses-child", obs.RowKey)
+	assert.Equal(t, "call-1", obs.RenameFrom)
+	assert.Equal(t, bgtask.StatusCompleted, obs.Status)
 }

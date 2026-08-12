@@ -132,7 +132,7 @@ export function useWorkerPrivateStreams(opts: UseWorkerPrivateStreamsOpts): void
           // FILE hydrator has nothing left to ask. That flag is the one place
           // "the worker has answered for this tab" lives; a second cache
           // holding the same fact could outlive the row it describes and strand
-          // the tab (see `retainOnly`).
+          // the tab (see `useMetadataSweep`).
           opts.metadata.patch(evt.tabId, {
             filePath: evt.filePath || undefined,
             workingDir: evt.workingDir || undefined,

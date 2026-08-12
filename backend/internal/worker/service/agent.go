@@ -264,8 +264,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// the tab from the UI. The AgentStartup goroutine's trailing
 			// rollback work is tracked separately by
 			// AgentStartup.WaitForInFlight and drained in Shutdown.
-			result := svc.closeAgentTabCommon(userID.String(), agentID, r.GetWorktreeAction(), dropWorktreeLink)
-			sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{Result: result})
+			result, descendants := svc.closeAgentTabCommon(userID.String(), agentID, r.GetWorktreeAction(), dropWorktreeLink)
+			sendProtoResponse(sender, &leapmuxv1.CloseAgentResponse{
+				Result:             result,
+				DescendantAgentIds: descendants,
+			})
 		})
 
 	// SendAgentMessage persists the user message, forwards it to the agent
@@ -2017,7 +2020,7 @@ func (svc *Service) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan 
 // prologue: rolls back any partial git-mode mutation, persists the
 // error, broadcasts STARTUP_FAILED, and marks the registry failed. The
 // shared `failStartup` enforces the ordering (DB before broadcast
-// before registry) so observers see a durable terminal state.
+// before registry) so observers see a durable final state.
 func (svc *Service) failAgentStartup(dbAgent *db.Agent, gm gitModeResult, cause error, gitStatus *leapmuxv1.AgentGitStatus, h *startupEntry) {
 	svc.failStartup(gm, cause, svc.agentStartupCallbacks(dbAgent, gitStatus, h))
 }

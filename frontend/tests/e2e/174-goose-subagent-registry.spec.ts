@@ -9,12 +9,11 @@
  */
 import { expect, GOOSE_E2E_SKIP_REASON, gooseTest } from './goose-fixtures'
 import {
-  agentTabIdsForWorkspace,
   expectRegistrySectionAbsent,
-  expectRowBecomesTerminal,
+  expectRowBecomesFinal,
   expectSectionPersists,
   listAgents,
-  tryWaitForRegistryRow,
+  requireRegistryRow,
 } from './helpers/subagentRegistry'
 import { sendMessage } from './helpers/ui'
 
@@ -28,7 +27,6 @@ gooseTest.describe('Goose subagent registry', () => {
   }) => {
     void authenticatedGooseWorkspace
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    const workspaceId = authenticatedGooseWorkspace.workspaceId
 
     await expectRegistrySectionAbsent(page)
 
@@ -36,8 +34,7 @@ gooseTest.describe('Goose subagent registry', () => {
     await sendMessage(page, 'Use your delegate/subagent tool to spawn a subagent that runs a shell command `echo goose-done` and tells you the result.')
 
     // The model may choose not to spawn; skip the spawn-dependent assertions.
-    const row = await tryWaitForRegistryRow(page)
-    gooseTest.skip(!row, 'model did not spawn a subagent')
+    const row = await requireRegistryRow(gooseTest, page)
     const r = row!
 
     // The row links to a tool-request transcript (child-agent-id) when Goose
@@ -62,22 +59,45 @@ gooseTest.describe('Goose subagent registry', () => {
       const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
       await r.click()
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
-      // Composer on the child tab is disabled (Goose is not steerable).
-      await expect(page.getByTestId('composer-disabled-hint')).toBeVisible()
+      // Composer on the child tab is disabled (Goose is not steerable), and
+      // the box itself says WHY. The placeholder used to blame a lost
+      // connection the read-only transcript never had; asserting it here is
+      // what proves the reason reaches the editor, since the plugin's unit
+      // test cannot see the prop chain that feeds it.
+      const noMessages = 'This subagent doesn\'t accept messages.'
+      await expect(page.locator(`[data-placeholder="${noMessages}"]:visible`)).toBeVisible()
+      // ONCE, not twice. The reason used to render again as a note above the
+      // box, so a read-only subagent tab said the same sentence twice, a few
+      // pixels apart.
+      await expect(page.getByText(noMessages, { exact: true })).toHaveCount(0)
     }
 
-    await expectRowBecomesTerminal(page, r, 'Completed').catch(e => console.warn('terminal assertion (best-effort):', e?.message ?? e))
+    await expectRowBecomesFinal(page, r)
     await expectSectionPersists(page)
 
     // Worker-backed: a child agent exists with a parent when Goose linked one.
     if (childId) {
+      // Ask the worker about THIS child id (read off the registry row), the way
+      // 170/171 do. Seeding from the hub's tab list instead made this
+      // unreachable: tabs live in the user CRDT and the hub's tab projection is
+      // empty here, so the id list was always [].
       await expect.poll(async () => {
-        const tabIds = await agentTabIdsForWorkspace(hubUrl, adminToken, workspaceId)
-        const agents = await listAgents(hubUrl, adminToken, workerId, tabIds)
-        if (!agents)
+        const agents = await listAgents(hubUrl, adminToken, workerId, [childId!])
+        const child = agents?.find(a => a.id === childId)
+        if (!child)
           return null
-        return agents.some(a => a.parentAgentId !== '') ? 'found' : null
-      }).toBe('found')
+        return {
+          hasParent: child.parentAgentId !== '',
+          hasSpawnSpan: child.spawnSpanId !== '',
+          acceptsMessages: child.acceptsMessages,
+        }
+      }).toEqual({
+        hasParent: true,
+        hasSpawnSpan: true,
+        // Goose cannot steer a subagent, so the child tab is a read-only
+        // transcript -- the same fact the disabled composer above shows.
+        acceptsMessages: false,
+      })
     }
   })
 })

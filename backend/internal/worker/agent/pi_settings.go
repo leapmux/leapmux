@@ -44,26 +44,26 @@ const (
 // set_thinking_level RPC and let Pi keep its current level (typically driven
 // by ~/.pi/agent/settings.json).
 var piAutoEffort = &EffortInfo{
-	Id: EffortAuto, Name: "Auto", Description: "Use Pi's configured default thinking level",
+	Id: EffortAuto, Name: effortLabel(EffortAuto), Description: "Use Pi's configured default thinking level",
 }
 
 // piDefaultEfforts is the static fallback list of thinking levels surfaced to
 // the UI before get_available_models populates per-model SupportedEfforts.
 var piDefaultEfforts = []*EffortInfo{
 	piAutoEffort,
-	{Id: PiThinkingXHigh, Name: "Extra High"},
-	{Id: PiThinkingHigh, Name: "High"},
-	{Id: PiThinkingMedium, Name: "Medium"},
-	{Id: PiThinkingLow, Name: "Low"},
-	{Id: PiThinkingMinimal, Name: "Minimal"},
-	{Id: PiThinkingOff, Name: "Off"},
+	effortTier(PiThinkingXHigh),
+	effortTier(PiThinkingHigh),
+	effortTier(PiThinkingMedium),
+	effortTier(PiThinkingLow),
+	effortTier(PiThinkingMinimal),
+	effortTier(PiThinkingOff),
 }
 
 // piNonReasoningEfforts is the trimmed effort list for models that don't
 // support reasoning — only Auto and Off make sense.
 var piNonReasoningEfforts = []*EffortInfo{
 	piAutoEffort,
-	{Id: PiThinkingOff, Name: "Off"},
+	effortTier(PiThinkingOff),
 }
 
 // piDefaultModels is the static fallback model list used until the Pi process

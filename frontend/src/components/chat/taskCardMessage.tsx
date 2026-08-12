@@ -4,7 +4,7 @@ import type { TaskCheckboxStatus } from '~/components/todo/TaskCheckbox'
 import type { CLAUDE_TOOL } from '~/types/toolMessages'
 import { TaskCheckbox } from '~/components/todo/TaskCheckbox'
 import { todoStruck } from '~/components/todo/TodoList.css'
-import { isTerminalTodoStatus, todoDisplayLabel } from '~/stores/chatTodos'
+import { isFinishedTodoStatus, todoDisplayLabel } from '~/stores/chatTodos'
 import * as styles from './taskCardMessage.css'
 import { ToolUseLayout } from './toolRenderers'
 import { toolInputText } from './toolStyles.css'
@@ -40,7 +40,7 @@ export function TaskCardMessage(props: {
       title={(
         <span
           class={toolInputText}
-          classList={{ [todoStruck]: isTerminalTodoStatus(props.source.status) }}
+          classList={{ [todoStruck]: isFinishedTodoStatus(props.source.status) }}
         >
           {titleLabel()}
         </span>

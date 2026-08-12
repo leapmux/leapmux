@@ -324,6 +324,55 @@ describe('claude classify', () => {
   })
 })
 
+// A user message stamped with the spawning tool_use id means two different
+// things depending on which transcript it is in, and only the transcript can
+// tell them apart -- Claude forwards a subagent's own messages into the child
+// carrying that same id.
+describe('claude classify: a user message carrying parent_tool_use_id', () => {
+  const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
+
+  // The real payload from a stopped subagent's transcript.
+  const interrupted = {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: '[Request interrupted by user]' }],
+    },
+    parent_tool_use_id: 'toolu_017mp825HZEDTn7h565GkKr1',
+    session_id: '54b79798-6a44-45b1-9bb9-27364aaf83e4',
+    subagent_type: 'general-purpose',
+    task_description: 'FOOTGUNS angle',
+  }
+
+  it('is the prompt sent to a subagent in the PARENT transcript', () => {
+    expect(plugin.classify!(input(interrupted), { isChildTranscript: false }))
+      .toEqual({ kind: 'agent_prompt' })
+  })
+
+  it('is an ordinary user message in the SUBAGENT\'s own transcript', () => {
+    expect(plugin.classify!(input(interrupted), { isChildTranscript: true }))
+      .toEqual({ kind: 'user_text' })
+  })
+
+  // No context at all keeps the parent reading, which is the one every
+  // non-subagent transcript uses.
+  it('defaults to the parent reading when the caller supplies no context', () => {
+    expect(plugin.classify!(input(interrupted))).toEqual({ kind: 'agent_prompt' })
+  })
+
+  // A subagent's tool RESULTS carry the same id and must stay tool results on
+  // both sides -- the array check runs before the prompt check.
+  it('stays a tool result on both sides', () => {
+    const toolResult = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_9', content: 'ok' }] },
+      parent_tool_use_id: 'toolu_017mp825HZEDTn7h565GkKr1',
+    }
+    expect(plugin.classify!(input(toolResult), { isChildTranscript: true })).toEqual({ kind: 'tool_result' })
+    expect(plugin.classify!(input(toolResult), { isChildTranscript: false })).toEqual({ kind: 'tool_result' })
+  })
+})
+
 describe('claude planMode', () => {
   const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
 

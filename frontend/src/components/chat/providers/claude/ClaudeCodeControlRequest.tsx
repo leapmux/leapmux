@@ -3,7 +3,6 @@ import type { ActionsProps, ContentProps } from '../../controls/types'
 
 import { Match, Switch } from 'solid-js'
 import { getToolName } from '~/utils/controlResponse'
-import * as styles from '../../ControlRequestBanner.css'
 import { AskUserQuestionActions, AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
 import { ExitPlanModeActions, ExitPlanModeContent } from '../../controls/ExitPlanModeControl'
 import { GenericToolActions, GenericToolContent } from '../../controls/GenericToolControl'
@@ -27,17 +26,7 @@ export const ClaudeCodeControlContent: Component<ContentProps> = (props) => {
 export const ClaudeCodeControlActions: Component<ActionsProps> = (props) => {
   const toolName = () => props.request?.payload ? getToolName(props.request.payload) : ''
   return (
-    <Switch fallback={(
-      <div class={styles.controlFooter}>
-        <div class={styles.controlFooterLeft}>
-          {props.infoTrigger}
-        </div>
-        <div class={styles.controlFooterRight}>
-          <GenericToolActions {...props} />
-        </div>
-      </div>
-    )}
-    >
+    <Switch fallback={<GenericToolActions {...props} />}>
       <Match when={toolName() === 'ExitPlanMode'}>
         <ExitPlanModeActions {...props} />
       </Match>

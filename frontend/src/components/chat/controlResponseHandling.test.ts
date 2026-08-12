@@ -494,3 +494,52 @@ describe('handleControlSend', () => {
     })
   })
 })
+
+/**
+ * The Interrupt button is offered only when the click can actually land. A
+ * subagent tab whose provider cannot interrupt one subagent gets no button:
+ * the worker routes a child interrupt through the same ChildSteerer as a child
+ * message, so the request would come back FailedPrecondition.
+ */
+describe('showInterrupt', () => {
+  it('shows the button while the agent works and nothing is being asked', () => {
+    createRoot((dispose) => {
+      const { result } = setup({ agentWorking: true })
+      expect(result.showInterrupt()).toBe(true)
+      dispose()
+    })
+  })
+
+  it('hides the button when the agent is idle', () => {
+    createRoot((dispose) => {
+      const { result } = setup({ agentWorking: false })
+      expect(result.showInterrupt()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('hides the button while a control request is pending', () => {
+    createRoot((dispose) => {
+      const request = { requestId: 'r1', payload: {}, agentId: 'test-agent' } as unknown as ControlRequest
+      const { result } = setup({ agentWorking: true, controlRequests: [request] })
+      expect(result.showInterrupt()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('hides the button when this agent cannot be interrupted on its own', () => {
+    createRoot((dispose) => {
+      const { result } = setup({ agentWorking: true, canInterrupt: false })
+      expect(result.showInterrupt()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('treats an unset capability as interruptible (the root-agent default)', () => {
+    createRoot((dispose) => {
+      const { result } = setup({ agentWorking: true, canInterrupt: undefined })
+      expect(result.showInterrupt()).toBe(true)
+      dispose()
+    })
+  })
+})

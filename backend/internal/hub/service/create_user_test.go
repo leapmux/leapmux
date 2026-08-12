@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/sections"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -35,10 +37,15 @@ func createSimpleUser(t *testing.T, st store.Store, username, email string) *sto
 	return user
 }
 
-// TestCreateUser_CreatesOnlyUserRow pins the user-owned model: CreateUser
-// inserts exactly one users row and does not invent workspaces (or any other
-// owned entity) as a side effect of signup.
-func TestCreateUser_CreatesOnlyUserRow(t *testing.T) {
+// TestCreateUser_CreatesOneUserRowAndNoWorkspaces pins the user-owned model:
+// CreateUser inserts exactly one users row and does not invent a WORKSPACE as a
+// side effect of signup.
+//
+// It does write the default sidebar sections, in the same transaction, which is
+// the one owned entity signup is allowed to create -- nothing backfills them
+// later, so a user without them would have an empty sidebar forever.
+// TestCreateUser_SeedsTheDefaultSections covers that half.
+func TestCreateUser_CreatesOneUserRowAndNoWorkspaces(t *testing.T) {
 	t.Parallel()
 
 	st := setupCreateUserTestDB(t)
@@ -74,6 +81,105 @@ func TestCreateUser_CreatesOnlyUserRow(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, workspaces, "CreateUser must not create workspaces as a signup side effect")
+}
+
+// The default sections must land with the user row, because no read path
+// creates them any more. A user without them shows an empty sidebar forever.
+func TestCreateUser_SeedsTheDefaultSections(t *testing.T) {
+	t.Parallel()
+
+	st := setupCreateUserTestDB(t)
+	ctx := context.Background()
+
+	user := createSimpleUser(t, st, "seeded-user", "seeded@example.com")
+
+	got, err := st.WorkspaceSections().ListByUserID(ctx, userid.MustNew(user.ID))
+	require.NoError(t, err)
+	assert.Len(t, got, sections.Count, "signup seeds every default section")
+}
+
+// failingSectionsStore fails every WorkspaceSections().Create, leaving every
+// other operation to the real store. It exists to fail INSIDE the transaction
+// but AFTER the user row is written, which is the only shape that exercises the
+// rollback: a duplicate username aborts at the first statement, so nothing has
+// been written for the transaction to undo.
+type failingSectionsStore struct {
+	store.Store
+}
+
+func (s failingSectionsStore) RunInTransaction(ctx context.Context, fn func(store.Store) error) error {
+	return s.Store.RunInTransaction(ctx, func(tx store.Store) error {
+		return fn(failingSectionsStore{Store: tx})
+	})
+}
+
+func (s failingSectionsStore) WorkspaceSections() store.WorkspaceSectionStore {
+	return failingSectionStore{WorkspaceSectionStore: s.Store.WorkspaceSections()}
+}
+
+type failingSectionStore struct {
+	store.WorkspaceSectionStore
+}
+
+func (failingSectionStore) Create(context.Context, store.CreateWorkspaceSectionParams) error {
+	return errors.New("injected section failure")
+}
+
+// A failure while seeding the sections must roll the USER ROW back with them:
+// the two writes share one transaction precisely so a user can never exist
+// without a sidebar.
+func TestCreateUser_SectionFailureRollsBackTheUserRow(t *testing.T) {
+	t.Parallel()
+
+	st := setupCreateUserTestDB(t)
+	ctx := context.Background()
+
+	hash, err := password.Hash("testpass")
+	require.NoError(t, err)
+	_, err = CreateUser(ctx, failingSectionsStore{Store: st}, CreateUserParams{
+		Username:     "rollback",
+		PasswordHash: hash,
+		DisplayName:  "Rollback",
+		PasswordSet:  true,
+	})
+	require.Error(t, err, "the injected section failure must surface")
+
+	users, err := st.Users().Count(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), users, "the user row rolled back with the sections")
+}
+
+// The sections go in the SAME transaction as the user row, so a failure after
+// the user insert must leave NEITHER behind. A duplicate username fails inside
+// that transaction, which is the reachable way to test it.
+func TestCreateUser_FailedSignupLeavesNoSections(t *testing.T) {
+	t.Parallel()
+
+	st := setupCreateUserTestDB(t)
+	ctx := context.Background()
+
+	first := createSimpleUser(t, st, "taken", "first@example.com")
+
+	hash, err := password.Hash("testpass")
+	require.NoError(t, err)
+	_, err = CreateUser(ctx, st, CreateUserParams{
+		Username:     "taken",
+		PasswordHash: hash,
+		DisplayName:  "Second",
+		PasswordSet:  true,
+	})
+	require.Error(t, err, "a duplicate username must fail")
+
+	// The winner keeps exactly one set; the loser wrote none. A per-user count
+	// is what proves the rollback: a global count would also pass if the failed
+	// attempt had left an orphan set under a different user id.
+	got, err := st.WorkspaceSections().ListByUserID(ctx, userid.MustNew(first.ID))
+	require.NoError(t, err)
+	assert.Len(t, got, sections.Count, "the successful signup keeps its own set")
+
+	users, err := st.Users().Count(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), users, "the failed signup rolled its user row back")
 }
 
 // TestCreateUser_DuplicateUsernameErrorIsNotDoublePrefixed pins the shape of the

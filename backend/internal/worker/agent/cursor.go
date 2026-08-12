@@ -212,13 +212,12 @@ func cursorModelNameSuffix(params map[string]string) string {
 	return ""
 }
 
-// cursorEffortLabel renders a Cursor reasoning-effort level for the model-name suffix,
-// casing the compound "xhigh" nicely as "XHigh"; every other level just capitalizes.
+// cursorEffortLabel renders a Cursor reasoning-effort level for the model-name
+// suffix. It reads the shared table, so an id Cursor shows in a model name and
+// the same id in another provider's effort picker cannot be spelled differently
+// -- "xhigh" used to render "XHigh" here and "Extra High" everywhere else.
 func cursorEffortLabel(level string) string {
-	if strings.EqualFold(level, "xhigh") {
-		return "XHigh"
-	}
-	return capitalizeFirst(level)
+	return effortLabel(level)
 }
 
 func cursorModelIDForWire(model string) string {
@@ -292,8 +291,8 @@ func cursorSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation 
 }
 
 // cursorSubagentFromToolCallUpdate maps Cursor's task tool_call status
-// transitions to terminal registry rows. The terminal update fires for EVERY
-// terminal tool_call (not just spawns); a plain tool (isBackground absent) is
+// transitions to finished registry rows. The final update fires for EVERY
+// finished tool_call (not just spawns); a plain tool (isBackground absent) is
 // a close-only observation so it does not create a spurious row. A background
 // task carries an activity line and upserts before closing.
 func cursorSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
@@ -318,7 +317,7 @@ func cursorSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagen
 	return &acpSubagentObservation{
 		RowKey:   tcu.ToolCallID,
 		Activity: activity,
-		Status:   acpTerminalStatus(tcu.Status),
+		Status:   acpFinalStatus(tcu.Status),
 		CloseRow: true,
 		Mode:     mode,
 	}

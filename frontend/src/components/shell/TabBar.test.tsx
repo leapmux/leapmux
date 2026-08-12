@@ -51,6 +51,19 @@ vi.mock('~/components/common/DropdownMenu', () => ({
       </span>
     )
   },
+  DropdownMenuCheckableItem(props: any) {
+    return (
+      <button
+        role={props.kind === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio'}
+        aria-checked={props.checked}
+        disabled={props.disabled}
+        onClick={() => props.onSelect()}
+      >
+        <input type={props.kind} checked={props.checked} disabled />
+        <span>{props.label}</span>
+      </button>
+    )
+  },
 }))
 
 // Mock TabBar.css to provide minimal class names
@@ -70,8 +83,6 @@ vi.mock('~/components/shell/TabBar.css', () => ({
   collapsedNewTab: 'collapsedNewTab',
   collapsedOverflow: 'collapsedOverflow',
   shellDefault: 'shellDefault',
-  toggleMenuLabel: 'toggleMenuLabel',
-  toggleMenuIndicator: 'toggleMenuIndicator',
 }))
 
 function noop() {}
@@ -274,8 +285,8 @@ describe('tabBar readOnly prop', () => {
     expect(screen.getAllByText('Advanced').length).toBeGreaterThan(0)
     expect(screen.queryByText('Developer')).not.toBeInTheDocument()
 
-    const expandItems = screen.getAllByRole('menuitem', { name: /Expand agent thoughts/ })
-    const hiddenItems = screen.getAllByRole('menuitem', { name: /Show hidden messages/ })
+    const expandItems = screen.getAllByRole('menuitemcheckbox', { name: /Expand agent thoughts/ })
+    const hiddenItems = screen.getAllByRole('menuitemcheckbox', { name: /Show hidden messages/ })
     expect(expandItems.length).toBeGreaterThan(0)
     expect(hiddenItems.length).toBeGreaterThan(0)
     expect(expandItems[0].compareDocumentPosition(hiddenItems[0]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
@@ -291,19 +302,22 @@ describe('tabBar readOnly prop', () => {
       </PreferencesProvider>
     ))
 
-    const menuItem = screen.getAllByRole('menuitem', { name: /Expand agent thoughts/ })[0]
+    // The toggles carry role=menuitemcheckbox, so a screen reader announces
+    // their on/off state; the display-only indicator is aria-hidden.
+    const menuItem = screen.getAllByRole('menuitemcheckbox', { name: /Expand agent thoughts/ })[0]
     expect(menuItem).toHaveTextContent('Expand agent thoughts')
-    expect(menuItem).toHaveTextContent('✓')
+    expect(menuItem).toHaveAttribute('aria-checked', 'true')
+    const checkbox = menuItem.querySelector('input[type="checkbox"]') as HTMLInputElement
+    expect(checkbox.checked).toBe(true)
     expect(getBrowserPrefs().expandAgentThoughts).toBeUndefined()
 
     fireEvent.click(menuItem)
-    expect(menuItem).toHaveTextContent('Expand agent thoughts')
-    expect(menuItem).not.toHaveTextContent('✓')
+    expect(checkbox.checked).toBe(false)
+    expect(menuItem).toHaveAttribute('aria-checked', 'false')
     expect(getBrowserPrefs().expandAgentThoughts).toBe(false)
 
     fireEvent.click(menuItem)
-    expect(menuItem).toHaveTextContent('Expand agent thoughts')
-    expect(menuItem).toHaveTextContent('✓')
+    expect(checkbox.checked).toBe(true)
     expect(getBrowserPrefs().expandAgentThoughts).toBeUndefined()
   })
 })

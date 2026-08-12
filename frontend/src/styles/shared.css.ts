@@ -1,5 +1,28 @@
 import { style } from '@vanilla-extract/css'
 
+/**
+ * The small muted button that opens something: the composer's status-bar chips
+ * (branch, model, effort, mode) and the info cluster beside them (the
+ * context-usage trigger, the copy buttons inside its card).
+ *
+ * They sit next to each other in the same bar, so a divergence in radius, hover
+ * colour, or resting colour is immediately visible. Each composer takes this
+ * base and adds only what genuinely differs: its padding, its font size, and
+ * whether it centres its content.
+ */
+export const chipBase = style({
+  all: 'unset',
+  boxSizing: 'border-box',
+  display: 'inline-flex',
+  alignItems: 'center',
+  cursor: 'pointer',
+  borderRadius: 'var(--radius-small)',
+  color: 'var(--faint-foreground)',
+  selectors: {
+    '&:hover': { color: 'var(--foreground)', backgroundColor: 'var(--card)' },
+  },
+})
+
 export const errorText = style({
   color: 'var(--danger)',
   fontSize: 'var(--text-7)',
@@ -88,8 +111,4 @@ export const cardNarrow = style({
 
 export const cardMedium = style({
   width: '400px',
-})
-
-export const cardWide = style({
-  width: '440px',
 })

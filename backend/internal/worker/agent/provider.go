@@ -129,6 +129,26 @@ type Provider interface {
 	// turn-end sound for a zero-tool turn, so a provider that cannot say must
 	// return ok=false rather than 0.
 	TurnEndToolUses(content []byte) (count int32, ok bool)
+	// EndsSubagentTranscript reports whether content, as the LAST message of a
+	// SUBAGENT transcript, already announces that the SUBAGENT itself is over.
+	//
+	// Used to decide whether that transcript already ends in a divider. Claude
+	// forwards a subagent's own `result`, so its child transcript closes
+	// itself; writing the worker's neutral subagent-end divider on top would
+	// stack two rules saying the same thing. Providers whose child transcript
+	// simply stops return false and get the neutral divider.
+	//
+	// The question is "does this close the SUBAGENT", NOT "is this a turn-end
+	// envelope". The two differ for a steerable child: a Codex collab thread
+	// draws a turn-end divider at the end of EVERY turn and then accepts
+	// another, so answering the turn-end question would suppress the divider
+	// for exactly the stopped-mid-life child that needs it. Codex therefore
+	// keeps the false default although it does forward a turn end.
+	//
+	// Content-based, not a static capability: the SAME Claude subagent ends
+	// with a forwarded result when it completes and with nothing at all when it
+	// is stopped mid-flight, and only the stopped one needs the neutral divider.
+	EndsSubagentTranscript(content []byte) bool
 	// SupportsChildSteering reports whether a running agent of this provider
 	// can address a subagent conversation inside the same process (Codex's
 	// collab child threads). Drives AgentInfo.accepts_messages for child tabs:
@@ -176,6 +196,17 @@ func (noopProvider) PermissionModeFromRawInput(string) (string, bool) { return "
 func (noopProvider) TurnEndToolUses(content []byte) (int32, bool) {
 	return defaultTurnEndToolUses(content)
 }
+
+// EndsSubagentTranscript defaults to false: a provider that forwards no
+// subagent-final envelope into its subagent transcripts leaves them to be
+// closed by the worker's neutral subagent-end divider. Only Claude overrides
+// it.
+//
+// Codex keeps this default deliberately although it DOES forward a divider:
+// its per-turn `turn/completed` ends a turn, not the subagent, and a collab
+// child accepts another turn afterwards. Answering true there would suppress
+// the closing divider for every stopped child.
+func (noopProvider) EndsSubagentTranscript([]byte) bool { return false }
 
 // SupportsChildSteering defaults to false: a provider whose running agents
 // cannot steer a subagent conversation inside their own process. Only Codex
@@ -433,6 +464,22 @@ func (claudeProvider) PlanModeControl(toolName string) PlanModeControlKind {
 // Claude's plan flow is EnterPlanMode/ExitPlanMode (never PlanModeControlPrompt), so no
 // plan-approval option settlement runs for it.
 func (claudeProvider) PlanApprovalOptions() PlanApprovalOptions { return PlanApprovalOptions{} }
+
+// EndsSubagentTranscript recognizes Claude's final `{"type":"result",...}`.
+// With --forward-subagent-text a subagent's own result is forwarded into the
+// child transcript, and a Claude subagent gets exactly one, so a subagent that
+// runs to completion already closes itself and needs no neutral divider
+// stacked on top. A subagent stopped mid-flight forwards no result, so its
+// transcript does not end here and still gets the neutral divider.
+func (claudeProvider) EndsSubagentTranscript(content []byte) bool {
+	var env struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(content, &env); err != nil {
+		return false
+	}
+	return env.Type == claudeMsgTypeResult
+}
 
 // SyntheticInterruptNotice: Claude's interrupt surfaces in its own transcript, so no synthetic
 // notice is persisted for a forwarded interrupt frame.

@@ -1,12 +1,12 @@
 /// <reference types="vitest/globals" />
 import { create } from '@bufbuild/protobuf'
-import { createEffect, createRoot } from 'solid-js'
+import { createEffect, createRoot, createSignal } from 'solid-js'
 import { unwrap } from 'solid-js/store'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AgentGitStatusSchema, AgentStatus, AvailableOptionGroupSchema } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
-import { createTabMetadataStore, liveTabIds } from './tabMetadata.store'
+import { createTabMetadataStore, liveTabIds, useMetadataSweep } from './tabMetadata.store'
 
 /**
  * Everything about a tab the CRDT does not carry.
@@ -366,37 +366,35 @@ describe('tabMetadata', () => {
    * tombstoned tabs are swept against its tab set rather than removed by each
    * close path.
    */
-  describe('retainOnly', () => {
-    it('drops rows for tabs not in the live set', () => {
+  describe('dropTabs', () => {
+    it('drops exactly the rows named, and nothing else', () => {
       const m = createTabMetadataStore()
       m.patch('alive', { title: 'A' })
       m.patch('dead', { title: 'B' })
 
-      m.retainOnly(new Set(['alive']))
+      m.dropTabs(new Set(['dead']))
 
       expect(m.get('alive')?.title).toBe('A')
       expect(m.get('dead')).toBeUndefined()
     })
 
-    it('clears everything for an empty live set', () => {
+    it('is a no-op for an empty set', () => {
       const m = createTabMetadataStore()
       m.patch('a1', { title: 'A' })
-      m.retainOnly(new Set())
-      expect(m.get('a1')).toBeUndefined()
+      m.dropTabs(new Set())
+      expect(m.get('a1')?.title).toBe('A')
     })
 
-    it('keeps every row when the live set covers them all', () => {
+    it('ignores an id it holds no row for', () => {
       const m = createTabMetadataStore()
       m.patch('a1', { title: 'A' })
-      m.patch('a2', { title: 'B' })
-      m.retainOnly(new Set(['a1', 'a2', 'not-yet-seen']))
-      expect(m.get('a1')?.title).toBe('A')
-      expect(m.get('a2')?.title).toBe('B')
+      m.dropTabs(new Set(['ghost', 'a1']))
+      expect(m.get('a1')).toBeUndefined()
     })
   })
 
   /**
-   * Which tabs a sweep may retire.
+   * Which tabs the CRDT still has.
    *
    * The distinction this encodes cost a real bug: keyed on the projection's
    * `ownedTabs` instead, closing a tile silently deleted the surviving tab's
@@ -419,19 +417,6 @@ describe('tabMetadata', () => {
       expect(liveTabIds(state as never).has('stranded')).toBe(true)
     })
 
-    it('survives a sweep round-trip: unresolvable tabs keep their metadata', () => {
-      const m = createTabMetadataStore()
-      m.patch('stranded', { title: 'Still mine', screen: new Uint8Array([1, 2, 3]) })
-      m.patch('gone', { title: 'Closed elsewhere' })
-
-      // `gone` left the CRDT entirely; `stranded` is merely unplaced.
-      m.retainOnly(liveTabIds({ tabs: { stranded: {} } }))
-
-      expect(m.get('stranded')?.title).toBe('Still mine')
-      expect(m.get('stranded')?.screen).toEqual(new Uint8Array([1, 2, 3]))
-      expect(m.get('gone')).toBeUndefined()
-    })
-
     /**
      * A tombstone does NOT delete the map key -- `applyTombstoneTab` replaces
      * the record with a tombstoned one. Counting raw keys therefore named every
@@ -447,16 +432,205 @@ describe('tabMetadata', () => {
       }
       expect(liveTabIds(state as never)).toEqual(new Set(['alive']))
     })
+  })
 
-    it('reclaims a closed terminal scrollback on sweep', () => {
-      const m = createTabMetadataStore()
-      m.patch('t1', { title: 'shell', screen: new Uint8Array(1024) })
+  /**
+   * The sweep as it actually runs: a memo over the CRDT state feeding an effect.
+   *
+   * The rule the effect adds to `liveTabIds` is the load-bearing part. A row is
+   * retired when its tab WAS live and stopped being live, never merely because
+   * it is not live now -- every open path writes a tab's metadata BEFORE
+   * emitting the op that creates it, so a CRDT tick landing in that window used
+   * to delete the row of a tab that was about to exist.
+   */
+  describe('useMetadataSweep', () => {
+    const tombstone = { physical: 7n, logical: 0n, clientId: 'a' }
+    interface SweepState { tabs: Record<string, { tombstoneAt?: unknown }> }
 
-      m.retainOnly(liveTabIds({
-        tabs: { t1: { tombstoneAt: { physical: 9n, logical: 0n, clientId: 'a' } } },
-      } as never))
+    it('spares a row written before its tab reaches the CRDT, and retires it once closed', async () => {
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        const [state, setState] = createSignal<SweepState>({ tabs: {} })
+        useMetadataSweep(() => state() as never, m)
+        await flush()
 
-      expect(m.get('t1')).toBeUndefined()
+        // The open path's order: the row first, then the op that creates the tab.
+        m.patch('f1', { title: 'file.txt', fileViewMode: 'unified-diff' })
+
+        // An unrelated batch lands in that window. This is what used to delete
+        // the row: `f1` was not live, so it was retired -- and the file then
+        // opened with no view mode and no diff-mode toolbar.
+        setState({ tabs: { other: {} } })
+        await flush()
+        expect(m.get('f1')?.fileViewMode, 'the row survives the window').toBe('unified-diff')
+
+        // The tab's own op lands.
+        setState({ tabs: { other: {}, f1: {} } })
+        await flush()
+        expect(m.get('f1')?.fileViewMode).toBe('unified-diff')
+
+        // Closing it tombstones the record, which IS what retires the row.
+        setState({ tabs: { other: {}, f1: { tombstoneAt: tombstone } } })
+        await flush()
+        expect(m.get('f1'), 'a tombstone reclaims the row').toBeUndefined()
+        expect(m.get('other'), 'and only that row').toBeUndefined()
+
+        dispose()
+      })
+    })
+
+    /**
+     * The OTHER way a tab leaves. `consumeEntityRemoved` DELETES the record
+     * rather than tombstoning it, for a workspace that moved out of this
+     * subscriber's allowed set -- so a sweep that only looked for tombstones
+     * would leak every one of those rows, terminal scrollback included.
+     */
+    it('retires a row whose record the CRDT deleted outright', async () => {
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        const [state, setState] = createSignal<SweepState>({ tabs: { t1: {} } })
+        useMetadataSweep(() => state() as never, m)
+        m.patch('t1', { title: 'shell', screen: new Uint8Array(1024) })
+        await flush()
+        expect(m.get('t1')?.title).toBe('shell')
+
+        setState({ tabs: {} })
+        await flush()
+        expect(m.get('t1')).toBeUndefined()
+
+        dispose()
+      })
+    })
+
+    // A tab that leaves and comes back (`emitReviveTab`) must be sweepable
+    // again, which it is only if the revive puts it back among the seen ids.
+    it('retires a revived tab a second time', async () => {
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        const [state, setState] = createSignal<SweepState>({ tabs: { a1: {} } })
+        useMetadataSweep(() => state() as never, m)
+        await flush()
+
+        setState({ tabs: { a1: { tombstoneAt: tombstone } } })
+        await flush()
+
+        // Revived: the record is untombstoned again, and the tab is re-titled.
+        setState({ tabs: { a1: {} } })
+        await flush()
+        m.patch('a1', { title: 'Back' })
+        expect(m.get('a1')?.title).toBe('Back')
+
+        setState({ tabs: { a1: { tombstoneAt: tombstone } } })
+        await flush()
+        expect(m.get('a1')).toBeUndefined()
+
+        dispose()
+      })
+    })
+
+    /**
+     * The sweep retires an id ONCE and forgets it, so a write that lands after
+     * that point would strand a row nothing can ever reclaim. The terminal
+     * screen sink is that writer: `disposeTerminalInstance` defers to a
+     * microtask, so for a terminal closed on ANOTHER device it runs after the
+     * tombstone already swept the row.
+     *
+     * `patchExisting` is what closes it -- the sink creates no row for a tab
+     * that is gone. `patch` must keep creating them, because every open path
+     * writes a tab's metadata BEFORE the op that creates it.
+     */
+    it('does not resurrect a swept row when a late writer patches it', async () => {
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        const [state, setState] = createSignal<SweepState>({ tabs: { t1: {} } })
+        useMetadataSweep(() => state() as never, m)
+        m.patch('t1', { title: 'shell', screen: new Uint8Array(1024) })
+        await flush()
+
+        // Closed on another device: the tombstone arrives and the row goes.
+        setState({ tabs: { t1: { tombstoneAt: tombstone } } })
+        await flush()
+        expect(m.get('t1')).toBeUndefined()
+
+        // The unmount's deferred capture lands AFTER that.
+        m.patchExisting('t1', { screen: new Uint8Array(4096) })
+        expect(m.get('t1'), 'a late capture does not re-create the row').toBeUndefined()
+
+        // And no later sweep can reach it, which is why the WRITE had to be the
+        // thing that declined: the id left the live set for good, so a `patch`
+        // here strands its row for the life of the page. That contrast is the
+        // whole reason the sink uses `patchExisting`.
+        m.patch('t1', { screen: new Uint8Array(4096) })
+        expect(m.get('t1'), 'patch still creates -- open paths depend on it').toBeDefined()
+        setState({ tabs: {} })
+        await flush()
+        expect(m.get('t1'), 'and no sweep can ever reclaim what patch created').toBeDefined()
+
+        dispose()
+      })
+    })
+
+    /**
+     * The rows the store restores from the persisted MRU map belong to tabs that
+     * were live in an EARLIER session. Retiring only ids seen live in THIS one
+     * left them permanently: a tab closed on another device while this page was
+     * away is never reported live, so it could never be retired either, and
+     * `mruSnapshot` re-persisted its stamp on every write.
+     */
+    it('retires a row restored from the persisted MRU for a tab that is gone', async () => {
+      sessionStorageSet(KEY_TAB_MRU, { gone: 4, kept: 5 })
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        expect(m.get('gone'), 'seeded from the persisted MRU').toBeDefined()
+
+        const [state, setState] = createSignal<SweepState>({ tabs: {} })
+        useMetadataSweep(() => state() as never, m)
+        await flush()
+
+        // A cold start publishes an EMPTY tab set before the server fills it.
+        // Retiring against that would drop the stamp of a tab about to arrive.
+        expect(m.get('kept'), 'an empty first state retires nothing').toBeDefined()
+
+        setState({ tabs: { kept: {} } })
+        await flush()
+        expect(m.get('gone'), 'a seeded row with no live tab is reclaimed').toBeUndefined()
+        expect(m.get('kept'), 'and one whose tab did arrive is kept').toBeDefined()
+
+        dispose()
+      })
+    })
+
+    // The memo compares the live tab-id SET, so the ~60 batches/s a tile
+    // drag emits -- none of which create or retire a tab -- must not re-run it.
+    it('does not re-run while the live set is unchanged', async () => {
+      await createRoot(async (dispose) => {
+        const m = createTabMetadataStore()
+        const [state, setState] = createSignal<SweepState>({ tabs: {} }, { equals: false })
+        let sweeps = 0
+        const counting = {
+          ...m,
+          dropTabs(retired: Set<string>) {
+            sweeps++
+            m.dropTabs(retired)
+          },
+        }
+        useMetadataSweep(() => state() as never, counting as never)
+        setState({ tabs: { a: {}, b: {} } })
+        await flush()
+        const baseline = sweeps
+
+        for (let i = 0; i < 5; i++) {
+          setState({ tabs: { a: {}, b: {} } })
+          await flush()
+        }
+        expect(sweeps, 'an unchanged live set re-runs nothing').toBe(baseline)
+
+        setState({ tabs: { a: {}, b: { tombstoneAt: tombstone } } })
+        await flush()
+        expect(sweeps).toBe(baseline + 1)
+
+        dispose()
+      })
     })
   })
 
@@ -523,7 +697,7 @@ describe('tabMetadata', () => {
    * MRU is persisted to sessionStorage (`KEY_TAB_MRU`) so a reload restores the
    * prior ordering rather than leaving every tab at zero (which made `mruHead`
    * silently fall back to `tabs[0]`). The store seeds eagerly on construction
-   * and writes back (deduped) from `touchMru`, `remove`, and `retainOnly`.
+   * and writes back (deduped) from `touchMru`, `remove`, and `dropTabs`.
    */
   describe('mru persistence', () => {
     it('writes the stamp map to sessionStorage on touchMru', () => {
@@ -552,12 +726,12 @@ describe('tabMetadata', () => {
       expect(sessionStorageGet<Record<string, number>>(KEY_TAB_MRU)).toEqual({ b: 2 })
     })
 
-    it('drops swept tabs\' stamps on retainOnly', () => {
+    it('drops swept tabs\' stamps on dropTabs', () => {
       const m = createTabMetadataStore()
       m.touchMru('a')
       m.touchMru('b')
       m.touchMru('c')
-      m.retainOnly(new Set(['b']))
+      m.dropTabs(new Set(['a', 'c']))
       expect(sessionStorageGet<Record<string, number>>(KEY_TAB_MRU)).toEqual({ b: 2 })
     })
 

@@ -31,17 +31,36 @@ export const ACCOUNT_DEFAULT_MODEL = 'default' as const
 /** Threshold above which an option group renders as a searchable list instead of radios. */
 export const OPTION_GROUP_SEARCHABLE_THRESHOLD = 7
 
-/** Shared item type used by RadioGroup and settings helpers. */
+/** Shared item type used by the option-group menu items and settings helpers. */
 export interface SettingsItem {
   label: string
   value: string
-  /** Hover text shown by RadioGroup and the searchable list. */
+  /** Hover text shown by the menu items and the filterable listbox. */
   tooltip?: string
 }
 
 /** Find an option group by id. */
 export function optionGroup(optionGroups: AvailableOptionGroup[] | undefined, id: string) {
   return optionGroups?.find(g => g.id === id)
+}
+
+/**
+ * Whether a group offers anything to pick.
+ *
+ * The worker reports a group before its option list resolves, so a surface that
+ * renders on the group's mere presence gets a chip that opens onto nothing, or
+ * a submenu that is a dead end. Both composer settings surfaces apply this one
+ * test -- the `[+]` menu when it lists submenus, the status bar when it decides
+ * which chips to show -- so they cannot disagree about which groups are worth
+ * showing.
+ */
+export function hasOptions(group: AvailableOptionGroup | undefined): boolean {
+  return !!group && group.options.length > 0
+}
+
+/** Whether the catalog holds `id` AND that group offers at least one option. */
+export function groupHasOptions(optionGroups: AvailableOptionGroup[] | undefined, id: string): boolean {
+  return hasOptions(optionGroup(optionGroups, id))
 }
 
 /**
@@ -136,13 +155,6 @@ export function optionGroupDefaultValue(optionGroups: AvailableOptionGroup[] | u
   return group.defaultValue || ''
 }
 
-/** Resolve a human-readable label for a value within an option group. */
-export function optionLabel(optionGroups: AvailableOptionGroup[] | undefined, id: string, currentValue: string): string {
-  const group = optionGroup(optionGroups, id)
-  const opt = group?.options.find(o => o.id === currentValue)
-  return opt?.name || opt?.id || currentValue
-}
-
 /** Whether `value` is one of the options the group currently offers. */
 export function valueValidForGroup(optionGroups: AvailableOptionGroup[] | undefined, id: string, value: string): boolean {
   return optionGroup(optionGroups, id)?.options.some(o => o.id === value) ?? false
@@ -180,6 +192,22 @@ export function currentValueOrDefault(optionGroups: AvailableOptionGroup[] | und
   if (id === OPTION_ID_MODEL)
     return optionGroup(optionGroups, id)?.options[0]?.id ?? ''
   return ''
+}
+
+/**
+ * The value a group's UI should show as selected: the effective current value
+ * (optimistic override, else the catalog's confirmed value), clamped to an
+ * option the group still offers.
+ *
+ * Every reader of a group's selection must use this one expression. The chip
+ * label, the radio that renders checked, and a provider action's "already
+ * applied" test all compare against the selection, so a site that clamped
+ * differently would disable an action the picker shows as unselected — or the
+ * reverse.
+ */
+export function resolvedCurrent(optionGroups: AvailableOptionGroup[] | undefined, optionValues: Record<string, string> | undefined, groupId: string): string {
+  const raw = effectiveCurrent(optionValues, optionGroup(optionGroups, groupId))
+  return currentValueOrDefault(optionGroups, groupId, raw)
 }
 
 /** Context window (tokens) of the currently-selected model, or 0 if unknown. */

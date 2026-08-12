@@ -138,6 +138,12 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 			return
 		}
 		a.mu.Lock()
+		// Codex ACCEPTED the turn. This is what `sendTurnStart` waits on: the
+		// turn/start response does not arrive until the turn ends.
+		if a.turnStartAck != nil {
+			close(a.turnStartAck)
+			a.turnStartAck = nil
+		}
 		a.turnID = notif.Turn.ID
 		a.turnToolUses = 0
 		a.turnSawPlan = false
@@ -424,6 +430,7 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 		if collab := parseCollabToolCall(item); collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
 				a.registerCollabReceiver(receiverID, itemID)
+				a.collabChildPrompts.remember(receiverID, collab.Prompt)
 			}
 		}
 	case "reasoning":
@@ -506,9 +513,10 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		if collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
 				a.registerCollabReceiver(receiverID, itemID)
+				a.collabChildPrompts.remember(receiverID, collab.Prompt)
 			}
 			if collab.Tool == "spawnAgent" {
-				if sp := parseCollabSpawnPrompt(item); sp != "" {
+				if sp := collab.Prompt; sp != "" {
 					for _, rid := range collab.ReceiverThreadIds {
 						a.recordCollabChildTitle(rid, sp)
 					}
@@ -962,8 +970,12 @@ type codexCollabAgentState struct {
 }
 
 type codexCollabAgentToolCall struct {
-	Tool              string                           `json:"tool"`
-	Status            string                           `json:"status"`
+	Tool   string `json:"tool"`
+	Status string `json:"status"`
+	// Prompt is the instruction the spawned agent was given. Codex declares it
+	// `prompt: string | null` on the collabAgentToolCall thread item, so it is
+	// absent for the non-spawn collab tools (send/wait).
+	Prompt            string                           `json:"prompt"`
 	ReceiverThreadIds []string                         `json:"receiverThreadIds"`
 	AgentsStates      map[string]codexCollabAgentState `json:"agentsStates"`
 }

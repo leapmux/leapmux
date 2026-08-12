@@ -1,11 +1,12 @@
-import type { Component } from 'solid-js'
+import type { Component, JSX } from 'solid-js'
+import type { DropdownTriggerProps } from '~/components/common/DropdownMenu'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { dangerMenuItem } from '~/styles/shared.css'
 
 interface BranchContextMenuProps {
-  onChangeBranch: () => void
-  onDeleteBranch: () => void
+  'onChangeBranch': () => void
+  'onDeleteBranch': () => void
   /**
    * Why both items are unusable, or undefined when they are usable. Both
    * actions need the Worker -- one to read the branch state, the other to
@@ -25,14 +26,23 @@ interface BranchContextMenuProps {
    * split the pattern and need its own `[aria-disabled]` styling. If this is
    * revisited, move all the menus together.
    */
-  disabledReason?: string
+  'disabledReason'?: string
+  /**
+   * DropdownMenu `trigger` render-prop for the open affordance. Defaults to the
+   * sidebar's kebab (`rowContextMenuTrigger()`); the composer's branch chip
+   * supplies a branch-name button here so the same menu items surface from a
+   * different trigger.
+   */
+  'trigger'?: (triggerProps: DropdownTriggerProps) => JSX.Element
+  /** data-testid applied to the popover element. */
+  'data-testid'?: string
 }
 
 // Per-row trigger+children wrapper around DropdownMenu. The menu items
 // close over their row's branch data via the calling component's
 // closure, so there's no shared overlay state to thread.
 export const BranchContextMenu: Component<BranchContextMenuProps> = props => (
-  <DropdownMenu trigger={rowContextMenuTrigger()}>
+  <DropdownMenu trigger={props.trigger ?? rowContextMenuTrigger()} data-testid={props['data-testid']}>
     <button
       role="menuitem"
       disabled={Boolean(props.disabledReason)}

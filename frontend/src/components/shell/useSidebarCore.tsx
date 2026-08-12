@@ -67,8 +67,9 @@ export interface SidebarCommonProps {
   activeTodos: TodoItem[]
   showBackgroundTasks: boolean
   activeBackgroundTasks: BackgroundTaskItem[]
+  /** The worker could not answer for this root's registry. */
+  activeBackgroundTasksFailed: boolean
   onOpenBackgroundTask?: (item: BackgroundTaskItem) => void
-  resolveAgentTabTitle?: (id: string) => string | undefined
   /** Signal bumped on agent turn-end; drives directory tree refresh. */
   turnEndTrigger?: number
   /**
@@ -200,8 +201,8 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     get activeTodos() { return props.activeTodos },
     get showBackgroundTasks() { return props.showBackgroundTasks },
     get activeBackgroundTasks() { return props.activeBackgroundTasks },
+    get activeBackgroundTasksFailed() { return props.activeBackgroundTasksFailed },
     get onOpenBackgroundTask() { return props.onOpenBackgroundTask },
-    get resolveAgentTabTitle() { return props.resolveAgentTabTitle },
     get workers() { return props.workers },
     workerInfoFn: props.workerInfoFn,
     channelStatusFn: props.channelStatusFn,

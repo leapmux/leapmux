@@ -111,6 +111,9 @@ function setup(
   // not the resolved outcome, so a plain vi.fn() (resolving undefined) is enough.
   const handleAgentClose = vi.fn()
   const handleTerminalClose = vi.fn()
+  // The descendant path retires locally instead of firing a per-child RPC, so
+  // this is the seam that records which subagents went, and in what order.
+  const retireAgentTabLocally = vi.fn()
 
   const ops = useTabOperations({
     view,
@@ -120,6 +123,7 @@ function setup(
     layoutStore,
     agentOps: {
       handleAgentClose,
+      retireAgentTabLocally,
     } as never,
     termOps: {
       handleTerminalClose,
@@ -140,8 +144,10 @@ function setup(
     tileId,
     handleAgentClose,
     handleTerminalClose,
+    retireAgentTabLocally,
     addFile: (id: string, filePath: string, onTile = tileId) => addFile(stores, id, onTile, filePath),
-    addAgent: (id: string, onTile = tileId) => addAgent(stores, id, onTile),
+    addAgent: (id: string, onTile = tileId, meta: Record<string, unknown> = {}) =>
+      addAgent(stores, id, onTile, undefined, meta),
     addTerminal: (id: string, onTile = tileId) => {
       nextPosition += 1
       emitAddTab({ type: TabType.TERMINAL, id, tileId: onTile, position: `p${nextPosition}`, workerId: 'w-1' })
@@ -210,6 +216,27 @@ describe('useTabOperations', () => {
             gitToplevel: '/tmp',
             gitIsWorktree: false,
             workingDir: '/tmp',
+          })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // Opening a file from a git filter tab starts it in the diff that tab shows.
+    // The mode is what puts the diff-mode toolbar on screen at all, so losing it
+    // silently downgrades the open to a plain read of the working copy.
+    it('opens a file from a git filter tab in the diff view that tab names', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          ops.handleFileOpen('/tmp/staged.go', 'staged')
+          const opened = view.forWorkspace('ws-test').find(t => t.type === TabType.FILE)
+          expect(opened).toMatchObject({
+            fileViewMode: 'unified-diff',
+            fileDiffBase: 'head-vs-staged',
+            fileOpenSource: 'staged',
           })
         }
         finally {
@@ -694,6 +721,170 @@ describe('useTabOperations', () => {
       expect(messages[0].seq).toBe(1n)
       expect(messages.at(-1)?.seq).toBe(60n)
       dispose()
+    })
+  })
+})
+
+/**
+ * Closing an agent tab closes the subagent tabs under it.
+ *
+ * A child agent tab is a transcript its parent's provider feeds; it owns no
+ * process of its own. With the parent gone nothing can add to it, and the
+ * sidebar promotes it to a top-level row claiming a lineage the user can no
+ * longer see -- so the subtree goes with the tab the user closed.
+ */
+describe('useTabOperations.handleTabClose subagent sweep', () => {
+  afterEach(() => {
+    mockInspectLastTabClose.mockReset()
+    mockInspectLastTabClose.mockImplementation(() => Promise.resolve({ shouldPrompt: false } as unknown))
+  })
+
+  /** Ids handleAgentClose was called with, in call order. */
+  const closedIds = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.map(c => c[0] as string)
+
+  it('closes every descendant, deepest first, when a root agent closes', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { view, ops, addAgent, handleAgentClose, retireAgentTabLocally } = setup()
+        addAgent('child-1', 'tile-1', { parentAgentId: 'agent-a' })
+        addAgent('child-2', 'tile-1', { parentAgentId: 'agent-a' })
+        addAgent('grandchild', 'tile-1', { parentAgentId: 'child-1' })
+
+        const ok = await ops.handleTabClose(view.getById(TabType.AGENT, 'agent-a')!)
+        expect(ok).toBe(true)
+
+        // The descendants leave the view here and now: their tombstones are
+        // this function's own, not the mocked RPC's. `agent-a` is not checked
+        // because `handleAgentClose` is the seam that emits its tombstone, and
+        // it is a mock in these tests.
+        for (const id of ['grandchild', 'child-1', 'child-2'])
+          expect(view.getById(TabType.AGENT, id), `${id} is gone`).toBeUndefined()
+
+        const ids = closedIds(retireAgentTabLocally)
+        expect(new Set(ids)).toEqual(new Set(['grandchild', 'child-1', 'child-2']))
+        // A tab goes before the one that placed it: each close prunes an
+        // emptied floating window, and the parent going first would prune the
+        // window its own children still sit in.
+        expect(ids.indexOf('grandchild')).toBeLessThan(ids.indexOf('child-1'))
+        // ...and the tab the user clicked is the LAST to go, so it is the one
+        // that finds the tile empty.
+        expect(closedIds(handleAgentClose)).toEqual(['agent-a'])
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  /**
+   * A child close is UI-only on the worker, and the ONE RPC the clicked tab
+   * fires already stamps `closed_at` over the whole subtree -- so a call per
+   * child would spend a round trip each to do nothing, and each response would
+   * re-report a subtree the parent's answer already covered.
+   */
+  it('retires each subagent locally, with no RPC and no inspection of its own', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { view, ops, addAgent, handleAgentClose, retireAgentTabLocally } = setup()
+        addAgent('child-1', 'tile-1', { parentAgentId: 'agent-a' })
+
+        await ops.handleTabClose(view.getById(TabType.AGENT, 'agent-a')!)
+
+        expect(mockInspectLastTabClose).toHaveBeenCalledTimes(1)
+        expect(retireAgentTabLocally).toHaveBeenCalledWith('child-1')
+        expect(
+          handleAgentClose.mock.calls.map(c => c[0]),
+          'only the clicked tab reaches the worker',
+        ).toEqual(['agent-a'])
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  // The sweep runs in the COMMIT phase. A cancelled prompt leaves the whole
+  // subtree open -- closing the children of a tab that survives would be the
+  // worst possible outcome of saying "cancel".
+  it('leaves the subtree open when the user cancels the close', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { view, ops, addAgent, handleAgentClose } = setup()
+        addAgent('child-1', 'tile-1', { parentAgentId: 'agent-a' })
+        mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: true })
+
+        const closePromise = ops.handleTabClose(view.getById(TabType.AGENT, 'agent-a')!)
+        await flush()
+        ops.lastTabConfirmDialog.value()!.resolve('cancel')
+
+        expect(await closePromise).toBe(false)
+        expect(handleAgentClose).not.toHaveBeenCalled()
+        expect(view.getById(TabType.AGENT, 'child-1')).toBeDefined()
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('closes a subagent tab\'s own subagents when the subagent tab closes', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { view, ops, addAgent, handleAgentClose, retireAgentTabLocally } = setup()
+        addAgent('child-1', 'tile-1', { parentAgentId: 'agent-a' })
+        addAgent('grandchild', 'tile-1', { parentAgentId: 'child-1' })
+
+        const ok = await ops.handleTabClose(view.getById(TabType.AGENT, 'child-1')!)
+        expect(ok).toBe(true)
+
+        // A child close is UI-only, so it skips the inspection entirely.
+        expect(mockInspectLastTabClose).not.toHaveBeenCalled()
+        expect(closedIds(retireAgentTabLocally)).toEqual(['grandchild'])
+        expect(closedIds(handleAgentClose)).toEqual(['child-1'])
+        expect(view.getById(TabType.AGENT, 'grandchild')).toBeUndefined()
+        // ...and the SIBLING branch is untouched: only what is below this tab goes.
+        expect(view.getById(TabType.AGENT, 'agent-b')).toBeDefined()
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('leaves an unrelated agent tab alone', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { view, ops, addAgent, handleAgentClose } = setup()
+        addAgent('child-of-b', 'tile-1', { parentAgentId: 'agent-b' })
+
+        await ops.handleTabClose(view.getById(TabType.AGENT, 'agent-a')!)
+
+        expect(closedIds(handleAgentClose)).toEqual(['agent-a'])
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  // A terminal and an agent tab can share an id, and only an AGENT is ever a
+  // parent -- so the sweep must not reach a same-named tab of another kind.
+  it('never closes a terminal tab that shares an id with a subagent', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const { view, ops, addAgent, addTerminal, handleAgentClose, handleTerminalClose, retireAgentTabLocally } = setup()
+        addAgent('child-1', 'tile-1', { parentAgentId: 'agent-a' })
+        addTerminal('child-1')
+
+        await ops.handleTabClose(view.getById(TabType.AGENT, 'agent-a')!)
+
+        expect(closedIds(retireAgentTabLocally)).toEqual(['child-1'])
+        expect(closedIds(handleAgentClose)).toEqual(['agent-a'])
+        expect(handleTerminalClose).not.toHaveBeenCalled()
+      }
+      finally {
+        dispose()
+      }
     })
   })
 })

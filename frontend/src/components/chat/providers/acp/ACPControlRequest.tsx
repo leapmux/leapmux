@@ -5,6 +5,7 @@ import { For, Show } from 'solid-js'
 import { ButtonGroup } from '~/components/common/ButtonGroup'
 import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from '../../ControlRequestBanner.css'
+import { ControlActionRow } from '../../controls/ControlActionRow'
 import { sendResponse, toRpcId } from '../../controls/types'
 
 interface ACPPermissionOption {
@@ -66,21 +67,21 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
     sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, optionId)
   }
 
-  const handleBypassPermissions = () => {
+  // Await the allow BEFORE switching the mode: the worker dispatches the two
+  // concurrently, and a mode change the provider cannot take live relaunches the
+  // agent, which kills the session before an un-awaited allow reaches it.
+  const handleBypassPermissions = async () => {
     const allowOptionId = defaultAllowOptionId(props.request.payload)
     if (!allowOptionId)
       return
-    sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, allowOptionId)
+    await sendACPPermissionResponse(props.request.agentId, props.onRespond, props.request.requestId, allowOptionId)
     if (props.bypassPermissionMode)
       props.onPermissionModeChange?.(props.bypassPermissionMode)
   }
 
   return (
-    <div class={styles.controlFooter}>
-      <div class={styles.controlFooterLeft}>
-        {props.infoTrigger}
-      </div>
-      <div class={styles.controlFooterRight}>
+    <ControlActionRow
+      primary={(
         <ButtonGroup>
           <For each={options()}>
             {option => (
@@ -105,7 +106,7 @@ export const ACPControlActions: Component<ActionsProps> = (props) => {
             </Tooltip>
           </Show>
         </ButtonGroup>
-      </div>
-    </div>
+      )}
+    />
   )
 }

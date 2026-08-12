@@ -112,11 +112,11 @@ If you already have a workspace open and want another agent in it, open the tab 
 
 Click **"Create"** (it shows **"Creating..."** while the agent starts).
 
-> **Note:** The New agent dialog does **not** include model, effort, or permission-mode fields. A new agent starts with the provider's defaults — for Claude Code that's the **Opus (1M context)** model with effort **Auto** and the **Default** permission mode. You change all of these mid-session from the in-chat settings dropdown. See [Coding Agents](/docs/using/coding-agents/) for the full settings reference.
+> **Note:** The New agent dialog does **not** include model, effort, or permission-mode fields. A new agent starts with the provider's defaults — for Claude Code that's the **Opus (1M context)** model with effort **Auto** and the **Default** permission mode. You change all of these mid-session from the composer's status-bar chips or its **[+]** menu. See [Coding Agents](/docs/using/coding-agents/) for the full settings reference.
 
 ### 4. (Optional) Choose model and effort after the agent starts
 
-Once the agent is running, the editor footer shows a settings trigger displaying the current model and effort. Open it to pick a different **Model** (for Claude Code: Opus, Opus (1M context), Sonnet, Sonnet (1M context), Haiku), an **Effort** tier, a **Permission Mode**, and other per-provider options. Changing the model or effort restarts the agent process; for Claude Code, permission-mode changes apply live. Details and the per-provider option matrix are in [Coding Agents](/docs/using/coding-agents/).
+Once the agent is running, the status bar under the composer shows one chip per axis: branch, model, effort, and mode. Click a chip to pick a different **Model** (for Claude Code: Opus, Opus (1M context), Sonnet, Sonnet (1M context), Haiku), an **Effort** tier, or a **Permission Mode**. The composer's **[+]** menu holds every axis, including the per-provider options that have no chip, and it stays available when you hide the status bar. Changing the model or effort restarts the agent process; for Claude Code, permission-mode changes apply live. Details and the per-provider option matrix are in [Coding Agents](/docs/using/coding-agents/).
 
 ### 5. (Optional) Work in a branch or worktree
 
