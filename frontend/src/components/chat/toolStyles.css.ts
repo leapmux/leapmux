@@ -1,6 +1,7 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { todoList } from '~/components/todo/TodoList.css'
 import { codeTypography, codeWrap } from '~/styles/codeBlock'
+import { clippedText } from '~/styles/shared.css'
 import { shikiDualThemeColors } from './shikiTokenColors.css'
 import { LINE_THICKNESS, TOOL_BODY_INDENT } from './widgets/SpanLines.geometry'
 
@@ -170,24 +171,16 @@ shikiDualThemeColors(`${toolInputSummary} pre.shiki span`, { bg: true })
 shikiDualThemeColors(`${toolInputSummary} span[data-shiki-token]`, { bg: true })
 
 // Tool input detail text (natural language: descriptions, URLs, queries)
-export const toolInputText = style({
+export const toolInputText = style([clippedText, {
   color: 'var(--foreground)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  minWidth: 0,
-})
+}])
 
 // Tool input code text (commands, patterns — monospaced)
-export const toolInputCode = style({
+export const toolInputCode = style([clippedText, {
   color: 'var(--foreground)',
   fontFamily: 'var(--font-mono)',
   fontVariantLigatures: 'none',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  minWidth: 0,
-})
+}])
 
 // File path display in tool messages
 export const toolInputPath = style({
@@ -267,13 +260,6 @@ export const webSearchLink = style({
   fontSize: 'var(--text-8)',
   lineHeight: 1.5,
   overflow: 'hidden',
-})
-
-export const webSearchLinkTitle = style({
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  minWidth: 0,
 })
 
 export const webSearchLinkDomain = style({

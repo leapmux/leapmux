@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { clippedText } from '~/styles/shared.css'
 import { headerHeightPx } from '~/styles/tokens'
 
 export const tooltipTrigger = style({
@@ -116,10 +117,19 @@ export const tabIcon = style({
   marginTop: '2px',
 })
 
-export const tabText = style({
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-})
+/**
+ * The tab label, clipped to one line.
+ *
+ * `clippedText` also supplies the `min-width: 0` this was missing, which is what
+ * lets the label shrink inside the tab's 200px cap and reach the ellipsis; the
+ * `nowrap` it adds restates what `tab` above already passes down.
+ *
+ * Composed with an EMPTY rule on purpose. The empty object keeps `tabText` its
+ * own class, and the tile-size rules further down hide the label by targeting
+ * it. Assigning `clippedText` here instead would point those rules at every
+ * clipped label in the app.
+ */
+export const tabText = style([clippedText, {}])
 
 export const tabDragging = style({
   opacity: 0.4,

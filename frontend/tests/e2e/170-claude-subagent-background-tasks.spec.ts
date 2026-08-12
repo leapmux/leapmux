@@ -21,7 +21,7 @@ import {
   openChildTabFromRow,
   requireRegistryRow,
 } from './helpers/subagentRegistry'
-import { sendMessage, waitForAgentIdle } from './helpers/ui'
+import { expectClipsLongText, expectClipsToOneLine, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 test.describe('Claude subagent background tasks', () => {
   test('subagent spawn creates a registry row, a child tab, and isolates the transcript', async ({
@@ -144,5 +144,19 @@ test.describe('Claude subagent background tasks', () => {
     // A static row is a <div>. It must render at the same weight as the
     // clickable <button> row that this spec's first test pins.
     await expect(shellRow!).toHaveCSS('font-weight', '400')
+
+    // A shell row's title is a COMMAND, which is long and rarely breakable, so
+    // this is where the section used to grow a horizontal scrollbar. The title
+    // is clipped now, and nothing above it scrolls sideways. The composed
+    // vanilla-extract rules only resolve in a real browser, so a unit test can
+    // see the classes but never this outcome.
+    //
+    // The declarations alone discriminate here -- the title WRAPPED before, so
+    // it declared no `nowrap` -- and `expectClipsLongText` then measures the
+    // outcome under a title long enough to reach the edge whatever the model
+    // sent.
+    const title = shellRow!.locator('[class*="taskTitle"]').first()
+    await expectClipsToOneLine(title)
+    await expectClipsLongText(title)
   })
 })

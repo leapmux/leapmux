@@ -4,7 +4,7 @@ import { createEffect, createSignal, createUniqueId, on, onCleanup, Show } from 
 import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
 import { popoverCard } from '~/styles/popover.css'
-import { menuItemContent, menuItemLabel, menuItemShortcut } from '~/styles/shared.css'
+import { clippedText, menuItemContent, menuItemShortcut } from '~/styles/shared.css'
 
 /**
  * Marks a dropdown's trigger element. An enclosing popover's dismiss handler
@@ -114,7 +114,12 @@ export interface DropdownMenuItemContentProps {
 export function DropdownMenuItemContent(props: DropdownMenuItemContentProps) {
   return (
     <span class={menuItemContent}>
-      <span class={menuItemLabel}>{props.label}</span>
+      {/* The raw style, not `ClippedText`: `label` is arbitrary JSX, and
+          `ClippedText` renders a plain string. Every live caller passes one
+          today, so narrowing `label` to `string` would let this take the
+          component -- that changes a shared prop contract, so it is the
+          author's call, not a mechanical swap. */}
+      <span class={clippedText}>{props.label}</span>
       <Show when={props.shortcut}>
         {shortcut => <span class={menuItemShortcut}>{shortcut()}</span>}
       </Show>
@@ -173,7 +178,13 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
     >
       <span class={menuItemContent}>
         <input type={props.kind} checked={props.checked} disabled aria-hidden="true" style={{ 'pointer-events': 'none' }} />
-        <span class={menuItemLabel}>{props.label}</span>
+        {/* The raw style, not `ClippedText`, although `label` is a string. A
+            caller already wraps this whole button in a `Tooltip` that carries
+            the option's DESCRIPTION. A second tooltip inside it would dismiss
+            that one -- `Tooltip` keeps at most one open -- and replace the
+            description with a verbatim repeat of the label, which is a net
+            loss. The fix is one tooltip chosen by the item, not two nested. */}
+        <span class={clippedText}>{props.label}</span>
       </span>
     </button>
   )

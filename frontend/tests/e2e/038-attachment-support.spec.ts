@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from './fixtures'
+import { expectClipsToOneLine } from './helpers/ui'
 
 /** Create a minimal 1x1 PNG file in a temp directory and return its path. */
 function createTestPng(name = 'test.png'): string {
@@ -45,6 +46,15 @@ test.describe('Attachment Support', () => {
     const pill = page.locator('[data-testid="attachment-pill"]')
     await expect(pill).toHaveCount(1)
     await expect(pill).toContainText('screenshot.png')
+
+    // The file name clips to one line inside the pill's 200px cap. It declared
+    // the ellipsis before but not the `min-width: 0` a flex item needs to shrink
+    // past its own text; only a real browser resolves the composed rules.
+    //
+    // `span[class]` selects the LABEL. Tooltip wraps its child in a bare
+    // `display: contents` span, which also holds the text and comes first, so a
+    // plain `span` locator resolves to that wrapper instead.
+    await expectClipsToOneLine(pill.locator('span[class]').filter({ hasText: 'screenshot.png' }))
   })
 
   test('remove attachment via X button', async ({ page, authenticatedWorkspace }) => {

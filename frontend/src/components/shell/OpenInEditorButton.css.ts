@@ -66,7 +66,7 @@ export const chevronFace = style({
   },
 })
 
-// Menu visual language mirrors `AgentProviderSelector.css.ts`. We don't import
+// Menu visual language mirrors `./AgentProviderSelector.css.ts`. We don't import
 // from there — the trigger styling above is bespoke to the split-button — but
 // the popover / item look is intentionally identical so the two selectors
 // feel like the same family.

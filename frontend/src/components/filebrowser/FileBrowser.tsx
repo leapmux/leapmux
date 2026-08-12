@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
 import { createMemo, For, Show } from 'solid-js'
+import { ClippedText } from '~/components/common/ClippedText'
 import { formatBytes } from '~/lib/formatBytes'
 import { detectFlavor, parentDirectory, pathSegments, sep } from '~/lib/paths'
 import { emptyState } from '~/styles/shared.css'
@@ -95,7 +96,7 @@ export const FileBrowser: Component<FileBrowserProps> = (props) => {
                   <span class={entry.isDir ? styles.dirIcon : styles.fileIcon}>
                     {entry.isDir ? 'D' : 'F'}
                   </span>
-                  <span class={styles.fileName}>{entry.name}</span>
+                  <ClippedText text={entry.name} class={styles.fileName} />
                   <Show when={!entry.isDir}>
                     <span class={styles.fileSize}>{formatBytes(entry.size)}</span>
                   </Show>

@@ -20,6 +20,85 @@ export async function expectAnyVisible(...locators: Locator[]) {
 }
 
 // ──────────────────────────────────────────────
+// Sidebar text clipping
+// ──────────────────────────────────────────────
+
+/**
+ * Assert that a sidebar label declares the one-line clip.
+ *
+ * Only a real browser resolves this. The rules arrive through a COMPOSED
+ * vanilla-extract style (`style([clippedText, …])`), so the element carries two
+ * class names and the declarations come from two rules; jsdom loads no
+ * stylesheet at all, so a unit test can see the class but never the outcome.
+ *
+ * `min-width` is asserted with the rest, because it is the one that decides
+ * whether the ellipsis ever fires: a flex item defaults to `min-width: auto`
+ * and keeps the width of its own text, so the other three declarations sit
+ * there and do nothing. Several labels shipped exactly that way.
+ *
+ * This states what the label DECLARES. Pair it with {@link expectClipsLongText},
+ * which measures what the label DOES.
+ *
+ * Pass the LABEL, not an ancestor. A clipped label usually sits inside
+ * `Tooltip`, which wraps its child in a bare `display: contents` span; that
+ * wrapper holds the same text and comes first, so a loose `span` locator
+ * resolves to it and reports `text-overflow: clip`.
+ */
+export async function expectClipsToOneLine(label: Locator) {
+  await expect(label).toHaveCSS('white-space', 'nowrap')
+  await expect(label).toHaveCSS('text-overflow', 'ellipsis')
+  await expect(label).toHaveCSS('overflow-x', 'hidden')
+  await expect(label).toHaveCSS('min-width', '0px')
+}
+
+/**
+ * Assert that a LONG label clips itself and widens no scroller above it.
+ *
+ * The declarations alone prove nothing. A worker name already declared the
+ * whole quartet while the ellipsis still never fired, because the list's
+ * container sized to its widest row; only a label longer than its box separates
+ * the two containers. No fixture can give the dev worker a long name, so this
+ * writes one into the text node and restores it inside ONE synchronous block.
+ * The write forces the reflow that the reads below need, and Solid keeps its
+ * reference to the text node because the node itself is reused.
+ *
+ * A scroller is a box whose computed `overflow-x` is `auto` or `scroll`.
+ * Testing that is what separates "an ancestor grew a scrollbar" from "the label
+ * clips its own text" -- a clipped label reports `scrollWidth > clientWidth` BY
+ * CONSTRUCTION, which is the same measurement the ellipsis is made of.
+ *
+ * A 1px tolerance absorbs sub-pixel layout rounding, which reports a scrollable
+ * width larger than the client width on a box that shows no scrollbar.
+ */
+export async function expectClipsLongText(label: Locator) {
+  const measured = await label.evaluate((el) => {
+    const node = el.firstChild
+    if (!(node instanceof Text))
+      throw new TypeError('expectClipsLongText needs a label whose first child is its text')
+    const original = node.nodeValue
+    // A repeated letter has no break opportunity, which is the input that
+    // escaped its box and grew the sideways scrollbar in the first place.
+    node.nodeValue = 'W'.repeat(200)
+    try {
+      const scrolling: string[] = []
+      for (let box: Element | null = el; box && box !== document.body; box = box.parentElement) {
+        const { overflowX } = getComputedStyle(box)
+        if (overflowX !== 'auto' && overflowX !== 'scroll')
+          continue
+        if (box.scrollWidth - box.clientWidth > 1)
+          scrolling.push(`${box.tagName.toLowerCase()}.${box.getAttribute('class') ?? ''} (${box.scrollWidth} > ${box.clientWidth})`)
+      }
+      return { clipped: el.scrollWidth - el.clientWidth > 1, scrolling }
+    }
+    finally {
+      node.nodeValue = original
+    }
+  })
+  expect(measured.clipped, 'the label must clip its own text').toBe(true)
+  expect(measured.scrolling, 'no ancestor should scroll horizontally').toEqual([])
+}
+
+// ──────────────────────────────────────────────
 // Common UI interaction helpers
 // ──────────────────────────────────────────────
 

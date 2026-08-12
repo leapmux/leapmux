@@ -110,6 +110,12 @@ globalStyle(`.${BLOCKED_IMAGE_CHIP_CLASS}`, {
 
 // The author's alt text (or the URL when there is no alt). Clickable only when the
 // sibling link-hardening pass kept it an <a> (http(s) srcs); otherwise it is plain text.
+//
+// The clipping is spelled out rather than composed from `clippedText` in
+// `~/styles/shared.css.ts`. A composition applies to a `style()`, and this is a
+// `globalStyle` keyed on a FIXED class name that the rehype plugin writes into
+// the rendered HTML. Reaching the shared rule would mean the plugin emitting the
+// hashed class too, which couples a markdown transform to a stylesheet.
 globalStyle(`.${BLOCKED_IMAGE_LABEL_CLASS}`, {
   overflow: 'hidden',
   textOverflow: 'ellipsis',

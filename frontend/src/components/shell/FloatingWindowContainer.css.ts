@@ -29,12 +29,13 @@ export const titleBarDragging = style({
   cursor: 'grabbing',
 })
 
+// Decoration only. `ClippedText` owns the clipping rule -- see
+// `~/components/common/ClippedText.tsx`. It also supplies the `min-width: 0`
+// this was missing, which is what lets a `flex: 1` item shrink past its own
+// text and reach the ellipsis.
 export const titleText = style({
   fontSize: '12px',
   fontWeight: 'var(--font-normal)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
   flex: 1,
   color: 'var(--foreground)',
 })

@@ -72,11 +72,12 @@ export const dirIcon = style([fileIcon, {
   color: 'var(--primary)',
 }])
 
+// Decoration only. `ClippedText` owns the clipping rule -- see
+// `~/components/common/ClippedText.tsx`. It also supplies the `min-width: 0`
+// this was missing: without it a `flex: 1` item keeps the width of its own
+// text, so a long file name widened the row and the ellipsis never appeared.
 export const fileName = style({
   flex: 1,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
 })
 
 export const fileSize = style({

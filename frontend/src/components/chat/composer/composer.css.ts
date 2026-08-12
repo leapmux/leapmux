@@ -1,6 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { popoverColumnClamp } from '~/styles/popover.css'
-import { chipBase } from '~/styles/shared.css'
+import { chipBase, clippedText } from '~/styles/shared.css'
 import { breakpoints } from '~/styles/tokens'
 
 /**
@@ -76,11 +76,13 @@ export const axisChip = style([chipBase, {
   userSelect: 'none',
 }])
 
-export const axisChipLabel = style({
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
+// `clippedText` restates the `nowrap` that `axisChip` above already passes down
+// by inheritance, and adds the `min-width: 0` this was missing. The chip is a
+// flex container, so without it the label kept the width of its own text and
+// the ellipsis declared here waited on `max-width` alone to trigger.
+export const axisChipLabel = style([clippedText, {
   maxWidth: '14em',
-})
+}])
 
 // --- Popovers ---
 
@@ -156,15 +158,11 @@ export const subTrigger = style({
  * (the branch item). `subTrigger` pushes its two children apart, so the icon and
  * the text need one box between them or the chevron separates them instead.
  */
-export const subTriggerLabel = style({
+export const subTriggerLabel = style([clippedText, {
   display: 'inline-flex',
   alignItems: 'center',
   gap: 'var(--space-2)',
-  minWidth: 0,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-})
+}])
 
 export const subPopover = style([composerMenuPopover, {
   padding: 'var(--space-1)',

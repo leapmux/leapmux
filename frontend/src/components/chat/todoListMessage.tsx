@@ -56,7 +56,9 @@ export function TodoListMessage(props: {
           markdownCopied: copied(),
         }}
       >
-        <TodoList todos={todos()} />
+        {/* `full`: a tool card stretches to the tile, so it has the room to
+            show a whole to-do. The sidebar section and the popover do not. */}
+        <TodoList todos={todos()} variant="full" />
       </ToolUseLayout>
     </Show>
   )

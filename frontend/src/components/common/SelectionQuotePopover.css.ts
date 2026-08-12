@@ -10,7 +10,7 @@ export const popover = style({
   'boxShadow': '0 2px 8px rgba(0, 0, 0, 0.15)',
   'opacity': 0.9,
   // Counter-translate body's `--vv-offset` mitigation (see
-  // `global.css.ts`). Body uses `transform: translateY(-vv-offset)` to
+  // `~/styles/global.css.ts`). Body uses `transform: translateY(-vv-offset)` to
   // cancel the iOS-26 stuck visualViewport offset, which incidentally
   // makes body the containing block for descendants like this popover.
   // Without the counter-translate, the JS-computed (viewport-relative)

@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { clippedText } from '~/styles/shared.css'
 import { node } from '../tree/sharedTree.css'
 
 export const treeWrapper = style({
@@ -36,10 +37,7 @@ export const tabIcon = style({
   flexShrink: 0,
 })
 
-export const tabLabel = style({
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
+export const tabLabel = style([clippedText, {
   // Natural content width (capped by row via flex-shrink) — not flex: 1 —
   // so getBoundingClientRect on this span reflects where the text actually
   // is. The tooltip centers over the rect; flex: 1 would stretch this into
@@ -47,8 +45,7 @@ export const tabLabel = style({
   // close button in sidebarActions still sits flush-right via margin-left:
   // auto, so no layout shift.
   flex: '0 1 auto',
-  minWidth: 0,
-})
+}])
 
 export const leafActions = style({
   minWidth: 0,

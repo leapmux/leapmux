@@ -236,7 +236,7 @@ export const mobileTabBar = style({
 // out of flow (`position: absolute; inset: 0`) and only the tab bar +
 // composer end up in mobileCenter's flex flow — collapsing the composer
 // up against the tab bar at the top of the viewport. Mirrors the desktop
-// `tileContent` style at `Tile.css.ts`.
+// `tileContent` style at `./Tile.css.ts`.
 export const mobileTilePaneSlot = style({
   flex: 1,
   minHeight: 0,
@@ -259,5 +259,7 @@ export const dragPreviewTooltip = style({
   whiteSpace: 'nowrap',
   maxWidth: '180px',
   overflow: 'hidden',
-  textOverflow: 'ellipsis',
+  // No `text-overflow` here: this box is a flex container, and the property
+  // acts on a block container's own inline content, never on a flex item. The
+  // label inside carries `clippedText` and ellipsizes itself.
 })

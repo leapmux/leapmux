@@ -7,10 +7,19 @@ import { create } from '@bufbuild/protobuf'
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { actionSlot, actionSlotResting } from '~/components/tree/sidebarActions.css'
+import * as listStyles from '~/components/workspace/workspaceList.css'
 import { TunnelProvider } from '~/context/TunnelContext'
 import { WorkerSchema } from '~/generated/leapmux/v1/worker_pb'
 import { createTunnelStore } from '~/stores/tunnel.store'
+import { clippedText } from '~/styles/shared.css'
+import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
+import { classSelector } from '~/test-support/composedClass'
 import { WorkerSectionContent } from './WorkerSectionContent'
+
+/** A port-forward tunnel, whose label is the one that carries the arrow. */
+function portForward(): TunnelInfo {
+  return { id: 't1', workerId: 'w1', type: 'port_forward', bindAddr: '127.0.0.1', bindPort: 3000, targetAddr: '10.0.0.1', targetPort: 8080 }
+}
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/platformBridge')>()
@@ -149,6 +158,82 @@ describe('workerSectionContent', () => {
     const { container } = renderSection()
     const dot = container.querySelector(`.${actionSlot} [data-status]`)!
     expect(dot.className).toContain(actionSlotResting)
+  })
+
+  /**
+   * The list fills the section width so a row CLIPS its name.
+   *
+   * It used to render into `sectionItems`, which sizes to its widest row so the
+   * workspace tree can scroll sideways to reveal a deep path. That width made
+   * the ellipsis on a worker name unreachable and scrolled the sidebar instead.
+   * jsdom loads no stylesheet, so the class is what a unit test can see.
+   */
+  it('renders into the workers list container, not the workspace one', () => {
+    const { container } = renderSection()
+    expect(container.firstElementChild!.className).toMatch(/workerItems/)
+    expect(container.firstElementChild!.className).not.toMatch(/sectionItems/)
+  })
+
+  it('clips the worker name and keeps its test id on the label', () => {
+    renderSection()
+    const name = screen.getByTestId('worker-name')
+    expect(name.textContent).toBe('test-worker')
+    // Token membership, not a substring: a future class whose own name merely
+    // CONTAINS "clippedText" would satisfy a regex and prove nothing.
+    expect(name.className.trim().split(/\s+/)).toContain(clippedText)
+    expect(name.className).toMatch(/itemTitle/)
+  })
+
+  it('clips a tunnel label the same way', () => {
+    const { container } = renderSection({ tunnels: [portForward()] })
+    const label = [...container.querySelectorAll(classSelector(listStyles.itemTitle))]
+      .find(el => el.textContent?.includes('→'))!
+    expect(label.className.trim().split(/\s+/)).toContain(clippedText)
+  })
+
+  // The class alone does not prove the reader can recover the name. These pin
+  // the other half of the pairing: once the label is clipped, the full string
+  // is on the tooltip, and while it fits there is no tooltip to read.
+  describe('clipped label tooltip', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    })
+
+    it('gives the full worker name on hover once the label is clipped', () => {
+      renderSection()
+      const name = screen.getByTestId('worker-name')
+      stubClipped(name)
+      expect(hoverForTooltip(name)?.textContent).toBe('test-worker')
+    })
+
+    it('shows no tooltip while the worker name fits', () => {
+      renderSection()
+      const name = screen.getByTestId('worker-name')
+      stubFitting(name)
+      expect(hoverForTooltip(name)).toBeNull()
+    })
+
+    it('gives the full tunnel label on hover once it is clipped', () => {
+      const { container } = renderSection({ tunnels: [portForward()] })
+      const label = [...container.querySelectorAll<HTMLElement>(classSelector(listStyles.itemTitle))]
+        .find(el => el.textContent?.includes('→'))!
+      stubClipped(label)
+      expect(hoverForTooltip(label)?.textContent).toBe('127.0.0.1:3000 → 10.0.0.1:8080')
+    })
+  })
+
+  // The dot carries the channel state as COLOUR, so it needs a text
+  // alternative; `aria-label` needs a role to attach to.
+  it('gives the status dot an accessible name, not colour alone', () => {
+    const { container } = renderSection()
+    const dot = container.querySelector('[data-status]')!
+    expect(dot.getAttribute('role')).toBe('img')
+    expect(dot.getAttribute('aria-label')).toBe('Connected')
   })
 
   it('shows dash when workerInfo is null', () => {

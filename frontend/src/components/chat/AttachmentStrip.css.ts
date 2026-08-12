@@ -28,12 +28,6 @@ export const pill = style({
   flexShrink: 0,
 })
 
-export const pillFilename = style({
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-})
-
 export const pillIcon = style({
   flexShrink: 0,
   color: 'var(--muted-foreground)',

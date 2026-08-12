@@ -214,6 +214,107 @@ describe('tooltip', () => {
 
       expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
     })
+
+    // A row scrolled part-way out of a vertical list FITS its own box. Treating
+    // that as clipped would show a tooltip that repeats the visible label, on
+    // every sidebar row that happens to sit at the edge of its scroller.
+    it('ignores an ancestor that cuts the target vertically only', () => {
+      render(() => (
+        <div style={{ 'overflow-x': 'hidden', 'overflow-y': 'auto', 'height': '30px' }}>
+          <Tooltip text="Tooltip text" showWhen="clipped">
+            <button type="button">Row label</button>
+          </Tooltip>
+        </div>
+      ))
+
+      const button = screen.getByRole('button')
+      const container = button.closest('div')!
+      // The target sits ABOVE the scroller's client box, and fits it sideways.
+      stubRect(button, { left: 10, top: 10, right: 60, bottom: 30, width: 50, height: 20 })
+      stubRect(container, { left: 0, top: 20, right: 100, bottom: 50, width: 100, height: 30 })
+      Object.defineProperty(container, 'clientLeft', { value: 0, configurable: true })
+      Object.defineProperty(container, 'clientTop', { value: 0, configurable: true })
+      Object.defineProperty(container, 'clientWidth', { value: 100, configurable: true })
+      Object.defineProperty(container, 'clientHeight', { value: 30, configurable: true })
+
+      fireEvent.mouseEnter(button)
+      vi.advanceTimersByTime(700)
+
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    })
+  })
+
+  /**
+   * A tap must reach a clipped label's tooltip. Hover cannot: a tap synthesizes
+   * `mouseenter` and then `click`, and the `click` handler dismisses long
+   * before the 700 ms hover timer, so nothing ever appeared on a touch screen.
+   */
+  describe('touch', () => {
+    const tap = (el: Element) => {
+      fireEvent(el, new PointerEvent('pointerup', { pointerType: 'touch', bubbles: true }))
+      fireEvent.click(el)
+    }
+
+    it('opens on a tap, with no hover delay', () => {
+      render(() => (
+        <Tooltip text="Tooltip text">
+          <button type="button">Trigger</button>
+        </Tooltip>
+      ))
+
+      tap(screen.getByRole('button', { name: 'Trigger' }))
+
+      // No timer advance: a tap is deliberate and needs no delay to prove it.
+      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+    })
+
+    it('closes on the next press outside the trigger', () => {
+      render(() => (
+        <Tooltip text="Tooltip text">
+          <button type="button">Trigger</button>
+        </Tooltip>
+      ))
+
+      const button = screen.getByRole('button', { name: 'Trigger' })
+      tap(button)
+      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+      // The trigger's rect is 0x0 in jsdom, so any coordinate is outside it.
+      fireEvent(document, new PointerEvent('pointerdown', { clientX: 500, clientY: 500, bubbles: true }))
+
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    })
+
+    it('stays closed on a tap when the label is not clipped', () => {
+      render(() => (
+        <Tooltip text="Tooltip text" showWhen="clipped">
+          <button type="button">Trigger</button>
+        </Tooltip>
+      ))
+
+      // A mouse click dismisses; a tap that opens nothing must do the same, so
+      // the swallow-the-click guard must not latch on a suppressed tooltip.
+      tap(screen.getByRole('button', { name: 'Trigger' }))
+
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    })
+
+    it('leaves a mouse click dismissing the tooltip', () => {
+      render(() => (
+        <Tooltip text="Tooltip text">
+          <button type="button">Trigger</button>
+        </Tooltip>
+      ))
+
+      const button = screen.getByRole('button', { name: 'Trigger' })
+      fireEvent.mouseEnter(button)
+      vi.advanceTimersByTime(700)
+      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+
+      fireEvent.click(button)
+
+      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    })
   })
 
   it('warns and leaves invalid children unchanged', () => {

@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { clippedText } from '~/styles/shared.css'
+import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { createTestFloatingWindowStore } from '~/test-support/tabStores'
 import { FloatingWindowContainer, resolveParentSize, snapPosition } from './FloatingWindowContainer'
 
@@ -198,6 +200,47 @@ describe('floatingWindowContainer', () => {
     const { windowId } = renderContainer()
     const win = screen.getByTestId('floating-window')
     expect(win.getAttribute('data-window-id')).toBe(windowId)
+  })
+
+  /**
+   * The title is `flex: 1` in a fixed-height bar. It declared an ellipsis but
+   * not the `min-width: 0` a flex item needs to shrink past its own text, so it
+   * never clipped -- it pushed the close button instead. It clips now, which
+   * makes the tooltip the only route to the rest of the title.
+   */
+  describe('title clipping', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    })
+
+    function titleOf(): HTMLElement {
+      return screen.getByText('My Window')
+    }
+
+    it('holds the title to one clipped line', () => {
+      renderContainer({ title: 'My Window' })
+      const title = titleOf()
+      expect(title.className.trim().split(/\s+/)).toContain(clippedText)
+    })
+
+    it('gives the full title on hover once it is clipped', () => {
+      renderContainer({ title: 'My Window' })
+      const title = titleOf()
+      stubClipped(title)
+      expect(hoverForTooltip(title)?.textContent).toBe('My Window')
+    })
+
+    it('shows no tooltip while the title fits', () => {
+      renderContainer({ title: 'My Window' })
+      const title = titleOf()
+      stubFitting(title)
+      expect(hoverForTooltip(title)).toBeNull()
+    })
   })
 
   it('invokes onClose when the close button is clicked', () => {
