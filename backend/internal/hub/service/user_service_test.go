@@ -48,7 +48,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(st, nil, false, false)
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
 	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	opts := connect.WithInterceptors(interceptor)
@@ -78,7 +78,7 @@ func setupUserTest(t *testing.T) *userTestEnv {
 		IsAdmin:      true,
 	})
 
-	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &userTestEnv{
@@ -103,7 +103,7 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(st, nil, false, false)
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
@@ -132,7 +132,7 @@ func setupOAuthUserTest(t *testing.T) *userTestEnv {
 		IsAdmin:      true,
 	})
 
-	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &userTestEnv{
@@ -225,11 +225,11 @@ func TestUserService_ChangePassword(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify login works with new password.
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123")
+	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 
 	// Verify login with old password fails.
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "testpass")
+	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "testpass", auth.DefaultSessionDuration)
 	require.Error(t, err)
 }
 
@@ -500,7 +500,7 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 		ID:            userID,
 	}))
 
-	userToken, _, _, err := auth.Login(context.Background(), st, "plainuser", "userpass")
+	userToken, _, _, err := auth.Login(context.Background(), st, "plainuser", "userpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	resp, err := client.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
@@ -566,7 +566,7 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(st, nil, false, true)
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, EmailVerificationRequired: true})
 	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 
@@ -583,7 +583,7 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
 
 	// Log in as admin (bootstrap user).
-	token, _, _, err := auth.Login(context.Background(), st, "admin", "admin123")
+	token, _, _, err := auth.Login(context.Background(), st, "admin", "admin123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return client, st, token
@@ -616,7 +616,7 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	require.NoError(t, err)
 
 	// Log in as the non-admin user.
-	userToken, _, _, err := auth.Login(context.Background(), st, "verifyuser", "userpass")
+	userToken, _, _, err := auth.Login(context.Background(), st, "verifyuser", "userpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Request email change.
@@ -835,7 +835,7 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
 	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{})
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(st, nil, false, false)
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
@@ -854,7 +854,7 @@ func setupResendUserTest(t *testing.T) (*userTestEnv, *recordingSender) {
 		ID: userID, Username: "resender", PasswordHash: hash,
 		DisplayName: "Resender", PasswordSet: true,
 	})
-	token, _, _, err := auth.Login(context.Background(), st, "resender", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "resender", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &userTestEnv{client: client, store: st, token: token, userID: userID}, rec
@@ -1014,7 +1014,7 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 		PendingEmailExpiresAt: ptrTime(time.Now().Add(1 * time.Hour).UTC()),
 		ID:                    attackerID,
 	}))
-	attackerToken, _, _, err := auth.Login(context.Background(), env.store, "attacker", "testpass2")
+	attackerToken, _, _, err := auth.Login(context.Background(), env.store, "attacker", "testpass2", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	_, err = env.client.VerifyEmail(context.Background(), authedReq(&leapmuxv1.VerifyEmailRequest{
@@ -1031,7 +1031,7 @@ func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
 	env := setupUserTest(t)
 
 	// Create a second session for the same user (simulates another device).
-	otherSession, _, err := auth.CreateSession(context.Background(), env.store, userid.MustNew(env.userID))
+	otherSession, _, err := auth.CreateSession(context.Background(), env.store, userid.MustNew(env.userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Verify both sessions are valid.
@@ -1093,7 +1093,7 @@ func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
 		DisplayName: "Test User", PasswordSet: true,
 	}))
 
-	token, _, _, err := auth.Login(ctx, st, "testuser", "testpass")
+	token, _, _, err := auth.Login(ctx, st, "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	userInfo, err := auth.ValidateToken(ctx, st, token)
 	require.NoError(t, err)
@@ -1110,7 +1110,7 @@ func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
 	}}
 
 	mux := http.NewServeMux()
-	interceptor, contexts := auth.NewInterceptor(st, nil, false, false)
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(contexts.Stop)
 	userSvc := service.NewUserService(hooked, testConfig(), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, connect.WithInterceptors(interceptor))
@@ -1131,9 +1131,9 @@ func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
 
 	// The password actually changed: the old one no longer authenticates and the
 	// new one does.
-	_, _, _, err = auth.Login(ctx, st, "testuser", "testpass")
+	_, _, _, err = auth.Login(ctx, st, "testuser", "testpass", auth.DefaultSessionDuration)
 	require.Error(t, err, "old password must be rejected after the change")
-	_, _, _, err = auth.Login(ctx, st, "testuser", "newpass123")
+	_, _, _, err = auth.Login(ctx, st, "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err, "new password must authenticate after the change")
 }
 
@@ -1157,7 +1157,7 @@ func TestChangePassword_OAuthUser_CanSetWithoutCurrentPassword(t *testing.T) {
 	assert.True(t, user.PasswordSet)
 
 	// Verify the new password works via login.
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123")
+	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 

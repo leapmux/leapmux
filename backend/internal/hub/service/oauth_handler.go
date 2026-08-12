@@ -182,7 +182,7 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	// hung IdP during NORMAL operation would otherwise park it for the process's
 	// life). This per-leg deadline bounds exactly that: a slow or wedged IdP
 	// while the hub is healthy.
-	exchangeCtx, cancelExchange := context.WithTimeout(ctx, h.cfg.APITimeout())
+	exchangeCtx, cancelExchange := context.WithTimeout(ctx, h.cfg.APITimeout)
 	defer cancelExchange()
 	tokenSet, claims, err := provider.Exchange(exchangeCtx, code, oauthState.PkceVerifier)
 	if err != nil {
@@ -294,7 +294,7 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, auth.SessionMeta{
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, h.cfg.SessionDuration, auth.SessionMeta{
 		UserAgent: r.UserAgent(),
 		IPAddress: r.RemoteAddr,
 	})

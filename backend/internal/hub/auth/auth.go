@@ -15,8 +15,97 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// SessionDuration is the lifetime of a user session.
-const SessionDuration = 24 * time.Hour
+// DefaultSessionDuration is the minimum time a session stays valid after the
+// user's last request, when the operator configures no other value. The
+// session_duration flag registers it, so the flag default and this one cannot
+// drift.
+//
+// CreateSession sets the first expiry through sessionExpiry, and each later
+// authenticated request slides that expiry forward (see touchSession in
+// interceptor.go). A session therefore ends one lifetime after the last
+// request, not one lifetime after the login.
+const DefaultSessionDuration = 7 * 24 * time.Hour
+
+// MinSessionDuration is the shortest session the Hub can honestly enforce.
+//
+// Two mechanisms keep a session alive past its written expiry, and the floor
+// caps what they cost together:
+//
+//   - The Hub serves a validated session from an in-memory cache for
+//     sessionCacheTTL, so a request succeeds up to that long after the row
+//     expired. That window is a constant, so it is the term that decides the
+//     floor.
+//   - A slide is throttled, so the row can carry up to one throttle window more
+//     than the configured duration. touchThreshold keeps that window at a
+//     tenth of the session, so it scales instead of dominating.
+//
+// At touchSlideDivisor times the cache TTL, the two together are at most a
+// fifth of the configured duration. Below that, "expired" stops describing when
+// the user is signed out. ValidateSessionDuration rejects a shorter
+// configuration rather than accept a policy the Hub cannot keep.
+const MinSessionDuration = touchSlideDivisor * sessionCacheTTL
+
+// ValidateSessionDuration reports whether an operator's session lifetime is one
+// the Hub can enforce. The rule lives here, next to the two constants that set
+// the floor, so a change to either cannot leave the check behind. The caller
+// adds the name of the setting.
+//
+// There is no upper bound: a long session is a policy an operator may hold, and
+// the slide makes it an idle timeout rather than an unbounded credential.
+func ValidateSessionDuration(d time.Duration) error {
+	switch {
+	case d < 0:
+		return fmt.Errorf("must not be negative, got %s", d)
+	case d < MinSessionDuration:
+		return fmt.Errorf(
+			"must be at least %s, got %s: the Hub serves a validated session from "+
+				"an in-memory cache for %s, so a shorter session stays usable for a "+
+				"large share of its own life",
+			MinSessionDuration, d, sessionCacheTTL)
+	}
+	return nil
+}
+
+// sessionLifetime resolves a configured session lifetime. Zero or less falls
+// back to DefaultSessionDuration. One home for that fallback, so the first
+// expiry that CreateSession writes and the slide that the interceptor writes
+// cannot disagree about how long an unconfigured session lives.
+func sessionLifetime(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		return DefaultSessionDuration
+	}
+	return configured
+}
+
+// touchSlideDivisor sets how much of a session's life may pass before the Hub
+// slides it again. A tenth keeps the DB write rate low on a long session and
+// still slides a short one often enough that the configured duration describes
+// it.
+const touchSlideDivisor = 10
+
+// touchThreshold returns how long the Hub waits before it slides a session
+// again. It is a tenth of the session, and never more than
+// sessionTouchThreshold, which caps the write rate for a long session.
+//
+// The fixed ceiling alone was wrong for a short session: at a five-minute
+// throttle a session shorter than five minutes expired before its first slide
+// could land, so it ended at the login deadline however active the user was --
+// the absolute timeout that the slide exists to remove.
+func touchThreshold(lifetime time.Duration) time.Duration {
+	return min(sessionTouchThreshold, sessionLifetime(lifetime)/touchSlideDivisor)
+}
+
+// sessionExpiry returns the expiry to write for a session whose lifetime is
+// lifetime. Both writers use it -- CreateSession at the login and touchSession
+// at each slide -- so the row always carries the same promise.
+//
+// The extra touchThreshold is what keeps that promise. A request inside the
+// throttle window writes no row, so an expiry of exactly now + lifetime would
+// end the session up to one throttle window before the lifetime passed since
+// the last request.
+func sessionExpiry(now time.Time, lifetime time.Duration) time.Time {
+	return now.Add(sessionLifetime(lifetime) + touchThreshold(lifetime)).UTC()
+}
 
 type contextKey int
 
@@ -159,9 +248,10 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 	}, nil
 }
 
-// Login validates credentials and creates a new session token.
+// Login validates credentials and creates a new session token. lifetime is the
+// session's minimum life past the user's last request; see CreateSession.
 // Returns the session ID, user, session expiry time, and any error.
-func Login(ctx context.Context, st store.Store, username, password string) (string, *store.User, time.Time, error) {
+func Login(ctx context.Context, st store.Store, username, password string, lifetime time.Duration) (string, *store.User, time.Time, error) {
 	var zero time.Time
 	user, err := st.Users().GetByUsername(ctx, username)
 	if err != nil {
@@ -227,7 +317,7 @@ func Login(ctx context.Context, st store.Store, username, password string) (stri
 		if !sessMintOK {
 			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
 		}
-		sessionID, expiresAt, err = CreateSession(ctx, tx, sessUID)
+		sessionID, expiresAt, err = CreateSession(ctx, tx, sessUID, lifetime)
 		if err != nil {
 			return err
 		}
@@ -255,7 +345,12 @@ type SessionMeta struct {
 
 // CreateSession creates a new user session and returns the session ID and
 // expiry time.
-func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, meta ...SessionMeta) (string, time.Time, error) {
+//
+// lifetime is the session's minimum life past the user's last request. Zero or
+// less falls back to DefaultSessionDuration: a caller that has no configured
+// value must still issue a usable session, not one that expired before the
+// response left the Hub.
+func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, lifetime time.Duration, meta ...SessionMeta) (string, time.Time, error) {
 	// A session for nobody is worse than no session: it would authenticate as a
 	// blank id, which every predicate then has to refuse individually. Refuse to
 	// write the row at all.
@@ -263,7 +358,7 @@ func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, me
 		return "", time.Time{}, fmt.Errorf("create session: user id is required")
 	}
 	sessionID := id.Generate()
-	expiresAt := time.Now().Add(SessionDuration).UTC()
+	expiresAt := sessionExpiry(time.Now(), lifetime)
 	params := store.CreateSessionParams{
 		ID:        sessionID,
 		UserID:    userID,

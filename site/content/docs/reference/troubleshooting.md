@@ -312,12 +312,12 @@ Install the agent's own CLI on the **Worker** machine (not where the browser run
 The chat pane shows a centered error titled **"&lt;Provider&gt; failed to start"** (e.g. "Claude Code failed to start") with an error message from the Worker.
 
 **Cause**
-The agent subprocess couldn't be launched or didn't complete its startup handshake. Common reasons: the CLI binary isn't actually runnable on the Worker (wrong version, broken install, missing auth), the working directory is invalid, or startup exceeded the timeout (`--agent-startup-timeout-seconds`, default **300**).
+The agent subprocess couldn't be launched or didn't complete its startup handshake. Common reasons: the CLI binary isn't actually runnable on the Worker (wrong version, broken install, missing auth), the working directory is invalid, or startup exceeded the timeout (`--agent-startup-timeout`, default **5m**).
 
 **Fix**
 - Read the error text shown in the pane — it comes straight from the Worker and usually names the cause.
 - On the Worker, run the agent's CLI directly (e.g. `claude --version`) to confirm it works and is authenticated.
-- If startup is legitimately slow, raise the timeout: `leapmux worker --agent-startup-timeout-seconds 600` (or the equivalent key in config). This flag exists on the Worker and on `hub`/`solo`/`dev` modes. See [Configuration](/docs/operating/configuration/).
+- If startup is legitimately slow, raise the timeout: `leapmux worker --agent-startup-timeout 10m` (or the equivalent key in config). This flag exists on the Worker and on `hub`/`solo`/`dev` modes. See [Configuration](/docs/operating/configuration/).
 - Reopen the agent once the underlying CLI issue is fixed.
 
 ### A model, effort, or permission-mode change seems to "reset" the agent

@@ -132,13 +132,13 @@ func TestZeroUserIDDenies(t *testing.T) {
 				// requires it to state a contract: a session must never be
 				// written for an id that names no user -- that row would then
 				// authenticate as blank on every subsequent request.
-				_, _, err := auth.CreateSession(ctx, st, zero)
+				_, _, err := auth.CreateSession(ctx, st, zero, auth.DefaultSessionDuration)
 				require.Error(t, err, "a zero UserID must not create a session")
 				// Control, per this test's own contract: without it the case
 				// passes if CreateSession ever starts erroring for an unrelated
 				// reason (a schema change, a newly-required column), proving
 				// nothing about the zero id.
-				_, _, err = auth.CreateSession(ctx, st, ownerID)
+				_, _, err = auth.CreateSession(ctx, st, ownerID, auth.DefaultSessionDuration)
 				require.NoError(t, err, "control: a real user's session is created")
 			case "WorkerCanUse":
 				w, ok, err := auth.WorkerCanUse(ctx, st, worker.ID, ownerID)
@@ -250,9 +250,9 @@ func TestZeroUserIDDenies(t *testing.T) {
 // case" becomes a recorded judgment rather than an omission. Moving a function
 // here is the deliberate act; forgetting it entirely is a failure.
 var zeroUserIDNonDeciders = map[string]string{
-	"WithUser":                 "stores the principal on a context; the predicates that read it are the deciders",
-	"NewInterceptor":           "constructor; it authenticates requests rather than authorizing a principal it was handed",
-	"NewInterceptorWithTokens": "constructor; same as NewInterceptor",
+	"WithUser":         "stores the principal on a context; the predicates that read it are the deciders",
+	"NewInterceptor":   "constructor; it authenticates requests rather than authorizing a principal it was handed",
+	"AuthenticateHTTP": "the HTTP twin of the interceptor: it resolves a caller from the request's own credentials, and the *UserInfo it carries is the configured solo identity, not a principal a caller asserted",
 	"(*AuthContextRegistry).RegisterAuthenticatedLease": "refuses on a per-user quota keyed on the id, but a zero id could only share the leasesByUser[\"\"] bucket and over-refuse; it never widens reach. Unreachable besides -- every AuthenticateHTTP arm mints through userid.New and refuses a blank",
 	"(*AuthContextRegistry).CurrentSyntheticUser":       "returns the configured solo identity; it answers no question about the caller",
 	"(*AuthContextRegistry).IsAuthContextCurrent":       "compares cache generations, not identities -- a zero id is stale-vs-current, not allowed-vs-denied",
@@ -275,6 +275,8 @@ func TestEveryUserIDCarryingFuncIsClassified(t *testing.T) {
 	dir, err := os.Getwd()
 	require.NoError(t, err)
 
+	identityStructs := identityStructTypes(t, dir)
+
 	var found []string
 	testutil.ForEachPackageSourceFile(t, dir, func(_ *token.FileSet, file *ast.File) {
 		// Resolved from the import PATH, not assumed to be the identifier
@@ -287,7 +289,7 @@ func TestEveryUserIDCarryingFuncIsClassified(t *testing.T) {
 			if !ok || fn.Name == nil || !fn.Name.IsExported() || fn.Type.Params == nil {
 				continue
 			}
-			if hasIdentityParam(useridAlias, fn.Type.Params) {
+			if hasIdentityParam(useridAlias, identityStructs, fn.Type.Params) {
 				// Receiver-qualified so two same-named methods on different
 				// types cannot share one classification.
 				found = append(found, testutil.QualifiedFuncName(fn))
@@ -305,23 +307,100 @@ func TestEveryUserIDCarryingFuncIsClassified(t *testing.T) {
 
 // hasIdentityParam reports whether params includes a parameter that carries a
 // caller identity: a userid.UserID -- directly, or behind a slice / array /
-// pointer / variadic / map value -- or a *UserInfo, which holds one.
+// pointer / variadic / map value -- a *UserInfo, which holds one, or one of the
+// package's own structs that holds either (identityStructs).
 //
-// Both shapes need the same net. The batch predicates take []userid.UserID and
-// need the zero-deny contract just as much as the single-id ones (a zero entry
-// must be dropped, not matched). And matching only the bare type would leave
-// every *UserInfo-taking predicate outside the table -- the delegation-scope
-// decisions among them -- which is the blind spot this test exists to close.
-func hasIdentityParam(useridAlias string, params *ast.FieldList) bool {
+// All three shapes need the same net. The batch predicates take
+// []userid.UserID and need the zero-deny contract just as much as the single-id
+// ones (a zero entry must be dropped, not matched). Matching only the bare type
+// would leave every *UserInfo-taking predicate outside the table -- the
+// delegation-scope decisions among them -- which is the blind spot this test
+// exists to close. And an options struct closes the same hole again from the
+// other side: moving a parameter into one is a refactor nobody would call a
+// security change, and it took NewInterceptor's *UserInfo out of this net
+// without touching a single predicate.
+func hasIdentityParam(useridAlias string, identityStructs map[string]bool, params *ast.FieldList) bool {
 	if params == nil {
 		return false
 	}
 	for _, field := range params.List {
-		if carriesUserID(useridAlias, field.Type) || carriesUserInfo(field.Type) {
+		if carriesUserID(useridAlias, field.Type) ||
+			carriesUserInfo(field.Type) ||
+			carriesNamedStruct(identityStructs, field.Type) {
 			return true
 		}
 	}
 	return false
+}
+
+// identityStructTypes returns the package's struct type names that declare a
+// caller identity in a field of their own.
+//
+// One level deep, deliberately. The shape this must catch is the options struct
+// -- a parameter whose fields are what the caller would otherwise have passed
+// positionally. Chasing further, through a field that points at a package's
+// internal state, reaches every type that transitively holds a *UserInfo:
+// AuthContextRegistry holds leases, so every constructor handed a registry
+// would land in the table as a "not a decider" entry, and a table that lists
+// everything classifies nothing.
+func identityStructTypes(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+
+	type declaredStruct struct {
+		spec        *ast.StructType
+		useridAlias string // resolved per file, as in the scan above
+	}
+	declared := map[string]declaredStruct{}
+	testutil.ForEachPackageSourceFile(t, dir, func(_ *token.FileSet, file *ast.File) {
+		useridAlias, _ := testutil.ImportedAs(file, useridPkgPath)
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				st, ok := ts.Type.(*ast.StructType)
+				if !ok || st.Fields == nil {
+					continue
+				}
+				declared[ts.Name.Name] = declaredStruct{spec: st, useridAlias: useridAlias}
+			}
+		}
+	})
+
+	carries := map[string]bool{}
+	for name, d := range declared {
+		for _, field := range d.spec.Fields.List {
+			if carriesUserID(d.useridAlias, field.Type) || carriesUserInfo(field.Type) {
+				carries[name] = true
+				break
+			}
+		}
+	}
+	return carries
+}
+
+// carriesNamedStruct unwraps the same type constructors as its siblings and
+// reports whether one of the named structs sits at the bottom.
+func carriesNamedStruct(named map[string]bool, expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return named[t.Name]
+	case *ast.ArrayType:
+		return carriesNamedStruct(named, t.Elt)
+	case *ast.StarExpr:
+		return carriesNamedStruct(named, t.X)
+	case *ast.Ellipsis:
+		return carriesNamedStruct(named, t.Elt)
+	case *ast.MapType:
+		return carriesNamedStruct(named, t.Key) || carriesNamedStruct(named, t.Value)
+	default:
+		return false
+	}
 }
 
 // carriesUserID unwraps the type constructors a UserID can hide behind and
@@ -361,6 +440,55 @@ func carriesUserInfo(expr ast.Expr) bool {
 	default:
 		return false
 	}
+}
+
+// TestIdentityStructTypes_ScopesToOptionsStructs pins the boundary the scan
+// draws: a struct that declares an identity in a field of its own is in, and a
+// type that merely holds internal state that eventually holds one is out.
+//
+// Both halves are load-bearing. Without the first, moving a *UserInfo parameter
+// into an options struct takes its function out of the classification table
+// silently -- which is exactly what the InterceptorOptions refactor did. Without
+// the second, every constructor handed an AuthContextRegistry joins the table,
+// and a table that lists everything classifies nothing.
+func TestIdentityStructTypes_ScopesToOptionsStructs(t *testing.T) {
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+
+	carries := identityStructTypes(t, dir)
+
+	assert.True(t, carries["InterceptorOptions"], "it declares SoloUser *UserInfo")
+	assert.True(t, carries["HTTPAuthOpts"], "it declares SoloUser *UserInfo")
+	assert.True(t, carries["UserInfo"], "it declares ID userid.UserID")
+	assert.False(t, carries["AuthContextRegistry"], "it reaches a *UserInfo only through internal state")
+	assert.False(t, carries["SessionMeta"], "it carries a user agent and an IP address, no identity")
+}
+
+func TestCarriesNamedStruct(t *testing.T) {
+	named := map[string]bool{"InterceptorOptions": true}
+	for name, tc := range map[string]struct {
+		expr string
+		want bool
+	}{
+		"bare":                       {"InterceptorOptions", true},
+		"behind a pointer":           {"*InterceptorOptions", true},
+		"behind a slice":             {"[]InterceptorOptions", true},
+		"as a map value":             {"map[string]InterceptorOptions", true},
+		"a struct that carries none": {"SessionMeta", false},
+		"a plain string":             {"string", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			expr, err := parser.ParseExpr(tc.expr)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, carriesNamedStruct(named, expr))
+		})
+	}
+
+	// `...T` is not an expression, so the variadic arm needs the node built by
+	// hand rather than parsed.
+	t.Run("variadic", func(t *testing.T) {
+		assert.True(t, carriesNamedStruct(named, &ast.Ellipsis{Elt: ast.NewIdent("InterceptorOptions")}))
+	})
 }
 
 // TestCarriesUserID_KeysOnTheImportedIdentifier pins the alias resolution that

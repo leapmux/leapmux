@@ -230,6 +230,21 @@ describe('tildify', () => {
     expect(tildify('/opt/data', '/home/alice')).toBe('/opt/data')
   })
 
+  // The home directory is a path prefix, not a string prefix. A naive
+  // startsWith would abbreviate a sibling whose name merely begins with it,
+  // and print the nonsense '~server/proj' for a real directory.
+  it('leaves a sibling whose name starts with homeDir alone', () => {
+    expect(tildify('/home/aliceserver/proj', '/home/alice')).toBe('/home/aliceserver/proj')
+    expect(tildify('C:\\Users\\aliceserver\\proj', 'C:\\Users\\alice')).toBe('C:\\Users\\aliceserver\\proj')
+  })
+
+  // A configured home directory that carries a trailing separator must abbreviate
+  // the same way, or the same worker reports two spellings for one directory.
+  it('ignores a trailing separator on homeDir', () => {
+    expect(tildify('/home/alice/proj', '/home/alice/')).toBe('~/proj')
+    expect(tildify('C:\\Users\\alice\\proj', 'C:\\Users\\alice\\')).toBe('~\\proj')
+  })
+
   it('is a no-op when homeDir is omitted', () => {
     expect(tildify('/home/alice/proj')).toBe('/home/alice/proj')
   })

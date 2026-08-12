@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -52,14 +51,14 @@ func Open(ctx context.Context, cfg config.PostgresConfig) (store.Store, error) {
 	if cfg.MinConns > 0 {
 		poolCfg.MinConns = int32(cfg.MinConns)
 	}
-	if cfg.ConnMaxLifetimeSeconds > 0 {
-		poolCfg.MaxConnLifetime = time.Duration(cfg.ConnMaxLifetimeSeconds) * time.Second
+	if cfg.ConnMaxLifetime > 0 {
+		poolCfg.MaxConnLifetime = cfg.ConnMaxLifetime
 	}
-	if cfg.MaxConnIdleTimeSeconds > 0 {
-		poolCfg.MaxConnIdleTime = time.Duration(cfg.MaxConnIdleTimeSeconds) * time.Second
+	if cfg.MaxConnIdleTime > 0 {
+		poolCfg.MaxConnIdleTime = cfg.MaxConnIdleTime
 	}
-	if cfg.HealthCheckPeriodSeconds > 0 {
-		poolCfg.HealthCheckPeriod = time.Duration(cfg.HealthCheckPeriodSeconds) * time.Second
+	if cfg.HealthCheckPeriod > 0 {
+		poolCfg.HealthCheckPeriod = cfg.HealthCheckPeriod
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)

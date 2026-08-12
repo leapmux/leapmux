@@ -56,6 +56,11 @@ type touchRecordingSessionStore struct {
 	// session was touched within the threshold). Default false = one row
 	// matched.
 	touchMissed bool
+	// touchErr simulates a store that cannot answer, and touchCalls counts how
+	// often the UPDATE was attempted -- which is what tells a retry storm apart
+	// from a throttled request.
+	touchErr   error
+	touchCalls int
 }
 
 func (s *touchRecordingSessionStore) ValidateWithUser(context.Context, string) (*store.SessionWithUser, error) {
@@ -64,6 +69,10 @@ func (s *touchRecordingSessionStore) ValidateWithUser(context.Context, string) (
 
 func (s *touchRecordingSessionStore) Touch(_ context.Context, p store.TouchSessionParams) (int64, error) {
 	s.touched = p
+	s.touchCalls++
+	if s.touchErr != nil {
+		return 0, s.touchErr
+	}
 	if s.touchMissed {
 		return 0, nil
 	}
@@ -280,7 +289,7 @@ func TestAuthenticateUsesTouchedSessionExpiry(t *testing.T) {
 		state: &authState{},
 	}
 
-	ctx, err := a.authenticate(
+	ctx, refresh, err := a.authenticate(
 		context.Background(), "/private",
 		CookieName+"=session", "",
 	)
@@ -291,6 +300,9 @@ func TestAuthenticateUsesTouchedSessionExpiry(t *testing.T) {
 	touchedAt, atOK := user.CredentialExpiresAt.At()
 	require.True(t, atOK)
 	assert.True(t, touchedAt.After(oldExpiry))
+	// The refreshed cookie must carry the same session and the same slid expiry
+	// the row now carries, or the browser's copy expires before the row does.
+	assert.Equal(t, sessionRefresh{sessionID: "session", expiresAt: sessions.touched.ExpiresAt}, refresh)
 }
 
 // TestZeroRowTouchDoesNotExtendSessionExpiry pins the C1 guard: when the
@@ -311,7 +323,7 @@ func TestZeroRowTouchDoesNotExtendSessionExpiry(t *testing.T) {
 		state: &authState{},
 	}
 
-	ctx, err := a.authenticate(
+	ctx, refresh, err := a.authenticate(
 		context.Background(), "/private",
 		CookieName+"=session", "",
 	)
@@ -320,6 +332,8 @@ func TestZeroRowTouchDoesNotExtendSessionExpiry(t *testing.T) {
 	require.NotNil(t, user)
 	assert.Equal(t, DeadlineAt(oldExpiry), user.CredentialExpiresAt,
 		"a zero-row touch must not extend the in-memory session expiry")
+	assert.Equal(t, sessionRefresh{}, refresh,
+		"a zero-row touch must not re-issue a cookie carrying an expiry the row does not have")
 }
 
 func TestUnrelatedSessionEvictionDoesNotReloadWarmCacheEntry(t *testing.T) {
@@ -555,8 +569,9 @@ func TestSoloAuthenticationAdvancesPastUserRevocation(t *testing.T) {
 	cache := &AuthContextRegistry{state: state}
 
 	cache.RevokeUserAuthContextAtGeneration("solo", 2)
-	ctx, err := a.authenticate(context.Background(), "/private", "", "")
+	ctx, refresh, err := a.authenticate(context.Background(), "/private", "", "")
 	require.NoError(t, err)
+	assert.Equal(t, sessionRefresh{}, refresh, "solo mode holds no session cookie to refresh")
 	current := GetUser(ctx)
 	require.NotNil(t, current)
 	assert.Equal(t, int64(2), current.UserAuthGeneration)
@@ -892,7 +907,7 @@ func TestAuthContextRegistry_EvictsBumpGen(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, sc := NewInterceptorWithTokens(nil, nil, nil, false, false)
+			_, sc := NewInterceptor(InterceptorOptions{})
 			t.Cleanup(sc.Stop)
 			before := sc.state.revocationGen.Load()
 			tc.fn(sc)
@@ -934,7 +949,7 @@ func TestDelegationAllowedProcedures_FailClosed(t *testing.T) {
 }
 
 func TestAuthContextRegistry_IsAuthContextCurrentIsScoped(t *testing.T) {
-	_, sc := NewInterceptorWithTokens(nil, nil, nil, false, false)
+	_, sc := NewInterceptor(InterceptorOptions{})
 	t.Cleanup(sc.Stop)
 
 	gen := sc.state.revocationGen.Load()
@@ -1148,7 +1163,9 @@ func TestAuthInterceptor_SweepsExpiredBearerExpiries(t *testing.T) {
 
 func TestAuthInterceptor_SweepsBearerAndRevocationCaches(t *testing.T) {
 	a := &authInterceptor{state: &authState{}}
-	old := time.Now().Add(-SessionDuration - time.Minute)
+	// Past the sweep cutoff, which is the slide duration (the session duration
+	// plus the touch threshold) rather than the session duration alone.
+	old := time.Now().Add(-DefaultSessionDuration - 2*sessionTouchThreshold)
 
 	a.state.bearers.Store(bearerCacheKey(BearerKindAPI, "tok-1", []byte("secret-hash")), cachedSession{
 		user:     &UserInfo{ID: userid.MustNew("u-1")},
@@ -1178,7 +1195,7 @@ func TestAuthInterceptor_SweepsBearerAndRevocationCaches(t *testing.T) {
 
 func TestStaleCacheSweepDoesNotDeleteFreshReplacements(t *testing.T) {
 	caches := &credentialCaches{}
-	oldTime := time.Now().Add(-SessionDuration)
+	oldTime := time.Now().Add(-DefaultSessionDuration)
 	freshTime := time.Now()
 	caches.lastTouch.Store("session", freshTime)
 	caches.deleteStaleLastTouch("session", oldTime)
@@ -1212,7 +1229,7 @@ func TestStaleCredentialCacheSweepSerializesWithValidation(t *testing.T) {
 		user:     &UserInfo{ID: userid.MustNew("user")},
 		cachedAt: time.Now().Add(-2 * sessionCacheTTL),
 	}
-	state.lastTouch.Store("touch", time.Now().Add(-2*SessionDuration))
+	state.lastTouch.Store("touch", time.Now().Add(-2*DefaultSessionDuration))
 	state.sessions.Store("session", stale)
 	indexSyncMap(&state.userSessions, "user", "session")
 

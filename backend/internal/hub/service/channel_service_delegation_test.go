@@ -54,10 +54,10 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New(0)
-	pendingReqs := workermgr.NewPendingRequests(testConfig().APITimeout)
+	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return testConfig().APITimeout })
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 

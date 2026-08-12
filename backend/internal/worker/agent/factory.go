@@ -43,7 +43,7 @@ const (
 
 // DefaultAPITimeout is the fallback timeout for JSON-RPC requests to the
 // agent process, used when no configured value is provided.
-const DefaultAPITimeout = time.Duration(config.DefaultAPITimeoutSeconds) * time.Second
+const DefaultAPITimeout = config.DefaultAPITimeout
 
 // EffortAuto is the LeapMux-side sentinel meaning "let the CLI pick its own
 // default reasoning effort". When an agent's Effort is this value, the
@@ -142,7 +142,7 @@ func (o Options) startupTimeout() time.Duration {
 	if o.StartupTimeout > 0 {
 		return o.StartupTimeout
 	}
-	return time.Duration(config.DefaultAgentStartupTimeoutSeconds) * time.Second
+	return config.DefaultAgentStartupTimeout
 }
 
 func (o Options) apiTimeout() time.Duration {

@@ -14,10 +14,14 @@ INSERT INTO user_sessions (
 SELECT * FROM user_sessions WHERE id = $1 AND expires_at > NOW();
 
 -- name: TouchUserSession :execrows
+-- The expires_at predicate is what keeps an expired session dead. The Hub
+-- serves a validated session from an in-memory cache for a short window, so a
+-- request can reach this UPDATE after the row expired; without the predicate
+-- that request would slide a dead session forward and revive it.
 UPDATE user_sessions
 SET last_active_at = NOW(),
     expires_at = $1
-WHERE id = $2 AND last_active_at < $3;
+WHERE id = $2 AND last_active_at < $3 AND expires_at > NOW();
 
 -- name: DeleteUserSession :one
 DELETE FROM user_sessions WHERE id = $1 RETURNING id, user_id;

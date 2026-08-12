@@ -66,7 +66,7 @@ func New(st store.Store, wMgr workerRegistry, pr *workermgr.PendingRequests, cfg
 func (n *Notifier) SendOrQueue(ctx context.Context, workerID string, notificationType leapmuxv1.NotificationType, payload string, msg *leapmuxv1.ConnectResponse) error {
 	conn := n.workerMgr.ConnForTrustedPath(workerID)
 	if conn != nil {
-		sendCtx, cancel := context.WithTimeout(ctx, n.cfg.APITimeout())
+		sendCtx, cancel := context.WithTimeout(ctx, n.cfg.APITimeout)
 		defer cancel()
 
 		_, err := n.pending.SendAndWait(sendCtx, conn, msg)
@@ -110,7 +110,7 @@ func (n *Notifier) ProcessPendingNotifications(ctx context.Context, workerID str
 			continue
 		}
 
-		sendCtx, cancel := context.WithTimeout(ctx, n.cfg.APITimeout())
+		sendCtx, cancel := context.WithTimeout(ctx, n.cfg.APITimeout)
 		_, sendErr := n.pending.SendAndWait(sendCtx, conn, msg)
 		cancel()
 

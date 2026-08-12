@@ -134,6 +134,56 @@ func TestFlagProvider(t *testing.T) {
 			"listen": ":9999",
 		}, m)
 	})
+
+	// A nested key must arrive nested. koanf.Load does not split a key on the
+	// delimiter, so a flat "storage.postgres.dsn" lands as a top-level key whose
+	// name merely contains dots: Get finds it, because the lookup index is flat
+	// either way, and Unmarshal does not, because it walks the nested map. Every
+	// storage flag parsed, reported no error, and was then ignored.
+	t.Run("nests a dotted key", func(t *testing.T) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		fs.String("storage-type", "", "storage type")
+		fs.String("storage-postgres-dsn", "", "postgres dsn")
+		fs.Int("storage-postgres-max-conns", 25, "postgres max conns")
+
+		require.NoError(t, fs.Parse([]string{
+			"-storage-type", "postgres",
+			"-storage-postgres-dsn", "postgres://example/db",
+			"-storage-postgres-max-conns", "77",
+		}))
+
+		fp := NewFlagProvider(fs, map[string]string{
+			"storage-type":               "storage.type",
+			"storage-postgres-dsn":       "storage.postgres.dsn",
+			"storage-postgres-max-conns": "storage.postgres.max_conns",
+		})
+		m, err := fp.Read()
+		require.NoError(t, err)
+
+		assert.Equal(t, map[string]interface{}{
+			"storage": map[string]interface{}{
+				"type": "postgres",
+				"postgres": map[string]interface{}{
+					"dsn":       "postgres://example/db",
+					"max_conns": "77",
+				},
+			},
+		}, m)
+	})
+
+	// A key with no delimiter must stay exactly where it was, so the nesting
+	// above cannot change how a flat key reaches the config.
+	t.Run("leaves a flat key at the top level", func(t *testing.T) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		fs.String("log-level", "info", "log level")
+
+		require.NoError(t, fs.Parse([]string{"-log-level", "debug"}))
+
+		m, err := NewFlagProvider(fs, map[string]string{"log-level": "log_level"}).Read()
+		require.NoError(t, err)
+
+		assert.Equal(t, map[string]interface{}{"log_level": "debug"}, m)
+	})
 }
 
 func TestExpandHome(t *testing.T) {

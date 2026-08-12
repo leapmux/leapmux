@@ -83,7 +83,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	pepper := []byte("0123456789abcdef0123456789abcdef")
 	tv, err := auth.NewTokenValidator(st, pepper)
 	require.NoError(t, err)
-	_, sc := auth.NewInterceptor(st, nil, false, false)
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 
 	mux := http.NewServeMux()

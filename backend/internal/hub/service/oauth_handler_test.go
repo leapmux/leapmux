@@ -335,7 +335,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	oauthHandler.RegisterRoutes(mux)
 
 	// Register AuthService ConnectRPC routes.
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
@@ -456,6 +456,35 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 	// Verify pending signup was consumed.
 	_, err = st.PendingOAuthSignups().Get(context.Background(), signupToken)
 	require.Error(t, err)
+}
+
+// The OAuth sign-up mints its own session, so it must stamp the configured
+// duration like every other mint path. Its own CreateSession call is the one
+// that would otherwise leave OAuth users on the built-in default while password
+// users follow the operator's setting.
+func TestCompleteOAuthSignup_UsesConfiguredSessionDuration(t *testing.T) {
+	t.Parallel()
+
+	const configured = 90 * time.Minute
+	_, client, st, ks, cfg := setupOAuthTestServerWithAuthService(t)
+	cfg.SessionDuration = configured
+	providerID := createTestProvider(t, st, ks)
+	signupToken := id.Generate()
+
+	insertPendingSignup(t, st, ks, providerID, signupToken, "dana@example.com", "Dana", "sub-dana", time.Now().Add(5*time.Minute).UTC())
+
+	before := time.Now()
+	resp, err := client.CompleteOAuthSignup(context.Background(), connect.NewRequest(&leapmuxv1.CompleteOAuthSignupRequest{
+		SignupToken: signupToken,
+		Username:    "danauser",
+		DisplayName: "Dana User",
+	}))
+	require.NoError(t, err)
+
+	sessionID := sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+	sess, err := st.Sessions().GetByID(context.Background(), sessionID)
+	require.NoError(t, err)
+	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 }
 
 func TestCompleteOAuthSignup_UsesProviderEmail_IgnoresRequestEmail(t *testing.T) {

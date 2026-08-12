@@ -166,8 +166,8 @@ func runWorker(args []string) error {
 		DataDir:              cfg.DataDir,
 		HubURL:               cfg.HubURL,
 		AuthToken:            state.AuthToken,
-		AgentStartupTimeout:  cfg.AgentStartupTimeout(),
-		APITimeout:           cfg.APITimeout(),
+		AgentStartupTimeout:  cfg.AgentStartupTimeout,
+		APITimeout:           cfg.APITimeout,
 		UseLoginShell:        cfg.UseLoginShell,
 		WakeLock:             wakeLockTracker,
 	})

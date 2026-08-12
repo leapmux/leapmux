@@ -25,15 +25,15 @@ const (
 	defaultConfigFile = "~/.config/leapmux/worker/worker.yaml"
 	defaultLogLevel   = "info"
 
-	// DefaultAgentStartupTimeoutSeconds is the default timeout (in seconds) for
-	// agent startup handshake. Must match the hub's default. Sized for agents
-	// that initialize slow MCP servers during the handshake (e.g. Claude Code
-	// loading a workspace .mcp.json with multiple servers).
-	DefaultAgentStartupTimeoutSeconds = 300
+	// DefaultAgentStartupTimeout is the default timeout for the agent startup
+	// handshake. Must match the hub's default. Sized for agents that initialize
+	// slow MCP servers during the handshake (e.g. Claude Code loading a
+	// workspace .mcp.json with multiple servers).
+	DefaultAgentStartupTimeout = 5 * time.Minute
 
-	// DefaultAPITimeoutSeconds is the default timeout (in seconds) for
-	// JSON-RPC requests to agent processes (e.g. turn/start, session/new).
-	DefaultAPITimeoutSeconds = 10
+	// DefaultAPITimeout is the default timeout for JSON-RPC requests to agent
+	// processes (e.g. turn/start, session/new).
+	DefaultAPITimeout = 10 * time.Second
 )
 
 // Config holds the worker's runtime configuration.
@@ -42,19 +42,22 @@ type Config struct {
 	// RegistrationKey is the bearer credential the worker presents to
 	// WorkerConnectorService.Register. Required on first run; ignored on
 	// subsequent runs if the worker is already registered. Not persisted.
-	RegistrationKey            string `koanf:"registration_key" json:"-"`
-	Name                       string `koanf:"name" json:"name"`
-	DataDir                    string `koanf:"data_dir" json:"data_dir"`
-	DBMaxConns                 int    `koanf:"db_max_conns" json:"db_max_conns"`
-	DBCacheSize                int    `koanf:"db_cache_size" json:"db_cache_size"`
-	DBMmapSize                 int    `koanf:"db_mmap_size" json:"db_mmap_size"`
-	MaxIncompleteChunked       int    `koanf:"max_incomplete_chunked" json:"max_incomplete_chunked"`
-	MaxMessageSize             int    `koanf:"max_message_size" json:"max_message_size"`
-	AgentStartupTimeoutSeconds int    `koanf:"agent_startup_timeout_seconds" json:"agent_startup_timeout_seconds"`
-	APITimeoutSeconds          int    `koanf:"api_timeout_seconds" json:"api_timeout_seconds"`
-	LogLevel                   string `koanf:"log_level" json:"log_level"`
-	EncryptionMode             string `koanf:"encryption_mode" json:"encryption_mode"`
-	UseLoginShell              bool   `koanf:"use_login_shell" json:"use_login_shell"`
+	RegistrationKey      string `koanf:"registration_key" json:"-"`
+	Name                 string `koanf:"name" json:"name"`
+	DataDir              string `koanf:"data_dir" json:"data_dir"`
+	DBMaxConns           int    `koanf:"db_max_conns" json:"db_max_conns"`
+	DBCacheSize          int    `koanf:"db_cache_size" json:"db_cache_size"`
+	DBMmapSize           int    `koanf:"db_mmap_size" json:"db_mmap_size"`
+	MaxIncompleteChunked int    `koanf:"max_incomplete_chunked" json:"max_incomplete_chunked"`
+	MaxMessageSize       int    `koanf:"max_message_size" json:"max_message_size"`
+	// Both durations accept a unit suffix and read a bare number as seconds --
+	// see internalconfig.ParseDuration. Load resolves a zero to the matching
+	// Default* constant.
+	AgentStartupTimeout time.Duration `koanf:"agent_startup_timeout" json:"agent_startup_timeout"`
+	APITimeout          time.Duration `koanf:"api_timeout" json:"api_timeout"`
+	LogLevel            string        `koanf:"log_level" json:"log_level"`
+	EncryptionMode      string        `koanf:"encryption_mode" json:"encryption_mode"`
+	UseLoginShell       bool          `koanf:"use_login_shell" json:"use_login_shell"`
 }
 
 // EncryptionModeProto returns the protobuf EncryptionMode value.
@@ -74,22 +77,16 @@ func ParseEncryptionMode(s string) leapmuxv1.EncryptionMode {
 	}
 }
 
-// AgentStartupTimeout returns the agent startup timeout as a duration.
-func (c *Config) AgentStartupTimeout() time.Duration {
-	v := c.AgentStartupTimeoutSeconds
-	if v <= 0 {
-		v = DefaultAgentStartupTimeoutSeconds
+// applyDurationDefaults restores the default for each timeout that a source
+// left at zero, so every reader of a loaded Config finds a usable value and
+// none of them repeats the fallback.
+func (c *Config) applyDurationDefaults() {
+	if c.AgentStartupTimeout == 0 {
+		c.AgentStartupTimeout = DefaultAgentStartupTimeout
 	}
-	return time.Duration(v) * time.Second
-}
-
-// APITimeout returns the JSON-RPC request timeout as a duration.
-func (c *Config) APITimeout() time.Duration {
-	v := c.APITimeoutSeconds
-	if v <= 0 {
-		v = DefaultAPITimeoutSeconds
+	if c.APITimeout == 0 {
+		c.APITimeout = DefaultAPITimeout
 	}
-	return time.Duration(v) * time.Second
 }
 
 // State holds the worker's persistent state (saved to disk after registration).
@@ -172,29 +169,31 @@ func Load(args []string) (*Config, bool, error) {
 	fs.Int("db-mmap-size", 0, "SQLite memory-mapped I/O size in bytes (0 = disabled)")
 	fs.Int("max-incomplete-chunked", 0, "maximum in-flight chunked sequences per channel (default 4)")
 	fs.Int("max-message-size", 0, "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom")
-	fs.Int("agent-startup-timeout-seconds", DefaultAgentStartupTimeoutSeconds, "agent startup timeout in seconds")
-	fs.Int("api-timeout-seconds", DefaultAPITimeoutSeconds, "JSON-RPC request timeout in seconds")
+	fs.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAgentStartupTimeout),
+		"agent-startup-timeout", "agent startup timeout. "+internalconfig.UnitSyntax)
+	fs.Var(internalconfig.NewDurationFlag(new(time.Duration), DefaultAPITimeout),
+		"api-timeout", "JSON-RPC request timeout. "+internalconfig.UnitSyntax)
 	fs.String("log-level", defaultLogLevel, "log level (debug, info, warn, error)")
 	fs.String("encryption-mode", "post-quantum", "encryption mode (classic, post-quantum)")
 	fs.Bool("use-login-shell", true, "wrap claude invocation in user's login shell")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	usageCategories := map[string]string{
-		"config":                        "Common options",
-		"version":                       "Common options",
-		"hub":                           "Worker options",
-		"registration-key":              "Worker options",
-		"name":                          "Worker options",
-		"data-dir":                      "Worker options",
-		"log-level":                     "Worker options",
-		"encryption-mode":               "Worker options",
-		"use-login-shell":               "Worker options",
-		"max-incomplete-chunked":        "Timeout and limit options",
-		"max-message-size":              "Timeout and limit options",
-		"agent-startup-timeout-seconds": "Timeout and limit options",
-		"api-timeout-seconds":           "Timeout and limit options",
-		"db-max-conns":                  "SQLite database options",
-		"db-cache-size":                 "SQLite database options",
-		"db-mmap-size":                  "SQLite database options",
+		"config":                 "Common options",
+		"version":                "Common options",
+		"hub":                    "Worker options",
+		"registration-key":       "Worker options",
+		"name":                   "Worker options",
+		"data-dir":               "Worker options",
+		"log-level":              "Worker options",
+		"encryption-mode":        "Worker options",
+		"use-login-shell":        "Worker options",
+		"max-incomplete-chunked": "Timeout and limit options",
+		"max-message-size":       "Timeout and limit options",
+		"agent-startup-timeout":  "Timeout and limit options",
+		"api-timeout":            "Timeout and limit options",
+		"db-max-conns":           "SQLite database options",
+		"db-cache-size":          "SQLite database options",
+		"db-mmap-size":           "SQLite database options",
 	}
 	if err := internalconfig.ConfigureAndParse(fs, args, "Run a Worker connected to a Hub.", usageCategories, workerFlagCategoryOrder); err != nil {
 		return nil, false, err
@@ -206,40 +205,40 @@ func Load(args []string) (*Config, bool, error) {
 
 	// Flag name -> koanf key mapping.
 	fieldMap := map[string]string{
-		"hub":                           "hub",
-		"registration-key":              "registration_key",
-		"name":                          "name",
-		"data-dir":                      "data_dir",
-		"db-max-conns":                  "db_max_conns",
-		"db-cache-size":                 "db_cache_size",
-		"db-mmap-size":                  "db_mmap_size",
-		"max-incomplete-chunked":        "max_incomplete_chunked",
-		"max-message-size":              "max_message_size",
-		"agent-startup-timeout-seconds": "agent_startup_timeout_seconds",
-		"api-timeout-seconds":           "api_timeout_seconds",
-		"log-level":                     "log_level",
-		"encryption-mode":               "encryption_mode",
-		"use-login-shell":               "use_login_shell",
+		"hub":                    "hub",
+		"registration-key":       "registration_key",
+		"name":                   "name",
+		"data-dir":               "data_dir",
+		"db-max-conns":           "db_max_conns",
+		"db-cache-size":          "db_cache_size",
+		"db-mmap-size":           "db_mmap_size",
+		"max-incomplete-chunked": "max_incomplete_chunked",
+		"max-message-size":       "max_message_size",
+		"agent-startup-timeout":  "agent_startup_timeout",
+		"api-timeout":            "api_timeout",
+		"log-level":              "log_level",
+		"encryption-mode":        "encryption_mode",
+		"use-login-shell":        "use_login_shell",
 	}
 
 	defaults := map[string]interface{}{
-		"hub":                           defaultHubURL,
-		"registration_key":              "",
-		"name":                          "",
-		"data_dir":                      ".",
-		"db_max_conns":                  sqlitedb.DefaultMaxConns,
-		"db_cache_size":                 0,
-		"db_mmap_size":                  0,
-		"max_incomplete_chunked":        0,
-		"max_message_size":              0,
-		"agent_startup_timeout_seconds": DefaultAgentStartupTimeoutSeconds,
-		"api_timeout_seconds":           DefaultAPITimeoutSeconds,
-		"log_level":                     defaultLogLevel,
-		"encryption_mode":               "post-quantum",
-		"use_login_shell":               true,
+		"hub":                    defaultHubURL,
+		"registration_key":       "",
+		"name":                   "",
+		"data_dir":               ".",
+		"db_max_conns":           sqlitedb.DefaultMaxConns,
+		"db_cache_size":          0,
+		"db_mmap_size":           0,
+		"max_incomplete_chunked": 0,
+		"max_message_size":       0,
+		"agent_startup_timeout":  DefaultAgentStartupTimeout,
+		"api_timeout":            DefaultAPITimeout,
+		"log_level":              defaultLogLevel,
+		"encryption_mode":        "post-quantum",
+		"use_login_shell":        true,
 	}
 
-	k := koanf.New(".")
+	k := koanf.New(internalconfig.Delim)
 	fp := internalconfig.NewFlagProvider(fs, fieldMap)
 
 	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_WORKER_", fp); err != nil {
@@ -247,9 +246,12 @@ func Load(args []string) (*Config, bool, error) {
 	}
 
 	var cfg Config
-	if err := k.Unmarshal("", &cfg); err != nil {
+	if err := internalconfig.Unmarshal(k, &cfg); err != nil {
 		return nil, false, fmt.Errorf("unmarshal config: %w", err)
 	}
+
+	// Resolve the timeouts before anything reads one.
+	cfg.applyDurationDefaults()
 
 	// Resolve relative data_dir against config file directory.
 	cfg.DataDir = internalconfig.ResolveDataDir(cfg.DataDir, configPath, defaultConfigDir)

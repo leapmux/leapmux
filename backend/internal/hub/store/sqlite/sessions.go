@@ -79,7 +79,8 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams) (i
 		`UPDATE user_sessions
 		 SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
 		     expires_at = ?
-		 WHERE id = ? AND last_active_at < ?`,
+		 WHERE id = ? AND last_active_at < ?
+		   AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
 		sqltime.NewSQLiteTime(p.ExpiresAt), p.ID, sqltime.NewSQLiteTime(p.LastActiveAt),
 	)
 	if err != nil {

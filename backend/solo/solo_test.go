@@ -141,6 +141,36 @@ func TestDevModeAddsPublicURL(t *testing.T) {
 		"dev must not lose the caps when it gains public-url")
 }
 
+// TestDevModeAddsSessionDuration guards the other dev-only flag. Dev runs the
+// full sign-up-and-cookie path, so a short session is worth asking for on the
+// command line; solo authenticates every request as the synthetic local user
+// and mints no session, which would make the flag inert in its --help.
+func TestDevModeAddsSessionDuration(t *testing.T) {
+	t.Parallel()
+
+	assert.Contains(t, defaultCLIFlags(true), "session-duration")
+	assert.NotContains(t, defaultCLIFlags(false), "session-duration")
+
+	cfg, _, err := hubconfig.LoadWithOptions(
+		[]string{"--session-duration=1h"}, testLoadOptions(t, true))
+	require.NoError(t, err, "dev must accept the session duration as a CLI flag")
+	assert.Equal(t, time.Hour, cfg.SessionDuration)
+
+	_, _, err = hubconfig.LoadWithOptions(
+		[]string{"--session-duration=1h"}, testLoadOptions(t, false))
+	require.Error(t, err, "solo must not offer a flag it has no session to apply it to")
+
+	// The key stays reachable where the flag is not, the same contract the
+	// queue budgets hold: CLIFlags decides only what earns a line in --help.
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("session_duration: 1h\n"), 0o600))
+	opts := testLoadOptions(t, false)
+	opts.DefaultConfigFile = path
+	cfg, _, err = hubconfig.LoadWithOptions(nil, opts)
+	require.NoError(t, err)
+	assert.Equal(t, time.Hour, cfg.SessionDuration)
+}
+
 func TestListenIsNonLoopback(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

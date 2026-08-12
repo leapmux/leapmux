@@ -17,6 +17,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -45,7 +46,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	sectionSvc := service.NewSectionService(st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
 	path, handler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, opts)
 	mux.Handle(path, handler)
@@ -77,7 +78,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	require.NoError(t, err)
 	userID := user.ID
 
-	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass")
+	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &sectionTestEnv{
@@ -204,7 +205,7 @@ func TestSectionService_ListSections_NeverWrites(t *testing.T) {
 		DisplayName:  "Unseeded",
 		PasswordSet:  true,
 	}))
-	bareToken, _, _, err := auth.Login(ctx, env.store, "unseeded", "testpass")
+	bareToken, _, _, err := auth.Login(ctx, env.store, "unseeded", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	userID := userid.MustNew(bareID)
 

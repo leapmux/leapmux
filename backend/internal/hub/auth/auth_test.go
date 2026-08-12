@@ -48,10 +48,61 @@ func TestLogin_Success(t *testing.T) {
 	userID := createTestUser(t, st)
 	ctx := context.Background()
 
-	token, user, _, err := auth.Login(ctx, st, "testuser", "password123")
+	token, user, _, err := auth.Login(ctx, st, "testuser", "password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	assert.NotEmpty(t, token)
 	assert.Equal(t, userID, user.ID)
+}
+
+// Login must pass its lifetime through to the session it creates. It threads the
+// value across a transaction boundary, where dropping it would leave every login
+// on the default and no caller any the wiser.
+func TestLogin_StampsTheGivenLifetime(t *testing.T) {
+	st := setupStore(t)
+	createTestUser(t, st)
+	ctx := context.Background()
+
+	const lifetime = 90 * time.Minute
+	before := time.Now()
+	token, _, expiresAt, err := auth.Login(ctx, st, "testuser", "password123", lifetime)
+	require.NoError(t, err)
+	hubtestutil.AssertSessionLifetime(t, before, lifetime, expiresAt)
+
+	sess, err := st.Sessions().GetByID(ctx, token)
+	require.NoError(t, err)
+	assert.WithinDuration(t, expiresAt, sess.ExpiresAt, time.Second,
+		"the returned expiry and the stored row must be the same deadline")
+}
+
+// CreateSession states that a lifetime of zero or less falls back to the
+// default. The fallback is what keeps a caller that has no configured value --
+// a test, a tool, a path that forgets the argument -- from writing a session
+// that expired before the response left the Hub.
+func TestCreateSession_NonPositiveLifetimeFallsBackToDefault(t *testing.T) {
+	st := setupStore(t)
+	userID := userid.MustNew(createTestUser(t, st))
+	ctx := context.Background()
+
+	for name, lifetime := range map[string]time.Duration{
+		"zero":     0,
+		"negative": -time.Hour,
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := time.Now()
+			_, expiresAt, err := auth.CreateSession(ctx, st, userID, lifetime)
+			require.NoError(t, err)
+			hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, expiresAt)
+		})
+	}
+
+	// Control: a real lifetime is used as given, so the cases above prove the
+	// fallback rather than that CreateSession ignores the argument entirely.
+	t.Run("positive is honoured", func(t *testing.T) {
+		before := time.Now()
+		_, expiresAt, err := auth.CreateSession(ctx, st, userID, time.Hour)
+		require.NoError(t, err)
+		hubtestutil.AssertSessionLifetime(t, before, time.Hour, expiresAt)
+	})
 }
 
 // Workspace access is owner-only: no other user may read someone else's workspace.
@@ -225,7 +276,7 @@ func TestLogin_InvalidPassword(t *testing.T) {
 	createTestUser(t, st)
 	ctx := context.Background()
 
-	_, _, _, err := auth.Login(ctx, st, "testuser", "wrongpassword")
+	_, _, _, err := auth.Login(ctx, st, "testuser", "wrongpassword", auth.DefaultSessionDuration)
 	require.Error(t, err)
 }
 
@@ -233,7 +284,7 @@ func TestLogin_UnknownUser(t *testing.T) {
 	st := setupStore(t)
 	ctx := context.Background()
 
-	_, _, _, err := auth.Login(ctx, st, "nonexistent", "password")
+	_, _, _, err := auth.Login(ctx, st, "nonexistent", "password", auth.DefaultSessionDuration)
 	require.Error(t, err)
 }
 
@@ -246,7 +297,7 @@ func TestLogin_HashUnchangedAfterLogin(t *testing.T) {
 	require.NoError(t, err)
 	originalHash := user.PasswordHash
 
-	_, _, _, err = auth.Login(ctx, st, "testuser", "password123")
+	_, _, _, err = auth.Login(ctx, st, "testuser", "password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	user, err = st.Users().GetByUsername(ctx, "testuser")
@@ -290,7 +341,7 @@ func TestLogin_RejectsOldPasswordRotatedAtTransactionBoundary(t *testing.T) {
 		},
 	}
 
-	_, _, _, err = auth.Login(ctx, hooked, "testuser", "password123")
+	_, _, _, err = auth.Login(ctx, hooked, "testuser", "password123", auth.DefaultSessionDuration)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	sessions := storetest.ListAllSessions(t, st, userID)
@@ -320,7 +371,7 @@ func TestLogin_AcceptsNewPasswordRotatedAtTransactionBoundary(t *testing.T) {
 		},
 	}
 
-	sessionID, user, _, err := auth.Login(ctx, hooked, "testuser", "new-password123")
+	sessionID, user, _, err := auth.Login(ctx, hooked, "testuser", "new-password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	assert.NotEmpty(t, sessionID)
 	assert.Equal(t, userID, user.ID)
@@ -334,7 +385,7 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 		userID := createTestUser(t, st)
 		ctx := context.Background()
 
-		sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID))
+		sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID), auth.DefaultSessionDuration)
 		require.NoError(t, err)
 		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
 			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
@@ -355,7 +406,7 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
 			return err
 		}))
-		sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID))
+		sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID), auth.DefaultSessionDuration)
 		require.NoError(t, err)
 
 		info, err := auth.ValidateToken(ctx, st, sessionID)
@@ -425,7 +476,7 @@ func TestValidateToken_Success(t *testing.T) {
 	createTestUser(t, st)
 	ctx := context.Background()
 
-	token, _, _, err := auth.Login(ctx, st, "testuser", "password123")
+	token, _, _, err := auth.Login(ctx, st, "testuser", "password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	info, err := auth.ValidateToken(ctx, st, token)
@@ -593,7 +644,7 @@ func TestLogin_BlankUserIDRowIsRefusedNotPanicked(t *testing.T) {
 	}
 
 	require.NotPanics(t, func() {
-		sessionID, user, _, loginErr := auth.Login(context.Background(), wrapped, "blank", "correct-horse-battery")
+		sessionID, user, _, loginErr := auth.Login(context.Background(), wrapped, "blank", "correct-horse-battery", auth.DefaultSessionDuration)
 		require.Error(t, loginErr)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(loginErr),
 			"a blank-id row is refused as bad credentials, not surfaced as an internal error")

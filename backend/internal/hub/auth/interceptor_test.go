@@ -36,7 +36,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, nil, false, false)
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
@@ -109,7 +109,7 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptor(st, soloUser, false, false)
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{SoloMode: true}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
@@ -168,7 +168,7 @@ func setupInterceptorTestServerWithBearerSupport(t *testing.T) (leapmuxv1connect
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
@@ -301,7 +301,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptorWithTokens(st, nil, tv, false, false)
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
@@ -563,16 +563,27 @@ func newTestTokenID() string {
 // returns the store for DB inspection.
 func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthServiceClient, store.Store) {
 	t.Helper()
+	return setupSessionDurationTestServer(t, 0)
+}
+
+// setupSessionDurationTestServer builds that server with a configured session
+// duration; zero leaves the default. One config.Config feeds both the service
+// that stamps the first expiry at login and the interceptor that slides it, so
+// a test that pins a non-default duration exercises the whole wiring rather
+// than one half of it.
+func setupSessionDurationTestServer(t *testing.T, sessionDuration time.Duration) (leapmuxv1connect.AuthServiceClient, store.Store) {
+	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
 
 	hubtestutil.CreateTestAdmin(t, st)
 
+	cfg := &config.Config{SessionDuration: sessionDuration}
 	mux := http.NewServeMux()
-	interceptor, sc := auth.NewInterceptor(st, nil, false, false)
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SessionDuration: cfg.SessionDuration})
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -608,6 +619,146 @@ func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
 	t2 := sess2.LastActiveAt
 
 	assert.Equal(t, t1, t2, "last_active_at should not change on rapid successive requests (throttled)")
+}
+
+// backdateLastActive puts a session's last_active_at an hour in the past, past
+// any touch throttle, so the next authenticated request slides the expiry. The
+// throttle is what makes a slide unobservable in a test that only logs in: the
+// row is created with last_active_at = now, so the conditional UPDATE matches
+// no row until the threshold passes.
+func backdateLastActive(t *testing.T, st store.Store, sessionID string) {
+	t.Helper()
+	testable, ok := st.(store.TestableStore)
+	require.True(t, ok, "the test store must expose the test helper")
+	require.NoError(t, testable.TestHelper().SetLastActiveAt(context.Background(), sessionID, time.Now().Add(-time.Hour)))
+}
+
+// A slide must re-issue the cookie. The cookie carries its own Expires, so a
+// browser drops it at the deadline the login set however far the row slid --
+// which would sign an active user out one session duration after the login.
+//
+// The configured duration, not the default, is what both ends must carry.
+func TestTouchSession_SlideRefreshesCookie(t *testing.T) {
+	const configured = 36 * time.Hour
+	client, st := setupSessionDurationTestServer(t, configured)
+
+	token := loginAdmin(t, client)
+	backdateLastActive(t, st, token)
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Cookie", auth.CookieName+"="+token)
+	before := time.Now()
+	resp, err := client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+
+	setCookie := resp.Header().Get("Set-Cookie")
+	require.NotEmpty(t, setCookie, "a slid session must re-issue its cookie")
+	parsed, err := http.ParseSetCookie(setCookie)
+	require.NoError(t, err)
+	assert.Equal(t, auth.CookieName, parsed.Name)
+	assert.Equal(t, token, parsed.Value, "the refresh must re-issue the same session, not mint one")
+	assert.True(t, parsed.HttpOnly)
+	assert.True(t, parsed.Expires.After(before.Add(configured)),
+		"the browser's copy must outlive the configured duration measured from this request")
+	assert.WithinDuration(t, before.Add(configured), parsed.Expires, 15*time.Minute,
+		"the slide must follow the configured duration, not the default")
+
+	sess, err := st.Sessions().GetByID(context.Background(), token)
+	require.NoError(t, err)
+	assert.WithinDuration(t, sess.ExpiresAt, parsed.Expires, time.Second,
+		"the cookie and the row must expire together, or one outlives the other silently")
+}
+
+// Login stamps the first expiry from the same configured duration. Without
+// this, a configured value would take effect only at the first slide -- five
+// minutes into the session, and never for a user who signs in and leaves.
+func TestLogin_UsesConfiguredSessionDuration(t *testing.T) {
+	const configured = 36 * time.Hour
+	client, st := setupSessionDurationTestServer(t, configured)
+
+	before := time.Now()
+	token := loginAdmin(t, client)
+
+	sess, err := st.Sessions().GetByID(context.Background(), token)
+	require.NoError(t, err)
+	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
+}
+
+// An unconfigured Hub issues the default, so an operator who sets nothing gets
+// the documented lifetime rather than whatever the zero value would mean.
+func TestLogin_UnconfiguredUsesDefaultSessionDuration(t *testing.T) {
+	client, st := setupInterceptorTestServerWithCache(t)
+
+	before := time.Now()
+	token := loginAdmin(t, client)
+
+	sess, err := st.Sessions().GetByID(context.Background(), token)
+	require.NoError(t, err)
+	hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, sess.ExpiresAt)
+}
+
+// The throttle governs the cookie too: a request that writes no row must not
+// hand the browser an expiry the row does not carry.
+func TestTouchSession_ThrottledRequestSendsNoCookie(t *testing.T) {
+	client, _ := setupInterceptorTestServerWithCache(t)
+
+	token := loginAdmin(t, client)
+
+	// No backdating: login stamped last_active_at, so this request is inside the
+	// throttle window and the conditional UPDATE matches no row.
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Cookie", auth.CookieName+"="+token)
+	resp, err := client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+
+	assert.Empty(t, resp.Header().Values("Set-Cookie"))
+}
+
+// Logout writes the clearing cookie itself. A refresh must not follow it: a
+// browser keeps the last Set-Cookie for a name, so the user would stay signed
+// in on a session the Hub deleted.
+func TestLogout_SlideDoesNotResurrectCookie(t *testing.T) {
+	client, st := setupInterceptorTestServerWithCache(t)
+
+	token := loginAdmin(t, client)
+	backdateLastActive(t, st, token)
+
+	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
+	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
+	resp, err := client.Logout(context.Background(), logoutReq)
+	require.NoError(t, err)
+
+	values := resp.Header().Values("Set-Cookie")
+	require.Len(t, values, 1, "logout must answer with exactly one session cookie")
+	parsed, err := http.ParseSetCookie(values[0])
+	require.NoError(t, err)
+	assert.Empty(t, parsed.Value)
+	assert.Negative(t, parsed.MaxAge, "the clearing cookie must survive the slide's refresh")
+}
+
+// A bearer holds no session cookie, so a bearer-authenticated call must never
+// answer with one -- that would hand a CLI or an agent a browser credential.
+func TestBearerRequest_SendsNoSessionCookie(t *testing.T) {
+	client, st, tv := setupInterceptorTestServerWithBearerSupport(t)
+	userID := adminUserID(t, st)
+
+	tokenID := newTestTokenID()
+	secret := auth.MintAccessSecret()
+	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID:         tokenID,
+		UserID:     userid.MustNew(userID),
+		ClientType: "cli",
+		ClientName: "test",
+		SecretHash: tv.HashSecret(secret),
+		Scope:      "remote:*",
+	}))
+
+	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
+	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
+	resp, err := client.GetCurrentUser(context.Background(), req)
+	require.NoError(t, err)
+
+	assert.Empty(t, resp.Header().Values("Set-Cookie"))
 }
 
 func TestLogout_EvictsSessionFromCache(t *testing.T) {
