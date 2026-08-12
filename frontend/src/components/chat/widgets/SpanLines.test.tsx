@@ -18,7 +18,6 @@ describe('spanLines', () => {
     const { container } = render(() => (
       <SpanLines
         lines={[{ span_id: 'span-A', color: 0, type: 'active' }]}
-        spanOpener
       />
     ))
     // Should render a container div with one child (the column).
@@ -31,7 +30,6 @@ describe('spanLines', () => {
     const { container } = render(() => (
       <SpanLines
         lines={[{ span_id: 'span-A', color: 0, type: 'active' }, null, { span_id: 'span-B', color: 1, type: 'active' }]}
-        spanOpener
       />
     ))
     const wrapper = container.firstElementChild
@@ -48,7 +46,6 @@ describe('spanLines', () => {
           { span_id: 'span-B', color: 1, type: 'active' },
           { span_id: 'span-C', color: 2, type: 'active' },
         ]}
-        spanOpener={false}
       />
     ))
     const wrapper = container.firstElementChild

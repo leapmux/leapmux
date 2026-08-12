@@ -244,3 +244,316 @@ func TestClaude_ReplayedTaskStartedDoesNotDuplicateThePrompt(t *testing.T) {
 	require.True(t, ok)
 	assert.Len(t, child.Messages(), 1)
 }
+
+// --- A subagent spawn owns no span ---
+
+func TestClaude_ToolSpawnsSubagent(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, claudeToolSpawnsSubagent(ToolNameClaudeAgent))
+	assert.True(t, claudeToolSpawnsSubagent(ToolNameClaudeTask),
+		"Task is the legacy wire name for the SAME Agent tool")
+
+	// The to-do tools merely share the "Task" prefix; none of them spawns.
+	for _, name := range []string{
+		"Read", "Bash", "TaskCreate", "TaskUpdate", "TaskGet",
+		"TaskList", "TaskOutput", "TaskStop", "AgentTool", "",
+	} {
+		assert.False(t, claudeToolSpawnsSubagent(name), "%q does not spawn", name)
+	}
+}
+
+// The spawn's tool_use opens no span and reserves no color. It still carries
+// the span id (the frontend pairs it with the tool_result by that id) and the
+// span type (the tool_result reads it back through GetSpanType).
+func TestClaude_AgentToolUseOpensNoSpan(t *testing.T) {
+	t.Parallel()
+
+	for _, toolName := range []string{ToolNameClaudeAgent, ToolNameClaudeTask} {
+		t.Run(toolName, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			a := newTestAgent(sink)
+			a.HandleOutput([]byte(`{
+				"type": "assistant",
+				"message": {"role": "assistant", "content": [
+					{"type": "tool_use", "id": "tu-spawn", "name": "` + toolName + `",
+					 "input": {"description": "explore", "prompt": "look around"}}
+				]}
+			}`))
+
+			assert.Empty(t, sink.OpenSpans(), "a spawn opens no span")
+			assert.Empty(t, sink.ReservedColorSpans(),
+				"a spawn reserves no color, so none is blocked while it runs")
+			assert.Equal(t, toolName, sink.GetSpanType("tu-spawn"),
+				"the span type is still recorded for the tool_result")
+
+			msgs := sink.Messages()
+			require.Len(t, msgs, 1)
+			assert.Equal(t, "tu-spawn", msgs[0].SpanID, "the row still carries the span id")
+			assert.Empty(t, msgs[0].SpansOpenAtPersist, "nothing else was open, so no rail")
+		})
+	}
+}
+
+// The guard is not too wide: an ordinary tool still opens a span and reserves
+// a color.
+func TestClaude_OrdinaryToolUseStillOpensASpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-read", "name": "Read", "input": {"file_path": "/tmp/a"}}
+		]}
+	}`))
+
+	open := sink.OpenSpans()
+	require.Len(t, open, 1)
+	assert.Equal(t, "tu-read", open[0].SpanID)
+	assert.Equal(t, []string{"tu-read"}, sink.ReservedColorSpans())
+}
+
+// One assistant envelope can carry parallel tool calls. The spawn among them
+// opens nothing while its siblings still open their spans.
+func TestClaude_ParallelBlocksOpenOnlyTheNonSpawns(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-spawn", "name": "Agent", "input": {"prompt": "go"}},
+			{"type": "tool_use", "id": "tu-read", "name": "Read", "input": {"file_path": "/tmp/a"}}
+		]}
+	}`))
+
+	open := sink.OpenSpans()
+	require.Len(t, open, 1, "only the Read opens a span")
+	assert.Equal(t, "tu-read", open[0].SpanID)
+	// spanID/spanColor come from the FIRST tool_use block, which is the spawn,
+	// so no color is reserved for this row at all.
+	assert.Empty(t, sink.ReservedColorSpans())
+}
+
+// The spawn's tool_result closes nothing and draws no rail of its own.
+func TestClaude_AgentToolResultDrawsNoRail(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-spawn", "name": "Agent", "input": {"prompt": "go"}}
+		]}
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "user",
+		"message": {"role": "user", "content": [
+			{"type": "tool_result", "tool_use_id": "tu-spawn", "content": "the finding"}
+		]}
+	}`))
+
+	msgs := sink.Messages()
+	require.Len(t, msgs, 2)
+	assert.True(t, msgs[1].Closing, "the tool_result is still a closer")
+	assert.Equal(t, ToolNameClaudeAgent, msgs[1].SpanType,
+		"span_type survives because the spawn never closed a span to forget it")
+	assert.Empty(t, msgs[1].SpansOpenAtPersist, "and it draws no rail")
+	assert.Empty(t, sink.OpenSpans())
+}
+
+// The user's second example: a spawn that starts while a Read is running draws
+// exactly the Read's rail -- one column, not two.
+func TestClaude_SpawnInsideOpenReadDrawsOneColumn(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-read", "name": "Read", "input": {"file_path": "/tmp/a"}}
+		]}
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-spawn", "name": "Agent", "input": {"prompt": "go"}}
+		]}
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "user",
+		"message": {"role": "user", "content": [
+			{"type": "tool_result", "tool_use_id": "tu-spawn", "content": "the finding"}
+		]}
+	}`))
+
+	msgs := sink.Messages()
+	require.Len(t, msgs, 3)
+	for i, msg := range msgs[1:] {
+		require.Len(t, msg.SpansOpenAtPersist, 1, "spawn row %d draws exactly one column", i)
+		assert.Equal(t, "tu-read", msg.SpansOpenAtPersist[0].SpanID)
+	}
+	// The Read span outlives both spawn rows and is still the only one open.
+	// The spawn's tool_result does call CloseSpan -- that is how the recorded
+	// span type is freed -- but with no span of its own to remove it cannot
+	// disturb the Read's column.
+	assert.Equal(t, []string{"tu-spawn"}, sink.ClosedSpans())
+	open := sink.OpenSpans()
+	require.Len(t, open, 1)
+	assert.Equal(t, "tu-read", open[0].SpanID)
+	assert.Empty(t, sink.DiscardedSpans())
+}
+
+// A Workflow run spawns a fleet of agents and blocks until the last one ends,
+// so it is a spawn too. Its tool_use already opened a span -- the CLI keeps the
+// Workflow tool behind a feature flag, so its name is not matched -- and
+// task_started is the first authoritative word. Take the span back there.
+func TestClaude_WorkflowTaskStartedDiscardsTheSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-wf", "name": "Workflow", "input": {"name": "review"}}
+		]}
+	}`))
+	require.Len(t, sink.OpenSpans(), 1, "the tool_use opened one before we knew")
+
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-wf",
+		"tool_use_id": "tu-wf",
+		"task_type": "local_workflow",
+		"workflow_name": "review"
+	}`))
+
+	assert.Equal(t, []string{"tu-wf"}, sink.DiscardedSpans())
+	assert.Empty(t, sink.ClosedSpans(), "discarded, not closed -- the run is still going")
+	assert.Equal(t, "Workflow", sink.GetSpanType("tu-wf"),
+		"a discard keeps the type the tool_result reads back")
+
+	// A tool row persisted after the discard draws no rail.
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-read", "name": "Read", "input": {"file_path": "/tmp/a"}}
+		]}
+	}`))
+	msgs := sink.Messages()
+	require.Len(t, msgs, 2)
+	assert.Empty(t, msgs[1].SpansOpenAtPersist, "the workflow rail is gone")
+}
+
+// A backgrounded shell is an ordinary Bash span whose tool_result returns at
+// once. It reports task_started too, and it must KEEP its rail.
+func TestClaude_BackgroundShellTaskStartedKeepsTheSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-bash", "name": "Bash", "input": {"command": "sleep 100"}}
+		]}
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-sh",
+		"tool_use_id": "tu-bash",
+		"task_type": "local_bash",
+		"description": "sleep 100"
+	}`))
+
+	assert.Empty(t, sink.DiscardedSpans(), "a background shell keeps its span")
+	open := sink.OpenSpans()
+	require.Len(t, open, 1)
+	assert.Equal(t, "tu-bash", open[0].SpanID)
+}
+
+// A local_agent Task never opened a span, so its task_started has nothing to
+// discard.
+func TestClaude_AgentTaskStartedDiscardsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-spawn", "name": "Agent", "input": {"prompt": "go"}}
+		]}
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-1",
+		"tool_use_id": "tu-spawn",
+		"task_type": "local_agent",
+		"prompt": "go"
+	}`))
+
+	assert.Empty(t, sink.OpenSpans())
+	assert.Empty(t, sink.DiscardedSpans())
+}
+
+// A workflow event without a tool_use_id has no span to name, so it discards
+// nothing rather than discarding the empty id.
+func TestClaude_WorkflowTaskStartedWithoutToolUseIDDiscardsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-wf",
+		"task_type": "local_workflow",
+		"workflow_name": "review"
+	}`))
+
+	assert.Empty(t, sink.DiscardedSpans())
+}
+
+// A subagent can spawn a subagent of its own. That nested spawn owns no span in
+// the CHILD transcript either, for the same reason: its output goes to a
+// transcript of its own.
+func TestClaude_NestedSpawnOpensNoSpanInTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	// A forwarded envelope carries the spawning tool_use id, which routes it to
+	// the child transcript.
+	a.HandleOutput([]byte(`{
+		"type": "assistant",
+		"parent_tool_use_id": "tu-spawn",
+		"message": {"role": "assistant", "content": [
+			{"type": "tool_use", "id": "tu-nested", "name": "Agent", "input": {"prompt": "go deeper"}},
+			{"type": "tool_use", "id": "tu-read", "name": "Read", "input": {"file_path": "/tmp/a"}}
+		]}
+	}`))
+
+	assert.Empty(t, sink.OpenSpans(), "the parent transcript is untouched")
+
+	child, ok := sink.ChildSink("child-of-tu-spawn").(*testSink)
+	require.True(t, ok)
+	open := child.OpenSpans()
+	require.Len(t, open, 1, "only the Read opens a span in the child transcript")
+	assert.Equal(t, "tu-read", open[0].SpanID)
+	assert.Empty(t, child.ReservedColorSpans(),
+		"the row's color comes from the first block, which is the nested spawn")
+	assert.Equal(t, ToolNameClaudeAgent, child.GetSpanType("tu-nested"),
+		"the nested spawn's type is still recorded for its tool_result")
+}

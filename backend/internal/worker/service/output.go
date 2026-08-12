@@ -320,17 +320,13 @@ func (t *SpanTracker) Reset() {
 	clear(t.parentMap)
 }
 
-// CloseSpan removes a span, freeing its column.
-func (t *SpanTracker) CloseSpan(spanID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
+// removeSpanLocked drops a span from the active set, freeing its column and
+// its color. Shared by CloseSpan and DiscardSpan, which differ only in what
+// they do to the recorded span type. Must be called with t.mu held.
+func (t *SpanTracker) removeSpanLocked(spanID string) {
 	t.spans = slices.DeleteFunc(t.spans, func(s ActiveSpan) bool {
 		return s.SpanID == spanID
 	})
-	if t.spanTypes != nil {
-		delete(t.spanTypes, spanID)
-	}
 	// Defensive: if a reservation for this exact span was never consumed by
 	// OpenSpan, drop it so the color goes back to Free.
 	if t.pending != nil && t.pending.spanID == spanID {
@@ -339,6 +335,40 @@ func (t *SpanTracker) CloseSpan(spanID string) {
 	if len(t.spans) == 0 {
 		clear(t.parentMap)
 	}
+}
+
+// CloseSpan removes a span, freeing its column. The span ended, so its type is
+// forgotten too.
+func (t *SpanTracker) CloseSpan(spanID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.removeSpanLocked(spanID)
+	if t.spanTypes != nil {
+		delete(t.spanTypes, spanID)
+	}
+}
+
+// DiscardSpan removes an open span WITHOUT ending it: the tool call keeps
+// running, but no later message connects to its column and no message draws
+// its rail.
+//
+// A subagent spawn owns no span (its output lives in the child transcript, so
+// a rail that stays open for the whole subagent run only adds depth). Most
+// providers state at the tool call that the call is a spawn and simply never
+// open one. Two learn late -- Kilo fills its spawn rawInput only on the first
+// in-progress tool_call_update, and Claude reports a Workflow run only in the
+// task_started that follows the tool_use -- and this is what those call.
+//
+// Unlike CloseSpan it KEEPS the recorded span type, because the provider's own
+// closing message still reads that type back through GetSpanType to persist
+// span_type. Closing here instead would degrade the finished row to the
+// provider's fallback type.
+func (t *SpanTracker) DiscardSpan(spanID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.removeSpanLocked(spanID)
 }
 
 // SetSpanType records the type (tool name / item type) for a span ID.
@@ -1075,6 +1105,10 @@ func (s *agentOutputSink) OpenSpan(spanID, parentSpanID string) {
 
 func (s *agentOutputSink) CloseSpan(spanID string) {
 	s.tracker.CloseSpan(spanID)
+}
+
+func (s *agentOutputSink) DiscardSpan(spanID string) {
+	s.tracker.DiscardSpan(spanID)
 }
 
 func (s *agentOutputSink) ResetSpans() {

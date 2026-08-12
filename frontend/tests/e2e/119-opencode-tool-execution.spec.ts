@@ -13,10 +13,15 @@ opencodeTest.describe('OpenCode Tool Execution', () => {
     await sendMessage(page, 'Use your shell tool to run `ls` in the current directory and report the output. You must call the tool — do not describe what ls would do.')
     await waitForAgentIdle(page, 180_000)
 
-    // A successful tool dispatch renders at least one thread-line. If the
-    // agent answers without ever invoking a tool, that is the regression
-    // this test was added to catch.
-    const toolBubbles = page.locator('[data-testid="thread-line-connector"], [data-testid="thread-line-active"]')
-    await expect(toolBubbles.first()).toBeVisible()
+    // A successful tool dispatch renders at least one row that draws a span
+    // rail. If the agent answers without ever invoking a tool, that is the
+    // regression this test was added to catch.
+    //
+    // data-span-columns is the count of rails on one row; a row that draws none
+    // reports "0". The previous locator here named two data-testids that no
+    // component has ever emitted, so it could only pass while the whole spec
+    // was skipped.
+    const railedRows = page.locator('[data-span-columns]:not([data-span-columns="0"]):visible')
+    await expect(railedRows.first()).toBeVisible()
   })
 })

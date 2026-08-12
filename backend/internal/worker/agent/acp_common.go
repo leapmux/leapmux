@@ -65,6 +65,12 @@ const (
 	acpUpdateConfigOptionUpdate      = "config_option_update"
 )
 
+// acpToolKindExecute is the ACP tool_call kind for running a command. A
+// provider's spawn detector must never strip the span off one of these: a
+// backgrounded shell is an ordinary tool span, not a subagent spawn, and it
+// keeps its rail even when the detector fires on it.
+const acpToolKindExecute = "execute"
+
 // acpPendingInput holds a user message queued while a prompt is in flight.
 type acpPendingInput struct {
 	content     string
@@ -1545,6 +1551,14 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		spanType = acpUpdateToolCall
 	}
 
+	// Ask the provider's detector BEFORE persisting, so a spawn it recognizes
+	// here never reserves a color and never opens a span. The observation is
+	// applied further down, at the point it was applied before.
+	var obs *acpSubagentObservation
+	if b.subagentFromToolCall != nil {
+		obs = b.subagentFromToolCall(tc)
+	}
+
 	// Tool calls that arrive already final (completed/failed/cancelled)
 	// are persisted as closing spans immediately — no open/close cycle.
 	if tc.Status == "completed" || tc.Status == "failed" || tc.Status == "cancelled" {
@@ -1553,23 +1567,30 @@ func (b *acpBase) handleToolCall(update json.RawMessage) {
 		}); err != nil {
 			slog.Error("persist final acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "status", tc.Status, "error", err)
 		}
-		if b.subagentFromToolCall != nil {
-			b.applySubagentObservation(b.subagentFromToolCall(tc))
-		}
+		b.applySubagentObservation(obs)
 		return
 	}
 
-	spanColor := b.sink.ReserveSpanColor(tc.ToolCallID, "")
+	// A subagent spawn owns no span: its output lands in its own child
+	// transcript, so a rail held open for the whole subagent run only pushes
+	// every concurrent tool one column right.
+	spawns := acpObservationIsSpawn(obs) && spanType != acpToolKindExecute
+	var spanColor int32
+	if !spawns {
+		spanColor = b.sink.ReserveSpanColor(tc.ToolCallID, "")
+	}
 	if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, update, SpanInfo{
 		SpanID: tc.ToolCallID, SpanType: spanType, SpanColor: spanColor,
 	}); err != nil {
 		slog.Error("persist acp tool_call", "agent_id", b.agentID, "kind", tc.Kind, "error", err)
 	}
+	// The span type is recorded either way: the closing tool_call_update reads
+	// it back to persist span_type.
 	b.sink.SetSpanType(tc.ToolCallID, spanType)
-	b.sink.OpenSpan(tc.ToolCallID, "")
-	if b.subagentFromToolCall != nil {
-		b.applySubagentObservation(b.subagentFromToolCall(tc))
+	if !spawns {
+		b.sink.OpenSpan(tc.ToolCallID, "")
 	}
+	b.applySubagentObservation(obs)
 }
 
 func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
@@ -1588,6 +1609,15 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 	if b.subagentFromToolCallUpdate != nil {
 		if obs := b.subagentFromToolCallUpdate(tcu); obs != nil {
 			b.applySubagentObservation(obs)
+			// A spawn recognized only HERE already opened a span at its
+			// tool_call, so take that span back now. Kilo is why: it opens the
+			// spawn with `rawInput: {}` and fills the spawn shape only on the
+			// first in-progress update. A no-op for every provider whose
+			// detector already fired at the tool_call, and for a shell, whose
+			// span must survive a detector that misfires on it.
+			if acpObservationIsSpawn(obs) && b.sink.GetSpanType(tcu.ToolCallID) != acpToolKindExecute {
+				b.sink.DiscardSpan(tcu.ToolCallID)
+			}
 		}
 	}
 
@@ -1625,6 +1655,19 @@ func (b *acpBase) handleToolCallUpdate(update json.RawMessage) {
 		b.sink.BroadcastStreamEnd(tcu.ToolCallID)
 		b.sink.CloseSpan(tcu.ToolCallID)
 	}
+}
+
+// acpObservationIsSpawn reports whether an observation announces a subagent
+// that is starting or running, as opposed to one that only ends a row. It is
+// the exact condition under which applySubagentObservation upserts a running
+// registry row, so the span decision and the registry decision cannot drift:
+// a close-only observation (Goose's and Cursor's closing hooks fire for EVERY
+// tool_call) and a rename+close (OpenCode learns the child session id on the
+// final update) both operate on a row that already exists, and neither says
+// "this tool call spawns a subagent".
+func acpObservationIsSpawn(obs *acpSubagentObservation) bool {
+	return obs != nil && obs.RowKey != "" &&
+		obs.Mode != acpModeCloseOnly && obs.RenameFrom == ""
 }
 
 // applySubagentObservation translates a provider hook's neutral observation

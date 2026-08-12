@@ -1108,15 +1108,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                               const bubble = renderMessageBubble(entry)
                               return (
                                 <>
+                                  {/*
+                                    data-span-columns carries how many rails
+                                    this row draws (0 when it draws none, e.g. a
+                                    subagent spawn with nothing else open). Every
+                                    column class is a hashed vanilla-extract
+                                    name, so an e2e spec has no other stable way
+                                    to read the rail count of one row.
+                                  */}
                                   <Show
                                     when={parsedSpanLines.length > 0}
-                                    fallback={<div style={{ 'margin-left': `${NO_SPAN_MARGIN}px` }}>{bubble}</div>}
+                                    fallback={<div data-span-columns="0" style={{ 'margin-left': `${NO_SPAN_MARGIN}px` }}>{bubble}</div>}
                                   >
-                                    <div class={styles.messageRow}>
-                                      <SpanLines
-                                        lines={parsedSpanLines}
-                                        spanOpener={!!msg.spanId}
-                                      />
+                                    <div class={styles.messageRow} data-span-columns={parsedSpanLines.length}>
+                                      <SpanLines lines={parsedSpanLines} />
                                       <div class={styles.messageRowContent}>
                                         {bubble}
                                       </div>

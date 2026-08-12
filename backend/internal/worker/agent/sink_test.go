@@ -28,21 +28,23 @@ type testSinkModeChange struct {
 
 // testSink is a test implementation of OutputSink that records calls.
 type testSink struct {
-	mu                sync.Mutex
-	messages          []testSinkMessage
-	notifications     []testSinkMessage
-	streamChunks      []testSinkStreamChunk
-	streamEnds        []string
-	sessionIDs        []string
-	permissionModes   []string
-	modeChanges       []testSinkModeChange
-	settingsRefreshes []testSinkSettingsRefreshed
-	sessionInfos      []map[string]interface{}
-	spanTypes         map[string]string
-	openSpans         []testSinkSpanOpen
-	closedSpans       []string
-	// liveSpans is the CURRENTLY-open subset of openSpans (a close or a reset
-	// removes entries), mirroring the real SpanTracker's active set.
+	mu                 sync.Mutex
+	messages           []testSinkMessage
+	notifications      []testSinkMessage
+	streamChunks       []testSinkStreamChunk
+	streamEnds         []string
+	sessionIDs         []string
+	permissionModes    []string
+	modeChanges        []testSinkModeChange
+	settingsRefreshes  []testSinkSettingsRefreshed
+	sessionInfos       []map[string]interface{}
+	spanTypes          map[string]string
+	openSpans          []testSinkSpanOpen
+	closedSpans        []string
+	discardedSpans     []string
+	reservedColorSpans []string
+	// liveSpans is the CURRENTLY-open subset of openSpans (a close, a discard,
+	// or a reset removes entries), mirroring the real SpanTracker's active set.
 	liveSpans        []testSinkSpanOpen
 	resetSpanCount   int
 	statusActives    []string
@@ -156,6 +158,17 @@ func (s *testSink) CloseSpan(spanID string) {
 		return o.SpanID == spanID
 	})
 }
+
+// DiscardSpan mirrors the real tracker: the span leaves the active set but its
+// recorded type survives, unlike CloseSpan.
+func (s *testSink) DiscardSpan(spanID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.discardedSpans = append(s.discardedSpans, spanID)
+	s.liveSpans = slices.DeleteFunc(s.liveSpans, func(o testSinkSpanOpen) bool {
+		return o.SpanID == spanID
+	})
+}
 func (s *testSink) ResetSpans() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -177,7 +190,22 @@ func (s *testSink) GetSpanType(spanID string) string {
 	return s.spanTypes[spanID]
 }
 
-func (s *testSink) ReserveSpanColor(spanID, parentSpanID string) int32 { return 0 }
+// ReserveSpanColor records which spans asked for a color. A span that never
+// opens must never reserve one either: the real tracker parks the reservation
+// on its single pending slot, which blocks that color from the next real span.
+func (s *testSink) ReserveSpanColor(spanID, parentSpanID string) int32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reservedColorSpans = append(s.reservedColorSpans, spanID)
+	return 0
+}
+
+// ReservedColorSpans returns a copy of the span IDs that reserved a color.
+func (s *testSink) ReservedColorSpans() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.reservedColorSpans...)
+}
 
 func (s *testSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
 	s.mu.Lock()
@@ -641,6 +669,13 @@ func (s *testSink) ClosedSpanCount() int {
 	return len(s.closedSpans)
 }
 
+// DiscardedSpans returns a copy of all discarded span IDs.
+func (s *testSink) DiscardedSpans() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.discardedSpans...)
+}
+
 func (s *testSink) ResetSpanCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -682,6 +717,7 @@ func (noopSink) PersistTurnEnd([]byte, SpanInfo) error                          
 func (noopSink) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
 func (noopSink) OpenSpan(string, string)                                           {}
 func (noopSink) CloseSpan(string)                                                  {}
+func (noopSink) DiscardSpan(string)                                                {}
 func (noopSink) ResetSpans()                                                       {}
 func (noopSink) SetSpanType(string, string)                                        {}
 func (noopSink) GetSpanType(string) string                                         { return "" }

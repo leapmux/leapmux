@@ -312,7 +312,12 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
 			}
 
-			a.sink.OpenSpan(block.ID, parentSpanID)
+			// A subagent spawn opens no span (claudeToolSpawnsSubagent). Its
+			// span type is still recorded above, because the tool_result path
+			// reads it back through GetSpanType to persist span_type.
+			if !claudeToolSpawnsSubagent(block.Name) {
+				a.sink.OpenSpan(block.ID, parentSpanID)
+			}
 		}
 
 		// Plan file path tracking (Write/Edit to ~/.claude/plans/).
@@ -483,8 +488,11 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 
 	// Reserve the span color for tool_use messages (assistant with a spanID)
 	// so it is available at persist time, before the span is actually opened.
+	// A subagent spawn reserves nothing: it opens no span, so it draws no rail
+	// and its card takes the neutral border. Reserving anyway would also block
+	// that color from the next real span until the spawn's tool_result landed.
 	var spanColor int32
-	if msgType == claudeMsgTypeAssistant && spanID != "" {
+	if msgType == claudeMsgTypeAssistant && spanID != "" && !claudeToolSpawnsSubagent(spanType) {
 		spanColor = a.sink.ReserveSpanColor(spanID, parentSpanID)
 	}
 

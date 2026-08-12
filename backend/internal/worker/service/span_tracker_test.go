@@ -307,6 +307,141 @@ func TestSpanTracker_ConnectorEnd(t *testing.T) {
 	assert.Equal(t, SpanLineConnector, parsed[0].Type)
 }
 
+// DiscardSpan and CloseSpan both free the column; only CloseSpan forgets the
+// recorded type. Asserted as a pair so the one difference between them cannot
+// regress unnoticed.
+func TestSpanTracker_DiscardSpanKeepsTypeAndCloseSpanDropsIt(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.SetSpanType("span-discard", "task")
+	tracker.SetSpanType("span-close", "read")
+	tracker.OpenSpan("span-discard", "")
+	tracker.OpenSpan("span-close", "")
+
+	tracker.DiscardSpan("span-discard")
+	tracker.CloseSpan("span-close")
+
+	_, lines, _ := tracker.Snapshot("", "", false)
+	assert.Equal(t, "[]", lines, "both spans left the active set")
+	assert.Equal(t, "task", tracker.GetSpanType("span-discard"),
+		"a discarded span keeps its type: the closing message still reads it back")
+	assert.Empty(t, tracker.GetSpanType("span-close"), "a closed span forgets its type")
+}
+
+// A discarded span frees its column, so the next span starts at column 0 rather
+// than being pushed right by a rail nobody draws.
+func TestSpanTracker_DiscardSpanFreesTheColumn(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-spawn", "")
+	tracker.DiscardSpan("span-spawn")
+	tracker.OpenSpan("span-next", "")
+
+	_, lines, _ := tracker.Snapshot("", "", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1, "the next span reuses column 0")
+	assert.Equal(t, "span-next", parsed[0].SpanID)
+}
+
+// A reservation that OpenSpan never consumed must not survive a discard, or its
+// color stays blocked for the rest of the turn.
+func TestSpanTracker_DiscardSpanDropsAnUnconsumedReservation(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	reserved := tracker.ReserveSpanColor("span-spawn", "")
+	require.NotZero(t, reserved)
+
+	tracker.DiscardSpan("span-spawn")
+
+	// With the reservation gone, the whole palette is free again, so a span that
+	// opens now can draw the color the discarded one had reserved. Sample until
+	// it does; a surviving reservation would block it forever.
+	drewReservedColor := false
+	for i := 0; i < 200 && !drewReservedColor; i++ {
+		id := fmt.Sprintf("span-%d", i)
+		tracker.OpenSpan(id, "")
+		drewReservedColor = snapshotColor(t, tracker, id) == int(reserved)
+		tracker.CloseSpan(id)
+	}
+	assert.True(t, drewReservedColor, "the reserved color returned to the pool")
+}
+
+// Discarding the last span clears the parent chain, exactly as closing it does.
+func TestSpanTracker_DiscardSpanClearsParentageWhenLast(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-parent", "")
+	tracker.OpenSpan("span-child", "span-parent")
+	tracker.CloseSpan("span-child")
+	tracker.DiscardSpan("span-parent")
+
+	depth, lines, _ := tracker.Snapshot("span-child", "", false)
+	assert.Equal(t, "[]", lines)
+	assert.Equal(t, int32(0), depth, "the parent chain is gone, so nothing is nested")
+}
+
+func TestSpanTracker_DiscardSpanUnknownIDIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-A", "")
+	tracker.DiscardSpan("span-nope")
+
+	_, lines, _ := tracker.Snapshot("", "", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1)
+	assert.Equal(t, "span-A", parsed[0].SpanID)
+}
+
+// The rendering contract for a subagent spawn: a closing row whose span was
+// never opened draws no connector_end, and every other column stays a plain
+// vertical. This is the "spawn nested inside an open Read" shape.
+func TestSpanTracker_SnapshotClosingUnopenedSpanDrawsNoConnector(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-read", "")
+
+	// "span-spawn" was never opened -- it is the spawn's tool_result closing.
+	depth, lines, connectorColor := tracker.Snapshot("", "span-spawn", true)
+	assert.Equal(t, int32(0), depth)
+	assert.Equal(t, int32(0), connectorColor, "no connector column was found")
+
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1, "only the Read column")
+	assert.Equal(t, SpanLineActive, parsed[0].Type, "a plain vertical, not a connector_end")
+	assert.Equal(t, "span-read", parsed[0].SpanID)
+}
+
+// With nothing else open, a spawn row carries no span lines at all.
+func TestSpanTracker_SnapshotUnopenedSpanAloneIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+
+	depth, lines, connectorColor := tracker.Snapshot("", "span-spawn", true)
+	assert.Equal(t, int32(0), depth)
+	assert.Equal(t, "[]", lines)
+	assert.Equal(t, int32(0), connectorColor)
+}
+
+// A spawn opens no span, so live deltas keep flowing while the subagent runs.
+func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsWhileASpawnRuns(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	// The spawn's tool_use only records a type; it never opens a span.
+	tracker.SetSpanType("span-spawn", "Agent")
+	assert.True(t, tracker.ShouldBroadcastStreamChunk())
+}
+
 func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsWhenNoSpansActive(t *testing.T) {
 	t.Parallel()
 

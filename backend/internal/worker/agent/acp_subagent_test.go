@@ -743,3 +743,198 @@ func TestACP_OpenCodeFinalUpdateStillClosesAndRekeys(t *testing.T) {
 	assert.Equal(t, "call-1", obs.RenameFrom)
 	assert.Equal(t, bgtask.StatusCompleted, obs.Status)
 }
+
+// --- A subagent spawn owns no span ---
+
+func TestACP_ObservationIsSpawn(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, acpObservationIsSpawn(nil), "no observation, no spawn")
+	assert.False(t, acpObservationIsSpawn(&acpSubagentObservation{}), "an empty row key names nothing")
+	assert.False(t, acpObservationIsSpawn(&acpSubagentObservation{
+		RowKey: "call-1", Mode: acpModeCloseOnly,
+	}), "a close-only observation ends a row; it does not announce a spawn")
+	assert.False(t, acpObservationIsSpawn(&acpSubagentObservation{
+		RowKey: "ses-child", RenameFrom: "call-1",
+	}), "a rename+close operates on a row that already exists")
+	assert.True(t, acpObservationIsSpawn(&acpSubagentObservation{
+		RowKey: "call-1", Status: bgtask.StatusRunning,
+	}))
+}
+
+// Every ACP provider whose detector fires at the tool_call opens no span for a
+// spawn, and still opens one for an ordinary tool call.
+func TestACP_SpawnToolCallOpensNoSpan(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		provider  string
+		hook      func(acpToolCallEnvelope) *acpSubagentObservation
+		spawnCall string
+		plainCall string
+	}{
+		{
+			provider:  "cursor",
+			hook:      cursorSubagentFromToolCall,
+			spawnCall: `{"toolCallId":"call-spawn","kind":"other","title":"Task: explore","rawInput":{"_toolName":"task"}}`,
+			plainCall: `{"toolCallId":"call-plain","kind":"read","title":"Read","rawInput":{"_toolName":"read","path":"/tmp/a"}}`,
+		},
+		{
+			provider:  "opencode",
+			hook:      openCodeSubagentFromToolCall,
+			spawnCall: `{"toolCallId":"call-spawn","kind":"other","title":"explore","rawInput":{"description":"explore","prompt":"go","subagent_type":"general"}}`,
+			plainCall: `{"toolCallId":"call-plain","kind":"read","title":"Read","rawInput":{"filePath":"/tmp/a"}}`,
+		},
+		{
+			provider:  "goose",
+			hook:      gooseSubagentFromToolCall,
+			spawnCall: `{"toolCallId":"call-spawn","kind":"other","title":"Goose subagent","rawInput":{"instructions":"go"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`,
+			plainCall: `{"toolCallId":"call-plain","kind":"read","title":"Read","_meta":{"goose":{"toolCall":{"toolName":"text_editor","extensionName":"developer"}}}}`,
+		},
+		{
+			provider:  "reasonix",
+			hook:      reasonixSubagentFromToolCall,
+			spawnCall: `{"toolCallId":"call-spawn","kind":"other","title":"task","rawInput":{"description":"explore","prompt":"go"}}`,
+			plainCall: `{"toolCallId":"call-plain","kind":"read","title":"Read","rawInput":{"path":"/tmp/a"}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.provider, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			b := &acpBase{sink: sink, subagentFromToolCall: tc.hook}
+
+			b.handleToolCall(json.RawMessage(tc.spawnCall))
+			assert.Empty(t, sink.OpenSpans(), "a spawn opens no span")
+			assert.Empty(t, sink.ReservedColorSpans(), "and reserves no color")
+			assert.Equal(t, "other", sink.GetSpanType("call-spawn"),
+				"the span type is still recorded for the closing update")
+
+			b.handleToolCall(json.RawMessage(tc.plainCall))
+			open := sink.OpenSpans()
+			require.Len(t, open, 1, "an ordinary tool call still opens a span")
+			assert.Equal(t, "call-plain", open[0].SpanID)
+			assert.Equal(t, []string{"call-plain"}, sink.ReservedColorSpans())
+
+			// The spawn row was persisted before the plain call, so it drew no
+			// rail; the plain row persists before its own span opens, so it
+			// draws none either.
+			msgs := sink.Messages()
+			require.Len(t, msgs, 2)
+			assert.Empty(t, msgs[0].SpansOpenAtPersist)
+			assert.Equal(t, "call-spawn", msgs[0].SpanID)
+		})
+	}
+}
+
+// Kilo opens its spawn with `rawInput: {}` and reveals the spawn shape only on
+// the first in-progress update, so the span is already open by then. The update
+// takes it back with DiscardSpan -- which, unlike CloseSpan, keeps the recorded
+// span type that the closing update reads back.
+func TestACP_KiloLateSpawnDiscardsTheSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{
+		sink:                       sink,
+		subagentFromToolCall:       openCodeSubagentFromToolCall,
+		subagentFromToolCallUpdate: openCodeSubagentFromToolCallUpdate,
+	}
+
+	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-spawn","kind":"other","title":"new_task","rawInput":{}}`))
+	require.Len(t, sink.OpenSpans(), 1, "the empty rawInput hides the spawn, so a span opens")
+
+	b.handleToolCallUpdate(json.RawMessage(
+		`{"toolCallId":"call-spawn","status":"in_progress","rawInput":{"description":"explore","prompt":"go","subagent_type":"general"}}`))
+
+	assert.Equal(t, []string{"call-spawn"}, sink.DiscardedSpans())
+	assert.Empty(t, sink.ClosedSpans(), "discarded, not closed -- the subagent is still running")
+	assert.Equal(t, "other", sink.GetSpanType("call-spawn"),
+		"a discard keeps the type the closing update reads back")
+
+	// A tool call that starts after the discard sits at column 0, not column 1.
+	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-plain","kind":"read","title":"Read"}`))
+	msgs := sink.Messages()
+	require.Len(t, msgs, 2)
+	assert.Empty(t, msgs[1].SpansOpenAtPersist, "the spawn rail is gone")
+
+	// The closing update persists the recorded kind, not the "tool_call"
+	// fallback -- this is what DiscardSpan buys over CloseSpan.
+	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-spawn","status":"completed","rawOutput":{"metadata":{"sessionId":"ses-child"}}}`))
+	msgs = sink.Messages()
+	require.Len(t, msgs, 3)
+	assert.Equal(t, "other", msgs[2].SpanType)
+	assert.True(t, msgs[2].Closing)
+}
+
+// A backgrounded shell is an ordinary tool span. Even when a provider's spawn
+// detector fires on it, an `execute` tool call KEEPS its rail.
+func TestACP_ExecuteKindKeepsItsSpanEvenWhenDetectedAsASpawn(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{
+		sink:                       sink,
+		subagentFromToolCall:       openCodeSubagentFromToolCall,
+		subagentFromToolCallUpdate: openCodeSubagentFromToolCallUpdate,
+	}
+
+	// Spawn-shaped rawInput on an execute call: the detector fires, the span stays.
+	spawnShaped := `"rawInput":{"description":"run it","prompt":"go","subagent_type":"general"}`
+	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-sh","kind":"execute","title":"bash",` + spawnShaped + `}`))
+
+	open := sink.OpenSpans()
+	require.Len(t, open, 1, "an execute call keeps its span")
+	assert.Equal(t, "call-sh", open[0].SpanID)
+	assert.Equal(t, []string{"call-sh"}, sink.ReservedColorSpans())
+
+	// And the late path does not take it away either.
+	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-sh","status":"in_progress",` + spawnShaped + `}`))
+	assert.Empty(t, sink.DiscardedSpans())
+}
+
+// A tool_call that arrives already final never opened a span, so the spawn
+// detector must not disturb it -- it only feeds the registry.
+func TestACP_FinalToolCallSpawnStillFeedsTheRegistry(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{sink: sink, subagentFromToolCall: openCodeSubagentFromToolCall}
+
+	b.handleToolCall(json.RawMessage(
+		`{"toolCallId":"call-spawn","kind":"other","status":"completed","title":"explore","rawInput":{"description":"explore","prompt":"go","subagent_type":"general"}}`))
+
+	assert.Empty(t, sink.OpenSpans())
+	assert.Empty(t, sink.DiscardedSpans())
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1, "the registry row is still upserted")
+	assert.Equal(t, "call-spawn", tasks[0].RowKey)
+
+	msgs := sink.Messages()
+	require.Len(t, msgs, 1)
+	assert.True(t, msgs[0].Closing)
+}
+
+// Cursor's closing hook fires for EVERY finished tool call. Its close-only
+// observation must not be read as a spawn, or an ordinary tool would lose the
+// span it is about to close.
+func TestACP_CursorClosingUpdateDoesNotDiscardAPlainToolSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	b := &acpBase{
+		sink:                       sink,
+		subagentFromToolCall:       cursorSubagentFromToolCall,
+		subagentFromToolCallUpdate: cursorSubagentFromToolCallUpdate,
+	}
+
+	b.handleToolCall(json.RawMessage(`{"toolCallId":"call-read","kind":"read","title":"Read","rawInput":{"_toolName":"read"}}`))
+	require.Len(t, sink.OpenSpans(), 1)
+
+	b.handleToolCallUpdate(json.RawMessage(`{"toolCallId":"call-read","status":"completed"}`))
+
+	assert.Empty(t, sink.DiscardedSpans(), "a close-only observation discards nothing")
+	assert.Equal(t, []string{"call-read"}, sink.ClosedSpans(), "the span closes normally")
+}

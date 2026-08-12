@@ -10,6 +10,30 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+// The Claude tool names that spawn a subagent. `Agent` is the current name and
+// `Task` is the legacy wire name for the SAME tool, which the CLI still emits
+// for permission rules, hooks, and resumed sessions
+// (src/tools/AgentTool/constants.ts: AGENT_TOOL_NAME / LEGACY_AGENT_TOOL_NAME).
+// The to-do tools TaskCreate/TaskUpdate/TaskGet/TaskList/TaskOutput/TaskStop
+// are separate names and are NOT spawns.
+const (
+	ToolNameClaudeAgent = "Agent"
+	ToolNameClaudeTask  = "Task"
+)
+
+// claudeToolSpawnsSubagent reports whether a Claude tool_use block starts a
+// subagent. A spawn owns no span: the subagent's own output lands in its child
+// transcript, so a rail held open for the whole run only pushes every
+// concurrent tool one column further right.
+//
+// The Workflow tool is also a spawn but is NOT matched here. It sits behind the
+// CLI's WORKFLOW_SCRIPTS feature flag, so its wire name is not a stable thing to
+// match; handleClaudeTaskStarted discards its span off the authoritative
+// task_started event instead.
+func claudeToolSpawnsSubagent(toolName string) bool {
+	return toolName == ToolNameClaudeAgent || toolName == ToolNameClaudeTask
+}
+
 // claudeTaskEnvelope is the parsed shape of a Claude system event of subtype
 // task_started / task_progress / task_notification / task_updated /
 // background_tasks_changed. Every field is optional; unknown subtypes are
@@ -161,8 +185,21 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		slog.Warn("claude task_started upsert failed", "task_id", ev.TaskID, "error", err)
 	}
 
-	// Pre-create the child transcript for a Task subagent (local_agent) that
-	// owns a tool_use span. local_bash (shell) and local_workflow have no
+	// A Workflow run spawns a fleet of agents and blocks until the last one
+	// ends, so it is a spawn and owns no span. Its tool_use already opened one:
+	// claudeToolSpawnsSubagent cannot match the Workflow tool by name (the CLI
+	// keeps it behind the WORKFLOW_SCRIPTS feature flag), and this event is the
+	// first authoritative word that the call is a workflow. Take the span back
+	// now.
+	//
+	// local_bash must NOT reach this: a backgrounded shell is a plain Bash span
+	// whose tool_result returns at once, and it keeps its rail.
+	if ev.TaskType == "local_workflow" && ev.ToolUseID != "" {
+		a.sink.DiscardSpan(ev.ToolUseID)
+	}
+
+	// Pre-create the child transcript for a Task subagent (local_agent), keyed
+	// by its spawning tool_use id. local_bash (shell) and local_workflow have no
 	// transcript; their envelopes are never forwarded.
 	if ev.TaskType != "local_bash" && ev.TaskType != "local_workflow" && ev.ToolUseID != "" {
 		childID, err := a.sink.EnsureChildAgent(ev.ToolUseID, ev.TaskID, title)
@@ -337,10 +374,11 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 		spanType = childSink.GetSpanType(spanID)
 	}
 	var spanColor int32
-	if msgType == claudeMsgTypeAssistant && spanID != "" {
+	if msgType == claudeMsgTypeAssistant && spanID != "" && !claudeToolSpawnsSubagent(spanType) {
 		// Reserving (not opening) is what makes the color available at persist
 		// time while the span is still closed, so the tool_use row can carry the
-		// color its rail will use without yet drawing that rail.
+		// color its rail will use without yet drawing that rail. A subagent this
+		// subagent spawns in turn owns no span, so it reserves nothing either.
 		spanColor = childSink.ReserveSpanColor(spanID, spawnSpanID)
 	}
 
@@ -412,11 +450,16 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	//
 	// Every tool_use block opens, not just the first: one assistant message can
 	// carry parallel tool calls, and the user envelope below closes all of them.
+	// The one exception is a nested spawn -- a subagent spawning a subagent of
+	// its own -- which owns no span here for the same reason it owns none in the
+	// parent transcript: its output goes to a transcript of its own.
 	if msgType == claudeMsgTypeAssistant {
 		for _, block := range env.ContentBlocks() {
 			if block.Type == "tool_use" && block.ID != "" {
 				childSink.SetSpanType(block.ID, block.Name)
-				childSink.OpenSpan(block.ID, spawnSpanID)
+				if !claudeToolSpawnsSubagent(block.Name) {
+					childSink.OpenSpan(block.ID, spawnSpanID)
+				}
 			}
 		}
 	}

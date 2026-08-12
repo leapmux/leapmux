@@ -24,9 +24,10 @@ type spanRecord struct {
 type outputTestSink struct {
 	testSink
 
-	spanMu      sync.Mutex
-	openedSpans []spanRecord
-	closedSpans []string
+	spanMu         sync.Mutex
+	openedSpans    []spanRecord
+	closedSpans    []string
+	discardedSpans []string
 
 	modeMu          sync.Mutex
 	permissionModes []string
@@ -51,6 +52,12 @@ func (s *outputTestSink) CloseSpan(spanID string) {
 	s.closedSpans = append(s.closedSpans, spanID)
 }
 
+func (s *outputTestSink) DiscardSpan(spanID string) {
+	s.spanMu.Lock()
+	defer s.spanMu.Unlock()
+	s.discardedSpans = append(s.discardedSpans, spanID)
+}
+
 func (s *outputTestSink) UpdatePermissionMode(mode string) {
 	s.modeMu.Lock()
 	defer s.modeMu.Unlock()
@@ -67,6 +74,12 @@ func (s *outputTestSink) ClosedSpans() []string {
 	s.spanMu.Lock()
 	defer s.spanMu.Unlock()
 	return append([]string(nil), s.closedSpans...)
+}
+
+func (s *outputTestSink) DiscardedSpans() []string {
+	s.spanMu.Lock()
+	defer s.spanMu.Unlock()
+	return append([]string(nil), s.discardedSpans...)
 }
 
 func (s *outputTestSink) PermissionModes() []string {

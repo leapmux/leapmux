@@ -223,6 +223,14 @@ type OutputSink interface {
 	PersistTurnEnd(content []byte, span SpanInfo) error
 	OpenSpan(spanID string, parentSpanID string)
 	CloseSpan(spanID string)
+	// DiscardSpan removes an open span WITHOUT ending it: the tool call keeps
+	// running, but no later message connects to its column and no message draws
+	// its rail. A subagent spawn owns no span, and a provider that states the
+	// spawn only AFTER the tool call started (Kilo's first in-progress
+	// tool_call_update, Claude's task_started for a Workflow run) calls this to
+	// take back the span it already opened. Unlike CloseSpan it keeps the
+	// recorded span type, which the closing message still reads back.
+	DiscardSpan(spanID string)
 	ResetSpans()
 	SetSpanType(spanID, spanType string)
 	GetSpanType(spanID string) string
