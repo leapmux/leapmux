@@ -817,7 +817,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     onLoadNewerMessages: () => props.pagination?.onLoadNewerMessages?.(),
     onJumpToLatest: () => props.pagination?.onJumpToLatest?.(),
     onJumpToOldest: () => props.pagination?.onJumpToOldest?.(),
-    onJumpToSeq: seq => props.pagination?.onJumpToSeq?.(seq),
+    onJumpToSeq: (seq, signal) => props.pagination?.onJumpToSeq?.(seq, signal),
     virtualizer: virt,
     savedViewportScroll: () => props.savedViewportScroll,
     onClearSavedViewportScroll: () => props.onClearSavedViewportScroll?.(),

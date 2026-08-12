@@ -63,13 +63,19 @@ async function revealRailByTouch(page: Page) {
   })
   const scrollerBox = await scroller.boundingBox()
   expect(scrollerBox).not.toBeNull()
+  // Measure the rail BEFORE the swipe, not after. The rail's activity window is short, and every
+  // awaited round trip between the swipe and the caller's press eats into it -- on a loaded CI
+  // worker enough of them let the rail go idle, where a coarse pointer finds it
+  // `pointer-events: none` and the press falls through to the message underneath. The rail's box
+  // does not depend on the swipe (it is faded, not unmounted -- see 047b), so taking it first
+  // leaves only the opacity assertion in that gap.
+  const rail = page.locator(RAIL)
+  const railBox = await rail.boundingBox()
+  expect(railBox).not.toBeNull()
   // Swipe well clear of the rail strip on the right edge.
   const swipeX = scrollerBox!.x + scrollerBox!.width / 3
   await touchSwipe(page, { x: swipeX, fromY: scrollerBox!.y + scrollerBox!.height * 0.7, toY: scrollerBox!.y + scrollerBox!.height * 0.5 })
-  const rail = page.locator(RAIL)
   await expect(rail).toHaveCSS('opacity', '1')
-  const railBox = await rail.boundingBox()
-  expect(railBox).not.toBeNull()
   return railBox!
 }
 

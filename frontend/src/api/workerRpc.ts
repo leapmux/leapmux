@@ -350,8 +350,8 @@ export function listAgents(workerId: string, req: MessageInitShape<typeof ListAg
   return callWorker(workerId, 'ListAgents', ListAgentsRequestSchema, ListAgentsResponseSchema, req)
 }
 
-export function listAgentMessages(workerId: string, req: MessageInitShape<typeof ListAgentMessagesRequestSchema>): Promise<ListAgentMessagesResponse> {
-  return callWorker(workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, req)
+export function listAgentMessages(workerId: string, req: MessageInitShape<typeof ListAgentMessagesRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ListAgentMessagesResponse> {
+  return callWorker(workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, req, opts)
 }
 
 export function listMessageMarks(workerId: string, req: MessageInitShape<typeof ListMessageMarksRequestSchema>, opts?: { signal?: AbortSignal }): Promise<ListMessageMarksResponse> {

@@ -728,7 +728,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    * the surviving oldest/newest rows. Both empty means the history genuinely vanished
    * (mirrors jumpToLatestMessages' authoritative-empty reset).
    */
-  async function jumpToMessagesAroundSeq(workerId: string, agentId: string, seq: bigint): Promise<void> {
+  async function jumpToMessagesAroundSeq(workerId: string, agentId: string, seq: bigint, watchSignal?: AbortSignal): Promise<void> {
     await deps.runHistoryFetch(agentId, 'fetchingNewer', async (signal) => {
       // Snapshot the recorded live tail before the swap: a message broadcast DURING the
       // fetch raises it past this, and hasMoreNewer/resetToEmptyIfStale must respect that.
@@ -736,10 +736,25 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       const beforeRequest = seq >= MAX_INT64_SEQ
         ? { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_SIZE }
         : { agentId, anchor: MessagePageAnchor.BEFORE, cursorSeq: seq + 1n, limit: MESSAGE_PAGE_SIZE }
-      const [before, after] = await Promise.all([
-        listAgentMessages(workerId, beforeRequest),
-        listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.AFTER, cursorSeq: seq, limit: MESSAGE_PAGE_SIZE }),
-      ])
+      // Both requests carry `signal`, so an abort ends them at the transport rather than only
+      // discarding what they return. That is what makes a seek genuinely abandonable: the caller
+      // that gave up (the rail, when its scrub leaves this target) stops the round trip instead
+      // of paying for a page it will throw away.
+      let before, after
+      try {
+        [before, after] = await Promise.all([
+          listAgentMessages(workerId, beforeRequest, { signal }),
+          listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.AFTER, cursorSeq: seq, limit: MESSAGE_PAGE_SIZE }, { signal }),
+        ])
+      }
+      catch (err) {
+        // An abort is how this fetch is DESIGNED to end early -- a superseding jump, or a caller
+        // abandoning its seek -- so it is not a failure to report. Leave the window untouched,
+        // exactly as the aborted-after-resolve path below does.
+        if (signal.aborted)
+          return
+        throw err
+      }
       if (signal.aborted)
         return
       const rows = [...before.messages, ...after.messages]
@@ -758,7 +773,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // !caughtUpToLiveTail term (mirroring loadNewerPage) covers a live message that
       // bumped the recorded tail during the fetch, so the window can't claim the tail.
       setState('hasMoreNewer', agentId, after.hasMore || !deps.caughtUpToLiveTail(agentId))
-    })
+    }, watchSignal)
   }
 
   return {

@@ -41,6 +41,18 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+/**
+ * The rail element with a rect jsdom cannot supply: top 0, height 400 (== VIEWPORT_H), so a
+ * pointer's clientY maps 1:1 onto the rail-relative Y every press handler computes from it.
+ * Every test that dispatches a pointer event at the rail needs this, so it lives at file scope
+ * rather than being re-inlined per test.
+ */
+function railWithRect(container: HTMLElement): HTMLElement {
+  const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+  rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+  return rail
+}
+
 /** A scroll container with defined scroll geometry (clientHeight comes from the prototype spy). */
 function makeScrollEl(scrollTop = 0, scrollHeight = 500): HTMLDivElement {
   const el = document.createElement('div')
@@ -234,6 +246,105 @@ describe('chatscrollrail', () => {
     expect(onJumpToSeq).toHaveBeenCalledTimes(2) // an unrelated key does nothing
   })
 
+  it('attaches a rejection handler to a keyboard seek, so that path cannot leak one', async () => {
+    // Every seek in the component goes through one normalising entry point. The keyboard path
+    // discards the result, so a RAW call here would leave a rejected promise with no handler --
+    // a console error for the reader, and an unhandled-rejection failure for any suite that
+    // stubs onJumpToSeq to reject (which this file's pointer-path tests already do).
+    //
+    // Asserted on the thenable rather than on a real rejection: Promise.resolve() assimilates a
+    // thenable by calling its `then` with BOTH callbacks, so a non-undefined second argument is
+    // direct proof that a rejection handler exists. Waiting for Node to report a real unhandled
+    // rejection would pass whether or not the handler is there, which proves nothing.
+    const then = vi.fn()
+    const onJumpToSeq = vi.fn(() => ({ then } as unknown as Promise<boolean>))
+    const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
+    const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
+
+    dot.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onJumpToSeq).toHaveBeenCalledWith(2n)
+    await tick()
+    expect(then).toHaveBeenCalledTimes(1)
+    expect(typeof then.mock.calls[0][1]).toBe('function') // the onRejected half
+  })
+
+  it('ignores a keyboard activation while a drag is live (no rival seek)', () => {
+    // A dot keeps keyboard focus while a pointer scrubs the rail, so Enter mid-scrub would fire
+    // exactly the rival jump the two press paths already guard against -- racing the drag's
+    // live-scroll and its release seek.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const onJumpToSeq = vi.fn()
+    const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
+    const rail = railWithRect(container)
+    const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
+
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 300, pointerId: 1 }))
+    onJumpToSeq.mockClear()
+    dot.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onJumpToSeq).not.toHaveBeenCalled()
+
+    // The guard lifts with the drag: the next activation jumps normally.
+    rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 300, pointerId: 1 }))
+    dot.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onJumpToSeq).toHaveBeenCalledWith(2n)
+  })
+
+  it.each([
+    ['the track', (c: HTMLElement) => railWithRect(c)],
+    ['a dot', (c: HTMLElement) => c.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement],
+  ])('ignores a SECONDARY-button press on %s', (_name, target) => {
+    // Every press now captures the pointer and owns the rail until its pointerup -- and a context
+    // menu can swallow the pointerup of a right press, which would leave the rail owned by a
+    // gesture that never ends and reject every later press. A secondary press must not start one,
+    // and must keep its default so the context menu still opens.
+    const setPointerCapture = vi.fn()
+    HTMLElement.prototype.setPointerCapture = setPointerCapture
+    const onJumpToSeq = vi.fn()
+    const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
+    const el = target(container)
+
+    const event = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 2, clientY: 300, pointerId: 1 })
+    el.dispatchEvent(event)
+    expect(onJumpToSeq).not.toHaveBeenCalled()
+    expect(setPointerCapture).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('claims a press it REJECTS, so a rival press cannot focus a dot and strand its popover', () => {
+    // A rejected dot press that keeps its default focuses the dot button, and the focus opens the
+    // dot's preview popover -- with no pointerleave on touch to ever close it. That pins
+    // activeDot() non-null, which holds the whole rail lit for the rest of the session.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const { container } = render(() => <ChatScrollRail {...baseProps()} />)
+    const rail = railWithRect(container)
+    const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
+
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 300, pointerId: 1 }))
+    const rival = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientY: 120, pointerId: 2 })
+    dot.dispatchEvent(rival)
+    expect(rival.defaultPrevented).toBe(true)
+  })
+
+  it('frees the rail for the next press when a drag loses pointer capture', () => {
+    // The pointerup of a captured drag does not always come back to the rail (a context menu
+    // takes it, or the browser revokes the capture). Without a lostpointercapture teardown the
+    // "a drag is live" guard would then reject every later press for the life of the component.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const onJumpToSeq = vi.fn()
+    const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
+    const rail = railWithRect(container)
+
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 300, pointerId: 1 }))
+    rail.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, clientY: 300, pointerId: 1 }))
+    onJumpToSeq.mockClear()
+
+    rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 300, pointerId: 2 }))
+    expect(onJumpToSeq).toHaveBeenCalledTimes(1) // the rail still works
+  })
+
   it('renders the thumb from the computed seq-space rect', () => {
     const { container } = render(() => <ChatScrollRail {...baseProps()} />)
     const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
@@ -273,9 +384,7 @@ describe('chatscrollrail', () => {
   it('maps a track click (below the thumb) to a seq via onJumpToSeq', () => {
     const onJumpToSeq = vi.fn()
     const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    // Give the rail a concrete rect (jsdom returns zeros otherwise).
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // The thumb spans 0..24px, so click at y=360 (track region) maps near the bottom -> seq 5.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360 }))
     expect(onJumpToSeq).toHaveBeenCalledWith(5n)
@@ -330,10 +439,7 @@ describe('chatscrollrail', () => {
     const { container } = render(() => (
       <ChatScrollRail {...baseProps({ previewScrollTo, onJumpToSeq })} />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    // Concrete rail rect (top 0, height 400). The fixed thumb spans 0..24px at the top,
-    // so its CENTRE axis is [12, 388].
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     previewScrollTo.mockClear()
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
@@ -352,14 +458,13 @@ describe('chatscrollrail', () => {
     const { container } = render(() => (
       <ChatScrollRail {...baseProps({ onSeekInterrupt })} />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // Every press is a grab now, so every press abandons a PRIOR release's still-fetching
     // out-of-window seek -- it must not land and yank the viewport under this gesture.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
     expect(onSeekInterrupt).toHaveBeenCalledTimes(1)
     // Dragging past the slop abandons a second seek: the one THIS press just issued, which the
-    // reader has now scrubbed away from.
+    // reader now scrubbed away from.
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
     expect(onSeekInterrupt).toHaveBeenCalledTimes(2)
     // Engaging is one-way: later moves do not keep re-firing it.
@@ -373,8 +478,7 @@ describe('chatscrollrail', () => {
     const previewScrollTo = vi.fn()
     const onJumpToSeq = vi.fn()
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewScrollTo, onJumpToSeq })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // Press the bare track near the bottom (the thumb spans 0..24) -> jump to seq 5 at once.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
     expect(onJumpToSeq).toHaveBeenCalledWith(5n)
@@ -400,8 +504,7 @@ describe('chatscrollrail', () => {
     installImmediateRaf()
     const onJumpToSeq = vi.fn()
     const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
     // A finger drifts a pixel or two as it lifts; that is still a tap, not a scrub.
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 363, pointerId: 1 }))
@@ -426,8 +529,7 @@ describe('chatscrollrail', () => {
     const { container } = render(() => (
       <ChatScrollRail {...baseProps({ onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // Tap the track: press and release on the same pixel.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 360, pointerId: 1 }))
@@ -435,7 +537,7 @@ describe('chatscrollrail', () => {
     expect(thumb.className).toContain(styles.thumbDragging) // pinned while the fetch is in flight
     expect(thumb.style.top).toBe('348px') // and pinned on the TAPPED point
     expect(onJumpToSeq).toHaveBeenCalledTimes(1) // the release added no second seek
-    // The pin SURVIVES the settle a resolved seek would have cleared on: it is waiting for the
+    // The pin SURVIVES the settle a resolved seek clears on: it still waits for the
     // press's fetch, not clearing itself the moment the pointer lifted.
     await tick()
     expect(thumb.className).toContain(styles.thumbDragging)
@@ -447,7 +549,7 @@ describe('chatscrollrail', () => {
   })
 
   it('hands the thumb off ONE FRAME after a seek that reports it scrolled', async () => {
-    // A seek that scrolled is followed by a landing, so the pin must survive until the
+    // A landing follows a seek that scrolled, so the pin must survive until the
     // metrics-derived thumb has caught up to it -- one animation frame. Clearing on the seek's
     // microtask instead would flash the thumb back for that frame.
     HTMLElement.prototype.setPointerCapture = vi.fn()
@@ -460,8 +562,7 @@ describe('chatscrollrail', () => {
     const { container } = render(() => (
       <ChatScrollRail {...baseProps({ onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // Grab the thumb and release far away: the release position alone engages the scrub.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
@@ -485,8 +586,7 @@ describe('chatscrollrail', () => {
     const { container } = render(() => (
       <ChatScrollRail {...baseProps({ onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // A TAP on the track: the hold waits on the PRESS's seek, which is the one that rejects.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 360, pointerId: 1 }))
@@ -523,8 +623,7 @@ describe('chatscrollrail', () => {
       })}
       />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     flushRaf()
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
@@ -550,8 +649,7 @@ describe('chatscrollrail', () => {
     installImmediateRaf()
     const onJumpToSeq = vi.fn()
     const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     expect(() => {
       rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 360, pointerId: 1 }))
     }).not.toThrow()
@@ -561,7 +659,7 @@ describe('chatscrollrail', () => {
     expect(onJumpToSeq).toHaveBeenCalledTimes(2)
   })
 
-  it('a dot press jumps to the dot seq, centres the thumb on the dot, and scrubs on', () => {
+  it('a dot press jumps to the dot seq, centres the thumb on the FINGER, and scrubs on', () => {
     // On a coarse pointer each dot carries a 24px hit circle, so on a marked conversation most
     // of the rail is dot rather than track. A dot press that could not scrub would leave a
     // finger with nowhere to start the gesture.
@@ -569,19 +667,42 @@ describe('chatscrollrail', () => {
     installImmediateRaf()
     const onJumpToSeq = vi.fn()
     const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="2"]') as HTMLElement
     // Press the dot slightly off its centre (a fingertip is wider than the 6px dot).
     dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 131, pointerId: 1 }))
     // The jump takes the dot's OWN seq, not the fraction under the finger.
     expect(onJumpToSeq).toHaveBeenCalledWith(2n)
     const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
-    expect(thumb.style.top).toBe('113px') // the dot sits at 125; the thumb centre lands on it
+    // The thumb centres on the PRESS (131), not on the dot it hit (125). The drag keeps the
+    // finger-to-thumb offset it starts with, so centring on the dot would hold the thumb 6px off
+    // the finger for the whole scrub below -- and up to 12px, half a coarse hit circle, in
+    // general. Only a dot press could do that, so it also gave one gesture two different feels.
+    expect(thumb.style.top).toBe('119px') // 131 - half the 24px thumb
     // The same press scrubs on to the other dot and lands there.
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 281, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 281, pointerId: 1 }))
     expect(onJumpToSeq).toHaveBeenLastCalledWith(4n)
+  })
+
+  it('tracks the finger 1:1 after a dot press, with no residual offset from the dot', () => {
+    // The regression this guards: the thumb used to anchor on the dot while the grab offset
+    // anchored on the finger, so every later frame of the scrub stayed off by the gap between
+    // them. Press well off the dot centre, then move a known distance and check the thumb moved
+    // exactly that far AND sits under the finger -- which pins both halves at once.
+    HTMLElement.prototype.setPointerCapture = vi.fn()
+    installImmediateRaf()
+    const { container } = render(() => <ChatScrollRail {...baseProps()} />)
+    const rail = railWithRect(container)
+    const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="2"]') as HTMLElement
+    // Read the top as a NUMBER: the pixel goes through a [0,1] fraction and back, so the
+    // round-trip lands a float ULP off the whole pixel it means.
+    const thumbTop = () => Number.parseFloat((container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement).style.top)
+
+    dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 137, pointerId: 1 }))
+    expect(thumbTop()).toBeCloseTo(125, 6) // 137 - 12: under the finger, 12px below the dot at 125
+    rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 237, pointerId: 1 }))
+    expect(thumbTop()).toBeCloseTo(225, 6) // moved exactly the finger's 100px, still centred on it
   })
 
   it('a dot press released without a scrub seeks its dot exactly once', () => {
@@ -589,8 +710,7 @@ describe('chatscrollrail', () => {
     installImmediateRaf()
     const onJumpToSeq = vi.fn()
     const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="2"]') as HTMLElement
     dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 125, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 125, pointerId: 1 }))
@@ -605,8 +725,7 @@ describe('chatscrollrail', () => {
     installImmediateRaf()
     const previewFor = (seq: bigint) => (seq === 2n ? 'pressed message two' : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    railWithRect(container) // the component reads the rail's rect on the dot press below
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="2"]') as HTMLElement
     dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 125, pointerId: 1 }))
@@ -620,8 +739,7 @@ describe('chatscrollrail', () => {
     installImmediateRaf()
     const onJumpToSeq = vi.fn()
     const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // A first pointer grabs the thumb (spans 0..24) -> a live drag is in progress.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     // A SECOND finger lands on a dot mid-drag: without the guard it would fire a rival jump
@@ -650,8 +768,7 @@ describe('chatscrollrail', () => {
       })}
       />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     onJumpToSeq.mockClear() // the grab itself is a thumb grab: it jumps nowhere
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
@@ -673,8 +790,7 @@ describe('chatscrollrail', () => {
     const { container } = render(() => (
       <ChatScrollRail {...baseProps({ onJumpToSeq })} />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // A first pointer grabs the thumb (spans 0..24) -> a live drag is in progress.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     // A SECOND pointer lands on the TRACK (below the thumb) mid-drag: without the drag guard it
@@ -700,8 +816,7 @@ describe('chatscrollrail', () => {
     const { container } = render(() => (
       <ChatScrollRail {...baseProps({ scrollEl, onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} geometryVersion={geometryVersion()} />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // Grab the fixed thumb (spans 0..24) and release at a DIFFERENT position.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
@@ -732,8 +847,7 @@ describe('chatscrollrail', () => {
     const { container } = render(() => (
       <ChatScrollRail {...baseProps({ scrollEl, onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} />
     ))
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
     const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
@@ -750,8 +864,7 @@ describe('chatscrollrail', () => {
     const capture = vi.fn()
     HTMLElement.prototype.setPointerCapture = capture
     const { container } = render(() => <ChatScrollRail {...baseProps({ hasMoreOlder: true, hasMoreNewer: true })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // First grab on the fixed thumb (spans 0..24) captures pointer 1.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     expect(capture).toHaveBeenCalledTimes(1)
@@ -775,8 +888,7 @@ describe('chatscrollrail', () => {
     const { container } = render(() => (
       <ChatScrollRail {...base} hidden={hidden()} />
     ))
-    let rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    let rail = railWithRect(container)
 
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     expect(capture).toHaveBeenCalledTimes(1)
@@ -790,8 +902,7 @@ describe('chatscrollrail', () => {
     setHidden(false)
     await Promise.resolve()
 
-    rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    rail = railWithRect(container)
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 2 }))
     expect(capture).toHaveBeenCalledTimes(2)
   })
@@ -803,8 +914,7 @@ describe('chatscrollrail', () => {
     const warmPreview = vi.fn()
     const previewFor = (seq: bigint) => (seq === 2n ? 'scrubbed message two' : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ warmPreview, previewFor })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // No popover until a drag is in progress (and nothing is hovered).
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
     // Grab the fixed thumb, then scrub to the seq-2 dot at y=125.
@@ -833,8 +943,7 @@ describe('chatscrollrail', () => {
     const flushRaf = () => rafQueue.splice(0).forEach(cb => cb(0))
     const warmPreview = vi.fn()
     const { container } = render(() => <ChatScrollRail {...baseProps({ warmPreview })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // Grab the thumb, pass OVER the seq-2 dot (y=125), then move on to seq-4 (y=275) BEFORE the
     // debounce elapses -- the second move supersedes the first dot's pending warm.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
@@ -853,8 +962,7 @@ describe('chatscrollrail', () => {
     HTMLElement.prototype.setPointerCapture = vi.fn()
     installImmediateRaf()
     const { container } = render(() => <ChatScrollRail {...baseProps()} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // y=200 -> thumb centre 200; dots sit at 125 and 275, both >12px away -> no scrub target.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
@@ -866,8 +974,7 @@ describe('chatscrollrail', () => {
     installImmediateRaf()
     const previewFor = (seq: bigint) => (seq === 2n ? 'scrub target two' : seq === 4n ? 'hovered four' : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
-    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-    rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+    const rail = railWithRect(container)
     // Scrub over the seq-2 dot (thumb centre 125), then also hover the seq-4 dot.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 125, pointerId: 1 }))
@@ -1058,12 +1165,6 @@ describe('chatscrollrail dot preview popover', () => {
   // tests/e2e/047b-chat-scroll-rail-autohide.spec.ts).
   describe('railIdle auto-hide', () => {
     /** The rail root, with a concrete rect so pointer hit-tests resolve (jsdom does no layout). */
-    function railWithRect(container: HTMLElement): HTMLElement {
-      const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-      rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
-      return rail
-    }
-
     it('marks the rail idle when the activity window closes and un-marks it when it reopens', () => {
       const [scrollActive, setScrollActive] = createSignal(true)
       const { container } = render(() => <ChatScrollRail {...baseProps()} scrollActive={scrollActive()} />)
@@ -1180,7 +1281,7 @@ describe('chatscrollrail dot preview popover', () => {
       expect(onActivity).toHaveBeenCalledTimes(2)
     })
 
-    it('reopens the host window when a drag ENDS, so a long scrub still gets a fade tail', () => {
+    it('reopens the host window when a drag ENDS, so a long scrub still gets a fade tail', async () => {
       // The window the grab opened has a fixed idle timeout, and nothing re-arms it mid-drag: the
       // pointer is captured (the scroll container sees nothing), the rail's own pointermove
       // relight is inert while idle() is false, and the drag's live-scroll writes are
@@ -1197,6 +1298,55 @@ describe('chatscrollrail dot preview popover', () => {
       rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
       expect(onActivity).not.toHaveBeenCalled() // no per-move timer churn
       rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
+      // The re-arm keys on the rail releasing ITSELF, not on the pointer lifting: the release
+      // hold outlives the pointer, and it is one of the states that outrank the host's window.
+      await tick()
+      expect(onActivity).toHaveBeenCalledTimes(1)
+    })
+
+    it('defers the reopen until a SLOW release seek lands, so a fetch cannot outlast the window', async () => {
+      // The case a re-arm at pointerup gets wrong. An out-of-window release seek fetches a page,
+      // and the rail holds itself lit for the whole fetch (the release hold keeps drag()
+      // non-null). A window re-armed when the finger lifted would already be closing by the time
+      // that hold clears, so the rail would snap dark with no fade tail -- the very failure the
+      // re-arm exists to prevent, just moved later. Re-arm when the hold ends instead.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const onActivity = vi.fn()
+      let landSeek: (scrolled: boolean) => void = () => {}
+      const onJumpToSeq = vi.fn(() => new Promise<boolean>((resolve) => {
+        landSeek = resolve
+      }))
+      const { container } = render(() => <ChatScrollRail {...baseProps({ onActivity, onJumpToSeq })} />)
+      const rail = railWithRect(container)
+
+      rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
+      rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
+      onActivity.mockClear()
+      rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
+      await tick()
+      // Still fetching: the rail holds itself lit, so a window opened now would only burn down.
+      expect(onActivity).not.toHaveBeenCalled()
+
+      landSeek(false) // resolved with no landing scroll -> the hold clears at once
+      await tick()
+      expect(onActivity).toHaveBeenCalledTimes(1)
+    })
+
+    it('reopens the host window when a dot popover closes, so tabbing away gets a fade tail too', async () => {
+      // The popover is the third state that outranks the host's window (see idle()), and it can
+      // stay open past the idle timeout just as easily as a drag can. The re-arm keys on the
+      // whole override set, so this needs no separate wiring -- which is the point of keying it
+      // there rather than on the pointer lifecycle.
+      const onActivity = vi.fn()
+      const { container } = render(() => <ChatScrollRail {...baseProps({ onActivity })} />)
+      const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
+
+      fireEvent.pointerEnter(dot)
+      expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).not.toBeNull()
+      onActivity.mockClear()
+      fireEvent.pointerLeave(dot)
+      await tick()
       expect(onActivity).toHaveBeenCalledTimes(1)
     })
 

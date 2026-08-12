@@ -97,17 +97,23 @@ globalStyle('body', {
 // is dispatched below that layer. `touch-action: none` on html+body
 // refuses the pan gesture entirely at the page level.
 //
-// Inner scroll regions still pan, and need NO opt-in to: the browser
-// resolves a touch's allowed behaviour against the ancestors up to the
-// element that will handle the gesture, which for a touch inside the
-// chat list is that list, not the page. So a nested `overflow: auto`
-// region — the message list, a code block that scrolls sideways — keeps
-// its own pan. Setting `touch-action` on those regions would only take
-// panning away (`pan-y` on the message list would freeze the horizontal
-// scroll of every code block and table inside it), so none of them does.
-// The one element that DOES set it sets it to refuse: the scroll rail
-// (`touchAction: 'none'`, see ~/components/chat/ChatScrollRail.css.ts),
-// so a finger dragging its thumb scrubs instead of panning the list.
+// A nested scroll region still pans: the browser resolves a touch's
+// allowed behaviour against the ancestors up to the element that handles
+// the gesture, which for a touch inside the chat list is that list, not
+// the page. So the message list needs no opt-in, and it sets none —
+// `pan-y` there would freeze the sideways scroll of every code block and
+// table inside it, because a `touch-action` on an ANCESTOR restricts a
+// descendant scroller.
+//
+// That is the rule for the whole app: a region declares `touch-action`
+// only to constrain a gesture it owns, never to re-enable one. Three do.
+// Two refuse a gesture — the scroll rail (`touchAction: 'none'`, see
+// ~/components/chat/ChatScrollRail.css.ts), so a finger dragging its
+// thumb scrubs instead of panning the list, and the tiling separator
+// (see ~/components/shell/TilingLayout.css.ts), so a drag resizes the
+// pane instead of scrolling. One narrows a gesture to the single axis it
+// scrolls: the tab strip (`touchAction: 'pan-x'`, see
+// ~/components/shell/TabBar.css.ts).
 globalStyle('html, body', {
   overscrollBehavior: 'none',
   touchAction: 'none',

@@ -282,9 +282,11 @@ export interface PaginationCallbacks {
   onJumpToOldest?: () => Promise<void> | void
   /**
    * Replace the window with a page centered on `seq` (the scroll rail's out-of-window
-   * seek). Resolves once the window has been swapped, so the hook can land on the row.
+   * seek). Resolves once the window swapped, so the hook can land on the row. `signal`
+   * abandons the fetch: the seek that issued it gave up (see ChatSeek.cancelPendingSeek),
+   * so the page must not arrive and swap the window under a reader who moved on.
    */
-  onJumpToSeq?: (seq: bigint) => Promise<void> | void
+  onJumpToSeq?: (seq: bigint, signal?: AbortSignal) => Promise<void> | void
   /**
    * Cap the in-memory window on a live-tail append. `minKeepNewest` is the count of
    * newest messages the trim must retain to leave a scrolled-up reader's viewport
@@ -373,8 +375,9 @@ export interface UseChatScrollResult {
    */
   previewScrollTo: (top: number) => void
   /**
-   * Abandon any in-flight out-of-window seek (rail thumb re-grab): its late fetch must
-   * not yank the viewport after the user has taken manual control of the thumb.
+   * Abandon any in-flight out-of-window seek (a rail gesture that moved on, or a genuine
+   * user scroll): its fetch is aborted and its landing dropped, so neither the page nor
+   * the scroll can arrive after the user took manual control.
    */
   cancelPendingSeek: () => void
   /**

@@ -2,6 +2,7 @@ import type { ThumbDragDeps } from './chatScrollRailDrag'
 import type { PreparedGeometry } from './chatScrollRailGeometry'
 import type { VirtualItem } from './useChatVirtualizer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { SCRUB_WARM_DEBOUNCE_MS } from './chatDotPreview'
 import { createThumbDrag, SCRUB_SEEK_DEBOUNCE_MS } from './chatScrollRailDrag'
 import { prepareGeometry } from './chatScrollRailGeometry'
 
@@ -64,6 +65,7 @@ function setup(opts: { engageSlopPx?: number } = {}) {
   const setDrag = vi.fn()
   const previewScrollTo = vi.fn()
   const scrubSeek = vi.fn()
+  const abandonSeeks = vi.fn()
   const onEngage = vi.fn()
   const onRelease = vi.fn()
   const onEnd = vi.fn()
@@ -83,12 +85,13 @@ function setup(opts: { engageSlopPx?: number } = {}) {
     setDrag,
     previewScrollTo,
     scrubSeek,
+    abandonSeeks,
     onEngage,
     onRelease,
     onEnd,
   }
   const handle = createThumbDrag(deps)
-  return { el, handle, state, setDrag, previewScrollTo, scrubSeek, onEngage, onRelease, onEnd }
+  return { el, handle, state, setDrag, previewScrollTo, scrubSeek, abandonSeeks, onEngage, onRelease, onEnd }
 }
 
 function move(el: HTMLElement, clientY: number) {
@@ -97,6 +100,18 @@ function move(el: HTMLElement, clientY: number) {
 function up(el: HTMLElement, clientY: number) {
   el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY }))
 }
+
+describe('scrub debounce ordering', () => {
+  it('settles the seek LATER than the dot preview warms', () => {
+    // The two debounces are a deliberate sequence, and SCRUB_SEEK_DEBOUNCE_MS's own doc states
+    // it: on a rest the cheap message preview resolves first, and only a longer rest moves the
+    // view. Nothing in either module enforces the ordering, and each constant reads as
+    // reasonable alone -- so an edit to either one could invert the sequence with both files
+    // still looking correct. Pin it here, as ChatView.test.tsx pins the sibling
+    // RAIL_MOMENTUM_GRACE_MS < RAIL_VISIBLE_IDLE_MS ordering.
+    expect(SCRUB_WARM_DEBOUNCE_MS).toBeLessThan(SCRUB_SEEK_DEBOUNCE_MS)
+  })
+})
 
 describe('createthumbdrag', () => {
   it('captures the pointer and applies the initial position, live-scrolling in-window', () => {
@@ -391,7 +406,7 @@ describe('createthumbdrag', () => {
       state.windowFirstSeq = 4n // seqs below 4 are out of the loaded window
       handle.start(1, 100) // grabbed on the resting thumb top: clientY maps 1:1 to the fraction
       scrubTo(el, 200) // fraction 0.5 -> seq 3, out of window
-      expect(scrubSeek).not.toHaveBeenCalled() // not until the thumb has rested
+      expect(scrubSeek).not.toHaveBeenCalled() // not until the thumb rests
       vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
       expect(scrubSeek).toHaveBeenCalledWith(3n)
     })
@@ -479,7 +494,7 @@ describe('createthumbdrag', () => {
 
     it('seeks when the loaded window is UNKNOWN, rather than scrubbing over a frozen transcript', () => {
       // No window bounds at all (a conversation whose rows are all optimistic locals, or a
-      // window that has not resolved yet) is the fail-closed case: "outside". The reader must
+      // window that does not resolve yet) is the fail-closed case: "outside". The reader must
       // still get the debounced seek, or the thumb moves over a transcript that never follows.
       const { el, handle, state, scrubSeek, previewScrollTo } = setup()
       state.windowFirstSeq = undefined
@@ -511,6 +526,152 @@ describe('createthumbdrag', () => {
       handle.cancel()
       vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS * 4)
       expect(scrubSeek).not.toHaveBeenCalled()
+    })
+
+    describe('abandoning a seek the scrub already fired', () => {
+      // Cancelling the TIMER only stops a fetch that has not started. Once a rest fires its seek,
+      // the page request is in flight and nothing else recalls it -- so a scrub that moves on
+      // must abandon it through the owner, or it lands whenever it finishes and yanks the
+      // transcript to a position the reader scrubbed past long before.
+
+      it('abandons a fired seek once the thumb reaches a different seq', () => {
+        const { el, handle, state, scrubSeek, abandonSeeks } = setup()
+        state.windowFirstSeq = 4n
+        handle.start(1, 100)
+        scrubTo(el, 200) // seq 3
+        vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+        expect(scrubSeek).toHaveBeenCalledWith(3n)
+        abandonSeeks.mockClear()
+
+        scrubTo(el, 100) // seq 2: seq 3's page is no longer the one under the thumb
+        expect(abandonSeeks).toHaveBeenCalledTimes(1)
+      })
+
+      it('does NOT abandon while the thumb only jitters within the sought seq', () => {
+        // The dedup rule that stops a rest/jitter/rest from fetching twice must not turn into an
+        // abandon of the fetch it deduped against.
+        const { el, handle, state, abandonSeeks } = setup()
+        state.windowFirstSeq = 4n
+        handle.start(1, 100)
+        scrubTo(el, 200)
+        vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+        abandonSeeks.mockClear()
+
+        scrubTo(el, 201) // still seq 3
+        expect(abandonSeeks).not.toHaveBeenCalled()
+      })
+
+      it('abandons a fired seek when the thumb scrubs back into the loaded window', () => {
+        const { el, handle, state, abandonSeeks } = setup()
+        state.windowFirstSeq = 4n
+        handle.start(1, 100)
+        scrubTo(el, 200)
+        vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+        abandonSeeks.mockClear()
+
+        scrubTo(el, 300) // in-window: the live-scroll drives the view from here
+        expect(abandonSeeks).toHaveBeenCalledTimes(1)
+      })
+
+      it('seeks the same seq again after abandoning it, rather than deduping against a dead fetch', () => {
+        // `soughtSeq` means "a fetch is outstanding for this seq". Once abandoned there is no
+        // fetch, so a reader who scrubs away and comes back must get the page -- otherwise the
+        // thumb sits on a position the transcript never reaches for the rest of the drag.
+        const { el, handle, state, scrubSeek } = setup()
+        state.windowFirstSeq = 4n
+        handle.start(1, 100)
+        scrubTo(el, 200) // seq 3
+        vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+        expect(scrubSeek).toHaveBeenCalledTimes(1)
+
+        scrubTo(el, 100) // seq 2 -- abandons seq 3's fetch
+        scrubTo(el, 200) // back to seq 3
+        vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+        expect(scrubSeek).toHaveBeenNthCalledWith(2, 3n)
+      })
+
+      it('leaves a fired seek alone on a deliberate release, whose own seek supersedes it', () => {
+        // A release issues the seek that wins. Abandoning here would also drop a TAP's press
+        // jump, whose whole meaning is that it lands.
+        const { el, handle, state, abandonSeeks } = setup()
+        state.windowFirstSeq = 4n
+        handle.start(1, 100)
+        scrubTo(el, 200)
+        vi.advanceTimersByTime(SCRUB_SEEK_DEBOUNCE_MS)
+        abandonSeeks.mockClear()
+
+        up(el, 200)
+        expect(abandonSeeks).not.toHaveBeenCalled()
+      })
+
+      it('leaves a completed release alone when cancel() arrives after it', () => {
+        // cancel() is the unmount path, and it is documented as a no-op once the drag ended. The
+        // release it follows already issued the seek the reader waits for, so abandoning here
+        // would cancel exactly the fetch that is about to land.
+        const { el, handle, abandonSeeks } = setup()
+        handle.start(1, 100)
+        up(el, 100) // a deliberate release: its own seek is in flight
+        abandonSeeks.mockClear()
+
+        handle.cancel()
+        expect(abandonSeeks).not.toHaveBeenCalled()
+      })
+
+      it.each([
+        ['pointercancel', (el: HTMLElement) => el.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, clientY: 100 }))],
+        ['lostpointercapture', (el: HTMLElement) => el.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, clientY: 100 }))],
+      ])('abandons EVERY seek of an aborted gesture on %s, press jump included', (_name, abort) => {
+        // No settle seek has fired here, so the only thing outstanding is the press's own jump --
+        // which the owner issued and only it can drop. An aborted gesture lands nothing, so the
+        // abandon must fire even with no seq of its own to forget.
+        const { el, handle, abandonSeeks } = setup()
+        handle.start(1, 100)
+        abandonSeeks.mockClear()
+        abort(el)
+        expect(abandonSeeks).toHaveBeenCalledTimes(1)
+      })
+    })
+  })
+
+  describe('lostpointercapture', () => {
+    // A pointerup does not always come back to the rail: a context menu can swallow it, and the
+    // browser revokes capture when the captured element is removed. The drag listens on the rail
+    // and relies on capture to retarget the moves, so without this the drag would never tear
+    // down -- and the owner's "a drag is live" guard would reject every later press for the life
+    // of the component.
+    it('tears the drag down and clears the preview, like a pointercancel', () => {
+      const { el, handle, setDrag, onEnd, onRelease } = setup()
+      handle.start(1, 100)
+      setDrag.mockClear()
+
+      el.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, clientY: 100 }))
+      expect(setDrag).toHaveBeenCalledWith(null)
+      expect(onEnd).toHaveBeenCalledTimes(1)
+      expect(onRelease).not.toHaveBeenCalled() // an abandoned gesture seeks nothing
+
+      // And it really stopped tracking: a later move must not move the preview.
+      setDrag.mockClear()
+      move(el, 300)
+      flushRaf()
+      expect(setDrag).not.toHaveBeenCalled()
+    })
+
+    it('does not fire from the drag releasing its OWN capture on a normal release', () => {
+      // teardown detaches before it calls releasePointerCapture, which itself fires
+      // lostpointercapture. A listener still attached would turn every release into an abandon
+      // and clear the preview the owner is holding for its seek.
+      const { el, handle, setDrag, onRelease } = setup()
+      el.releasePointerCapture = vi.fn(() => {
+        el.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, clientY: 200 }))
+      })
+      handle.start(1, 100)
+      move(el, 200)
+      flushRaf()
+      setDrag.mockClear()
+
+      up(el, 200)
+      expect(onRelease).toHaveBeenCalledWith(0.5, true)
+      expect(setDrag).not.toHaveBeenCalled() // the owner still holds the preview
     })
   })
 })

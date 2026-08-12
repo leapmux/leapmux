@@ -92,9 +92,10 @@ export interface ChatScrollRailProps {
   /**
    * The rail's OWN interaction reopens the host's activity window. Required, not a
    * nicety: a thumb drag captures the pointer, so its pointermove events retarget to the
-   * rail element and the host's scroll container never sees them. Without this the rail
-   * would snap dark the instant a drag releases or a focused dot is tabbed away from,
-   * with no fade tail.
+   * rail element and the host's scroll container never sees them. The rail calls it on its
+   * own traffic (a press, a wheel, focus reaching a dot) and again whenever it stops holding
+   * ITSELF lit -- a drag, its release hold, or a dot popover ending. Without the second one,
+   * any of those outlasting the host's idle timeout snaps the rail dark with no fade tail.
    */
   onActivity?: () => void
   hasMoreOlder: boolean
@@ -109,10 +110,12 @@ export interface ChatScrollRailProps {
   previewScrollTo: (top: number) => void
   /**
    * Abandon the host's in-flight out-of-window seek, so its late fetch can't yank the viewport
-   * mid-scrub -- the rail's own scroll writes are programmatic and never trip the host's
-   * user-scroll cancellation. Called twice over one gesture, for two different stale seeks: at
-   * the grab (a PRIOR release's seek) and again when the grab becomes a scrub (THIS press's own
-   * jump, which the reader has now scrubbed away from). Optional.
+   * -- the rail's own scroll writes are programmatic and never trip the host's user-scroll
+   * cancellation, so nothing else drops one. One rule drives every call: a gesture abandons
+   * each seek it issued and did not choose to land. That covers the grab (a PRIOR release's
+   * seek), the moment the grab becomes a scrub (THIS press's own jump), each moment a scrub
+   * leaves the position a settle seek asked for, and an aborted gesture, which drops the lot.
+   * Optional.
    */
   onSeekInterrupt?: () => void
   /**
@@ -248,6 +251,25 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   // :focus-within is needed).
   const idle = createMemo(() => !props.scrollActive && drag() === null && activeDot() === null)
 
+  // Re-open the host's activity window on the FALLING edge of the rail's OWN overrides -- the
+  // live drag, its post-release hold, and the open dot popover that idle() above lets outrank
+  // the host's window. Each of them holds the rail lit while nothing re-arms that window: a
+  // captured drag's pointermove retargets to the rail, so the host's scroll container never
+  // sees it, and the rail's own onPointerMove relight is inert for the whole time (idle() is
+  // false). So without this, any override outlasting the host's idle timeout ends by snapping
+  // the rail dark instead of fading it. Keying the re-arm on the overrides rather than on the
+  // pointer lifecycle is what covers all three: a release whose out-of-window seek outlives the
+  // window re-arms when the hold clears, not when the finger lifts.
+  let railHeldLit = false
+  createEffect(() => {
+    const heldLit = drag() !== null || activeDot() !== null
+    // Not while hidden: the rail that just stopped rendering must not re-arm a window for
+    // itself. Hiding tears the drag down (below), which is a falling edge of its own.
+    if (railHeldLit && !heldLit && !hidden())
+      props.onActivity?.()
+    railHeldLit = heldLit
+  })
+
   createEffect(() => {
     if (hidden())
       disconnectRail()
@@ -272,16 +294,33 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   })
 
   /**
-   * Normalise a seek's result to the boolean the drag-release hold reads: `true` only when the
-   * seek reported that it scrolled. A seek that returns nothing, or that rejects, resolves
-   * `false` here -- so a caller that ignores the result can never leak an unhandled rejection,
-   * and the hold clears the thumb at once when no landing will follow.
+   * The ONE way this component seeks. Every path goes through here -- a track or dot press, a
+   * scrub's settle, a scrub release, and a keyboard activation -- so the seek contract is a
+   * property of the code rather than of whichever call site remembered it:
+   *
+   *   - The result is normalised to the boolean the drag-release hold reads: `true` only when
+   *     the seek reported that it scrolled. A seek that returns nothing resolves `false`, so
+   *     the hold clears the thumb at once when no landing will follow.
+   *   - A seek that rejects, or that throws synchronously, also resolves `false`. Thus a caller
+   *     that ignores the result can never leak an unhandled rejection, and a throw from inside
+   *     `onJumpToSeq` can never escape a pointer handler or a settle timer.
+   *
+   * A failure is degraded, not hidden: `false` is the honest answer for the hold (no landing
+   * will follow, so release the thumb now), and the warn keeps the cause visible instead of
+   * turning a broken seek into a thumb that silently springs back.
    */
-  const normalizeSeek = (result: ReturnType<ChatScrollRailProps['onJumpToSeq']>): Promise<boolean> =>
-    Promise.resolve(result).then(scrolled => scrolled === true, () => false)
-
-  /** Seek to a seq now, with the result normalised for the hold. */
-  const seekTo = (seq: bigint): Promise<boolean> => normalizeSeek(props.onJumpToSeq(seq))
+  const seekTo = (seq: bigint): Promise<boolean> => {
+    const failed = (err: unknown): boolean => {
+      console.warn('chat scroll rail: seek failed', { seq: seq.toString(), err })
+      return false
+    }
+    try {
+      return Promise.resolve(props.onJumpToSeq(seq)).then(scrolled => scrolled === true, failed)
+    }
+    catch (err) {
+      return Promise.resolve(failed(err))
+    }
+  }
 
   // The seek the PRESS issued, kept for the length of one grab. A track or dot press jumps
   // immediately (see pressJumpAndScrub); a thumb grab jumps nowhere and leaves this undefined.
@@ -306,8 +345,12 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
       dragHold.release(fraction, () => {})
       return
     }
-    const jump = props.onJumpToSeq
-    dragHold.release(fraction, () => normalizeSeek(jump(seq)))
+    // Seek EAGERLY and hand the hold the promise, exactly as the tap branch hands it the press's.
+    // The hold invokes its thunk synchronously anyway, so this changes no ordering the reader can
+    // see -- and it keeps the reactive `props.onJumpToSeq` read out of a deferred callback, where
+    // it would be a stale-closure hazard rather than the release-time read this needs.
+    const jumped = seekTo(seq)
+    dragHold.release(fraction, () => jumped)
   }
 
   /**
@@ -357,6 +400,11 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
       // page it needs -- otherwise a scrub across a long history moves the thumb and the dot
       // preview over a transcript that never follows.
       scrubSeek: (seq) => { void seekTo(seq) },
+      // Abandon a seek this gesture issued and no longer points at, so its late fetch cannot
+      // land under the reader (see ThumbDragDeps.abandonSeeks for each moment it fires). The
+      // host's own user-scroll cancellation never covers these: the drag scrolls only
+      // programmatically, so nothing it does looks like a gesture to the host.
+      abandonSeeks: () => props.onSeekInterrupt?.(),
       // The grab became a scrub: the reader took manual control of the thumb, so this press's own
       // jump (issued a moment ago, possibly still fetching) is stale and must not land under them.
       // The settle seeks drive the view from here on.
@@ -367,11 +415,6 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
       onEnd: () => {
         dragCleanup = undefined
         dragHold.end()
-        // Re-open the host's activity window so the rail keeps its fade tail after the drag. A
-        // captured pointer reaches no other listener, and the rail's own onPointerMove relight is
-        // inert while dragging (idle() is false for the whole drag) -- so without this, any drag
-        // longer than the host's idle timeout ends with the rail fading out under the finger.
-        props.onActivity?.()
       },
     })
     // Teardown for an unmount that lands mid-drag (onCleanup below); idempotent, so a
@@ -387,8 +430,15 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
    * centres on `centreY` -- the reader pressed a position, so the thumb belongs under it -- and
    * the grab carries the engage slop, which is what keeps the jump the only seek of a plain tap.
    */
-  const pressJumpAndScrub = (event: PointerEvent, rect: DOMRect, seq: bigint | null, centreY: number) => {
-    const grabThumbTopPx = centreY - thumbHeightNow() / 2
+  const pressJumpAndScrub = (event: PointerEvent, rect: DOMRect, seq: bigint | null) => {
+    // Centre the thumb on the PRESSED POINT -- for a dot press exactly as for a track press. The
+    // jump still goes to the seq the caller resolved (a dot passes its OWN seq, not the wide
+    // fraction under the finger), but the thumb belongs under the finger, because the drag keeps
+    // whatever finger-to-thumb offset it starts with for its whole length. Anchoring a dot press
+    // on the dot instead left that offset at up to half a coarse hit circle (12px), so the thumb,
+    // the dot preview it resolves against, and the release landing all sat that far from the
+    // point the reader was pointing at -- and only for a dot press, so one gesture had two feels.
+    const grabThumbTopPx = (event.clientY - rect.top) - thumbHeightNow() / 2
     if (!startDrag(event, rect, { grabThumbTopPx, engageSlopPx: SCRUB_ENGAGE_SLOP_PX }))
       return
     if (seq !== null)
@@ -409,23 +459,50 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     return faded
   }
 
+  /**
+   * The prelude EVERY press on the rail runs, whatever it lands on: reject a press the rail
+   * cannot serve, reveal a faded rail instead of acting on it, and claim the press from the
+   * browser. Returns the rail's rect for the caller's hit-test, or null when the press is
+   * rejected. One home for the rule, so a guard added later cannot reach the track press and
+   * miss the dot press.
+   */
+  const beginRailPress = (event: PointerEvent): DOMRect | null => {
+    // Only the primary button opens a gesture, and this runs FIRST so a secondary press neither
+    // relights the rail nor loses its default. Every press now CAPTURES the pointer and owns the
+    // rail until its pointerup, and a context menu can swallow the pointerup of a right press --
+    // which would leave the rail owned by a gesture that never ends. (lostpointercapture in
+    // createThumbDrag recovers from the capture losses this cannot exclude.)
+    if (event.button !== 0)
+      return null
+    // Whether or not this grab is accepted, reaching for the rail is intent to use it, so it
+    // must keep the rail lit rather than fade under the cursor (see revealIfFaded).
+    if (revealIfFaded())
+      return null
+    const el = railEl
+    if (!el || hidden())
+      return null
+    // A LIT rail owns this press even when it rejects it below, so preventDefault comes BEFORE
+    // the rival-drag test rather than after: without it, a second finger landing on a dot
+    // focuses that dot's button, and the focus opens the dot's preview popover with no
+    // pointerleave to ever close it -- which pins activeDot() non-null and holds the whole rail
+    // lit for the rest of the session.
+    event.preventDefault()
+    // Ignore a second pointerdown while a drag is already live (dragCleanup is set from
+    // startDrag until the pointer lifecycle ends). Without this, a second finger landing on the
+    // TRACK or a DOT would fire a rival onJumpToSeq that races the in-progress drag's
+    // live-scroll and its eventual release seek.
+    if (dragCleanup)
+      return null
+    return el.getBoundingClientRect()
+  }
+
   // One pointerdown handler for the rail: hit-test the thumb (grab it where it lies) vs the
   // track (jump to the pressed position, then scrub). Dots stop propagation so they never
   // reach here.
   const onRailPointerDown = (event: PointerEvent) => {
-    // Whether or not this grab is accepted, reaching for the rail is intent to use it, so it
-    // must keep the rail lit rather than fade under the cursor (see revealIfFaded).
-    if (revealIfFaded())
+    const rect = beginRailPress(event)
+    if (!rect)
       return
-    const el = railEl
-    // Ignore a second pointerdown while a thumb-drag is already live (dragCleanup is set from
-    // startDrag until the pointer lifecycle ends). Without this, a second finger landing on the
-    // TRACK -- the thumb branch is already guarded by dragHold.begin() -- would fire a rival
-    // onJumpToSeq that races the in-progress drag's live-scroll and its eventual release seek.
-    if (!el || hidden() || dragCleanup)
-      return
-    event.preventDefault()
-    const rect = el.getBoundingClientRect()
     const y = event.clientY - rect.top
     const tp = thumbPx()
     // On the thumb -> drag it from where it was grabbed (the pointer keeps its within-thumb
@@ -436,7 +513,7 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
       return
     }
     // On the bare track -> jump to the pressed position and scrub on from there.
-    pressJumpAndScrub(event, rect, railYToSeq(y, rect.height, thumbHeightNow(), props.rail), y)
+    pressJumpAndScrub(event, rect, railYToSeq(y, rect.height, thumbHeightNow(), props.rail))
   }
 
   const onDotPointerDown = (event: PointerEvent, d: DotCluster) => {
@@ -444,34 +521,36 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     // and never also as a track click -- stopPropagation runs before the faded guard so a
     // rejected (faded) press still doesn't fall through to onRailPointerDown.
     event.stopPropagation()
-    // Same reveal-but-reject rule as a track/thumb press (see revealIfFaded). The dot
-    // hover/focus path keeps the rail visible on its own, so this only bites the very first
-    // press onto a faded strip. A coarse-pointer idle rail is pointer-events:none, so the dot
-    // buttons under it are unreachable there.
-    if (revealIfFaded())
+    // The same prelude the track press runs -- the reveal-but-reject rule, the primary-button
+    // test, and the rival-drag guard (see beginRailPress). The dot hover/focus path keeps the
+    // rail visible on its own, so the faded rejection only bites the very first press onto a
+    // faded strip; a coarse-pointer idle rail is pointer-events:none, so the dot buttons under
+    // it are unreachable there.
+    const rect = beginRailPress(event)
+    if (!rect)
       return
-    const el = railEl
-    // The same rival-grab and disconnected-rail guards the track press carries: a second finger
-    // landing on a dot mid-scrub must not fire a jump that races the live drag.
-    if (!el || hidden() || dragCleanup)
-      return
-    event.preventDefault()
     // Jump to the dot's OWN seq (not the fraction under the finger, which on a long history is
     // hundreds of seqs wide) and scrub on from the dot's position. On a coarse pointer each dot
     // carries a 24px hit circle, so on a marked conversation most of the rail is dot rather than
     // track -- without this, most of a finger's presses could jump but never scrub.
-    pressJumpAndScrub(event, el.getBoundingClientRect(), d.seq, d.topPx)
+    pressJumpAndScrub(event, rect, d.seq)
   }
 
   // Keyboard activation of a focused dot. Pointer devices jump on pointerdown (above) and
   // never fire keydown; the keyboard never fires pointerdown -- so exactly one jump per
-  // activation, and the button's inert native click can't double it. preventDefault stops
-  // Space from also page-scrolling.
+  // activation, and the button's inert native click can't double it.
   const onDotKeyDown = (event: KeyboardEvent, seq: bigint) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      props.onJumpToSeq(seq)
-    }
+    if (event.key !== 'Enter' && event.key !== ' ')
+      return
+    // preventDefault stops Space from also page-scrolling.
+    event.preventDefault()
+    // The rival-drag guard both press paths carry (see beginRailPress). A dot keeps keyboard
+    // focus while a pointer scrubs the rail, so without this an Enter mid-scrub fires exactly
+    // the rival jump those guards exist to stop.
+    if (hidden() || dragCleanup)
+      return
+    // Through seekTo like every other seek, so this path cannot leak an unhandled rejection.
+    void seekTo(seq)
   }
 
   // The rail overlays the strip where the native scrollbar used to be, and its ancestors

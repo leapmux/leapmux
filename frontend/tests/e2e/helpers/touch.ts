@@ -66,7 +66,14 @@ export async function touchSwipe(
 ): Promise<void> {
   const steps = opts.steps ?? 5
   const finger = await touchDown(page, opts.x, opts.fromY)
-  for (let step = 1; step <= steps; step++)
-    await finger.moveTo(opts.x, opts.fromY + ((opts.toY - opts.fromY) * step) / steps)
-  await finger.end()
+  // `finally`, so a failed move still lifts the finger and detaches the session. Without it a
+  // mid-swipe protocol error would leave Blink believing a finger is still down, and every later
+  // touch in the same test would arrive as a second contact point.
+  try {
+    for (let step = 1; step <= steps; step++)
+      await finger.moveTo(opts.x, opts.fromY + ((opts.toY - opts.fromY) * step) / steps)
+  }
+  finally {
+    await finger.end()
+  }
 }
