@@ -7,9 +7,10 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createDialogState, createToggleDialog, createUpdatableDialogState } from '~/hooks/createDialogState'
-import { makeInspectResp } from '~/test-support/gitBranchFixtures'
+import { makeInspectResp, makeWorktreeRemovalResp } from '~/test-support/gitBranchFixtures'
 import { AppShellDialogs } from './AppShellDialogs'
 
 // Replace the module wholesale, like the sibling DeleteBranchDialog suite.
@@ -20,6 +21,7 @@ import { AppShellDialogs } from './AppShellDialogs'
 // this suite reaches another workerRpc call.
 vi.mock('~/api/workerRpc', () => ({
   inspectBranchDeletion: vi.fn(),
+  inspectWorktreeRemoval: vi.fn(),
   deleteBranch: vi.fn(),
   pushBranch: vi.fn(),
 }))
@@ -108,7 +110,7 @@ function renderDialogs(activeWorkspace: () => { id: string } | null = () => null
   // other dialog's props stay unread. The alternative constructs eight
   // operational stores (agentOps / termOps / view / metadata / …) that the
   // closed dialogs never ask for.
-  const tabOps = { closeWorktreeTabs } satisfies Pick<ReturnType<typeof useTabOperations>, 'closeWorktreeTabs'>
+  const tabOps = { closeWorktreeTabsAndReport: closeWorktreeTabs } satisfies Pick<ReturnType<typeof useTabOperations>, 'closeWorktreeTabsAndReport'>
   const props = {
     dialogs,
     onBranchChanged,
@@ -141,6 +143,10 @@ describe('appShellDialogs branch dialogs', () => {
     vi.clearAllMocks()
     vi.mocked(workerRpc.inspectBranchDeletion).mockResolvedValue(makeInspectResp())
     vi.mocked(workerRpc.deleteBranch).mockResolvedValue({ $typeName: 'leapmux.v1.DeleteBranchResponse' })
+    // The worktree delete path preflights the removal before it hands the
+    // tab closes off. Nothing here tests a refusal, so answer "no known
+    // refusal" and let the delete proceed.
+    vi.mocked(workerRpc.inspectWorktreeRemoval).mockResolvedValue(makeWorktreeRemovalResp())
   })
 
   // Regression: a delete of the checked-out branch left the deleted branch's
@@ -249,7 +255,7 @@ describe('appShellDialogs branch dialogs', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm?' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
 
-    await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalledWith(tabs))
+    await waitFor(() => expect(closeWorktreeTabs).toHaveBeenCalledWith(tabs, WorktreeAction.REMOVE, true))
     expect(closeWorktreeTabs.mock.calls[0][0]).toBe(tabs)
     // The worktree path removes the tabs outright. There is no branch to
     // stamp, so the dialog must not tell the parent that a branch changed.

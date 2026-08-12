@@ -36,6 +36,11 @@ import (
 // applies to file tabs too: a file tab holds a worktree open and sits
 // on a branch exactly like the other two types do.
 //
+// `discard` is refused up front when the inspect reports that git would
+// refuse the removal (a locked worktree, a path git will not remove),
+// exactly as the frontend disables the same choice — see the
+// worktree_removal_blocked_reason handling below.
+//
 // Closing the calling tab itself kills its PTY mid-response, so
 // `guardTabClose` rejects that case unless --force is supplied.
 func RunTabClose(rawCtx any, args []string) error {
@@ -113,6 +118,19 @@ func RunTabClose(rawCtx any, args []string) error {
 		} else if inspected.GetShouldPrompt() {
 			if wt == closeWorktreeUnspecified {
 				return control.EmitError("invalid_request", lastTabPromptMessage(inspected))
+			}
+			// Refuse a discard git will not honour, BEFORE the tombstone. The
+			// removal runs after the tab is gone -- the worker stops the
+			// subprocess and deletes the whole directory, which takes seconds --
+			// so a refusal that arrives afterwards reaches a command that
+			// already reported success and a tab that is already destroyed.
+			// The frontend's last-tab dialog disables its own Delete button from
+			// this same field, so both surfaces refuse the same removals for the
+			// same stated reason. An empty reason is not a promise the removal
+			// succeeds; whatever the preflight cannot state still comes back in
+			// worker_close_error below.
+			if msg := discardRefusalMessage(wt, inspected); msg != "" {
+				return control.EmitError("invalid_request", msg)
 			}
 			if wt == closeWorktreePush {
 				if !inspected.GetGitState().GetCanPush() {
@@ -283,6 +301,25 @@ func lastTabPromptMessage(r *leapmuxv1.InspectLastTabCloseResponse) string {
 	}
 	b.WriteString(`; pass --worktree=keep|push|discard`)
 	return b.String()
+}
+
+// discardRefusalMessage returns the message that refuses a
+// `--worktree=discard`, or "" when nothing refuses it.
+//
+// It tests the disposition as well as the reason, because the reason describes
+// the REMOVAL only: `keep` and `push` leave the worktree in place, so a locked
+// worktree must not stop either of them. The worker states the reason (git's
+// rules are its to read) and this only frames it, the same split
+// pushBlockedReason has.
+func discardRefusalMessage(wt tabCloseWorktree, r *leapmuxv1.InspectLastTabCloseResponse) string {
+	if wt != closeWorktreeDiscard {
+		return ""
+	}
+	reason := r.GetWorktreeRemovalBlockedReason()
+	if reason == "" {
+		return ""
+	}
+	return "cannot discard: " + reason
 }
 
 func pushBlockedReason(r *leapmuxv1.InspectLastTabCloseResponse) string {

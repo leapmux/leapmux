@@ -155,6 +155,14 @@ function setup(
   }
 }
 
+// The worktree outcome report crosses several awaits before it toasts: the
+// per-tab close guard, the Promise.all over the group, the fold, then the
+// message. A fixed tick count is brittle across all of them, so yield to the
+// macrotask queue once, which drains every pending microtask first.
+function settle() {
+  return new Promise(resolve => setTimeout(resolve, 0))
+}
+
 describe('useTabOperations', () => {
   afterEach(() => {
     mockInspectLastTabClose.mockReset()
@@ -348,7 +356,12 @@ describe('useTabOperations', () => {
           expect(mockRevokeFileTabPath).toHaveBeenCalledTimes(1)
           const [, req] = mockRevokeFileTabPath.mock.calls[0]
           expect((req as { worktreeAction: WorktreeAction }).worktreeAction).toBe(WorktreeAction.REMOVE)
-          expect(mockShowInfoToast).toHaveBeenCalledWith('Worktree will be removed')
+          // The report is the worker's verdict, not an optimistic promise at
+          // click time. This mock resolves no result, so the honest answer is
+          // "could not confirm".
+          await settle()
+          expect(mockShowInfoToast).toHaveBeenCalledWith('Could not confirm the worktree removal')
+          expect(mockShowInfoToast).not.toHaveBeenCalledWith('Worktree will be removed')
         }
         finally {
           dispose()
@@ -475,7 +488,8 @@ describe('useTabOperations', () => {
       try {
         const { view, ops, handleAgentClose } = setup()
         const tab = view.getById(TabType.AGENT, 'agent-a')!
-        mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: true })
+        mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: true, worktreeId: 'wt-1' })
+        handleAgentClose.mockResolvedValue({ worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
 
         const closePromise = ops.handleTabClose(tab)
         await flush()
@@ -483,7 +497,13 @@ describe('useTabOperations', () => {
         await closePromise
 
         expect(handleAgentClose).toHaveBeenCalledWith('agent-a', WorktreeAction.REMOVE)
-        expect(mockShowInfoToast).toHaveBeenCalledWith('Worktree will be removed')
+        // The single-tab close reports the worker's REAL outcome when it lands,
+        // through the same mapper the Delete branch dialog uses. It no longer
+        // promises a removal at click time -- which left STILL_REFERENCED and a
+        // degrade-to-KEEP silently contradicting what the user was told.
+        await settle()
+        expect(mockShowInfoToast).toHaveBeenCalledWith('Worktree removed')
+        expect(mockShowInfoToast).not.toHaveBeenCalledWith('Worktree will be removed')
       }
       finally {
         dispose()
@@ -1398,39 +1418,42 @@ describe('useTabOperations.closeTabWithAction', () => {
     })
   })
 
-  it('closeWorktreeTabs folds a per-tab REMOVED outcome into removed=true', async () => {
+  it('closeWorktreeTabsAndReport toasts the worker REMOVED outcome', async () => {
     await createRoot(async (dispose) => {
       const { view, ops, handleAgentClose } = setup()
       handleAgentClose.mockResolvedValue({ worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
       const agent = view.getById(TabType.AGENT, 'agent-a')!
 
-      const summary = await ops.closeWorktreeTabs([agent])
+      ops.closeWorktreeTabsAndReport([agent], WorktreeAction.REMOVE, true)
+      await settle()
 
-      expect(summary).toEqual({ removed: true, failed: false, stillReferenced: false, unknown: false })
+      expect(handleAgentClose).toHaveBeenCalledWith('agent-a', WorktreeAction.REMOVE)
+      expect(mockShowInfoToast).toHaveBeenCalledWith('Worktree removed')
       dispose()
     })
   })
 
-  it('closeWorktreeTabs folds a tab with no definitive result (rejected RPC / unreachable / threw) into unknown=true', async () => {
+  it('closeWorktreeTabsAndReport reports a tab with no definitive result as unconfirmed', async () => {
     // awaitCloseResult resolves undefined when the close RPC rejects; the
     // fold must treat that as "outcome unknown" — NOT a clean no-op — so the
-    // dialog can say it couldn't confirm removal rather than "not removed".
+    // report says it could not confirm the removal rather than "not removed".
     await createRoot(async (dispose) => {
       const { view, ops, handleAgentClose } = setup()
       handleAgentClose.mockResolvedValue(undefined)
       const agent = view.getById(TabType.AGENT, 'agent-a')!
 
-      const summary = await ops.closeWorktreeTabs([agent])
+      ops.closeWorktreeTabsAndReport([agent], WorktreeAction.REMOVE, true)
+      await settle()
 
-      expect(summary).toEqual({ removed: false, failed: false, stillReferenced: false, unknown: true })
+      expect(mockShowInfoToast).toHaveBeenCalledWith('Could not confirm the worktree removal')
       dispose()
     })
   })
 
-  it('closeWorktreeTabs accumulates flags across a mixed group (REMOVED + indeterminate)', async () => {
+  it('closeWorktreeTabsAndReport lets a definitive REMOVED win over a sibling with no result', async () => {
     // The fold is an OR across the whole group, not a single per-group verdict:
     // one tab's close removed the worktree while another's was indeterminate
-    // (rejected RPC). Both flags must be recorded — the dialog's own precedence
+    // (rejected RPC). Both flags are recorded, and the reporter's precedence
     // (removed wins) then decides the toast.
     await createRoot(async (dispose) => {
       const { view, ops, handleAgentClose, addAgent } = setup()
@@ -1441,9 +1464,29 @@ describe('useTabOperations.closeTabWithAction', () => {
       const a = view.getById(TabType.AGENT, 'agent-a')!
       const b = view.getById(TabType.AGENT, 'agent-b')!
 
-      const summary = await ops.closeWorktreeTabs([a, b])
+      ops.closeWorktreeTabsAndReport([a, b], WorktreeAction.REMOVE, true)
+      await settle()
 
-      expect(summary).toEqual({ removed: true, failed: false, stillReferenced: false, unknown: true })
+      expect(mockShowInfoToast).toHaveBeenCalledWith('Worktree removed')
+      dispose()
+    })
+  })
+
+  it('closeWorktreeTabsAndReport with KEEP closes the tabs and states the worktree stays', async () => {
+    // The Delete branch dialog's escape hatch for a refused removal. KEEP asks
+    // for no removal, so there is no removal outcome to report -- saying
+    // "Worktree not removed" here would read as a failure rather than the
+    // choice the user made.
+    await createRoot(async (dispose) => {
+      const { view, ops, handleAgentClose } = setup()
+      handleAgentClose.mockResolvedValue({ worktreeRemoval: WorktreeRemovalOutcome.UNSPECIFIED })
+      const agent = view.getById(TabType.AGENT, 'agent-a')!
+
+      ops.closeWorktreeTabsAndReport([agent], WorktreeAction.KEEP, false)
+      await settle()
+
+      expect(handleAgentClose).toHaveBeenCalledWith('agent-a', WorktreeAction.KEEP)
+      expect(mockShowInfoToast).toHaveBeenCalledWith('Tabs closed; worktree kept on disk')
       dispose()
     })
   })

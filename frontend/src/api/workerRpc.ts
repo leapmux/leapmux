@@ -39,6 +39,7 @@ import type {
   InspectBranchChangeResponse,
   InspectBranchDeletionResponse,
   InspectLastTabCloseResponse,
+  InspectWorktreeRemovalResponse,
   ListGitBranchesResponse,
   ListGitWorktreesResponse,
   PushBranchResponse,
@@ -129,6 +130,8 @@ import {
   InspectBranchDeletionResponseSchema,
   InspectLastTabCloseRequestSchema,
   InspectLastTabCloseResponseSchema,
+  InspectWorktreeRemovalRequestSchema,
+  InspectWorktreeRemovalResponseSchema,
   ListGitBranchesRequestSchema,
   ListGitBranchesResponseSchema,
   ListGitWorktreesRequestSchema,
@@ -473,6 +476,10 @@ export function listGitWorktrees(workerId: string, req: MessageInitShape<typeof 
 
 export function inspectBranchDeletion(workerId: string, req: MessageInitShape<typeof InspectBranchDeletionRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectBranchDeletionResponse> {
   return callWorker(workerId, 'InspectBranchDeletion', InspectBranchDeletionRequestSchema, InspectBranchDeletionResponseSchema, req, opts)
+}
+
+export function inspectWorktreeRemoval(workerId: string, req: MessageInitShape<typeof InspectWorktreeRemovalRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectWorktreeRemovalResponse> {
+  return callWorker(workerId, 'InspectWorktreeRemoval', InspectWorktreeRemovalRequestSchema, InspectWorktreeRemovalResponseSchema, req, opts)
 }
 
 export function inspectBranchChange(workerId: string, req: MessageInitShape<typeof InspectBranchChangeRequestSchema>, opts?: { signal?: AbortSignal }): Promise<InspectBranchChangeResponse> {

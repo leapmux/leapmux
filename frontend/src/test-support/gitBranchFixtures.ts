@@ -1,15 +1,24 @@
-import type { GitBranchEntry, InspectBranchDeletionResponse } from '~/generated/leapmux/v1/git_pb'
+import type { GitBranchEntry, InspectBranchDeletionResponse, InspectWorktreeRemovalResponse } from '~/generated/leapmux/v1/git_pb'
 
 /**
- * Fixtures for the branch dialogs' `InspectBranchDeletion` responses.
+ * Fixtures for the git inspect responses the branch dialogs drive.
  *
- * Two suites drive the same RPC shape: `DeleteBranchDialog.test.tsx` renders
+ * Two suites drive the same RPC shapes: `DeleteBranchDialog.test.tsx` renders
  * the dialog directly, and `AppShellDialogs.test.tsx` renders it through the
  * real `<Show>` composition. They held byte-identical copies of these
  * builders, and the second copy dropped the worktree conventions that the
  * first one documents, so each suite had to re-encode them at the call site.
  * One home keeps the worker contract in one place.
  */
+
+/**
+ * The removal preflight's verdict. An empty reason is the normal answer, so it
+ * is the default: a fixture that blocks by accident disables Delete for every
+ * case that did not ask for it.
+ */
+export function makeWorktreeRemovalResp(blockedReason = ''): InspectWorktreeRemovalResponse {
+  return { $typeName: 'leapmux.v1.InspectWorktreeRemovalResponse', blockedReason }
+}
 
 export function makeBranches(names: string[]): GitBranchEntry[] {
   return names.map(name => ({

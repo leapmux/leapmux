@@ -109,6 +109,20 @@ message InspectLastTabCloseResponse {
   // only the ids it holds a live tab record for; tombstoning an id the CRDT has
   // never seen is rejected, and the rejection is fatal for the whole batch.
   repeated string descendant_agent_ids = 19;
+  // Why `git worktree remove` refuses this worktree, in the words
+  // InspectWorktreeRemoval defines. Empty when nothing known refuses it.
+  // The worker sets it on a WORKTREE prompt only, which is the one
+  // response that offers the removal.
+  //
+  // It rides on THIS response, so the two clients that offer the choice
+  // pay no extra round trip. The frontend disables its "Delete worktree"
+  // button and shows the reason, and `control tab close` refuses
+  // `--worktree=discard` before it tombstones anything. Both then refuse
+  // the same removals for the same stated reason.
+  //
+  // An asynchronous removal is what makes that necessary: once the tab
+  // is gone, no client has a surface left to report a refusal.
+  string worktree_removal_blocked_reason = 20;
 }
 
 message PushBranchRequest {
@@ -212,6 +226,16 @@ message GitWorktreeEntry {
   string path = 1;
   string branch = 2;
   bool is_main = 3;  // true for the main working tree
+  // True when `git worktree lock` holds this working tree. git refuses
+  // `git worktree remove --force` on a locked worktree, so the removal
+  // preflight reports it as a blocked removal. The close would otherwise
+  // fail after the tabs are gone.
+  bool locked = 4;
+  // Reason text the user passed to `git worktree lock --reason`, decoded
+  // from git's own quoting. Empty for an unlocked worktree AND for one
+  // locked with no reason, so read `locked` for the state and this for
+  // the message only.
+  string lock_reason = 5;
 }
 
 message ListGitWorktreesRequest {
@@ -257,6 +281,58 @@ message InspectBranchDeletionResponse {
   // an empty id means the worktree dir stays on disk after the tabs
   // close.
   string worktree_id = 6;
+  // Why `git worktree remove` refuses this worktree, in the words
+  // InspectWorktreeRemoval defines. Empty when nothing known refuses it,
+  // and always empty when `is_worktree` is false.
+  //
+  // It rides on the OPEN-time inspect so the dialog disables its Delete
+  // button before the user arms a destructive two-click confirm, which is
+  // what the last-tab dialog already does from the same verdict on
+  // InspectLastTabClose. The dialog still re-checks at confirm time
+  // through InspectWorktreeRemoval, because a `git worktree lock` taken
+  // while the dialog sat open is not in this answer.
+  string worktree_removal_blocked_reason = 7;
+  // Set when a probe this response needed could not answer. An empty
+  // blocked reason is also what a clean worktree sends, so without this
+  // the user cannot tell a removal git accepts from one nobody checked.
+  // Mirrors InspectLastTabCloseResponse.error_hint.
+  string error_hint = 8;
+}
+
+// InspectWorktreeRemoval asks whether `git worktree remove` can run
+// against a working tree, BEFORE the caller closes the tabs that hold
+// it.
+//
+// DeleteBranchDialog hands the removal off and closes at once. The
+// removal stops each agent subprocess and deletes the whole directory,
+// which takes seconds, and the dialog has nothing left to decide. That
+// trade needs this probe, because a dialog that closed first has no
+// surface left to report a refusal.
+//
+// So this reports ONLY the refusals that the close cannot change: a
+// lock, a main working tree, or a path git no longer lists. Every other
+// outcome stays a toast that the close raises when it lands.
+message InspectWorktreeRemovalRequest {
+  string worker_id = 1;
+  string path = 2;             // working tree to remove (the branch group's toplevel)
+}
+
+message InspectWorktreeRemovalResponse {
+  // The user-facing sentence that states why `git worktree remove` is
+  // refused, or empty when nothing refuses it. ONE field, not a bool
+  // plus a string: two fields can disagree, and the caller reads exactly
+  // this one both to decide and to render.
+  //
+  // Empty does NOT promise that the removal succeeds. It states that no
+  // KNOWN refusal applies. A git failure the probe cannot predict (a
+  // permission error, a file another process holds open) still surfaces
+  // through the close's own outcome report.
+  //
+  // An RPC ERROR is not a refusal either. The worker fails the call when
+  // its probe cannot answer, and every caller must fail open on that:
+  // a block the worker cannot confirm refuses a removal the user can
+  // have.
+  string blocked_reason = 1;
 }
 
 // InspectBranchChange bundles every probe ChangeBranchDialog runs at

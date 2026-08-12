@@ -53,3 +53,31 @@ func Canonicalize(p string) string {
 	}
 	return filepath.Clean(p)
 }
+
+// CanonicalizeAbsent canonicalizes a path whose final components may not exist.
+//
+// EvalSymlinks fails outright when any component is missing, so Canonicalize
+// falls back to Clean and answers with a spelling that no stored record
+// matches: on macOS a directory under /var is recorded as /private/var, and a
+// lookup for one the user just deleted misses its own row. This resolves the
+// deepest ancestor that still exists and re-appends the rest, so a deleted leaf
+// keeps the spelling its parent gives it.
+//
+// It equals Canonicalize for a path that exists. Use it only where the leaf may
+// be absent and the result is matched against a path canonicalized earlier.
+func CanonicalizeAbsent(p string) string {
+	cleaned := filepath.Clean(p)
+	dir, rest := cleaned, ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the volume root without resolving anything.
+			return cleaned
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+}

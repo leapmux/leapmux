@@ -1,5 +1,5 @@
 import type { Component, JSX } from 'solid-js'
-import { createSignal, onCleanup, splitProps } from 'solid-js'
+import { createEffect, createSignal, onCleanup, splitProps } from 'solid-js'
 
 const RESET_TIMEOUT_MS = 10_000
 
@@ -42,6 +42,17 @@ export const ConfirmButton: Component<ConfirmButtonProps> = (props) => {
       clearTimeout(blurResetTimer)
     }
     clearResetTimer()
+  })
+
+  // Disarm when the button becomes disabled. `disabled` is reactive on some
+  // callers -- LastTabCloseDialog flips it when a refreshed inspect reports the
+  // worktree removal blocked -- and a disabled button that still reads
+  // "Confirm?" offers a confirmation for an action nobody can take. The armed
+  // label would otherwise sit there until the 10-second timer or a blur, and
+  // neither fires for a control the pointer no longer reaches.
+  createEffect(() => {
+    if (buttonProps.disabled && armed())
+      reset()
   })
 
   const handleClick = () => {
