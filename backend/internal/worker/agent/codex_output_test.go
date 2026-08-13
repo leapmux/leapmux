@@ -587,7 +587,12 @@ func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 	require.Equal(t, AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
-func TestHandleCodexOutput_SpawnAgentStartedOpensFlatSpan(t *testing.T) {
+// A spawnAgent tool call owns NO span: the subagent's output lives in its own
+// child transcript, so a rail held open for the whole run would only push every
+// concurrent tool one column right. The row still carries the span id (the
+// frontend pairs the started and completed rows by it) and the span type (which
+// item/completed reads back).
+func TestHandleCodexOutput_SpawnAgentStartedOpensNoSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
@@ -596,11 +601,59 @@ func TestHandleCodexOutput_SpawnAgentStartedOpensFlatSpan(t *testing.T) {
 	input := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	handleCodexOutput(agent, parseLine([]byte(input)))
 
-	got := sink.OpenSpans()
-	require.Len(t, got, 1)
-	require.Equal(t, "call-1", got[0].SpanID)
-	require.Equal(t, "", got[0].ParentSpanID, "spawn span is flat (no parent)")
-	require.Equal(t, 0, sink.ClosedSpanCount())
+	assert.Empty(t, sink.OpenSpans(), "a spawn opens no span")
+	assert.Equal(t, 0, sink.ClosedSpanCount())
+	assert.Equal(t, "collabAgentToolCall", sink.GetSpanType("call-1"), "the span type is still recorded")
+
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, "call-1", messages[0].SpanID, "the row still carries the span id")
+	assert.Empty(t, messages[0].SpansOpenAtPersist, "nothing else was open, so the row draws no rail")
+}
+
+// The spawn's completed row closes nothing and still draws no rail.
+func TestHandleCodexOutput_SpawnAgentCompletedLeavesNoSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+
+	assert.Empty(t, sink.OpenSpans(), "neither row opens a span")
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	assert.True(t, messages[1].Closing, "the completed row is still a closer")
+	assert.Empty(t, messages[1].SpansOpenAtPersist, "and it draws no rail")
+}
+
+// A subagent spawn that starts while an unrelated command is running draws that
+// command's rail and nothing more -- one column, not two.
+func TestHandleCodexOutput_SpawnInsideOpenCommandDrawsOneColumn(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	cmdStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`
+	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(cmdStarted)))
+	handleCodexOutput(agent, parseLine([]byte(spawnStarted)))
+
+	open := sink.OpenSpans()
+	require.Len(t, open, 1)
+	assert.Equal(t, "cmd-1", open[0].SpanID, "only the command owns a span")
+
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	require.Len(t, messages[1].SpansOpenAtPersist, 1, "the spawn row draws exactly the command's rail")
+	assert.Equal(t, "cmd-1", messages[1].SpansOpenAtPersist[0].SpanID)
 }
 
 func TestHandleCodexOutput_WaitIsAFlatToolSpan(t *testing.T) {
@@ -622,6 +675,17 @@ func TestHandleCodexOutput_WaitIsAFlatToolSpan(t *testing.T) {
 	// wait is a flat tool span: no parent nesting, no connector.
 	require.Equal(t, "", messages[1].ParentSpanID, "wait started is flat")
 	require.Equal(t, "", messages[2].ParentSpanID, "wait completed is flat")
+
+	// Only the spawn loses its span. wait blocks on the subagent but stays an
+	// ordinary tool span, so it opens one and closes it at completion.
+	open := sink.OpenSpans()
+	require.Len(t, open, 1, "the spawn opens nothing; wait opens one span")
+	assert.Equal(t, "call-2", open[0].SpanID)
+	assert.Equal(t, []string{"call-2"}, sink.ClosedSpans())
+	// The closing row persists while its own span is still open, so it can draw
+	// the connector_end on that column. The spawn contributes no second column.
+	require.Len(t, messages[2].SpansOpenAtPersist, 1)
+	assert.Equal(t, "call-2", messages[2].SpansOpenAtPersist[0].SpanID)
 }
 
 func TestHandleCodexOutput_SubagentCommandRoutesToChildTranscript(t *testing.T) {

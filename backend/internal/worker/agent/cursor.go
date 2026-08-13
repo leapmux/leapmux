@@ -23,6 +23,79 @@ const (
 // CursorCLIAgent manages a single Cursor CLI ACP process.
 type CursorCLIAgent struct {
 	acpBase
+
+	// taskToolCalls holds the toolCallId of every `task` tool call the spawn
+	// hook claimed. The closing hook needs it: Cursor reports "this ran in the
+	// background" only in the final update's rawOutput, and the tool's identity
+	// only in rawInput, which that update does not always carry. Without the
+	// note, a backgrounded task and a backgrounded shell are the same wire
+	// shape.
+	//
+	// Guarded by acpBase's mu, which neither handleToolCall nor
+	// handleToolCallUpdate holds while it calls a hook, so the hooks can take it.
+	// An entry is dropped on the final update. A `task` call that never reaches
+	// one keeps its entry -- one bool and one id -- for the life of the agent,
+	// which matches how acpBase's subagentPrompts holds a spawn's prompt.
+	taskToolCalls map[string]bool
+}
+
+// clearTaskToolCalls drops every note. ClearContext calls it: the notes are
+// keyed by the OUTGOING session's tool-call ids, which send no closing update
+// once that session is gone, and a new session that reuses an id would read a
+// stale note and file a backgrounded shell as a subagent.
+func (a *CursorCLIAgent) clearTaskToolCalls() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	clear(a.taskToolCalls)
+}
+
+// rememberTaskToolCall notes that toolCallID is Cursor's `task` tool.
+func (a *CursorCLIAgent) rememberTaskToolCall(toolCallID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.taskToolCalls == nil {
+		a.taskToolCalls = make(map[string]bool)
+	}
+	a.taskToolCalls[toolCallID] = true
+}
+
+// forgetTaskToolCall drops the note for toolCallID and reports whether one was
+// there. The call is over when this runs, so the entry cannot accumulate.
+func (a *CursorCLIAgent) forgetTaskToolCall(toolCallID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	was := a.taskToolCalls[toolCallID]
+	delete(a.taskToolCalls, toolCallID)
+	return was
+}
+
+// spawnObservation runs Cursor's spawn detector and remembers what it claimed,
+// so the closing hook does not have to ask the wire a second time.
+//
+// A tool call that arrives ALREADY final gets no note. handleToolCall applies
+// this observation and returns, so no closing update follows to drop one --
+// a `session/load` replay of a finished task would leave an entry for the life
+// of the agent, and a later call that reuses the id would read it and file a
+// backgrounded shell as a subagent. The note has no reader on that path either:
+// this observation already carries the kind and the title.
+func (a *CursorCLIAgent) spawnObservation(tc acpToolCallEnvelope) *acpSubagentObservation {
+	obs := cursorSubagentFromToolCall(tc)
+	if obs != nil && !acpStatusIsFinal(tc.Status) {
+		a.rememberTaskToolCall(tc.ToolCallID)
+	}
+	return obs
+}
+
+// finishedObservation answers "was this the task tool" from the tool call
+// itself, and falls back to the note the spawn left when this update carries no
+// input of its own.
+func (a *CursorCLIAgent) finishedObservation(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
+	wasTaskTool := cursorToolCallIsTaskTool(tcu.RawInput)
+	// The row is over on a final status, so drop the note whatever it said.
+	if acpStatusIsFinal(tcu.Status) && a.forgetTaskToolCall(tcu.ToolCallID) {
+		wasTaskTool = true
+	}
+	return cursorSubagentFromToolCallUpdate(tcu, wasTaskTool)
 }
 
 // StartCursorCLI starts a Cursor CLI ACP agent process and performs the handshake.
@@ -52,8 +125,9 @@ func StartCursorCLI(ctx context.Context, opts Options, sink OutputSink) (Agent, 
 			// Registry-only -- Cursor exposes no child-session metadata. The observed
 			// toolCallId can contain an embedded newline; the neutral layer sanitizes
 			// the row key.
-			a.subagentFromToolCall = cursorSubagentFromToolCall
-			a.subagentFromToolCallUpdate = cursorSubagentFromToolCallUpdate
+			a.subagentFromToolCall = a.spawnObservation
+			a.subagentFromToolCallUpdate = a.finishedObservation
+			a.clearProviderState = a.clearTaskToolCalls
 		},
 		afterHandshake: func(a *CursorCLIAgent, handshake *acpSessionResult, opts Options) error {
 			return a.applyPermissionModeStartup(handshake, opts, CursorCLIModeAgent, normalizeCursorModelID(opts.Model()))
@@ -270,13 +344,7 @@ func init() {
 // keys before use, so no fixup is needed here. Registry-only: Cursor surfaces
 // no metadata/child linkage.
 func cursorSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
-	if len(tc.RawInput) == 0 {
-		return nil
-	}
-	var input struct {
-		ToolName string `json:"_toolName"`
-	}
-	if err := json.Unmarshal(tc.RawInput, &input); err != nil || input.ToolName != "task" {
+	if !cursorToolCallIsTaskTool(tc.RawInput) {
 		return nil
 	}
 	title := strings.TrimPrefix(tc.Title, "Task: ")
@@ -287,38 +355,84 @@ func cursorSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation 
 		RowKey: tc.ToolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
+		Spawns: true,
 	}
 }
 
-// cursorSubagentFromToolCallUpdate maps Cursor's task tool_call status
-// transitions to finished registry rows. The final update fires for EVERY
-// finished tool_call (not just spawns); a plain tool (isBackground absent) is
-// a close-only observation so it does not create a spurious row. A background
-// task carries an activity line and upserts before closing.
-func cursorSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagentObservation {
-	switch tcu.Status {
-	case "completed", "failed", "cancelled":
-	default:
+// cursorToolCallIsTaskTool reports whether a Cursor tool call is the `task`
+// delegation tool, which is the only Cursor tool that spawns a subagent. It
+// reads ONE payload, so it answers only for a payload that carries the input.
+//
+// An absent rawInput gives false, which means "this payload does not say it is
+// the task tool" and NOT "this call is not the task tool". Cursor does not
+// always echo the input on an update, so the closing hook must not treat the
+// two as the same: finishedObservation falls back to the note the spawn left
+// (taskToolCalls) before it classifies a backgrounded call as a shell.
+func cursorToolCallIsTaskTool(rawInput json.RawMessage) bool {
+	if len(rawInput) == 0 {
+		return false
+	}
+	var input struct {
+		ToolName string `json:"_toolName"`
+	}
+	return json.Unmarshal(rawInput, &input) == nil && input.ToolName == "task"
+}
+
+// cursorToolCallRanInBackground reports whether a finished Cursor tool call was
+// backgrounded, which Cursor states as rawOutput.isBackground.
+func cursorToolCallRanInBackground(rawOutput json.RawMessage) bool {
+	if len(rawOutput) == 0 {
+		return false
+	}
+	var out struct {
+		IsBackground bool `json:"isBackground"`
+	}
+	return json.Unmarshal(rawOutput, &out) == nil && out.IsBackground
+}
+
+// cursorSubagentFromToolCallUpdate maps Cursor's finished tool_call updates to
+// registry rows. The final update fires for EVERY finished tool_call (not just
+// spawns); a plain foreground tool is a close-only observation, so it does not
+// create a spurious row. A backgrounded call carries an activity line and
+// upserts before closing.
+//
+// A backgrounded call is a SHELL unless it is the `task` tool. Cursor's other
+// tools are not subagents, and the neutral layer defaults a blank kind to
+// Subagent -- so leaving the kind blank here put a shell in the sidebar under a
+// Bot icon, in the subagent filter tab, labelled with its raw toolCallId. The
+// task-tool arm leaves BOTH the kind and the title blank on purpose: the spawn
+// observation already set them, and Item.PreservingBlanksFrom keeps an existing
+// value only for a blank incoming one. Writing them here would flip a real
+// subagent row to a shell and overwrite its trimmed title with the raw
+// "Task: ..." string.
+//
+// wasTaskTool comes from the caller, not from tcu, because this update does not
+// always carry rawInput. Reading the identity off tcu alone made an absent
+// rawInput mean "not the task tool", so a backgrounded task whose final update
+// omitted its input took the shell arm and flipped its own live row.
+func cursorSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope, wasTaskTool bool) *acpSubagentObservation {
+	if !acpStatusIsFinal(tcu.Status) {
 		return nil
 	}
-	activity := ""
-	if len(tcu.RawOutput) > 0 {
-		var out struct {
-			IsBackground bool `json:"isBackground"`
-		}
-		if json.Unmarshal(tcu.RawOutput, &out) == nil && out.IsBackground {
-			activity = "background task"
-		}
-	}
-	mode := acpModeCloseOnly
-	if activity != "" {
-		mode = acpModeUpsert
-	}
-	return &acpSubagentObservation{
+	obs := &acpSubagentObservation{
 		RowKey:   tcu.ToolCallID,
-		Activity: activity,
 		Status:   acpFinalStatus(tcu.Status),
 		CloseRow: true,
-		Mode:     mode,
+		Mode:     acpModeCloseOnly,
 	}
+	if !cursorToolCallRanInBackground(tcu.RawOutput) {
+		return obs
+	}
+	obs.Mode = acpModeUpsert
+	obs.Activity = "background task"
+	if !wasTaskTool {
+		obs.Kind = bgtask.KindShell
+		// This update is the row's only event, so it is also the only chance to
+		// give it a readable label. Without one the sidebar shows the raw
+		// toolCallId. The row's TitleIsCommand stays false (no observation sets
+		// it): Cursor's title is a label, not a verbatim command, and prose in
+		// the monospace face reads worse than a command in the normal one.
+		obs.Title = tcu.Title
+	}
+	return obs
 }

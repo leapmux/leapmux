@@ -204,3 +204,77 @@ func TestPi_ApplySubagentEnd_FinalStatusWritesNoPrompt(t *testing.T) {
 	require.True(t, ok)
 	assert.Empty(t, child.Messages())
 }
+
+// --- A subagent spawn owns no span ---
+
+// pi-subagents registers its spawn tool as `Agent` (SUBAGENT_TOOL_NAMES.AGENT).
+// That call owns no span: the subagent's output lands in its own child
+// transcript, so a rail held open for the whole run only pushes every
+// concurrent tool one column right.
+func TestPi_AgentToolStartOpensNoSpan(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"tc-spawn","toolName":"Agent","input":{"description":"explore","prompt":"look around"}}`)))
+
+	assert.Empty(t, sink.OpenSpans(), "a spawn opens no span")
+	assert.Empty(t, sink.ReservedColorSpans(), "and reserves no color")
+	assert.Equal(t, PiToolAgent, sink.GetSpanType("tc-spawn"),
+		"the span type is still recorded for tool_execution_end")
+
+	msgs := sink.Messages()
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "tc-spawn", msgs[0].SpanID, "the row still carries the span id")
+	assert.Empty(t, msgs[0].SpansOpenAtPersist, "nothing else was open, so no rail")
+}
+
+// Only the spawn loses its span. Every other Pi tool -- including the two
+// subagent-control tools, which act on an agent that already runs -- keeps one.
+func TestPi_NonSpawnToolsStillOpenASpan(t *testing.T) {
+	t.Parallel()
+
+	for _, toolName := range []string{PiToolBash, PiToolRead, "get_subagent_result", "steer_subagent"} {
+		t.Run(toolName, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &testSink{}
+			a := newPiAgentWithSink(sink)
+			handlePiOutput(a, parseLine([]byte(
+				`{"type":"tool_execution_start","toolCallId":"tc-1","toolName":"`+toolName+`","input":{"prompt":"x"}}`)))
+
+			open := sink.OpenSpans()
+			require.Len(t, open, 1)
+			assert.Equal(t, "tc-1", open[0].SpanID)
+			assert.Equal(t, []string{"tc-1"}, sink.ReservedColorSpans())
+		})
+	}
+}
+
+// A spawn that starts while a bash call is running draws that call's rail and
+// nothing more -- one column, not two.
+func TestPi_SpawnInsideOpenToolDrawsOneColumn(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newPiAgentWithSink(sink)
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"tc-bash","toolName":"bash","input":{"command":"ls"}}`)))
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_start","toolCallId":"tc-spawn","toolName":"Agent","input":{"prompt":"go"}}`)))
+	handlePiOutput(a, parseLine([]byte(
+		`{"type":"tool_execution_end","toolCallId":"tc-spawn","toolName":"Agent","result":{"status":"completed"}}`)))
+
+	msgs := sink.Messages()
+	require.Len(t, msgs, 3)
+	for i, msg := range msgs[1:] {
+		require.Len(t, msg.SpansOpenAtPersist, 1, "spawn row %d draws exactly one column", i)
+		assert.Equal(t, "tc-bash", msg.SpansOpenAtPersist[0].SpanID)
+	}
+	assert.True(t, msgs[2].Closing, "the end row is still a closer")
+
+	open := sink.OpenSpans()
+	require.Len(t, open, 1, "only the bash call ever opened a span")
+	assert.Equal(t, "tc-bash", open[0].SpanID)
+}

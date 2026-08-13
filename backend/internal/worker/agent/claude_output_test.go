@@ -14,19 +14,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// spanRecord captures an OpenSpan call.
-type spanRecord struct {
-	SpanID       string
-	ParentSpanID string
-}
-
-// outputTestSink extends testSink to record spans and permission mode updates.
+// outputTestSink extends testSink with permission mode and plan updates. It
+// deliberately does NOT override OpenSpan or CloseSpan: testSink already records
+// both AND mirrors the real SpanTracker's active set and its span types, so an
+// override here would leave both stale -- which is what it did, until every
+// assertion that read them through this double had become vacuous.
 type outputTestSink struct {
 	testSink
-
-	spanMu      sync.Mutex
-	openedSpans []spanRecord
-	closedSpans []string
 
 	modeMu          sync.Mutex
 	permissionModes []string
@@ -39,34 +33,10 @@ type planUpdateCall struct {
 	Title string
 }
 
-func (s *outputTestSink) OpenSpan(spanID, parentSpanID string) {
-	s.spanMu.Lock()
-	defer s.spanMu.Unlock()
-	s.openedSpans = append(s.openedSpans, spanRecord{SpanID: spanID, ParentSpanID: parentSpanID})
-}
-
-func (s *outputTestSink) CloseSpan(spanID string) {
-	s.spanMu.Lock()
-	defer s.spanMu.Unlock()
-	s.closedSpans = append(s.closedSpans, spanID)
-}
-
 func (s *outputTestSink) UpdatePermissionMode(mode string) {
 	s.modeMu.Lock()
 	defer s.modeMu.Unlock()
 	s.permissionModes = append(s.permissionModes, mode)
-}
-
-func (s *outputTestSink) OpenedSpans() []spanRecord {
-	s.spanMu.Lock()
-	defer s.spanMu.Unlock()
-	return append([]spanRecord(nil), s.openedSpans...)
-}
-
-func (s *outputTestSink) ClosedSpans() []string {
-	s.spanMu.Lock()
-	defer s.spanMu.Unlock()
-	return append([]string(nil), s.closedSpans...)
 }
 
 func (s *outputTestSink) PermissionModes() []string {
@@ -85,6 +55,42 @@ func (s *outputTestSink) PlanCalls() []planUpdateCall {
 	s.planMu.Lock()
 	defer s.planMu.Unlock()
 	return append([]planUpdateCall(nil), s.planCalls...)
+}
+
+// outputTestSink must behave exactly like the double it extends. It shadowed the
+// span methods before, so its active set stayed empty and every assertion that
+// read one through this double held no matter what the code did.
+func TestOutputTestSink_MirrorsTheSpanBookkeepingItExtends(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	sink.SetSpanType("span-close", "Read")
+	sink.SetSpanType("span-kept", "Agent")
+	sink.OpenSpan("span-close", "parent-1")
+	sink.OpenSpan("span-kept", "")
+
+	assert.Equal(t, []testSinkSpanOpen{
+		{SpanID: "span-close", ParentSpanID: "parent-1"},
+		{SpanID: "span-kept", ParentSpanID: ""},
+	}, sink.OpenSpans(), "an open reaches the embedded double, parentage included")
+
+	sink.CloseSpan("span-close")
+	sink.CloseSpan("span-kept")
+
+	assert.Equal(t, []string{"span-close", "span-kept"}, sink.ClosedSpans())
+	assert.Equal(t, "Read", sink.GetSpanType("span-close"),
+		"a closed span KEEPS its type, exactly as the real tracker keeps it")
+	assert.Equal(t, "Agent", sink.GetSpanType("span-kept"))
+
+	sink.ResetSpans()
+	assert.Empty(t, sink.GetSpanType("span-close"), "only the turn boundary clears types")
+
+	// Both left the active set, so a row persisted now draws no rail.
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		[]byte(`{"type":"assistant"}`), SpanInfo{SpanID: "span-next"}))
+	msgs := sink.Messages()
+	require.Len(t, msgs, 1)
+	assert.Empty(t, msgs[0].SpansOpenAtPersist)
 }
 
 // newTestAgent creates a minimal ClaudeCodeAgent for unit-testing HandleOutput.
@@ -441,7 +447,7 @@ func TestHandleOutput_AssistantNoToolUse(t *testing.T) {
 	assert.Equal(t, "", msgs[0].ParentSpanID)
 
 	// No spans opened.
-	assert.Empty(t, sink.OpenedSpans())
+	assert.Empty(t, sink.OpenSpans())
 	assert.Equal(t, 0, agent.turnToolUses)
 }
 
@@ -901,7 +907,7 @@ func TestHandleOutput_MultipleToolUses(t *testing.T) {
 	assert.Equal(t, "Read", msgs[0].SpanType)
 
 	// Both tool_use blocks should open spans.
-	spans := sink.OpenedSpans()
+	spans := sink.OpenSpans()
 	require.Len(t, spans, 2)
 	assert.Equal(t, "tu-a", spans[0].SpanID)
 	assert.Equal(t, "tu-b", spans[1].SpanID)
@@ -2237,4 +2243,79 @@ func TestHandleOutput_SubagentResultRoutesAsChildTurnEnd(t *testing.T) {
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status, "subagent result closes the registry row")
+}
+
+// claudeSpanForEnvelope is the one place both transcripts resolve which span a
+// Claude envelope belongs to. An envelope with no tool block belongs to none --
+// plain assistant text, a result, and an unknown type all persist unattached.
+func TestClaudeSpanForEnvelope(t *testing.T) {
+	t.Parallel()
+
+	spanTypeFor := func(id string) string {
+		if id == "tu-known" {
+			return "Read"
+		}
+		return ""
+	}
+	parse := func(t *testing.T, raw string) *messageEnvelope {
+		t.Helper()
+		var env messageEnvelope
+		require.NoError(t, json.Unmarshal([]byte(raw), &env))
+		return &env
+	}
+
+	t.Run("assistant takes the first tool_use", func(t *testing.T) {
+		env := parse(t, `{"message":{"content":[
+			{"type":"text","text":"hi"},
+			{"type":"tool_use","id":"tu-a","name":"Read"},
+			{"type":"tool_use","id":"tu-b","name":"Bash"}
+		]}}`)
+		id, typ, closing := claudeSpanForEnvelope(claudeMsgTypeAssistant, env, spanTypeFor)
+		assert.Equal(t, "tu-a", id, "the FIRST tool_use decides the row's span")
+		assert.Equal(t, "Read", typ)
+		assert.False(t, closing)
+	})
+
+	t.Run("user takes the first tool_result and looks its type up", func(t *testing.T) {
+		env := parse(t, `{"message":{"content":[{"type":"tool_result","tool_use_id":"tu-known"}]}}`)
+		id, typ, closing := claudeSpanForEnvelope(claudeMsgTypeUser, env, spanTypeFor)
+		assert.Equal(t, "tu-known", id)
+		assert.Equal(t, "Read", typ, "the type comes from the transcript's own tracker")
+		assert.True(t, closing, "a tool_result closes its span")
+	})
+
+	t.Run("an unknown tool_use_id yields a blank type, not a guess", func(t *testing.T) {
+		env := parse(t, `{"message":{"content":[{"type":"tool_result","tool_use_id":"tu-gone"}]}}`)
+		id, typ, closing := claudeSpanForEnvelope(claudeMsgTypeUser, env, spanTypeFor)
+		assert.Equal(t, "tu-gone", id)
+		assert.Empty(t, typ)
+		assert.True(t, closing)
+	})
+
+	t.Run("no tool block means no span", func(t *testing.T) {
+		for name, raw := range map[string]string{
+			"plain text":      `{"message":{"content":[{"type":"text","text":"hi"}]}}`,
+			"empty content":   `{"message":{"content":[]}}`,
+			"blank tool id":   `{"message":{"content":[{"type":"tool_use","id":"","name":"Read"}]}}`,
+			"blank result id": `{"message":{"content":[{"type":"tool_result","tool_use_id":""}]}}`,
+		} {
+			t.Run(name, func(t *testing.T) {
+				msgType := claudeMsgTypeAssistant
+				if name == "blank result id" {
+					msgType = claudeMsgTypeUser
+				}
+				id, typ, closing := claudeSpanForEnvelope(msgType, parse(t, raw), spanTypeFor)
+				assert.Empty(t, id)
+				assert.Empty(t, typ)
+				assert.False(t, closing)
+			})
+		}
+	})
+
+	t.Run("a result envelope belongs to no span", func(t *testing.T) {
+		env := parse(t, `{"message":{"content":[{"type":"tool_use","id":"tu-a","name":"Read"}]}}`)
+		id, _, closing := claudeSpanForEnvelope(claudeMsgTypeResult, env, spanTypeFor)
+		assert.Empty(t, id, "a turn-end envelope is not a tool row")
+		assert.False(t, closing)
+	})
 }

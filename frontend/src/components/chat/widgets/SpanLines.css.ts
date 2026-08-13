@@ -45,17 +45,13 @@ import {
 // ─── Styles ─────────────────────────────────────────────────────────
 
 /** Container for all span line columns. */
-const spanLinesContainerBase = style({
+export const spanLinesContainer = style({
   display: 'flex',
   flexDirection: 'row',
   alignItems: 'stretch',
   flexShrink: 0,
   paddingRight: `${CONTAINER_PAD_RIGHT}px`,
 })
-
-export const spanLinesContainer = style([spanLinesContainerBase])
-
-export const spanLinesContainerSpanOpener = style([spanLinesContainerBase])
 
 /** Base style for a single span line column. */
 const spanLineColumnBase = style({

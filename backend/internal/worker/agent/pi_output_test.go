@@ -274,6 +274,11 @@ func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 	endRaw := []byte(`{"type":"tool_execution_end","toolCallId":"call-1","toolName":"bash","result":{"content":[{"type":"text","text":"file1\nfile2\n"}],"details":{"exitCode":0}},"isError":false}`)
 
 	handlePiOutput(a, parseLine(startRaw))
+	// SetSpanType is recorded at the start, and asserted here rather than at the
+	// end of the test: the close below ends the span, and an ended span forgets
+	// its type.
+	assert.Equal(t, "bash", sink.GetSpanType("call-1"))
+
 	handlePiOutput(a, parseLine(updateRaw))
 	handlePiOutput(a, parseLine(endRaw))
 
@@ -299,9 +304,6 @@ func TestHandlePiOutput_ToolExecutionLifecycle(t *testing.T) {
 	assert.Equal(t, "file1\n", string(chunk.Content))
 	assert.Equal(t, 1, sink.StreamEndCount())
 	assert.Equal(t, "call-1", sink.LastStreamEnd())
-
-	// SetSpanType recorded.
-	assert.Equal(t, "bash", sink.GetSpanType("call-1"))
 
 	// Tool count incremented.
 	a.mu.Lock()
@@ -813,7 +815,7 @@ func TestHandlePiOutput_ToolUpdateDetailsUpsertsSubagentActivity(t *testing.T) {
 	// A tool_execution_start records the spawn prompt as the title (read from
 	// the `input` field) so the subagent row has a label.
 	handlePiOutput(a, parseLine([]byte(
-		`{"type":"tool_execution_start","toolCallId":"call-sub-1","toolName":"Task","input":{"description":"build the feature","prompt":"build it"}}`)))
+		`{"type":"tool_execution_start","toolCallId":"call-sub-1","toolName":"Agent","input":{"description":"build the feature","prompt":"build it"}}`)))
 
 	// An update whose partialResult.details carries the subagent shape.
 	handlePiOutput(a, parseLine([]byte(
@@ -838,7 +840,7 @@ func TestHandlePiOutput_ToolUpdateDetails_FallsBackToToolCallID(t *testing.T) {
 	a := newPiAgentWithSink(sink)
 
 	handlePiOutput(a, parseLine([]byte(
-		`{"type":"tool_execution_start","toolCallId":"call-no-id","toolName":"Task","input":{"description":"work"}}`)))
+		`{"type":"tool_execution_start","toolCallId":"call-no-id","toolName":"Agent","input":{"description":"work"}}`)))
 
 	handlePiOutput(a, parseLine([]byte(
 		`{"type":"tool_execution_update","toolCallId":"call-no-id","partialResult":{"content":[{"type":"text","text":"x\n"}],"details":{"status":"running","activity":"thinking"}}}`)))
@@ -860,7 +862,7 @@ func TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID(t *testing.T) {
 
 	// Seed a running row keyed by toolCallId.
 	handlePiOutput(a, parseLine([]byte(
-		`{"type":"tool_execution_start","toolCallId":"call-bg","toolName":"Task","input":{"description":"bg work"}}`)))
+		`{"type":"tool_execution_start","toolCallId":"call-bg","toolName":"Agent","input":{"description":"bg work"}}`)))
 	handlePiOutput(a, parseLine([]byte(
 		`{"type":"tool_execution_update","toolCallId":"call-bg","partialResult":{"content":[{"type":"text","text":"x\n"}],"details":{"status":"running","activity":"starting"}}}`)))
 
@@ -868,7 +870,7 @@ func TestHandlePiOutput_ToolEndBackgroundRekeysToAgentID(t *testing.T) {
 	// status:"background" + agentId. piApplySubagentEnd unmarshals the result
 	// directly as the details shape.
 	handlePiOutput(a, parseLine([]byte(
-		`{"type":"tool_execution_end","toolCallId":"call-bg","toolName":"Task","result":{"status":"background","agentId":"agent-bg-1"}}`)))
+		`{"type":"tool_execution_end","toolCallId":"call-bg","toolName":"Agent","result":{"status":"background","agentId":"agent-bg-1"}}`)))
 
 	tasks := sink.BackgroundTasks()
 	// Two rows: the old toolCallId row closed (Completed) and the new
@@ -906,7 +908,7 @@ func TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry(t *testin
 	// Seed a running subagent row keyed by agentId (the notification carries
 	// agentId, not toolCallId).
 	handlePiOutput(a, parseLine([]byte(
-		`{"type":"tool_execution_start","toolCallId":"call-notif","toolName":"Task","args":{"description":"notif task"}}`)))
+		`{"type":"tool_execution_start","toolCallId":"call-notif","toolName":"Agent","args":{"description":"notif task"}}`)))
 	handlePiOutput(a, parseLine([]byte(
 		`{"type":"tool_execution_update","toolCallId":"call-notif","partialResult":{"content":[{"type":"text","text":"x\n"}],"details":{"status":"running","activity":"busy","agentId":"agent-notif-1"}}}`)))
 	require.Len(t, sink.BackgroundTasks(), 1)

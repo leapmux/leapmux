@@ -10,7 +10,6 @@ import {
   spanLineEmpty,
   spanLinePassthrough,
   spanLinesContainer,
-  spanLinesContainerSpanOpener,
   spanPassthroughColors,
 } from './SpanLines.css'
 
@@ -33,7 +32,6 @@ export interface SpanLine {
 
 interface SpanLinesProps {
   lines: (SpanLine | null)[]
-  spanOpener?: boolean
 }
 
 const TYPE_STYLES: Record<SpanLine['type'], string> = {
@@ -106,11 +104,9 @@ export function shouldConnectSpanLineTop(line: SpanLine | null, previousLine: Sp
 }
 
 export const SpanLines: Component<SpanLinesProps> = (props) => {
-  const containerClass = () => props.spanOpener ? spanLinesContainerSpanOpener : spanLinesContainer
-
   return (
     <Show when={props.lines && props.lines.length > 0}>
-      <div class={containerClass()}>
+      <div class={spanLinesContainer}>
         {/*
           <Index> keys columns by position (the array is positional plain data),
           so re-parsing span_lines updates each column's class in place instead

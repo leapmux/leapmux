@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -10,6 +9,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/internal/worker/spantrack"
 )
 
 // testSinkSettingsRefreshed records the args of a PersistSettingsRefresh call.
@@ -28,22 +28,25 @@ type testSinkModeChange struct {
 
 // testSink is a test implementation of OutputSink that records calls.
 type testSink struct {
-	mu                sync.Mutex
-	messages          []testSinkMessage
-	notifications     []testSinkMessage
-	streamChunks      []testSinkStreamChunk
-	streamEnds        []string
-	sessionIDs        []string
-	permissionModes   []string
-	modeChanges       []testSinkModeChange
-	settingsRefreshes []testSinkSettingsRefreshed
-	sessionInfos      []map[string]interface{}
-	spanTypes         map[string]string
-	openSpans         []testSinkSpanOpen
-	closedSpans       []string
-	// liveSpans is the CURRENTLY-open subset of openSpans (a close or a reset
-	// removes entries), mirroring the real SpanTracker's active set.
-	liveSpans        []testSinkSpanOpen
+	// persistErr, when set, is what PersistMessage returns. Read without the
+	// lock: a test sets it at construction and never changes it afterwards.
+	persistErr         error
+	mu                 sync.Mutex
+	messages           []testSinkMessage
+	notifications      []testSinkMessage
+	streamChunks       []testSinkStreamChunk
+	streamEnds         []string
+	sessionIDs         []string
+	permissionModes    []string
+	modeChanges        []testSinkModeChange
+	settingsRefreshes  []testSinkSettingsRefreshed
+	sessionInfos       []map[string]interface{}
+	openSpans          []testSinkSpanOpen
+	closedSpans        []string
+	reservedColorSpans []testSinkSpanOpen
+	// tracker is the REAL span engine. Delegating to it is what keeps this
+	// double from drifting from the behavior it stands in for.
+	tracker          spantrack.SpanTracker
 	resetSpanCount   int
 	statusActives    []string
 	autoSchedules    []AutoContinueSchedule
@@ -73,7 +76,12 @@ type testSinkMessage struct {
 	SpanID          string
 	SpanType        string
 	Closing         bool
+	SpanColor       int32
 	MarkType        leapmuxv1.MarkType
+	// NoSpan mirrors SpanInfo.NoSpan: the row carries a span id but owns no
+	// span, so its span_color of 0 is the answer and the persist path must not
+	// fill it from the connector.
+	NoSpan bool
 	// TurnEnd is set on entries recorded by PersistTurnEnd so tests can
 	// distinguish the turn-end divider from regular AGENT messages
 	// without inspecting the inner content.
@@ -97,20 +105,30 @@ type testSinkSpanOpen struct {
 	ParentSpanID string
 }
 
-// liveSpansLocked copies the spans currently open on this sink. Must be called
-// with s.mu held.
+// liveSpansLocked snapshots the spans the REAL tracker holds open, in column
+// order. The service layer derives a row's span_lines from exactly that state,
+// so this is the observable that pins the ordering rule a provider must follow.
 func (s *testSink) liveSpansLocked() []testSinkSpanOpen {
-	if len(s.liveSpans) == 0 {
+	active := s.tracker.ActiveSpans()
+	if len(active) == 0 {
 		return nil
 	}
-	return append([]testSinkSpanOpen(nil), s.liveSpans...)
+	open := make([]testSinkSpanOpen, 0, len(active))
+	for _, a := range active {
+		open = append(open, testSinkSpanOpen{SpanID: a.SpanID, ParentSpanID: s.tracker.ParentOf(a.SpanID)})
+	}
+	return open
 }
 
+// PersistMessage records the row. Set persistErr to make it fail, which is the
+// only way to exercise a caller's error path: every caller LOGS the error and
+// carries on, so a test that cannot make the persist fail cannot tell "carries
+// on" from "returns early".
 func (s *testSink) PersistMessage(source leapmuxv1.MessageSource, content []byte, span SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, MarkType: span.MarkType, SpansOpenAtPersist: s.liveSpansLocked()})
-	return nil
+	s.messages = append(s.messages, testSinkMessage{Source: source, Content: append([]byte(nil), content...), ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, SpansOpenAtPersist: s.liveSpansLocked()})
+	return s.persistErr
 }
 
 func (s *testSink) PersistTurnEnd(content []byte, span SpanInfo) error {
@@ -138,46 +156,77 @@ func (s *testSink) PersistNotification(source leapmuxv1.MessageSource, content [
 	return !s.notifSuppressBroadcast, nil
 }
 
+// The span methods DELEGATE to a real SpanTracker rather than re-implementing
+// it. The double used to keep its own active set and span-type map, which drifted
+// from the engine twice: a closed span kept its type here after the tracker
+// stopped keeping it, and again after it started. Recording slices stay
+// alongside, because a test still wants to assert WHICH calls were made.
 func (s *testSink) OpenSpan(spanID string, parentSpanID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	open := testSinkSpanOpen{SpanID: spanID, ParentSpanID: parentSpanID}
-	s.openSpans = append(s.openSpans, open)
-	// liveSpans mirrors the real SpanTracker's active set (open minus close
-	// minus reset), which is what SpansOpenAtPersist snapshots. openSpans stays
-	// a cumulative log so existing assertions about "was ever opened" hold.
-	s.liveSpans = append(s.liveSpans, open)
+	s.openSpans = append(s.openSpans, testSinkSpanOpen{SpanID: spanID, ParentSpanID: parentSpanID})
+	s.mu.Unlock()
+	s.tracker.OpenSpan(spanID, parentSpanID)
 }
+
 func (s *testSink) CloseSpan(spanID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.closedSpans = append(s.closedSpans, spanID)
-	s.liveSpans = slices.DeleteFunc(s.liveSpans, func(o testSinkSpanOpen) bool {
-		return o.SpanID == spanID
-	})
+	s.mu.Unlock()
+	s.tracker.CloseSpan(spanID)
 }
+
 func (s *testSink) ResetSpans() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.resetSpanCount++
-	s.liveSpans = nil
+	s.mu.Unlock()
+	s.tracker.Reset()
 }
+
 func (s *testSink) SetSpanType(spanID, spanType string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.spanTypes == nil {
-		s.spanTypes = make(map[string]string)
-	}
-	s.spanTypes[spanID] = spanType
+	s.tracker.SetSpanType(spanID, spanType)
 }
 
 func (s *testSink) GetSpanType(spanID string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.spanTypes[spanID]
+	return s.tracker.GetSpanType(spanID)
 }
 
-func (s *testSink) ReserveSpanColor(spanID, parentSpanID string) int32 { return 0 }
+// ReserveSpanColor records which spans asked for a color, and under which
+// parent. A span that never opens must never reserve one either: the real
+// tracker parks the reservation on its single pending slot, which blocks that
+// color from the next real span. The parent is recorded because it decides the
+// column the reservation is computed for, and the child transcript reserves
+// under the spawn span rather than at the root.
+func (s *testSink) ReserveSpanColor(spanID, parentSpanID string) int32 {
+	s.mu.Lock()
+	s.reservedColorSpans = append(s.reservedColorSpans, testSinkSpanOpen{SpanID: spanID, ParentSpanID: parentSpanID})
+	s.mu.Unlock()
+	// Delegated, so the reservation really is parked on the tracker's single
+	// pending slot: a span that reserves and never opens then blocks that color
+	// exactly as it would in production.
+	return s.tracker.ReserveSpanColor(spanID, parentSpanID)
+}
+
+// ReservedColorSpans returns a copy of the span IDs that reserved a color.
+func (s *testSink) ReservedColorSpans() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.reservedColorSpans))
+	for _, r := range s.reservedColorSpans {
+		ids = append(ids, r.SpanID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return ids
+}
+
+// ReservedColors returns each reservation with the parent span it was made
+// under.
+func (s *testSink) ReservedColors() []testSinkSpanOpen {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]testSinkSpanOpen(nil), s.reservedColorSpans...)
+}
 
 func (s *testSink) BroadcastStreamChunk(content []byte, spanID string, method string) {
 	s.mu.Lock()

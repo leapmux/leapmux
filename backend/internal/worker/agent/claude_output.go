@@ -312,7 +312,12 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 				a.sink.StorePlanModeToolUse(block.ID, PermissionModeDefault)
 			}
 
-			a.sink.OpenSpan(block.ID, parentSpanID)
+			// A subagent spawn opens no span (claudeToolSpawnsSubagent). Its
+			// span type is still recorded above, because the tool_result path
+			// reads it back through GetSpanType to persist span_type.
+			if !claudeToolSpawnsSubagent(block.Name) {
+				a.sink.OpenSpan(block.ID, parentSpanID)
+			}
 		}
 
 		// Plan file path tracking (Write/Edit to ~/.claude/plans/).
@@ -362,6 +367,81 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 		a.mu.Lock()
 		a.turnToolUses += toolUseCount
 		a.mu.Unlock()
+	}
+}
+
+// claudeSpanForEnvelope resolves which span a Claude envelope belongs to.
+//
+// An assistant envelope takes the FIRST tool_use block's id and tool name; a
+// user envelope takes the first tool_result's tool_use_id and looks its type up
+// through spanTypeFor, which is the tracker of whichever transcript the row
+// lands in. Every other envelope belongs to no span.
+func claudeSpanForEnvelope(msgType string, env *messageEnvelope, spanTypeFor func(string) string) (spanID, spanType string, closing bool) {
+	switch msgType {
+	case claudeMsgTypeAssistant:
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_use" && block.ID != "" {
+				return block.ID, block.Name, false
+			}
+		}
+	case claudeMsgTypeUser:
+		for _, block := range env.ContentBlocks() {
+			if block.Type == "tool_result" && block.ToolUseID != "" {
+				return block.ToolUseID, spanTypeFor(block.ToolUseID), true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// claudeSpanInfoFor builds the SpanInfo a Claude envelope persists with, and
+// reserves the tool_use row's color against sink.
+//
+// Reserving (not opening) is what makes the color available at persist time
+// while the span is still closed, so the tool_use row can carry the color its
+// rail will use without yet drawing that rail.
+//
+// A subagent spawn reserves nothing: it opens no span, so it draws no rail and
+// its card takes the neutral border. Reserving anyway would also block that
+// color from the next real span until the spawn's tool_result landed. NoSpan
+// then tells the persist path that the resulting color 0 is the answer.
+//
+// Shared by the parent transcript (handlePersistableMessage) and the child one
+// (routeSubagentMessage), which differ only in the sink and the parent span id.
+// They held two copies of this rule, so the spawn guard had to be written twice.
+func claudeSpanInfoFor(sink OutputSink, msgType string, env *messageEnvelope, parentSpanID string) SpanInfo {
+	spanID, spanType, closing := claudeSpanForEnvelope(msgType, env, sink.GetSpanType)
+	spawns := spanID != "" && claudeToolSpawnsSubagent(spanType)
+
+	var spanColor int32
+	if msgType == claudeMsgTypeAssistant && spanID != "" && !spawns {
+		spanColor = sink.ReserveSpanColor(spanID, parentSpanID)
+	}
+	// A self-displaying control tool (AskUserQuestion/ExitPlanMode) forwarded as
+	// a tool_result gets its CONTROL_RESPONSE scroll-rail mark.
+	var markType leapmuxv1.MarkType
+	if msgType == claudeMsgTypeUser {
+		markType = claudeUserEnvelopeBlocksMarkType(env.ContentBlocks(), sink.GetSpanType)
+	}
+	return SpanInfo{
+		ParentSpanID: parentSpanID,
+		SpanID:       spanID,
+		SpanType:     spanType,
+		SpanColor:    spanColor,
+		Closing:      closing,
+		MarkType:     markType,
+		NoSpan:       spawns,
+	}
+}
+
+// claudeCloseToolResultSpans closes the span of EVERY tool_result in a user
+// envelope. One user message can carry parallel tool calls, so closing only the
+// first would leak the rest until the turn's bulk ResetSpans.
+func claudeCloseToolResultSpans(sink OutputSink, env *messageEnvelope) {
+	for _, block := range env.ContentBlocks() {
+		if block.Type == "tool_result" && block.ToolUseID != "" {
+			sink.CloseSpan(block.ToolUseID)
+		}
 	}
 }
 
@@ -448,29 +528,6 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		parentSpanID = env.ToolUseID
 	}
 
-	// Determine span ID and span type: for tool_use messages use the block ID
-	// and tool name, for tool_result messages use the tool_use_id reference
-	// and look up the tool name from the span tracker.
-	var spanID, spanType string
-	if msgType == claudeMsgTypeAssistant {
-		for _, block := range env.ContentBlocks() {
-			if block.Type == "tool_use" && block.ID != "" {
-				spanID, spanType = block.ID, block.Name
-				break
-			}
-		}
-	} else if msgType == claudeMsgTypeUser {
-		for _, block := range env.ContentBlocks() {
-			if block.Type == "tool_result" && block.ToolUseID != "" {
-				spanID = block.ToolUseID
-				break
-			}
-		}
-		if spanID != "" {
-			spanType = a.sink.GetSpanType(spanID)
-		}
-	}
-
 	// Detect plan mode from tool_result messages.
 	if msgType == claudeMsgTypeUser {
 		a.detectPlanModeFromToolResult(&env)
@@ -481,30 +538,14 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		content = a.enrichResultWithToolUses(content)
 	}
 
-	// Reserve the span color for tool_use messages (assistant with a spanID)
-	// so it is available at persist time, before the span is actually opened.
-	var spanColor int32
-	if msgType == claudeMsgTypeAssistant && spanID != "" {
-		spanColor = a.sink.ReserveSpanColor(spanID, parentSpanID)
-	}
+	// Resolve the span metadata and reserve the tool_use row's color. Shared
+	// with the child-transcript path in routeSubagentMessage.
+	spanInfo := claudeSpanInfoFor(a.sink, msgType, &env, parentSpanID)
+	spanID, spanType := spanInfo.SpanID, spanInfo.SpanType
 
 	// Persist as a standalone message with hierarchy metadata.
 	// This MUST happen before processAssistantBlocks (which opens spans)
 	// so the assistant message stays at the parent depth.
-	// closing is true when this is a tool_result that will close its span.
-	closing := msgType == claudeMsgTypeUser && spanID != ""
-	var markType leapmuxv1.MarkType
-	if msgType == claudeMsgTypeUser {
-		markType = claudeUserEnvelopeBlocksMarkType(env.ContentBlocks(), a.sink.GetSpanType)
-	}
-	spanInfo := SpanInfo{
-		ParentSpanID: parentSpanID,
-		SpanID:       spanID,
-		SpanType:     spanType,
-		SpanColor:    spanColor,
-		Closing:      closing,
-		MarkType:     markType,
-	}
 	var persistErr error
 	if msgType == claudeMsgTypeResult {
 		// Terminal turn-end envelope — routes through PersistTurnEnd so
@@ -529,14 +570,8 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 		a.processAssistantBlocks(&env)
 	}
 
-	// A single user message may contain multiple tool_result blocks
-	// (parallel tool calls), so close all of them.
 	if msgType == claudeMsgTypeUser {
-		for _, block := range env.ContentBlocks() {
-			if block.Type == "tool_result" && block.ToolUseID != "" {
-				a.sink.CloseSpan(block.ToolUseID)
-			}
-		}
+		claudeCloseToolResultSpans(a.sink, &env)
 	}
 
 	if msgType == claudeMsgTypeResult {

@@ -2954,4 +2954,42 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(container.querySelector('[data-testid="chat-scroll-rail"]')).toBeNull()
     })
   })
+  describe('data-span-columns row hook', () => {
+    // Every span-line column class is a hashed vanilla-extract name, so
+    // data-span-columns is the only stable way for an e2e spec to read how many
+    // rails one row draws. It must be present on BOTH branches, including the
+    // zero case -- that is the case a subagent spawn produces.
+    const withSpanLines = (id: string, lines: unknown[]): AgentChatMessage => ({
+      ...makeMessage('assistant', `row ${id}`, id),
+      spanLines: JSON.stringify(lines),
+    } as AgentChatMessage)
+
+    it('reports 0 for a row that draws no rail', () => {
+      const { container } = render(() => (
+        <PreferencesProvider>
+          <ChatView messages={[withSpanLines('m1', [])]} streamingText="" />
+        </PreferencesProvider>
+      ))
+      const rows = container.querySelectorAll('[data-span-columns]')
+      expect(rows.length).toBeGreaterThan(0)
+      rows.forEach(row => expect(row.getAttribute('data-span-columns')).toBe('0'))
+    })
+
+    it('reports the column count for a row that draws rails', () => {
+      const { container } = render(() => (
+        <PreferencesProvider>
+          <ChatView
+            messages={[withSpanLines('m1', [
+              { span_id: 'span-A', color: 1, type: 'active' },
+              { span_id: 'span-B', color: 2, type: 'connector_end' },
+            ])]}
+            streamingText=""
+          />
+        </PreferencesProvider>
+      ))
+      const rows = container.querySelectorAll('[data-span-columns]')
+      expect(rows.length).toBeGreaterThan(0)
+      rows.forEach(row => expect(row.getAttribute('data-span-columns')).toBe('2'))
+    })
+  })
 })

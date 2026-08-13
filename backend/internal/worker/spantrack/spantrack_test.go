@@ -1,9 +1,10 @@
-package service
+package spantrack
 
 import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -307,28 +308,210 @@ func TestSpanTracker_ConnectorEnd(t *testing.T) {
 	assert.Equal(t, SpanLineConnector, parsed[0].Type)
 }
 
-func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsWhenNoSpansActive(t *testing.T) {
+// CloseSpan frees the column but KEEPS the recorded type; only Reset clears
+// types, at the turn boundary. Every reader wants the type after the span leaves
+// the active set -- a provider's closing message reads it back to persist
+// span_type, and an ACP history replay re-delivers that message much later.
+func TestSpanTracker_CloseSpanKeepsTheTypeAndResetClearsIt(t *testing.T) {
 	t.Parallel()
 
 	tracker := &SpanTracker{}
-	assert.True(t, tracker.ShouldBroadcastStreamChunk())
+	tracker.SetSpanType("span-a", "task")
+	tracker.SetSpanType("span-b", "read")
+	tracker.OpenSpan("span-a", "")
+	tracker.OpenSpan("span-b", "")
+
+	tracker.CloseSpan("span-a")
+	tracker.CloseSpan("span-b")
+
+	_, lines, _ := tracker.Snapshot("", "", false)
+	assert.Equal(t, "[]", lines, "both spans left the active set")
+	assert.Equal(t, "task", tracker.GetSpanType("span-a"),
+		"a closed span keeps its type: a replayed closing message still reads it")
+	assert.Equal(t, "read", tracker.GetSpanType("span-b"))
+
+	tracker.Reset()
+	assert.Empty(t, tracker.GetSpanType("span-a"), "the turn boundary clears types")
+	assert.Empty(t, tracker.GetSpanType("span-b"))
 }
 
-func TestSpanTracker_ShouldBroadcastStreamChunk_HidesWhenSpanActive(t *testing.T) {
+// Closing a span frees its column, so the next span starts at column 0 rather
+// than being pushed right by a rail nobody draws.
+func TestSpanTracker_CloseSpanFreesTheColumn(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-spawn", "")
+	tracker.CloseSpan("span-spawn")
+	tracker.OpenSpan("span-next", "")
+
+	_, lines, _ := tracker.Snapshot("", "", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1, "the next span reuses column 0")
+	assert.Equal(t, "span-next", parsed[0].SpanID)
+}
+
+// A reservation that OpenSpan never consumed must not survive the close, or its
+// color stays blocked for the rest of the turn.
+func TestSpanTracker_CloseSpanDropsAnUnconsumedReservation(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	reserved := tracker.ReserveSpanColor("span-spawn", "")
+	require.NotZero(t, reserved)
+
+	tracker.CloseSpan("span-spawn")
+
+	// With the reservation gone, the whole palette is free again, so a span that
+	// opens now can draw the color that the discarded one reserved. Sample until
+	// it does; a surviving reservation would block it forever.
+	drewReservedColor := false
+	for i := 0; i < 200 && !drewReservedColor; i++ {
+		id := fmt.Sprintf("span-%d", i)
+		tracker.OpenSpan(id, "")
+		drewReservedColor = snapshotColor(t, tracker, id) == int(reserved)
+		tracker.CloseSpan(id)
+	}
+	assert.True(t, drewReservedColor, "the reserved color returned to the pool")
+}
+
+// Closing the last span clears the parent chain.
+func TestSpanTracker_CloseSpanClearsParentageWhenLast(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-parent", "")
+	tracker.OpenSpan("span-child", "span-parent")
+	tracker.CloseSpan("span-child")
+	tracker.CloseSpan("span-parent")
+
+	depth, lines, _ := tracker.Snapshot("span-child", "", false)
+	assert.Equal(t, "[]", lines)
+	assert.Equal(t, int32(0), depth, "the parent chain is gone, so nothing is nested")
+}
+
+func TestSpanTracker_CloseSpanUnknownIDIsNoOp(t *testing.T) {
 	t.Parallel()
 
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("span-A", "")
-	assert.False(t, tracker.ShouldBroadcastStreamChunk())
+	tracker.CloseSpan("span-nope")
+
+	_, lines, _ := tracker.Snapshot("", "", false)
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1)
+	assert.Equal(t, "span-A", parsed[0].SpanID)
 }
 
-func TestSpanTracker_ShouldBroadcastStreamChunk_HidesWhenMultipleSpansActive(t *testing.T) {
+// The rendering contract for a subagent spawn: a closing row whose span was
+// never opened draws no connector_end, and every other column stays a plain
+// vertical. This is the "spawn nested inside an open Read" shape.
+func TestSpanTracker_SnapshotClosingUnopenedSpanDrawsNoConnector(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-read", "")
+
+	// "span-spawn" was never opened -- it is the spawn's tool_result closing.
+	depth, lines, connectorColor := tracker.Snapshot("", "span-spawn", true)
+	assert.Equal(t, int32(0), depth)
+	assert.Equal(t, int32(0), connectorColor, "no connector column was found")
+
+	var parsed []*SpanLine
+	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
+	require.Len(t, parsed, 1, "only the Read column")
+	assert.Equal(t, SpanLineActive, parsed[0].Type, "a plain vertical, not a connector_end")
+	assert.Equal(t, "span-read", parsed[0].SpanID)
+}
+
+// With nothing else open, a spawn row carries no span lines at all.
+func TestSpanTracker_SnapshotUnopenedSpanAloneIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+
+	depth, lines, connectorColor := tracker.Snapshot("", "span-spawn", true)
+	assert.Equal(t, int32(0), depth)
+	assert.Equal(t, "[]", lines)
+	assert.Equal(t, int32(0), connectorColor)
+}
+
+// A spawn recognized late opened a span, so deltas were suppressed; giving the
+// span back must restore them for the rest of the subagent's run.
+//
+// Recording a span type alone would prove nothing here -- SetSpanType never
+// touches the active set, so the assertion would hold whatever the code did.
+// Only a real open and a real close exercise this.
+func TestSpanTracker_ShouldBroadcastStreamChunk_ResumesWhenASpawnGivesItsSpanBack(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.SetSpanType("span-spawn", "Agent")
+	tracker.OpenSpan("span-spawn", "")
+	require.False(t, tracker.ShouldBroadcastStreamChunk(""),
+		"an open span suppresses the agent's free-form text")
+
+	tracker.CloseSpan("span-spawn")
+
+	assert.True(t, tracker.ShouldBroadcastStreamChunk(""),
+		"the spawn gave its span back, so the parent streams for the rest of the run")
+	assert.Equal(t, "Agent", tracker.GetSpanType("span-spawn"),
+		"and the close kept the type the closing message reads back")
+}
+
+// A chunk that belongs to an ACTIVE span is that tool's own live output. It was
+// suppressed by the "any span open" test, and a tool's output delta is emitted
+// while its own span is open by construction -- so per-tool live output never
+// reached the UI, for any provider.
+func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsASpansOwnOutput(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-A", "")
+
+	assert.True(t, tracker.ShouldBroadcastStreamChunk("span-A"),
+		"a tool streams its own output while it runs")
+	assert.False(t, tracker.ShouldBroadcastStreamChunk(""),
+		"the agent's free-form text still waits for the tool")
+	assert.False(t, tracker.ShouldBroadcastStreamChunk("span-other"),
+		"a chunk for a span that is not active follows the free-form rule")
+
+	// A second concurrent tool streams its own output too.
+	tracker.OpenSpan("span-B", "")
+	assert.True(t, tracker.ShouldBroadcastStreamChunk("span-A"))
+	assert.True(t, tracker.ShouldBroadcastStreamChunk("span-B"))
+
+	tracker.CloseSpan("span-A")
+	assert.False(t, tracker.ShouldBroadcastStreamChunk("span-A"),
+		"once closed, its late chunks follow the free-form rule again")
+}
+
+func TestSpanTracker_ShouldBroadcastStreamChunk_AllowsWhenNoSpansActive(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	assert.True(t, tracker.ShouldBroadcastStreamChunk(""))
+	assert.True(t, tracker.ShouldBroadcastStreamChunk("span-unknown"),
+		"nothing is open, so a chunk for an unknown span goes too")
+}
+
+func TestSpanTracker_ShouldBroadcastStreamChunk_HidesFreeFormWhenSpanActive(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	tracker.OpenSpan("span-A", "")
+	assert.False(t, tracker.ShouldBroadcastStreamChunk(""))
+}
+
+func TestSpanTracker_ShouldBroadcastStreamChunk_HidesFreeFormWhenMultipleSpansActive(t *testing.T) {
 	t.Parallel()
 
 	tracker := &SpanTracker{}
 	tracker.OpenSpan("span-A", "")
 	tracker.OpenSpan("span-B", "")
-	assert.False(t, tracker.ShouldBroadcastStreamChunk())
+	assert.False(t, tracker.ShouldBroadcastStreamChunk(""))
 }
 
 func TestSpanTracker_PassthroughWithNullSlot(t *testing.T) {
@@ -668,82 +851,13 @@ func TestSpanTracker_SpanType(t *testing.T) {
 	tracker.SetSpanType("span-2", "")
 	assert.Equal(t, "", tracker.GetSpanType("span-2"))
 
-	// CloseSpan removes the span type.
+	// CloseSpan KEEPS the span type; only Reset clears it.
 	tracker.SetSpanType("span-3", "Read")
 	assert.Equal(t, "Read", tracker.GetSpanType("span-3"))
 	tracker.CloseSpan("span-3")
+	assert.Equal(t, "Read", tracker.GetSpanType("span-3"))
+	tracker.Reset()
 	assert.Equal(t, "", tracker.GetSpanType("span-3"))
-}
-
-func TestSpanTracker_ToolUseConnectorInSubagent(t *testing.T) {
-	t.Parallel()
-
-	// When a tool_use message is emitted inside a subagent, the tool_use's
-	// own span hasn't been opened yet (it opens after persist). The parent
-	// subagent span IS active. The span line for the subagent should render
-	// as "connector" (├), not "active" (│).
-	tracker := &SpanTracker{}
-	tracker.OpenSpan("subagent", "")
-
-	// Simulate persistAndBroadcast for a tool_use inside the subagent:
-	//   span.SpanID       = "tool-1"  (not yet open)
-	//   span.ParentSpanID = "subagent" (already open)
-	//   span.Closing      = false
-	connectorSpanID := resolveConnectorSpanID("tool-1", "", "subagent", false)
-	_, lines, _ := tracker.Snapshot("subagent", connectorSpanID, false)
-
-	var parsed []*SpanLine
-	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
-	require.Len(t, parsed, 1)
-	assert.Equal(t, SpanLineConnector, parsed[0].Type,
-		"tool_use inside subagent should show connector to parent span")
-}
-
-func TestSpanTracker_ToolResultConnectorInSubagent(t *testing.T) {
-	t.Parallel()
-
-	// A tool_result (closing) message should still connect to the tool's
-	// own span, not the parent — the span is open at this point.
-	tracker := &SpanTracker{}
-	tracker.OpenSpan("subagent", "")
-	tracker.OpenSpan("tool-1", "subagent")
-
-	connectorSpanID := resolveConnectorSpanID("tool-1", "", "subagent", true)
-	_, lines, _ := tracker.Snapshot("subagent", connectorSpanID, true)
-
-	var parsed []*SpanLine
-	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
-	require.Len(t, parsed, 2)
-	assert.Equal(t, SpanLineActive, parsed[0].Type)
-	assert.Equal(t, SpanLineConnectorEnd, parsed[1].Type,
-		"tool_result should show connector_end on its own span")
-}
-
-func TestSpanTracker_TopLevelToolUseNoConnector(t *testing.T) {
-	t.Parallel()
-
-	// A top-level tool_use (no parent span) should have no connector.
-	tracker := &SpanTracker{}
-
-	connectorSpanID := resolveConnectorSpanID("tool-1", "", "", false)
-	_, lines, _ := tracker.Snapshot("", connectorSpanID, false)
-	assert.Equal(t, "[]", lines)
-}
-
-func TestSpanTracker_ExplicitClosingConnectorUsesOverride(t *testing.T) {
-	t.Parallel()
-
-	tracker := &SpanTracker{}
-	tracker.OpenSpan("subagent", "")
-
-	connectorSpanID := resolveConnectorSpanID("wait-1", "subagent", "", true)
-	_, lines, _ := tracker.Snapshot("", connectorSpanID, true)
-
-	var parsed []*SpanLine
-	require.NoError(t, json.Unmarshal([]byte(lines), &parsed))
-	require.Len(t, parsed, 1)
-	assert.Equal(t, SpanLineConnectorEnd, parsed[0].Type,
-		"explicit connector override should let a spanless message close its parent span")
 }
 
 func TestSpanTracker_ParentMapClearedOnAllClose(t *testing.T) {
@@ -1038,4 +1152,58 @@ func TestSpanTracker_CloseClearsPendingForSameSpan(t *testing.T) {
 
 	tracker.CloseSpan("a")
 	assert.Nil(t, tracker.pending, "CloseSpan for the pending span must clear pending")
+}
+
+// ActiveSpans is the read side the agent package's test double delegates to. It
+// reports each open span WITH its column, in column order, which is the order
+// the service layer renders span_lines in.
+//
+// resolveColumn happens to assign columns in increasing order today, so the
+// tracker's own slice is already sorted; ActiveSpans sorts anyway so its
+// contract does not rest on that. The assertion below states the contract, not
+// the coincidence.
+func TestSpanTracker_ActiveSpansReportsOpenSpansByColumn(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	assert.Empty(t, tracker.ActiveSpans(), "an empty tracker holds nothing")
+
+	tracker.OpenSpan("span-A", "")       // col 0
+	tracker.OpenSpan("span-B", "span-A") // col 1
+	tracker.OpenSpan("span-C", "")       // col 2
+	tracker.CloseSpan("span-B")          // frees col 1, leaving a gap
+
+	active := tracker.ActiveSpans()
+	require.Len(t, active, 2, "a closed span is gone from the active set")
+	assert.Equal(t, "span-A", active[0].SpanID)
+	assert.Equal(t, 0, active[0].Column)
+	assert.Equal(t, "span-C", active[1].SpanID)
+	assert.Equal(t, 2, active[1].Column, "the gap the close left is preserved")
+	assert.True(t, slices.IsSortedFunc(active, func(a, b ActiveSpan) int { return a.Column - b.Column }))
+
+	// The returned slice is a copy: mutating it must not corrupt the tracker.
+	active[0].SpanID = "clobbered"
+	assert.Equal(t, "span-A", tracker.ActiveSpans()[0].SpanID)
+}
+
+// ParentOf exposes the parentage the tracker records. It outlives a close, so a
+// row persisted after its parent closed still reports the chain it belonged to;
+// emptying the active set clears it.
+func TestSpanTracker_ParentOf(t *testing.T) {
+	t.Parallel()
+
+	tracker := &SpanTracker{}
+	assert.Empty(t, tracker.ParentOf("unknown"), "an unknown span has no parent")
+
+	tracker.OpenSpan("span-A", "")
+	tracker.OpenSpan("span-B", "span-A")
+	assert.Empty(t, tracker.ParentOf("span-A"), "a root span reports no parent")
+	assert.Equal(t, "span-A", tracker.ParentOf("span-B"))
+
+	tracker.CloseSpan("span-B")
+	assert.Equal(t, "span-A", tracker.ParentOf("span-B"),
+		"parentage outlives a close while any span is still active")
+
+	tracker.CloseSpan("span-A")
+	assert.Empty(t, tracker.ParentOf("span-B"), "the last close clears the chain")
 }

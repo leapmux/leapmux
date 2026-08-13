@@ -10,6 +10,40 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+// The Claude tool names that spawn a subagent. `Agent` is the current name and
+// `Task` is the legacy wire name for the SAME tool, which the CLI still emits
+// for permission rules, hooks, and resumed sessions
+// (src/tools/AgentTool/constants.ts: AGENT_TOOL_NAME / LEGACY_AGENT_TOOL_NAME).
+// The to-do tools TaskCreate/TaskUpdate/TaskGet/TaskList/TaskOutput/TaskStop
+// are separate names and are NOT spawns.
+const (
+	ToolNameClaudeAgent = "Agent"
+	ToolNameClaudeTask  = "Task"
+)
+
+// claudeToolSpawnsSubagent reports whether a Claude tool_use block starts a
+// subagent. A spawn owns no span: the subagent's own output lands in its child
+// transcript, so a rail held open for the whole run only pushes every
+// concurrent tool one column further right.
+//
+// The Workflow tool is also a spawn but is NOT matched here. It sits behind the
+// CLI's WORKFLOW_SCRIPTS feature flag, so its wire name is not a stable thing to
+// match; handleClaudeTaskStarted gives its span back off the authoritative
+// task_started event instead.
+func claudeToolSpawnsSubagent(toolName string) bool {
+	return toolName == ToolNameClaudeAgent || toolName == ToolNameClaudeTask
+}
+
+// The task_type values a Claude task_started event carries. local_bash is a
+// backgrounded shell; local_agent is a Task subagent; local_workflow is a
+// Workflow run. Only local_bash is NOT a spawn, so the code tests for that one
+// and treats every other value -- including one this list does not name -- as a
+// spawn that owns no span and gets a child transcript.
+const (
+	claudeTaskTypeBash     = "local_bash"
+	claudeTaskTypeWorkflow = "local_workflow"
+)
+
 // claudeTaskEnvelope is the parsed shape of a Claude system event of subtype
 // task_started / task_progress / task_notification / task_updated /
 // background_tasks_changed. Every field is optional; unknown subtypes are
@@ -106,7 +140,7 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		a.taskKind = make(map[string]bgtask.Kind)
 	}
 	startedKind := bgtask.KindSubagent
-	if ev.TaskType == "local_bash" {
+	if ev.TaskType == claudeTaskTypeBash {
 		startedKind = bgtask.KindShell
 	}
 	a.taskKind[ev.TaskID] = startedKind
@@ -161,10 +195,29 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 		slog.Warn("claude task_started upsert failed", "task_id", ev.TaskID, "error", err)
 	}
 
-	// Pre-create the child transcript for a Task subagent (local_agent) that
-	// owns a tool_use span. local_bash (shell) and local_workflow have no
+	// task_started is the authority on which Claude tool calls own a span. A
+	// backgrounded shell is a plain Bash span whose tool_result returns at once,
+	// so it keeps its rail; every other task type starts a subagent and owns no
+	// span. The same startedKind that classifies the registry row above decides
+	// it here, so a task type nobody matched by name is still handled.
+	//
+	// A spawn that claudeToolSpawnsSubagent already matched never opened a span,
+	// so this is a no-op for it. A Workflow run is why the call exists: the CLI
+	// keeps that tool behind the WORKFLOW_SCRIPTS feature flag, so its wire name
+	// is not a stable thing to match, and this event is the first authoritative
+	// word that the call is a workflow.
+	if startedKind != bgtask.KindShell && ev.ToolUseID != "" {
+		// CloseSpan, although the subagent keeps running: the call frees the
+		// column and nothing downstream distinguishes "ended" from "given back".
+		// The recorded span type survives it, so the tool_result still persists
+		// the real tool name.
+		a.sink.CloseSpan(ev.ToolUseID)
+	}
+
+	// Pre-create the child transcript for a Task subagent (local_agent), keyed
+	// by its spawning tool_use id. local_bash (shell) and local_workflow have no
 	// transcript; their envelopes are never forwarded.
-	if ev.TaskType != "local_bash" && ev.TaskType != "local_workflow" && ev.ToolUseID != "" {
+	if ev.TaskType != claudeTaskTypeBash && ev.TaskType != claudeTaskTypeWorkflow && ev.ToolUseID != "" {
 		childID, err := a.sink.EnsureChildAgent(ev.ToolUseID, ev.TaskID, title)
 		if err != nil {
 			slog.Warn("claude task_started ensure child failed", "task_id", ev.TaskID, "error", err)
@@ -308,61 +361,17 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 		return
 	}
 
-	// Resolve the child span id / type with the same per-block logic the main
-	// path uses, but against the CHILD sink's span tracker.
-	var spanID, spanType string
-	closing := false
-	if msgType == claudeMsgTypeAssistant {
-		for _, block := range env.ContentBlocks() {
-			if block.Type == "tool_use" && block.ID != "" {
-				spanID, spanType = block.ID, block.Name
-				break
-			}
-		}
-	} else if msgType == claudeMsgTypeUser {
-		for _, block := range env.ContentBlocks() {
-			if block.Type == "tool_result" && block.ToolUseID != "" {
-				spanID = block.ToolUseID
-				closing = true
-				break
-			}
-		}
-	}
-
-	// Look up the tool name for a tool_result, and reserve the tool_use's color.
-	// The span itself opens only AFTER the persist below -- see the ordering note
-	// there.
+	// Resolve the span metadata and reserve the tool_use's color with the SAME
+	// helper the parent transcript uses, but against the CHILD sink's tracker
+	// and under the spawn span as the parent. The span itself opens only AFTER
+	// the persist below -- see the ordering note there.
 	childSink := a.sink.ChildSink(childID)
-	if spanType == "" && spanID != "" {
-		spanType = childSink.GetSpanType(spanID)
-	}
-	var spanColor int32
-	if msgType == claudeMsgTypeAssistant && spanID != "" {
-		// Reserving (not opening) is what makes the color available at persist
-		// time while the span is still closed, so the tool_use row can carry the
-		// color its rail will use without yet drawing that rail.
-		spanColor = childSink.ReserveSpanColor(spanID, spawnSpanID)
-	}
+	spanInfo := claudeSpanInfoFor(childSink, msgType, env, spawnSpanID)
+	spanID, spanType := spanInfo.SpanID, spanInfo.SpanType
 
 	source := leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
 	if msgType == claudeMsgTypeUser {
 		source = leapmuxv1.MessageSource_MESSAGE_SOURCE_USER
-	}
-
-	// Match the main path's markType derivation for user tool_results so a
-	// self-displaying control tool (AskUserQuestion/ExitPlanMode) forwarded into
-	// the child transcript gets its CONTROL_RESPONSE scroll-rail mark.
-	var markType leapmuxv1.MarkType
-	if msgType == claudeMsgTypeUser {
-		markType = claudeUserEnvelopeBlocksMarkType(env.ContentBlocks(), childSink.GetSpanType)
-	}
-	spanInfo := SpanInfo{
-		ParentSpanID: spawnSpanID,
-		SpanID:       spanID,
-		SpanType:     spanType,
-		SpanColor:    spanColor,
-		Closing:      closing,
-		MarkType:     markType,
 	}
 
 	if msgType == claudeMsgTypeResult {
@@ -412,22 +421,23 @@ func (a *ClaudeCodeAgent) routeSubagentMessage(content []byte, msgType string, e
 	//
 	// Every tool_use block opens, not just the first: one assistant message can
 	// carry parallel tool calls, and the user envelope below closes all of them.
+	// The one exception is a nested spawn -- a subagent spawning a subagent of
+	// its own -- which owns no span here for the same reason it owns none in the
+	// parent transcript: its output goes to a transcript of its own.
 	if msgType == claudeMsgTypeAssistant {
 		for _, block := range env.ContentBlocks() {
 			if block.Type == "tool_use" && block.ID != "" {
 				childSink.SetSpanType(block.ID, block.Name)
-				childSink.OpenSpan(block.ID, spawnSpanID)
+				if !claudeToolSpawnsSubagent(block.Name) {
+					childSink.OpenSpan(block.ID, spawnSpanID)
+				}
 			}
 		}
 	}
 	// A user envelope may close multiple parallel tool_result spans in the
 	// child transcript.
 	if msgType == claudeMsgTypeUser {
-		for _, block := range env.ContentBlocks() {
-			if block.Type == "tool_result" && block.ToolUseID != "" {
-				childSink.CloseSpan(block.ToolUseID)
-			}
-		}
+		claudeCloseToolResultSpans(childSink, env)
 	}
 }
 

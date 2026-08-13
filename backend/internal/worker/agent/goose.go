@@ -99,6 +99,7 @@ func gooseSubagentFromToolCall(tc acpToolCallEnvelope) *acpSubagentObservation {
 		RowKey: tc.ToolCallID,
 		Title:  title,
 		Status: bgtask.StatusRunning,
+		Spawns: true,
 		// Goose's delegate tool puts its task text in `instructions`, not `prompt`
 		// (crates/goose/src/agents/platform_extensions/summon.rs). The child
 		// transcript is created later, on the first forwarded tool request, so
@@ -143,7 +144,7 @@ func gooseSubagentFromToolCallUpdate(tcu acpToolCallUpdateEnvelope) *acpSubagent
 	// (by the tool_call or a tool-request) under this toolCallId, so closing on
 	// the final update is correct. CloseRow is idempotent: a plain tool with
 	// no registry row is a no-op (the upsert path finds no row to close).
-	if tcu.Status == "completed" || tcu.Status == "failed" || tcu.Status == "cancelled" {
+	if acpStatusIsFinal(tcu.Status) {
 		return &acpSubagentObservation{
 			RowKey:   tcu.ToolCallID,
 			Status:   acpFinalStatus(tcu.Status),

@@ -415,19 +415,20 @@ func (a *CodexAgent) handleItemStarted(raw []byte, params json.RawMessage) {
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
 		persistToolItemStarted(a.sink, params, itemType, itemID, a.agentID)
 	case "collabAgentToolCall":
-		// The spawn tool_call stays in the parent transcript as a flat tool
-		// span (children no longer nest under it). Register receiver threads
-		// as the child index so later child-thread items route to child
+		// Every collab tool_call stays in the parent transcript as a flat tool
+		// span (children no longer nest under it) -- EXCEPT spawnAgent, which
+		// owns no span at all. A spawn's output lives in the child transcript,
+		// so a rail held open for the whole subagent run only pushes every
+		// concurrent tool one column right. The other collab tools (wait,
+		// sendInput, resumeAgent, closeAgent) keep their span. Register receiver
+		// threads as the child index so later child-thread items route to child
 		// transcripts.
-		spanColor := a.sink.ReserveSpanColor(itemID, "")
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
-			SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
-		}); err != nil {
+		collab := parseCollabToolCall(item)
+		spawns := collab != nil && collab.Tool == codexCollabToolSpawnAgent
+		if err := openToolSpan(a.sink, params, itemID, itemType, spawns); err != nil {
 			slog.Error("codex persist collabAgentToolCall/started", "agent_id", a.agentID, "error", err)
 		}
-		a.sink.SetSpanType(itemID, itemType)
-		a.sink.OpenSpan(itemID, "")
-		if collab := parseCollabToolCall(item); collab != nil {
+		if collab != nil {
 			for _, receiverID := range collab.ReceiverThreadIds {
 				a.registerCollabReceiver(receiverID, itemID)
 				a.collabChildPrompts.remember(receiverID, collab.Prompt)
@@ -493,15 +494,13 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 		a.mu.Unlock()
 		persistToolItemCompleted(a.sink, params, itemType, itemID, a.agentID)
 	case "collabAgentToolCall":
-		// Every collab tool_call (spawnAgent, wait, sendInput, resumeAgent,
-		// closeAgent) is a flat tool span in the parent transcript that CLOSES at
-		// completion. Children no longer nest under the spawn span -- they route
-		// to their own transcripts -- so leaving any of these open leaks a span
-		// until the next turn's bulk ResetSpans.
-		var collab *codexCollabAgentToolCall
-		if itemType == "collabAgentToolCall" {
-			collab = parseCollabToolCall(item)
-		}
+		// wait, sendInput, resumeAgent and closeAgent are flat tool spans in the
+		// parent transcript that CLOSE at completion. Children no longer nest
+		// under the spawn span -- they route to their own transcripts -- so
+		// leaving any of these open leaks a span until the next turn's bulk
+		// ResetSpans. spawnAgent never opened one (item/started skips it), and
+		// the close below is a harmless no-op for it.
+		collab := parseCollabToolCall(item)
 		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
 			SpanID: itemID, SpanType: itemType, Closing: true,
 		}); err != nil {
@@ -515,7 +514,7 @@ func (a *CodexAgent) handleItemCompleted(params json.RawMessage) {
 				a.registerCollabReceiver(receiverID, itemID)
 				a.collabChildPrompts.remember(receiverID, collab.Prompt)
 			}
-			if collab.Tool == "spawnAgent" {
+			if collab.Tool == codexCollabToolSpawnAgent {
 				if sp := collab.Prompt; sp != "" {
 					for _, rid := range collab.ReceiverThreadIds {
 						a.recordCollabChildTitle(rid, sp)
@@ -965,6 +964,12 @@ func codexWindowToType(mins int) string {
 	}
 }
 
+// codexCollabToolSpawnAgent is the one collabAgentToolCall tool that starts a
+// subagent. Codex declares the whole set as spawnAgent, sendInput, resumeAgent,
+// wait, closeAgent (CollabAgentTool in the app-server protocol); only the spawn
+// owns no span.
+const codexCollabToolSpawnAgent = "spawnAgent"
+
 type codexCollabAgentState struct {
 	Status string `json:"status"`
 }
@@ -1075,14 +1080,9 @@ func (a *CodexAgent) persistItemCompletedChild(childID string, params json.RawMe
 func persistToolItemStarted(sink OutputSink, params json.RawMessage, itemType, itemID, agentID string) {
 	switch itemType {
 	case "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall":
-		spanColor := sink.ReserveSpanColor(itemID, "")
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, params, SpanInfo{
-			SpanID: itemID, SpanType: itemType, SpanColor: spanColor,
-		}); err != nil {
+		if err := openToolSpan(sink, params, itemID, itemType, false); err != nil {
 			slog.Error("codex persist item/started", "agent_id", agentID, "type", itemType, "error", err)
 		}
-		sink.SetSpanType(itemID, itemType)
-		sink.OpenSpan(itemID, "")
 	}
 }
 
