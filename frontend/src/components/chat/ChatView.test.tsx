@@ -11,9 +11,11 @@ import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor, triggerResizeObservers } from '~/test-support/resizeObserverStub'
 import { railIdle } from './ChatScrollRail.css'
 import { ChatView, RAIL_MOMENTUM_GRACE_MS, RAIL_VISIBLE_IDLE_MS, rowChromeHeightKey, SKELETON_SHOW_DELAY_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
-import { messageListRailActive, rowSkeletonClosing } from './ChatView.css'
+import { bandTailMerged, messageListRailActive, railedRowContent, rowSkeletonClosing } from './ChatView.css'
 import { computeOverscanPx, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
+import { bandMessage, bandRow, bandRowThought, bleedRow } from './messageStyles.css'
 import { sameVirtualItems } from './useChatVirtualizer'
+import { ROW_BLEED_LEFT_VAR, rowBleedLeftStyle } from './widgets/SpanLines.geometry'
 
 const A_TXT_RE = /a\.txt/
 const B_TXT_RE = /b\.txt/
@@ -797,6 +799,95 @@ describe('chatView', () => {
     expect(screen.getByText('Hi there')).toBeInTheDocument()
   })
 
+  it('marks assistant message and thought ROWS as bands, and nothing else', () => {
+    // The full-bleed strip is the ROW's own background and border, so the band
+    // marker must land on the row wrapper -- not on the bubble, which paint
+    // containment would clip at the list gutter.
+    const withContent = (id: string, inner: unknown, seq: bigint): AgentChatMessage => ({
+      ...makeMessage('assistant', '', id),
+      seq,
+      content: new TextEncoder().encode(JSON.stringify(inner)),
+    })
+    const messages = [
+      withContent('m1', { type: 'assistant', message: { content: [{ type: 'text', text: 'answer' }] } }, 1n),
+      withContent('m2', { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'pondering' }] } }, 2n),
+      withContent('m3', { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } }, 3n),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    const bands = [...view.container.querySelectorAll('[data-seq]')]
+      .map(row => (row as HTMLElement).dataset.band)
+    expect(bands).toEqual(['text', 'thought', undefined])
+  })
+
+  it('publishes the distance to the panel edge on the row content column, rails included', () => {
+    // A bleeding child reads this var instead of assuming the bare gutter. On a
+    // row WITH rails the content column starts further right, and a bleed that
+    // ignored that stopped short of the panel edge.
+    const withSpanLines = (id: string, seq: bigint, lines: unknown[]): AgentChatMessage => ({
+      ...makeMessage('assistant', 'answer', id),
+      seq,
+      spanLines: JSON.stringify(lines),
+    })
+    const messages = [
+      withSpanLines('m1', 1n, []),
+      withSpanLines('m2', 2n, [
+        { span_id: 's1', color: 1, type: 'active' },
+        { span_id: 's2', color: 2, type: 'active' },
+      ]),
+    ]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    const columnOf = (seq: string) => {
+      const row = view.container.querySelector(`[data-seq="${seq}"]`) as HTMLElement
+      return row.querySelector('[data-span-columns]')!.matches('[data-span-columns="0"]')
+        ? row.querySelector('[data-span-columns="0"]') as HTMLElement
+        : row.querySelector(`.${railedRowContent}`) as HTMLElement
+    }
+
+    expect(columnOf('1').style.getPropertyValue(ROW_BLEED_LEFT_VAR))
+      .toBe(rowBleedLeftStyle(0)[ROW_BLEED_LEFT_VAR])
+    expect(columnOf('2').style.getPropertyValue(ROW_BLEED_LEFT_VAR))
+      .toBe(rowBleedLeftStyle(2)[ROW_BLEED_LEFT_VAR])
+    // The two must differ, or the rails were not folded in at all.
+    expect(columnOf('1').style.getPropertyValue(ROW_BLEED_LEFT_VAR))
+      .not
+      .toBe(columnOf('2').style.getPropertyValue(ROW_BLEED_LEFT_VAR))
+  })
+
+  it('widens a turn-end divider row without banding it', () => {
+    // A divider bleeds like a band, but its rule is drawn by a DESCENDANT, so
+    // the row only widens -- it paints no strip and carries no band marker.
+    const messages = [{
+      ...makeMessage('assistant', '', 'm1'),
+      seq: 1n,
+      content: new TextEncoder().encode(JSON.stringify({ type: 'result', subtype: 'success', duration_ms: 1200 })),
+    }]
+
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} streamingText="" />
+      </PreferencesProvider>
+    ))
+
+    const row = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
+    expect(row).not.toBeNull()
+    expect(row!.classList.contains(bleedRow)).toBe(true)
+    expect(row!.classList.contains(bandRow)).toBe(false)
+    expect(row!.dataset.band).toBeUndefined()
+    expect(view.container.querySelector('[data-testid="result-divider"]')).not.toBeNull()
+  })
+
   it('hides a trailing optimistic local while windowed away from the live tail', () => {
     const messages = [
       makeMessage('assistant', 'Server reply', 'm1'),
@@ -961,6 +1052,69 @@ describe('chatView', () => {
     expect(tailRow!.style.visibility).toBe('')
     expect(tailRow!.style.opacity).toBe('1')
     expect(spacer!.style.height).toBe('532px')
+  })
+
+  it('wears the assistant band on the streaming tail, so the strip does not appear only once the row lands', async () => {
+    // The tail is NOT a virtual row -- it sits in flow beside the spacer -- so it
+    // carries the band classes itself. Without them the gray strip would pop into
+    // existence at the moment streaming text is replaced by the persisted row.
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[]} streamingText="Streaming answer" />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => expect(screen.getByText('Streaming answer')).toBeInTheDocument())
+
+    const tail = view.container.querySelector('[data-band="text"]') as HTMLElement | null
+    expect(tail).not.toBeNull()
+    expect(tail!.classList.contains(bandRow)).toBe(true)
+    expect(tail!.classList.contains(bandRowThought)).toBe(false)
+    expect(tail!.querySelector(`.${bandMessage}`)).not.toBeNull()
+    expect(tail!.textContent).toContain('Streaming answer')
+    // Nothing above it, so there is no band to merge into and the gap stays.
+    expect(tail!.classList.contains(bandTailMerged)).toBe(false)
+  })
+
+  it('merges the streaming tail into the band above it, so the seam does not close when the row lands', async () => {
+    // The tail is in FLOW, not in the offset map, so the virtualizer's band overlap cannot
+    // reach it. Without its own merge the reader watches a gap and two border lines for the
+    // whole of a streamed reply, which snap into one line the instant the message lands --
+    // and the transcript above the seam jumps by that gap plus a border.
+    const withContent = (id: string, inner: unknown): AgentChatMessage => ({
+      ...makeMessage('assistant', '', id),
+      seq: 1n,
+      content: new TextEncoder().encode(JSON.stringify(inner)),
+    })
+    const thought = withContent('m1', { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'pondering' }] } })
+    const toolUse = withContent('m1', { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } })
+
+    // The tail is the LAST band in flow; a virtual row comes before it.
+    const tailOf = (container: HTMLElement) => {
+      const bands = [...container.querySelectorAll('[data-band="text"]')] as HTMLElement[]
+      return bands[bands.length - 1]
+    }
+
+    // A visible thought above the tail: two bands that must read as one surface, so the
+    // tail cancels the flow gap it would otherwise keep.
+    const withThought = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[thought]} streamingText="Streaming answer" />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(withThought.container.querySelector('[data-band="thought"]')).not.toBeNull())
+    expect(tailOf(withThought.container).classList.contains(bandTailMerged)).toBe(true)
+    withThought.unmount()
+
+    // A tool row above it is not a band, so the tail keeps the ordinary flow gap.
+    const withTool = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[toolUse]} streamingText="Streaming answer" />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(tailOf(withTool.container)).toBeDefined())
+    expect(withTool.container.querySelector('[data-band="thought"]')).toBeNull()
+    expect(tailOf(withTool.container).classList.contains(bandTailMerged)).toBe(false)
   })
 
   it('keeps streaming text visible until its replacement row is measured', async () => {
@@ -2409,6 +2563,46 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(interior!.style.visibility).toBe('hidden')
       expect(tail).not.toBeNull()
       expect(tail!.style.visibility).toBe('hidden')
+    })
+
+    it('gives a band row its own chrome while its skeleton stands in for it', () => {
+      // The skeleton slot is a FOURTH row-mount site. The row it covers is invisible, and a
+      // band's gray surface and its two border lines belong to the ROW -- so without the
+      // chrome here the shimmer sits on the bare panel and the band appears only at the
+      // crossfade, which is the pop-in the tail already avoids.
+      vi.useFakeTimers()
+      virtualizerState.attachedIds = []
+      virtualizerState.measuredIds = new Set(['m0'])
+      virtualizerState.currentHeightKeys = new Map()
+      virtualizerState.setDeferred?.(false)
+      hiddenPremeasureState.candidates = []
+      hiddenPremeasureState.onMeasure = undefined
+      virtualizerState.setRange?.({ start: 0, end: 1 })
+      // The full Claude envelope: `type: 'assistant'` is what makes the row a band.
+      const assistantText = (id: string, seq: bigint, text: string): AgentChatMessage => ({
+        ...makeMessage('assistant', '', id),
+        seq,
+        content: new TextEncoder().encode(JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text }] },
+        })),
+      })
+      const [messages, setMessages] = createSignal([assistantText('m0', 1n, 'first')])
+      const { container } = render(() => (
+        <ChatView messages={messages()} streamingText="" />
+      ))
+
+      virtualizerState.setRange?.({ start: 0, end: 2 })
+      setMessages([assistantText('m0', 1n, 'first'), assistantText('m1', 2n, 'answer')])
+      vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
+
+      const skeleton = container.querySelector('[data-testid="row-skeleton"]')
+      expect(skeleton).not.toBeNull()
+      const slot = skeleton!.parentElement!
+      expect(slot.classList.contains(bandRow)).toBe(true)
+      // The class ONLY. `data-band` is the e2e hook, and a second visible element carrying
+      // it would break the seam check that walks every [data-band] in DOM order.
+      expect(slot.hasAttribute('data-band')).toBe(false)
     })
 
     it('defers loading skeletons past the show-delay, then paints them (including the live tail)', () => {

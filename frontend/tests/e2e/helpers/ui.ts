@@ -193,6 +193,47 @@ export function messageContents(page: Page) {
 }
 
 /**
+ * Return a locator for the visible band ROWS -- the full-bleed strips an
+ * assistant message (`data-band="text"`) and a thought (`data-band="thought"`)
+ * paint behind themselves. Pass a kind to restrict to one of the two.
+ *
+ * The strip is the row's own background and border, so it is the ROW that
+ * carries the marker, not the bubble inside it. Every style class is a hashed
+ * vanilla-extract name, which is why the attribute exists at all.
+ */
+export function bandRows(page: Page, kind?: 'text' | 'thought') {
+  const selector = kind === undefined ? '[data-band]' : `[data-band="${kind}"]`
+  return page.locator(selector + VISIBLE)
+}
+
+/** The chat's scrolling element, which the app publishes for exactly this purpose. */
+export const CHAT_SCROLL_CONTAINER = '[data-chat-scroll-container="true"]'
+
+/** Return a locator for the chat's scrolling element. */
+export function chatScrollContainer(page: Page) {
+  return page.locator(CHAT_SCROLL_CONTAINER)
+}
+
+/**
+ * Measure a full-bleed chat element against the width it must span: the chat
+ * scroll container's `clientWidth`, which IS its padding box (the scrollbar
+ * excluded), and which is exactly what a band or a turn-end rule reaches.
+ *
+ * The container is resolved from the element itself rather than from a
+ * hard-coded position in the DOM, and by the attribute the app publishes rather
+ * than by a computed-style walk that has to guess which ancestor scrolls. Both
+ * numbers are read in one browser round trip, so they cannot straddle a resize.
+ */
+export async function measureAgainstChatList(locator: Locator): Promise<{ width: number, listWidth: number }> {
+  return locator.evaluate((el, selector) => {
+    const list = el.closest(selector)
+    if (!list)
+      throw new Error('measureAgainstChatList: element is not inside the chat scroll container')
+    return { width: el.getBoundingClientRect().width, listWidth: list.clientWidth }
+  }, CHAT_SCROLL_CONTAINER)
+}
+
+/**
  * Restrict `locator` to the elements the user can see.
  *
  * For page-rooted chat assertions that match by text rather than test id --

@@ -27,7 +27,7 @@ import { resolveStack } from '~/lib/resolveStack'
 import { buildRawJsonEnvelope } from './chatRawJson'
 import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
 import * as styles from './MessageBubble.css'
-import { classifyParsedMessage, messageBubbleClass, messageRowClass } from './messageClassification'
+import { bubbleRunsToRightEdge, classifyParsedMessage, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageClassification'
 import { renderMessageContent } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
@@ -329,9 +329,17 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const rowClass = () => messageRowClass(category().kind, props.message.source)
   const isLocalPending = () => props.message.id.startsWith('local-')
   const isPendingUserMessage = () => isLocalPending() && props.message.source === MessageSource.USER && !props.error
-  const bubbleClass = () => isPendingUserMessage()
-    ? chatStyles.userMessagePending
-    : messageBubbleClass(category().kind, props.message.source)
+  const bubbleClass = () => {
+    // The pending variant is chosen HERE, not in messageBubbleClass, because only
+    // this component knows the message is an optimistic local. It is the same
+    // bubble otherwise, so it takes the same flush-right treatment.
+    const base = isPendingUserMessage()
+      ? chatStyles.userMessagePending
+      : messageBubbleClass(category().kind, props.message.source)
+    return bubbleRunsToRightEdge(category().kind, props.message.source, !!props.error)
+      ? `${base} ${chatStyles.bubbleFlushRight}`
+      : base
+  }
 
   // A notification category carries the messages to render -- a consolidated
   // thread holds the wrapper's messages; a standalone notification is a
@@ -343,7 +351,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   }
 
   // The payload to hand a renderer: the parsed parent object, or the raw text
-  // when the envelope didn't parse to an object. Named once so renderContent and
+  // when the envelope didn't parse to an object. Defined once so renderContent and
   // the result_divider arm pass the renderers the same shape.
   const renderPayload = () => parsed().parentObject ?? parsed().rawText
 
@@ -502,6 +510,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
               markdownCopied: markdownCopied(),
             }}
             layout={{
+              // A right-aligned user row mirrors its toolbar beside the bubble,
+              // so it reverses the button order -- read from the same predicate
+              // that picks the row class, never re-derived here.
+              mirrored: isMirroredMessageRow(category().kind, props.message.source),
               createdAt: props.message.createdAt,
               expanded: toolResultExpanded(),
               onToggleExpand: isCollapsibleToolResult() ? toggleToolResultExpanded : undefined,

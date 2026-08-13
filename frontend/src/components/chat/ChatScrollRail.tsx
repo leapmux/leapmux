@@ -151,6 +151,12 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   const dragHold = createDragReleaseHold()
   const drag = dragHold.fraction
 
+  // A MOUSE resting on the strip. Restricted to `pointerType === 'mouse'`: a touch fires
+  // pointerenter on tap and does not leave until the next tap lands elsewhere, which would
+  // pin the rail lit on a surface where it is meant to fade back out. A finger holds the
+  // rail through drag() and activeDot() instead, both of which end with the gesture.
+  const [hovered, setHovered] = createSignal(false)
+
   // The (n+1)-length row-seq map is computed ONCE in ChatView (railRowSeqs, memoized on the item
   // list) and handed down as a prop -- the scroll-owner resolution there already needs it, so the
   // O(n) row-seq scan runs once per item-list change instead of twice. The thin `geo` wrapper still
@@ -217,6 +223,12 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     railResizeObserver = undefined
     railEl = undefined
     setRailHeight(0)
+    // Clear the hover here, with the other self-overrides. A DOM removal delivers no
+    // pointerleave, so a cursor that rests on the strip when the rail hides would otherwise
+    // leave this flag set: the rail then returns lit, with the cursor elsewhere, and only a
+    // deliberate enter-then-leave clears it. Every override that holds the rail lit drops in
+    // this one teardown, so the next one added is safe by default.
+    setHovered(false)
     // No close delay here: the rail is going away, so there is no card left to move onto. The
     // press lock needs no reset: the card clears it from its own cleanup as it unmounts, which
     // keeps the card the single owner of its press lifecycle.
@@ -258,31 +270,47 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   // the viewport with zero or two scrollbars; the rail now trusts the single upstream decision.
   const hidden = () => props.hidden
 
-  // Idle is a PAINT state, never an unmount (see the `scrollActive` prop). Two of the
-  // rail's OWN states override the host's window, so an interaction never fades under the
-  // reader's finger or cursor: a live thumb drag AND its post-release settle (drag() stays
-  // non-null until the seek lands -- see createDragReleaseHold), and an open dot popover
-  // (activeDot() folds hover, KEYBOARD FOCUS, and scrub into one signal, so no CSS
-  // :focus-within is needed).
-  const idle = createMemo(() => !props.scrollActive && drag() === null && activeDot() === null)
+  // The rail's OWN overrides of the host's activity window. Four states hold the rail lit, so
+  // an interaction never fades under the reader's finger or cursor: a live thumb drag AND its
+  // post-release settle (drag() stays non-null until the seek lands -- see
+  // createDragReleaseHold), an open dot popover (activeDot() folds hover, KEYBOARD FOCUS, and
+  // scrub into one signal, so no CSS :focus-within is needed), and a mouse that rests anywhere
+  // on the strip.
+  //
+  // ONE definition, read by both the paint state below and the re-arm effect under it. An
+  // override carries a two-sided contract -- hold the rail lit, then re-arm the host's window
+  // when it releases -- and a term written into only one side either fails to hold the paint or
+  // fails to re-arm, with no error either way.
+  //
+  // The hover term is a real state, not a `:hover { opacity: 1 }` paint override. The host's
+  // window closes on its own timer, and a parked cursor sends no further pointermove to re-arm
+  // it, so the rail faded out from under a cursor that rested on it -- and a CSS-only override
+  // would have made it LOOK usable while the press guard below still read it as faded and
+  // rejected the click. Folding hover in here keeps the look and the guard agreeing: hovered
+  // means lit means clickable.
+  const heldLit = createMemo(() => drag() !== null || activeDot() !== null || hovered())
 
-  // Re-open the host's activity window on the FALLING edge of the rail's OWN overrides -- the
-  // live drag, its post-release hold, and the open dot popover that idle() above lets outrank
-  // the host's window. Each of them holds the rail lit while nothing re-arms that window: a
-  // captured drag's pointermove retargets to the rail, so the host's scroll container never
-  // sees it, and the rail's own onPointerMove relight is inert for the whole time (idle() is
-  // false). So without this, any override outlasting the host's idle timeout ends by snapping
-  // the rail dark instead of fading it. Keying the re-arm on the overrides rather than on the
-  // pointer lifecycle is what covers all three: a release whose out-of-window seek outlives the
-  // window re-arms when the hold clears, not when the finger lifts.
-  let railHeldLit = false
+  // Idle is a PAINT state, never an unmount (see the `scrollActive` prop).
+  const idle = createMemo(() => !props.scrollActive && !heldLit())
+
+  // Re-open the host's activity window on the FALLING edge of those overrides. Each of them
+  // holds the rail lit while nothing re-arms that window: a captured drag's pointermove
+  // retargets to the rail, so the host's scroll container never sees it, and the rail's own
+  // onPointerMove relight is inert for the whole time (idle() is false). So without this, any
+  // override that outlasts the host's idle timeout ends by snapping the rail dark instead of
+  // fading it. Keying the re-arm on the overrides rather than on the pointer lifecycle is what
+  // covers all four: a release whose out-of-window seek outlives the window re-arms when the
+  // hold clears, not when the finger lifts. The hover term also re-arms on the way IN (see
+  // onPointerEnter), so that a leave fades the rail instead of snapping it dark; both halves are
+  // deliberate, and neither one is redundant.
+  let wasHeldLit = false
   createEffect(() => {
-    const heldLit = drag() !== null || activeDot() !== null
+    const lit = heldLit()
     // Not while hidden: the rail that just stopped rendering must not re-arm a window for
     // itself. Hiding tears the drag down (below), which is a falling edge of its own.
-    if (railHeldLit && !heldLit && !hidden())
+    if (wasHeldLit && !lit && !hidden())
       props.onActivity?.()
-    railHeldLit = heldLit
+    wasHeldLit = lit
   })
 
   createEffect(() => {
@@ -623,15 +651,43 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
         class={`${styles.rail}${idle() ? ` ${styles.railIdle}` : ''}`}
         data-testid="chat-scroll-rail"
         onPointerDown={onRailPointerDown}
-        // Reopen the host's window ONLY when the rail is faded: a cursor crossing the invisible
-        // strip relights it (intent to use it), and a captured thumb drag's pointermove retargets
-        // here so the scroll container never sees it. Once lit, idle() is false -- the drag itself
-        // (drag() !== null) or the now-open host window holds the rail visible -- so further moves
-        // would only re-arm a timer that the next move cancels again (dozens of clearTimeout +
-        // setTimeout pairs per second of dragging). No-op once visible; the host's idle timer
-        // carries the fade tail.
-        onPointerMove={() => {
-          if (idle())
+        // A cursor on the strip HOLDS the rail lit for as long as it rests there (see idle()),
+        // and re-arms the host's window on the way in so leaving fades it out instead of
+        // snapping it dark. Enter/leave rather than pointermove, because a parked cursor sends
+        // no moves -- which is exactly how the rail used to disappear from under one.
+        onPointerEnter={(event: PointerEvent) => {
+          if (event.pointerType !== 'mouse')
+            return
+          setHovered(true)
+          props.onActivity?.()
+        }}
+        // Mouse only, to match the enter handler. A touch never SETS the hover, so an unfiltered
+        // leave could only clear one that a mouse holds: on a hybrid device a tap elsewhere would
+        // then drop the rail out from under a parked cursor.
+        onPointerLeave={(event: PointerEvent) => {
+          if (event.pointerType !== 'mouse')
+            return
+          setHovered(false)
+        }}
+        // Two jobs, with different audiences.
+        //
+        // The relight (every pointer type) reopens the host's window from a move onto a faded
+        // strip. A captured thumb drag's pointermove retargets here, so the scroll container
+        // never sees it. Only while idle: once lit, further moves would replace a timer that the
+        // next move replaces again, dozens of times a second through a drag.
+        //
+        // The hold (a MOUSE that is not dragging) is the enter handler's other half. A rail that
+        // mounts or un-hides UNDER a stationary cursor receives no pointerenter, because nothing
+        // entered, so its first move has to establish the hover -- otherwise a cursor that then
+        // stops moving loses the rail to the host's timer, which is the case the hold exists for.
+        // Skipped during a drag, because capture retargets moves from far outside the strip;
+        // without capture, a move on this element means the pointer IS on it, so no hit test is
+        // needed. Read idle() BEFORE the set, or the set hides the falling edge from the relight.
+        onPointerMove={(event: PointerEvent) => {
+          const wasIdle = idle()
+          if (drag() === null && event.pointerType === 'mouse')
+            setHovered(true)
+          if (wasIdle)
             props.onActivity?.()
         }}
         // focusin bubbles from a dot button, so tabbing through the dots keeps the rail

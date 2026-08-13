@@ -1,9 +1,11 @@
+import type { MessageBandKind } from './chatRowGeometry'
 import type { ClassificationContext, ClassificationInput } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { isWorkerAuthoredNotification } from '~/lib/notificationTypes'
+import { messageBandKind } from './chatRowGeometry'
 import * as chatStyles from './messageStyles.css'
 import { isPersistedControlResponse } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
@@ -168,7 +170,7 @@ export function invalidateMessageClassificationCache(message: AgentChatMessage):
 function sourceStyle(source: MessageSource): string {
   switch (source) {
     case MessageSource.USER: return chatStyles.userMessage
-    case MessageSource.AGENT: return chatStyles.assistantMessage
+    case MessageSource.AGENT: return chatStyles.agentFallbackMessage
     default: return chatStyles.systemMessage
   }
 }
@@ -222,24 +224,122 @@ export function shouldClearStreamingText(
   return !NON_STREAM_CLEAR_KINDS.has(category.kind)
 }
 
+/**
+ * True when the row lays its bubble out at the END of the line and MIRRORS its
+ * toolbar beside it (`messageRowEnd`: a right-aligned user message, whose
+ * actions sit to the LEFT of the bubble in a right-to-left grid).
+ *
+ * Exported because the toolbar's button order depends on it: a mirrored row puts
+ * Quote first so it lands nearest the bubble, where every other row puts the
+ * timestamp first. Both callers read this one predicate, so the class and the
+ * order can't disagree about which rows are mirrored.
+ */
+export function isMirroredMessageRow(kind: MessageCategory['kind'], source: MessageSource): boolean {
+  // `notification` needs no test of its own: META_KINDS holds it.
+  return !META_KINDS.has(kind) && source === MessageSource.USER
+}
+
 /** Row class: determines horizontal alignment. */
 export function messageRowClass(kind: MessageCategory['kind'], source: MessageSource): string {
   if (kind === 'notification')
     return chatStyles.messageRowCenter
-  if (!META_KINDS.has(kind) && source === MessageSource.USER)
+  if (isMirroredMessageRow(kind, source))
     return chatStyles.messageRowEnd
   return chatStyles.messageRow
 }
 
 /** Bubble class: determines visual style of the message container. */
 export function messageBubbleClass(kind: MessageCategory['kind'], source: MessageSource): string {
+  // A band's content class is the same for a message and a thought -- the solid
+  // vs dashed line lives on the ROW (see messageRowChromeClass), so this must not
+  // branch on the band kind again.
+  if (messageBandKind(kind))
+    return chatStyles.bandMessage
   if (kind === 'notification')
     return chatStyles.systemMessage
-  if (kind === 'assistant_thinking')
-    return chatStyles.thinkingMessage
   if (kind === 'plan_execution')
     return chatStyles.planExecutionMessage
   if (META_KINDS.has(kind))
     return chatStyles.metaMessage
   return sourceStyle(source)
+}
+
+/**
+ * Row class for the decoration a row paints across the FULL panel width, or ''
+ * for a row that stays inside the list gutter. Three rows bleed: a message or a
+ * thought paints a band behind itself, a turn-end divider runs its rule to both
+ * edges, and a user message's bubble runs its right side to the right edge.
+ *
+ * Belongs on the ROW element, so that the measured row and the visible row carry
+ * identical chrome and cannot wrap their text at different widths. Reach it
+ * through `messageRowChrome` below, which is what every row-mount site uses.
+ */
+export function messageRowChromeClass(kind: MessageCategory['kind'], source: MessageSource): string {
+  const band = messageBandKind(kind)
+  if (band)
+    return band === 'thought' ? `${chatStyles.bandRow} ${chatStyles.bandRowThought}` : chatStyles.bandRow
+  // A turn-end rule reaches both edges; a user bubble's right side reaches the
+  // right one. Neither row paints anything itself, so both just widen.
+  if (kind === 'result_divider' || isMirroredMessageRow(kind, source))
+    return chatStyles.bleedRow
+  return ''
+}
+
+/**
+ * True when the row's bubble runs its RIGHT side off the panel edge.
+ *
+ * Derived from `messageBubbleClass`, not from a condition written again here, so
+ * the two cannot disagree about which bubbles bleed. That derivation also proves
+ * the pairing the layout depends on: `sourceStyle` returns `userMessage` only for
+ * a USER source on a non-meta kind, which is exactly `isMirroredMessageRow`, so a
+ * bubble that reaches the edge always sits in a row that `messageRowChromeClass`
+ * widened. (The stylesheet enforces it a second time: the bleed is declared only
+ * inside `bleedRow` -- see `bubbleFlushRight`.)
+ *
+ * A delivery error is the one case that opts out. It stacks "Failed to deliver /
+ * Retry / Delete" under the bubble, laid out against the row's CONTENT edge, so a
+ * bleeding bubble above it would leave the two right edges a whole gutter apart.
+ * Bleeding that line to match would be worse: it would put Retry and Delete under
+ * the scroll rail's column, which takes every pointer event in its own box. An
+ * undelivered message is also not part of the settled transcript that runs off
+ * the panel edge, and a closed bubble with its controls squared under it says so.
+ */
+export function bubbleRunsToRightEdge(
+  kind: MessageCategory['kind'],
+  source: MessageSource,
+  hasDeliveryError: boolean,
+): boolean {
+  return !hasDeliveryError && messageBubbleClass(kind, source) === chatStyles.userMessage
+}
+
+/** Everything a mounted chat row's own element carries, for one `(kind, source)`. */
+export interface MessageRowChrome {
+  /** `baseClass` and the row's bleed decoration, joined and ready for `class=`. */
+  class: string
+  /** The band this row paints, or undefined. `data-band` is the e2e hook for it. */
+  band: MessageBandKind | undefined
+}
+
+/**
+ * The chrome for ONE mounted chat row. Every place that mounts a row calls this
+ * and spreads the result, which is what keeps them identical.
+ *
+ * There are four such places, and they agree on nothing else: the virtual row and
+ * the streaming tail (ChatView), the hidden premeasure row (chatHiddenPremeasure)
+ * and, for its class alone, the positioned skeleton that stands in for an
+ * unmeasured row. They differ in positioning and in role -- absolute and measured,
+ * in flow, hidden and measured, an overlay -- so they are deliberately NOT one
+ * component. Their CHROME is the one thing that must not differ: a row measured
+ * without its band commits a height two borders and two paddings short of the
+ * height it renders at, and the offset map then shifts under the reader.
+ */
+export function messageRowChrome(
+  baseClass: string,
+  kind: MessageCategory['kind'],
+  source: MessageSource,
+): MessageRowChrome {
+  return {
+    class: [baseClass, messageRowChromeClass(kind, source)].filter(Boolean).join(' '),
+    band: messageBandKind(kind),
+  }
 }

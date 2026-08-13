@@ -1915,6 +1915,141 @@ describe('chatScrollRail dot preview card', () => {
       expect(onActivity).toHaveBeenCalledTimes(1)
     })
 
+    it('holds the rail lit under a PARKED cursor, which sends no further pointermove', () => {
+      // The bug this fixes: the host's activity window closes on its own timer, and a
+      // stationary cursor re-arms nothing, so the rail faded out from under a reader who was
+      // sitting on it. Hover is part of idle() now, so the strip stays lit with no further
+      // events at all -- scrollActive going false must NOT be able to fade it.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const [scrollActive, setScrollActive] = createSignal(true)
+      const { container } = render(() => (
+        <ChatScrollRail {...baseProps()} scrollActive={scrollActive()} />
+      ))
+      const rail = railWithRect(container)
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      rail.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse', pointerId: 1 }))
+      // The host's window closes while the cursor rests there, sending nothing.
+      setScrollActive(false)
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      // It fades only once the cursor actually leaves.
+      rail.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, pointerType: 'mouse', pointerId: 1 }))
+      expect(rail.className).toContain(styles.railIdle)
+    })
+
+    it('re-arms the host window on the way in, so leaving fades rather than snaps dark', () => {
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const onActivity = vi.fn()
+      const { container } = render(() => (
+        <ChatScrollRail {...baseProps({ onActivity })} scrollActive={false} />
+      ))
+      const rail = railWithRect(container)
+
+      rail.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse', pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalled()
+
+      // And again on the falling edge, so the fade tail starts when the cursor leaves --
+      // not at whatever moment the window happened to close underneath it.
+      onActivity.mockClear()
+      rail.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, pointerType: 'mouse', pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalled()
+    })
+
+    it('does not let a TOUCH pin the rail lit, since it never leaves until the next tap', () => {
+      // pointerenter fires on tap and pointerleave only when the next tap lands elsewhere,
+      // so honouring touch here would hold the rail up indefinitely on a surface where it is
+      // meant to fade. A finger holds it through drag() and activeDot(), which end with the
+      // gesture.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const { container } = render(() => (
+        <ChatScrollRail {...baseProps()} scrollActive={false} />
+      ))
+      const rail = railWithRect(container)
+      expect(rail.className).toContain(styles.railIdle)
+
+      rail.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'touch', pointerId: 1 }))
+      expect(rail.className).toContain(styles.railIdle)
+    })
+
+    it('does not let a TOUCH leave clear the hold a mouse has on the rail', () => {
+      // Only a mouse SETS the hold, so an unfiltered leave could only ever clear one that a
+      // mouse holds. On a hybrid device a tap elsewhere would then drop the rail out from
+      // under a parked cursor -- the exact fade the hold exists to stop.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const { container } = render(() => (
+        <ChatScrollRail {...baseProps()} scrollActive={false} />
+      ))
+      const rail = railWithRect(container)
+
+      rail.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse', pointerId: 1 }))
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      rail.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, pointerType: 'touch', pointerId: 2 }))
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      rail.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, pointerType: 'mouse', pointerId: 1 }))
+      expect(rail.className).toContain(styles.railIdle)
+    })
+
+    it('holds the rail lit from a MOUSE move, for a strip that appeared under a still cursor', () => {
+      // A rail that mounts or un-hides under a stationary cursor gets no pointerenter, because
+      // nothing entered. Its first move has to establish the hold, or the cursor stops moving
+      // and the host's window closes under it.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const [scrollActive, setScrollActive] = createSignal(false)
+      const onActivity = vi.fn(() => setScrollActive(true))
+      const { container } = render(() => (
+        <ChatScrollRail {...baseProps({ onActivity })} scrollActive={scrollActive()} />
+      ))
+      const rail = railWithRect(container)
+
+      rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse', clientY: 200, pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalledTimes(1)
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      // The host's window closes and the still cursor sends no further input. The hold, not
+      // the window, is what keeps the rail lit from here.
+      setScrollActive(false)
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      // Leaving releases the hold, whose falling edge re-arms the window -- so the rail fades
+      // out on the host's timer instead of snapping dark under the departing cursor.
+      rail.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, pointerType: 'mouse', pointerId: 1 }))
+      expect(onActivity).toHaveBeenCalledTimes(2)
+      setScrollActive(false)
+      expect(rail.className).toContain(styles.railIdle)
+    })
+
+    it('clears the hold when the rail hides under the cursor, so it returns faded', async () => {
+      // A DOM removal delivers no pointerleave. Without the teardown the flag would survive the
+      // hide, and the rail would come back fully lit with the cursor nowhere near it -- and stay
+      // lit, because the falling edge that re-arms the host's window never comes either.
+      HTMLElement.prototype.setPointerCapture = vi.fn()
+      installImmediateRaf()
+      const [hidden, setHidden] = createSignal(false)
+      const { container } = render(() => (
+        <ChatScrollRail {...baseProps()} scrollActive={false} hidden={hidden()} />
+      ))
+      let rail = railWithRect(container)
+
+      rail.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse', pointerId: 1 }))
+      expect(rail.className).not.toContain(styles.railIdle)
+
+      setHidden(true)
+      await Promise.resolve()
+      setHidden(false)
+      await Promise.resolve()
+
+      rail = railWithRect(container)
+      expect(rail.className).toContain(styles.railIdle)
+    })
+
     it('reopens the host window from a pointermove only while the rail is faded, not on every move', () => {
       // A captured thumb drag retargets its pointermove to the rail, so the host's scroll
       // container sees nothing -- the FIRST move onto a faded strip must relight it. But once lit

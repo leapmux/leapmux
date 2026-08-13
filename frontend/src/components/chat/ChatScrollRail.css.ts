@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { floatingCardSurface } from '~/styles/popover.css'
+import { CHAT_RAIL_WIDTH_VAR, COARSE_HIT_PX } from './chatChromeVars'
 
 // Fixed px here are scrollbar-like dimensions (rail/thumb/dot widths, thumb radius),
 // NOT spacing-scale values -- see CLAUDE.md. The top/bottom insets use the spacing scale.
@@ -15,28 +16,64 @@ import { floatingCardSurface } from '~/styles/popover.css'
  */
 const PREVIEW_CARD_MAX_H_PX = 200
 
-/** Width of the rail overlay column (a touch wider than the 8px native scrollbar). */
-const RAIL_WIDTH_PX = 10
-/**
- * Wider interactive column on COARSE pointers (touch): a finger can't hit a 10px strip, so
- * the hit area grows to a touch-friendlier size while the thin visuals (track/thumb/dots)
- * stay their fine-pointer widths, just centred in the wider column. Below breakpoints.sm the
- * list's right gutter shrinks to reclaim text width, so this strip now overlaps roughly 20px
- * of message content instead of 8px. That is acceptable ONLY because the rail is
- * pointer-events:none while idle (see railIdle), which is the large majority of the time.
- * Widening it further, or dropping the idle inertness, starts swallowing message taps into
- * track-click jumps.
- */
-const RAIL_WIDTH_COARSE_PX = 22
+/** Width of the muted vertical track line. */
+const TRACK_WIDTH_PX = 2
 /** Thumb width, matching the app's 8px native scrollbar thumb. */
 const THUMB_WIDTH_PX = 8
+
+/**
+ * The rail's box comes from a token the chat root publishes
+ * (`~/components/chat/ChatView.css.ts`), because a message row's floating toolbar
+ * needs the same number to sit clear of this column. The token travels as a
+ * custom property rather than an import: `ChatView.css.ts` already imports
+ * `~/components/chat/messageStyles.css.ts`, and the toolbar rules live there, so
+ * the value has to reach two modules that cannot both import each other. The
+ * NAMES are shared, from the import-free leaf `~/components/chat/chatChromeVars.ts`.
+ *
+ * The column is the gutter. That one decision does three things at once:
+ * everything the rail draws sits centred in it, so the track, thumb and dots run
+ * down the gutter's middle; the box normally stops at the message column, so it
+ * does not cover a row's floating action buttons; and the hover target is the
+ * whole gutter rather than the ~10px strip that was hard to hit.
+ *
+ * The second point is the one that matters most. The rail overlays a row from
+ * OUTSIDE its stacking context and stays hit-testable while faded, so every
+ * pointer event inside the rail's box goes to the rail, and no z-index or
+ * pointer-events arrangement inside the row changes that. A box that stops at the
+ * gutter cannot receive an event meant for a row's action buttons.
+ *
+ * Two floors break that rule on purpose, because a 4px phone gutter and a coarse
+ * pointer both need a wider press target than the gutter gives. The column then
+ * DOES overhang the message text, and the row's floating actions are inset by
+ * exactly that overhang to stay clear of it -- see the toolbar rules in
+ * `~/components/chat/messageStyles.css.ts`, which read the same two properties.
+ */
+const RAIL_WIDTH = `var(${CHAT_RAIL_WIDTH_VAR})`
+
+/**
+ * Opacity of the rail's own surface while it is shown.
+ *
+ * Painted in `--background` -- the PANEL colour, not the message surface -- so
+ * the strip reads as a channel cut out of the content: it lightens the column in
+ * the light theme and darkens it in the dark one, from the same declaration.
+ * Partial, so the content beneath still shows through and the strip does not
+ * read as an opaque bar. The whole rail fades with `railIdle`, so this needs no
+ * shown/hidden branch of its own.
+ */
+const RAIL_SURFACE_ALPHA = 0.7
 
 export const rail = style({
   'position': 'absolute',
   'top': 'var(--space-2)',
   'bottom': 'var(--space-2)',
-  'right': '2px',
-  'width': `${RAIL_WIDTH_PX}px`,
+  'right': 0,
+  'width': RAIL_WIDTH,
+  'backgroundColor': `color-mix(in srgb, var(--background) ${RAIL_SURFACE_ALPHA * 100}%, transparent)`,
+  // Round the surface off the same way as the loading pills and the scroll-to-bottom
+  // button: the base radius token, NOT a pill. All of them float over this one viewport,
+  // so they should read as one set. (The corner this replaced was twice the TRACK's width,
+  // which is a measurement of the line inside the strip, not of the strip.)
+  'borderRadius': 'var(--radius-medium)',
   'zIndex': 10,
   // Interactive (unlike the pointer-events:none loading pills): track clicks + thumb drag.
   'cursor': 'pointer',
@@ -53,9 +90,6 @@ export const rail = style({
     '(prefers-reduced-motion: no-preference)': {
       transition: 'opacity var(--transition)',
     },
-    '(pointer: coarse)': {
-      width: `${RAIL_WIDTH_COARSE_PX}px`,
-    },
   },
 })
 
@@ -70,19 +104,26 @@ export const rail = style({
  * tree and could disturb the height its own ResizeObserver measures.
  *
  * `pointer-events: none` is COARSE-ONLY, deliberately:
- *   - on touch the idle rail must go inert, because below breakpoints.sm the list's right
- *     gutter shrinks and this strip then overlaps ~20px of message content. An invisible
- *     strip that swallowed taps into a track-click jump would be a trap.
- *   - on a FINE pointer the faded rail STAYS hit-testable so a `pointermove` over it relights
- *     it (see ChatScrollRail.onPointerMove -> onActivity), but a CLICK on the faded rail is
- *     rejected in the pointer handler -- you can't click what you can't see. So a mouse
- *     reaches the rail by scrolling or by moving onto the strip (which relights it) first.
+ *   - on touch the idle rail must go inert. The column takes a finger-sized floor there, so on
+ *     a phone, whose right gutter is 4px, this strip overlaps 20px of message content. An
+ *     invisible strip that swallowed taps into a track-click jump would be a trap.
+ *   - on a FINE pointer the faded rail STAYS hit-testable so a pointer over it relights it (see
+ *     ChatScrollRail.onPointerEnter, and onPointerMove for the strip that appears under an
+ *     already-stationary cursor), but a CLICK on the faded rail is rejected in the pointer
+ *     handler -- you can't click what you can't see. So a mouse reaches the rail by scrolling or
+ *     by moving onto the strip, which relights it, first.
+ *
+ * A universal `pointer-events: none` cannot protect what the column overhangs. The relight has
+ * to come from a pointer event on the strip itself, so an inert strip never lights again from
+ * the pointer, and a strip that stays live takes the hover from whatever it covers. Neither
+ * setting helps, which is why the overhang is removed at the source instead: the column is the
+ * gutter, and the row's actions are inset by the little that the two floors add to it.
  *
  * `opacity: 0` is universal: every screen/pointer fades the idle rail the same way. There is
- * deliberately NO `:hover { opacity: 1 }` shortcut: that would make the rail LOOK visible
- * under a parked cursor while the activity window is still closed, so the click guard would
- * reject a click on something that appeared visible. Visibility stays driven solely by the
- * activity window, which carries its own idle timeout so a parked cursor cannot pin it lit.
+ * deliberately NO `:hover { opacity: 1 }` shortcut. That would make the rail LOOK visible while
+ * the press guard still read it as faded, and the guard would reject a click on something that
+ * appeared visible. A parked cursor DOES hold the rail lit, but through the `hovered` signal
+ * that `idle()` folds in (ChatScrollRail.tsx), so the look and the guard move together.
  */
 export const railIdle = style({
   'opacity': 0,
@@ -102,15 +143,19 @@ globalStyle(`${railIdle} *`, {
   cursor: 'auto',
 })
 
-/** The muted vertical track line, centered in the rail. Non-interactive (clicks fall to rail). */
+/**
+ * The muted vertical track line, centred in the rail -- and so, because the rail
+ * fills the gutter exactly, down the gutter's middle. The thumb and the dots
+ * share that axis. Non-interactive (clicks fall to rail).
+ */
 export const track = style({
   position: 'absolute',
   top: 0,
   bottom: 0,
   left: '50%',
   transform: 'translateX(-50%)',
-  width: '2px',
-  borderRadius: '1px',
+  width: `${TRACK_WIDTH_PX}px`,
+  borderRadius: `${TRACK_WIDTH_PX / 2}px`,
   backgroundColor: 'var(--border)',
   pointerEvents: 'none',
 })
@@ -175,8 +220,11 @@ export const dot = style({
  * anywhere inside this circle, and the preview card that press opens is resolved by distance from
  * the dot's rail-Y, so a range narrower than this circle's radius leaves a rim of the hit area
  * that jumps but shows no preview. Same reason PREVIEW_CARD_MAX_H_PX is exported above.
+ *
+ * The finger size itself comes from the shared constant, which the rail's own column also floors
+ * at on a coarse pointer -- so a dot and the track around it take the same press target.
  */
-export const DOT_COARSE_HIT_PX = 24
+export const DOT_COARSE_HIT_PX = COARSE_HIT_PX
 
 // Coarse-pointer (touch) hit expander: a transparent circle centred on the 6px dot, so a finger
 // tap within range still hits the button. A pseudo-element leaves the dot's visual fill + ring at
@@ -262,7 +310,11 @@ globalStyle(`${dotPreviewMarkdown} > * > :last-child`, { marginBottom: 0 })
  */
 export const previewCard = style([floatingCardSurface, {
   'position': 'absolute',
-  'right': 'calc(100% + var(--space-2))',
+  // Flush against the rail's left edge. The rail is a wide hit column whose
+  // visuals sit centred in it, so any gap here is added to the ~10px the column
+  // already puts between its left edge and the dot the card describes -- and the
+  // card drifts away from the thing it points at.
+  'right': '100%',
   'transform': 'translateY(-50%)',
   'width': 'max-content',
   'maxWidth': '280px',

@@ -24,6 +24,15 @@ import { sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
  */
 const LONG_MESSAGE = `Please just reply with "ok". Ignore this filler: ${'the quick brown fox jumps over the lazy dog. '.repeat(12)}`
 
+/**
+ * A wait that comfortably outlasts the rail's idle window (RAIL_VISIBLE_IDLE_MS in
+ * ~/components/chat/ChatView, 1200ms). Not imported: pulling a component into the e2e type
+ * program drags `import.meta.env` with it, which that tsconfig does not model. Only a LOWER
+ * bound is needed here, so a generous local value cannot make the test wrong -- if the window
+ * ever grew past this, the test would stop proving anything rather than start failing.
+ */
+const PAST_RAIL_IDLE_MS = 4000
+
 const RAIL = '[data-testid="chat-scroll-rail"]'
 const SCROLLER = '[data-chat-scroll-container="true"]'
 
@@ -63,6 +72,30 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(rail).toHaveCSS('opacity', '1')
 
     // ...and it fades again once that gesture goes quiet.
+    await expect(rail).toHaveCSS('opacity', '0')
+  })
+
+  test('keeps the rail lit while the cursor rests on it, and fades once it leaves', async ({ page, authenticatedWorkspace }) => {
+    // A parked cursor sends no pointermove, so nothing re-arms the host's activity window and
+    // the rail used to fade out from under the reader sitting on it. Only a real browser
+    // covers this: it needs the live idle timer, a real hover, and the CSS opacity it drives.
+    await page.setViewportSize({ width: 1024, height: 600 })
+    await seedOverflowingConversation(page)
+
+    const rail = page.locator(RAIL)
+    await expect(rail).toHaveCSS('opacity', '0')
+
+    // Move onto the strip and STOP. Nothing further is dispatched from here on.
+    const railBox = await rail.boundingBox()
+    await page.mouse.move(railBox!.x + railBox!.width / 2, railBox!.y + railBox!.height / 2, { steps: 5 })
+    await expect(rail).toHaveCSS('opacity', '1')
+
+    // Well past the idle window the cursor has not moved, and the rail is still there.
+    await page.waitForTimeout(PAST_RAIL_IDLE_MS)
+    await expect(rail).toHaveCSS('opacity', '1')
+
+    // Leaving hands it back to the window, which fades it.
+    await page.mouse.move(railBox!.x - 200, railBox!.y + railBox!.height / 2, { steps: 5 })
     await expect(rail).toHaveCSS('opacity', '0')
   })
 
@@ -127,6 +160,75 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(scroller).toHaveCSS('padding-right', '4px')
   })
 
+  test('fills the gutter exactly, centring its visuals and clearing the message column', async ({ page, authenticatedWorkspace }) => {
+    // The rail owns the gutter and nothing else. That places its visuals down the
+    // gutter's middle AND keeps the column off the message content -- the rail
+    // overlays a row from outside its stacking context and is hit-testable while
+    // faded, so anything it covers it takes from the text and the row action
+    // buttons underneath. Only a real browser resolves the width against the
+    // tokens; the rail needs content to overflow before it renders at all.
+    await page.setViewportSize({ width: 1024, height: 600 })
+    await seedOverflowingConversation(page)
+
+    const thumb = page.locator('[data-testid="chat-scroll-rail-thumb"]')
+    await expect(thumb).toBeVisible()
+
+    const thumbBox = await thumb.boundingBox()
+    const railBox = await page.locator(RAIL).boundingBox()
+    const gutter = await page.locator(SCROLLER).evaluate((el) => {
+      const rect = el.getBoundingClientRect()
+      const paddingRight = Number.parseFloat(globalThis.getComputedStyle(el).paddingRight)
+      // Where the message column stops, and how wide the strip beyond it is.
+      return { contentRight: rect.right - paddingRight, width: paddingRight, right: rect.right }
+    })
+
+    // The column is the gutter: it starts where the content stops and runs to the edge.
+    expect(gutter.width).toBeGreaterThan(0)
+    expect(Math.abs(railBox!.x - gutter.contentRight)).toBeLessThanOrEqual(1)
+    expect(Math.abs(railBox!.width - gutter.width)).toBeLessThanOrEqual(1)
+    expect(Math.abs((railBox!.x + railBox!.width) - gutter.right)).toBeLessThanOrEqual(1)
+
+    // And the thumb runs down its middle.
+    expect(Math.abs((thumbBox!.x + thumbBox!.width / 2) - (railBox!.x + railBox!.width / 2)))
+      .toBeLessThanOrEqual(1)
+
+    // The rail paints the PANEL colour at partial alpha, so the strip reads as a
+    // channel cut out of the content -- lighter in the light theme, darker in the
+    // dark one -- rather than an opaque bar.
+    const surface = await page.locator(RAIL).evaluate(el => globalThis.getComputedStyle(el).backgroundColor)
+    // A color-mix result serializes as `color(srgb r g b / a)`; a plain colour as
+    // `rgba(r, g, b, a)` or an opaque `rgb(r, g, b)`. Only the first two carry an
+    // alpha, and an opaque value means the translucency was dropped -- which is
+    // the regression this guards.
+    const alpha = surface.match(/\/\s*([\d.]+)\s*\)$/)?.[1]
+      ?? surface.match(/^rgba\((?:\s*[\d.]+\s*,){3}\s*([\d.]+)\s*\)$/)?.[1]
+    expect(alpha, `rail background was ${surface}`).toBeDefined()
+    expect(Number.parseFloat(alpha!)).toBeGreaterThan(0)
+    expect(Number.parseFloat(alpha!)).toBeLessThan(1)
+
+    // The hover target is worth having: the whole gutter, not the thin strip the
+    // thumb draws. This is what made the rail hard to hover before.
+    expect(railBox!.width).toBeGreaterThan(thumbBox!.width * 1.5)
+
+    // A row's FLOATING actions sit clear of that column. Here the column IS the gutter,
+    // so there is nothing to clear and they sit flush at the content edge.
+    //
+    // Scoped to a band row inside the scroller: only a row that gives its whole width to
+    // the content floats its actions absolutely, so a user row's toolbar -- which is
+    // in-flow in a mirrored grid -- reads `right: auto` and would prove nothing.
+    const toolbarRight = () => page.locator(`${SCROLLER} [data-band] [data-testid="message-toolbar"]`).first().evaluate(el => globalThis.getComputedStyle(el).right)
+    expect(await toolbarRight()).toBe('0px')
+
+    // Below the phone breakpoint the gutter shrinks to 4px but the column keeps its
+    // floor, so it overhangs the message text by 12px. The rail wins every pointer event
+    // in its own box, so anything left under that overhang is unreachable -- the actions
+    // move in by exactly the overhang. Asserted from the same page: the rail itself
+    // unmounts at this width (resolveScrollbarOwner stops naming it the owner), but the
+    // inset reads the tokens on the chat root, which do not depend on the rail rendering.
+    await page.setViewportSize({ width: 600, height: 600 })
+    await expect.poll(toolbarRight).toBe('12px')
+  })
+
   test('stays hit-testable on a fine pointer but rejects a click on the faded rail', async ({ page, authenticatedWorkspace }) => {
     // The faded rail stays hit-testable on a fine pointer (pointer-events: auto) so a
     // pointermove onto it can relight it -- but a CLICK on the faded rail is rejected at the
@@ -172,14 +274,22 @@ test.describe('chat scroll rail auto-hide', () => {
     test.use(COARSE_POINTER_METRICS)
 
     test('makes the idle rail inert, so its strip cannot swallow a tap', async ({ page, authenticatedWorkspace }) => {
-      // With the phone gutters the 22px coarse strip overlaps ~20px of message content. An
+      // A finger needs a whole target, so on a coarse pointer the rail's column floors at
+      // 24px -- against a 4px phone gutter, that overlaps 20px of message content. An
       // INVISIBLE strip that still took pointer events would turn a tap on the text into a
       // track-click jump, so going inert while idle is what makes that overlap acceptable.
+      // The row's own floating actions are inset by the same overhang, so they stay clear
+      // of it whether the rail is inert or not.
       await seedOverflowingConversation(page)
 
       const rail = page.locator(RAIL)
       await expect(rail).toHaveCSS('opacity', '0')
       await expect(rail).toHaveCSS('pointer-events', 'none')
+
+      // And the column is a whole finger wide, not the 4px gutter under it. A track
+      // click and a thumb drag can land nowhere else, so the gutter alone would leave
+      // them unhittable -- this is the one place the coarse floor is observable.
+      await expect(rail).toHaveCSS('width', '24px')
     })
   })
 })

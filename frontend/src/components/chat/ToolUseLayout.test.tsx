@@ -3,7 +3,7 @@ import { render, screen } from '@solidjs/testing-library'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ToolUseLayout } from '~/components/chat/toolRenderers'
-import { toolBodyBorder, toolBodyContent, toolInputText } from '~/components/chat/toolStyles.css'
+import { toolBodyBorder, toolBodyContent, toolHeaderTimestamp, toolInputText } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { classSelector } from '~/test-support/composedClass'
 
@@ -40,6 +40,35 @@ describe('toolUseLayout', () => {
     expect(container).toHaveTextContent('3 tasks')
     // Icon should be present as an SVG element
     expect(container.querySelector('svg')).toBeInTheDocument()
+  })
+
+  it('orders the header actions the same way an assistant row does', () => {
+    // A tool header and an agent message row used to lay their toolbars out
+    // differently, so the same two buttons moved depending on which row was
+    // above. They now share one order; this pins the tool-header half of that,
+    // and MessageBubble.test.tsx pins the message-row half.
+    render(() => (
+      <PreferencesProvider>
+        <ToolUseLayout
+          icon={ListTodo}
+          toolName="TestTool"
+          title="3 tasks"
+          context={makeContext({ createdAt: '2026-08-13T00:00:00Z' })}
+          onToggleExpand={() => {}}
+        >
+          <div>details</div>
+        </ToolUseLayout>
+      </PreferencesProvider>
+    ))
+
+    const toolbar = screen.getByTestId('message-toolbar')
+    const ids = [...toolbar.querySelectorAll('[data-testid]')].map(el => el.getAttribute('data-testid'))
+    expect(ids).toEqual(['message-copy-json'])
+    // The timestamp leads the copy button, as on every left-to-right row.
+    const timestamp = toolbar.querySelector(classSelector(toolHeaderTimestamp))
+    expect(timestamp).not.toBeNull()
+    expect(timestamp!.compareDocumentPosition(screen.getByTestId('message-copy-json')))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
   })
 
   it('shows summary inside bordered area', () => {

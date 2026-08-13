@@ -131,7 +131,6 @@ export function ToolUseLayout(props: {
           <ToolHeaderActions
             caller={actions()}
             layout={{
-              inline: true,
               createdAt: props.context?.createdAt,
               expanded: expanded(),
               onToggleExpand: props.onToggleExpand,
@@ -196,11 +195,18 @@ export interface ToolHeaderActionsLayoutProps {
   hasDiff?: boolean
   diffView?: DiffViewPreference
   onToggleDiffView?: () => void
-  /** When true, use inline tool header order; when false (default), use bubble order. */
-  inline?: boolean
+  /**
+   * The row mirrors its toolbar beside a right-aligned bubble (a user message --
+   * see isMirroredMessageRow). Such a row reverses the button order so Quote
+   * still lands nearest the bubble; every other row leads with the timestamp.
+   */
+  mirrored?: boolean
 }
 
-/** Actions area in tool header: Reply + Raw JSON copy + diff toggle + expand/collapse, all with tooltips. */
+/**
+ * Actions area for a message row or a tool header: timestamp, the copies, Quote,
+ * then the diff and expand toggles -- all with tooltips.
+ */
 export function ToolHeaderActions(props: {
   caller?: ToolHeaderActionsCallerProps
   layout?: ToolHeaderActionsLayoutProps
@@ -262,23 +268,47 @@ export function ToolHeaderActions(props: {
 
   return (
     <div class={toolHeaderActions} data-testid="message-toolbar">
-      {layout()?.inline
+      {/*
+        One order, READ LEFT TO RIGHT ON SCREEN, for every row: timestamp, then
+        the copies from broadest (the whole envelope) to narrowest (the rendered
+        content), then Quote. A tool header and a message row used to disagree
+        here, which put the same two buttons in different places depending on the
+        row above.
+
+        A MIRRORED row (a right-aligned user message) moves Quote only, from last
+        to second, so it still lands nearest the bubble on its right. Everything
+        else keeps its place: timestamp, Quote, JSON, Markdown, Content.
+
+        Its source order looks scrambled because it is NOT the render order. That
+        toolbar is a two-column `direction: rtl` grid (see `messageRowEnd >
+        toolHeaderActions` in ~/components/chat/messageStyles.css.ts), so the
+        FIRST item of each pair lands in the RIGHT cell:
+
+          source [Quote, timestamp]  renders  timestamp  Quote
+          source [Markdown, JSON]    renders  JSON       Markdown
+          source [Content]           renders             Content
+
+        Reading those rows left to right gives the one order above. The two arms
+        must therefore stay pairwise-swapped against each other; writing them the
+        "same" way is what would break them apart.
+      */}
+      {layout()?.mirrored
         ? (
             <>
-              {timestampEl}
-              {copyJsonButton}
-              {copyMarkdownButton}
-              {copyContentButton}
               {replyButton}
+              {timestampEl}
+              {copyMarkdownButton}
+              {copyJsonButton}
+              {copyContentButton}
             </>
           )
         : (
             <>
-              {replyButton}
               {timestampEl}
-              {copyMarkdownButton}
               {copyJsonButton}
+              {copyMarkdownButton}
               {copyContentButton}
+              {replyButton}
             </>
           )}
       <Show when={layout()?.hasDiff && layout()?.onToggleDiffView}>

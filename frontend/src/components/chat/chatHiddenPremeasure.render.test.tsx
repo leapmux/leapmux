@@ -1,20 +1,60 @@
 import type { ClassifiedEntry } from './chatEntryCache'
+import type { MessageCategory } from './messageClassification'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
-import { COL_SPACING, CONTAINER_PAD_RIGHT, spanLinesReservedWidth } from './widgets/SpanLines.geometry'
+import { bandRow, bandRowThought, bleedRow } from './messageStyles.css'
+import { COL_SPACING, CONTAINER_PAD_RIGHT, ROW_BLEED_LEFT_VAR, rowBleedLeftStyle, spanLinesReservedWidth } from './widgets/SpanLines.geometry'
 
-function entryWithSpanLines(lineCount: number): ClassifiedEntry {
+function entryWithSpanLines(
+  lineCount: number,
+  kind: MessageCategory['kind'] = 'user_text',
+  source: MessageSource = MessageSource.AGENT,
+): ClassifiedEntry {
   return {
-    msg: { id: 'm1', seq: 1n, spanId: 'span-1' } as AgentChatMessage,
+    msg: { id: 'm1', seq: 1n, spanId: 'span-1', source } as AgentChatMessage,
+    category: { kind } as MessageCategory,
     parsedSpanLines: Array.from({ length: lineCount }, (_, i) => ({
       span_id: `s${i}`,
       color: i + 1,
       type: 'active' as const,
     })),
   } as ClassifiedEntry
+}
+
+/** The premeasure row element: the bubble's grandparent (row > reserved wrapper > bubble). */
+function premeasureRowOf(bubble: HTMLElement): HTMLElement {
+  const row = bubble.parentElement?.parentElement
+  if (!row)
+    throw new Error('premeasure row not found')
+  return row
+}
+
+/**
+ * Render one candidate through the premeasure root and hand back the two elements
+ * every test below asserts on. The mount is identical across them -- only the kind,
+ * the source and the rail count vary -- so it lives here rather than in each `it`.
+ */
+function renderPremeasureRow(
+  kind: MessageCategory['kind'],
+  source: MessageSource = MessageSource.AGENT,
+  lineCount = 0,
+): { row: HTMLElement, column: HTMLElement, unmount: () => void } {
+  const entry = entryWithSpanLines(lineCount, kind, source)
+  const item: VirtualItem = { id: 'm1', hasSpanLines: lineCount > 0, heightKey: 'k1' }
+  const { unmount } = render(() => (
+    <ChatHiddenPremeasure
+      candidates={[{ entry, item }]}
+      contentWidthPx={400}
+      renderBubble={() => <div data-testid="bubble">bubble</div>}
+      onMeasure={vi.fn()}
+    />
+  ))
+  const bubble = screen.getByTestId('bubble')
+  return { row: premeasureRowOf(bubble), column: bubble.parentElement!, unmount }
 }
 
 describe('chat hidden premeasure rendering', () => {
@@ -25,22 +65,65 @@ describe('chat hidden premeasure rendering', () => {
   })
 
   it('reserves span-line width without mounting SpanLines columns', () => {
-    const entry = entryWithSpanLines(3)
-    const item: VirtualItem = { id: 'm1', hasSpanLines: true, heightKey: 'k1' }
+    const { column } = renderPremeasureRow('user_text', MessageSource.AGENT, 3)
+    expect(column.style.marginLeft).toBe(`${spanLinesReservedWidth(3)}px`)
+    expect(column.previousElementSibling).toBeNull()
+  })
 
-    render(() => (
-      <ChatHiddenPremeasure
-        candidates={[{ entry, item }]}
-        contentWidthPx={400}
-        renderBubble={() => <div data-testid="bubble">bubble</div>}
-        onMeasure={vi.fn()}
-      />
-    ))
+  // The band's two borders and its vertical padding are part of the row's height,
+  // so a premeasured band row must carry the same strip as the live row -- else
+  // every band commits a height short by both borders.
+  it('wears the band strip when the candidate is an assistant message', () => {
+    const { row } = renderPremeasureRow('assistant_text')
+    expect(row.classList.contains(bandRow)).toBe(true)
+    expect(row.classList.contains(bandRowThought)).toBe(false)
+    expect(row.dataset.band).toBe('text')
+  })
 
-    const bubble = screen.getByTestId('bubble')
-    const reservedWrapper = bubble.parentElement
-    expect(reservedWrapper?.style.marginLeft).toBe(`${spanLinesReservedWidth(3)}px`)
-    expect(reservedWrapper?.previousElementSibling).toBeNull()
+  it('wears the dashed band strip when the candidate is a thought', () => {
+    const { row } = renderPremeasureRow('assistant_thinking')
+    expect(row.classList.contains(bandRow)).toBe(true)
+    expect(row.classList.contains(bandRowThought)).toBe(true)
+    expect(row.dataset.band).toBe('thought')
+  })
+
+  it('leaves a non-band candidate unbanded', () => {
+    const { row } = renderPremeasureRow('tool_result')
+    expect(row.classList.contains(bandRow)).toBe(false)
+    expect(row.classList.contains(bleedRow)).toBe(false)
+    expect(row.dataset.band).toBeUndefined()
+  })
+
+  it('widens a user message candidate, whose bubble bleeds to the right edge', () => {
+    // The widening is decided by kind AND source here, exactly as in the live row.
+    // A premeasure row that missed it would clip the bubble's bleed and measure a
+    // different wrap than the list shows.
+    const { row } = renderPremeasureRow('user_text', MessageSource.USER)
+    expect(row.classList.contains(bleedRow)).toBe(true)
+    expect(row.classList.contains(bandRow)).toBe(false)
+  })
+
+  it('publishes the distance to the panel edge, rails included, like the live row', () => {
+    // The bleeding child inside reads this var to size its negative margin. If the
+    // measured row published a different distance than the live one, the two would
+    // wrap their text at different widths and the committed height would be wrong.
+    for (const lineCount of [0, 3]) {
+      const { column, unmount } = renderPremeasureRow('result_divider', MessageSource.AGENT, lineCount)
+      expect(column.style.getPropertyValue(ROW_BLEED_LEFT_VAR))
+        .toBe(rowBleedLeftStyle(lineCount)[ROW_BLEED_LEFT_VAR])
+      // And it tracks the rails: the two counts must not resolve to the same distance.
+      expect(column.style.marginLeft).toBe(`${spanLinesReservedWidth(lineCount)}px`)
+      unmount()
+    }
+  })
+
+  // A turn-end divider bleeds too, so the measured row must be as wide as the
+  // live one -- a long divider label wraps differently at the narrower width.
+  it('widens a turn-end divider candidate without banding it', () => {
+    const { row } = renderPremeasureRow('result_divider')
+    expect(row.classList.contains(bleedRow)).toBe(true)
+    expect(row.classList.contains(bandRow)).toBe(false)
+    expect(row.dataset.band).toBeUndefined()
   })
 
   it('remeasures when an image loads after the first premeasure frame', () => {

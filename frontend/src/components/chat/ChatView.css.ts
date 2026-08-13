@@ -2,6 +2,9 @@ import { globalStyle, keyframes, style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
 import { chipBase } from '~/styles/shared.css'
 import { breakpoints, motion } from '~/styles/tokens'
+import { CHAT_PAD_LEFT_VAR, CHAT_PAD_RIGHT_VAR, CHAT_RAIL_WIDTH_VAR, COARSE_HIT_PX } from './chatChromeVars'
+import { BAND_BORDER_PX } from './chatRowGeometry'
+import { contentColumnBleed } from './messageStyles.css'
 
 export const editorResizeHandle = style({
   height: '4px',
@@ -23,11 +26,93 @@ export const editorResizeHandleActive = style({
   },
 })
 
+/**
+ * Horizontal inset of the composer box. Deliberately NOT the list's gutter
+ * (`CHAT_PAD_LEFT_VAR`, one step wider): the composer is a bordered box on the
+ * panel, and the list is a column of rows that run to the panel edge, so the two
+ * insets answer different questions and must not be folded into one token.
+ */
+const COMPOSER_INSET = 'var(--space-3)'
+
+/**
+ * The chat list's horizontal gutter, as CSS vars so the band rows can cancel it.
+ * An assistant band paints edge to edge: it negates these two values and adds
+ * them back as padding (see `bandRow` in ~/components/chat/messageStyles.css.ts),
+ * which only works while the gutter has ONE definition. Declared on the chat
+ * ROOT rather than on the list: the scroll rail sizes its column from the right
+ * gutter and is the list's SIBLING, so a definition on the list itself would be
+ * out of its reach. `premeasureRoot` INHERITS them from here, media override
+ * included, which is what puts the hidden measurement in the same horizontal
+ * geometry as the live list.
+ */
+const chatGutterVars = {
+  [CHAT_PAD_LEFT_VAR]: 'var(--space-4)',
+  [CHAT_PAD_RIGHT_VAR]: 'var(--space-4)',
+} as const
+
+/**
+ * The scroll rail's column, published as a token on the chat root.
+ *
+ * The rail IS the gutter: it fills that strip exactly, so its track, thumb and
+ * dots -- all centred in it -- run down the gutter's middle. Its box also stops
+ * at the gutter, which matters because the rail overlays a row from outside that
+ * row's stacking context and stays hit-testable while faded: every pointer event
+ * inside the rail's box goes to the rail, and no z-index or pointer-events
+ * arrangement inside the row changes that. A box that stops at the gutter cannot
+ * receive an event meant for a row's floating action buttons.
+ *
+ * Two floors keep the column usable where the gutter alone is too thin to press:
+ * the phone gutter shrinks to 4px to reclaim text width, and a coarse pointer
+ * needs a whole finger. Both floors make the column WIDER than the gutter, so it
+ * does overhang the message column -- which is why the row's floating actions are
+ * inset by exactly that overhang (see the toolbar rules in
+ * ~/components/chat/messageStyles.css.ts). The inset is computed from these same
+ * two properties, so it is zero whenever the column is the bare gutter and it
+ * tracks either floor automatically.
+ */
+const RAIL_MIN_WIDTH = '16px'
+const chatRailVars = {
+  [CHAT_RAIL_WIDTH_VAR]: `max(var(${CHAT_PAD_RIGHT_VAR}), ${RAIL_MIN_WIDTH})`,
+} as const
+
 export const container = style({
-  display: 'flex',
-  flexDirection: 'column',
-  height: '100%',
-  overflow: 'hidden',
+  'display': 'flex',
+  'flexDirection': 'column',
+  'height': '100%',
+  'overflow': 'hidden',
+  'vars': { ...chatGutterVars, ...chatRailVars },
+  '@media': {
+    /**
+     * Phone gutters. The rail floats over the right edge, so 16px reserved there is pure
+     * lost text width; 4px still separates the text from the panel edge. The left drops to
+     * 12px rather than matching 4px for two reasons: the span-line stack overhangs the
+     * content box by COL_OVERLAP (5px, see ./widgets/SpanLines.css.ts) and `overflowX:
+     * hidden` would clip it, and 24px against 4px reads visibly uneven on a 360px viewport.
+     *
+     * Declared HERE, with the gutter itself, so the rail -- the list's sibling -- narrows
+     * with it rather than reading a stale desktop value.
+     */
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      vars: {
+        [CHAT_PAD_LEFT_VAR]: 'var(--space-3)',
+        [CHAT_PAD_RIGHT_VAR]: 'var(--space-1)',
+      },
+    },
+    /**
+     * A finger cannot press a 16px strip. The rail's column is the only part of the rail
+     * that a track click or a thumb drag can land on, so it takes the finger size directly
+     * -- the dots carry their own hit circle of the same diameter (DOT_COARSE_HIT_PX in
+     * ~/components/chat/ChatScrollRail.css.ts, derived from the same constant).
+     *
+     * Declared as a floor rather than a fixed width, so a wide desktop-class gutter on a
+     * touch screen still gives the rail the whole gutter and no more.
+     */
+    '(pointer: coarse)': {
+      vars: {
+        [CHAT_RAIL_WIDTH_VAR]: `max(var(${CHAT_PAD_RIGHT_VAR}), ${COARSE_HIT_PX}px)`,
+      },
+    },
+  },
 })
 
 export const messageListWrapper = style({
@@ -50,11 +135,36 @@ export const messageListSelectionRoot = style({
   overflowAnchor: 'none',
 })
 
+/**
+ * Flow gap between the virtual spacer and the in-flow tail UI below it.
+ *
+ * Named because two rules must agree on it: this gap, and the negative margin that
+ * `bandTailMerged` uses to cancel it. It also matches the virtualizer's own
+ * gapLargePx, which ChatView measures from the same token (see the
+ * `measureSpaceToken('--space-5', …)` call), so a virtual row and the tail are
+ * spaced alike.
+ */
+const MESSAGE_LIST_ROW_GAP = 'var(--space-5)'
+
 export const messageListContent = style({
   display: 'flex',
   flexDirection: 'column',
   flexShrink: 0,
-  gap: 'var(--space-5)',
+  gap: MESSAGE_LIST_ROW_GAP,
+})
+
+/**
+ * Merge the streaming tail's band into the band of the row directly above it.
+ *
+ * The virtualizer overlaps two adjacent bands by one border width in its offset
+ * map, so the pair shows one line. The tail is not in that map -- it is a flow
+ * sibling of the virtual spacer -- so the same merge has to be spelled here: cancel
+ * the flow gap, then one more border so the tail's top border lands on the row's
+ * bottom border. Without it the reader watches a gap and two separate lines while
+ * the reply streams, which close the instant the persisted row lands.
+ */
+export const bandTailMerged = style({
+  marginTop: `calc(-1 * ${MESSAGE_LIST_ROW_GAP} - ${BAND_BORDER_PX}px)`,
 })
 
 export const messageList = style({
@@ -62,7 +172,7 @@ export const messageList = style({
   'overflowX': 'hidden',
   'overflowY': 'auto',
   'overflowAnchor': 'none',
-  'padding': 'var(--space-4)',
+  'padding': `var(--space-4) var(${CHAT_PAD_RIGHT_VAR}) var(--space-4) var(${CHAT_PAD_LEFT_VAR})`,
   'display': 'flex',
   'flexDirection': 'column',
   'gap': 'var(--space-3)',
@@ -89,17 +199,6 @@ export const messageList = style({
      */
     '(pointer: coarse)': {
       scrollbarWidth: 'none',
-    },
-    /**
-     * Phone gutters. The rail floats over the right edge, so 16px reserved there is pure
-     * lost text width; 4px still keeps the text off the glass. The left drops to 12px
-     * rather than matching 4px for two reasons: the span-line stack overhangs the content
-     * box by COL_OVERLAP (5px, see ./widgets/SpanLines.css.ts) and `overflowX: hidden`
-     * would clip it, and 24px against 4px reads visibly lopsided on a 360px viewport.
-     */
-    [`(max-width: ${breakpoints.sm - 1}px)`]: {
-      paddingLeft: 'var(--space-3)',
-      paddingRight: 'var(--space-1)',
     },
   },
 })
@@ -178,7 +277,7 @@ export const inputArea = style({
   // Bottom padding is space-1 when the status bar is shown beneath, and
   // space-2 when it's hidden (the status bar's own space-2 bottom padding
   // then provides the gap to the window edge instead).
-  padding: 'var(--space-1) var(--space-3) var(--space-1)',
+  padding: `var(--space-1) ${COMPOSER_INSET} var(--space-1)`,
   flexShrink: 0,
 })
 
@@ -311,13 +410,28 @@ export const rateLimitCountdown = style({
   whiteSpace: 'nowrap',
 })
 
-export const messageRow = style({
+/**
+ * A row's RAILED wrapper: the span-line stack beside the content column. Named
+ * for the rails, NOT `messageRow`, because `~/components/chat/messageStyles.css.ts`
+ * exports a different class under that name -- the bubble row that the band and
+ * meta selectors target. Two exports with one name make a reader decide which is
+ * meant at every read, and a `:has()` selector written against the wrong one
+ * matches nothing at all.
+ */
+export const railedRow = style({
   display: 'flex',
 })
 
-export const messageRowContent = style({
+/** The content column beside those rails. */
+export const railedRowContent = style({
   flex: 1,
   minWidth: 0,
+  // Widen the CLIP box to both panel edges without moving the content box, so a
+  // bleeding descendant (a turn-end rule, a user bubble's right side) is not cut
+  // off at the content column. `flex: 1` absorbs the negative margins -- the box
+  // grows by exactly what they remove, and the equal padding gives the content
+  // back its original width -- so a row without a bleeding child is unchanged.
+  ...contentColumnBleed,
   // Isolate the bubble's layout/paint so an internal change (e.g. a tool card
   // expanding) doesn't invalidate the span columns beside it. The row itself
   // is also contained (see virtualRow); this inner boundary keeps bubble
@@ -400,12 +514,26 @@ export const premeasureRoot = style({
   overflow: 'hidden',
   zIndex: -1,
   contain: 'layout paint',
+  // Deliberately no `vars: chatGutterVars` here. This element is a descendant of
+  // `container`, so it already INHERITS the gutter -- media override and all. A
+  // restatement would carry the desktop values only, and below breakpoints.sm the
+  // measured row would then read a 16px gutter where the live row reads 4px. That
+  // costs nothing on a band, whose margins and padding cancel, but a bleeding
+  // DESCENDANT (a turn-end rule) resolves its negative margins straight from these
+  // two values: it would measure a whole gutter wider than it renders, wrap its
+  // label at the wrong width, and commit a short height into the offset map.
 })
 
+// Sized to the premeasure root's own width, which ChatView sets to the live
+// list's CONTENT width. Deliberately no `width: 100%`: with border-box sizing a
+// band row's negative gutter margins plus its equal padding would leave a
+// content box two gutters too narrow, so band text would wrap differently here
+// than in the list and commit a wrong height. A block box with auto width
+// resolves to the containing block minus its own margins, which lands on the
+// live row's content width for a band and a non-band alike.
 export const premeasureRow = style({
   display: 'flow-root',
   position: 'relative',
-  width: '100%',
 })
 
 export const editorPanelWrapper = style({

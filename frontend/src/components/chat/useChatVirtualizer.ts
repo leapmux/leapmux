@@ -6,6 +6,7 @@ import { largestIndexWhere, smallestIndexWhere } from '~/lib/binarySearch'
 import { clamp } from '~/lib/clamp'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { monotonicNow } from '~/lib/monotonicNow'
+import { BAND_BORDER_PX, messageBandKind } from './chatRowGeometry'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
 import { warnSlowScrollPhase } from './chatScrollGeometry'
 import { createRowMeasurer } from './createRowMeasurer'
@@ -311,6 +312,16 @@ export interface UseChatVirtualizerResult {
    */
   heightOfId: (id: string) => number
   /**
+   * The gap (px) the offset map left ABOVE a row: `gapAfter` of the row before
+   * it, and 0 for the first row. Negative where two adjacent bands overlap.
+   *
+   * The gap-bridge overlay sizes its segments from this rather than from a token
+   * of its own, so the bridge and the offsets cannot disagree: at a merged band
+   * seam there is no gap, and the segment collapses instead of being drawn for
+   * one that does not exist.
+   */
+  gapAboveOf: (id: string) => number
+  /**
    * Debug accessor: a row's measured DOM height when the cache holds one. The
    * generic fallback estimate is deliberately omitted from the raw-JSON surface;
    * it is not a row-specific analytical model.
@@ -610,12 +621,24 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
 
   // The gap between row i and i+1 is tightened (small) whenever the LOWER row
   // (i+1) has span lines. SpanLines gives the lower row column-specific
-  // ownership of the top bridge across this gap, so ROW_GAP (--space-2) must
-  // match gapSmallPx.
+  // ownership of the top bridge across this gap, and that bridge sizes itself
+  // from `gapAboveOf` below rather than from a token of its own -- so this
+  // function is the single decider for both the offset and the rail across it.
+  //
+  // Two adjacent BANDS (assistant message / thought) instead OVERLAP by one
+  // border width. Each band paints a full-bleed strip with a line on its top and
+  // bottom edge, so a zero gap would stack two lines; the lower row paints after
+  // the upper one, so this overlap puts its top border exactly over the upper
+  // row's bottom border and the pair shows one line. Placing the merge HERE, in
+  // the offset map, keeps every row's own height independent of its neighbour --
+  // which hidden premeasure requires, because it measures each row alone.
   const gapAfter = (list: VirtualItem[], i: number): number => {
     if (i >= list.length - 1)
       return 0
-    return list[i + 1].hasSpanLines
+    const next = list[i + 1]
+    if (messageBandKind(list[i].kind ?? '') && messageBandKind(next.kind ?? ''))
+      return -BAND_BORDER_PX
+    return next.hasSpanLines
       ? resolve(opts.gapSmallPx, DEFAULT_GAP_SMALL_PX)
       : resolve(opts.gapLargePx, DEFAULT_GAP_LARGE_PX)
   }
@@ -687,6 +710,11 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   }
 
   const heightOfId = (id: string): number => heightOfIndex(indexOfId(id))
+
+  const gapAboveOf = (id: string): number => {
+    const i = indexOfId(id)
+    return i > 0 ? gapAfter(geom().list, i - 1) : 0
+  }
 
   const currentHeightKey = (id: string): string | undefined => {
     const g = geom()
@@ -1080,6 +1108,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     scrollTopNearAnchor,
     heightOfIndex,
     heightOfId,
+    gapAboveOf,
     heightDebugOfId,
     estimateHeight,
     lastMeasurement: () => lastMeasurement,

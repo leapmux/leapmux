@@ -1,8 +1,40 @@
+import type { MessageCategory } from '~/components/chat/messageClassification'
 import { describe, expect, it } from 'vitest'
-import { classifyMessage, messageBubbleClass, messageRowClass } from '~/components/chat/messageClassification'
+import { bubbleRunsToRightEdge, classifyMessage, isMirroredMessageRow, messageBubbleClass, messageRowChrome, messageRowChromeClass, messageRowClass } from '~/components/chat/messageClassification'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { input } from '~/components/chat/providers/testUtils'
 import { AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
+
+/**
+ * Every kind the classifier can produce. The `satisfies Record<...>` annotation is
+ * the guard: a new member of `MessageCategory` fails `tsc` here until it is listed,
+ * which is what forces the whole-domain sweeps below to stay whole.
+ */
+const ALL_MESSAGE_KINDS = Object.keys({
+  agent_prompt: true,
+  assistant_text: true,
+  assistant_thinking: true,
+  compact_summary: true,
+  control_response: true,
+  hidden: true,
+  notification: true,
+  plan_execution: true,
+  result_divider: true,
+  tool_result: true,
+  tool_use: true,
+  unknown: true,
+  unsupported_provider: true,
+  user_content: true,
+  user_text: true,
+} satisfies Record<MessageCategory['kind'], true>) as MessageCategory['kind'][]
+
+/** Every source a persisted row can carry. */
+const ALL_MESSAGE_SOURCES = [
+  MessageSource.UNSPECIFIED,
+  MessageSource.USER,
+  MessageSource.AGENT,
+  MessageSource.LEAPMUX,
+] as const
 
 // ---------------------------------------------------------------------------
 // Helper to build assistant message payloads
@@ -481,6 +513,41 @@ describe('messageRowClass', () => {
 })
 
 // ---------------------------------------------------------------------------
+// isMirroredMessageRow
+// ---------------------------------------------------------------------------
+
+describe('isMirroredMessageRow', () => {
+  it('is true for exactly the rows messageRowClass sends to messageRowEnd', () => {
+    // The toolbar's button order reads this predicate and the row class reads it
+    // too; a disagreement would reverse the buttons on a row that is not
+    // mirrored, which is how the agent rows' new order once leaked into user rows.
+    const cases: Array<[Parameters<typeof messageRowClass>[0], MessageSource]> = [
+      ['user_text', MessageSource.USER],
+      ['user_content', MessageSource.USER],
+      ['user_text', MessageSource.AGENT],
+      ['assistant_text', MessageSource.AGENT],
+      ['assistant_thinking', MessageSource.AGENT],
+      ['tool_use', MessageSource.USER],
+      ['tool_result', MessageSource.USER],
+      ['hidden', MessageSource.USER],
+      ['notification', MessageSource.USER],
+      ['plan_execution', MessageSource.USER],
+    ]
+    for (const [kind, source] of cases) {
+      expect(isMirroredMessageRow(kind, source))
+        .toBe(messageRowClass(kind, source) === chatStyles.messageRowEnd)
+    }
+  })
+
+  it('mirrors a user message and never an agent one', () => {
+    expect(isMirroredMessageRow('user_text', MessageSource.USER)).toBe(true)
+    expect(isMirroredMessageRow('assistant_text', MessageSource.AGENT)).toBe(false)
+    expect(isMirroredMessageRow('tool_use', MessageSource.USER)).toBe(false)
+    expect(isMirroredMessageRow('notification', MessageSource.USER)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // messageBubbleClass
 // ---------------------------------------------------------------------------
 
@@ -489,8 +556,8 @@ describe('messageBubbleClass', () => {
     expect(messageBubbleClass('notification', MessageSource.AGENT)).toBe(chatStyles.systemMessage)
   })
 
-  it('returns thinkingMessage for assistant_thinking', () => {
-    expect(messageBubbleClass('assistant_thinking', MessageSource.AGENT)).toBe(chatStyles.thinkingMessage)
+  it('returns bandMessage for assistant_thinking', () => {
+    expect(messageBubbleClass('assistant_thinking', MessageSource.AGENT)).toBe(chatStyles.bandMessage)
   })
 
   it('returns metaMessage for meta kinds', () => {
@@ -502,8 +569,30 @@ describe('messageBubbleClass', () => {
     expect(messageBubbleClass('compact_summary', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
   })
 
-  it('returns assistantMessage for assistant_text with AGENT source', () => {
-    expect(messageBubbleClass('assistant_text', MessageSource.AGENT)).toBe(chatStyles.assistantMessage)
+  it('returns bandMessage for assistant_text with AGENT source', () => {
+    expect(messageBubbleClass('assistant_text', MessageSource.AGENT)).toBe(chatStyles.bandMessage)
+  })
+
+  it('gives a message and a thought the SAME content class -- the line style lives on the row', () => {
+    expect(messageBubbleClass('assistant_text', MessageSource.AGENT))
+      .toBe(messageBubbleClass('assistant_thinking', MessageSource.AGENT))
+  })
+
+  it('returns bandMessage for a band kind regardless of source', () => {
+    // The band is decided by kind alone, exactly as messageRowChromeClass and the
+    // virtualizer's gap decide it -- a source-dependent answer here would let the
+    // strip and its content disagree.
+    expect(messageBubbleClass('assistant_text', MessageSource.USER)).toBe(chatStyles.bandMessage)
+    expect(messageBubbleClass('assistant_thinking', MessageSource.LEAPMUX)).toBe(chatStyles.bandMessage)
+  })
+
+  it('returns the fallback bubble for an unclassified AGENT shape', () => {
+    // `unknown` renders as a bare raw-text span, so it still needs a container.
+    expect(messageBubbleClass('unknown', MessageSource.AGENT)).toBe(chatStyles.agentFallbackMessage)
+  })
+
+  it('keeps plan_execution on its own bubble, not a band', () => {
+    expect(messageBubbleClass('plan_execution', MessageSource.AGENT)).toBe(chatStyles.planExecutionMessage)
   })
 
   it('returns userMessage for user_text with USER source', () => {
@@ -516,5 +605,145 @@ describe('messageBubbleClass', () => {
 
   it('returns systemMessage for unknown kind with LEAPMUX source', () => {
     expect(messageBubbleClass('unknown', MessageSource.LEAPMUX)).toBe(chatStyles.systemMessage)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// messageRowChromeClass
+// ---------------------------------------------------------------------------
+
+describe('messageRowChromeClass', () => {
+  it('returns the plain band for an assistant message', () => {
+    expect(messageRowChromeClass('assistant_text', MessageSource.AGENT)).toBe(chatStyles.bandRow)
+  })
+
+  it('adds the dashed variant for a thought', () => {
+    const classes = messageRowChromeClass('assistant_thinking', MessageSource.AGENT).split(' ')
+    expect(classes).toContain(chatStyles.bandRow)
+    expect(classes).toContain(chatStyles.bandRowThought)
+  })
+
+  it('widens a turn-end divider row so its rule can reach both edges', () => {
+    expect(messageRowChromeClass('result_divider', MessageSource.AGENT)).toBe(chatStyles.bleedRow)
+  })
+
+  it('widens a user message row so its bubble can reach the right edge', () => {
+    expect(messageRowChromeClass('user_text', MessageSource.USER)).toBe(chatStyles.bleedRow)
+    expect(messageRowChromeClass('user_content', MessageSource.USER)).toBe(chatStyles.bleedRow)
+  })
+
+  it('widens exactly the rows that mirror -- never a meta row from the user', () => {
+    // The bubble's negative margin and the row's widening must cover the same
+    // rows; a tool row sent by the user renders a metaMessage, not a bubble, so
+    // widening it would be pointless and could clip nothing into view.
+    for (const kind of ['tool_use', 'tool_result', 'hidden', 'notification'] as const) {
+      expect(messageRowChromeClass(kind, MessageSource.USER)).toBe('')
+      expect(isMirroredMessageRow(kind, MessageSource.USER)).toBe(false)
+    }
+  })
+
+  it('gives a widened row NO band chrome -- it paints no strip of its own', () => {
+    for (const [kind, source] of [['result_divider', MessageSource.AGENT], ['user_text', MessageSource.USER]] as const) {
+      const classes = messageRowChromeClass(kind, source).split(' ')
+      expect(classes).not.toContain(chatStyles.bandRow)
+      expect(classes).not.toContain(chatStyles.bandRowThought)
+    }
+  })
+
+  it('returns an empty string for every row that stays inside the gutter', () => {
+    for (const kind of ['tool_use', 'tool_result', 'agent_prompt', 'user_text', 'user_content', 'plan_execution', 'notification', 'control_response', 'compact_summary', 'hidden', 'unsupported_provider', 'unknown'] as const) {
+      expect(messageRowChromeClass(kind, MessageSource.AGENT)).toBe('')
+    }
+  })
+
+  it('agrees with messageBubbleClass on which kinds are bands', () => {
+    // The strip and the content inside it are chosen by two functions; a
+    // disagreement would paint gray behind a bubble or leave a band unpainted.
+    // result_divider and a user row bleed WITHOUT being bands, so this checks
+    // the band class specifically, not "chrome is non-empty".
+    for (const kind of ['assistant_text', 'assistant_thinking', 'result_divider', 'tool_use', 'user_text', 'plan_execution', 'notification', 'unknown'] as const) {
+      const isBand = messageRowChromeClass(kind, MessageSource.AGENT).split(' ').includes(chatStyles.bandRow)
+      expect(messageBubbleClass(kind, MessageSource.AGENT) === chatStyles.bandMessage).toBe(isBand)
+    }
+  })
+
+  it('widens a row whenever its bubble runs to the right edge', () => {
+    // The invariant the layout rests on: a bubble that bleeds needs its row widened,
+    // or paint containment clips the bleed away. Swept over the WHOLE domain, not a
+    // sample -- a new kind that reaches the edge without bleedRow would otherwise
+    // land as a silently clipped bubble that only a screenshot catches.
+    let bleedingBubbles = 0
+    for (const kind of ALL_MESSAGE_KINDS) {
+      for (const source of ALL_MESSAGE_SOURCES) {
+        if (!bubbleRunsToRightEdge(kind, source, false))
+          continue
+        bleedingBubbles++
+        expect(messageRowChromeClass(kind, source)).toBe(chatStyles.bleedRow)
+      }
+    }
+    // Guard the loop against becoming a no-op if the bubble mapping ever changes.
+    expect(bleedingBubbles).toBeGreaterThan(0)
+  })
+})
+
+describe('messageRowChrome', () => {
+  it('joins the base class with the row chrome and reports the band beside it', () => {
+    // The four row-mount sites spread this ONE result. Before it existed they each
+    // hand-built the class join and looked the band up again, and the streaming tail
+    // hardcoded both -- so a row could be measured without the chrome it renders with.
+    const chrome = messageRowChrome('base-class', 'assistant_thinking', MessageSource.AGENT)
+    expect(chrome.class.split(' ')).toEqual([
+      'base-class',
+      chatStyles.bandRow,
+      chatStyles.bandRowThought,
+    ])
+    expect(chrome.band).toBe('thought')
+  })
+
+  it('emits no stray separator for a row that paints nothing', () => {
+    // messageRowChromeClass returns '' for such a row, and a naive join would leave a
+    // trailing space -- which reads as an empty class token in the DOM.
+    const chrome = messageRowChrome('base-class', 'tool_use', MessageSource.AGENT)
+    expect(chrome.class).toBe('base-class')
+    expect(chrome.band).toBeUndefined()
+  })
+
+  it('drops the separator the other way too, for a row mounted with no base class', () => {
+    // The streaming tail passes '' -- it is in flow, so it has no positioning class of
+    // its own. A leading space would be the same empty token.
+    const chrome = messageRowChrome('', 'assistant_text', MessageSource.AGENT)
+    expect(chrome.class).toBe(chatStyles.bandRow)
+    expect(chrome.band).toBe('text')
+  })
+
+  it('agrees with messageRowChromeClass over the whole domain', () => {
+    for (const kind of ALL_MESSAGE_KINDS) {
+      for (const source of ALL_MESSAGE_SOURCES) {
+        const expected = [messageRowChromeClass(kind, source)].filter(Boolean).join(' ')
+        expect(messageRowChrome('', kind, source).class).toBe(expected)
+      }
+    }
+  })
+})
+
+describe('bubbleRunsToRightEdge', () => {
+  it('is true for exactly the rows whose bubble is a user bubble', () => {
+    // Derived from messageBubbleClass rather than from a condition written again,
+    // so the two can never disagree about which bubbles reach the edge.
+    for (const kind of ALL_MESSAGE_KINDS) {
+      for (const source of ALL_MESSAGE_SOURCES) {
+        const isUserBubble = messageBubbleClass(kind, source) === chatStyles.userMessage
+        expect(bubbleRunsToRightEdge(kind, source, false)).toBe(isUserBubble)
+      }
+    }
+  })
+
+  it('is false for every row once a delivery error stacks controls under the bubble', () => {
+    // Retry and Delete are laid out against the row's CONTENT edge, so a bleeding
+    // bubble above them would leave the two right edges a whole gutter apart.
+    for (const kind of ALL_MESSAGE_KINDS) {
+      for (const source of ALL_MESSAGE_SOURCES)
+        expect(bubbleRunsToRightEdge(kind, source, true)).toBe(false)
+    }
   })
 })
