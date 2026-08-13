@@ -1,10 +1,11 @@
 import type { JSX } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
 import type { VirtualItem } from './useChatVirtualizer'
-import { batch, createEffect, createSignal, For, on, onCleanup } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, For, on, onCleanup } from 'solid-js'
 import { monotonicNow } from '~/lib/monotonicNow'
 import * as styles from './ChatView.css'
-import { spanLinesReservedWidth } from './widgets/SpanLines.geometry'
+import { messageRowChrome } from './messageClassification'
+import { reservedRowContentColumnStyle } from './widgets/SpanLines.geometry'
 
 export interface ChatDomPremeasureCandidate {
   entry: ClassifiedEntry
@@ -180,11 +181,25 @@ function PremeasureRow(props: {
       props.frame.cancel(scheduledMeasureKey)
   })
 
-  const reservedLeftPx = () => spanLinesReservedWidth(props.candidate.entry.parsedSpanLines.length)
+  // Row chrome is part of the row's HEIGHT: a band's borders and vertical
+  // padding add to it directly, and any bleed widens the row, which is what the
+  // text inside wraps against. The measured row must therefore wear exactly what
+  // the live row wears (ChatView's virtual row), or it commits a wrong height.
+  const chrome = createMemo(() => messageRowChrome(
+    styles.premeasureRow,
+    props.candidate.entry.category.kind,
+    props.candidate.entry.msg.source,
+  ))
+
+  const lineCount = () => props.candidate.entry.parsedSpanLines.length
 
   return (
-    <div ref={rowEl} class={styles.premeasureRow}>
-      <div style={{ 'margin-left': `${reservedLeftPx()}px` }}>
+    <div ref={rowEl} class={chrome().class} data-band={chrome().band}>
+      {/* Mirrors the live row's content column, ROW_BLEED_LEFT_VAR included: a
+          bleeding child that measured at the wrong width would wrap its text
+          differently here than in the list. This row RESERVES the rails' width
+          rather than rendering them, so it takes the margin too. */}
+      <div style={reservedRowContentColumnStyle(lineCount())}>
         {props.renderBubble(props.candidate.entry)}
       </div>
     </div>

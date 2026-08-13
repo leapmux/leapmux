@@ -14,7 +14,17 @@ import { pluginFor } from './providers/registry'
 function ResultDivider(props: { model: ResultDividerModel }): JSXElement {
   return (
     <>
-      <div class={resultDivider} style={props.model.isError ? { color: 'var(--danger)' } : undefined}>
+      {/*
+        The test id marks the TURN-END rule specifically. `resultDivider` is a
+        hashed class and is shared with the compaction-boundary rule inside a
+        centered bubble (NotificationDivider), which does NOT bleed -- so a class
+        selector could not tell the two apart.
+      */}
+      <div
+        class={resultDivider}
+        data-testid="result-divider"
+        style={props.model.isError ? { color: 'var(--danger)' } : undefined}
+      >
         {props.model.label}
       </div>
       {props.model.detail && <pre class={resultErrorDetail}>{props.model.detail}</pre>}

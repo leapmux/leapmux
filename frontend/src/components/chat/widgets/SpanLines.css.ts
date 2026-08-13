@@ -12,7 +12,7 @@ import {
   CONNECTOR_Y,
   CONTAINER_PAD_RIGHT,
   LINE_THICKNESS,
-  ROW_GAP,
+  SPAN_BRIDGE_GAP_VAR,
 } from './SpanLines.geometry'
 
 // ─── Span Column Geometry ───────────────────────────────────────────
@@ -44,13 +44,22 @@ import {
 
 // ─── Styles ─────────────────────────────────────────────────────────
 
-/** Container for all span line columns. */
+/**
+ * Container for all span line columns.
+ *
+ * Raised above the row's content column, which now bleeds LEFT under the rails
+ * to reach the panel edge. Without this the content column, a later sibling,
+ * would paint its band or its turn-end rule over them. This is the same
+ * precedence the band already has: the rails stay legible on top.
+ */
 export const spanLinesContainer = style({
   display: 'flex',
   flexDirection: 'row',
   alignItems: 'stretch',
   flexShrink: 0,
   paddingRight: `${CONTAINER_PAD_RIGHT}px`,
+  position: 'relative',
+  zIndex: 1,
 })
 
 /** Base style for a single span line column. */
@@ -253,8 +262,8 @@ export const spanGapBridgeRow = style({
  */
 export const spanGapBridge = style({
   position: 'absolute',
-  top: `calc(-1 * ${ROW_GAP})`,
-  height: `calc(${ROW_GAP} + ${BRIDGE_SEAM}px)`,
+  top: `calc(-1 * var(${SPAN_BRIDGE_GAP_VAR}, 0px))`,
+  height: `calc(var(${SPAN_BRIDGE_GAP_VAR}, 0px) + ${BRIDGE_SEAM}px)`,
   width: `${LINE_THICKNESS}px`,
   backgroundColor: 'var(--span-line-color, var(--border))',
 })

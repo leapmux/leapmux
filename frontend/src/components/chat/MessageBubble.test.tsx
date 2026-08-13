@@ -2,8 +2,10 @@ import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownContent.css'
 import { MessageBubble } from '~/components/chat/MessageBubble'
+import * as bubbleStyles from '~/components/chat/MessageBubble.css'
+import { classifyAgentMessage, messageRowChromeClass } from '~/components/chat/messageClassification'
 import * as chatStyles from '~/components/chat/messageStyles.css'
-import { toolBodyContent } from '~/components/chat/toolStyles.css'
+import { toolBodyContent, toolHeaderTimestamp } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { AgentProvider, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
@@ -262,6 +264,80 @@ describe('thinking message toolbar buttons', () => {
 
     expect(screen.queryByTestId('message-quote')).toBeInTheDocument()
     expect(screen.queryByTestId('message-copy-markdown')).toBeInTheDocument()
+  })
+
+  it('orders the toolbar timestamp, Copy Raw JSON, Copy Markdown, then Quote', () => {
+    const innerMsg = {
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: 'Order matters.' }] },
+    }
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent(innerMsg),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} onReply={() => {}} />
+      </PreferencesProvider>
+    ))
+
+    // One order for every left-to-right row -- a tool header and an agent
+    // message row used to disagree, which moved the same two buttons between
+    // rows depending on which row was above.
+    const toolbar = screen.getByTestId('message-toolbar')
+    const ids = [...toolbar.querySelectorAll('[data-testid]')].map(el => el.getAttribute('data-testid'))
+    expect(ids).toEqual(['message-copy-json', 'message-copy-markdown', 'message-quote'])
+    // The timestamp leads, ahead of every button.
+    const timestamp = toolbar.querySelector(`.${toolHeaderTimestamp}`)
+    expect(timestamp).not.toBeNull()
+    expect(timestamp!.compareDocumentPosition(screen.getByTestId('message-copy-json')))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+  })
+
+  it('keeps the mirrored order on a user row: Quote first, then the timestamp', () => {
+    // A user bubble is right-aligned and its toolbar is laid out right-to-left
+    // beside it, so Quote leads in the DOM to land nearest the bubble. The agent
+    // rows' order change must NOT reach this row.
+    const msg = makeMsg({
+      source: MessageSource.USER,
+      content: rawContent({ content: 'ping' }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} onReply={() => {}} />
+      </PreferencesProvider>
+    ))
+
+    const toolbar = screen.getByTestId('message-toolbar')
+    const ids = [...toolbar.querySelectorAll('[data-testid]')].map(el => el.getAttribute('data-testid'))
+    expect(ids).toEqual(['message-quote', 'message-copy-markdown', 'message-copy-json'])
+    const timestamp = toolbar.querySelector(`.${toolHeaderTimestamp}`)
+    expect(timestamp).not.toBeNull()
+    expect(timestamp!.compareDocumentPosition(screen.getByTestId('message-quote')))
+      .toBe(Node.DOCUMENT_POSITION_PRECEDING)
+  })
+
+  it('gives a message and a thought the same chrome-less band content class', () => {
+    const bandContent = (inner: unknown) => {
+      const { unmount } = render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={makeMsg({ source: MessageSource.AGENT, content: rawContent(inner) })} />
+        </PreferencesProvider>
+      ))
+      const cls = screen.getByTestId('message-bubble').className
+      unmount()
+      return cls
+    }
+
+    // The band's own strip -- background, borders, full bleed -- belongs to the
+    // ROW, so the element inside it carries no bubble chrome at all.
+    const thought = bandContent({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm' }] } })
+    const text = bandContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } })
+    expect(text).toContain(chatStyles.bandMessage)
+    expect(thought).toBe(text)
+    expect(text).not.toContain(chatStyles.messageBubble)
   })
 
   it('keeps inert Quote and Copy Markdown button slots during premeasure', async () => {
@@ -1163,6 +1239,81 @@ describe('pending user bubble state', () => {
     ))
 
     expect(screen.getByTestId('message-bubble')).toHaveClass(chatStyles.userMessagePending)
+  })
+
+  it('widens the row behind a pulsing local bubble, which bleeds like a settled one', () => {
+    // `userMessagePending` spreads the same `userBubble`, so it carries the negative right
+    // margin that runs the bubble to the panel edge. Paint containment on the virtual row
+    // clips a descendant to the row's padding box, so the row has to widen to match -- and
+    // this branch is picked by isPendingUserMessage, which messageBubbleClass never sees.
+    // The invariant test beside messageBubbleClass therefore cannot reach it.
+    const msg = makeMsg({
+      id: 'local-3',
+      source: MessageSource.USER,
+      content: rawContent({ content: 'hello' }),
+    })
+
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getByTestId('message-bubble')).toHaveClass(chatStyles.userMessagePending)
+    expect(messageRowChromeClass(classifyAgentMessage(msg).kind, msg.source)).toBe(chatStyles.bleedRow)
+  })
+
+  it('closes the bubble again when the message failed to deliver', () => {
+    // The "Failed to deliver / Retry / Delete" line is a sibling below the row, laid out
+    // against the row's content edge -- so a bleeding bubble above it would leave the two
+    // right edges a whole gutter apart. Bleeding that line to match would put Retry and
+    // Delete under the scroll rail's column, which takes every pointer event in its own box.
+    const msg = makeMsg({
+      id: 'local-4',
+      source: MessageSource.USER,
+      content: rawContent({ content: 'hello' }),
+    })
+
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} error="Failed to deliver" />
+      </PreferencesProvider>
+    ))
+
+    expect(container.querySelector(`.${bubbleStyles.messageWithError}`)).not.toBeNull()
+    expect(screen.getByTestId('message-error')).toBeInTheDocument()
+    // The bubble is still a user bubble, and it drops ONLY the flush-right marker.
+    // Nothing cancels a bleed here: without the marker no bleed is declared at all.
+    expect(screen.getByTestId('message-bubble')).toHaveClass(chatStyles.userMessage)
+    expect(screen.getByTestId('message-bubble')).not.toHaveClass(chatStyles.bubbleFlushRight)
+  })
+
+  it('marks a delivered user bubble flush-right, settled or pending alike', () => {
+    for (const [id, expected] of [['m-settled', chatStyles.userMessage], ['local-5', chatStyles.userMessagePending]] as const) {
+      const msg = makeMsg({ id, source: MessageSource.USER, content: rawContent({ content: 'hello' }) })
+      const view = render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={msg} />
+        </PreferencesProvider>
+      ))
+      const bubble = view.getByTestId('message-bubble')
+      expect(bubble).toHaveClass(expected)
+      expect(bubble).toHaveClass(chatStyles.bubbleFlushRight)
+      view.unmount()
+    }
+  })
+
+  it('never marks an AGENT bubble flush-right', () => {
+    // The marker only takes effect inside a widened row, and an agent row is not
+    // widened -- but it must not carry the marker either, or the stylesheet is the
+    // only thing standing between it and a clipped bleed.
+    const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent({ content: 'hi' }) })
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('message-bubble')).not.toHaveClass(chatStyles.bubbleFlushRight)
   })
 })
 

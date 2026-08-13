@@ -3,7 +3,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { SpanLineGapBridges } from '~/components/chat/widgets/SpanLineGapBridges'
 import { bodySpanKey, shouldConnectSpanLineTop, SpanLines } from '~/components/chat/widgets/SpanLines'
-import { LINE_THICKNESS, spanColumnCenterX } from '~/components/chat/widgets/SpanLines.geometry'
+import { COL_SPACING, LINE_THICKNESS, NO_SPAN_MARGIN, ROW_BLEED_LEFT_VAR, rowBleedLeftStyle, spanColumnCenterX, spanLinesReservedWidth } from '~/components/chat/widgets/SpanLines.geometry'
 
 describe('spanLines', () => {
   it('renders nothing when lines array is empty', () => {
@@ -82,6 +82,7 @@ describe('spanLines', () => {
         precedingEntry={undefined}
         topOf={id => (id === 'm2' ? 240 : 120)}
         hiddenOf={() => false}
+        gapAboveOf={() => 8}
       />
     ))
 
@@ -107,6 +108,7 @@ describe('spanLines', () => {
         precedingEntry={{ msg: { id: 'm5' }, category: { kind: 'assistant_text' }, parsedSpanLines: [lineA, lineB] }}
         topOf={() => 300}
         hiddenOf={() => false}
+        gapAboveOf={() => 8}
       />
     ))
     const anchor = container.querySelector('[data-span-gap-bridges-for="m6"]') as HTMLElement
@@ -127,6 +129,7 @@ describe('spanLines', () => {
         precedingEntry={{ msg: { id: 'm2' }, category: { kind: 'assistant_text' }, parsedSpanLines: [line] }}
         topOf={() => 100}
         hiddenOf={() => true}
+        gapAboveOf={() => 8}
       />
     ))
     const anchor = container.querySelector('[data-span-gap-bridges-for="m3"]') as HTMLElement
@@ -154,6 +157,7 @@ describe('spanLines', () => {
         }}
         topOf={() => 60}
         hiddenOf={() => false}
+        gapAboveOf={() => 8}
       />
     ))
     const anchor = container.querySelector('[data-span-gap-bridges-for="m4"]') as HTMLElement
@@ -187,5 +191,30 @@ describe('spanLines', () => {
       { span_id: 'span-parent', color: 1, type: 'active' },
       previousToolBodyKey,
     )).toBe(false)
+  })
+})
+
+describe('rowBleedLeftStyle', () => {
+  it('folds the rails width into the distance to the panel edge', () => {
+    // A bleeding child cannot assume the bare gutter: the rails push the row's
+    // content column right, and only the row knows by how much. Getting this
+    // wrong is exactly what stopped a bleed short of the edge on a span row.
+    for (const lineCount of [0, 1, 2, 5]) {
+      expect(rowBleedLeftStyle(lineCount)).toEqual({
+        [ROW_BLEED_LEFT_VAR]: `calc(var(--chat-pad-left, 0px) + ${spanLinesReservedWidth(lineCount)}px)`,
+      })
+    }
+  })
+
+  it('grows with each rail, by exactly one column spacing', () => {
+    const at = (n: number) => Number.parseInt(rowBleedLeftStyle(n)[ROW_BLEED_LEFT_VAR].match(/\+ (\d+)px/)![1], 10)
+    expect(at(1) - at(0)).toBe(COL_SPACING)
+    expect(at(3) - at(2)).toBe(COL_SPACING)
+  })
+
+  it('reserves the no-rail inset for a row with no span lines', () => {
+    // The railless wrapper carries margin-left: NO_SPAN_MARGIN, so the distance
+    // to the edge must include that same pixel.
+    expect(rowBleedLeftStyle(0)[ROW_BLEED_LEFT_VAR]).toContain(`+ ${NO_SPAN_MARGIN}px`)
   })
 })

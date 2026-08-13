@@ -17,7 +17,7 @@ import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { Spinner } from '~/components/common/Spinner'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
+import { AgentStatus, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { motion } from '~/styles/tokens'
 import { AgentStartupBanner } from './AgentStartupBanner'
@@ -27,7 +27,7 @@ import { createMessageUiState } from './chatMessageUiState'
 import { createOrderedTailReveal } from './chatOrderedReveal'
 import { createChatPremeasureBands } from './chatPremeasureBands'
 import { resolveScrollbarOwner } from './chatRailPolicy'
-import { kindScopedLayoutKey } from './chatRowGeometry'
+import { kindScopedLayoutKey, messageBandKind } from './chatRowGeometry'
 import { createRowHeightPersistence } from './chatRowHeightPersistence'
 import { createScrollActivity } from './chatScrollActivity'
 import { ChatScrollRail } from './ChatScrollRail'
@@ -38,8 +38,8 @@ import * as styles from './ChatView.css'
 import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { MessageBubble } from './MessageBubble'
+import { messageBubbleClass, messageRowChrome } from './messageClassification'
 import { createMessageRenderCacheStore } from './messageRenderCache'
-import { assistantMessage } from './messageStyles.css'
 import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
 import { ToolUseLayout } from './toolRenderers'
 import { useChatScroll } from './useChatScroll'
@@ -47,7 +47,7 @@ import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
 import { ChatRowSkeleton } from './widgets/ChatRowSkeleton'
 import { SpanLineGapBridges } from './widgets/SpanLineGapBridges'
 import { SpanLines } from './widgets/SpanLines'
-import { NO_SPAN_MARGIN } from './widgets/SpanLines.geometry'
+import { reservedRowContentColumnStyle, rowBleedLeftStyle } from './widgets/SpanLines.geometry'
 import { ThinkingIndicator } from './widgets/ThinkingIndicator'
 
 /**
@@ -57,11 +57,11 @@ import { ThinkingIndicator } from './widgets/ThinkingIndicator'
  */
 export const SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS = 160
 /**
- * How long the floating scroll rail stays lit after the last scroll activity, on the
- * touch / narrow viewports where it auto-hides at all. Much longer than the
- * syntax-highlight pause on purpose: that one only has to outlast a repaint, while this
- * is a navigation affordance the reader must have time to see, aim at, and tap a jump
- * dot on.
+ * How long the floating scroll rail stays lit after the last scroll activity. Every
+ * viewport and pointer fades it the same way. Much longer than the syntax-highlight
+ * pause on purpose: that one only has to outlast a repaint, while this is a navigation
+ * affordance the reader must have time to see, aim at, and tap a jump dot on. A mouse
+ * that rests on the strip holds it lit past this window -- see the rail's `hovered`.
  */
 export const RAIL_VISIBLE_IDLE_MS = 1200
 /**
@@ -727,6 +727,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     isCoveredByInFlowTail(id) || rowHiddenPendingReveal(id)
   )
 
+  // The streaming tail paints a band, and so does the last virtual row above it in
+  // the common case (a thought, then the streamed reply). The virtualizer merges
+  // two adjacent bands in its offset map, but the tail has no offset-map entry, so
+  // it must cancel its own flow gap. Requires the row above to be PAINTING: a row
+  // held invisible until it measures shows no band, and merging against it would
+  // pull the tail up over blank space.
+  const tailMergesWithRowAbove = createMemo(() => {
+    const above = tailVisibleEntry()
+    return above !== undefined
+      && messageBandKind(above.category.kind) !== undefined
+      && !rowHiddenUntilMeasured(above.msg.id)
+  })
+
   // Fling-skeleton phases for the rendered rows, collected into one reactive set so the
   // gap-bridge overlay (rendered outside the rows) can see which rows are skeletons.
   const flingSkeletons = createFlingSkeletonRegistry(virt, SKELETON_CROSSFADE_MS)
@@ -954,7 +967,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // place instead of two copies that could drift.
   const positionedRowSkeleton = (entry: ClassifiedEntry, closing = false) => (
     <div
-      class={closing ? `${styles.virtualRow} ${styles.rowSkeletonClosing}` : styles.virtualRow}
+      // A band row's decoration is the ROW's own background and border, and the row
+      // this slot stands in for is invisible -- so without the chrome here the
+      // shimmer bars sit on the bare panel and the band appears only at the
+      // crossfade. Carries the class and NOT `data-band`: the marker is an e2e
+      // hook, and a second visible element with it would break the seam check that
+      // walks every [data-band] in DOM order.
+      //
+      // The CLOSING copy stays bare on purpose. The real row is already visible
+      // underneath and paints its own band, so an opaque surface on the fading copy
+      // would cover the revealed text for the length of the crossfade.
+      class={closing
+        ? `${styles.virtualRow} ${styles.rowSkeletonClosing}`
+        : messageRowChrome(styles.virtualRow, entry.category.kind, entry.msg.source).class}
       style={{ transform: `translateY(${virt.offsetOfId(entry.msg.id) ?? 0}px)` }}
     >
       <ChatRowSkeleton height={virt.heightOfId(entry.msg.id)} seed={entry.msg.id} />
@@ -1033,6 +1058,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     precedingEntry={visibleEntries()[virt.range().start - 1]}
                     topOf={id => virt.offsetOfId(id) ?? 0}
                     hiddenOf={rowSpanColumnHidden}
+                    gapAboveOf={virt.gapAboveOf}
                   />
                   {/*
                     Loading skeletons: a premeasure-hidden row whose wait has
@@ -1075,9 +1101,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       // this row's bridge while the skeleton shows.
                       const upgradePhase = flingSkeletons.trackRow(msg.id)
 
+                      // An assistant message / thought paints a full-bleed band
+                      // BEHIND the row: the band is the row's own background and
+                      // border, so paint containment can't clip it and the span
+                      // rails and toolbar sit on top of the gray. Read once --
+                      // reclassifying a row replaces its entry, which remounts
+                      // this row. data-band is the e2e hook, because every style
+                      // class is a hashed name.
+                      const chrome = messageRowChrome(styles.virtualRow, entry.category.kind, msg.source)
+
                       return (
                         <div
-                          class={styles.virtualRow}
+                          class={chrome.class}
+                          data-band={chrome.band}
                           style={{
                             transform: `translateY(${top()}px)`,
                             // Absolute rows do not reserve flow height for
@@ -1116,13 +1152,28 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                     name, so an e2e spec has no other stable way
                                     to read the rail count of one row.
                                   */}
+                                  {/*
+                                    Both arms publish ROW_BLEED_LEFT_VAR: how far
+                                    the panel's left edge is from where this row's
+                                    content starts. The rails push that start
+                                    right by a width only the row knows, so a
+                                    bleeding child reads it instead of assuming
+                                    the bare gutter.
+                                  */}
                                   <Show
                                     when={parsedSpanLines.length > 0}
-                                    fallback={<div data-span-columns={parsedSpanLines.length} style={{ 'margin-left': `${NO_SPAN_MARGIN}px` }}>{bubble}</div>}
+                                    fallback={(
+                                      <div
+                                        data-span-columns={parsedSpanLines.length}
+                                        style={reservedRowContentColumnStyle(0)}
+                                      >
+                                        {bubble}
+                                      </div>
+                                    )}
                                   >
-                                    <div class={styles.messageRow} data-span-columns={parsedSpanLines.length}>
+                                    <div class={styles.railedRow} data-span-columns={parsedSpanLines.length}>
                                       <SpanLines lines={parsedSpanLines} />
-                                      <div class={styles.messageRowContent}>
+                                      <div class={styles.railedRowContent} style={rowBleedLeftStyle(parsedSpanLines.length)}>
                                         {bubble}
                                       </div>
                                     </div>
@@ -1155,12 +1206,31 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     {streamingTail => (
                       <Show
                         when={streamingTail().type === 'plan'}
-                        fallback={(
-                          <div class={assistantMessage}>
-                            {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
-                            <div class={markdownContent} innerHTML={streamingTail().html} />
-                          </div>
-                        )}
+                        fallback={(() => {
+                          // The live tail wears the SAME chrome as the persisted
+                          // assistant row that replaces it, so the band does not
+                          // appear only after the message lands. Derived from the
+                          // kind it will become, never hardcoded: this is a row
+                          // mount site like the other three, and a hand-written
+                          // copy is what lets them drift.
+                          const chrome = messageRowChrome('', 'assistant_text', MessageSource.AGENT)
+                          return (
+                            <div
+                              // The tail sits in FLOW, not in the offset map, so the
+                              // virtualizer's band overlap cannot reach it. Cancel
+                              // the flow gap and one border here instead, or the
+                              // reader sees two lines and a gap that snap into one
+                              // line the instant the message lands.
+                              class={tailMergesWithRowAbove() ? `${chrome.class} ${styles.bandTailMerged}` : chrome.class}
+                              data-band={chrome.band}
+                            >
+                              <div class={messageBubbleClass('assistant_text', MessageSource.AGENT)}>
+                                {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
+                                <div class={markdownContent} innerHTML={streamingTail().html} />
+                              </div>
+                            </div>
+                          )
+                        })()}
                       >
                         <ToolUseLayout
                           icon={PlaneTakeoff}
@@ -1264,11 +1334,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             // derived from ONE railOwner resolution (single viewport-height source), so the rail is
             // shown exactly when the native bar is hidden -- never zero, never two scrollbars.
             hidden={railOwner() !== 'rail'}
-            // Paint-only auto-hide on touch / narrow viewports; never an unmount (see the
-            // rail's scrollActive prop). Driven by railActivity, which takes user input plus
-            // a momentum-gated scroll, so a streaming turn's stick-to-bottom writes cannot
-            // light it. Passed unconditionally: every declaration the resulting class carries
-            // lives inside a media query, so desktop is unaffected with no JS branch here.
+            // Paint-only auto-hide; never an unmount (see the rail's scrollActive prop).
+            // Driven by railActivity, which takes user input plus a momentum-gated scroll, so
+            // a streaming turn's stick-to-bottom writes cannot light it. Every viewport and
+            // pointer fades the idle rail the same way -- only the `pointer-events` half of
+            // railIdle is coarse-only -- so there is no JS branch here.
             scrollActive={railActivity.active()}
             // The rail's own interactions (grab, drag move, dot hover or focus) reopen the
             // window -- a captured thumb drag fires no events on the scroll container.

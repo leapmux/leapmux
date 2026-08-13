@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { PersistableRowHeight, UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
 import { createEffect, onCleanup, untrack } from 'solid-js'
-import { localStorageGet, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
+import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
@@ -34,8 +34,21 @@ import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 /** One stored row: [message id, heightKey digest, height (px, 2dp)]. */
 type StoredRow = [id: string, digest: string, height: number]
 
+/**
+ * Stored-payload version. A heightKey encodes the row's CONTENT, width and UI
+ * state -- never the stylesheet -- so a layout change keeps every digest valid
+ * while making every stored height wrong. Bump this whenever a change to the
+ * chat CSS moves row heights, and the next load discards the whole payload
+ * instead of hydrating heights that jump the offset map under the scroll anchor
+ * until re-measurement heals them.
+ *
+ * 2: assistant messages and thoughts became full-bleed bands (row borders and
+ *    band padding replaced the bubble's border, padding and 85% width cap).
+ */
+export const STORED_ROW_HEIGHTS_VERSION = 2
+
 interface StoredRowHeights {
-  v: 1
+  v: typeof STORED_ROW_HEIGHTS_VERSION
   rows: StoredRow[]
 }
 
@@ -65,7 +78,7 @@ export interface RowHeightPersistenceDeps {
 
 function parseStoredRows(raw: unknown): Map<string, { digest: string, height: number }> {
   const pending = new Map<string, { digest: string, height: number }>()
-  if (raw === null || typeof raw !== 'object' || (raw as StoredRowHeights).v !== 1)
+  if (raw === null || typeof raw !== 'object' || (raw as StoredRowHeights).v !== STORED_ROW_HEIGHTS_VERSION)
     return pending
   const rows = (raw as StoredRowHeights).rows
   if (!Array.isArray(rows))
@@ -192,7 +205,7 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     // rows (snapshotHeights is LRU-ordered, oldest first), keeping the most recent
     // measurements -- and the eviction bound can't drift from the render/token caches'.
     capMapInsertionOrder(merged, PERSISTED_ROW_HEIGHTS_MAX)
-    localStorageSet(storageKey(id), { v: 1, rows: [...merged.values()] } satisfies StoredRowHeights)
+    localStorageSet(storageKey(id), { v: STORED_ROW_HEIGHTS_VERSION, rows: [...merged.values()] } satisfies StoredRowHeights)
   }
 
   // Load once, as soon as the storage identity is available.
@@ -203,7 +216,14 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     loaded = true
     const stored = localStorageGet<StoredRowHeights>(storageKey(id))
     if (stored !== undefined) {
-      for (const [rowId, entry] of parseStoredRows(stored))
+      const rows = parseStoredRows(stored)
+      // A payload from an older version parses to nothing. Drop it now rather
+      // than leaving it: the read that just returned it also refreshed its
+      // expiry, so a chat that never commits a height (one the reader opens and
+      // leaves) would keep tens of KB of dead rows alive indefinitely.
+      if (rows.size === 0)
+        localStorageRemove(storageKey(id))
+      for (const [rowId, entry] of rows)
         pending.set(rowId, entry)
     }
     tryAdopt(untrack(deps.virtualItems))

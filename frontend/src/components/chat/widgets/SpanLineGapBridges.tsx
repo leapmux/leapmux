@@ -3,7 +3,7 @@ import type { SpanLine } from './SpanLines'
 import { createMemo, For, Index, Show } from 'solid-js'
 import { bodySpanKey, shouldConnectSpanLineTop, spanColorClassFor } from './SpanLines'
 import { spanGapBridge, spanGapBridgeRow } from './SpanLines.css'
-import { LINE_THICKNESS, spanColumnCenterX } from './SpanLines.geometry'
+import { LINE_THICKNESS, SPAN_BRIDGE_GAP_VAR, spanColumnCenterX } from './SpanLines.geometry'
 
 /**
  * The slice of a classified chat entry the bridge overlay reads. Structural
@@ -30,13 +30,23 @@ export interface SpanLineGapBridgesProps {
   topOf: (id: string) => number
   /** Mirrors the row's hide-until-measured state so a bridge never paints for an invisible row. */
   hiddenOf: (id: string) => boolean
+  /**
+   * The gap the offset map left above a row (`gapAboveOf` on the virtualizer).
+   * The segments are sized from it, so this overlay and the row offsets read one
+   * decider. Required, not optional, so a new mount site cannot forget it and
+   * silently draw every bridge at zero height.
+   */
+  gapAboveOf: (id: string) => number
 }
 
 /**
  * The inter-row rail segments, drawn OUTSIDE the rows in one overlay inside
  * the virtual spacer. The rows' own span columns stop exactly at the row
- * edge; this overlay paints the ROW_GAP-tall continuation above each row
- * whose column connects to the row above. Living outside the rows is what
+ * edge; this overlay paints the continuation across the gap above each row
+ * whose column connects to the row above, sized from that row's own gap (see
+ * `gapAboveOf`), so a merged band pair -- which has no gap -- gets a segment of
+ * zero height instead of one drawn for a gap that does not exist. Living
+ * outside the rows is what
  * lets every virtualized row take `contain: layout paint` — the one thing
  * that used to overflow a row's box was this bridge segment.
  */
@@ -61,6 +71,9 @@ export const SpanLineGapBridges: Component<SpanLineGapBridgesProps> = props => (
             style={{
               transform: `translateY(${props.topOf(entry.msg.id)}px)`,
               visibility: props.hiddenOf(entry.msg.id) ? 'hidden' : undefined,
+              // Published once per ROW, not per column: every segment in this
+              // anchor spans the same gap.
+              [SPAN_BRIDGE_GAP_VAR]: `${props.gapAboveOf(entry.msg.id)}px`,
             }}
             data-span-gap-bridges-for={entry.msg.id}
           >

@@ -3,10 +3,10 @@ import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { localStorageGet, localStorageRemove, localStorageSet, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { fnv1a32Hex } from '~/lib/stringDigest'
-import { createRowHeightPersistence, PERSISTED_ROW_HEIGHTS_MAX, ROW_HEIGHT_SAVE_DEBOUNCE_MS } from './chatRowHeightPersistence'
+import { createRowHeightPersistence, PERSISTED_ROW_HEIGHTS_MAX, ROW_HEIGHT_SAVE_DEBOUNCE_MS, STORED_ROW_HEIGHTS_VERSION } from './chatRowHeightPersistence'
 
 interface StoredShape {
-  v: 1
+  v: typeof STORED_ROW_HEIGHTS_VERSION
   rows: [string, string, number][]
 }
 
@@ -71,7 +71,7 @@ describe('chatrowheightpersistence', () => {
 
   it('hydrates stored rows whose key digest matches the live heightKey', () => {
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120), storedRow('b', 'k-b-old', 80)],
     })
     const h = makeHarness({
@@ -86,7 +86,7 @@ describe('chatrowheightpersistence', () => {
 
   it('adopts a pending row later, when its live key changes to match (width settles)', () => {
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a|w800', 120)],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a|w360')] })
@@ -98,7 +98,7 @@ describe('chatrowheightpersistence', () => {
 
   it('keeps a pending row when the virtualizer defers prime-height adoption', () => {
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
     const pending = new Set<string>()
@@ -135,7 +135,7 @@ describe('chatrowheightpersistence', () => {
     // is still not in the cache -- so the persistence layer MUST re-attempt the
     // prime when the key matches again. It must not permanently bar the row.
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
     const pending = new Set<string>()
@@ -190,7 +190,7 @@ describe('chatrowheightpersistence', () => {
     // attempt marker), the persistence layer must re-attempt when the row returns,
     // or the stale marker bars its warm-start height for the component's life.
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
     const pending = new Set<string>()
@@ -235,7 +235,7 @@ describe('chatrowheightpersistence', () => {
 
   it('retires a pending row once a real measurement supersedes it', () => {
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
     const measured = new Set(['a'])
@@ -248,7 +248,7 @@ describe('chatrowheightpersistence', () => {
     // 'old' is a stored row for history that has not paginated in — it must
     // survive the save instead of being clobbered by the fresh snapshot.
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('old', 'k-old', 300)],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [] })
@@ -279,7 +279,7 @@ describe('chatrowheightpersistence', () => {
 
   it('never replaces stored data with an empty snapshot', () => {
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a|w800', 120)],
     })
     // Live key never matches (different width), so nothing adopts and the
@@ -312,7 +312,7 @@ describe('chatrowheightpersistence', () => {
 
   it('loads and hydrates once the storage id arrives late', () => {
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a', 120)],
     })
     const h = makeHarness({ items: [item('a', 'k-a')] }) // no id yet
@@ -327,7 +327,7 @@ describe('chatrowheightpersistence', () => {
     // ceiling's worth of fresh measurements: the cap must keep every fresh
     // row and shed the pending one first.
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('stale', 'k-stale|w999', 50)],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [item('stale', 'k-live')] })
@@ -350,7 +350,7 @@ describe('chatrowheightpersistence', () => {
     // the snapshot -- and its fresh measurement must land at the recent end, not
     // inherit 'a's early pending slot (which the cap would shed first).
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [storedRow('a', 'k-a-old', 120)],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a-new')] })
@@ -370,9 +370,26 @@ describe('chatrowheightpersistence', () => {
     h.dispose()
   })
 
+  it('discards a payload written by an older layout version', () => {
+    // A heightKey never encodes the stylesheet, so an older payload's digests
+    // still match while every height in it is wrong. The version guard is the
+    // only thing that stops those heights from jumping the offset map.
+    localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
+      v: STORED_ROW_HEIGHTS_VERSION - 1,
+      rows: [storedRow('a', 'k-a', 120)],
+    })
+    const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a')] })
+    expect(h.primed).toEqual([])
+    // And it is DELETED, not merely ignored. The read that returned it also refreshed its
+    // expiry, so a chat the reader opens and leaves -- one that commits no height, and so
+    // never overwrites the key -- would keep tens of KB of dead rows alive indefinitely.
+    expect(localStorageGet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)).toBeUndefined()
+    h.dispose()
+  })
+
   it('ignores malformed stored payloads', () => {
     localStorageSet(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
-      v: 1,
+      v: STORED_ROW_HEIGHTS_VERSION,
       rows: [
         ['a', fnv1a32Hex('k-a')], // missing height
         ['b', fnv1a32Hex('k-b'), -5], // non-positive

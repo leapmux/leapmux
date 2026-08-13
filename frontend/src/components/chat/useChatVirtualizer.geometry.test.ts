@@ -2,6 +2,7 @@ import type { VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
+import { BAND_BORDER_PX } from './chatRowGeometry'
 import { HEIGHT_CACHE_MAX, sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
 import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.testkit'
 
@@ -27,6 +28,112 @@ describe('useChatVirtualizer geometry', () => {
       expect(virt.offsetOfIndex(2)).toBe(230) // +100 + large gap (lower row plain)
       expect(virt.totalHeight()).toBe(330) // +100
       dispose()
+    })
+  })
+
+  describe('adjacent band rows', () => {
+    // A band paints a full-bleed strip with a line on its top and bottom edge. Two
+    // adjacent bands overlap by one border width so the pair shows ONE line.
+    it('overlaps two adjacent bands by the band border width', () => {
+      createRoot((dispose) => {
+        const { virt } = setup(makeItems([{ seq: 1, kind: 'assistant_text' }, { seq: 2, kind: 'assistant_thinking' }]))
+        expect(virt.offsetOfIndex(1)).toBe(100 - BAND_BORDER_PX)
+        expect(virt.totalHeight()).toBe(200 - BAND_BORDER_PX)
+        dispose()
+      })
+    })
+
+    it('overlaps once per pair across a run of bands', () => {
+      createRoot((dispose) => {
+        const { virt } = setup(makeItems([
+          { seq: 1, kind: 'assistant_thinking' },
+          { seq: 2, kind: 'assistant_text' },
+          { seq: 3, kind: 'assistant_thinking' },
+          { seq: 4, kind: 'assistant_text' },
+        ]))
+        expect(virt.offsetOfIndex(1)).toBe(100 - BAND_BORDER_PX)
+        expect(virt.offsetOfIndex(2)).toBe(200 - 2 * BAND_BORDER_PX)
+        expect(virt.offsetOfIndex(3)).toBe(300 - 3 * BAND_BORDER_PX)
+        expect(virt.totalHeight()).toBe(400 - 3 * BAND_BORDER_PX)
+        dispose()
+      })
+    })
+
+    it('keeps the normal gap when only one side of the pair is a band', () => {
+      createRoot((dispose) => {
+        // band -> tool, then tool -> band. Neither pair merges, so both keep the
+        // large gap: a band next to a non-band still draws both of its own lines.
+        const { virt } = setup(makeItems([
+          { seq: 1, kind: 'assistant_text' },
+          { seq: 2, kind: 'tool_use' },
+          { seq: 3, kind: 'assistant_thinking' },
+        ]))
+        expect(virt.offsetOfIndex(1)).toBe(120)
+        expect(virt.offsetOfIndex(2)).toBe(240)
+        expect(virt.totalHeight()).toBe(340)
+        dispose()
+      })
+    })
+
+    it('overlaps a band pair even when the lower band has span lines', () => {
+      createRoot((dispose) => {
+        // The band rule wins over the small-gap rule. The rails then meet at the
+        // band's own shared border rather than across a gap, and the bridge across
+        // that seam collapses -- it sizes itself from gapAboveOf, asserted below.
+        const { virt } = setup(makeItems([
+          { seq: 1, kind: 'assistant_text', span: true },
+          { seq: 2, kind: 'assistant_thinking', span: true },
+        ]))
+        expect(virt.offsetOfIndex(1)).toBe(100 - BAND_BORDER_PX)
+        dispose()
+      })
+    })
+
+    it('still uses the small gap when a span row below a band is not a band', () => {
+      createRoot((dispose) => {
+        const { virt } = setup(makeItems([
+          { seq: 1, kind: 'assistant_text' },
+          { seq: 2, kind: 'tool_use', span: true },
+        ]))
+        expect(virt.offsetOfIndex(1)).toBe(110)
+        dispose()
+      })
+    })
+
+    it('adds no gap after the last row, band or not', () => {
+      createRoot((dispose) => {
+        const { virt } = setup(makeItems([{ seq: 1, kind: 'assistant_text' }]))
+        expect(virt.totalHeight()).toBe(100)
+        dispose()
+      })
+    })
+
+    it('reports the gap above each row, which is what sizes the span-line bridge', () => {
+      // The bridge overlay reads this instead of restating the gap as a token of its
+      // own, so a merged band seam -- where there IS no gap -- collapses its segment
+      // rather than drawing one for a gap that does not exist.
+      createRoot((dispose) => {
+        const { virt } = setup(makeItems([
+          { seq: 1, kind: 'assistant_text' },
+          { seq: 2, kind: 'assistant_thinking' },
+          { seq: 3, kind: 'tool_use', span: true },
+          { seq: 4, kind: 'tool_result' },
+        ]))
+        expect(virt.gapAboveOf('m1')).toBe(0) // nothing above the first row
+        expect(virt.gapAboveOf('m2')).toBe(-BAND_BORDER_PX) // merged band pair
+        expect(virt.gapAboveOf('m3')).toBe(10) // small gap: the lower row has rails
+        expect(virt.gapAboveOf('m4')).toBe(20) // large gap
+        expect(virt.gapAboveOf('nope')).toBe(0) // an absent row bridges nothing
+        dispose()
+      })
+    })
+
+    it('treats a row with no kind as a non-band', () => {
+      createRoot((dispose) => {
+        const { virt } = setup(makeItems([{ seq: 1 }, { seq: 2 }]))
+        expect(virt.offsetOfIndex(1)).toBe(120)
+        dispose()
+      })
     })
   })
 
