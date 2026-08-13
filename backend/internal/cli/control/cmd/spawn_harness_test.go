@@ -54,6 +54,13 @@ type recordingHub struct {
 	// preflight's positive behaviour over the same harness.
 	listWorkers []string
 
+	// materialized, when non-nil, answers GetMaterialized with this
+	// snapshot. A command that bootstraps the CRDT (every `tab`
+	// mutation) needs one before it can preflight its target, so a
+	// test that drives such a command end to end supplies the tree
+	// its tab lives in.
+	materialized *leapmuxv1.UserMaterialized
+
 	mu      sync.Mutex
 	methods []string
 }
@@ -67,6 +74,24 @@ func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method stri
 		return proto.Marshal(&leapmuxv1.ListWorkspacesResponse{
 			Workspaces: []*leapmuxv1.Workspace{{Id: "ws-1", CreatedBy: "u-spawn", Title: "First"}},
 		})
+	// The three round-trips a `tab` mutation makes before it touches the tab:
+	// the resolver's existence check and tab lookup, then the CRDT bootstrap.
+	// All three answer only when a test supplies a snapshot, so a test that
+	// wants the denial keeps getting it.
+	case method == "GetWorkspace" && h.materialized != nil:
+		return proto.Marshal(&leapmuxv1.GetWorkspaceResponse{
+			Workspace: &leapmuxv1.Workspace{Id: "ws-1", CreatedBy: "u-spawn", Title: "First"},
+		})
+	case method == "LocateTab" && h.materialized != nil:
+		return proto.Marshal(&leapmuxv1.LocateTabResponse{Tab: &leapmuxv1.WorkspaceTab{
+			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+			TabId:       "agent-2",
+			TileId:      "root-1",
+			WorkerId:    "worker-A",
+			WorkspaceId: "ws-1",
+		}})
+	case method == "GetMaterialized" && h.materialized != nil:
+		return proto.Marshal(&leapmuxv1.GetMaterializedResponse{State: h.materialized})
 	case method == "ListWorkers" && h.listWorkers != nil:
 		workers := make([]*leapmuxv1.Worker, 0, len(h.listWorkers))
 		for _, id := range h.listWorkers {

@@ -336,23 +336,43 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 			return
 		}
 	}
-	if err := svc.removeWorktreeFromDisk(*wt, true); err != nil {
+	// Enforce the removal policy HERE, at the site that runs the removal, and
+	// not only at the clients that offered the choice. The clients read the
+	// same verdict to disable a button and to refuse a flag, but a client that
+	// ignores the field still reaches this line, and a `git worktree lock`
+	// taken after the dialog opened beats any answer they were given. This
+	// check runs inside the per-worktree removal lock the caller already holds,
+	// so it cannot be raced, and it reports the curated sentence rather than
+	// git's raw stderr.
+	//
+	// A probe that cannot answer falls through to the removal. That matches the
+	// fail-open rule worktreeRemovalBlockedReason states: a block the worker
+	// cannot confirm would refuse a removal the user can have.
+	if reason, err := svc.worktreeRemovalBlockedReason(bgCtx(), wt.WorktreePath, nil); err != nil {
+		slog.Warn("worktree removal policy could not be read; attempting the removal",
+			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "error", err)
+	} else if reason != "" {
+		slog.Info("refusing a worktree removal git would reject",
+			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "reason", reason)
+		setWorktreeRemovalRefused(result, wt, reason)
+		return
+	}
+	if err := svc.removeWorktreeFromDisk(*wt); err != nil {
 		setWorktreeRemovalFailed(result, wt, err)
 		return
 	}
 	result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED
 }
 
-// setWorktreeRemovalFailed marks result as a failed worktree removal,
-// stamping the path + id so the UI can point the user at the directory
-// for manual cleanup. Shared by the link-drop, count, and `git worktree
-// remove` failure paths, which all carry the same partial-failure shape.
 // setWorktreeRemovalRefused marks a removal we declined on purpose, because the
 // close could not be attributed to a live tab and the directory still holds work
 // nobody was asked about. Reported as FAILED so the UI surfaces it rather than
-// implying the directory is gone; the link is left in place, so the orphan
-// reconciler re-examines it and reclaims it once the work is committed and
-// pushed.
+// implying the directory is gone.
+//
+// The directory survives, but nothing revisits it: this close already dropped
+// the last worktree_tabs link (that is what `remaining == 0` above means), and
+// ListOrphanCandidateWorktrees requires at least one link, so the orphan
+// reconciler never sees the worktree again. The user cleans it up by hand.
 func setWorktreeRemovalRefused(result *leapmuxv1.CloseTabResult, wt *db.Worktree, reason string) {
 	result.FailureMessage = "Worktree kept: it may hold unsaved work"
 	result.FailureDetail = reason
@@ -361,6 +381,10 @@ func setWorktreeRemovalRefused(result *leapmuxv1.CloseTabResult, wt *db.Worktree
 	result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED
 }
 
+// setWorktreeRemovalFailed marks result as a failed worktree removal,
+// stamping the path + id so the UI can point the user at the directory
+// for manual cleanup. Shared by the link-drop, count, and `git worktree
+// remove` failure paths, which all carry the same partial-failure shape.
 func setWorktreeRemovalFailed(result *leapmuxv1.CloseTabResult, wt *db.Worktree, err error) {
 	result.FailureMessage = "Failed to remove worktree"
 	result.FailureDetail = err.Error()

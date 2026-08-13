@@ -9,6 +9,17 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
 
+// The `git` family is READ-ONLY. The two branch mutations the frontend
+// offers -- delete branch and change branch -- have no CLI command, so a
+// script can inspect a branch but not act on one. The worker RPCs behind
+// both already exist; what is missing is the CLI surface and the
+// tab-group resolution the worktree delete path needs.
+// Design sketch and open questions:
+// https://github.com/leapmux/leapmux/issues/376
+//
+// Until then, `tab close --worktree=discard` is the CLI's only path to a
+// worktree removal, one tab at a time.
+
 // workingDirEnv returns the spawning tab's working directory as
 // injected by the worker on tab spawn. Used as the default value
 // for --path on `git status` / `git branches` / `git worktrees`

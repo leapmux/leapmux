@@ -100,6 +100,45 @@ func TestCloseAgent_WithWorktreeActionRemove_RemovesWorktreeSync(t *testing.T) {
 	assert.True(t, row.DeletedAt.Valid, "expected DB row to be soft-deleted")
 }
 
+// TestCloseAgent_WithWorktreeActionRemove_RefusesALockedWorktree pins the
+// removal policy at the site that PERFORMS the removal, and not only at the
+// three clients that offer the choice.
+//
+// A client that ignores worktree_removal_blocked_reason still reaches this
+// line, and a `git worktree lock` taken after the dialog opened beats any
+// answer the client was given -- the check here runs inside the per-worktree
+// removal lock, so it cannot be raced. The close request below carries REMOVE
+// with no client-side preflight at all, which is exactly that case.
+func TestCloseAgent_WithWorktreeActionRemove_RefusesALockedWorktree(t *testing.T) {
+	t.Parallel()
+
+	fx := setupCloseTabFixture(t, leapmuxv1.TabType_TAB_TYPE_AGENT, "close-locked")
+	run(t, fx.wtDir, "git", "worktree", "lock", "--reason", "held for review", fx.wtDir)
+
+	dispatch(fx.d, "CloseAgent", &leapmuxv1.CloseAgentRequest{
+		AgentId:        fx.tabID,
+		WorktreeAction: leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE,
+	}, fx.w)
+
+	require.Empty(t, fx.w.errors)
+	require.Len(t, fx.w.responses, 1)
+	var resp leapmuxv1.CloseAgentResponse
+	require.NoError(t, proto.Unmarshal(fx.w.responses[0].GetPayload(), &resp))
+
+	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, resp.GetResult().GetWorktreeRemoval())
+	// The curated sentence, not git's raw stderr. One source states the reason,
+	// so every surface says the same thing and every one of them is actionable.
+	assert.Contains(t, resp.GetResult().GetFailureDetail(), "held for review")
+	assert.Contains(t, resp.GetResult().GetFailureDetail(), "git worktree unlock")
+	assert.NotContains(t, resp.GetResult().GetFailureDetail(), "fatal:")
+
+	// Nothing was destroyed, and the row survives to describe what is still there.
+	assert.DirExists(t, fx.wtDir)
+	row, err := fx.svc.Queries.GetWorktreeByID(context.Background(), fx.wtID)
+	require.NoError(t, err)
+	assert.False(t, row.DeletedAt.Valid, "a refused removal must not tombstone the row")
+}
+
 func TestCloseAgent_WithWorktreeActionKeep_PreservesWorktree(t *testing.T) {
 	t.Parallel()
 
@@ -700,11 +739,14 @@ func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
 	_, statErr := os.Stat(bogusPath)
 	assert.NoError(t, statErr, "disk path should still exist when removal failed")
 
-	// Per the plan, the DB row is still soft-deleted (a stale row is
-	// less harmful than a live row pointing at an unremovable path).
+	// The row OUTLIVES a removal that did not happen. It is the only handle
+	// anything keeps on the directory: ListOrphanCandidateWorktrees filters
+	// `deleted_at IS NULL`, so a tombstone here strands the orphan forever and
+	// no later repair (a `git worktree unlock`, a fixed admin dir) can bring it
+	// back as a GC candidate.
 	row, err := svc.Queries.GetWorktreeByID(context.Background(), wtID)
 	require.NoError(t, err)
-	assert.True(t, row.DeletedAt.Valid, "DB row should be soft-deleted even on disk-remove failure")
+	assert.False(t, row.DeletedAt.Valid, "a failed removal must leave the row so the reap can retry")
 }
 
 func TestCloseAgent_WorktreeRemove_DiskAlreadyGone_StillDeletesDBRow(t *testing.T) {
@@ -860,7 +902,7 @@ func TestRemoveWorktreeFromDisk_Success_ReturnsNil(t *testing.T) {
 	wt, err := svc.Queries.GetWorktreeByID(context.Background(), wtID)
 	require.NoError(t, err)
 
-	err = svc.removeWorktreeFromDisk(wt, true)
+	err = svc.removeWorktreeFromDisk(wt)
 	assert.NoError(t, err)
 	_, statErr := os.Stat(wtDir)
 	assert.True(t, os.IsNotExist(statErr))
@@ -901,7 +943,7 @@ func TestRemoveWorktreeFromDisk_BranchInUse_KeepsBranch(t *testing.T) {
 	wtA_row, err := svc.Queries.GetWorktreeByID(context.Background(), wtIDA)
 	require.NoError(t, err)
 
-	require.NoError(t, svc.removeWorktreeFromDisk(wtA_row, true))
+	require.NoError(t, svc.removeWorktreeFromDisk(wtA_row))
 	assert.True(t, localBranchExists(t, repoDir, branch), "branch must survive when another worktree still uses it")
 	_, statErr := os.Stat(wtA)
 	assert.True(t, os.IsNotExist(statErr), "wtA path removed")
@@ -932,7 +974,7 @@ func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T)
 	})
 	require.NoError(t, cwErr)
 
-	err := svc.removeWorktreeFromDisk(wt, true)
+	err := svc.removeWorktreeFromDisk(wt)
 	assert.Error(t, err, "git-remove failure with path intact should return error")
 	assert.Contains(t, err.Error(), bogusPath)
 
@@ -940,10 +982,13 @@ func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T)
 	_, statErr := os.Stat(bogusPath)
 	assert.NoError(t, statErr)
 
-	// DB row still soft-deleted.
+	// The row OUTLIVES a removal that did not happen. It is the only handle
+	// anything keeps on the directory: ListOrphanCandidateWorktrees filters
+	// `deleted_at IS NULL`, so a tombstone here strands the directory forever
+	// and no later repair brings it back as a GC candidate.
 	row, err := svc.Queries.GetWorktreeByID(context.Background(), wt.ID)
 	require.NoError(t, err)
-	assert.True(t, row.DeletedAt.Valid, "DB row soft-deleted even on failure")
+	assert.False(t, row.DeletedAt.Valid, "a failed removal must leave the row so the reap can retry")
 }
 
 func TestRemoveWorktreeFromDisk_PathMissing_ReturnsNil(t *testing.T) {
@@ -968,12 +1013,131 @@ func TestRemoveWorktreeFromDisk_PathMissing_ReturnsNil(t *testing.T) {
 	})
 	require.NoError(t, cwErr)
 
-	err := svc.removeWorktreeFromDisk(wt, true)
+	err := svc.removeWorktreeFromDisk(wt)
 	assert.NoError(t, err, "missing path should count as success")
 
 	row, err := svc.Queries.GetWorktreeByID(context.Background(), wt.ID)
 	require.NoError(t, err)
 	assert.True(t, row.DeletedAt.Valid, "DB row soft-deleted")
+}
+
+// TestRemoveWorktreeFromDisk_PathMissingButStillListed_ReturnsError is the
+// other half of the pair above, and the one an absent-path check alone got
+// wrong.
+//
+// `git worktree list` reads the admin directory, not the working tree, so git
+// keeps a LOCKED worktree in its listing after the user deletes the directory
+// by hand -- and keeps refusing to remove it. Reporting "the path is gone" as a
+// success there told the user "Worktree removed" over a worktree git still
+// held, on a branch that still existed, with the DB row tombstoned so nothing
+// revisited it.
+func TestRemoveWorktreeFromDisk_PathMissingButStillListed_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "rwtfd-missing-locked")
+	run(t, repoDir, "git", "worktree", "add", "-b", "rwtfd-missing-locked", wtDir)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "held", wtDir)
+
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	wt, err := svc.Queries.GetWorktreeByID(context.Background(), wtID)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(wtDir))
+
+	err = svc.removeWorktreeFromDisk(wt)
+	assert.Error(t, err, "git refused the removal, so the close must not report a removal")
+	assert.Contains(t, err.Error(), wt.WorktreePath)
+
+	// The refusal is git's: the worktree and its branch both survive.
+	entries, listErr := listGitWorktrees(context.Background(), repoDir)
+	require.NoError(t, listErr)
+	assert.NotNil(t, worktreeEntryFor(entries, wt.WorktreePath),
+		"git still holds the worktree, which is exactly why the failure must be reported")
+	assert.True(t, localBranchExists(t, repoDir, "rwtfd-missing-locked"))
+
+	row, err := svc.Queries.GetWorktreeByID(context.Background(), wtID)
+	require.NoError(t, err)
+	assert.False(t, row.DeletedAt.Valid, "the row must survive a removal git refused")
+}
+
+// gitStillListsWorktree answers "still listed" when it cannot read the
+// listing, and that direction is deliberate: its caller uses it to SUPPRESS a
+// failure report, so a failure the worker cannot disprove must reach the user.
+// Real git output never exercises this branch, so nothing else reaches it.
+func TestGitStillListsWorktree_UnreadableListingReportsStillListed(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "listing-probe-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "listing-probe", wtDir)
+
+	// The control: a readable listing answers truthfully in both directions.
+	assert.True(t, svc.gitStillListsWorktree(context.Background(), db.Worktree{
+		RepoRoot: repoDir, WorktreePath: wtDir,
+	}))
+	assert.False(t, svc.gitStillListsWorktree(context.Background(), db.Worktree{
+		RepoRoot: repoDir, WorktreePath: filepath.Join(t.TempDir(), "never-added"),
+	}))
+
+	// The fail-safe: a RepoRoot that is not a repository at all.
+	assert.True(t, svc.gitStillListsWorktree(context.Background(), db.Worktree{
+		RepoRoot: t.TempDir(), WorktreePath: wtDir,
+	}), "an unreadable listing must not be read as 'git let it go'")
+}
+
+// TestReapOrphanWorktree_RefusedRemovalStaysAGCCandidate is the payoff of the
+// conditional soft-delete. The reap gives up on a locked worktree, but it must
+// not tombstone the row on the way out: ListOrphanCandidateWorktrees filters
+// `deleted_at IS NULL`, so a tombstone here means a later `git worktree unlock`
+// never brings the worktree back and the directory is stranded for good.
+func TestReapOrphanWorktree_RefusedRemovalStaysAGCCandidate(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+	ctx := context.Background()
+
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "reap-locked")
+	run(t, repoDir, "git", "worktree", "add", "-b", "reap-locked", wtDir)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "held", wtDir)
+	wtID, err := svc.ensureTrackedWorktree(ctx, wtDir)
+	require.NoError(t, err)
+	// A strand link: a worktree_tabs row for a tab that no longer lives. That
+	// is what makes it an orphan CANDIDATE rather than a mid-creation worktree.
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "reap-strand")
+
+	before, err := svc.Queries.ListOrphanCandidateWorktrees(ctx)
+	require.NoError(t, err)
+	require.True(t, containsWorktreeID(before, wtID), "the strand link makes it a candidate")
+
+	stored, err := svc.Queries.GetWorktreeByID(ctx, wtID)
+	require.NoError(t, err)
+	svc.ReapOrphanWorktree(ctx, stored)
+
+	assert.DirExists(t, wtDir, "git refused the removal, so the directory stays")
+	row, err := svc.Queries.GetWorktreeByID(ctx, wtID)
+	require.NoError(t, err)
+	assert.False(t, row.DeletedAt.Valid)
+
+	after, err := svc.Queries.ListOrphanCandidateWorktrees(ctx)
+	require.NoError(t, err)
+	assert.True(t, containsWorktreeID(after, wtID),
+		"an unlock later must be able to make the reap succeed; a tombstoned row never resurfaces")
+}
+
+func containsWorktreeID(rows []db.Worktree, id string) bool {
+	for _, row := range rows {
+		if row.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Shutdown waiting -------------------------------------------------

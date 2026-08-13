@@ -108,3 +108,48 @@ func TestCanonicalize_UnresolvableFallbackIsCleaned(t *testing.T) {
 		"two spellings of one unresolvable path must canonicalize to one key")
 	assert.Equal(t, filepath.Clean(messy), Canonicalize(messy))
 }
+
+// TestCanonicalizeAbsent_ResolvesThroughTheDeepestExistingAncestor covers the
+// case Canonicalize cannot: a leaf that no longer exists.
+//
+// A worktree row stores the path canonicalized while the directory was there.
+// Once the user deletes the directory, EvalSymlinks fails on the whole path and
+// Canonicalize falls back to Clean -- which on macOS answers /var/... where the
+// row holds /private/var/..., so the lookup misses its own row. The worktree
+// removal preflight reads that row to keep its lock check alive for a directory
+// that is gone, so a miss there reported a locked worktree as removable.
+func TestCanonicalizeAbsent_ResolvesThroughTheDeepestExistingAncestor(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	absent := filepath.Join(parent, "gone", "deeper")
+
+	_, err := filepath.EvalSymlinks(absent)
+	require.Error(t, err, "the test needs a path EvalSymlinks cannot resolve")
+
+	assert.Equal(t, filepath.Join(Canonicalize(parent), "gone", "deeper"), CanonicalizeAbsent(absent),
+		"the existing ancestor supplies the spelling; the absent tail rides along")
+
+	// The point of the helper, stated as the property that matters: the path a
+	// caller canonicalized while it existed still matches after it is deleted.
+	child := filepath.Join(parent, "child")
+	require.NoError(t, os.Mkdir(child, 0o755))
+	before := Canonicalize(child)
+	require.NoError(t, os.Remove(child))
+	assert.Equal(t, before, CanonicalizeAbsent(child))
+	if runtime.GOOS == "darwin" {
+		assert.NotEqual(t, before, Canonicalize(child),
+			"this is the miss the helper exists to fix; if it stops happening the helper is dead code")
+	}
+}
+
+// For a path that exists the helper must agree with Canonicalize exactly --
+// otherwise the two spellings drift apart and a caller has to know which one
+// produced a stored value.
+func TestCanonicalizeAbsent_MatchesCanonicalizeForAnExistingPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	assert.Equal(t, Canonicalize(dir), CanonicalizeAbsent(dir))
+	assert.Equal(t, Canonicalize(filepath.Join(dir, "sub", "..", ".")), CanonicalizeAbsent(filepath.Join(dir, "sub", "..", ".")))
+}

@@ -11,6 +11,7 @@ import {
   createGitRepo,
   createWorkspaceWithWorktreeViaAPI,
   expectRepoBranch,
+  listAgentsViaAPI,
   waitForAgentStartupViaAPI,
 } from './helpers/worktree'
 
@@ -86,8 +87,10 @@ test.describe('Branch context menu', () => {
 
     await confirmDeleteBranch(page)
 
-    // The dialog holds open under its busy overlay until the coupled tab
-    // closes report back, then dismisses.
+    // The dialog holds open for its removal PREFLIGHT only. Then it hands
+    // the coupled tab closes off and dismisses. It does not wait for the
+    // removal, because that stops the agent and deletes the directory, which
+    // takes seconds and asks the user nothing.
     await expect(page.getByRole('heading', { name: 'Delete branch' })).not.toBeVisible()
 
     // Removal is coupled to the tab closes (WorktreeAction.REMOVE), so the
@@ -97,6 +100,118 @@ test.describe('Branch context menu', () => {
       expect(existsSync(worktreeDir)).toBe(false)
       expect(branchExists(repoDir, 'delete-branch')).toBe(false)
     }).toPass()
+  })
+
+  test('delete branch (worktree variant) refuses a locked worktree before the user can arm Delete', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    // The preflight is the cost of the dialog closing early. `git worktree
+    // lock` is the refusal that the single `--force` behind the removal does
+    // NOT override. Without the preflight this close destroys the tab,
+    // dismisses the dialog, and only then finds that git refuses -- with no
+    // surface left to say so.
+    //
+    // The verdict rides on the OPEN-time inspect, so the refusal is stated
+    // before the user arms a destructive two-click confirm rather than after
+    // firing it.
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'branch-delete-locked-repo')
+    const realDataDir = realpathSync(dataDir)
+    const worktreeDir = join(realDataDir, 'branch-delete-locked-repo-worktrees', 'locked-branch')
+
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Branch Delete Locked WS',
+      repoDir,
+      'locked-branch',
+    )
+    expect(existsSync(worktreeDir)).toBe(true)
+    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    execSync(`git worktree lock --reason "held by the e2e test" "${worktreeDir}"`, { cwd: repoDir })
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+
+    await clickBranchMenuItem(page, branchGroupRow(page), 'Delete branch...')
+    await expect(page.getByRole('heading', { name: 'Delete branch' })).toBeVisible()
+
+    // Delete is unavailable, and git's own reason says why. Visible text, not
+    // the button's `title` alone: a greyed-out destructive option with no
+    // stated reason looks like a defect.
+    await expect(page.getByRole('dialog').getByText(/held by the e2e test/)).toBeVisible()
+    // Located by TEXT, not by role+name: while `title` is set it becomes the
+    // button's accessible name, so `{ name: 'Delete branch' }` stops matching
+    // in exactly the state under test. See the note at the ConfirmButton.
+    await expect(page.getByRole('contentinfo').getByText('Delete branch')).toBeDisabled()
+
+    // The escape hatch is offered instead, so the dialog is not a dead end.
+    await expect(page.getByRole('button', { name: 'Close tabs, keep worktree' })).toBeEnabled()
+
+    // "Destroys nothing" needs a settle, not a first observation. A
+    // regression that fires the closes beside the refusal tombstones the tab
+    // at once, and the removal behind it then takes seconds -- so an
+    // immediate existsSync and a `toBeVisible` that passes on the first frame
+    // both stay green while the group is torn down. Poll the WORKER's own
+    // agent list, which no optimistic client state can answer for, and hold
+    // it: the agent must still be running after the dialog refused.
+    await expect(async () => {
+      const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+      expect(agents).toHaveLength(1)
+    }).toPass()
+    expect(existsSync(worktreeDir)).toBe(true)
+    expect(branchExists(repoDir, 'locked-branch')).toBe(true)
+    // The tab is still there to return to, which is why the refusal has to
+    // come before the close rather than after it.
+    await expect(branchGroupRow(page)).toBeVisible()
+  })
+
+  test('delete branch (worktree variant) closes the tabs and keeps a locked worktree', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    // The escape hatch, end to end. A refused removal must not strand the user
+    // with Cancel as the dialog's one action: the tabs are still closable, and
+    // only the removal is refused. This is the counterpart of the last-tab
+    // dialog's "Close anyway".
+    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'branch-keep-locked-repo')
+    const realDataDir = realpathSync(dataDir)
+    const worktreeDir = join(realDataDir, 'branch-keep-locked-repo-worktrees', 'keep-locked-branch')
+
+    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+      hubUrl,
+      adminToken,
+      workerId,
+      'Branch Keep Locked WS',
+      repoDir,
+      'keep-locked-branch',
+    )
+    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, workspaceId)
+    execSync(`git worktree lock --reason "held by the e2e test" "${worktreeDir}"`, { cwd: repoDir })
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspaceId)
+
+    await clickBranchMenuItem(page, branchGroupRow(page), 'Delete branch...')
+    await expect(page.getByRole('heading', { name: 'Delete branch' })).toBeVisible()
+    // ConfirmButton arms on the first click and fires on the second.
+    await page.getByRole('button', { name: 'Close tabs, keep worktree' }).click()
+    await page.getByRole('button', { name: 'Confirm?' }).click()
+
+    await expect(page.getByRole('heading', { name: 'Delete branch' })).not.toBeVisible()
+
+    // The tabs go, and the worktree stays — which is the whole point of the
+    // hatch. Poll the worker for the tab count; the directory check follows it,
+    // because the removal (if a regression let one run) takes seconds.
+    await expect(async () => {
+      const agents = await listAgentsViaAPI(hubUrl, adminToken, workerId, workspaceId)
+      expect(agents).toHaveLength(0)
+    }).toPass()
+    expect(existsSync(worktreeDir)).toBe(true)
+    expect(branchExists(repoDir, 'keep-locked-branch')).toBe(true)
   })
 
   test('delete branch (in-place variant) relabels the sidebar without a reload', async ({

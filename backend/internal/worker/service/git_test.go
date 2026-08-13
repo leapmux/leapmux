@@ -914,6 +914,71 @@ func TestInspectLastTabClose_WorktreeLastTabPromptsEvenWhenClean(t *testing.T) {
 	assert.Equal(t, "inspect-clean", resp.GetBranchName())
 }
 
+// The prompting worktree response carries the removal preflight, because it is
+// the one response that OFFERS a removal: the frontend disables its Delete
+// button from this field and `control tab close` refuses --worktree=discard on
+// it. Both decide while the tab is still open -- after it closes, the removal
+// runs unattended and a refusal has nowhere to land.
+func TestInspectLastTabClose_WorktreePromptCarriesRemovalBlockedReason(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "inspect-locked-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "inspect-locked", wtDir)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "held by the release script", wtDir)
+
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	createAgentForPath(t, svc, "agent-locked-wt", wtDir)
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-locked-wt")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-locked-wt", "")
+	require.NoError(t, err)
+	assert.True(t, resp.GetShouldPrompt(), "a lock must not suppress the prompt; it only removes the Delete option")
+	assert.Contains(t, resp.GetWorktreeRemovalBlockedReason(), "locked")
+	assert.Contains(t, resp.GetWorktreeRemovalBlockedReason(), "held by the release script")
+}
+
+// The mirror case, and the one that matters most: an ordinary worktree must
+// come back with an EMPTY reason. A field that is populated by accident
+// disables the Delete button for every close.
+func TestInspectLastTabClose_UnlockedWorktreePromptCarriesNoBlockedReason(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "inspect-unlocked-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "inspect-unlocked", wtDir)
+
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	createAgentForPath(t, svc, "agent-unlocked-wt", wtDir)
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-unlocked-wt")
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-unlocked-wt", "")
+	require.NoError(t, err)
+	assert.True(t, resp.GetShouldPrompt())
+	assert.Empty(t, resp.GetWorktreeRemovalBlockedReason())
+}
+
+// A NON-worktree prompt offers no removal, so it must carry no reason either --
+// the field would otherwise describe a button that response never renders.
+func TestInspectLastTabClose_BranchPromptCarriesNoBlockedReason(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	createAgentForPath(t, svc, "agent-branch-no-reason", repoDir)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("dirty\n"), 0o644))
+
+	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-no-reason", "")
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_BRANCH, resp.GetTarget())
+	assert.True(t, resp.GetShouldPrompt())
+	assert.Empty(t, resp.GetWorktreeRemovalBlockedReason())
+}
+
 func TestInspectLastTabClose_BranchLastTabCleanDoesNotPrompt(t *testing.T) {
 	t.Parallel()
 
@@ -2069,6 +2134,537 @@ func TestInspectBranchDeletion_NonWorktreeBranchesIncludesCurrent(t *testing.T) 
 	assert.Contains(t, names, "feature", "current branch must appear in response.branches; the dialog filters it")
 	// Default `main`/`master` branch from initRepo also lands in the list.
 	assert.GreaterOrEqual(t, len(names), 2)
+}
+
+// --- inspectWorktreeRemoval (the removal preflight) --------------------
+//
+// DeleteBranchDialog hands the removal off and closes, and `control tab close`
+// tombstones and returns, so this probe is the LAST point at which either can
+// refuse. Every case below pins one half of that contract: a blocked reason
+// where git would refuse, and an EMPTY one everywhere else -- a false block
+// refuses a removal the user can actually have.
+
+func TestInspectWorktreeRemoval_LinkedWorktreeIsRemovable(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "removable-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "removable-branch", wtDir)
+
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), wtDir)
+	require.NoError(t, err)
+	assert.Empty(t, resp.GetBlockedReason(), "an ordinary linked worktree must not be blocked")
+}
+
+func TestInspectWorktreeRemoval_LockedWorktreeIsBlocked(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "locked-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "locked-branch", wtDir)
+	// A lock is what `git worktree remove --force` refuses -- the single
+	// --force removeWorktreeFromDisk passes does NOT override it -- so this is
+	// the case the preflight exists for.
+	run(t, repoDir, "git", "worktree", "lock", wtDir)
+
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), wtDir)
+	require.NoError(t, err)
+	assert.Contains(t, resp.GetBlockedReason(), "locked")
+
+	// And the refusal is real: prove git actually rejects the removal the
+	// preflight predicted, so this test cannot pass on a reason we invented.
+	assert.Error(t, gitutil.Run(context.Background(), repoDir, "worktree", "remove", "--force", wtDir),
+		"git must refuse a locked worktree, which is what makes the block correct")
+}
+
+func TestInspectWorktreeRemoval_LockReasonIsCarried(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "locked-reason-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "locked-reason-branch", wtDir)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "pinned by the release script", wtDir)
+
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), wtDir)
+	require.NoError(t, err)
+	assert.Contains(t, resp.GetBlockedReason(), "pinned by the release script",
+		"the user's own lock reason is the actionable half of the message")
+}
+
+func TestInspectWorktreeRemoval_MainWorkingTreeIsBlocked(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), repoDir)
+	require.NoError(t, err)
+	assert.Contains(t, resp.GetBlockedReason(), "main working tree")
+}
+
+// A directory the user already removed by hand is NOT blocked: git still lists
+// the worktree, and `git worktree remove` on an unlocked one succeeds. Blocking
+// here would strand the tabs on a directory that is not there.
+func TestInspectWorktreeRemoval_MissingDirectoryIsRemovable(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "vanished-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "vanished-branch", wtDir)
+	_, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(wtDir))
+
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), wtDir)
+	require.NoError(t, err)
+	assert.Empty(t, resp.GetBlockedReason(), "an already-deleted directory removes cleanly")
+
+	// And the verdict is real: git accepts the removal the preflight predicted.
+	assert.NoError(t, gitutil.Run(context.Background(), repoDir, "worktree", "remove", "--force", wtDir))
+}
+
+// The case the whole missing-directory branch exists for. A LOCKED worktree
+// stays locked after the user deletes its directory by hand -- `git worktree
+// list` reads the admin directory, not the working tree -- and `git worktree
+// remove` keeps refusing it. A preflight that answered from the absent
+// directory alone reported it removable, the removal then failed, and the close
+// told the user "Worktree removed" over a worktree git still held.
+func TestInspectWorktreeRemoval_MissingButLockedDirectoryIsBlocked(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "vanished-locked-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "vanished-locked", wtDir)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "held by the release script", wtDir)
+	_, err := svc.ensureTrackedWorktree(context.Background(), wtDir)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(wtDir))
+
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), wtDir)
+	require.NoError(t, err)
+	assert.Contains(t, resp.GetBlockedReason(), "held by the release script")
+
+	// The refusal is git's, not one this test invented.
+	assert.Error(t, gitutil.Run(context.Background(), repoDir, "worktree", "remove", "--force", wtDir),
+		"git must refuse a locked worktree whether or not its directory is still there")
+}
+
+// A path the worker cannot place in any repository is an ERROR, never a block.
+// A block states a property of the repository, and the worker has not found one
+// to state anything about. Both callers fail open on an error and let the close
+// report the real outcome, which is what every close did before the preflight
+// existed -- whereas a false block refuses a removal in the one dialog that
+// would otherwise have gone through.
+func TestInspectWorktreeRemoval_NonRepoDirectoryErrorsRatherThanBlocks(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	dir := t.TempDir()
+
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), dir)
+	require.Error(t, err, "a path in no known repository must surface as an error")
+	assert.Nil(t, resp, "an error carries no verdict; a caller must not read a reason off it")
+}
+
+// The same asymmetry for a probe that fails against a HEALTHY worktree. A
+// cancelled ctx is the reachable case: queryGitPathInfo answers it with a ctx
+// error, and reporting that as a verdict would fabricate a block against a
+// worktree the user can remove.
+func TestInspectWorktreeRemoval_CancelledProbeErrorsRatherThanBlocks(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "cancelled-probe-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "cancelled-probe", wtDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	resp, err := svc.inspectWorktreeRemoval(ctx, wtDir)
+	require.Error(t, err, "a cancelled probe must surface as an error")
+	assert.Nil(t, resp, "an error carries no verdict; a caller must not read a reason off it")
+	// The error must stay in the ctx domain. Reported as errNotGitRepo it would
+	// read as "this is not a working tree", which is the false statement the
+	// asymmetry above exists to prevent. Both assertions can fail: the first
+	// against a wrapper that swallows the cause, the second against the
+	// mis-classification itself.
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, errNotGitRepo)
+}
+
+// A worktree of a BARE repository. `--git-common-dir` is then the bare
+// directory itself, so RepoRoot -- its PARENT -- is an ordinary directory that
+// holds no repository, and a listing run there dies with "not a git
+// repository". The user saw that error in the dialog banner and could never
+// delete the branch. The listing runs in the worktree instead, which is a
+// directory the probe already proved is inside the repository.
+func TestInspectWorktreeRemoval_WorktreeOfABareRepoIsRemovable(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	seedDir := initRepo(t)
+	base := t.TempDir()
+	bareDir := filepath.Join(base, "origin.git")
+	run(t, base, "git", "clone", "--bare", seedDir, bareDir)
+	wtDir := filepath.Join(base, "bare-wt")
+	run(t, bareDir, "git", "worktree", "add", "-b", "bare-branch", wtDir)
+
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), wtDir)
+	require.NoError(t, err)
+	assert.Empty(t, resp.GetBlockedReason(), "a linked worktree of a bare repository is removable")
+	assert.NoError(t, gitutil.Run(context.Background(), bareDir, "worktree", "remove", "--force", wtDir),
+		"git accepts the removal, so the preflight must not refuse it")
+}
+
+// The `<repo>/.bare` + `<repo>/<branch>` layout. Its admin path holds no
+// `.git/worktrees` segment, so the rev-parse heuristic reports the linked
+// worktree as NOT a worktree -- and the old preflight answered "This is the
+// repository's main working tree" about a directory that is not, and refused a
+// removal git accepts. `git worktree list` names the main tree itself, so the
+// verdict now comes from the listing rather than from the path shape.
+func TestInspectWorktreeRemoval_DotBareLayoutWorktreeIsRemovable(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	seedDir := initRepo(t)
+	base := t.TempDir()
+	bareDir := filepath.Join(base, ".bare")
+	run(t, base, "git", "clone", "--bare", seedDir, bareDir)
+	wtDir := filepath.Join(base, "feature")
+	run(t, bareDir, "git", "worktree", "add", "-b", "dot-bare-branch", wtDir)
+
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), wtDir)
+	require.NoError(t, err)
+	assert.Empty(t, resp.GetBlockedReason(),
+		"a linked worktree must not be reported as the repository's main working tree")
+	assert.NoError(t, gitutil.Run(context.Background(), bareDir, "worktree", "remove", "--force", wtDir))
+}
+
+// A worktree the user moved with `mv` instead of `git worktree move`. git
+// matches a removal argument against the paths it RECORDED, so it refuses the
+// recorded path with "is not a working tree" -- a refusal the close cannot
+// change, which is what makes it a block. The old code logged a warning and
+// answered "removable", so the tabs were destroyed and the removal then failed
+// with nothing left to report it.
+func TestInspectWorktreeRemoval_UnlistedPathIsBlocked(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	base := t.TempDir()
+	wtDir := filepath.Join(base, "moved-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "moved-branch", wtDir)
+	movedTo := filepath.Join(base, "moved-wt-elsewhere")
+	require.NoError(t, os.Rename(wtDir, movedTo))
+
+	// Probed at its NEW path: git holds no record of it there.
+	resp, err := svc.inspectWorktreeRemoval(context.Background(), movedTo)
+	require.NoError(t, err)
+	assert.Contains(t, resp.GetBlockedReason(), "no longer lists this directory")
+
+	assert.Error(t, gitutil.Run(context.Background(), repoDir, "worktree", "remove", "--force", movedTo),
+		"git must refuse a path it never recorded, which is what makes the block correct")
+}
+
+// worktreeRemovalBlockedReason accepts an already-resolved rev-parse so a
+// caller that holds one does not fork the identical probe again -- which is
+// what inspectLastTabClose and inspectBranchDeletion both do. Nothing else
+// pins that the parameter is HONOURED rather than politely ignored, so this
+// hands it the info for a DIFFERENT worktree: the verdict must follow the info
+// it was given, not the path.
+func TestWorktreeRemovalBlockedReason_UsesTheSuppliedPathInfo(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	base := t.TempDir()
+	locked := filepath.Join(base, "supplied-info-locked")
+	plain := filepath.Join(base, "supplied-info-plain")
+	run(t, repoDir, "git", "worktree", "add", "-b", "supplied-info-locked", locked)
+	run(t, repoDir, "git", "worktree", "add", "-b", "supplied-info-plain", plain)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "held by the supplied info", locked)
+
+	lockedInfo, err := queryGitPathInfo(context.Background(), locked)
+	require.NoError(t, err)
+
+	// The path says "plain", the info says "locked". A re-probe would answer
+	// for the path and come back empty.
+	reason, err := svc.worktreeRemovalBlockedReason(context.Background(), plain, lockedInfo)
+	require.NoError(t, err)
+	assert.Contains(t, reason, "held by the supplied info",
+		"the caller's resolved info must be used; re-probing the path would answer for the wrong worktree")
+
+	// And the control: with no info, the same path answers for itself.
+	reason, err = svc.worktreeRemovalBlockedReason(context.Background(), plain, nil)
+	require.NoError(t, err)
+	assert.Empty(t, reason)
+}
+
+// unquoteGitValue decodes git's own quoting on a lock reason. Real git output
+// never produces the fallback cases, so the parser tests above cannot reach
+// them -- and the fallback is what keeps a value the decoder cannot read
+// visible to the user rather than blank.
+func TestUnquoteGitValue(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"an unquoted value passes through", "held for review", "held for review"},
+		{"an empty value stays empty", "", ""},
+		{"a quoted value is decoded", `"held for review"`, "held for review"},
+		{"an octal escape becomes its byte", `"caf\303\251"`, "café"},
+		{"an escaped quote is unescaped", `"has \"quotes\""`, `has "quotes"`},
+		{"a backslash is unescaped", `"C:\\build\\agent"`, `C:\build\agent`},
+		{"a newline escape is decoded", `"two\nlines"`, "two\nlines"},
+		// The fallbacks. A value the decoder cannot read is display text, and
+		// the raw form beats an empty string.
+		{"an unterminated quote falls back to the raw text", `"unterminated`, `"unterminated`},
+		{"an invalid escape falls back to the raw text", `"bad \q escape"`, `"bad \q escape"`},
+		{"a lone quote is too short to be quoted", `"`, `"`},
+		{"a value that merely CONTAINS a quote is not decoded", `held "loosely"`, `held "loosely"`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, unquoteGitValue(c.value))
+		})
+	}
+}
+
+// The RPC wiring, which the direct calls above do not exercise: the handler
+// must unmarshal its own request type, sanitize the path, and hand the verdict
+// back on the wire. Both `control tab close` and the Delete branch dialog reach
+// the preflight only through this registration.
+func TestInspectWorktreeRemovalRPC_AnswersForALinkedWorktree(t *testing.T) {
+	t.Parallel()
+
+	_, d, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "rpc-removable-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "rpc-removable", wtDir)
+
+	w := newTestWriter()
+	dispatch(d, "InspectWorktreeRemoval", &leapmuxv1.InspectWorktreeRemovalRequest{Path: wtDir}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.InspectWorktreeRemovalResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.Empty(t, resp.GetBlockedReason())
+}
+
+func TestInspectWorktreeRemovalRPC_ReportsALock(t *testing.T) {
+	t.Parallel()
+
+	_, d, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "rpc-locked-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "rpc-locked", wtDir)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "held by the operator", wtDir)
+
+	w := newTestWriter()
+	dispatch(d, "InspectWorktreeRemoval", &leapmuxv1.InspectWorktreeRemovalRequest{Path: wtDir}, w)
+	require.Empty(t, w.errors, "a refusal is a verdict, not an RPC failure")
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.InspectWorktreeRemovalResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.Contains(t, resp.GetBlockedReason(), "held by the operator")
+}
+
+// An empty path must be refused by SanitizePath, not probed. Without that call
+// the handler would fork git against the caller's own working directory and
+// answer for a repository nobody asked about.
+func TestInspectWorktreeRemovalRPC_RejectsAnEmptyPath(t *testing.T) {
+	t.Parallel()
+
+	_, d, _ := setupTestService(t)
+
+	w := newTestWriter()
+	dispatch(d, "InspectWorktreeRemoval", &leapmuxv1.InspectWorktreeRemovalRequest{Path: ""}, w)
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, codePermissionDenied, w.errors[0].code)
+	assert.Empty(t, w.responses)
+}
+
+// listGitWorktrees is the ONE parser both `ListGitWorktrees` and the preflight
+// read, so the lock fields it produces are pinned directly. `git worktree lock`
+// with no --reason writes the bare word, which a prefix-only match misses.
+func TestListGitWorktrees_ReportsLockState(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initRepo(t)
+	bare := filepath.Join(t.TempDir(), "bare-lock-wt")
+	reasoned := filepath.Join(t.TempDir(), "reasoned-lock-wt")
+	unlocked := filepath.Join(t.TempDir(), "unlocked-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "bare-lock", bare)
+	run(t, repoDir, "git", "worktree", "add", "-b", "reasoned-lock", reasoned)
+	run(t, repoDir, "git", "worktree", "add", "-b", "no-lock", unlocked)
+	run(t, repoDir, "git", "worktree", "lock", bare)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "held for review", reasoned)
+
+	entries, err := listGitWorktrees(context.Background(), repoDir)
+	require.NoError(t, err)
+
+	bareEntry := worktreeEntryFor(entries, bare)
+	require.NotNil(t, bareEntry, "the locked worktree must still be listed")
+	assert.True(t, bareEntry.GetLocked())
+	assert.Empty(t, bareEntry.GetLockReason(), "a lock with no --reason carries no reason text")
+
+	reasonedEntry := worktreeEntryFor(entries, reasoned)
+	require.NotNil(t, reasonedEntry)
+	assert.True(t, reasonedEntry.GetLocked())
+	assert.Equal(t, "held for review", reasonedEntry.GetLockReason())
+
+	unlockedEntry := worktreeEntryFor(entries, unlocked)
+	require.NotNil(t, unlockedEntry)
+	assert.False(t, unlockedEntry.GetLocked())
+	assert.Empty(t, unlockedEntry.GetLockReason())
+
+	mainEntry := worktreeEntryFor(entries, repoDir)
+	require.NotNil(t, mainEntry, "worktreeEntryFor must match across the /var -> /private/var symlink")
+	assert.True(t, mainEntry.GetIsMain())
+	assert.False(t, mainEntry.GetLocked())
+}
+
+// git writes a lock reason through its own quoting: it wraps the value in
+// double quotes, and escapes it, when it holds a quote, a backslash, or a byte
+// outside ASCII. The reason is rendered straight to the user in three places,
+// so an un-decoded value shows the escapes instead of the words the user typed.
+func TestListGitWorktrees_DecodesAQuotedLockReason(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initRepo(t)
+	base := t.TempDir()
+	accented := filepath.Join(base, "accented-lock-wt")
+	backslash := filepath.Join(base, "backslash-lock-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "accented-lock", accented)
+	run(t, repoDir, "git", "worktree", "add", "-b", "backslash-lock", backslash)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "réservé pour la revue", accented)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", `held by C:\build\agent`, backslash)
+
+	// The premise: git really does quote these. Without this the test could
+	// pass against a parser that decodes nothing.
+	raw, err := gitutil.Output(context.Background(), repoDir, "worktree", "list", "--porcelain")
+	require.NoError(t, err)
+	require.Contains(t, raw, `locked "`, "git must quote a reason holding non-ASCII or a backslash")
+
+	entries, err := listGitWorktrees(context.Background(), repoDir)
+	require.NoError(t, err)
+
+	accentedEntry := worktreeEntryFor(entries, accented)
+	require.NotNil(t, accentedEntry)
+	assert.Equal(t, "réservé pour la revue", accentedEntry.GetLockReason())
+
+	backslashEntry := worktreeEntryFor(entries, backslash)
+	require.NotNil(t, backslashEntry)
+	assert.Equal(t, `held by C:\build\agent`, backslashEntry.GetLockReason())
+}
+
+// git prints the porcelain worktree path unquoted, so a directory whose name
+// ends in a space arrives with that space intact. A parser that trims the line
+// first drops it and names a directory that does not exist -- and every later
+// path compare then misses the entry, which turns a locked worktree into a
+// removable one.
+func TestListGitWorktrees_KeepsATrailingSpaceInAPath(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "trailing-space-wt ")
+	run(t, repoDir, "git", "worktree", "add", "-b", "trailing-space", wtDir)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "held", wtDir)
+
+	entries, err := listGitWorktrees(context.Background(), repoDir)
+	require.NoError(t, err)
+
+	entry := worktreeEntryFor(entries, wtDir)
+	require.NotNil(t, entry, "the entry must match the path git was given, space and all")
+	assert.True(t, strings.HasSuffix(entry.GetPath(), " "), "the trailing space belongs to the path")
+	assert.True(t, entry.GetLocked())
+}
+
+// TestWorktreeRemoveArgs_PinsThePreflightsAssumption ties the removal command
+// to the policy derived from it. worktreeRemovalBlockedReason states that a
+// lock refuses the removal, and that is true of ONE --force only: a second
+// --force overrides the lock. Nothing else links the two files, so this test is
+// the link -- change the argv and it fails until the policy moves with it.
+func TestWorktreeRemoveArgs_PinsThePreflightsAssumption(t *testing.T) {
+	t.Parallel()
+
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "argv-pin-wt")
+	run(t, repoDir, "git", "worktree", "add", "-b", "argv-pin", wtDir)
+	run(t, repoDir, "git", "worktree", "lock", wtDir)
+
+	args := worktreeRemoveArgs(wtDir)
+	assert.Equal(t, []string{"worktree", "remove", "--force", wtDir}, args,
+		"exactly one --force, and it is the only argv this function can produce")
+
+	// git's own behaviour, not a restatement of the line above: the argv the
+	// production path builds is refused, and the two-force form is not.
+	assert.Error(t, gitutil.Run(context.Background(), repoDir, args...),
+		"one --force must keep refusing a locked worktree, or the lock block is wrong")
+	assert.NoError(t, gitutil.Run(context.Background(), repoDir, "worktree", "remove", "--force", "--force", wtDir),
+		"two --force overrides the lock, which is what the preflight must never assume")
+}
+
+// The Delete branch dialog disables its Delete button from THIS field, before
+// the user arms a destructive two-click confirm. The verdict rides on the
+// open-time inspect, which already resolved the path info, so it costs one
+// `git worktree list` and no second rev-parse.
+func TestInspectBranchDeletion_WorktreeCarriesTheRemovalBlockedReason(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "inspect-del-locked")
+	run(t, repoDir, "git", "worktree", "add", "-b", "inspect-del-locked", wtDir)
+	run(t, repoDir, "git", "worktree", "lock", "--reason", "held by the release script", wtDir)
+
+	resp, err := svc.inspectBranchDeletion(context.Background(), wtDir, "")
+	require.NoError(t, err)
+	assert.True(t, resp.GetIsWorktree())
+	assert.Contains(t, resp.GetWorktreeRemovalBlockedReason(), "held by the release script")
+	assert.Empty(t, resp.GetErrorHint(), "a verdict is not a degraded probe")
+}
+
+// The mirror, and the case that matters most: an ordinary worktree must come
+// back with an EMPTY reason. A field populated by accident disables the Delete
+// button for every worktree branch.
+func TestInspectBranchDeletion_UnlockedWorktreeCarriesNoBlockedReason(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "inspect-del-unlocked")
+	run(t, repoDir, "git", "worktree", "add", "-b", "inspect-del-unlocked", wtDir)
+
+	resp, err := svc.inspectBranchDeletion(context.Background(), wtDir, "")
+	require.NoError(t, err)
+	assert.True(t, resp.GetIsWorktree())
+	assert.Empty(t, resp.GetWorktreeRemovalBlockedReason())
+	assert.Empty(t, resp.GetErrorHint())
+}
+
+// A NON-worktree delete removes no worktree, so it must carry no verdict -- the
+// field would otherwise describe a removal that response never offers, and the
+// dialog gates its in-place delete on the same field.
+func TestInspectBranchDeletion_NonWorktreeCarriesNoBlockedReason(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	repoDir := initRepo(t)
+
+	resp, err := svc.inspectBranchDeletion(context.Background(), repoDir, "")
+	require.NoError(t, err)
+	assert.False(t, resp.GetIsWorktree())
+	assert.Empty(t, resp.GetWorktreeRemovalBlockedReason())
 }
 
 func TestInspectBranchDeletion_Worktree(t *testing.T) {
@@ -5219,7 +5815,7 @@ func TestRemoveWorktreeFromDisk_DeletesCurrentHEADNotStampedBranch(t *testing.T)
 	wt, err := svc.Queries.GetWorktreeByID(context.Background(), "wt-stale-1")
 	require.NoError(t, err)
 
-	require.NoError(t, svc.removeWorktreeFromDisk(wt, true))
+	require.NoError(t, svc.removeWorktreeFromDisk(wt))
 
 	// The stamped (wrong) branch must still exist on the main repo.
 	_, mainExistsErr := gitutil.Output(context.Background(), repoDir, "rev-parse", "--verify", mainBranch)

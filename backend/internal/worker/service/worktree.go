@@ -893,19 +893,58 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 	return stored.ID, nil
 }
 
+// worktreeRemoveArgs builds the argv for `git worktree remove`. It is the one
+// description of that command, because worktreeRemovalBlockedReason derives its
+// refusals from exactly this shape: always ONE --force, which removes a
+// worktree holding untracked or modified files and still refuses a locked one.
+//
+// Neither neighbouring form matches that policy, so neither is representable
+// here. Two --force override a lock, which the preflight blocks on. Zero
+// --force also refuse a DIRTY worktree, which the preflight deliberately never
+// blocks on. A change here changes which refusals the preflight may state, and
+// TestWorktreeRemoveArgs_PinsThePreflightsAssumption fails until both move
+// together.
+func worktreeRemoveArgs(worktreePath string) []string {
+	return []string{"worktree", "remove", "--force", worktreePath}
+}
+
+// gitStillListsWorktree reports whether `git worktree list` still carries an
+// entry for wt. It reads the repository's admin directory, so it answers for a
+// worktree whose working tree is already gone, which is exactly the case that
+// tells a refusal apart from a removal that had nothing left to do.
+//
+// A listing this cannot read answers true: the caller uses it to suppress a
+// failure report, and a failure the worker cannot disprove must reach the user.
+func (svc *Service) gitStillListsWorktree(ctx context.Context, wt db.Worktree) bool {
+	entries, err := listGitWorktrees(ctx, wt.RepoRoot)
+	if err != nil {
+		slog.Warn("could not list worktrees to confirm a failed removal; reporting the failure",
+			"worktree_id", wt.ID, "repo_root", wt.RepoRoot, "error", err)
+		return true
+	}
+	return worktreeEntryFor(entries, wt.WorktreePath) != nil
+}
+
 // removeWorktreeFromDisk force-removes a worktree from disk, deletes its
 // branch if no other worktree still uses it, and soft-deletes the DB row.
+// It returns a non-nil error when `git worktree remove` failed AND the
+// worktree is still there — callers surface that so the user can clean up
+// manually. Branch deletion failures are logged but never bubbled (a retained
+// branch is recoverable manually; mass-deleting unrelated branches is not).
 //
-// The DB row is always soft-deleted so a stale entry does not block future
-// reuse of the working directory: the next attach against the same path
-// either finds nothing (clean removal) or creates a fresh row consistent
-// with whatever the on-disk worktree actually looks like. Returns a
-// non-nil error when the git worktree-remove command failed AND the path
-// is still on disk — callers surface this so the user can clean up
-// manually. Branch deletion failures are logged but never bubbled
-// (a retained branch is recoverable manually; mass-deleting unrelated
-// branches is not).
-func (svc *Service) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
+// The DB row is soft-deleted ONLY on the paths that return nil, so the row
+// outlives a removal that did not happen. That matters because the row is the
+// only handle anything keeps on the directory: ListOrphanCandidateWorktrees
+// filters `deleted_at IS NULL`, so a tombstone for a worktree git still holds
+// strands the directory forever, and a later `git worktree unlock` never brings
+// it back. Keeping the row means the next reconciler pass re-probes it, which
+// also self-heals a removal that failed for a transient reason.
+//
+// The cost of keeping it is that the row still claims worktree_path under the
+// unique partial index, so a re-attach at that path adopts this row instead of
+// minting a fresh one. That is correct: the directory is still there, and it is
+// still this worktree.
+func (svc *Service) removeWorktreeFromDisk(wt db.Worktree) error {
 	ctx := bgCtx()
 
 	// Resolve the branch to delete BEFORE the worktree-remove call: the
@@ -940,11 +979,7 @@ func (svc *Service) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 			"error", infoErr)
 	}
 
-	args := []string{"worktree", "remove"}
-	if force {
-		args = append(args, "--force")
-	}
-	args = append(args, wt.WorktreePath)
+	args := worktreeRemoveArgs(wt.WorktreePath)
 	// Both git commands below run under the repo's index lock, so a concurrent
 	// startup doing `worktree add` in the same repository waits instead of
 	// failing on index.lock. Taken HERE rather than around each command: the
@@ -963,7 +998,25 @@ func (svc *Service) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 	removeErr := gitutil.Run(ctx, wt.RepoRoot, args...)
 	if removeErr != nil {
 		slog.Warn("failed to remove worktree",
-			"worktree_path", wt.WorktreePath, "force", force, "error", removeErr)
+			"worktree_path", wt.WorktreePath, "error", removeErr)
+	}
+
+	// Settle the verdict BEFORE the cleanup below, because the soft-delete now
+	// depends on it.
+	//
+	// A failed remove still counts as removed when the path is gone anyway (the
+	// user pre-deleted it, or git cleaned up partially) — there is nothing left
+	// for anyone to clean up. "Gone" is not the stat alone: `git worktree list`
+	// reads the admin directory, not the working tree, so git keeps a LOCKED
+	// worktree in its listing after the user deletes the directory by hand, and
+	// keeps refusing to remove it. A stat-only check reported that refusal as a
+	// removal, and the user was told "Worktree removed" over a worktree git
+	// still held, on a branch that still existed.
+	removed := removeErr == nil
+	if !removed {
+		if _, statErr := os.Stat(wt.WorktreePath); os.IsNotExist(statErr) && !svc.gitStillListsWorktree(ctx, wt) {
+			removed = true
+		}
 	}
 
 	var wg errgroup.Group
@@ -993,22 +1046,18 @@ func (svc *Service) removeWorktreeFromDisk(wt db.Worktree, force bool) error {
 			return nil
 		})
 	}
-	wg.Go(func() error {
-		if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
-			slog.Warn("failed to delete worktree record",
-				"worktree_id", wt.ID, "error", err)
-		}
-		return nil
-	})
+	if removed {
+		wg.Go(func() error {
+			if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
+				slog.Warn("failed to delete worktree record",
+					"worktree_id", wt.ID, "error", err)
+			}
+			return nil
+		})
+	}
 	_ = wg.Wait()
 
-	if removeErr == nil {
-		return nil
-	}
-	// git worktree-remove failed. If the path is gone anyway (user
-	// pre-deleted it, or git cleaned up partially), treat as success —
-	// nothing for the user to clean up.
-	if _, statErr := os.Stat(wt.WorktreePath); os.IsNotExist(statErr) {
+	if removed {
 		return nil
 	}
 	// Use %s + literal quotes rather than %q so Windows paths stay in
@@ -1065,18 +1114,20 @@ func (svc *Service) ReapOrphanWorktree(ctx context.Context, wt db.Worktree) {
 			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "reason", reason)
 		return
 	}
-	if err := svc.removeWorktreeFromDisk(wt, true); err != nil {
-		// Give up. `git worktree remove --force` failed (e.g. the worktree is
-		// locked or its .git admin dir is corrupt) and the directory is still
-		// on disk -- only the user can clear that by hand. We do NOT retry:
-		// removeWorktreeFromDisk has already soft-deleted the row, so this
-		// worktree drops out of ListOrphanCandidateWorktrees (it filters
-		// deleted_at IS NULL) and never resurfaces as a GC candidate. The
-		// leftover soft-deleted row and its strand links are harmless and
-		// self-clean -- the periodic cleanup hard-deletes the row past the
-		// retention window and the worktree_tabs ON DELETE CASCADE drops the
-		// strands with it.
-		slog.Warn("orphan worktree GC: `git worktree remove` failed; leaving the directory on disk for manual cleanup",
+	if err := svc.removeWorktreeFromDisk(wt); err != nil {
+		// `git worktree remove --force` failed (the worktree is locked, or its
+		// .git admin dir is corrupt) and the directory is still on disk. Leave
+		// it, and leave the row: removeWorktreeFromDisk soft-deletes only on
+		// the paths that removed something, and the strand links below are
+		// dropped only on the success path, so this worktree stays a GC
+		// candidate and the next pass re-probes it. A `git worktree unlock`,
+		// or a repair of the admin dir, is then enough to let the reap through.
+		//
+		// The retry costs one pass per interval for a worktree that may never
+		// become removable. That is the price of not stranding one that will:
+		// a tombstone here is permanent, because ListOrphanCandidateWorktrees
+		// filters `deleted_at IS NULL` and nothing ever revisits the row.
+		slog.Warn("orphan worktree GC: `git worktree remove` failed; leaving the directory on disk and keeping the GC candidate",
 			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "error", err)
 		return
 	}

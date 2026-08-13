@@ -17,9 +17,9 @@ import { batch, createEffect, createSignal } from 'solid-js'
 import { isWorkerUnreachable } from '~/api/workerErrors'
 import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
-import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
+import { awaitCloseResult, summarizeWorktreeCloses, warnWorktreeUnreachable, worktreeRemovalToast } from '~/components/shell/closeResultToast'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
-import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/leapmux/v1/common_pb'
+import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createUpdatableDialogState } from '~/hooks/createDialogState'
 import { makeIdGenerator } from '~/lib/idGenerator'
@@ -327,7 +327,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * path + stderr the user needs for manual cleanup); this returns the
    * aggregate so the caller only adds the POSITIVE outcome message.
    */
-  const closeWorktreeTabs = async (tabs: readonly Tab[]): Promise<WorktreeCloseSummary> => {
+  const closeWorktreeTabs = async (tabs: readonly Tab[], action: WorktreeAction): Promise<WorktreeCloseSummary> => {
     const results = await Promise.all(
       // Isolate each per-tab close. closeTabWithAction runs synchronous
       // store mutations (removeTab, focus migration, floating-window prune)
@@ -338,42 +338,52 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // Guard each so one tab's failure can't abort the group.
       tabs.map(tab =>
         Promise.resolve()
-          .then(() => closeTabWithAction(tab, WorktreeAction.REMOVE))
+          .then(() => closeTabWithAction(tab, action))
           .catch((err) => {
             showWarnToast('Failed to close tab', err)
             return undefined
           }),
       ),
     )
-    let removed = false
-    let failed = false
-    let stillReferenced = false
-    let unknown = false
-    for (const result of results) {
-      if (!result) {
-        // No definitive outcome for this tab: the close RPC was rejected, the
-        // worker was unreachable, or the local close threw (each already
-        // warn-toasted its own detail). A worker-reported outcome is always a
-        // CloseTabResult — even a degraded-to-KEEP close returns one with
-        // UNSPECIFIED — so a missing result genuinely means "we don't know".
-        // Record it so the dialog reports "couldn't confirm" rather than a
-        // clean "not removed".
-        unknown = true
-        continue
-      }
-      switch (result.worktreeRemoval) {
-        case WorktreeRemovalOutcome.REMOVED:
-          removed = true
-          break
-        case WorktreeRemovalOutcome.FAILED:
-          failed = true
-          break
-        case WorktreeRemovalOutcome.STILL_REFERENCED:
-          stillReferenced = true
-          break
-      }
-    }
-    return { removed, failed, stillReferenced, unknown }
+    return summarizeWorktreeCloses(results)
+  }
+
+  /**
+   * Close a whole branch group and report what happened to its worktree, as a
+   * hand-off: it returns at once and the report lands when the closes settle.
+   *
+   * This lives here, and not in the dialog that asks for it, because the work
+   * outlives that dialog. Each agent close stops a subprocess, which takes a
+   * 3-second grace before the kill, and `git worktree remove` then deletes the
+   * whole directory — seconds on a tree that holds node_modules. The dialog
+   * dismisses immediately, so a promise chain rooted in its closure would
+   * report against an owner that is already disposed.
+   *
+   * `trackedAtInspect` is the caller's inspect-time snapshot of whether
+   * LeapMux tracked the worktree. worktreeRemovalToast ranks it BELOW every
+   * definitive worker outcome, because it can go stale between inspect and
+   * confirm.
+   */
+  const closeWorktreeTabsAndReport = (tabs: readonly Tab[], action: WorktreeAction, trackedAtInspect: boolean): void => {
+    void closeWorktreeTabs(tabs, action)
+      .then((summary) => {
+        // A KEEP close asked for no removal, so there is no removal outcome to
+        // report. Say what the user actually chose.
+        if (action !== WorktreeAction.REMOVE) {
+          showInfoToast('Tabs closed; worktree kept on disk')
+          return
+        }
+        // Toast the REAL outcome. worktreeRemovalToast owns the precedence
+        // (ground truth over the stale inspect-time snapshot); null means stay
+        // silent because a FAILED close already warned.
+        const message = worktreeRemovalToast(summary, trackedAtInspect)
+        if (message)
+          showInfoToast(message)
+      })
+      // closeWorktreeTabs guards each per-tab close and folds every failure
+      // into its summary, so it should never reject. Keep the handler anyway:
+      // a rejection here would otherwise be an unhandled rejection nobody sees.
+      .catch(err => showWarnToast('Failed to close the branch group', err))
   }
 
   /**
@@ -477,9 +487,13 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // either way, which is why the CLI's copy could silently stop matching
     // while this one kept working.
     let worktreeAction: WorktreeAction = WorktreeAction.KEEP
+    // Hoisted out of the try because the outcome report below needs it after
+    // the block, and `status` is scoped inside.
+    let trackedAtInspect = false
     try {
       const workerId = tab.workerId ?? ''
       const status = await workerRpc.inspectLastTabClose(workerId, { tabType: tab.type, tabId: tab.id })
+      trackedAtInspect = Boolean(status.worktreeId)
       if (status.shouldPrompt) {
         const choice = await askLastTabConfirmation(workerId, tab.type, tab.id, status)
         if (choice === 'cancel') {
@@ -487,7 +501,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         }
         if (choice === 'schedule-delete') {
           worktreeAction = WorktreeAction.REMOVE
-          showInfoToast('Worktree will be removed')
         }
       }
       else if (status.errorHint) {
@@ -550,7 +563,28 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // floating window, and a parent that went first would prune the window its
     // own children still sit in.
     closeSubagentTabsUnder(tab)
-    closeTabWithAction(tab, worktreeAction)
+    // A REMOVE reports the worker's REAL verdict when the close lands, and not
+    // an optimistic "Worktree will be removed" at click time. The removal is a
+    // hand-off, so the promise the user's choice produced was the only place
+    // that could ever say what happened to the worktree — and dropping it left
+    // "still in use elsewhere" and a degrade-to-KEEP silently contradicting
+    // what the user was told. The Delete branch dialog reports the identical
+    // verdict through the identical mapper.
+    //
+    // Wrapped in Promise.resolve() for the same reason closeWorktreeTabs
+    // wraps its own calls: closeTabWithAction runs synchronous store mutations
+    // before it returns, so a throw there is not a rejection to catch. The
+    // wrapper turns both shapes into one.
+    const closing = Promise.resolve().then(() => closeTabWithAction(tab, worktreeAction))
+    if (worktreeAction === WorktreeAction.REMOVE) {
+      void closing
+        .then((result) => {
+          const message = worktreeRemovalToast(summarizeWorktreeCloses([result]), trackedAtInspect)
+          if (message)
+            showInfoToast(message)
+        })
+        .catch(err => showWarnToast('Failed to close tab', err))
+    }
     return true
   }
 
@@ -658,7 +692,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     handleTabSelect,
     handleTabClose,
     closeTabWithAction,
-    closeWorktreeTabs,
+    closeWorktreeTabsAndReport,
     handleFileOpen,
     setIsTabEditing: (fn: () => boolean) => { isTabEditing = fn },
   }

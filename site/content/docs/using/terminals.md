@@ -115,7 +115,7 @@ The Worker invokes each shell with interactive-login flags appropriate to that s
 
 ## Git options: open a terminal in a branch or worktree
 
-When the working directory is inside a git repository, the **Git options** panel offers the same five modes used when opening an agent or a workspace — use current state, switch to branch, create new branch, create new worktree, or use existing worktree. The modes, their fields, branch-name validation, the worktree path formula, and the dirty-tree warnings are all covered in depth in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
+When the working directory is inside a git repository, the **Git options** panel offers the same five modes used when opening an agent or a workspace — use current state, switch to branch, create new branch, create new worktree, or use existing worktree. The modes, their fields, branch-name validation, the worktree path formula, and the dirty-tree warnings are all covered in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 
 The terminal's tab is grouped in the sidebar under its repository and branch. If a terminal owns a worktree it created, closing its last tab can offer to remove that worktree (see [Closing a terminal](#closing-a-terminal)).
 

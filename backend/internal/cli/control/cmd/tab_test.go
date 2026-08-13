@@ -1,17 +1,22 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 )
 
 // TestSpawnOptions_SeedsPermissionModeWithModelAndEffort guards S6: the permission mode rides into
@@ -525,6 +530,159 @@ func TestLastTabPromptMessage_CleanWorktree(t *testing.T) {
 	assert.Contains(t, msg, "--worktree=keep|push|discard")
 	assert.NotContains(t, msg, "added")
 	assert.NotContains(t, msg, "unpushed")
+}
+
+// TestDiscardRefusalMessage_BlocksOnlyDiscard pins the disposition gate: the
+// worker's reason describes the REMOVAL, so it must refuse `discard` and leave
+// `keep` / `push` alone -- both of those leave the worktree in place, and a
+// locked worktree is no reason to stop them.
+func TestDiscardRefusalMessage_BlocksOnlyDiscard(t *testing.T) {
+	resp := &leapmuxv1.InspectLastTabCloseResponse{
+		Target:                       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+		WorktreeRemovalBlockedReason: "This worktree is locked (held for review). Unlock it with `git worktree unlock` first.",
+	}
+
+	msg := discardRefusalMessage(closeWorktreeDiscard, resp)
+	assert.Contains(t, msg, "cannot discard: ")
+	assert.Contains(t, msg, "held for review",
+		"the worker's reason is the actionable half; the CLI only frames it")
+
+	for _, wt := range []tabCloseWorktree{closeWorktreeKeep, closeWorktreePush, closeWorktreeUnspecified} {
+		assert.Emptyf(t, discardRefusalMessage(wt, resp),
+			"--worktree=%q keeps the worktree, so a removal refusal must not block it", string(wt))
+	}
+}
+
+// The mirror case: an empty reason must let the discard through. The preflight
+// reports only the refusals it can state, so "no known refusal" has to read as
+// "proceed" -- otherwise every discard would be refused.
+func TestDiscardRefusalMessage_EmptyReasonAllowsDiscard(t *testing.T) {
+	assert.Empty(t, discardRefusalMessage(closeWorktreeDiscard, &leapmuxv1.InspectLastTabCloseResponse{
+		Target: leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+	}))
+	// The unreachable-worker fallback reaches this with a nil response, and a
+	// generated getter on a nil message answers the zero value -- so the close
+	// proceeds rather than panicking.
+	assert.Empty(t, discardRefusalMessage(closeWorktreeDiscard, nil))
+}
+
+// closeDispatcher answers the worker-local inner RPCs `tab close` issues, and
+// records every method it was asked for. `inspect` is the InspectLastTabClose
+// verdict; every other method fails, so a test can prove which ones the command
+// reached.
+type closeDispatcher struct {
+	inspect *leapmuxv1.InspectLastTabCloseResponse
+
+	mu      sync.Mutex
+	methods []string
+}
+
+func (d *closeDispatcher) DispatchWith(_ context.Context, _ userid.UserID, req *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	d.mu.Lock()
+	d.methods = append(d.methods, req.GetMethod())
+	d.mu.Unlock()
+	if req.GetMethod() != "InspectLastTabClose" {
+		_ = w.SendError(int32(codes.Unimplemented), "unexpected method: "+req.GetMethod())
+		return
+	}
+	payload, err := proto.Marshal(d.inspect)
+	if err != nil {
+		_ = w.SendError(int32(codes.Internal), err.Error())
+		return
+	}
+	_ = w.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: payload})
+}
+
+func (d *closeDispatcher) called() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.methods...)
+}
+
+// TestRunTabClose_BlockedDiscardRefusesBeforeTheTombstone drives the whole
+// command against a worker that reports the removal blocked. The unit tests
+// above cover discardRefusalMessage as a function; this covers the thing that
+// makes it worth anything, which is WHERE the command calls it.
+//
+// The removal runs after the tab is gone, so a refusal that arrives afterwards
+// reaches a command that already reported success and a tab that is already
+// destroyed. Only the ORDER prevents that, and only an end-to-end run can see
+// it: the CRDT tombstone (SubmitOps) and the worker teardown (CloseAgent) must
+// both be absent from what the command issued.
+func TestRunTabClose_BlockedDiscardRefusesBeforeTheTombstone(t *testing.T) {
+	disp := &closeDispatcher{inspect: &leapmuxv1.InspectLastTabCloseResponse{
+		ShouldPrompt:                 true,
+		Target:                       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+		WorktreePath:                 "/tmp/wt",
+		WorktreeRemovalBlockedReason: "This worktree is locked (held for review). Unlock it with `git worktree unlock` first.",
+	}}
+	hub := &recordingHub{
+		listWorkers: []string{"worker-A"},
+		materialized: newStateBuilder().
+			workspace("ws-1", "root-1").
+			leafNode("root-1", "", "m").
+			tab("agent-2", "root-1", leapmuxv1.TabType_TAB_TYPE_AGENT).
+			st,
+	}
+	startSpawnIPC(t, hub, disp)
+
+	out := withCapturedStdout(t, func() {
+		// agent-2, not the caller's own agent-1: guardTabClose refuses a
+		// self-close without --force, which would mask the refusal under test.
+		require.Error(t, RunTabClose(fakeCmdCtx{}, []string{
+			"--tab-id", "agent-2", "--tab-type", "agent",
+			"--workspace-id", "ws-1", "--worker-id", "worker-A",
+			"--worktree", "discard",
+		}))
+	})
+
+	var env struct {
+		Error map[string]any `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	require.NotNil(t, env.Error, "a blocked discard must fail the command")
+	assert.Equal(t, "invalid_request", env.Error["code"])
+	assert.Contains(t, env.Error["message"], "cannot discard: ")
+	assert.Contains(t, env.Error["message"], "held for review",
+		"the worker's reason is the actionable half; the CLI only frames it")
+
+	assert.NotContains(t, hub.called(), "SubmitOps",
+		"the refusal must land BEFORE the CRDT tombstone, or the tab is destroyed and the refusal has nowhere to go")
+	assert.Equal(t, []string{"InspectLastTabClose"}, disp.called(),
+		"the command must stop after the inspect: no CloseAgent, no worktree teardown")
+}
+
+// The mirror case over the same end-to-end path: an empty reason must let the
+// discard through. A gate that refused every discard would pass the test above
+// and break the feature.
+func TestRunTabClose_UnblockedDiscardProceedsToTheTombstone(t *testing.T) {
+	disp := &closeDispatcher{inspect: &leapmuxv1.InspectLastTabCloseResponse{
+		ShouldPrompt: true,
+		Target:       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+		WorktreePath: "/tmp/wt",
+	}}
+	hub := &recordingHub{
+		listWorkers: []string{"worker-A"},
+		materialized: newStateBuilder().
+			workspace("ws-1", "root-1").
+			leafNode("root-1", "", "m").
+			tab("agent-2", "root-1", leapmuxv1.TabType_TAB_TYPE_AGENT).
+			st,
+	}
+	startSpawnIPC(t, hub, disp)
+
+	_ = withCapturedStdout(t, func() {
+		// The hub stub denies SubmitOps, so the command fails AFTER the gate.
+		// What this pins is that it got that far at all.
+		_ = RunTabClose(fakeCmdCtx{}, []string{
+			"--tab-id", "agent-2", "--tab-type", "agent",
+			"--workspace-id", "ws-1", "--worker-id", "worker-A",
+			"--worktree", "discard",
+		})
+	})
+
+	assert.Contains(t, hub.called(), "SubmitOps",
+		"an empty reason is not a refusal; the close must reach the tombstone")
 }
 
 // recordedWorkerCall is one inner-RPC dispatchWorkerClose issued.

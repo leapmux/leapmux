@@ -512,6 +512,32 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		sendProtoResponse(sender, resp)
 	})
 
+	d.Register("InspectWorktreeRemoval", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
+		var r leapmuxv1.InspectWorktreeRemovalRequest
+		if err := unmarshalRequest(req, &r); err != nil {
+			sendInvalidArgument(sender, "invalid request")
+			return
+		}
+
+		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		if err != nil {
+			sendPermissionDenied(sender, "access denied")
+			return
+		}
+
+		// Read-only handler: skip Cleanup.Add for the same reason as
+		// InspectBranchDeletion above.
+		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		resp, err := svc.inspectWorktreeRemoval(ctx, dirPath)
+		if err != nil {
+			slog.Error("inspect worktree removal failed", "path", dirPath, "error", err)
+			sendInternalError(sender, err.Error())
+			return
+		}
+		sendProtoResponse(sender, resp)
+	})
+
 	d.Register("InspectBranchChange", func(ctx context.Context, userID userid.UserID, req *leapmuxv1.InnerRpcRequest, sender channel.ResponseWriter) {
 		var r leapmuxv1.InspectBranchChangeRequest
 		if err := unmarshalRequest(req, &r); err != nil {
@@ -652,6 +678,10 @@ type tabGitContext struct {
 	worktreeRoot string
 	worktreeID   string
 	isWorktree   bool
+	// pathInfo is the rev-parse result the constructor already forked for this
+	// tab, or nil when that probe failed. inspectLastTabClose's removal
+	// preflight reads it rather than fork the identical rev-parse a second time.
+	pathInfo *gitPathInfo
 }
 
 func (t *tabGitContext) commitDir() string {
@@ -671,17 +701,21 @@ func (t *tabGitContext) commitDir() string {
 // (removeWorktreeFromDisk) still refuse the fallback because their
 // `git branch -D <stale>` would touch a real branch. `phase` labels the
 // slog.Warn so the fast- and slow-path probes are distinguishable in logs.
-func resolveWorktreeBranchName(ctx context.Context, wt db.Worktree, phase string) string {
+//
+// It also returns the rev-parse result itself, nil on probe failure, so the
+// caller can hand it to the next reader of the same path instead of forking
+// the identical probe again. The removal preflight is that reader.
+func resolveWorktreeBranchName(ctx context.Context, wt db.Worktree, phase string) (string, *gitPathInfo) {
 	branchName := wt.BranchName
 	info, infoErr := queryGitPathInfo(ctx, wt.WorktreePath)
 	if infoErr == nil {
-		return branchOrShortSHA(info)
+		return branchOrShortSHA(info), info
 	}
 	if !errors.Is(infoErr, errNotGitRepo) {
 		slog.Warn("inspectLastTabClose "+phase+": HEAD probe failed, falling back to DB-row branch name",
 			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "stale_db_branch", wt.BranchName, "error", infoErr)
 	}
-	return branchName
+	return branchName, nil
 }
 
 // userID scopes the worktree_tabs lookup below to the tab's owner: FILE links
@@ -746,7 +780,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 			// (removeWorktreeFromDisk) STILL refuse the fallback
 			// because their `git branch -D <stale>` would touch a
 			// real branch; the display surface here doesn't.
-			branchName := resolveWorktreeBranchName(ctx, wt, "fast-path")
+			branchName, _ := resolveWorktreeBranchName(ctx, wt, "fast-path")
 			trace("fast_path_taken")
 			return &leapmuxv1.InspectLastTabCloseResponse{
 				Target:       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
@@ -792,7 +826,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		// loadTabGitContext is GetWorktreeByPath (DB) and an additional
 		// queryGitPathInfo call's worktree-disposition derivation.
 		// Probe-failure fallback rationale lives on resolveWorktreeBranchName.
-		branchName := resolveWorktreeBranchName(ctx, wt, "slow-path")
+		branchName, pathInfo := resolveWorktreeBranchName(ctx, wt, "slow-path")
 		tabCtx = &tabGitContext{
 			workingDir:   wt.WorktreePath,
 			repoRoot:     wt.RepoRoot,
@@ -800,6 +834,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 			worktreeRoot: wt.WorktreePath,
 			worktreeID:   wt.ID,
 			isWorktree:   true,
+			pathInfo:     pathInfo,
 		}
 		trace("git_ctx_synth")
 	}
@@ -944,6 +979,37 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		resp.ShouldPrompt = true
 		resp.WorktreePath = tabCtx.worktreeRoot
 		resp.WorktreeId = tabCtx.worktreeID
+		// This is the ONE response that offers a worktree removal, so it also
+		// carries whether git would refuse one. Both clients decide from it
+		// while the tab is still open -- the frontend disables its "Delete
+		// worktree" button, and `control tab close` refuses
+		// `--worktree=discard` before it tombstones anything. The removal
+		// itself runs after the tab is gone, so a refusal that arrives later
+		// has no dialog and no command left to report it.
+		//
+		// Sequential, not raced against the snapshot above: the one extra git
+		// fork is small next to the diff and push probes that just ran (the
+		// rev-parse it would otherwise pay for comes free from tabCtx.pathInfo),
+		// and a goroutine writing this field would have to be joined on all four
+		// of that snapshot's return paths to stay race-free.
+		if reason, err := svc.worktreeRemovalBlockedReason(ctx, tabCtx.worktreeRoot, tabCtx.pathInfo); err != nil {
+			// An unknown verdict must NOT read as "blocked": that would hide a
+			// removal the user can still have. Leave the field empty, which
+			// returns this close to reporting the outcome afterwards -- the
+			// behaviour every close had before the preflight existed.
+			//
+			// error_hint, not a log line alone: an empty reason is also what a
+			// clean worktree sends, so without the hint the user cannot tell a
+			// removal git accepts from one nobody checked. Both clients already
+			// surface this field, and every other degraded path in this function
+			// sets it for the same reason.
+			slog.Warn("inspectLastTabClose: worktree removal preflight failed; offering the removal unqualified",
+				"tab_type", tabType, "tab_id", tabID, "worktree_path", tabCtx.worktreeRoot, "error", err)
+			resp.ErrorHint = "could not check whether git will remove this worktree" +
+				truncateGitHint(err.Error(), maxDegradedHintDetail)
+		} else {
+			resp.WorktreeRemovalBlockedReason = reason
+		}
 		return resp, nil
 	}
 
@@ -1144,6 +1210,23 @@ func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 		} else if !errors.Is(wtErr, sql.ErrNoRows) {
 			return nil, wtErr
 		}
+		// The removal verdict rides on the OPEN-time response so the dialog
+		// disables its Delete button before the user arms a destructive
+		// two-click confirm. `info` is already resolved, so this costs one
+		// `git worktree list` and no second rev-parse.
+		//
+		// A probe that cannot answer leaves the field empty and says so in
+		// error_hint, exactly as inspectLastTabClose does: an unknown verdict
+		// must not read as "blocked", because that would hide a removal the
+		// user can still have.
+		if reason, reasonErr := svc.worktreeRemovalBlockedReason(ctx, info.TopLevel, info); reasonErr != nil {
+			slog.Warn("inspectBranchDeletion: worktree removal preflight failed; offering the removal unqualified",
+				"dir", dirPath, "worktree_path", info.TopLevel, "error", reasonErr)
+			resp.ErrorHint = "could not check whether git will remove this worktree" +
+				truncateGitHint(reasonErr.Error(), maxDegradedHintDetail)
+		} else {
+			resp.WorktreeRemovalBlockedReason = reason
+		}
 	} else {
 		// Worktree path renders no branch picker — saving the bytes.
 		// Non-worktree path needs the candidates for the switch-to
@@ -1151,6 +1234,151 @@ func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 		resp.Branches = branches
 	}
 	return resp, nil
+}
+
+// inspectWorktreeRemoval reports whether `git worktree remove` can run against
+// the working tree at dirPath. It is the RPC face of worktreeRemovalBlockedReason,
+// which DeleteBranchDialog calls at CONFIRM time. That dialog hands the removal
+// to the coupled tab closes and dismisses itself, so a refusal that arrives
+// later has no dialog left to render it.
+func (svc *Service) inspectWorktreeRemoval(ctx context.Context, dirPath string) (*leapmuxv1.InspectWorktreeRemovalResponse, error) {
+	reason, err := svc.worktreeRemovalBlockedReason(ctx, dirPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &leapmuxv1.InspectWorktreeRemovalResponse{BlockedReason: reason}, nil
+}
+
+// worktreeRemovalBlockedReason is the single definition of when `git worktree
+// remove` is refused. It returns the user-facing sentence, or "" when nothing
+// known refuses the removal. It reaches the clients three ways: the RPC above,
+// and the two inspects they already fetch -- inspectLastTabClose's WORKTREE
+// prompt and inspectBranchDeletion -- where the dialogs and `control tab close`
+// learn it at no extra round trip.
+//
+// It reaches the removal site too. removeWorktreeIfLastReference calls it
+// inside the per-worktree removal lock it already holds, so a client that
+// ignores the verdict is still refused at the line that runs the removal, and a
+// `git worktree lock` taken after a dialog opened beats the answer that dialog
+// was given. A refusal this does NOT predict (a permission error, a file
+// another process holds open) still reaches `git worktree remove`, and
+// removeWorktreeFromDisk tells one of those apart from a removal that had
+// nothing left to do with gitStillListsWorktree.
+//
+// Every refusal comes from ONE source, `git worktree list`, so the verdict
+// states what git itself records instead of a guess assembled from several
+// probes:
+//
+//   - git does not list the path as a working tree of this repository,
+//   - it is the repository's MAIN working tree, which git removes never,
+//   - `git worktree lock` holds it, which the single `--force` of
+//     removeWorktreeFromDisk does not override.
+//
+// Each one is a property of the repository, so it holds whether the close runs
+// or not. That is what makes a block trustworthy.
+//
+// A live reference count ("a tab outside this branch group still holds the
+// worktree") is deliberately NOT a blocking reason, although the worker can
+// read one. The close DROPS those links, so a count read here describes a state
+// the close then changes, and a block on it would refuse removals that would
+// have succeeded. The same holds for an untracked worktree, which the close
+// degrades to KEEP. Both stay with the close, which reports what actually
+// happened -- see worktreeRemovalToast on the frontend.
+//
+// A probe that cannot answer returns an ERROR, never a block. Every caller
+// fails open on an error and lets the close report the real outcome, which is
+// what every close did before the preflight existed. A block the worker cannot
+// confirm refuses a removal the user can actually have, and it refuses it in
+// the one dialog that would otherwise have gone through.
+//
+// info is the rev-parse result for dirPath when the caller already holds one,
+// and nil when it does not.
+func (svc *Service) worktreeRemovalBlockedReason(ctx context.Context, dirPath string, info *gitPathInfo) (string, error) {
+	listDir, target, err := svc.worktreeListingFor(ctx, dirPath, info)
+	if err != nil {
+		return "", err
+	}
+	entries, err := listGitWorktrees(ctx, listDir)
+	if err != nil {
+		return "", err
+	}
+	entry := worktreeEntryFor(entries, target)
+	switch {
+	case entry == nil:
+		// git matches a removal argument against the paths it recorded, so a
+		// path it does not list is one `git worktree remove` refuses with "is
+		// not a working tree". A directory the user moved with `mv` instead of
+		// `git worktree move` is the common cause.
+		return "git no longer lists this directory as a working tree of the repository, so it cannot remove it.", nil
+	case entry.GetIsMain():
+		return "This is the repository's main working tree. git removes linked worktrees only.", nil
+	case entry.GetLocked():
+		if reason := entry.GetLockReason(); reason != "" {
+			return fmt.Sprintf("This worktree is locked (%s). Unlock it with `git worktree unlock` first.", reason), nil
+		}
+		return "This worktree is locked. Unlock it with `git worktree unlock` first.", nil
+	}
+	return "", nil
+}
+
+// worktreeListingFor answers the two questions the removal policy needs: the
+// directory to run `git worktree list` in, and the recorded path to match
+// against its output.
+//
+// The live rev-parse answers both when the directory is reachable. It supplies
+// TopLevel and not RepoRoot, because RepoRoot is the PARENT of
+// --git-common-dir: that is the repository only while the main working tree
+// holds it, and for a worktree of a BARE repository it is an ordinary directory
+// where `git -C` fails with "not a git repository".
+//
+// When the probe fails -- the user deleted the directory by hand, or a mode
+// change made it unreadable -- the tracked worktree row still names the
+// repository, and its recorded path is what git matches. That fallback is what
+// keeps the lock check alive for a directory that is gone: `git worktree list`
+// reads the admin directory rather than the working tree, so git still reports
+// the lock, and `git worktree remove` still refuses it. Without it, a locked
+// worktree the user deleted by hand read as removable, the removal then failed,
+// and the close reported "Worktree removed" over a worktree git still held.
+//
+// It returns the probe error when neither source answers, so the caller fails
+// open rather than states a block it cannot confirm.
+func (svc *Service) worktreeListingFor(ctx context.Context, dirPath string, info *gitPathInfo) (listDir, target string, err error) {
+	if info == nil {
+		probed, probeErr := queryGitPathInfo(ctx, dirPath)
+		if probeErr != nil {
+			// CanonicalizeAbsent, not Canonicalize: the row was stored while the
+			// directory existed, so it carries the resolved spelling, and a
+			// deleted leaf is exactly the case Canonicalize cannot resolve.
+			wt, dbErr := svc.Queries.GetWorktreeByPath(ctx, pathutil.CanonicalizeAbsent(dirPath))
+			if dbErr != nil {
+				return "", "", probeErr
+			}
+			return wt.RepoRoot, wt.WorktreePath, nil
+		}
+		info = probed
+	}
+	return info.TopLevel, info.TopLevel, nil
+}
+
+// worktreeEntryFor finds the `git worktree list` entry for one working-tree
+// path, or nil when git does not list it.
+//
+// Both sides are canonicalized because they come from different sources: git
+// prints the path it recorded at `worktree add` time, while the caller carries
+// a rev-parse result. On macOS those two spellings differ by the /var ->
+// /private/var symlink alone, and a raw string compare then matches nothing --
+// which would silently turn every lock check into "not listed". The compare
+// itself is pathutil.SamePath, not ==, because Canonicalize falls back to
+// filepath.Clean when it cannot resolve a path, and a cleaned Windows path
+// still differs from its match by letter case alone.
+func worktreeEntryFor(entries []*leapmuxv1.GitWorktreeEntry, path string) *leapmuxv1.GitWorktreeEntry {
+	target := pathutil.Canonicalize(path)
+	for _, entry := range entries {
+		if pathutil.SamePath(pathutil.Canonicalize(entry.GetPath()), target) {
+			return entry
+		}
+	}
+	return nil
 }
 
 // inspectBranchChange races the path-info probe, the dirty-tree probe,
@@ -1788,6 +2016,7 @@ func (svc *Service) loadGitContextForDir(ctx context.Context, workingDir string)
 		branchName:   branchName,
 		worktreeRoot: worktreeRoot,
 		isWorktree:   info.IsWorktree,
+		pathInfo:     info,
 	}
 
 	if tabCtx.isWorktree {
@@ -2918,7 +3147,32 @@ func listGitBranches(ctx context.Context, repoRoot string) ([]*leapmuxv1.GitBran
 	return branches, nil
 }
 
-// listGitWorktrees parses `git worktree list --porcelain` output into proto entries.
+// unquoteGitValue decodes one value that git wrote through its own quoting.
+// git wraps a value in double quotes, and escapes it, when it holds a quote, a
+// backslash, a control character, or a byte outside ASCII -- so a lock reason
+// with an accented word arrives as `"caf\303\251"`, and one that names a
+// Windows path as `"C:\\build"`. Rendered raw, the user reads the escapes
+// rather than the reason they typed.
+//
+// git's escape set (\a \b \f \n \r \t \v \\ \" and three-digit octal) is a
+// subset of Go's interpreted string literal, so strconv.Unquote decodes it
+// exactly. A value git did not quote, or one strconv cannot read, is returned
+// unchanged: this is display text, and the raw form beats an empty string.
+func unquoteGitValue(value string) string {
+	if len(value) < 2 || value[0] != '"' {
+		return value
+	}
+	unquoted, err := strconv.Unquote(value)
+	if err != nil {
+		return value
+	}
+	return unquoted
+}
+
+// listGitWorktrees parses `git worktree list --porcelain` output into proto
+// entries, including the lock state that worktreeRemovalBlockedReason decides
+// from. One parser for both readers: a second one written for the preflight
+// would be free to disagree with this one about what git printed.
 func listGitWorktrees(ctx context.Context, dirPath string) ([]*leapmuxv1.GitWorktreeEntry, error) {
 	output, err := gitutil.Output(ctx, dirPath, "worktree", "list", "--porcelain")
 	if err != nil {
@@ -2937,11 +3191,27 @@ func listGitWorktrees(ctx context.Context, dirPath string) ([]*leapmuxv1.GitWork
 
 		entry := &leapmuxv1.GitWorktreeEntry{IsMain: isFirst}
 		for _, line := range strings.Split(block, "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "worktree ") {
+			// Trim the carriage return of a CRLF line and nothing else. A
+			// worktree directory may legally end in a space, and git prints the
+			// porcelain path unquoted -- so a TrimSpace here drops a character
+			// that belongs to the path and yields a directory that does not
+			// exist, which every later stat and every path compare then misses.
+			line = strings.TrimSuffix(line, "\r")
+			switch {
+			case strings.HasPrefix(line, "worktree "):
 				entry.Path = strings.TrimPrefix(line, "worktree ")
-			} else if strings.HasPrefix(line, "branch refs/heads/") {
+			case strings.HasPrefix(line, "branch refs/heads/"):
 				entry.Branch = strings.TrimPrefix(line, "branch refs/heads/")
+			// git writes the bare word for a lock with no reason, and
+			// "locked <reason>" for one with a reason. Both must set Locked,
+			// so match the prefix and the bare word separately -- a single
+			// `HasPrefix(line, "locked ")` test misses the bare form, which is
+			// what `git worktree lock` writes when the user gives no --reason.
+			case line == "locked":
+				entry.Locked = true
+			case strings.HasPrefix(line, "locked "):
+				entry.Locked = true
+				entry.LockReason = unquoteGitValue(strings.TrimPrefix(line, "locked "))
 			}
 		}
 		if entry.Path != "" {

@@ -2,6 +2,7 @@
 import type { LastTabCloseChoice, LastTabConfirmState } from './LastTabCloseDialog'
 import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
@@ -52,6 +53,10 @@ function makeState(overrides: Partial<LastTabConfirmState> & GitStateFlat = {}):
     repoRoot: '/repo',
     worktreePath: '',
     worktreeId: '',
+    // The worker sets this on a WORKTREE prompt only, and empty is the
+    // normal answer there too. The fixture default therefore matches the
+    // shape every response that git does not refuse carries.
+    worktreeRemovalBlockedReason: '',
     branchName: 'feature',
     gitState: gitState ?? ({
       $typeName: 'leapmux.v1.BranchGitState',
@@ -207,6 +212,108 @@ describe('lastTabCloseDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
     expect(resolve).toHaveBeenCalledWith('schedule-delete')
     expect(onDismiss).toHaveBeenCalled()
+  })
+
+  it('disables Delete and states why when the worker reports the removal blocked', () => {
+    // The removal runs after this dialog is gone, so the dialog must state
+    // a refusal while it can. The reason rides on the same inspect response
+    // that opened the dialog, so it costs no round trip.
+    renderDialog(makeState({
+      target: LastTabCloseTarget.WORKTREE,
+      worktreePath: '/tmp/wt',
+      worktreeRemovalBlockedReason: 'This worktree is locked (held for review). Unlock it with `git worktree unlock` first.',
+    }))
+    const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
+    expect(del.disabled).toBe(true)
+    // Visible, not in `title` alone: a greyed-out destructive option with
+    // no stated reason looks like a defect.
+    expect(screen.getByText(/held for review/)).toBeInTheDocument()
+    expect(del.title).toContain('held for review')
+    // The tab is still closable — only the removal is refused.
+    expect((screen.getByRole('button', { name: 'Close anyway' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('a disabled Delete cannot resolve schedule-delete', () => {
+    // The gate must hold at the CLICK, not in the styling alone: a resolved
+    // schedule-delete closes the tab with WorktreeAction.REMOVE.
+    const resolve = vi.fn<(c: LastTabCloseChoice) => void>()
+    const { onDismiss } = renderDialog(makeState({
+      target: LastTabCloseTarget.WORKTREE,
+      worktreePath: '/tmp/wt',
+      worktreeRemovalBlockedReason: 'This worktree is locked. Unlock it with `git worktree unlock` first.',
+      resolve,
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(screen.queryByRole('button', { name: 'Confirm?' })).not.toBeInTheDocument()
+    expect(resolve).not.toHaveBeenCalled()
+    expect(onDismiss).not.toHaveBeenCalled()
+  })
+
+  it('leaves Delete enabled and states nothing when no reason is reported', () => {
+    // The mirror case. An empty reason is the normal one, so a field read
+    // that goes wrong here disables Delete on every worktree close.
+    renderDialog(makeState({
+      target: LastTabCloseTarget.WORKTREE,
+      worktreePath: '/tmp/wt',
+      worktreeRemovalBlockedReason: '',
+    }))
+    const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
+    expect(del.disabled).toBe(false)
+    expect(del.title).toBe('')
+  })
+
+  it('renders no removal warning on a non-worktree prompt', () => {
+    // The notice and the button it explains read ONE predicate. Read
+    // separately, a reason arriving on a BRANCH target renders a warning
+    // about a Delete button that target never draws -- a refusal for a
+    // control the user cannot see.
+    renderDialog(makeState({
+      target: LastTabCloseTarget.BRANCH,
+      worktreeRemovalBlockedReason: 'This worktree is locked. Unlock it with `git worktree unlock` first.',
+    }))
+    expect(screen.queryByText(/worktree is locked/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+  })
+
+  it('disarms an armed Delete when the removal becomes blocked', () => {
+    // `disabled` is reactive here: a post-push refresh re-runs the inspect,
+    // and the worktree can be locked by then. A disabled button that still
+    // reads "Confirm?" offers a confirmation for an action nobody can take,
+    // and neither the 10-second timer nor a blur clears it -- the pointer no
+    // longer reaches the control.
+    const [state, setState] = createSignal(makeState({
+      target: LastTabCloseTarget.WORKTREE,
+      worktreePath: '/tmp/wt',
+      worktreeRemovalBlockedReason: '',
+    }))
+    render(() => <LastTabCloseDialog state={state()} onDismiss={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(screen.getByRole('button', { name: 'Confirm?' })).toBeInTheDocument()
+
+    setState(makeState({
+      target: LastTabCloseTarget.WORKTREE,
+      worktreePath: '/tmp/wt',
+      worktreeRemovalBlockedReason: 'This worktree is locked. Unlock it with `git worktree unlock` first.',
+    }))
+
+    const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement
+    expect(del.disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Confirm?' })).not.toBeInTheDocument()
+  })
+
+  it('states that the removal check was skipped', () => {
+    // An empty reason is also what a clean worktree sends, so a skipped
+    // check and an accepted removal look identical without this. The worker
+    // sets error_hint when a probe it needed did not answer.
+    renderDialog(makeState({
+      target: LastTabCloseTarget.WORKTREE,
+      worktreePath: '/tmp/wt',
+      errorHint: 'could not check whether git will remove this worktree',
+    }))
+    expect(screen.getByText(/could not check whether git will remove this worktree/)).toBeInTheDocument()
+    expect((screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('push button is "Commit and Push" when uncommitted changes exist', () => {

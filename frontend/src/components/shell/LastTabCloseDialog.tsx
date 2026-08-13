@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { InspectLastTabCloseResponse } from '~/generated/leapmux/v1/git_pb'
 import type { TabType as TabTypeT } from '~/generated/leapmux/v1/workspace_pb'
-import { Show } from 'solid-js'
+import { createMemo, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 import { Dialog } from '~/components/common/Dialog'
@@ -11,6 +11,7 @@ import { PushBranchButton } from '~/components/workspace/PushBranchButton'
 import { LastTabCloseTarget } from '~/generated/leapmux/v1/git_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { createLogger } from '~/lib/logger'
+import { warningText } from '~/styles/shared.css'
 
 const log = createLogger('LastTabCloseDialog')
 
@@ -41,6 +42,14 @@ export interface LastTabCloseDialogProps {
 // or for a branch with pending git state (dirty tree, unpushed commits).
 // Offers Push / schedule-delete (worktree) / close-anyway alongside Cancel.
 export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) => {
+  // One predicate for the Delete button and for the notice that explains why it
+  // is unavailable. Reading the raw field at each site let the two disagree: the
+  // button is a WORKTREE-target control, so a reason arriving on any other
+  // target rendered a warning with no button beside it.
+  const removalBlockedReason = createMemo(() =>
+    props.state.target === LastTabCloseTarget.WORKTREE ? props.state.worktreeRemovalBlockedReason : '',
+  )
+
   const handleCancel = () => {
     props.state.resolve('cancel')
     props.onDismiss()
@@ -124,6 +133,24 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
             willStop: props.state.tabType !== TabType.FILE,
           }}
         />
+        {/* Why the Delete button below is unavailable. The worker's removal
+            preflight rides on the same inspect response that opened this
+            dialog, so it states the refusal while the tab is still open.
+            After the tab closes, the removal runs unattended and no
+            surface is left to report a refusal. This renders the reason as
+            visible text, not only as the button's `title`, because a
+            greyed-out destructive option with no stated reason looks like
+            a defect. */}
+        <Show when={removalBlockedReason()}>
+          <div class={warningText}>{removalBlockedReason()}</div>
+        </Show>
+        {/* The worker sets error_hint when a probe it needed did not answer.
+            An empty blocked reason is also what a clean worktree sends, so
+            without this the user cannot tell a removal git accepts from one
+            nobody checked. */}
+        <Show when={props.state.errorHint}>
+          <div class={warningText}>{props.state.errorHint}</div>
+        </Show>
       </section>
       <footer>
         <button type="button" class="outline" onClick={handleCancel}>
@@ -141,7 +168,24 @@ export const LastTabCloseDialog: Component<LastTabCloseDialogProps> = (props) =>
           />
         </Show>
         <Show when={props.state.target === LastTabCloseTarget.WORKTREE}>
-          <ConfirmButton data-variant="danger" onClick={handleScheduleDelete}>
+          {/* Disabled when git refuses the removal. "Close anyway" stays
+              available, so the user still closes the tab -- only the
+              removal is refused.
+              `title`, not <Tooltip>: a disabled control receives no pointer
+              events, which is the one case the project rule keeps `title`
+              for. The same text also renders in the body above.
+              NOTE: while `title` is set, it BECOMES the button's accessible
+              name, so a role+name locator addresses the button by the reason
+              rather than by "Delete". An aria-label would pin the name, but
+              ConfirmButton's label is state ("Confirm?" once armed) and that
+              state must stay in the accessible name. A disabled button can
+              never be armed, so the reason is the more useful name here. */}
+          <ConfirmButton
+            data-variant="danger"
+            disabled={Boolean(removalBlockedReason())}
+            title={removalBlockedReason() || undefined}
+            onClick={handleScheduleDelete}
+          >
             Delete
           </ConfirmButton>
         </Show>
