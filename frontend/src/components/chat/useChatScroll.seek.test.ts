@@ -118,7 +118,8 @@ describe('usechatscroll jump to seq', () => {
           hook.attachListRef(div.el)
 
           hook.jumpToSeq(5n)
-          expect(onJumpToSeq).toHaveBeenCalledWith(5n)
+          // The seq, plus the abort signal that lets a caller who gave up stop this fetch.
+          expect(onJumpToSeq).toHaveBeenCalledWith(5n, expect.any(AbortSignal))
 
           // Let the onJumpToSeq promise resolve, then the landing runs.
           await Promise.resolve()
@@ -277,6 +278,71 @@ describe('usechatscroll jump to seq', () => {
         }
       })
     }))
+
+  describe('abandoning an out-of-window seek aborts its fetch, not just its landing', () => {
+    // Suppressing the landing leaves the page fetch running, and that fetch SWAPS THE WINDOW on
+    // arrival. The reader then keeps the scroll position they took manual control of, while the
+    // loaded window is centred on a target they abandoned -- so the next scroll-up or edge fill
+    // pages around the wrong place. The signal is what actually stops it.
+
+    /** Stand up a hook whose out-of-window fetch never resolves, and capture its abort signal. */
+    function seekWithHeldFetch() {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(5000)
+      div.setClientHeight(500)
+      div.setScrollTop(2500)
+      const [messages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
+      const [streamingText] = createSignal('')
+      const signals: (AbortSignal | undefined)[] = []
+      const onJumpToSeq = vi.fn((_seq: bigint, signal?: AbortSignal) => {
+        signals.push(signal)
+        return new Promise<void>(() => {}) // held: only an abort ends this seek
+      })
+      const hook = useChatScroll({
+        virtualizer: seekVirt(),
+        messages,
+        streamingText,
+        hasOlderMessages: () => true,
+        hasNewerMessages: () => false,
+        onJumpToSeq,
+      })
+      hook.attachListRef(div.el)
+      return { hook, signals, div }
+    }
+
+    it('aborts the fetch when cancelPendingSeek abandons the seek', () =>
+      createRoot((dispose) => {
+        const { hook, signals } = seekWithHeldFetch()
+        void hook.jumpToSeq(5n)
+        expect(signals[0]?.aborted).toBe(false)
+
+        hook.cancelPendingSeek()
+        expect(signals[0]?.aborted).toBe(true)
+        dispose()
+      }))
+
+    it('aborts the previous fetch when a newer out-of-window jump supersedes it', () =>
+      createRoot((dispose) => {
+        const { hook, signals } = seekWithHeldFetch()
+        void hook.jumpToSeq(5n)
+        void hook.jumpToSeq(9n)
+        // Two disjoint pages would otherwise race, and the loser could land last.
+        expect(signals[0]?.aborted).toBe(true)
+        expect(signals[1]?.aborted).toBe(false)
+        dispose()
+      }))
+
+    it('aborts a pending fetch when an IN-WINDOW jump supersedes it', () =>
+      createRoot((dispose) => {
+        const { hook, signals } = seekWithHeldFetch()
+        void hook.jumpToSeq(5n)
+        // 102 is inside the loaded span, so this jump lands at once and issues no fetch of its
+        // own -- but the running one must still stop, or its swap arrives after this landing.
+        void hook.jumpToSeq(102n)
+        expect(signals[0]?.aborted).toBe(true)
+        dispose()
+      }))
+  })
 
   it('previewScrollTo writes a clamped programmatic scroll for in-window drag', () =>
     createRoot((dispose) => {

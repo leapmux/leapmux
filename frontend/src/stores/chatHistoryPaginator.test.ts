@@ -217,8 +217,8 @@ describe('chathistorypaginator', () => {
       await h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)
 
       // Cursor values: BEFORE is exclusive at seq+1 (includes the target), AFTER at seq.
-      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.BEFORE, cursorSeq: 6n }))
-      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.AFTER, cursorSeq: 5n }))
+      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.BEFORE, cursorSeq: 6n }), expect.anything())
+      expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.AFTER, cursorSeq: 5n }), expect.anything())
       // One window swap with the disjoint, ascending concatenation; hasMoreOlder from before.
       expect(h.applyMessages).toHaveBeenCalledWith('a', [makeMsg(4n), makeMsg(5n), makeMsg(6n), makeMsg(7n)], true)
       // after.hasMore=false and caughtUp -> no newer.
@@ -238,15 +238,15 @@ describe('chathistorypaginator', () => {
       expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({
         anchor: MessagePageAnchor.LATEST,
         limit: MESSAGE_PAGE_SIZE,
-      }))
+      }), expect.anything())
       expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({
         anchor: MessagePageAnchor.AFTER,
         cursorSeq: maxInt64Seq,
         limit: MESSAGE_PAGE_SIZE,
-      }))
+      }), expect.anything())
       expect(listAgentMessages).not.toHaveBeenCalledWith('w', expect.objectContaining({
         cursorSeq: maxInt64Seq + 1n,
-      }))
+      }), expect.anything())
       expect(h.applyMessages).toHaveBeenCalledWith('a', [makeMsg(maxInt64Seq)], true)
       expect(h.state.hasMoreNewer.a).toBe(false)
     })
@@ -270,6 +270,54 @@ describe('chathistorypaginator', () => {
 
       // hasMoreOlder from before.hasMore=false (nothing older survives).
       expect(h.applyMessages).toHaveBeenCalledWith('a', [makeMsg(8n), makeMsg(9n)], false)
+    })
+
+    it('carries the watch signal to BOTH page requests, so a caller can abort the round trip', async () => {
+      // The seek that asked for this page can give up mid-flight (the rail's scrub moves on).
+      // Suppressing its landing is not enough: the fetch would still arrive and SWAP THE
+      // WINDOW, leaving the reader's own scroll position over a window centred somewhere they
+      // abandoned. The signal has to reach the transport.
+      const h = harness({ messages: [makeMsg(1n)], caughtUp: () => true })
+      const watch = new AbortController()
+      // Hold both pages in flight, so the abort lands while the requests are still open --
+      // which is the only moment aborting them means anything.
+      let releaseBefore: (() => void) | undefined
+      listAgentMessages.mockImplementation((_w: string, req: { anchor: number }) =>
+        req.anchor === MessagePageAnchor.BEFORE
+          ? new Promise((resolve) => {
+              releaseBefore = () => resolve(page([makeMsg(5n)], false))
+            })
+          : Promise.resolve(page([makeMsg(6n)], false)))
+
+      const jump = h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n, watch.signal)
+      await Promise.resolve()
+
+      const signals = listAgentMessages.mock.calls.map((call: unknown[]) => (call[2] as { signal?: AbortSignal } | undefined)?.signal)
+      expect(signals).toHaveLength(2)
+      expect(signals.every((sig?: AbortSignal) => sig !== undefined)).toBe(true)
+      expect(signals.some((sig?: AbortSignal) => sig?.aborted === true)).toBe(false)
+
+      // The caller gives up: every request it opened is aborted, not merely ignored.
+      watch.abort()
+      expect(signals.every((sig?: AbortSignal) => sig?.aborted === true)).toBe(true)
+
+      releaseBefore?.()
+      await jump
+      expect(h.applyMessages).not.toHaveBeenCalled() // and nothing swaps the window afterwards
+    })
+
+    it('leaves the window untouched when the fetch rejects because it was aborted', async () => {
+      // An abort is how this fetch is designed to end early, so it must not read as a failure
+      // and must not disturb the window the reader is looking at.
+      const h = harness({ messages: [makeMsg(1n)], caughtUp: () => true })
+      const watch = new AbortController()
+      listAgentMessages.mockImplementation(async () => {
+        watch.abort()
+        throw new DOMException('aborted', 'AbortError')
+      })
+
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n, watch.signal)).resolves.toBeUndefined()
+      expect(h.applyMessages).not.toHaveBeenCalled()
     })
 
     it('empties the window and resets a stale tail when the history vanished around the seq', async () => {

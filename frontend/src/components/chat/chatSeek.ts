@@ -33,11 +33,18 @@ export interface ChatSeek {
   previewScrollTo: (top: number) => void
   /**
    * Abandon any in-flight out-of-window seek so its late-resolving fetch cannot land
-   * (yank the viewport) after the user has taken manual control. The hook's handleScroll
-   * calls this on a genuine user scroll, and the rail calls it (via the hook) when a fresh
-   * thumb grab begins -- a drag scrolls only programmatically, so it never trips the
-   * user-scroll path. Clearing pendingSeek makes an in-flight seek's `.then` short-circuit
-   * (its epoch no longer matches a live pendingSeek).
+   * (yank the viewport) after the user took manual control. The hook's handleScroll calls
+   * this on a genuine user scroll, and the rail calls it (via the hook) at each moment its
+   * gesture stops wanting a seek it issued -- a drag scrolls only programmatically, so it
+   * never trips the user-scroll path.
+   *
+   * The seek stops in BOTH places it can still move the view. Clearing pendingSeek makes an
+   * in-flight seek's `.then` short-circuit, because its epoch no longer matches a live
+   * pendingSeek. Aborting its controller reaches the page fetch itself (onJumpToSeq threads
+   * the signal to the paginator), so the request ends at the transport instead of completing
+   * and swapping the window. Without the abort the landing was suppressed but the swap was
+   * not: the reader kept the viewport they scrolled to, holding a window centred somewhere
+   * they abandoned.
    */
   cancelPendingSeek: () => void
 }
@@ -70,7 +77,7 @@ export interface ChatSeekExtras {
   /** Refresh atBottom off a fresh DOM read (used when an out-of-window fetch fails). */
   checkAtBottom: () => void
   /** Replace the window with a page centered on `seq` (the out-of-window seek). */
-  onJumpToSeq: ((seq: bigint) => Promise<void> | void) | undefined
+  onJumpToSeq: ((seq: bigint, signal?: AbortSignal) => Promise<void> | void) | undefined
   /** Hand a hidden-mid-jump target to the SavedViewportScroll restore path. */
   onSaveViewportScroll: ((state: SavedViewportScroll) => void) | undefined
   /** Whether newer messages exist beyond the loaded window (windowed away from tail). */
@@ -81,10 +88,23 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
   // Pixels of breathing room left above the target row when landing on a seek.
   const SEEK_ALIGN_OFFSET_PX = 8
 
-  // The in-flight out-of-window seek, guarded by an epoch so a superseding jump / a genuine
-  // user scroll (which clears it via cancelPendingSeek) makes a late resolve a no-op.
-  let pendingSeek: { seq: bigint, epoch: number } | null = null
+  // The in-flight out-of-window seek. The epoch makes a late resolve a no-op; the controller
+  // makes the fetch behind it genuinely stop. Both are needed and they are not the same thing:
+  // the epoch is what THIS module checks before it lands, while the controller reaches the page
+  // fetch itself (onJumpToSeq threads it to the paginator's abort signal), so a seek nobody
+  // wants any more stops its round trip instead of completing and swapping the window.
+  let pendingSeek: { seq: bigint, epoch: number, controller: AbortController } | null = null
   let seekEpoch = 0
+
+  /**
+   * Abandon the in-flight out-of-window seek: stop its fetch and forget it, so neither the fetch
+   * nor this module's own landing can move the view. Used by the two ways a seek stops being
+   * wanted -- a superseding jump, and a caller giving up (cancelPendingSeek).
+   */
+  const abandonPendingSeek = () => {
+    pendingSeek?.controller.abort()
+    pendingSeek = null
+  }
 
   // The window's first/last SERVER seq (skipping seq-0n optimistic locals) come from the
   // shared chatMessageOrder helpers -- the same definition the rail's window bounds and the
@@ -169,7 +189,9 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
     // In-window: the seq sits within the loaded server span. Re-take control (clear the
     // per-window filler pause/settle/suppress flags, same as forceScrollToBottom) and land.
     if (firstS !== undefined && lastS !== undefined && seq >= firstS && seq <= lastS) {
-      pendingSeek = null
+      // This jump needs no fetch, but it still supersedes one already running: without the
+      // abort, that page would land afterwards and swap the window out from under this landing.
+      abandonPendingSeek()
       extras.retakeScrollControl()
       return Promise.resolve(landOnSeq(seq))
     }
@@ -184,9 +206,12 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
     if (ctx.isFollowing())
       extras.captureAnchor()
     ctx.setAtBottom(false)
+    // Supersede any seek already in flight -- abort its fetch, not just its landing.
+    abandonPendingSeek()
     const epoch = ++seekEpoch
-    pendingSeek = { seq, epoch }
-    return Promise.resolve(extras.onJumpToSeq?.(seq))
+    const controller = new AbortController()
+    pendingSeek = { seq, epoch, controller }
+    return Promise.resolve(extras.onJumpToSeq?.(seq, controller.signal))
       .then(() => {
         // Superseded by a newer jump, or cancelled by a genuine user scroll.
         if (pendingSeek?.epoch !== epoch)
@@ -227,7 +252,7 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
   }
 
   const cancelPendingSeek = () => {
-    pendingSeek = null
+    abandonPendingSeek()
   }
 
   return { jumpToSeq, previewScrollTo, cancelPendingSeek }

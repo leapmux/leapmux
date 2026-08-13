@@ -16,6 +16,13 @@ import { sendMessage, USER_BUBBLE_SELECTOR, userBubbles, waitForAgentIdle } from
 // overflow the short viewport below -- otherwise the rail correctly hides itself.
 const LONG_MESSAGE = `Please just reply with "ok". Ignore this filler: ${'the quick brown fox jumps over the lazy dog. '.repeat(12)}`
 
+/**
+ * How long to rest on the preview card before checking that it is still there. Comfortably
+ * longer than POINTER_CLOSE_DELAY_MS, so a card that ignored the pointer would already be gone.
+ * A fixed wait is the only way to assert that something does NOT happen within a window.
+ */
+const POPOVER_LINGER_MS = 1000
+
 /** The virtual row wrapper (carries data-seq) for the Nth user message bubble. */
 function userRow(page: Page, nth: number) {
   return page
@@ -71,7 +78,46 @@ test.describe('chat scroll rail', () => {
     // message text begins with a fixed phrase, so the preview (extracted + truncated on the
     // client) must contain it.
     await page.locator(`[data-testid="chat-scroll-rail-dot"][data-seq="${firstUserSeq}"]`).hover()
-    await expect(page.locator('[data-testid="chat-scroll-rail-preview"]')).toContainText('Please just reply with "ok"')
+    const preview = page.locator('[data-testid="chat-scroll-rail-preview"]')
+    await expect(preview).toContainText('Please just reply with "ok"')
+
+    // The card is a place the reader can GO: the pointer leaves the dot, crosses the gutter, and
+    // lands on the card, which then stays for as long as the pointer rests on it. Only a real
+    // browser covers this -- it needs the card's pointer-events (a media query jsdom never
+    // evaluates) and a hit-test that reaches it. See POINTER_CLOSE_DELAY_MS.
+    const previewBox = await preview.boundingBox()
+    expect(previewBox).not.toBeNull()
+    await page.mouse.move(previewBox!.x + previewBox!.width / 2, previewBox!.y + previewBox!.height / 2)
+    await page.waitForTimeout(POPOVER_LINGER_MS)
+    await expect(preview).toBeVisible()
+    // And its text is selectable, although the rail around it sets user-select: none so a thumb
+    // drag never selects anything.
+    await expect(preview).toHaveCSS('user-select', 'text')
+
+    // A real drag-select inside the card, ending OUTSIDE it -- what selecting to the end of a line
+    // does, because the card's right edge is only a gutter away from the rail. The card must
+    // outlive that release, and the selection must survive with it. Only a real browser has a
+    // selection engine, so nothing but this run covers it. The drag starts inside the first line
+    // of text (past the card's own inset) and ends just past the right edge, which is still on
+    // screen -- a release beyond the viewport would extend no selection at all.
+    await page.mouse.move(previewBox!.x + 12, previewBox!.y + 14)
+    await page.mouse.down()
+    await page.mouse.move(previewBox!.x + previewBox!.width + 4, previewBox!.y + 14, { steps: 10 })
+    await page.mouse.up()
+    const selected = await page.evaluate(() => document.getSelection()?.toString() ?? '')
+    expect(selected.length, 'the drag must leave a selection the reader can copy').toBeGreaterThan(0)
+    await page.waitForTimeout(POPOVER_LINGER_MS)
+    await expect(preview).toBeVisible()
+
+    // The reader's next click collapses that selection, and the card lets go with it.
+    await page.mouse.click(previewBox!.x - 200, previewBox!.y)
+    await expect(preview).toHaveCount(0)
+
+    // Moving away closes it (after the same delay), so it is a card the reader visits, not a panel.
+    await page.locator(`[data-testid="chat-scroll-rail-dot"][data-seq="${firstUserSeq}"]`).hover()
+    await expect(preview).toBeVisible()
+    await page.mouse.move(previewBox!.x - 200, previewBox!.y)
+    await expect(preview).toHaveCount(0)
 
     // The thumb is sized to the viewport's share of the conversation, not the whole rail.
     const railBox = await rail.boundingBox()

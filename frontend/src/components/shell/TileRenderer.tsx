@@ -828,7 +828,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       onLoadNewerMessages: () => chatStore.loadNewerPage(agent()?.workerId ?? '', agentId),
                       onJumpToLatest: () => chatStore.jumpToLatestMessages(agent()?.workerId ?? '', agentId),
                       onJumpToOldest: () => chatStore.jumpToOldestMessages(agent()?.workerId ?? '', agentId),
-                      onJumpToSeq: seq => chatStore.jumpToMessagesAroundSeq(agent()?.workerId ?? '', agentId, seq),
+                      onJumpToSeq: (seq, signal) => chatStore.jumpToMessagesAroundSeq(agent()?.workerId ?? '', agentId, seq, signal),
                     }}
                     rail={railProps()}
                     savedViewportScroll={chatStore.viewportScroll.get(agentId)}

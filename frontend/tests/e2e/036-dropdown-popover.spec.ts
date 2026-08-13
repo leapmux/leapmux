@@ -1,4 +1,5 @@
 import type { Locator } from '@playwright/test'
+import { POPOVER_CARD_PADDING } from '../../src/styles/popoverTokens'
 import { expect, test } from './fixtures'
 import { ARITHMETIC_ANSWER, ARITHMETIC_PROMPT, assistantBubbles, closeComposerMenus, expectAssistantAnswer, openAgentViaUI, openPlusMenu, sendMessage, waitForAgentIdle } from './helpers/ui'
 
@@ -321,25 +322,36 @@ function readPadding(el: Element): string {
 }
 
 /**
- * Oat's own inset for a card, read from a throwaway element that carries its
- * `card` class.
+ * Both insets a card can take, measured from throwaway elements: Oat's own (which a card that
+ * FILLS the page, like the auth forms, still uses) and the compact one a FLOATING card takes.
  *
- * Measured rather than written down: the card popovers are supposed to FOLLOW
- * Oat's card padding, so a literal `24px` here would keep passing on the day Oat
- * changes it and the two surfaces silently stop matching the rest of the app.
+ * Measured rather than written down as `24px` and `8px 12px`, because every half comes from Oat's
+ * spacing scale -- a literal would keep passing on the day that scale changes and the cards
+ * silently stop matching the rest of the app. The compact inset arrives as an ARGUMENT, from
+ * `~/styles/popoverTokens.ts`, which `popover.css.ts` also reads: Playwright runs no
+ * vanilla-extract, so the spec cannot import the class, but it can import the plain value the
+ * class is built from, and then there is no second copy to drift.
  *
- * Runs inside the page, so it must not close over anything in this file.
+ * ONE function for both probes, with its `read` helper defined INSIDE it: Playwright serializes
+ * this function into the page, so it must not close over anything in this file -- which also rules
+ * out passing `read` in, because a function argument is not serializable either.
  */
-function resolveOatCardPadding(): string {
-  const probe = document.createElement('div')
-  probe.className = 'card'
-  document.body.append(probe)
-  try {
-    const style = getComputedStyle(probe)
-    return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' ')
+function resolveCardPaddings(popoverPadding: string): { oat: string, popover: string } {
+  const read = (configure: (el: HTMLElement) => void): string => {
+    const probe = document.createElement('div')
+    configure(probe)
+    document.body.append(probe)
+    try {
+      const style = getComputedStyle(probe)
+      return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' ')
+    }
+    finally {
+      probe.remove()
+    }
   }
-  finally {
-    probe.remove()
+  return {
+    oat: read((el) => { el.className = 'card' }),
+    popover: read((el) => { el.style.padding = popoverPadding }),
   }
 }
 
@@ -350,7 +362,7 @@ test.describe('agent info card', () => {
    * inset those rows differently for as long as each call site sets its own
    * padding, which is what this asserts against.
    */
-  test('both surfaces inset the card by Oat\'s card padding', async ({ page, authenticatedWorkspace }) => {
+  test('both surfaces inset the card by the shared popover-card padding', async ({ page, authenticatedWorkspace }) => {
     await openAgentViaUI(page)
     await sendMessage(page, ARITHMETIC_PROMPT)
     await expectAssistantAnswer(page)
@@ -373,9 +385,29 @@ test.describe('agent info card', () => {
     await expect(plusMenuCard).toBeVisible()
     const plusMenuPadding = await plusMenuCard.evaluate(readPadding)
 
-    const oatCardPadding = await page.evaluate(resolveOatCardPadding)
-    expect(statusBarPadding, 'the status bar\'s card must use Oat\'s card padding').toBe(oatCardPadding)
-    expect(plusMenuPadding, 'the `[+]` menu\'s card must use Oat\'s card padding').toBe(oatCardPadding)
+    const padding = await page.evaluate(resolveCardPaddings, POPOVER_CARD_PADDING)
+    expect(statusBarPadding, 'the status bar\'s card must use the popover-card padding').toBe(padding.popover)
+    expect(plusMenuPadding, 'the `[+]` menu\'s card must use the popover-card padding').toBe(padding.popover)
+
+    // The override reaches the card at all. It wins by LAYER, not by specificity: both
+    // selectors are (0,1,0), so a tie would be decided by stylesheet order alone. If the
+    // unlayered class ever stopped outranking Oat's `components` layer, the cards would
+    // quietly fall back to the generous page-card inset, and the two assertions above would
+    // still pass together.
+    expect(statusBarPadding, 'a floating card must NOT keep Oat\'s page-card inset').not.toBe(padding.oat)
+
+    // ...and Oat's `card` class still reaches it, which nothing above can see anymore. The inset
+    // used to BE the proof: it came from Oat, so a card that lost the class lost the padding with
+    // it. The unlayered override now supplies that padding on its own, so a popover stripped of
+    // `card` would render as a transparent, border-less block over the transcript and every
+    // assertion above would still pass. Measure what only Oat supplies instead.
+    const cardSurface = await statusBarCard.evaluate((el) => {
+      const style = getComputedStyle(el)
+      return { background: style.backgroundColor, border: style.borderTopWidth, shadow: style.boxShadow }
+    })
+    expect(cardSurface.background, 'a card popover must paint Oat\'s card background').not.toBe('rgba(0, 0, 0, 0)')
+    expect(cardSurface.border, 'a card popover must carry Oat\'s card border').not.toBe('0px')
+    expect(cardSurface.shadow, 'a card popover must carry Oat\'s card shadow').not.toBe('none')
   })
 
   /**
