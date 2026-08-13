@@ -30,9 +30,8 @@ export const sidebarRoot = style({
  *
  * The DropdownMenu card sizes to its content, so capping the list is what caps
  * the card. Both axes need a cap, for different reasons: a long registry
- * overflowed the card vertically, and one long shell command -- the rows wrap,
- * but the flex column still sizes to the widest unbroken run -- stretched it
- * sideways.
+ * overflows the card vertically, and a row holds each of its two lines on one
+ * line, so a long shell command asks for the full width of the command.
  *
  * Neither cap restates the VIEWPORT clamp: `popoverCard` in
  * `~/styles/popover.css.ts` already holds the card inside the viewport on both
@@ -44,13 +43,22 @@ export const popoverRoot = style({
   maxWidth: '360px',
 })
 
-/** The scrolling region the kind tabs swap. */
+/**
+ * The scrolling region the kind tabs swap.
+ *
+ * `overflow-x: hidden` is declared, not left out. `overflow-y: auto` alone makes
+ * CSS compute the other axis from `visible` to `auto`, so this box grew a
+ * horizontal scrollbar for any descendant that exceeded it. Every row now clips
+ * its own text, and this makes that structural: no descendant added later can
+ * bring the sideways scroll back.
+ */
 export const rows = style({
   display: 'flex',
   flexDirection: 'column',
   gap: '2px',
   padding: 'var(--space-1) var(--space-2)',
   overflowY: 'auto',
+  overflowX: 'hidden',
   minHeight: 0,
 })
 
@@ -70,7 +78,16 @@ export const loadFailedMessage = style({
   color: 'var(--danger)',
 })
 
+// Decoration only. `ClippedText` owns the clipping rule -- see
+// `~/components/common/ClippedText.tsx`.
+//
+// `display: block` is defensive, not load-bearing. The header is a <span>, and
+// an inline box would drop the vertical padding below; but the header renders
+// into `rows`, which is a flex container, and CSS blockifies a flex item
+// already. This declaration only holds the padding if `rows` stops being a flex
+// container.
 export const groupHeader = style({
+  display: 'block',
   padding: 'var(--space-1) 0',
   fontSize: 'var(--text-8)',
   fontWeight: 600,
@@ -125,33 +142,10 @@ const dotPulse = keyframes({
   '50%': { opacity: 0.35 },
 })
 
-/**
- * The status dot, FLOATED right inside the title.
- *
- * Float, not a flex sibling: the dot belongs at the right end of the title's
- * FIRST line, and a flex row would centre it against the whole wrapped block
- * instead. A right float sits at the top-right of its container, and because
- * the dot is only 8px tall in a ~17px line box, it shortens exactly that first
- * line -- every line below it, and the secondary line in the block underneath,
- * run the full width.
- *
- * 8px matches the workers section's dot (~/components/workers/workerSection.css.ts), so the two
- * sidebar sections read as one vocabulary.
- */
-export const statusDot = style({
-  float: 'right',
-  width: 8,
-  height: 8,
-  borderRadius: '50%',
-  flexShrink: 0,
-  marginLeft: 'var(--space-2)',
-  // Centres the dot on the first line's box. In em so it tracks the font size
-  // rather than needing a second magic number per variant.
-  marginTop: '0.35em',
-})
-
 // Status is carried by the dot's COLOR, so every row keeps the same shape and
-// the column reads as a status light rather than a set of glyphs to learn.
+// the column reads as a status light rather than a set of glyphs to learn. The
+// shape itself is the shared dot in `~/styles/shared.css.ts`, which the workers
+// section uses as well; only this palette is specific to the section.
 export const statusDotActive = style({
   'background': 'var(--primary)',
   '@media': {
@@ -183,45 +177,49 @@ export const taskBody = style({
   gap: '0',
 })
 
+/**
+ * The title line: the title itself, then the status dot at its right end.
+ *
+ * The dot is a flex sibling of the title, not a float inside it. The title is
+ * one clipped line now, so there is no wrapped block for a float to sit above
+ * -- a flex row centres the dot on that single line and needs no offset.
+ */
+export const titleRow = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  minWidth: 0,
+})
+
+// Decoration only. `ClippedText` owns the clipping rule -- see
+// `~/components/common/ClippedText.tsx`.
+//
+// `flex: 1` gives the title every pixel the dot does not take, which is what
+// puts the ellipsis at the right edge of the row rather than at the end of the
+// text. The component supplies the `min-width: 0` that lets it shrink that far.
 export const taskTitle = style({
-  // break-word + hyphens, NOT `anywhere`: the browser hyphenates at real
-  // syllable boundaries (the document is lang="en"), and only falls back to a
-  // hard mid-word break for a token it cannot hyphenate. `anywhere` would win
-  // every time and hyphenation would never run.
-  overflowWrap: 'break-word',
-  hyphens: 'auto',
+  flex: 1,
 })
 
 /**
- * A shell task's title is its COMMAND, so it is set in the monospace face and
- * wrapped like code, not like prose: hyphenation off (a hyphen inserted into a
- * path or a flag reads as part of the command), and breaking allowed anywhere
- * so a long `/path/like/this` wraps at the edge instead of pushing the whole
- * token to the next line and leaving the first one half empty.
+ * A shell task's title is its COMMAND, so it is set in the monospace face.
+ *
+ * Same size as any other title: the monospace face alone marks it as code, and
+ * stepping it down to the secondary line's size would flatten the
+ * title/subtitle hierarchy.
  */
 export const taskTitleCommand = style({
   fontFamily: 'var(--font-mono)',
-  // Same size as any other title: the monospace face alone marks it as code,
-  // and stepping it down to the secondary line's size would flatten the
-  // title/subtitle hierarchy. `anywhere` is what actually buys the width back
-  // -- it is whole-token wrapping, not the font size, that was leaving a line
-  // half empty in front of a long path.
-  overflowWrap: 'anywhere',
-  hyphens: 'none',
 })
 
-// Wraps rather than ellipsizing on one line. The activity text a provider
-// reports ("Running <what>", a tool name, a token tally) is the only thing that
-// says WHAT the subagent is doing, and the sidebar is narrow enough that a
-// single nowrap line cut almost all of it. Capped at three lines so one verbose
-// row cannot push the rest of the registry off screen.
+// Decoration only. `ClippedText` owns the clipping rule -- see
+// `~/components/common/ClippedText.tsx`.
+//
+// One clipped line, like the title. The activity text a provider reports
+// ("Running <what>", a tool name, a token tally) is often longer than the
+// sidebar is wide, so the full string is on the tooltip that ClippedText
+// attaches -- see renderSecondary in the component.
 export const taskSecondary = style({
   fontSize: 'var(--text-8)',
   color: 'var(--muted-foreground)',
-  overflow: 'hidden',
-  display: '-webkit-box',
-  WebkitBoxOrient: 'vertical',
-  WebkitLineClamp: 3,
-  overflowWrap: 'break-word',
-  hyphens: 'auto',
 })

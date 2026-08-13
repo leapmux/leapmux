@@ -29,8 +29,10 @@ async function openWorkersSidebar(page: import('@playwright/test').Page) {
   const isOpen = await workersSection.evaluate(el => !el.hasAttribute('data-closed'))
   if (!isOpen)
     await workersSection.locator('> [role="button"]').click()
-  // Wait for content to be visible
-  await expect(workersSection.locator('[class*="sectionItems"]')).toBeVisible()
+  // Wait for content to be visible. The workers list has its own container
+  // (`workerItems`): it fills the section width so a row clips its name, unlike
+  // the workspace list's `sectionItems`, which sizes to its widest row.
+  await expect(workersSection.locator('[class*="workerItems"]')).toBeVisible()
   return workersSection
 }
 

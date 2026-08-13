@@ -1,6 +1,8 @@
 import type { JSX } from 'solid-js'
 import { createSignal, onCleanup, useContext } from 'solid-js'
 import { createStableContext } from '~/lib/createStableContext'
+import { clippedText } from '~/styles/shared.css'
+import { dragPreviewTooltip } from './AppShell.css'
 import { useOptionalSectionDrag } from './SectionDragContext'
 
 /** Prefix used for tab-bar zone droppable IDs. */
@@ -11,6 +13,28 @@ export const WORKSPACE_DROP_PREFIX = 'workspace-drop:'
 
 /** Prefix used for draggable sidebar tab tree leaves. Format: `sidebar-tab:{workspaceId}:{tabType}:{tabId}` */
 export const SIDEBAR_TAB_PREFIX = 'sidebar-tab:'
+
+/**
+ * The drag image for a sidebar tab, built from the draggable's own data.
+ *
+ * A sidebar tab can belong to a workspace that is not the active one, so its
+ * title comes from the drag payload rather than from the tab store.
+ *
+ * Wears the same chrome as the tile drag preview, from the same style. That
+ * chrome used to be an inline copy here, and it carried `text-overflow` on the
+ * flex container, where the property does nothing -- so a long title was cut
+ * with no ellipsis. The LABEL carries the clipping, as it does there.
+ *
+ * Exported for its test: the renderer that calls it is a closure that only the
+ * drag provider registers.
+ */
+export function renderSidebarTabOverlay(title: string): JSX.Element {
+  return (
+    <div class={dragPreviewTooltip}>
+      <span class={clippedText}>{title}</span>
+    </div>
+  )
+}
 
 interface TabDragState {
   /** Tile ID where the drag started. */
@@ -218,28 +242,8 @@ function DelegatingTabDragProvider(props: TabDragProviderProps & { sectionDrag: 
       return null
     // Sidebar tab drag — render overlay from draggable data since the tab
     // may not be in the active workspace's store.
-    if (id.startsWith(SIDEBAR_TAB_PREFIX)) {
-      const title = String(draggable.data?.title || 'Tab')
-      return (
-        <div style={{
-          'display': 'flex',
-          'align-items': 'center',
-          'padding': '4px 6px',
-          'font-size': '13px',
-          'background': 'var(--card)',
-          'border': '1px solid var(--border)',
-          'border-radius': '4px',
-          'box-shadow': '0 2px 8px rgba(0,0,0,0.15)',
-          'white-space': 'nowrap',
-          'max-width': '180px',
-          'overflow': 'hidden',
-          'text-overflow': 'ellipsis',
-        }}
-        >
-          <span>{title}</span>
-        </div>
-      )
-    }
+    if (id.startsWith(SIDEBAR_TAB_PREFIX))
+      return renderSidebarTabOverlay(String(draggable.data?.title || 'Tab'))
     return props.renderDragOverlay(id)
   })
   /* eslint-enable solid/reactivity */

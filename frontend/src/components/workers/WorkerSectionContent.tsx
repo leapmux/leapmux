@@ -7,8 +7,9 @@ import ArrowBigRightDash from 'lucide-solid/icons/arrow-big-right-dash'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import ChevronsLeftRightEllipsis from 'lucide-solid/icons/chevrons-left-right-ellipsis'
 import { createMemo, createSignal, For, Show } from 'solid-js'
+import { ClippedText } from '~/components/common/ClippedText'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
-import { Tooltip } from '~/components/common/Tooltip'
+import { StatusDot } from '~/components/common/StatusDot'
 import * as shared from '~/components/tree/sharedTree.css'
 import { actionSlot, actionSlotResting, sidebarActions } from '~/components/tree/sidebarActions.css'
 import * as listStyles from '~/components/workspace/workspaceList.css'
@@ -28,6 +29,12 @@ export interface WorkerSectionContentProps {
 const statusClass: Record<ChannelStatus, string> = {
   connected: styles.statusConnected,
   disconnected: styles.statusDisconnected,
+}
+
+/** What the dot's colour means. The dot has no other way to say it. */
+const statusLabel: Record<ChannelStatus, string> = {
+  connected: 'Connected',
+  disconnected: 'Disconnected',
 }
 
 export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props) => {
@@ -58,7 +65,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
   }
 
   return (
-    <div class={listStyles.sectionItems}>
+    <div class={styles.workerItems}>
       <Show
         when={props.workers.length > 0}
         fallback={<div class={listStyles.emptySection}>No workers</div>}
@@ -79,19 +86,23 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                     size={14}
                     class={`${shared.chevron} ${isExpanded(worker.id) ? shared.chevronExpanded : ''}`}
                   />
-                  <Tooltip text={workerName()} showWhen="clipped">
-                    <span class={listStyles.itemTitle} data-testid="worker-name">
-                      {workerName()}
-                    </span>
-                  </Tooltip>
+                  <ClippedText
+                    text={workerName()}
+                    class={listStyles.itemTitle}
+                    testId="worker-name"
+                  />
                   <div class={sidebarActions}>
                     {/* The dot and the three-dot trigger share one cell: the
                         dot rests at the row's right edge and the trigger takes
                         its place on hover, so the row's width never shifts. */}
                     <div class={actionSlot}>
-                      <div
-                        class={`${styles.statusDot} ${actionSlotResting} ${statusClass[status()]}`}
-                        data-status={status()}
+                      {/* No tooltip: `actionSlotResting` is `pointer-events:
+                          none`, so a hover on this dot never reaches it. The
+                          accessible name carries the state instead. */}
+                      <StatusDot
+                        class={`${actionSlotResting} ${statusClass[status()]}`}
+                        label={statusLabel[status()]}
+                        status={status()}
                       />
                       <WorkerContextMenu
                         workerInfo={props.workerInfo(worker.id)}
@@ -115,11 +126,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                               {t.type === 'socks5'
                                 ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
                                 : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
-                              <Tooltip text={label} showWhen="clipped">
-                                <span class={listStyles.itemTitle}>
-                                  {label}
-                                </span>
-                              </Tooltip>
+                              <ClippedText text={label} class={listStyles.itemTitle} />
                               <div class={sidebarActions}>
                                 <TunnelContextMenu onDelete={() => setDeleteTunnelTarget(t)} />
                               </div>

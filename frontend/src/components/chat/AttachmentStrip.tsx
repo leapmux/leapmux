@@ -4,6 +4,7 @@ import FileIcon from 'lucide-solid/icons/file'
 import FileImageIcon from 'lucide-solid/icons/file-image'
 import X from 'lucide-solid/icons/x'
 import { For, Show } from 'solid-js'
+import { ClippedText } from '~/components/common/ClippedText'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { isImageMimeType } from './attachments'
@@ -41,9 +42,7 @@ export const AttachmentStrip: Component<AttachmentStripProps> = (props) => {
                   size="xs"
                 />
               </span>
-              <Tooltip text={attachment.filename}>
-                <span class={styles.pillFilename}>{attachment.filename}</span>
-              </Tooltip>
+              <ClippedText text={attachment.filename} />
               <Tooltip text="Remove attachment" ariaLabel>
                 <button
                   class={styles.removeButton}

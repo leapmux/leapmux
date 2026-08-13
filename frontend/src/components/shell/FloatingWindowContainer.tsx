@@ -2,6 +2,7 @@ import type { Component, JSX } from 'solid-js'
 import type { FloatingWindowStoreType } from '~/stores/floatingWindow.store'
 import X from 'lucide-solid/icons/x'
 import { For, onCleanup, onMount } from 'solid-js'
+import { ClippedText } from '~/components/common/ClippedText'
 import { IconButton } from '~/components/common/IconButton'
 import { MIN_WINDOW_DIMENSION } from '~/stores/floatingWindow.store'
 import * as styles from './FloatingWindowContainer.css'
@@ -296,7 +297,7 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
         data-testid="floating-window-titlebar"
         onPointerDown={handleDragStart}
       >
-        <span class={styles.titleText}>{props.title}</span>
+        <ClippedText text={props.title} class={styles.titleText} />
         <IconButton
           icon={X}
           size="sm"

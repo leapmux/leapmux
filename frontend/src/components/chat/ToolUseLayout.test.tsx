@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ToolUseLayout } from '~/components/chat/toolRenderers'
 import { toolBodyBorder, toolBodyContent, toolInputText } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
+import { classSelector } from '~/test-support/composedClass'
 
 // jsdom does not provide ResizeObserver
 beforeAll(() => {
@@ -205,6 +206,26 @@ describe('toolUseLayout', () => {
     expect(customIcon?.parentElement?.querySelector('svg')).toBeNull()
   })
 
+  // The positive control for the test below. Without it, an absence assertion
+  // proves nothing: a selector that matches no element ANYWHERE passes it. This
+  // pins that the selector does find the wrapper when the title is a string.
+  it('wraps a string title in a toolInputText span', () => {
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <ToolUseLayout
+          icon={ListTodo}
+          toolName="TestTool"
+          title="3 tasks"
+          context={makeContext()}
+        />
+      </PreferencesProvider>
+    ))
+
+    const wrapper = container.querySelector(classSelector(toolInputText))
+    expect(wrapper).toBeInTheDocument()
+    expect(wrapper).toHaveTextContent('3 tasks')
+  })
+
   it('renders JSX title without toolInputText wrapper', () => {
     const { container } = render(() => (
       <PreferencesProvider>
@@ -219,8 +240,11 @@ describe('toolUseLayout', () => {
 
     expect(screen.getByTestId('custom-title')).toBeInTheDocument()
     expect(container).toHaveTextContent('Custom JSX')
-    // Should NOT wrap JSX title in toolInputText span
-    const toolInputTextSpan = container.querySelector(`.${toolInputText}`)
+    // `classSelector`, not `.${toolInputText}`: the style composes `clippedText`,
+    // so it exports two space-separated class names and the template form is a
+    // descendant selector that matches nothing and passes this assertion for
+    // the wrong reason.
+    const toolInputTextSpan = container.querySelector(classSelector(toolInputText))
     expect(toolInputTextSpan).not.toBeInTheDocument()
   })
 })

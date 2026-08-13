@@ -4,12 +4,14 @@ import Check from 'lucide-solid/icons/check'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import { createMemo, For, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
+import { ClippedText } from '~/components/common/ClippedText'
 import { labelRow } from '~/components/common/Dialog.css'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import { getAvailableAgentProviders, sortAgentProvidersByName } from '~/lib/agentProviders'
+import { clippedText } from '~/styles/shared.css'
 import * as styles from './AgentProviderSelector.css'
 
 interface AgentProviderSelectorProps {
@@ -52,7 +54,11 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
           >
             <span class={styles.triggerValue}>
               <Icon icon={Bot} size="sm" />
-              <span class={styles.triggerLabel}>No agents available</span>
+              {/* The raw style, not `ClippedText`: this button is `disabled`,
+                  and a disabled element receives no pointer events, so a
+                  tooltip on the label could never fire. The text is also a
+                  fixed literal that the trigger's width always holds. */}
+              <span class={clippedText}>No agents available</span>
             </span>
           </button>
         )}
@@ -72,7 +78,7 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
             >
               <span class={styles.triggerValue}>
                 <AgentProviderIcon provider={currentProvider()} size={16} />
-                <span class={styles.triggerLabel}>{agentProviderLabel(currentProvider())}</span>
+                <ClippedText text={agentProviderLabel(currentProvider())} />
               </span>
               <ChevronDown size={16} class={styles.triggerChevron} />
             </button>

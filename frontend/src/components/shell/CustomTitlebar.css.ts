@@ -1,4 +1,5 @@
 import { style } from '@vanilla-extract/css'
+import { clippedText } from '~/styles/shared.css'
 import { headerHeight } from '~/styles/tokens'
 
 export const titlebar = style({
@@ -21,14 +22,11 @@ export const dragRegion = style({
   WebkitAppRegion: 'drag',
 } as any)
 
-export const titleText = style({
+export const titleText = style([clippedText, {
   position: 'absolute',
   left: '50%',
   transform: 'translateX(-50%)',
   maxWidth: '50%',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
   pointerEvents: 'none',
   userSelect: 'none',
   WebkitAppRegion: 'drag',
@@ -36,7 +34,7 @@ export const titleText = style({
   fontWeight: 'var(--font-bold)',
   letterSpacing: '0.02em',
   color: 'var(--text-secondary)',
-} as any)
+} as any])
 
 export const windowControls = style({
   display: 'flex',

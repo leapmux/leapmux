@@ -1,5 +1,6 @@
 import { globalStyle, style } from '@vanilla-extract/css'
 import { menuTrigger, sidebarActions } from '~/components/tree/sidebarActions.css'
+import { clippedText } from '~/styles/shared.css'
 import { iconSize } from '~/styles/tokens'
 
 export const list = style({
@@ -35,18 +36,14 @@ export const sectionChevronOpen = style([sectionChevron, {
   transform: 'rotate(90deg)',
 }])
 
-export const sectionName = style({
+export const sectionName = style([clippedText, {
   flex: 1,
   fontSize: 'var(--text-8)',
   fontWeight: 'var(--font-bold)',
   color: 'var(--muted-foreground)',
   textTransform: 'uppercase',
   letterSpacing: '0.5px',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  minWidth: 0,
-})
+}])
 
 export const sectionActions = style({
   display: 'flex',
@@ -92,6 +89,19 @@ export const sectionAddButton = style({
   },
 })
 
+/**
+ * The workspace tree's row container, which sizes to its WIDEST row.
+ *
+ * `width: max-content` is deliberate: the tab tree indents each level, so a deep
+ * branch runs past the sidebar, and the enclosing scroller must be able to
+ * reveal it sideways.
+ *
+ * A section whose rows should CLIP must not use this container. The width makes
+ * the row grow instead of the label shrinking, so the ellipsis never appears and
+ * the whole section scrolls sideways -- which is what the workers list did while
+ * it rendered in here. It has its own container now: `workerItems` in
+ * `~/components/workers/workerSection.css.ts`.
+ */
 export const sectionItems = style({
   display: 'flex',
   flexDirection: 'column',
@@ -143,15 +153,11 @@ export const itemLabel = style({
   overflow: 'hidden',
 })
 
-export const itemTitle = style({
+export const itemTitle = style([clippedText, {
   fontSize: 'var(--text-7)',
   fontWeight: 'var(--font-normal)',
   color: 'var(--foreground)',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  minWidth: 0,
-})
+}])
 
 export const itemRenameInput = style({
   'flex': 1,
@@ -199,7 +205,7 @@ export const sectionHeaderDropTarget = style({
   backgroundColor: 'var(--secondary)',
 })
 
-export const dragOverlay = style({
+export const dragOverlay = style([clippedText, {
   padding: 'var(--space-1) var(--space-3)',
   paddingLeft: 'var(--space-4)',
   fontSize: 'var(--text-7)',
@@ -209,8 +215,5 @@ export const dragOverlay = style({
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-small)',
   boxShadow: 'var(--shadow-large)',
-  whiteSpace: 'nowrap',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
   maxWidth: '200px',
-})
+}])

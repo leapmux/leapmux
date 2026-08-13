@@ -5,6 +5,7 @@ import type { TabView } from '~/stores/tabView'
 import { positionAtInsertIdx } from '~/lib/lexorank'
 import { tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
 import { emitReorderTabs, emitSetTabPosition } from '~/stores/tabOps'
+import { clippedText } from '~/styles/shared.css'
 import * as styles from './AppShell.css'
 import { useTileMove } from './useTileMove'
 
@@ -74,9 +75,12 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
     const tab = view.get(key)
     if (!tab)
       return <></>
+    // The raw style, not `ClippedText`: this is the drag image, which follows
+    // the pointer and is destroyed when the drag ends. A tooltip needs 700ms of
+    // still hover to appear, so one here could never show.
     return (
       <div class={styles.dragPreviewTooltip}>
-        <span>{tabDisplayLabel(tab)}</span>
+        <span class={clippedText}>{tabDisplayLabel(tab)}</span>
       </div>
     )
   }

@@ -3,6 +3,9 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { BackgroundTaskList } from '~/components/backgroundtasks/BackgroundTaskList'
 import * as styles from '~/components/backgroundtasks/BackgroundTaskList.css'
+import { clippedText } from '~/styles/shared.css'
+import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
+import { classSelector } from '~/test-support/composedClass'
 
 function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem {
   return {
@@ -33,6 +36,19 @@ function rowsText(container: HTMLElement): string {
   return container.querySelector('[role="tabpanel"]')!.textContent ?? ''
 }
 
+/** The class tokens on the element, so a test asserts membership, not a substring. */
+function classes(el: Element): string[] {
+  return el.className.trim().split(/\s+/)
+}
+
+function titles(container: HTMLElement): HTMLElement[] {
+  return [...container.querySelectorAll<HTMLElement>(classSelector(styles.taskTitle))]
+}
+
+function secondaries(container: HTMLElement): HTMLElement[] {
+  return [...container.querySelectorAll<HTMLElement>(classSelector(styles.taskSecondary))]
+}
+
 describe('backgroundTaskList', () => {
   it('renders a status glyph + title + activity for a running subagent', () => {
     const { container } = renderList({
@@ -47,18 +63,24 @@ describe('backgroundTaskList', () => {
     expect(container.textContent).toContain('running Bash')
   })
 
-  // The dot lives INSIDE the title, not as a sibling column: that is what lets
-  // it float to the right end of the title's first line while the secondary
-  // line below runs the full width.
-  it('puts the status dot inside the title, not beside it', () => {
+  // The dot is a SIBLING of the title on the title line, not a child of it. A
+  // child would count toward the title's own overflow, and the title is the
+  // element whose clipping decides whether its tooltip appears at all.
+  it('puts the status dot beside the title, on the title line', () => {
     const { container } = renderList({
       tasks: [row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })],
     })
     const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
-    const title = container.querySelector(`.${styles.taskTitle}`)!
-    expect(title.contains(dot)).toBe(true)
-    // ...and NOT inside the secondary line, whose width it must not affect.
-    expect(container.querySelector(`.${styles.taskSecondary}`)!.contains(dot)).toBe(false)
+    const title = titles(container)[0]
+    expect(title.contains(dot)).toBe(false)
+    // Both sit on the title line...
+    const titleRow = container.querySelector(classSelector(styles.titleRow))!
+    expect(titleRow.contains(title)).toBe(true)
+    expect(titleRow.contains(dot)).toBe(true)
+    // ...and the dot follows the title, so it lands at the row's right end.
+    expect(title.compareDocumentPosition(dot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The secondary line is a separate block and never holds the dot.
+    expect(secondaries(container)[0].contains(dot)).toBe(false)
   })
 
   // Code type follows the PROVIDER's claim, not the row's kind. A shell row
@@ -73,7 +95,7 @@ describe('backgroundTaskList', () => {
       ],
     })
     const titleOf = (text: string) =>
-      [...container.querySelectorAll(`.${styles.taskTitle}`)].find(t => t.textContent?.includes(text))!
+      titles(container).find(t => t.textContent?.includes(text))!
     expect(titleOf('go test').className).toContain(styles.taskTitleCommand)
     expect(titleOf('Run the worker').className).not.toContain(styles.taskTitleCommand)
     expect(titleOf('Review').className).not.toContain(styles.taskTitleCommand)
@@ -304,6 +326,120 @@ describe('backgroundTaskList kind tabs', () => {
     expect(rowsText(container)).toContain('my workflow')
     fireEvent.click(getByTestId('bg-task-filter-shell'))
     expect(rowsText(container)).not.toContain('my workflow')
+  })
+})
+
+/**
+ * Every line of a row is held to ONE line and clipped, and gives its full text
+ * back on hover. Wrapping made the sidebar section scroll sideways, because a
+ * label with no break opportunity escaped the box and `rows` computes its
+ * horizontal overflow to `auto`.
+ */
+describe('backgroundTaskList clipping', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  const hover = (el: Element): string | null => hoverForTooltip(el)?.textContent ?? null
+
+  it('clips the title and the secondary line to one line', () => {
+    const { container } = renderList({
+      tasks: [row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })],
+    })
+    // Token membership, not a substring: a future class whose own name merely
+    // CONTAINS "clippedText" would satisfy a regex and prove nothing.
+    expect(classes(titles(container)[0])).toContain(clippedText)
+    expect(classes(secondaries(container)[0])).toContain(clippedText)
+  })
+
+  it('clips a group header, which had no wrapping rule at all', () => {
+    const { container } = renderList({
+      tasks: [row({ rowKey: 'g1', groupKey: 'wf:x', groupLabel: 'find-flaky-tests-and-fix-them' })],
+    })
+    const header = container.querySelector(classSelector(styles.groupHeader))!
+    expect(header.textContent).toBe('find-flaky-tests-and-fix-them')
+    expect(classes(header)).toContain(clippedText)
+  })
+
+  // The header had no tooltip at all before it was clipped, so the hover route
+  // is the whole of what replaced a label the reader could simply see.
+  it('gives the full group label on hover once the header is clipped', () => {
+    const label = 'find-flaky-tests-and-fix-them-across-every-package'
+    const { container } = renderList({
+      tasks: [row({ rowKey: 'g1', groupKey: 'wf:x', groupLabel: label })],
+    })
+    const header = container.querySelector<HTMLElement>(classSelector(styles.groupHeader))!
+    stubClipped(header)
+    expect(hover(header)).toBe(label)
+  })
+
+  it('gives the full title on hover once the title is clipped', () => {
+    const long = 'go test ./internal/worker/service/... -run TestEverything -count=1'
+    const { container } = renderList({
+      tasks: [row({ rowKey: 'cmd', kind: 'shell', title: long, titleIsCommand: true })],
+    })
+    const title = titles(container)[0]
+    stubClipped(title)
+    expect(hover(title)).toBe(long)
+  })
+
+  it('shows no title tooltip while the title fits', () => {
+    const { container } = renderList({ tasks: [row({ rowKey: 't1', title: 'Short' })] })
+    const title = titles(container)[0]
+    stubFitting(title)
+    expect(hover(title)).toBeNull()
+  })
+
+  it('gives the full activity on hover once the secondary line is clipped', () => {
+    const activity = 'Running Bash(git log --oneline --format=%H%x09%s -n 200)'
+    const { container } = renderList({
+      tasks: [row({ rowKey: 't1', title: 'Spawned agent', status: 'running', activity })],
+    })
+    const secondary = secondaries(container)[0]
+    stubClipped(secondary)
+    expect(hover(secondary)).toBe(activity)
+  })
+
+  // A finished status carries an explanation the label cannot: "Interrupted"
+  // does not say that a worker restart cut the task off. The explanation is
+  // ADDED to the label, never put in its place, so a label that clips keeps its
+  // own route back. It shows while the label fits too, because it carries what
+  // the label cannot.
+  it('adds an explanation to a finished status without losing its label', () => {
+    const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'interrupted' })] })
+    const secondary = secondaries(container)[0]
+    expect(secondary.textContent).toBe('Interrupted')
+    const tip = hover(secondary)
+    expect(tip).toContain('Interrupted')
+    expect(tip).toContain('stopped by a worker restart')
+  })
+
+  // The label stays reachable even when the row carries an explanation AND the
+  // label is too long for its box -- the case the previous shape lost.
+  it('keeps a clipped label reachable beside its explanation', () => {
+    const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'interrupted' })] })
+    const secondary = secondaries(container)[0]
+    stubClipped(secondary)
+    const tip = hover(secondary)
+    expect(tip).toContain('Interrupted')
+    expect(tip).toContain('stopped by a worker restart')
+  })
+
+  // ...and a finished status with no explanation falls back to the clipped
+  // behaviour, rather than losing its tooltip entirely.
+  it('falls back to the label for a finished status with no explanation', () => {
+    const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'failed' })] })
+    const secondary = secondaries(container)[0]
+    expect(secondary.textContent).toBe('Failed')
+    stubFitting(secondary)
+    expect(hover(secondary)).toBeNull()
+    stubClipped(secondary)
+    expect(hover(secondary)).toBe('Failed')
   })
 })
 

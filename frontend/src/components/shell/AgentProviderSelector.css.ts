@@ -37,12 +37,6 @@ export const triggerValue = style({
   minWidth: 0,
 })
 
-export const triggerLabel = style({
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-})
-
 export const triggerChevron = style({
   color: 'var(--muted-foreground)',
   flexShrink: 0,
