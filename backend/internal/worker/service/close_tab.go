@@ -332,7 +332,7 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 		if hasWork, reason := svc.worktreeHoldsUnsavedWork(bgCtx(), *wt); hasWork {
 			slog.Info("skipping worktree removal for an already-closed tab, worktree may hold unsaved work",
 				"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "reason", reason)
-			setWorktreeRemovalRefused(result, wt, reason)
+			setWorktreeRemovalRefused(result, wt, "Worktree kept: it may hold unsaved work", reason)
 			return
 		}
 	}
@@ -354,7 +354,7 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 	} else if reason != "" {
 		slog.Info("refusing a worktree removal git would reject",
 			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "reason", reason)
-		setWorktreeRemovalRefused(result, wt, reason)
+		setWorktreeRemovalRefused(result, wt, "Worktree kept: git refuses to remove it", reason)
 		return
 	}
 	if err := svc.removeWorktreeFromDisk(*wt); err != nil {
@@ -364,17 +364,20 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 	result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED
 }
 
-// setWorktreeRemovalRefused marks a removal we declined on purpose, because the
-// close could not be attributed to a live tab and the directory still holds work
-// nobody was asked about. Reported as FAILED so the UI surfaces it rather than
-// implying the directory is gone.
+// setWorktreeRemovalRefused marks a removal the worker declined on purpose --
+// as opposed to one it attempted and failed. Reported as FAILED so the UI
+// surfaces it rather than implying the directory is gone.
+//
+// message names WHY this call refused (unsaved work nobody confirmed, or a
+// removal git itself would reject); reason carries the specifics and renders
+// after the message in the close-failure toast.
 //
 // The directory survives, but nothing revisits it: this close already dropped
 // the last worktree_tabs link (that is what `remaining == 0` above means), and
 // ListOrphanCandidateWorktrees requires at least one link, so the orphan
 // reconciler never sees the worktree again. The user cleans it up by hand.
-func setWorktreeRemovalRefused(result *leapmuxv1.CloseTabResult, wt *db.Worktree, reason string) {
-	result.FailureMessage = "Worktree kept: it may hold unsaved work"
+func setWorktreeRemovalRefused(result *leapmuxv1.CloseTabResult, wt *db.Worktree, message, reason string) {
+	result.FailureMessage = message
 	result.FailureDetail = reason
 	result.WorktreePath = wt.WorktreePath
 	result.WorktreeId = wt.ID

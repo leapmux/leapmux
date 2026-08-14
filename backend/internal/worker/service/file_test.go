@@ -430,8 +430,11 @@ func TestReadFile_CarriesModTime(t *testing.T) {
 	t.Parallel()
 
 	// A fixed past instant, so the assertion pins the file's mtime rather than
-	// "roughly now", which any clock would satisfy.
-	want := time.Date(2026, 3, 4, 5, 6, 7, 123456789, time.UTC)
+	// "roughly now", which any clock would satisfy. The nanosecond tail ends
+	// in 00 because NTFS stores file times in 100ns ticks: a value off that
+	// grid comes back rounded on Windows, and the round trip would fail there.
+	// Seven significant digits still prove sub-microsecond fidelity.
+	want := time.Date(2026, 3, 4, 5, 6, 7, 123456700, time.UTC)
 
 	readModTime := func(t *testing.T, metaOnly bool, limit int64) string {
 		t.Helper()
