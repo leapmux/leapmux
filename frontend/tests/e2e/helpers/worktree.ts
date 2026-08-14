@@ -19,6 +19,8 @@ import {
 import {
   CloseTerminalRequestSchema,
   CloseTerminalResponseSchema,
+  ListTerminalsRequestSchema,
+  ListTerminalsResponseSchema,
 } from '../../../src/generated/leapmux/v1/terminal_pb'
 import { expect } from '../fixtures'
 import { API_POLL_INTERVAL_MS, authedHeaders, createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './api'
@@ -386,6 +388,57 @@ export async function listAgentsViaAPI(
     return []
   }
   return (resp.agents ?? []).map(a => ({ id: a.id, title: a.title, workingDir: a.workingDir, status: a.status, startupError: a.startupError }))
+}
+
+/**
+ * List a workspace's terminals via hub ListTabs + worker ListTerminals.
+ *
+ * The worker's DB is the only durable home of a terminal's title, so this is
+ * where a test asks whether a rename PERSISTED. The tab bar shows a rename
+ * immediately -- the handler patches local metadata and fires
+ * `UpdateTerminalTitle` without awaiting it -- so a reload or a worker restart
+ * begun in that window drops the write and the failure reads as a
+ * persistence regression. Sibling of `listAgentsViaAPI`, same two-step shape.
+ */
+export async function listTerminalsViaAPI(
+  hubUrl: string,
+  token: string,
+  workerId: string,
+  workspaceId: string,
+): Promise<Array<{ id: string, title: string }>> {
+  const tabsRes = await fetch(`${hubUrl}/leapmux.v1.WorkspaceService/ListTabs`, {
+    method: 'POST',
+    headers: authedHeaders(token),
+    body: JSON.stringify({ workspaceIds: [workspaceId] }),
+  })
+  if (!tabsRes.ok) {
+    throw new Error(`ListTabs failed: ${tabsRes.status}`)
+  }
+  const tabsData = await tabsRes.json() as { tabs?: Array<{ tabType: string, tabId: string }> }
+  const terminalTabIds = (tabsData.tabs ?? [])
+    .filter(t => t.tabType === 'TAB_TYPE_TERMINAL')
+    .map(t => t.tabId)
+
+  if (terminalTabIds.length === 0) {
+    return []
+  }
+
+  const channel = await getTestChannel(hubUrl, token)
+  try {
+    const resp = await channel.callWorker(
+      workerId,
+      'ListTerminals',
+      ListTerminalsRequestSchema,
+      ListTerminalsResponseSchema,
+      { tabIds: terminalTabIds },
+    )
+    return (resp.terminals ?? []).map(t => ({ id: t.terminalId, title: t.title }))
+  }
+  catch {
+    // Treat as transient so a caller polling this converges instead of
+    // failing on one blip.
+    return []
+  }
 }
 
 /**

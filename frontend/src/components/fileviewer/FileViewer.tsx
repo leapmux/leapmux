@@ -126,6 +126,9 @@ export const FileViewer: Component<{
   const [error, setError] = createSignal<string | null>(null)
   const [content, setContent] = createSignal<Uint8Array | null>(null)
   const [totalSize, setTotalSize] = createSignal(0)
+  // Fed from the same response that supplies the bytes, so the three-dot menu's
+  // Modified row costs no round trip of its own.
+  const [modTime, setModTime] = createSignal('')
   const [viewMode, setViewMode] = createSignal<FileViewMode>('text')
   // Per-session signal flipped by the "Show anyway" button. Bytes
   // (when not already cached) are fetched lazily.
@@ -229,6 +232,9 @@ export const FileViewer: Component<{
       setLoading(true)
       setError(null)
       setContent(null)
+      // Cleared with the content: a stale modification time beside a different
+      // file's bytes is worse than an absent row.
+      setModTime('')
       setShowAnyway(false)
       setLoadingAnyway(false)
 
@@ -253,6 +259,7 @@ export const FileViewer: Component<{
           const statResp = await workerRpc.statFile(workerId, { workerId, path: filePath })
           batch(() => {
             setTotalSize(Number(statResp.info?.size ?? 0n))
+            setModTime(statResp.info?.modTime ?? '')
             setViewMode('binary')
             setLoading(false)
           })
@@ -279,6 +286,7 @@ export const FileViewer: Component<{
         if (isImageExt(fileExt) && respTotalSize > MAX_FILE_SIZE) {
           batch(() => {
             setTotalSize(respTotalSize)
+            setModTime(readResp.modTime)
             setViewMode('image')
             setLoading(false)
           })
@@ -289,6 +297,7 @@ export const FileViewer: Component<{
         batch(() => {
           setContent(bytes)
           setTotalSize(respTotalSize)
+          setModTime(readResp.modTime)
           setViewMode(detectFileViewModeFromExt(fileExt, bytes))
         })
         resolveBytes(bytes)
@@ -445,6 +454,7 @@ export const FileViewer: Component<{
         batch(() => {
           setContent(bytes)
           setTotalSize(Number(readResp.totalSize))
+          setModTime(readResp.modTime)
         })
       }
       catch (err) {
@@ -589,6 +599,12 @@ export const FileViewer: Component<{
             flavor={flavor()}
             rootPath={props.rootPath}
             homeDir={props.homeDir}
+            // The size the viewer already loaded, so its own three-dot menu
+            // shows the Size row the identical menu shows in the sidebar tree.
+            // `|| undefined` because 0 here means "not loaded yet", not "an
+            // empty file" -- the signal starts at 0 before the read resolves.
+            size={totalSize() || undefined}
+            modTime={modTime() || undefined}
             onMention={props.onMention ? () => props.onMention?.() : undefined}
             triggerClass={styles.viewToggleButton}
             triggerTestId="file-actions-trigger"

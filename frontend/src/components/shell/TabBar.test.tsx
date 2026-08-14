@@ -8,6 +8,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { loadBrowserPrefs } from '~/lib/browserStorage'
 import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, unbindAll } from '~/lib/shortcuts/keybindings'
+import { tabKey } from '~/stores/tab.helpers'
 
 // Mock solid-dnd to avoid DragDropProvider context requirement
 vi.mock('@thisbeyond/solid-dnd', () => ({
@@ -488,5 +489,63 @@ describe('tabBar row identity', () => {
     const stillThere = document.querySelector('input.tabEditInput') as HTMLInputElement
     expect(stillThere, 'the rename input must survive a sibling row updating').toBe(input)
     expect(stillThere.value, 'and keep what the user had typed').toBe('half-typed name')
+  })
+})
+
+/**
+ * A tab's tooltip repeats the label for most tabs, but a terminal's carries its
+ * live PTY title, which the label never shows. `showWhen="clipped"` is
+ * documented for the repeating case only — it hides the tooltip from screen
+ * readers too — so a terminal whose OSC title differs must not depend on the
+ * label happening to overflow.
+ */
+describe('tabBar tooltip mode', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    HTMLElement.prototype.showPopover = vi.fn()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function renderTabs(tabs: Tab[]) {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar {...defaultProps} tabs={tabs} activeTabKey={tabs[0] ? tabKey(tabs[0]) : null} />
+      </PreferencesProvider>
+    ))
+  }
+
+  function hoverLabel(text: string) {
+    // jsdom reports zero widths, so nothing is ever "clipped" here — which is
+    // exactly the condition that used to suppress the PTY title.
+    fireEvent.mouseEnter(screen.getByText(text))
+    vi.advanceTimersByTime(700)
+  }
+
+  it('shows a terminal tooltip carrying the live PTY title even when nothing is clipped', () => {
+    const tab = { ...makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'), ptyTitle: 'vim src/app.ts' } as Tab
+    renderTabs([tab])
+
+    hoverLabel('Terminal Liam')
+
+    expect(screen.getByRole('tooltip', { hidden: true }).textContent).toContain('vim src/app.ts')
+  })
+
+  it('keeps the clipped-only mode when the tooltip merely repeats the label', () => {
+    renderTabs([makeTab(TabType.AGENT, 'a1', 'Agent Olivia')])
+
+    hoverLabel('Agent Olivia')
+
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+
+  it('keeps the clipped-only mode for a terminal with no PTY title', () => {
+    renderTabs([makeTab(TabType.TERMINAL, 't1', 'Terminal Liam')])
+
+    hoverLabel('Terminal Liam')
+
+    expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
   })
 })

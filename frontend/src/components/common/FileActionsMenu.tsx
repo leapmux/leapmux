@@ -1,27 +1,33 @@
 import type { Component } from 'solid-js'
 import type { FileSaveActions } from '~/components/common/fileSaveActions'
+import type { MenuInfoRow } from '~/components/common/MenuInfoRows'
 import type { PathFlavor } from '~/lib/paths'
 import type { PopoverPositionOptions } from '~/lib/popoverPosition'
 import AtSign from 'lucide-solid/icons/at-sign'
 import Copy from 'lucide-solid/icons/copy'
 import Download from 'lucide-solid/icons/download'
 import TerminalIcon from 'lucide-solid/icons/terminal'
-import { createSignal, getOwner, runWithOwner, Show } from 'solid-js'
+import { createMemo, createSignal, getOwner, runWithOwner, Show } from 'solid-js'
 import { isTauriApp } from '~/api/platformBridge'
+import { RelativeTimeAgo } from '~/components/chat/RelativeTime'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { createFileSaveActions } from '~/components/common/fileSaveActions'
 import { Icon } from '~/components/common/Icon'
+import { MenuInfoButton } from '~/components/common/MenuInfoRows'
 import { moreHorizontalTrigger } from '~/components/common/moreHorizontalTrigger'
 import { copyTextToClipboard } from '~/lib/clipboard'
+import { formatBytes } from '~/lib/formatBytes'
+import { prettifyJson } from '~/lib/jsonFormat'
 import { relativizePath } from '~/lib/paths'
 
 /**
- * Shared file/dir actions context menu. Hosts Mention / Open terminal /
- * Copy path / Copy relative path / Save as / Save to Downloads /
- * Download as a single three-dot menu, used by both `DirectoryTree` and
- * the file viewer surfaces.
+ * Shared file/dir actions context menu. Hosts the size/modified info block,
+ * Mention / Open terminal / Copy path / Copy relative path / Save as /
+ * Save to Downloads / Download as a single three-dot menu, used by both
+ * `DirectoryTree` and the file viewer surfaces.
  *
  * Items are gated by the callbacks / props that are actually provided:
+ *   - `size` or `modTime` → the info block, then a separator
  *   - `onMention`     → "Mention in chat"
  *   - `isDir && onOpenTerminal` → "Open a terminal tab here"
  *   - always           → "Copy path"
@@ -35,6 +41,15 @@ export interface FileActionsMenuProps {
   isDir?: boolean
   rootPath?: string
   homeDir?: string
+  /**
+   * Size in bytes, shown for a file. Omit when the caller has no stat for the
+   * path -- the info block is skipped rather than showing a guess. A directory
+   * never shows a size: what a filesystem reports for one is its own inode
+   * size, not the size of its contents.
+   */
+  size?: number
+  /** Modification time as RFC3339. Omit when the caller has no stat. */
+  modTime?: string
   /** Optional handler for the "Mention in chat" item. */
   onMention?: (path: string) => void
   /** Optional handler for "Open terminal" — only shown for directories. */
@@ -49,7 +64,7 @@ export interface FileActionsMenuProps {
    * `tree`) so tests can assert on stable IDs without coupling to
    * this component's internals.
    *
-   * Items produced: `{prefix}-mention-button`,
+   * Items produced: `{prefix}-info-button`, `{prefix}-mention-button`,
    * `{prefix}-open-terminal-button`, `{prefix}-copy-path-button`,
    * `{prefix}-copy-relative-path-button`, `{prefix}-download-button`
    * (web), `{prefix}-save-as-button` + `{prefix}-save-to-downloads-button`
@@ -106,6 +121,39 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
     return menuOpen() && actions().op() !== null
   }
 
+  // A directory's own byte count says nothing about what it holds, so only a
+  // file offers a size.
+  const showSize = () => !props.isDir && props.size !== undefined
+  // A memo, not a plain function: the row values are real JSX, so every call
+  // CONSTRUCTS a `RelativeTimeAgo` -> `Tooltip` -> `Icon` tree, mounts its
+  // effects and subscribes it to the shared tick. `MenuInfoButton` reads the
+  // list twice (once to decide whether to render, once to render), and every
+  // row in the tree keeps one of these menus mounted while closed, so an
+  // unmemoized builder paid for a whole discarded component tree per row on
+  // every turn-end stat refresh.
+  const infoRows = createMemo((): MenuInfoRow[] => {
+    // Gated for the same reason as `busy()` above, and it must be the MEMO
+    // rather than a `<Show>` around the block: `DropdownMenu` renders its
+    // children eagerly, and `createMemo` runs its body at setup. An ungated
+    // builder therefore mounted a `RelativeTime` -> `Tooltip` tree and a
+    // 15-second tick subscriber for EVERY tree row, the vast majority of which
+    // are never opened. A `<Show>` would have hidden the DOM and kept both.
+    if (!menuOpen())
+      return []
+    const rows: MenuInfoRow[] = []
+    if (showSize())
+      rows.push({ label: 'Size:', value: formatBytes(props.size!) })
+    if (props.modTime)
+      rows.push({ label: 'Modified:', value: <RelativeTimeAgo timestamp={props.modTime} /> })
+    return rows
+  })
+
+  const infoJson = () => prettifyJson({
+    path: props.path,
+    size: showSize() ? props.size : undefined,
+    modified: props.modTime || undefined,
+  })
+
   return (
     <DropdownMenu
       placement={props.placement}
@@ -115,6 +163,16 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
         'data-testid': props.triggerTestId ?? 'file-actions-trigger',
       })}
     >
+      <MenuInfoButton
+        rows={infoRows()}
+        copyText={infoJson}
+        toastMessage={props.isDir ? 'Directory info copied to clipboard' : 'File info copied to clipboard'}
+        data-testid={tid('info-button')}
+      />
+      {/* Paired with the block above, so the separator disappears with it. */}
+      <Show when={infoRows().length > 0}>
+        <hr />
+      </Show>
       <Show when={props.onMention}>
         <button
           role="menuitem"

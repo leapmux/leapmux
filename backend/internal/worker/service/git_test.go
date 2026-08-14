@@ -6060,3 +6060,271 @@ func TestWorktreeHoldsUnsavedWork(t *testing.T) {
 		assert.False(t, hasWork, "refusing here would strand the DB row forever")
 	})
 }
+
+// TestGetGitFileStatus_AnnotatesStatsFromSubdirectory pins the base path the
+// stat pass joins against. `git status --porcelain=v2` emits paths relative to
+// the WORKING-TREE ROOT, not to the directory the caller queried, so joining
+// them against the queried directory yields "<repo>/frontend/frontend/src/..."
+// and every stat fails silently — leaving the sidebar unable to sort the flat
+// list by size or modified time. A tab whose working directory is a
+// subdirectory of the repo is the common case, so this is the case to pin.
+func TestGetGitFileStatus_AnnotatesStatsFromSubdirectory(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	repoDir := canonicalRepoDir(t)
+	subDir := filepath.Join(repoDir, "frontend", "src")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+	content := []byte("export const answer = 42\n")
+	require.NoError(t, os.WriteFile(filepath.Join(subDir, "app.ts"), content, 0o644))
+
+	// The whole "frontend/" subtree is untracked, so git would collapse it
+	// into one directory row. Add the intent-to-add so status lists the file.
+	run(t, repoDir, "git", "add", "-N", "frontend/src/app.ts")
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: filepath.Join(repoDir, "frontend"),
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	var entry *leapmuxv1.GitFileStatusEntry
+	for _, f := range resp.GetFiles() {
+		if f.GetPath() == "frontend/src/app.ts" {
+			entry = f
+		}
+	}
+	require.NotNil(t, entry, "status paths are relative to the working-tree root: %v", resp.GetFiles())
+	require.NotNil(t, entry.Size, "size must be set for a file the worker can stat")
+	assert.Equal(t, int64(len(content)), entry.GetSize())
+	require.NotNil(t, entry.ModTime, "mod_time must be set for a file the worker can stat")
+	_, err := time.Parse(time.RFC3339, entry.GetModTime())
+	assert.NoError(t, err, "mod_time must be RFC3339: %q", entry.GetModTime())
+}
+
+// TestGetGitFileStatus_AnnotatesStatsInAWorktree pins the OTHER half of the
+// base-path rule that annotateFileStats documents.
+//
+// TestGetGitFileStatus_AnnotatesStatsFromSubdirectory cannot see this one: it
+// runs against a main-tree repo, where TopLevel and RepoRoot are the same path,
+// so passing either one keeps it green. In a linked worktree they differ --
+// RepoRoot is the PARENT repo -- and joining a status path onto RepoRoot then
+// misses every file, which drops the sidebar's size and modified orders to the
+// name tiebreak with no error anywhere.
+func TestGetGitFileStatus_AnnotatesStatsInAWorktree(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	repoDir := canonicalRepoDir(t)
+	wtDir := filepath.Join(t.TempDir(), "wt-stats")
+	run(t, repoDir, "git", "worktree", "add", "-b", "wt-stats", wtDir)
+
+	content := []byte("worktree-only file\n")
+	require.NoError(t, os.WriteFile(filepath.Join(wtDir, "wt.txt"), content, 0o644))
+	run(t, wtDir, "git", "add", "-N", "wt.txt")
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: wtDir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	// The two roots really do differ here; without that this test would be
+	// the subdirectory test again.
+	require.NotEqual(t, resp.GetRepoRoot(), resp.GetToplevel(),
+		"a worktree query must report a toplevel distinct from repo_root")
+
+	var entry *leapmuxv1.GitFileStatusEntry
+	for _, f := range resp.GetFiles() {
+		if f.GetPath() == "wt.txt" {
+			entry = f
+		}
+	}
+	require.NotNil(t, entry, "expected wt.txt in the status: %v", resp.GetFiles())
+	require.NotNil(t, entry.Size, "size must be set for a file inside the worktree")
+	assert.Equal(t, int64(len(content)), entry.GetSize())
+	require.NotNil(t, entry.ModTime, "mod_time must be set for a file inside the worktree")
+}
+
+// TestGitFileStatusModTimeIsFixedWidthWithSubsecondPrecision pins both
+// properties the frontend comparator depends on.
+//
+// The comparator orders these strings LEXICOGRAPHICALLY instead of parsing
+// them, which is chronological only while the width is constant. And whole
+// seconds are not enough: a formatter that rewrites several files inside one
+// second would tie them all, so "Newest first" would fall back to the name --
+// the alphabetical order the user picked a time order to escape.
+func TestGitFileStatusModTimeIsFixedWidthWithSubsecondPrecision(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	repoDir := canonicalRepoDir(t)
+
+	// Two files written back to back land in the same wall-clock second on
+	// any normal machine, which is exactly the case whole seconds lose.
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "first.txt"), []byte("1\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "second.txt"), []byte("2\n"), 0o644))
+	run(t, repoDir, "git", "add", "-N", "first.txt", "second.txt")
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{
+		Path: repoDir,
+	}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	times := map[string]string{}
+	for _, f := range resp.GetFiles() {
+		if f.ModTime != nil {
+			times[f.GetPath()] = f.GetModTime()
+		}
+	}
+	first, ok := times["first.txt"]
+	require.True(t, ok, "first.txt must carry a mod_time: %v", times)
+	second, ok := times["second.txt"]
+	require.True(t, ok, "second.txt must carry a mod_time: %v", times)
+
+	// Fixed width, so `<` on the strings is `<` on the instants.
+	assert.Len(t, first, len("2006-01-02T15:04:05.000000000Z"))
+	assert.Equal(t, len(first), len(second))
+	// Still RFC3339, so any ordinary consumer can parse it.
+	_, err := time.Parse(time.RFC3339, first)
+	assert.NoError(t, err, "mod_time must stay RFC3339: %q", first)
+
+	// Sub-second digits are present, so two writes in the same second can be
+	// told apart rather than tying.
+	assert.Regexp(t, `\.\d{9}Z$`, first, "mod_time must carry nine fractional digits")
+	assert.NotEqual(t, first[:len("2006-01-02T15:04:05")], "",
+		"sanity: the layout must include a time-of-day")
+}
+
+// TestGetGitFileStatus_LeavesStatsUnsetWhenNotStatable pins the distinction
+// the optional proto fields exist for: an entry the worker cannot stat keeps
+// both unset, so the frontend sorts it last instead of treating it as a
+// zero-byte file at the epoch.
+func TestGetGitFileStatus_LeavesStatsUnsetWhenNotStatable(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	repoDir := canonicalRepoDir(t)
+
+	// A committed file that is then deleted from the working tree.
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "gone.txt"), []byte("bye\n"), 0o644))
+	run(t, repoDir, "git", "add", "gone.txt")
+	run(t, repoDir, "git", "commit", "-m", "add gone.txt")
+	require.NoError(t, os.Remove(filepath.Join(repoDir, "gone.txt")))
+
+	// A wholly untracked subtree, which git collapses into one "build/" row.
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "build"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "build", "out.js"), []byte("x\n"), 0o644))
+
+	dispatch(d, "GetGitFileStatus", &leapmuxv1.GetGitFileStatusRequest{Path: repoDir}, w)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitFileStatusResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+
+	byPath := make(map[string]*leapmuxv1.GitFileStatusEntry, len(resp.GetFiles()))
+	for _, f := range resp.GetFiles() {
+		byPath[f.GetPath()] = f
+	}
+
+	deleted := byPath["gone.txt"]
+	require.NotNil(t, deleted, "expected a status row for the deleted file: %v", resp.GetFiles())
+	assert.Nil(t, deleted.Size, "a deleted file has no size to report")
+	assert.Nil(t, deleted.ModTime, "a deleted file has no modification time to report")
+
+	untrackedDir := byPath["build/"]
+	require.NotNil(t, untrackedDir, "expected git's collapsed untracked-directory row: %v", resp.GetFiles())
+	assert.Nil(t, untrackedDir.Size, "a directory's inode size is not a file size")
+	assert.Nil(t, untrackedDir.ModTime, "a collapsed directory row carries no file mtime")
+	assert.True(t, untrackedDir.GetIsDir(), "a collapsed untracked directory is a directory too")
+}
+
+// A status path can name a DIRECTORY without git's trailing slash -- a
+// submodule is the usual case. The trailing-slash check alone would let that
+// through and report the directory's inode size as if it were a file size.
+func TestGetGitFileStatus_LeavesStatsUnsetForADirectoryPath(t *testing.T) {
+	t.Parallel()
+
+	repoDir := canonicalRepoDir(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "vendored"), 0o755))
+
+	// A path with no trailing slash that nonetheless resolves to a directory.
+	files := []*leapmuxv1.GitFileStatusEntry{{Path: "vendored"}}
+	annotateFileStats(repoDir, files)
+
+	assert.Nil(t, files[0].Size, "a directory has no file size to report")
+	assert.Nil(t, files[0].ModTime, "a directory row carries no file mtime")
+	assert.True(t, files[0].GetIsDir(),
+		"a directory must be marked, so the sidebar groups it with the folders and refuses to open it as a file")
+}
+
+// TestAnnotateFileStats_BoundsAHungStat pins that the sweep answers even when
+// the filesystem does not.
+//
+// os.Stat takes no context, so the handler's context.WithTimeout cannot
+// interrupt one: a stalled mount would leave GetGitFileStatus with no reply at
+// all and leak a goroutine per refresh. The bound trades the decorative size
+// and modified columns for an answer, which the wire format already models --
+// an unset pair means "not stat-able".
+func TestAnnotateFileStats_BoundsAHungStat(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	defer close(release)
+	// Returns an ERROR once released, never a nil FileInfo with a nil error --
+	// os.Stat has no such result, and a stub that invents one would panic the
+	// abandoned goroutine rather than exercise the timeout.
+	hung := func(string) (os.FileInfo, error) {
+		<-release
+		return nil, errors.New("released")
+	}
+
+	files := []*leapmuxv1.GitFileStatusEntry{{Path: "a.txt"}, {Path: "b.txt"}}
+	done := make(chan struct{})
+	go func() {
+		annotateFileStatsWithTimeout("/repo", files, 50*time.Millisecond, hung)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("annotateFileStats did not return; a hung stat must not block the RPC")
+	}
+
+	assert.Nil(t, files[0].Size, "a sweep that timed out reports no size")
+	assert.Nil(t, files[0].ModTime, "a sweep that timed out reports no mtime")
+	assert.Nil(t, files[1].Size)
+}
+
+// A stat that answers in time still populates every entry, so the bound above
+// cannot be satisfied by simply never writing anything.
+func TestAnnotateFileStats_AppliesAFastStat(t *testing.T) {
+	t.Parallel()
+
+	repoDir := canonicalRepoDir(t)
+	content := []byte("hello\n")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "quick.txt"), content, 0o644))
+
+	files := []*leapmuxv1.GitFileStatusEntry{{Path: "quick.txt"}}
+	annotateFileStatsWithTimeout(repoDir, files, 30*time.Second, os.Stat)
+
+	require.NotNil(t, files[0].Size)
+	assert.Equal(t, int64(len(content)), files[0].GetSize())
+	require.NotNil(t, files[0].ModTime)
+}
+
+// The stat pass must be inert when the caller has no working-tree root, rather
+// than joining against "" and stat-ing paths relative to the process's cwd.
+func TestAnnotateFileStats_NoopWithoutATopLevel(t *testing.T) {
+	t.Parallel()
+
+	files := []*leapmuxv1.GitFileStatusEntry{{Path: "go.mod"}}
+	annotateFileStats("", files)
+
+	assert.Nil(t, files[0].Size)
+	assert.Nil(t, files[0].ModTime)
+}

@@ -6,7 +6,7 @@ import { getGitFileStatus } from '~/api/workerRpc'
 import { createLogger } from '~/lib/logger'
 import { isSameRepo } from '~/stores/tab.helpers'
 import { stampBranchOnTabs } from './stampBranchOnTabs'
-import { applyGitStatusToTabs, gitStatusFromStore } from './syncGitStatusToTabs'
+import { aggregateDiffStats, applyGitStatusToTabs, gitStatusFromStore } from './syncGitStatusToTabs'
 
 const log = createLogger('handleBranchChanged')
 
@@ -81,7 +81,7 @@ export function handleBranchChanged(
         toplevel: resp.toplevel,
         originUrl: resp.originUrl,
         currentBranch: resp.currentBranch,
-        files: resp.files,
+        diffStats: aggregateDiffStats(resp.files),
       })
     })
     .catch((err) => {

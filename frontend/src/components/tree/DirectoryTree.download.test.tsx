@@ -21,6 +21,7 @@ const spies = vi.hoisted<SaveActionsSpies>(() => ({
   saveToDownloadsImpl: vi.fn(),
   revealImpl: vi.fn(),
   warnToastImpl: vi.fn(),
+  infoToastImpl: vi.fn(),
   revealAfterDownloadImpl: vi.fn(() => true),
   isTauriAppImpl: vi.fn(() => false),
 }))
@@ -29,6 +30,7 @@ const listDirectoryImpl = vi.hoisted(() => vi.fn())
 
 vi.mock('~/api/workerRpc', () => ({
   listDirectory: (...args: unknown[]) => listDirectoryImpl(...args),
+  statFile: async () => ({ info: { modTime: '2026-01-01T00:00:00Z' } }),
   channelManager: { subscribe: () => () => {} },
 }))
 vi.mock('~/api/platformBridge', () => platformBridgeMock(spies))
@@ -41,8 +43,8 @@ const { DirectoryTree } = await import('./DirectoryTree')
 function setupTree() {
   listDirectoryImpl.mockResolvedValue({
     entries: [
-      { path: '/repo/src', name: 'src', isDir: true, hidden: false },
-      { path: '/repo/archive.zip', name: 'archive.zip', isDir: false, hidden: false },
+      { path: '/repo/src', name: 'src', isDir: true, hidden: false, size: 0n, modTime: '2026-05-01T10:00:00Z' },
+      { path: '/repo/archive.zip', name: 'archive.zip', isDir: false, hidden: false, size: 1024n, modTime: '2026-05-01T10:00:00Z' },
     ],
     truncated: false,
   })

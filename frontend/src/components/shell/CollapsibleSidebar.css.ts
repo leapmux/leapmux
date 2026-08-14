@@ -60,6 +60,11 @@ export const sidebarTitle = style({
   textTransform: 'uppercase',
   letterSpacing: '0.5px',
   lineHeight: iconSize.container.md,
+  // A section carries a user-supplied name, so it can be long. Clip it rather
+  // than let it run under the action buttons on its right.
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 })
 
 export const sidebarContent = style({
@@ -72,6 +77,11 @@ export const sidebarHeaderActions = style({
   display: 'flex',
   alignItems: 'center',
   gap: 'var(--space-1)',
+  // The Files header carries six buttons. A flex item shrinks by default, so
+  // without this the row squeezes the buttons into each other at a narrow
+  // sidebar width instead of clipping the title, which does have a minWidth
+  // of 0 to give way.
+  flexShrink: 0,
 })
 
 export const collapsibleTrigger = style({
@@ -112,9 +122,16 @@ export const collapsibleTriggerStatic = style({
   },
 })
 
-/** Make the title expand so action buttons stay grouped on the right. */
+/**
+ * Make the title expand so action buttons stay grouped on the right.
+ *
+ * `minWidth: 0` lets it shrink below its text width. A flex item's default
+ * `min-width: auto` refuses to, so the title would push the action row out of
+ * the header instead of clipping itself.
+ */
 globalStyle(`${collapsibleTrigger} > ${sidebarTitle}`, {
   flex: 1,
+  minWidth: 0,
 })
 
 /** Rotate chevron when the pane is expanded. */

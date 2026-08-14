@@ -1,5 +1,5 @@
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
-import { createRoot } from 'solid-js'
+import { createMemo, createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
@@ -20,6 +20,7 @@ function makeEntry(overrides: Partial<GitFileStatusEntry> & { path: string }): G
     stagedLinesAdded: 0,
     stagedLinesDeleted: 0,
     oldPath: '',
+    isDir: false,
     ...overrides,
   }
 }
@@ -615,7 +616,7 @@ describe('gitFileStatusStore', () => {
       })
     })
 
-    it('replaces state.files when content differs', async () => {
+    it('applies a changed field to the entry in place', async () => {
       await createRoot(async (dispose) => {
         const store = createGitFileStatusStore()
 
@@ -628,7 +629,6 @@ describe('gitFileStatusStore', () => {
 
         mockGetGitFileStatus.mockResolvedValueOnce({
           repoRoot: '/repo',
-          // Different linesAdded — should trigger replacement.
           files: [makeEntry({
             path: 'a.txt',
             unstagedStatus: GitFileStatusCode.MODIFIED,
@@ -636,8 +636,190 @@ describe('gitFileStatusStore', () => {
           })],
         })
         await store.refresh('worker1', '/repo')
-        expect(store.state.files).not.toBe(firstRef)
+        // The new value lands, and the array keeps its identity: a keyed
+        // reconcile writes through to the entry instead of swapping the array.
         expect(store.state.files[0].linesAdded).toBe(2)
+        expect(store.state.files).toBe(firstRef)
+
+        dispose()
+      })
+    })
+
+    /**
+     * The sidebar SORTS the flat changed-file list by size and modification
+     * time, so a size-only change has to reach the row -- but it must not drag
+     * the rest of the store with it.
+     *
+     * An agent that rewrites one file in place leaves its git status and its
+     * line counts alone, so this is the common turn-end shape, not a rare one.
+     * The old field-by-field guard answered "something differs" by replacing
+     * the whole array, which rebuilt `filesByPath` and `prefixIndex` (which
+     * walks every file x every ancestor) and handed `<For>` fresh objects for
+     * every row. These two assertions are the ones that would have caught it:
+     * the value moves, and a consumer that reads only paths does not re-run.
+     */
+    it('moves a size-only change without invalidating a path-only consumer', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({ path: 'a.txt', unstagedStatus: GitFileStatusCode.MODIFIED, size: 10n, modTime: '2026-01-01T00:00:00.000000000Z' }),
+            makeEntry({ path: 'b.txt', unstagedStatus: GitFileStatusCode.MODIFIED, size: 20n, modTime: '2026-01-01T00:00:00.000000000Z' }),
+          ],
+        })
+        await store.refresh('worker1', '/repo')
+
+        // Stands in for filesByPath / prefixIndex: it reads only `path`.
+        let pathMemoRuns = 0
+        const paths = createMemo(() => {
+          pathMemoRuns++
+          return store.state.files.map(f => f.path).join(',')
+        })
+        // Stands in for the flat list's comparator: it reads `size`.
+        let sizeMemoRuns = 0
+        const sizes = createMemo(() => {
+          sizeMemoRuns++
+          return store.state.files.map(f => Number(f.size ?? -1n)).join(',')
+        })
+        expect(paths()).toBe('a.txt,b.txt')
+        expect(sizes()).toBe('10,20')
+        expect(pathMemoRuns).toBe(1)
+        expect(sizeMemoRuns).toBe(1)
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({ path: 'a.txt', unstagedStatus: GitFileStatusCode.MODIFIED, size: 4096n, modTime: '2026-01-01T00:00:00.000000000Z' }),
+            makeEntry({ path: 'b.txt', unstagedStatus: GitFileStatusCode.MODIFIED, size: 20n, modTime: '2026-01-01T00:00:00.000000000Z' }),
+          ],
+        })
+        await store.refresh('worker1', '/repo')
+
+        expect(sizes(), 'a size-only change must reach the row').toBe('4096,20')
+        expect(sizeMemoRuns, 'the size consumer re-runs').toBe(2)
+        expect(paths()).toBe('a.txt,b.txt')
+        expect(pathMemoRuns, 'a path-only consumer must not re-run').toBe(1)
+
+        // The same holds for the modification time.
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({ path: 'a.txt', unstagedStatus: GitFileStatusCode.MODIFIED, size: 4096n, modTime: '2026-02-01T00:00:00.000000000Z' }),
+            makeEntry({ path: 'b.txt', unstagedStatus: GitFileStatusCode.MODIFIED, size: 20n, modTime: '2026-01-01T00:00:00.000000000Z' }),
+          ],
+        })
+        await store.refresh('worker1', '/repo')
+
+        expect(store.state.files[0].modTime).toBe('2026-02-01T00:00:00.000000000Z')
+        expect(paths()).toBe('a.txt,b.txt')
+        expect(pathMemoRuns, 'an mtime-only change must not re-run it either').toBe(1)
+
+        dispose()
+      })
+    })
+
+    it('adds and removes entries without disturbing the survivors', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({ path: 'a.txt', unstagedStatus: GitFileStatusCode.MODIFIED }),
+            makeEntry({ path: 'b.txt', unstagedStatus: GitFileStatusCode.MODIFIED }),
+          ],
+        })
+        await store.refresh('worker1', '/repo')
+        const survivor = store.state.files[0]
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/repo',
+          files: [
+            makeEntry({ path: 'a.txt', unstagedStatus: GitFileStatusCode.MODIFIED }),
+            makeEntry({ path: 'c.txt', unstagedStatus: GitFileStatusCode.UNTRACKED }),
+          ],
+        })
+        await store.refresh('worker1', '/repo')
+
+        expect(store.state.files.map(f => f.path)).toEqual(['a.txt', 'c.txt'])
+        // `<For>` maps by reference, so an untouched row must keep its object
+        // or every sibling row is disposed and rebuilt around it.
+        expect(store.state.files[0]).toBe(survivor)
+
+        dispose()
+      })
+    })
+  })
+
+  describe('statusRoot', () => {
+    /**
+     * `git status --porcelain=v2` emits paths relative to the WORKING-TREE
+     * root. In a linked worktree the worker reports `repoRoot` as the parent
+     * repo, and LeapMux puts a worktree at `<repo>-worktrees/<branch>`, a
+     * SIBLING of the repo -- so relativizing against `repoRoot` matched nothing
+     * and every worktree tab lost its status icons, its diff badges and its
+     * git filter tabs.
+     */
+    it('resolves a worktree path against toplevel, not the parent repo', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/src/leapmux',
+          toplevel: '/src/leapmux-worktrees/feature',
+          isWorktree: true,
+          files: [makeEntry({ path: 'src/app.ts', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 3 })],
+        })
+        await store.refresh('worker1', '/src/leapmux-worktrees/feature')
+
+        expect(store.statusRoot()).toBe('/src/leapmux-worktrees/feature')
+        expect(store.getFileStatus('/src/leapmux-worktrees/feature/src/app.ts')?.linesAdded).toBe(3)
+        expect(store.getNodeDiffStats('/src/leapmux-worktrees/feature/src', true).added).toBe(3)
+        expect(store.hasChanges('/src/leapmux-worktrees/feature/src')).toBe(true)
+        // The parent repo is not the base; a same-named path under it is a
+        // different file and must not pick up the worktree's status.
+        expect(store.getFileStatus('/src/leapmux/src/app.ts')).toBeUndefined()
+
+        dispose()
+      })
+    })
+
+    it('falls back to repoRoot for a main-tree query', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '/src/leapmux',
+          toplevel: '/src/leapmux',
+          files: [makeEntry({ path: 'src/app.ts', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 1 })],
+        })
+        await store.refresh('worker1', '/src/leapmux')
+
+        expect(store.statusRoot()).toBe('/src/leapmux')
+        expect(store.getFileStatus('/src/leapmux/src/app.ts')?.linesAdded).toBe(1)
+
+        dispose()
+      })
+    })
+  })
+
+  describe('clear', () => {
+    it('clears errorHint along with every other field', async () => {
+      await createRoot(async (dispose) => {
+        const store = createGitFileStatusStore()
+
+        mockGetGitFileStatus.mockResolvedValueOnce({
+          repoRoot: '',
+          errorHint: 'not a git repository',
+          files: [],
+        })
+        await store.refresh('worker1', '/plain/dir')
+        expect(store.state.errorHint).toBe('not a git repository')
+
+        store.clear()
+        expect(store.state.errorHint).toBe('')
 
         dispose()
       })

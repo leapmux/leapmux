@@ -2,7 +2,7 @@ import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import type { Tab } from '~/stores/tab.types'
 import type { TabMetadata } from '~/stores/tabMetadata.store'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { applyGitStatusToTabs, syncGitStatusToTabs } from '~/components/shell/syncGitStatusToTabs'
+import { aggregateDiffStats, applyGitStatusToTabs, syncGitStatusToTabs } from '~/components/shell/syncGitStatusToTabs'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
@@ -26,6 +26,7 @@ function makeEntry(overrides: Partial<GitFileStatusEntry> & { path: string }): G
     stagedLinesAdded: 0,
     stagedLinesDeleted: 0,
     oldPath: '',
+    isDir: false,
     ...overrides,
   }
 }
@@ -461,10 +462,10 @@ describe('syncGitStatusToTabs', () => {
         toplevel: '/repo',
         originUrl: 'git@example.com:org/repo.git',
         currentBranch: 'feature',
-        files: [
+        diffStats: aggregateDiffStats([
           makeEntry({ path: 'a.ts', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 9, linesDeleted: 4 }),
           makeEntry({ path: 'b/', unstagedStatus: GitFileStatusCode.UNTRACKED }),
-        ],
+        ]),
       })
       const t1 = tabs.find(t => t.id === 't1')!
       expect(t1.gitToplevel).toBe('/repo')
@@ -488,7 +489,7 @@ describe('syncGitStatusToTabs', () => {
         toplevel: '/repo',
         originUrl: '',
         currentBranch: 'main',
-        files: [],
+        diffStats: { added: 0, deleted: 0, untracked: 0 },
       })
       expect(update).not.toHaveBeenCalled()
     })
@@ -515,7 +516,7 @@ describe('syncGitStatusToTabs', () => {
         toplevel: '/repo',
         originUrl: '',
         currentBranch: 'feature',
-        files: [],
+        diffStats: { added: 0, deleted: 0, untracked: 0 },
       })
 
       expect(tabs.find(t => t.id === 'mine')?.gitBranch).toBe('feature')
@@ -530,7 +531,7 @@ describe('syncGitStatusToTabs', () => {
         toplevel: '/repo',
         originUrl: '',
         currentBranch: 'main',
-        files: [],
+        diffStats: { added: 0, deleted: 0, untracked: 0 },
       })
       expect(update).not.toHaveBeenCalled()
     })
@@ -554,7 +555,7 @@ describe('syncGitStatusToTabs', () => {
         toplevel: '/repo',
         originUrl: '',
         currentBranch: '',
-        files: [],
+        diffStats: { added: 0, deleted: 0, untracked: 0 },
       })
       expect(tabs[0].gitBranch, 'a detached HEAD must not keep the stale label').toBe('')
     })
@@ -567,7 +568,7 @@ describe('syncGitStatusToTabs', () => {
         toplevel: '',
         originUrl: '',
         currentBranch: '',
-        files: [],
+        diffStats: { added: 0, deleted: 0, untracked: 0 },
       })
       expect(update).not.toHaveBeenCalled()
     })
@@ -613,7 +614,7 @@ describe('syncGitStatusToTabs', () => {
         toplevel: '/repo-wts/feature',
         originUrl: '',
         currentBranch: 'feature',
-        files: [],
+        diffStats: { added: 0, deleted: 0, untracked: 0 },
       })
       const main = tabs.find(t => t.id === 'main')!
       const wt = tabs.find(t => t.id === 'wt')!
@@ -658,7 +659,7 @@ describe('syncGitStatusToTabs', () => {
         toplevel: '/repo-wts/feature',
         originUrl: '',
         currentBranch: 'feature',
-        files: [],
+        diffStats: { added: 0, deleted: 0, untracked: 0 },
       })
 
       const sib = tabs.find(t => t.id === 'sibling')!
@@ -695,7 +696,7 @@ describe('syncGitStatusToTabs', () => {
         toplevel: '/repo',
         originUrl: '',
         currentBranch: 'parent-main',
-        files: [],
+        diffStats: { added: 0, deleted: 0, untracked: 0 },
       })
 
       const nested = tabs.find(t => t.id === 'nested')!
@@ -727,5 +728,45 @@ describe('syncGitStatusToTabs', () => {
       expect(t1?.gitToplevel).toBe('/repo')
       expect(t1?.gitBranch).toBe('main')
     })
+  })
+})
+
+describe('aggregateDiffStats', () => {
+  it('returns zeroes for an empty list', () => {
+    expect(aggregateDiffStats([])).toEqual({ added: 0, deleted: 0, untracked: 0 })
+  })
+
+  it('sums staged and unstaged line counts together', () => {
+    expect(aggregateDiffStats([
+      makeEntry({ path: 'a.ts', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 5, linesDeleted: 2 }),
+      makeEntry({ path: 'b.ts', stagedStatus: GitFileStatusCode.MODIFIED, stagedLinesAdded: 3, stagedLinesDeleted: 1 }),
+    ])).toEqual({ added: 8, deleted: 3, untracked: 0 })
+  })
+
+  /**
+   * An untracked file has no diff to count -- git reports no line counts for
+   * one -- so it contributes to `untracked` alone. A collapsed untracked
+   * DIRECTORY (`b/`) counts once, like any other untracked entry.
+   */
+  it('counts an untracked entry without adding its line counts', () => {
+    expect(aggregateDiffStats([
+      makeEntry({ path: 'a.ts', unstagedStatus: GitFileStatusCode.UNTRACKED, linesAdded: 99, linesDeleted: 99 }),
+      makeEntry({ path: 'b/', unstagedStatus: GitFileStatusCode.UNTRACKED }),
+    ])).toEqual({ added: 0, deleted: 0, untracked: 2 })
+  })
+
+  /**
+   * The reduction is also the effect's reactive dependency: it must read the
+   * counted fields and nothing else, so a file whose size or modification time
+   * moved does not re-stamp every tab in the account.
+   */
+  it('ignores size and modification time', () => {
+    const before = aggregateDiffStats([
+      makeEntry({ path: 'a.ts', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 1, size: 10n, modTime: '2026-01-01T00:00:00.000000000Z' }),
+    ])
+    const after = aggregateDiffStats([
+      makeEntry({ path: 'a.ts', unstagedStatus: GitFileStatusCode.MODIFIED, linesAdded: 1, size: 4096n, modTime: '2026-02-01T00:00:00.000000000Z' }),
+    ])
+    expect(after).toEqual(before)
   })
 })

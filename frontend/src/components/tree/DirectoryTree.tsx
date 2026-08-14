@@ -1,5 +1,5 @@
 import type { Component } from 'solid-js'
-import type { FileInfo } from '~/generated/leapmux/v1/file_pb'
+import type { FileSortFields, FileSortKey, FileSortOrder } from '~/lib/fileSort'
 import type { PathFlavor } from '~/lib/paths'
 import type { createGitFileStatusStore, DiffStats } from '~/stores/gitFileStatus.store'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
@@ -12,11 +12,11 @@ import * as workerRpc from '~/api/workerRpc'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
 import { Icon } from '~/components/common/Icon'
 import { StartupSpinner } from '~/components/common/StartupPanel'
-import { Tooltip } from '~/components/common/Tooltip'
 import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { formatErrorMessage } from '~/lib/errors'
-import { basename, detectFlavor, isAbsolute, relativeUnder, tildify, untildify } from '~/lib/paths'
+import { DEFAULT_FILE_SORT_ORDER, makeFileComparator } from '~/lib/fileSort'
+import { basename, detectFlavor, relativeUnder } from '~/lib/paths'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { emptyState } from '~/styles/shared.css'
@@ -57,6 +57,12 @@ export interface DirectoryTreeProps {
   /** When false, entries with hidden=true are filtered out. Defaults to true. */
   showHiddenFiles?: boolean
   /**
+   * Display order for the rows within each directory. Defaults to
+   * {@link DEFAULT_FILE_SORT_ORDER}. Applied at render time, so a change
+   * reorders the cached listing without re-fetching it.
+   */
+  sortOrder?: FileSortOrder
+  /**
    * When false, the initial root-children fetch is suppressed. Used to
    * defer a directory listing for a tab whose working dir isn't on disk
    * yet (e.g. a worktree-creating agent during its STARTING window —
@@ -74,6 +80,22 @@ interface TreeNodeData {
   displayName: string
   isDir: boolean
   hidden: boolean
+  /**
+   * Bytes, from the listing's stat. For a DIRECTORY this is the inode's own
+   * size, which says nothing about its contents — nothing displays or sorts on
+   * it (see `makeFileComparator` and `FileActionsMenu`'s `showSize`).
+   */
+  size: number
+  /** RFC3339 UTC, from the listing's stat. */
+  modTime: string
+}
+
+/** The fields the sort comparator reads off a tree node. */
+const TREE_SORT_FIELDS: FileSortFields<TreeNodeData> = {
+  name: node => node.displayName,
+  isDir: node => node.isDir,
+  size: node => node.size,
+  modTime: node => node.modTime || undefined,
 }
 
 // Content equality for the children cache; see setChildrenInStore.
@@ -85,8 +107,15 @@ function sameTreeEntries(a: readonly TreeNodeData[], b: readonly TreeNodeData[])
   for (let i = 0; i < a.length; i++) {
     const x = a[i]
     const y = b[i]
-    if (x.path !== y.path || x.displayName !== y.displayName || x.isDir !== y.isDir || x.hidden !== y.hidden)
+    // size and modTime are part of the comparison because the tree SORTS and
+    // DISPLAYS them: without them, a file whose contents changed but whose
+    // name did not would keep its stale size in the three-dot menu and its
+    // stale position under a size or modified sort. It does cost fast-path
+    // hits that the pre-sort tree never lost -- see setChildrenInStore.
+    if (x.path !== y.path || x.displayName !== y.displayName || x.isDir !== y.isDir
+      || x.hidden !== y.hidden || x.size !== y.size || x.modTime !== y.modTime) {
       return false
+    }
   }
   return true
 }
@@ -104,6 +133,10 @@ interface TreeContextValue {
   scrollContainer?: HTMLDivElement
   gitStatusStore: () => ReturnType<typeof createGitFileStatusStore> | undefined
   showHiddenFiles: boolean
+  /** Comparator for the current sort order, shared by every node. */
+  comparator: () => (a: TreeNodeData, b: TreeNodeData) => number
+  /** The inline notice for a directory the worker truncated, bound to the current sort. */
+  truncationNotice: (path: string, shown: number) => string
   isVisible: () => ((path: string) => boolean) | undefined
   refreshVersion: () => number
   onSelect: (path: string) => void
@@ -113,7 +146,7 @@ interface TreeContextValue {
   isNodeExpanded: (path: string) => boolean
   setNodeExpanded: (path: string, expanded: boolean) => void
   getChildren: (path: string) => TreeNodeData[] | undefined
-  setChildren: (path: string, data: TreeNodeData[], truncated: boolean) => void
+  setChildren: (path: string, data: TreeNodeData[], truncated: boolean, totalEntries: number) => void
   isTruncated: (path: string) => boolean
 }
 
@@ -130,34 +163,76 @@ function useTree(): TreeContextValue {
 // Serialization helpers for sessionStorage
 // -------------------------------------------------------------------------
 
+/**
+ * Schema version for the persisted tree state.
+ *
+ * Bump this whenever the SHAPE of anything in the payload changes -- a field
+ * added to or removed from `TreeNodeData`, or a change to how the two path maps
+ * are keyed. The next load then discards the whole payload and re-fetches,
+ * instead of hydrating a shape the current code misreads.
+ *
+ * A version, not a per-field probe: the probe this replaced tested two of
+ * `TreeNodeData`'s six fields and could not reach `expandedPaths` or
+ * `truncatedDirs` at all, so the next field added here would have needed
+ * someone to remember to extend it. Same mechanism as
+ * `STORED_ROW_HEIGHTS_VERSION` in the chat's row-height cache.
+ *
+ * 1: entries carry `size` and `modTime`, so the sidebar can sort by them.
+ */
+export const DIRECTORY_TREE_STATE_VERSION = 1
+
 interface DirectoryTreeStateJSON {
+  v?: number
   expandedPaths: Record<string, boolean>
   childrenCache: Record<string, TreeNodeData[]>
-  truncatedDirs?: Record<string, boolean>
+  truncatedDirs?: Record<string, number>
 }
 
 function serializeState(
   expandedPaths: Record<string, boolean>,
   childrenCache: Record<string, TreeNodeData[]>,
-  truncatedDirs: Record<string, boolean>,
+  truncatedDirs: Record<string, number>,
 ): string {
-  return JSON.stringify({ expandedPaths, childrenCache, truncatedDirs })
+  return JSON.stringify({ v: DIRECTORY_TREE_STATE_VERSION, expandedPaths, childrenCache, truncatedDirs })
 }
 
-function deserializeState(raw: string): { expandedPaths: Record<string, boolean>, childrenCache: Record<string, TreeNodeData[]>, truncatedDirs: Record<string, boolean> } | null {
+/**
+ * Restores the persisted tree state, or null when the payload is unusable.
+ *
+ * A version mismatch discards EVERYTHING, expansion included. That costs a
+ * collapsed tree once per bump, and it buys the one rule that covers every key
+ * in the payload: a partial restore would have to prove, for each surviving
+ * key, that the old shape still reads correctly under the new code.
+ */
+function deserializeState(raw: string): { expandedPaths: Record<string, boolean>, childrenCache: Record<string, TreeNodeData[]>, truncatedDirs: Record<string, number> } | null {
   try {
     const json: DirectoryTreeStateJSON = JSON.parse(raw)
-    if (!json || typeof json !== 'object')
+    if (!json || typeof json !== 'object' || json.v !== DIRECTORY_TREE_STATE_VERSION)
       return null
     return {
       expandedPaths: json.expandedPaths ?? {},
-      childrenCache: json.childrenCache ?? {},
+      // Still filtered, for a payload that is the right VERSION but corrupt --
+      // a hand edit, or a truncated write. The version answers "is this shape
+      // current"; this answers "is this value well formed".
+      childrenCache: wellFormedCachedChildren(json.childrenCache),
       truncatedDirs: json.truncatedDirs ?? {},
     }
   }
   catch {
     return null
   }
+}
+
+/** Drops any cached directory whose entries are not a well-formed array. */
+function wellFormedCachedChildren(cache: Record<string, TreeNodeData[]> | undefined): Record<string, TreeNodeData[]> {
+  const usable: Record<string, TreeNodeData[]> = {}
+  for (const [path, entries] of Object.entries(cache ?? {})) {
+    if (!Array.isArray(entries))
+      continue
+    if (entries.every(e => typeof e?.path === 'string' && typeof e?.displayName === 'string'))
+      usable[path] = entries
+  }
+  return usable
 }
 
 // -------------------------------------------------------------------------
@@ -169,39 +244,84 @@ function isDescendantPath(child: string, parent: string, flavor: PathFlavor): bo
   return rel !== null && rel !== ''
 }
 
+/**
+ * The inline row shown under a directory the worker truncated.
+ *
+ * The worker sorts by name and cuts at its entry limit BEFORE stat-ing, so a
+ * sort by anything else orders only the entries that survived that cut. The
+ * notice names the window, so the user does not read a partial answer as a
+ * complete one.
+ */
+function formatTruncationNotice(shown: number, total: number, sortKey: FileSortKey): string {
+  // The worker reports what the directory really held, so the notice names the
+  // size of what is hidden instead of only that something is. `total` is 0 for
+  // a listing restored from a cache written before the worker sent it.
+  const count = total > shown ? `${shown} of ${total} entries` : `${shown}+ entries`
+  return sortKey === 'name'
+    ? `${count}, listing truncated`
+    : `${count}, truncated by name before sorting`
+}
+
+/** The rows one directory renders: hidden/git filters first, then the sort. */
+function visibleSortedChildren(
+  all: readonly TreeNodeData[],
+  showHidden: boolean,
+  isVisible: ((path: string) => boolean) | undefined,
+  comparator: (a: TreeNodeData, b: TreeNodeData) => number,
+): TreeNodeData[] {
+  const filtered = showHidden && !isVisible
+    ? all
+    : all.filter(c => (showHidden || !c.hidden) && (!isVisible || isVisible(c.path)))
+  return filtered.toSorted(comparator)
+}
+
 // -------------------------------------------------------------------------
 // File listing
 // -------------------------------------------------------------------------
 
-function sortEntries(a: FileInfo, b: FileInfo): number {
-  if (a.isDir !== b.isDir)
-    return a.isDir ? -1 : 1
-  return a.name.localeCompare(b.name)
-}
-
+// No sort here: the cache holds the worker's order (directories first, then
+// name), and the display order is applied when the rows render, so changing the
+// sort reorders what is already on screen instead of re-fetching every
+// expanded directory.
 async function loadChildren(
   workerId: string,
   dirPath: string,
   showFiles: boolean,
-): Promise<{ entries: TreeNodeData[], truncated: boolean }> {
+): Promise<{ entries: TreeNodeData[], truncated: boolean, totalEntries: number }> {
   const resp = await workerRpc.listDirectory(workerId, { workerId, path: dirPath, maxDepth: 5, dirsOnly: !showFiles })
-  const entries = resp.entries.toSorted(sortEntries)
 
   return {
-    entries: entries.map(entry => ({
+    entries: resp.entries.map(entry => ({
       path: entry.path,
       displayName: entry.name,
       isDir: entry.isDir,
       hidden: entry.hidden,
+      // `size` is a protobuf int64, so the wire type is bigint. File sizes stay
+      // far below Number.MAX_SAFE_INTEGER, and JSON.stringify -- which the
+      // sessionStorage cache runs on this value -- throws on a bigint.
+      size: Number(entry.size ?? 0n),
+      modTime: entry.modTime,
     })),
     truncated: resp.truncated,
+    // `?? 0` for a worker that predates the field: the notice then falls back
+    // to "N+ entries" rather than claiming a total of zero.
+    totalEntries: resp.totalEntries ?? 0,
   }
 }
 
-/** Three-dot context menu for a tree node (file or directory). */
+/**
+ * Three-dot context menu for a tree node (file or directory).
+ *
+ * `size` and `modTime` come from the cached listing rather than a fresh
+ * StatFile call, so the menu opens with no round trip and shows exactly the
+ * values the current sort ordered the row by. The root row is the one
+ * exception — it has no parent listing here, so it stats itself once.
+ */
 const TreeContextMenu: Component<{
   path: string
   isDir: boolean
+  size?: number
+  modTime?: string
 }> = (props) => {
   const tree = useTree()
   return (
@@ -212,6 +332,8 @@ const TreeContextMenu: Component<{
       isDir={props.isDir}
       rootPath={tree.rootPath}
       homeDir={tree.homeDir}
+      size={props.size}
+      modTime={props.modTime}
       onMention={tree.onMention}
       onOpenTerminal={tree.onOpenTerminal}
       triggerClass={menuTrigger}
@@ -238,17 +360,27 @@ const TreeNode: Component<{
   const expanded = () => tree.isNodeExpanded(props.node.path)
   const isSelected = () => props.selectedPath === props.node.path
   const allChildren = () => tree.getChildren(props.node.path) ?? []
-  const children = () => {
-    const all = allChildren()
-    const showHidden = tree.showHiddenFiles
-    const isVisible = tree.isVisible()
-    if (showHidden && !isVisible)
-      return all
-    return all.filter(c =>
-      (showHidden || !c.hidden)
-      && (!isVisible || isVisible(c.path)),
-    )
-  }
+  // A memo, not a plain closure: `<For>`, the truncation notice, the empty
+  // state and the auto-expand effect all read it, and each read would
+  // otherwise re-filter and re-sort the whole directory.
+  //
+  // `toSorted`, never `sort`: `all` is the live store array, and mutating it
+  // outside setState desyncs the store from what `sameTreeEntries` compares
+  // against. The sorted copy holds the SAME store objects, so `<For>` moves
+  // the existing rows instead of disposing and rebuilding them.
+  //
+  // ACCEPTED CONSEQUENCE: under a `modified` or `size` order, a turn-end
+  // refresh that changes one file's stat can move rows. Moving a connected node
+  // runs its removing steps, and the removing steps of a showing popover hide
+  // it — so a three-dot menu open on a row that moves closes under the pointer.
+  // The default `name` order cannot trigger this, because a rename is already a
+  // structural change.
+  const children = createMemo(() => visibleSortedChildren(
+    allChildren(),
+    tree.showHiddenFiles,
+    tree.isVisible(),
+    tree.comparator(),
+  ))
   const loaded = () => tree.getChildren(props.node.path) !== undefined
 
   const doScroll = () => {
@@ -295,7 +427,7 @@ const TreeNode: Component<{
     setLoading(true)
     try {
       const result = await loadChildren(tree.workerId, props.node.path, tree.showFiles)
-      tree.setChildren(props.node.path, result.entries, result.truncated)
+      tree.setChildren(props.node.path, result.entries, result.truncated, result.totalEntries)
     }
     catch {
       // ignore load errors
@@ -369,13 +501,16 @@ const TreeNode: Component<{
         return
       loadChildren(tree.workerId, props.node.path, tree.showFiles)
         .then((result) => { // eslint-disable-line solid/reactivity -- one-shot async refresh
-          tree.setChildren(props.node.path, result.entries, result.truncated)
+          tree.setChildren(props.node.path, result.entries, result.truncated, result.totalEntries)
         })
         .catch(() => { /* ignore refresh errors */ })
     },
   ))
 
-  // Scroll into view when this node is selected via path input.
+  // Scroll into view when this node becomes the selected one without the user
+  // clicking it: Locate active file, a selection restored on tab switch, or a
+  // path typed into the dialog picker's PathInput, whose onSubmit feeds the
+  // same selectedPath.
   // Skip for directories that are collapsed — collapsing should not scroll.
   createEffect(() => {
     if (props.selectedPath === props.node.path && nodeRef) {
@@ -440,7 +575,11 @@ const TreeNode: Component<{
           </Show>
         </Show>
         <RowLabelWithStats
-          label={<span class={props.node.hidden ? styles.nodeNameMuted : styles.nodeName}>{props.node.displayName}</span>}
+          // The row's own text is not the name: the three-dot menu renders
+          // inside the row and stays mounted while closed, so its items are
+          // part of the row's textContent. Anything matching on the name needs
+          // this hook.
+          label={<span data-testid="tree-row-name" class={props.node.hidden ? styles.nodeNameMuted : styles.nodeName}>{props.node.displayName}</span>}
           tooltipLabel={props.node.displayName}
           stats={diffStats()}
         />
@@ -448,6 +587,8 @@ const TreeNode: Component<{
           <TreeContextMenu
             path={props.node.path}
             isDir={props.node.isDir}
+            size={props.node.size}
+            modTime={props.node.modTime}
           />
         </div>
       </div>
@@ -475,7 +616,7 @@ const TreeNode: Component<{
             </Show>
             <Show when={tree.isTruncated(props.node.path) && !tree.isVisible()}>
               <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
-                {`${children().length}+ entries, listing truncated`}
+                {tree.truncationNotice(props.node.path, children().length)}
               </div>
             </Show>
           </div>
@@ -488,7 +629,6 @@ const TreeNode: Component<{
 export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
-  const [inputValue, setInputValue] = createSignal('')
   let loadVersion = 0
   let treeRef!: HTMLDivElement
 
@@ -517,7 +657,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   const [state, setState] = createStore<{
     expandedPaths: Record<string, boolean>
     childrenCache: Record<string, TreeNodeData[]>
-    truncatedDirs: Record<string, boolean>
+    truncatedDirs: Record<string, number>
   }>({
     expandedPaths: {},
     childrenCache: {},
@@ -589,16 +729,24 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   }
 
   const getChildren = (path: string): TreeNodeData[] | undefined => state.childrenCache[path]
-  const isTruncated = (path: string): boolean => !!state.truncatedDirs[path]
+  // PRESENCE means truncated, not truthiness: the stored value is a count, and
+  // a worker that does not report one stores 0. Testing the number would make
+  // the notice vanish for exactly that case.
+  const isTruncated = (path: string): boolean => state.truncatedDirs[path] !== undefined
+  /** How many entries the worker saw before it cut; 0 when it did not say. */
+  const truncatedTotal = (path: string): number => state.truncatedDirs[path] ?? 0
   // Every turn-end fans out into one loadChildren per expanded TreeNode.
   // Most subtrees haven't changed between turns, so skip the setState when
   // data and truncation match the cache — otherwise Solid would invalidate
   // children(), per-node gitIcon/diffStats, prefixIndex (walks every file ×
   // every ancestor), and downstream JSX for a subtree whose contents are
   // already on screen. Load-bearing; keep.
-  const setChildrenInStore = (path: string, data: TreeNodeData[], truncated: boolean) => {
+  const setChildrenInStore = (path: string, data: TreeNodeData[], truncated: boolean, totalEntries: number) => {
     const existing = state.childrenCache[path]
-    const truncationUnchanged = !!state.truncatedDirs[path] === truncated
+    // Compares the stored value INCLUDING its absence, so both "was it cut"
+    // and "how much is missing" are covered: an unchanged listing whose total
+    // moved (files added past the cut) still refreshes the notice.
+    const truncationUnchanged = state.truncatedDirs[path] === (truncated ? totalEntries : undefined)
     if (truncationUnchanged && existing && sameTreeEntries(existing, data))
       return
     batch(() => {
@@ -611,9 +759,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       // sibling at turn end. Reconciling by `path` mutates the survivors in
       // place, so only genuinely added/removed entries move.
       setState('childrenCache', path, reconcile(data, { key: 'path' }))
-      setState('truncatedDirs', produce((t: Record<string, boolean>) => {
+      setState('truncatedDirs', produce((t: Record<string, number>) => {
         if (truncated)
-          t[path] = true
+          t[path] = totalEntries
         else
           delete t[path]
       }))
@@ -629,33 +777,61 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     return basename(rp, workerFlavor()) || rp
   }
 
-  // Root children derived from the centralized cache, optionally filtered.
+  // Root children derived from the centralized cache, filtered and sorted the
+  // same way every other directory is -- see visibleSortedChildren.
   const showHidden = () => props.showHiddenFiles ?? true
-  const rootChildren = () => {
+  const sortOrder = () => props.sortOrder ?? DEFAULT_FILE_SORT_ORDER
+  const comparator = createMemo(() => makeFileComparator(sortOrder(), TREE_SORT_FIELDS))
+  // Bound to the current sort here, so the root row and every TreeNode assemble
+  // the notice one way instead of two. The context then carries the derived
+  // value alone, not the raw sort key the comparator was already built from.
+  const truncationNotice = (path: string, shown: number) =>
+    formatTruncationNotice(shown, truncatedTotal(path), sortOrder().key)
+  const rootChildren = createMemo(() => {
     const all = getChildren(rootPath())
     if (!all)
       return undefined
-    const sh = showHidden()
-    const isVisible = props.isVisible
-    if (sh && !isVisible)
-      return all
-    return all.filter(c =>
-      (sh || !c.hidden)
-      && (!isVisible || isVisible(c.path)),
-    )
-  }
-
-  const submitPath = (raw: string) => {
-    const value = raw.trim()
-    if (!value)
-      return
-    props.onSelect(untildify(value, props.homeDir, workerFlavor()))
-  }
-
-  // Sync external selectedPath to input (tildified for display)
-  createEffect(() => {
-    setInputValue(tildify(props.selectedPath, props.homeDir, workerFlavor()))
+    return visibleSortedChildren(all, showHidden(), props.isVisible, comparator())
   })
+
+  /**
+   * The root row's own modification time, for its three-dot menu.
+   *
+   * Every other row reads its stat out of its parent's cached listing, but the
+   * root has no parent in this tree, so it takes one StatFile of its own. That
+   * is one call per root — not per row — and without it the root would be the
+   * one directory whose menu showed nothing.
+   */
+  const [rootModTime, setRootModTime] = createSignal('')
+  // Generation guard for the stat below. Two refreshes of the SAME root both
+  // satisfy the worker/root match, so without it a slow first response can land
+  // after a fast second one and pin the older time on the menu until the next
+  // refresh. Same idiom as `loadVersion` on the root listing.
+  let statVersion = 0
+  createEffect(on(
+    // `enabled` is a dependency, not just a guard: a worktree-creating agent
+    // starts disabled and flips true once its directory exists, and the stat
+    // has to run then rather than wait for a manual refresh.
+    () => [props.workerId, rootPath(), refreshVersion(), props.enabled !== false] as const,
+    ([workerId, root, , enabled], prev) => {
+      // Blank the old value only when the ROW changes. A refresh re-stats the
+      // same directory, so clearing there would make the menu's Modified row
+      // blink out at every turn end.
+      if (!prev || prev[0] !== workerId || prev[1] !== root)
+        setRootModTime('')
+      // Bumped BEFORE the early return, so a run that bails still invalidates
+      // whatever the previous run left in flight.
+      const version = ++statVersion
+      if (!workerId || !enabled)
+        return
+      workerRpc.statFile(workerId, { workerId, path: root })
+        .then((resp) => { // eslint-disable-line solid/reactivity -- one-shot async fetch
+          if (version === statVersion && workerId === props.workerId && root === rootPath())
+            setRootModTime(resp.info?.modTime ?? '')
+        })
+        .catch(() => { /* the menu simply omits the row */ })
+    },
+  ))
 
   // Load root children when workerId or rootPath changes
   createEffect(() => {
@@ -679,7 +855,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       .then((result) => {
         if (version !== loadVersion)
           return
-        setChildrenInStore(root, result.entries, result.truncated)
+        setChildrenInStore(root, result.entries, result.truncated, result.totalEntries)
         setLoading(false)
       })
       .catch((err) => {
@@ -713,47 +889,15 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
       loadChildren(workerId, root, props.showFiles ?? false)
         // eslint-disable-next-line solid/reactivity -- async promise callback; setChildrenInStore reads state as a current-value check, not a subscription
         .then((result) => {
-          setChildrenInStore(root, result.entries, result.truncated)
+          setChildrenInStore(root, result.entries, result.truncated, result.totalEntries)
         })
         .catch(() => { /* ignore refresh errors */ })
     },
   ))
 
-  const handlePathKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      submitPath(inputValue())
-    }
-  }
-
-  const handlePathBlur = () => {
-    const value = inputValue().trim()
-    if (!value)
-      return
-    // Avoid re-emitting the displayed tildified value.
-    if (value === tildify(props.selectedPath, props.homeDir, workerFlavor()))
-      return
-    submitPath(value)
-  }
-
   const rootDiffStats = createMemo<DiffStats | null>(() => {
     const store = props.gitStatusStore
     return store ? store.getNodeDiffStats(rootPath(), true) : null
-  })
-
-  const flavorHint = createMemo(() => {
-    const raw = inputValue().trim()
-    if (!raw || raw.startsWith('~'))
-      return null
-    const rawFlavor = detectFlavor(raw)
-    if (!isAbsolute(raw, rawFlavor))
-      return null
-    const wf = workerFlavor()
-    if (rawFlavor === wf)
-      return null
-    return wf === 'win32'
-      ? 'This looks like a POSIX path but the worker expects Windows paths.'
-      : 'This looks like a Windows path but the worker expects POSIX paths.'
   })
 
   const treeContextValue: TreeContextValue = {
@@ -764,6 +908,8 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     flavor: workerFlavor,
     get scrollContainer() { return treeRef },
     get showHiddenFiles() { return showHidden() },
+    comparator,
+    truncationNotice,
     gitStatusStore: () => props.gitStatusStore,
     isVisible: () => props.isVisible,
     refreshVersion,
@@ -781,24 +927,6 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   return (
     <TreeContext.Provider value={treeContextValue}>
       <div class={styles.container}>
-        <div class={styles.pathInput}>
-          <Tooltip text={props.selectedPath} showWhen="clipped">
-            <input
-              type="text"
-              value={inputValue()}
-              onInput={e => setInputValue(e.currentTarget.value)}
-              // Direct listener so preventDefault() fires before Dialog's keydown handler.
-              on:keydown={handlePathKeyDown}
-              onBlur={handlePathBlur}
-              placeholder="Enter path..."
-            />
-          </Tooltip>
-        </div>
-        <Show when={flavorHint()}>
-          {hint => (
-            <div class={styles.pathHint} data-testid="path-flavor-hint">{hint()}</div>
-          )}
-        </Show>
         <div class={styles.tree} ref={treeRef}>
           <Switch fallback={(
             <div class={styles.treeInner}>
@@ -812,7 +940,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
               >
                 <Icon icon={FolderOpen} size="sm" class={styles.folderIcon} />
                 <RowLabelWithStats
-                  label={<span class={styles.nodeName}>{rootDisplayName()}</span>}
+                  label={<span data-testid="tree-row-name" class={styles.nodeName}>{rootDisplayName()}</span>}
                   tooltipLabel={rootDisplayName()}
                   stats={rootDiffStats()}
                 />
@@ -820,6 +948,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                   <TreeContextMenu
                     path={rootPath()}
                     isDir
+                    modTime={rootModTime()}
                   />
                 </div>
               </div>
@@ -841,7 +970,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                       </For>
                       <Show when={isTruncated(rootPath()) && !props.isVisible}>
                         <div class={styles.emptyInline} style={{ 'padding-left': '24px' }}>
-                          {`${rootChildren()!.length}+ entries, listing truncated`}
+                          {truncationNotice(rootPath(), rootChildren()!.length)}
                         </div>
                       </Show>
                     </Show>

@@ -7,7 +7,7 @@ import { AgentGitStatusSchema, AgentInfoSchema, AgentProvider, AgentStatus, Avai
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { clearSettingsLabelCache, getCachedSettingsGroupLabel } from '~/lib/settingsLabelCache'
-import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
+import { agentTabToInfo, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedTerminalMetadata, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps, toAgentGitTabFields, toGitTabFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -45,6 +45,25 @@ describe('tabDisplayLabel', () => {
     expect(tabTooltipText(terminal({ title: 'My Shell', ptyTitle: 'live' }))).toBe('live')
     expect(tabTooltipText(terminal({ title: 'My Shell', ptyTitle: '' }))).toBe('My Shell')
     expect(tabTooltipText(agent({ title: 'Agent A' }))).toBe('Agent A')
+  })
+
+  /**
+   * `clipped` is for a tooltip that REPEATS its label; it also withholds the
+   * text from a screen reader. A terminal's live OSC title is text the label
+   * never shows, so gating it on the label happening to overflow hid it
+   * outright.
+   */
+  it('tabTooltipShowWhen is always only when the tooltip differs from the label', () => {
+    // A live PTY title behind a user rename: the tooltip carries text the
+    // label does not, so clip detection must not gate it.
+    expect(tabTooltipShowWhen(terminal({ title: 'My Shell', ptyTitle: 'vim src/app.ts' }))).toBe('always')
+    // No PTY title: the tooltip repeats the label, so `clipped` is correct.
+    expect(tabTooltipShowWhen(terminal({ title: 'My Shell', ptyTitle: '' }))).toBe('clipped')
+    // A PTY title that happens to equal the label repeats it too.
+    expect(tabTooltipShowWhen(terminal({ title: 'live', ptyTitle: 'live' }))).toBe('clipped')
+    // Non-terminal tabs never carry a second string.
+    expect(tabTooltipShowWhen(agent({ title: 'Agent A' }))).toBe('clipped')
+    expect(tabTooltipShowWhen(file({ title: 'Renamed', filePath: '/repo/notes.txt' }))).toBe('clipped')
   })
 
   it('treats an empty-string title as no title (falls through to fallbacks)', () => {

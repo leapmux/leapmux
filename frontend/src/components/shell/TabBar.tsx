@@ -22,7 +22,7 @@ import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useMruProviders } from '~/hooks/useMruProviders'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
-import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
+import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import { isTerminalTab } from '~/stores/tab.types'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
@@ -38,9 +38,9 @@ const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipPro
   </Tooltip>
 )
 
-const TabTextWithTooltip: Component<{ label: string, tooltip: string, status?: TerminalStatus }> = (props) => {
+const TabTextWithTooltip: Component<{ label: string, tooltip: string, showWhen: 'always' | 'clipped', status?: TerminalStatus }> = (props) => {
   return (
-    <Tooltip text={props.tooltip} showWhen="clipped">
+    <Tooltip text={props.tooltip} showWhen={props.showWhen}>
       <span
         class={styles.tabText}
         classList={terminalStatusClassList(props.status)}
@@ -261,10 +261,11 @@ export const TabBar: Component<TabBarProps> = (props) => {
         </span>
         <Show
           when={editingTabKey() === tabKey(tab())}
-          fallback={<TabTextWithTooltip label={tabDisplayLabel(tab())} tooltip={tabTooltipText(tab())} status={terminalStatusOf(tab())} />}
+          fallback={<TabTextWithTooltip label={tabDisplayLabel(tab())} tooltip={tabTooltipText(tab())} showWhen={tabTooltipShowWhen(tab())} status={terminalStatusOf(tab())} />}
         >
           <input
             class={styles.tabEditInput}
+            data-testid="tab-rename-input"
             type="text"
             value={editingValue()}
             onInput={e => setEditingValue(e.currentTarget.value)}

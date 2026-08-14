@@ -122,13 +122,17 @@ export function makeGitVisibilityPredicate(
  * worker answers ReadFile with "path is a directory", so the tab renders an
  * error and never recovers. There is nothing to open -- the tree view is where
  * a directory is browsable.
+ *
+ * `isDir` covers the directory that carries NO trailing slash: a submodule.
+ * Git names it like any other changed path, so the slash alone never caught it
+ * and its row opened the same broken tab.
  */
 export function flatEntryOpenTarget(
-  entryPath: string,
+  entry: { path: string, isDir: boolean },
   root: string,
   flavor: PathFlavor,
 ): string | undefined {
-  if (isUntrackedDirEntry(entryPath))
+  if (entry.isDir || isUntrackedDirEntry(entry.path))
     return undefined
-  return join([root, entryPath], flavor)
+  return join([root, entry.path], flavor)
 }

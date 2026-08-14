@@ -2,17 +2,19 @@ import type { Accessor, Component } from 'solid-js'
 import type { DirectoryTreeState } from '~/hooks/createDirectoryTreeState'
 import Eye from 'lucide-solid/icons/eye'
 import EyeOff from 'lucide-solid/icons/eye-off'
-import { createEffect, createSignal, on, onCleanup, Show } from 'solid-js'
-import { labelRow, treeContainer } from '~/components/common/Dialog.css'
+import { createEffect, onCleanup, Show } from 'solid-js'
+import { labelRow, treeContainer, treeContainerFill } from '~/components/common/Dialog.css'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
-import { KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, localStorageGet, localStorageSet } from '~/lib/browserStorage'
+import { KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN } from '~/lib/browserStorage'
+import { createPersistedSignal, persistedBoolean } from '~/lib/createPersistedSignal'
 import { registerDialogFileTreeOps } from '~/lib/fileTreeOps'
 import { flavorFromOs } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
 import { workerInfoStore } from '~/stores/workerInfo.store'
 import { emptyState } from '~/styles/shared.css'
+import { PathInput } from './PathInput'
 
 /**
  * Narrow slice of `WorkerDialogContext` that `DirectorySelector` reads —
@@ -33,11 +35,13 @@ interface DirectorySelectorProps {
 }
 
 export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
-  const [showHiddenFiles, setShowHiddenFiles] = createSignal(localStorageGet<boolean>(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN) ?? true)
-
-  createEffect(on(showHiddenFiles, (value) => {
-    localStorageSet(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, value)
-  }, { defer: true }))
+  // One fixed key, unlike the Files section's per-tab keys, so the re-read half
+  // of createPersistedSignal never fires. It still owns the write-on-change,
+  // never-on-mount rule.
+  const [showHiddenFiles, setShowHiddenFiles] = createPersistedSignal(
+    () => KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
+    persistedBoolean(true),
+  )
 
   createEffect(() => {
     const unregister = registerDialogFileTreeOps({
@@ -70,11 +74,17 @@ export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
         when={props.state.workerId()}
         fallback={(
           <div class={treeContainer}>
-            <div class={emptyState}>No workers online. Connect a worker to browse directories.</div>
+            <div class={`${treeContainerFill} ${emptyState}`}>No workers online. Connect a worker to browse directories.</div>
           </div>
         )}
       >
         <div class={treeContainer}>
+          <PathInput
+            selectedPath={props.state.workingDir()}
+            homeDir={workerInfoStore.getHomeDir(props.state.workerId())}
+            flavor={flavorFromOs(workerInfoStore.getOs(props.state.workerId()))}
+            onSubmit={props.state.setWorkingDir}
+          />
           <DirectoryTree
             workerId={props.state.workerId()}
             selectedPath={props.state.workingDir()}

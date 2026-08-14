@@ -15,6 +15,7 @@ const spies = vi.hoisted<SaveActionsSpies>(() => ({
   saveToDownloadsImpl: vi.fn(),
   revealImpl: vi.fn(),
   warnToastImpl: vi.fn(),
+  infoToastImpl: vi.fn(),
   revealAfterDownloadImpl: vi.fn(() => true),
   isTauriAppImpl: vi.fn(() => false),
 }))
@@ -155,5 +156,93 @@ describe('fileActionsMenu — desktop mode', () => {
     expect(screen.getByTestId('tree-save-as-button')).toBeInTheDocument()
     expect(screen.getByTestId('tree-save-to-downloads-button')).toBeInTheDocument()
     expect(screen.queryByTestId('file-actions-save-as-button')).not.toBeInTheDocument()
+  })
+})
+
+describe('fileActionsMenu — size and modified info', () => {
+  const modTime = '2026-05-01T10:00:00Z'
+
+  /**
+   * The block is built only once the popover opens. `DropdownMenu` renders its
+   * children eagerly, so an ungated builder mounted a live `RelativeTime` and a
+   * shared-tick subscriber for every closed menu -- one per tree row. Opening
+   * first is therefore part of what these tests assert, not harness noise.
+   */
+  const openMenu = () => fireEvent.click(screen.getByTestId('file-actions-trigger'))
+
+  it('builds nothing until the menu opens', () => {
+    renderMenu({ size: 2048, modTime })
+    expect(screen.queryByTestId('file-actions-info-button')).not.toBeInTheDocument()
+    openMenu()
+    expect(screen.getByTestId('file-actions-info-button')).toBeInTheDocument()
+  })
+
+  it('is absent when neither size nor modTime is supplied', () => {
+    renderMenu()
+    openMenu()
+    expect(screen.queryByTestId('file-actions-info-button')).not.toBeInTheDocument()
+  })
+
+  it('shows both size and modified for a file', () => {
+    renderMenu({ size: 2048, modTime })
+    openMenu()
+    const info = screen.getByTestId('file-actions-info-button')
+    expect(info.textContent).toContain('Size:')
+    expect(info.textContent).toContain('2.0 KB')
+    expect(info.textContent).toContain('Modified:')
+    expect(info.textContent).toContain('ago')
+  })
+
+  it('shows a zero-byte file as 0 B rather than hiding the row', () => {
+    renderMenu({ size: 0, modTime })
+    openMenu()
+    expect(screen.getByTestId('file-actions-info-button').textContent).toContain('0 B')
+  })
+
+  it('omits the size for a directory but keeps the modified time', () => {
+    renderMenu({ isDir: true, size: 4096, modTime })
+    openMenu()
+    const info = screen.getByTestId('file-actions-info-button')
+    expect(info.textContent).not.toContain('Size:')
+    expect(info.textContent).toContain('Modified:')
+  })
+
+  it('renders nothing for a directory with no modified time', () => {
+    renderMenu({ isDir: true, size: 4096 })
+    openMenu()
+    expect(screen.queryByTestId('file-actions-info-button')).not.toBeInTheDocument()
+  })
+
+  it('copies the path, size and modified time, and toasts', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    renderMenu({ size: 2048, modTime })
+    openMenu()
+
+    fireEvent.click(screen.getByTestId('file-actions-info-button'))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual({
+      path: '/repo/src/file.ts',
+      size: 2048,
+      modified: modTime,
+    })
+    await waitFor(() => expect(spies.infoToastImpl).toHaveBeenCalledWith('File info copied to clipboard'))
+  })
+
+  it('leaves the size out of the copied text for a directory', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    renderMenu({ isDir: true, size: 4096, modTime, path: '/repo/src' })
+    openMenu()
+
+    fireEvent.click(screen.getByTestId('file-actions-info-button'))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual({
+      path: '/repo/src',
+      modified: modTime,
+    })
+    await waitFor(() => expect(spies.infoToastImpl).toHaveBeenCalledWith('Directory info copied to clipboard'))
   })
 })

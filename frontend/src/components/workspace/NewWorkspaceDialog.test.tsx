@@ -43,6 +43,7 @@ vi.mock('~/api/workerRpc', () => ({
   openAgent: vi.fn(),
   getGitInfo: vi.fn(),
   listDirectory: vi.fn(),
+  statFile: vi.fn(async () => ({ info: { modTime: '2026-01-01T00:00:00Z' } })),
 }))
 
 // Partial mock: the dialog imports `seedTabIntoNewWorkspace` through the

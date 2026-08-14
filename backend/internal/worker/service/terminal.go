@@ -320,8 +320,13 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		})
 
 	// UpdateTerminalTitle updates a terminal's title in both the in-memory
-	// manager and the database. Kept for explicit user renames; PTY-driven
-	// OSC titles are persisted via persistTerminalTitleFromSignal instead.
+	// manager and the database. It is the only writer of a USER-SUPPLIED
+	// title; OpenTerminal writes the worker-assigned name at creation and
+	// persistTerminalOnExit writes TerminalMeta.Title on shell exit.
+	//
+	// The worker never persists a PTY-driven OSC title. It broadcasts that
+	// title as a live overlay instead -- see the SignalTitle case in this
+	// file for the reason.
 	registerTerminalGated(d, "UpdateTerminalTitle",
 		func(_ context.Context, userID userid.UserID, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()

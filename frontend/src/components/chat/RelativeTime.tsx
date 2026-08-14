@@ -12,9 +12,10 @@ import Clock9 from 'lucide-solid/icons/clock-9'
 import Clock10 from 'lucide-solid/icons/clock-10'
 import Clock11 from 'lucide-solid/icons/clock-11'
 import Clock12 from 'lucide-solid/icons/clock-12'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
+import { createSharedTicker } from '~/lib/createSharedTicker'
 import { formatLocalDateTime } from '~/lib/dateFormat'
 
 const clockIcons: LucideIcon[] = [
@@ -53,9 +54,22 @@ function formatCompact(ts: Date): string {
   return `${diffYr}y`
 }
 
+const REFRESH_INTERVAL_MS = 15_000
+
+// One interval for every mounted RelativeTime, not one each -- the chat view
+// renders a timestamp per message, and the file tree keeps a three-dot menu
+// mounted per row. See ~/lib/createSharedTicker for the refcount and why an
+// instance with an unparseable timestamp subscribes too.
+const sharedTick = createSharedTicker(REFRESH_INTERVAL_MS)
+
 interface RelativeTimeProps {
   timestamp: string
   class?: string
+  /**
+   * Text appended after the relative time, INSIDE the validity guard, so an
+   * unparseable timestamp renders nothing at all rather than a bare suffix.
+   */
+  suffix?: string
 }
 
 export function RelativeTime(props: RelativeTimeProps) {
@@ -63,22 +77,12 @@ export function RelativeTime(props: RelativeTimeProps) {
   const isValid = () => props.timestamp !== '' && !Number.isNaN(parsed().getTime())
   const fullText = () => formatLocalDateTime(parsed())
   const hour12 = () => parsed().getHours() % 12
-  const [relative, setRelative] = createSignal(isValid() ? formatCompact(parsed()) : '')
+  const relative = () => {
+    sharedTick.tick()
+    return isValid() ? formatCompact(parsed()) : ''
+  }
 
-  let timer: ReturnType<typeof setInterval> | undefined
-
-  onMount(() => {
-    if (!isValid())
-      return
-    timer = setInterval(() => {
-      setRelative(formatCompact(parsed()))
-    }, 15_000)
-  })
-
-  onCleanup(() => {
-    if (timer !== undefined)
-      clearInterval(timer)
-  })
+  sharedTick.subscribe()
 
   const ClockIcon = () => {
     const ClockFace = clockIcons[hour12()]
@@ -92,8 +96,23 @@ export function RelativeTime(props: RelativeTimeProps) {
           <ClockIcon />
           {' '}
           {relative()}
+          {props.suffix}
         </span>
       </Tooltip>
     </Show>
   )
+}
+
+/**
+ * {@link RelativeTime} followed by " ago" -- the form every context-menu info
+ * block uses for a timestamp.
+ *
+ * The suffix goes through `RelativeTime`'s own `suffix` prop rather than
+ * sitting beside the element, so it shares the one `isValid()` guard. Rendered
+ * as a sibling it survived that guard, and a menu whose stat carried a
+ * non-empty but unparseable timestamp showed a row reading "Modified:" with a
+ * bare "ago" and no time.
+ */
+export function RelativeTimeAgo(props: { timestamp: string }) {
+  return <RelativeTime timestamp={props.timestamp} suffix=" ago" />
 }

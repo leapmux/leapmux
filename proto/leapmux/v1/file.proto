@@ -12,6 +12,11 @@ message ListDirectoryResponse {
   string path = 1;
   repeated FileInfo entries = 2;
   bool truncated = 3;
+  // How many entries the directory held BEFORE truncation, after the
+  // dirs_only filter. Lets the UI say how much it is not showing, rather than
+  // only that something is missing. Equal to len(entries) when truncated is
+  // false.
+  int32 total_entries = 4;
 }
 
 message ReadFileRequest {
@@ -32,6 +37,11 @@ message ReadFileResponse {
   string path = 1;
   bytes content = 2;
   int64 total_size = 3;
+  // Modification time, in the same fixed-width RFC3339 UTC layout StatFile
+  // reports. Carried here so a reader that already fetched the bytes does not
+  // need a second round trip to show it; the handler holds the FileInfo
+  // already, so it costs no extra syscall.
+  string mod_time = 4;
 }
 
 message StatFileRequest {

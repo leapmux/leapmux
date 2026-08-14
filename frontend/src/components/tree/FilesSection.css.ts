@@ -15,7 +15,13 @@ export const toolbar = style({
   flexShrink: 0,
 })
 
+// A flex COLUMN, so the tree inside claims the remaining height through its own
+// `flex: 1` -- the same way the dialog's `treeContainer` sizes it. Before this,
+// the sidebar sized the tree with `height: 100%` and the dialog with `flex: 1`,
+// which forced the tree's own class to carry both rules at once.
 export const treeContent = style({
+  display: 'flex',
+  flexDirection: 'column',
   flex: 1,
   overflow: 'hidden',
   minHeight: 0,

@@ -1,15 +1,14 @@
 import type { Component } from 'solid-js'
+import type { MenuInfoRow } from '~/components/common/MenuInfoRows'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
-import { For, Show } from 'solid-js'
+import { createMemo, Show } from 'solid-js'
 import { isTunnelAvailable } from '~/api/platformBridge'
-import { RelativeTime } from '~/components/chat/RelativeTime'
+import { RelativeTimeAgo } from '~/components/chat/RelativeTime'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
+import { MenuInfoButton } from '~/components/common/MenuInfoRows'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
-import { showInfoToast } from '~/components/common/Toast'
-import { copyTextToClipboard } from '~/lib/clipboard'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { dangerMenuItem } from '~/styles/shared.css'
-import * as styles from './workerContextMenu.css'
 
 interface WorkerContextMenuProps {
   workerInfo: WorkerInfo | null
@@ -23,34 +22,33 @@ interface WorkerContextMenuProps {
   onDeregister: () => void
 }
 
-interface InfoRow {
-  label: string
-  value: string
-  kind: 'text' | 'relative_time'
-}
-
 export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
-  const infoRows = (): InfoRow[] | null => {
+  // Builds `MenuInfoRow[]` directly. `MenuInfoRow.value` is already a
+  // JSX.Element, so the timestamp row carries its own `RelativeTimeAgo` instead
+  // of a `kind` discriminator that a second loop had to switch on.
+  const infoRows = createMemo((): MenuInfoRow[] => {
     const info = props.workerInfo
     if (!info)
-      return null
+      return []
     let versionText = info.version
     if (info.commitHash)
       versionText += ` (${info.commitHash})`
-    const rows: InfoRow[] = [
-      { label: 'Name:', value: info.name, kind: 'text' },
-      { label: 'Version:', value: versionText, kind: 'text' },
+    const rows: MenuInfoRow[] = [
+      { label: 'Name:', value: info.name },
+      { label: 'Version:', value: versionText },
     ]
     if (info.buildTime)
-      rows.push({ label: 'Built at:', value: info.buildTime, kind: 'relative_time' })
-    rows.push({ label: 'OS:', value: `${info.os} (${info.arch})`, kind: 'text' })
+      rows.push({ label: 'Built at:', value: <RelativeTimeAgo timestamp={info.buildTime} /> })
+    rows.push({ label: 'OS:', value: `${info.os} (${info.arch})` })
     return rows
-  }
+  })
 
+  // Built from `workerInfo`, never from the displayed rows: the copy carries
+  // `homeDir`, which the menu does not show.
   const infoJson = () => {
     const info = props.workerInfo
     if (!info)
-      return null
+      return ''
     return prettifyJson({
       name: info.name,
       version: info.version,
@@ -62,48 +60,13 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
     })
   }
 
-  // Routed through `copyTextToClipboard`, which is guarded: a non-secure origin
-  // exposes no `navigator.clipboard` at all, so the bare
-  // `navigator.clipboard.writeText` this replaced threw a TypeError into an
-  // unhandled rejection. The toast is now conditional on the write actually
-  // landing -- it used to fire even when there was no info to copy.
-  const copyInfo = async () => {
-    const json = infoJson()
-    if (json && await copyTextToClipboard(json))
-      showInfoToast('Worker info copied to clipboard')
-  }
-
   return (
     <DropdownMenu trigger={rowContextMenuTrigger()}>
-      <Show when={infoRows()}>
-        {rows => (
-          <button
-            role="menuitem"
-            class={styles.infoButton}
-            onClick={() => void copyInfo()}
-          >
-            <span class={styles.infoGrid}>
-              <For each={rows()}>
-                {row => (
-                  <>
-                    <span>{row.label}</span>
-                    <span>
-                      {row.kind === 'relative_time'
-                        ? (
-                            <>
-                              <RelativeTime timestamp={row.value} />
-                              {' ago'}
-                            </>
-                          )
-                        : row.value}
-                    </span>
-                  </>
-                )}
-              </For>
-            </span>
-          </button>
-        )}
-      </Show>
+      <MenuInfoButton
+        rows={infoRows()}
+        copyText={infoJson}
+        toastMessage="Worker info copied to clipboard"
+      />
       <Show when={isTunnelAvailable()}>
         <button role="menuitem" onClick={() => props.onAddTunnel()}>
           Add tunnel...

@@ -21,6 +21,7 @@ export interface SaveActionsSpies {
   saveToDownloadsImpl: Mock
   revealImpl: Mock
   warnToastImpl: Mock
+  infoToastImpl: Mock
   revealAfterDownloadImpl: Mock<() => boolean>
   isTauriAppImpl: Mock<() => boolean>
 }
@@ -73,6 +74,7 @@ export function fileDownloadMock(spies: SaveActionsSpies) {
 export function toastMock(spies: SaveActionsSpies) {
   return {
     showWarnToast: (...args: unknown[]) => spies.warnToastImpl(...args),
+    showInfoToast: (...args: unknown[]) => spies.infoToastImpl(...args),
   }
 }
 
@@ -98,6 +100,7 @@ export function resetSaveActionsSpies(spies: SaveActionsSpies): void {
   spies.saveToDownloadsImpl.mockResolvedValue('/home/alice/Downloads/file.ts')
   spies.revealImpl.mockReset()
   spies.warnToastImpl.mockReset()
+  spies.infoToastImpl.mockReset()
   spies.revealAfterDownloadImpl.mockReset()
   spies.revealAfterDownloadImpl.mockReturnValue(true)
   spies.isTauriAppImpl.mockReset()

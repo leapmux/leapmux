@@ -109,38 +109,6 @@ export function split(p: string, flavor?: PathFlavor): string[] {
   return p.split('/').filter(Boolean)
 }
 
-// Build cumulative breadcrumb segments. Each entry carries its displayable
-// `name` and the absolute `path` that navigating to it would refer to.
-export function pathSegments(
-  p: string,
-  flavor?: PathFlavor,
-): Array<{ name: string, path: string }> {
-  if (!p)
-    return []
-  const f = flavorOf(p, flavor)
-  const parts = split(p, f)
-  if (parts.length === 0)
-    return []
-  const s = sep(f)
-  const result: Array<{ name: string, path: string }> = []
-  if (f === 'win32') {
-    const [volume, ...rest] = parts
-    result.push({ name: `${volume}${s}`, path: `${volume}${s}` })
-    let acc = volume
-    for (const part of rest) {
-      acc = acc.endsWith(s) ? `${acc}${part}` : `${acc}${s}${part}`
-      result.push({ name: part, path: acc })
-    }
-    return result
-  }
-  let acc = ''
-  for (const part of parts) {
-    acc = `${acc}/${part}`
-    result.push({ name: part, path: acc })
-  }
-  return result
-}
-
 export function join(parts: string[], flavor?: PathFlavor): string {
   const filtered = parts.filter(p => p !== undefined && p !== null && p !== '')
   if (filtered.length === 0)

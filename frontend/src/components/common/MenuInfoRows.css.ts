@@ -1,5 +1,6 @@
 import { style } from '@vanilla-extract/css'
 
+/** For the `role="menuitem"` button that wraps a {@link MenuInfoRows} block. */
 export const infoButton = style({
   textAlign: 'left',
   lineHeight: '1.35',

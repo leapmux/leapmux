@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 
 import { expect } from '@playwright/test'
-import { EXACT_KEY_TTLS, KEY_BROWSER_PREFS } from '../../../src/lib/browserStorage'
+import { EXACT_KEY_TTLS, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT } from '../../../src/lib/browserStorage'
 
 /** Check if a locator is visible, returning false on timeout or error. */
 export async function isMaybeVisible(locator: Locator, timeout?: number): Promise<boolean> {
@@ -823,6 +823,60 @@ export async function chooseSettingsOption(page: Page, testId: string) {
  */
 export function treeRow(page: Page, name: string): Locator {
   return page.locator(`[data-testid="tree-row"]${VISIBLE}`).filter({ hasText: name }).first()
+}
+
+/**
+ * Every visible tree row's NAME, in display order — for asserting on the sort.
+ *
+ * A row's own text is not its name: the three-dot menu renders inside the row
+ * and stays mounted while closed, so the row carries its menu items' text too.
+ */
+export function treeRowNames(page: Page): Locator {
+  return page.locator(`[data-testid="tree-row"]${VISIBLE} [data-testid="tree-row-name"]`)
+}
+
+/**
+ * Wait until the chat editor's draft for `text` has actually reached
+ * localStorage.
+ *
+ * The draft is written on a debounce, so a reload issued before that timer
+ * fires drops it. Sleeping "the debounce plus a margin" is what made the draft
+ * specs flaky: the margin is sized against a real timer, and under a loaded
+ * machine the debounce itself lands late, so the sleep expires first and the
+ * reload races the write. Poll the state the reload depends on instead.
+ */
+export async function waitForEditorDraft(page: Page, text: string) {
+  await expect.poll(async () => page.evaluate(
+    ([prefix, needle]) => {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i)
+        // The stored value is the `{ v, e }` wrapper browserStorage writes, so
+        // the draft text sits inside its JSON.
+        if (key?.startsWith(prefix) && (localStorage.getItem(key) ?? '').includes(needle))
+          return true
+      }
+      return false
+    },
+    [PREFIX_EDITOR_DRAFT, text] as const,
+  ), `the editor draft "${text}" must be persisted before the reload`).toBe(true)
+}
+
+/**
+ * Rename a tab through its double-click inline editor and wait for the label
+ * to settle.
+ *
+ * A rename is the only thing that writes a terminal's persisted title: the
+ * worker gives every terminal the name `Terminal <Name>` at creation, and a PTY-driven
+ * OSC title is a live overlay that is deliberately never persisted (see the
+ * SignalTitle case in the worker's terminal.go).
+ */
+export async function renameTabViaUI(page: Page, tab: Locator, newTitle: string) {
+  await tab.dblclick()
+  const input = page.locator(`[data-testid="tab-rename-input"]${VISIBLE}`)
+  await expect(input).toBeVisible()
+  await input.fill(newTitle)
+  await input.press('Enter')
+  await expect(tab).toContainText(newTitle)
 }
 
 /**

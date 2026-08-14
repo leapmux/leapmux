@@ -82,6 +82,31 @@ message GitFileStatusEntry {
   int32 staged_lines_added = 6;                 // Staged lines added
   int32 staged_lines_deleted = 7;               // Staged lines deleted
   string old_path = 8;                          // Previous path (for renames/copies)
+
+  // On-disk size and modification time, so the sidebar can sort the flat
+  // changed-file list the same way it sorts the tree.
+  //
+  // Both are OPTIONAL rather than defaulted, and the distinction is
+  // load-bearing: the worker leaves them unset for an entry it cannot stat
+  // (a deleted file, a collapsed untracked directory such as "build/"). A
+  // defaulted 0 / "" would be indistinguishable from an empty file and from
+  // the epoch, and would sort FIRST under an ascending order -- the opposite
+  // of where an unknown value belongs.
+  // mod_time is RFC3339 UTC with all nine nanosecond digits, so the width is
+  // fixed and a consumer can order these strings without parsing them.
+  optional int64 size = 9;                      // Bytes; unset when not stat-able
+  optional string mod_time = 10;                // Fixed-width RFC3339 UTC; unset when not stat-able
+
+  // True when the path resolves to a DIRECTORY on disk: a submodule, or git's
+  // collapsed whole-untracked-directory form ("build/").
+  //
+  // Distinct from that trailing-slash convention, which is narrower -- it means
+  // "a wholly untracked subtree", and a tracked submodule is not one. The
+  // worker already learns this from the stat above and would otherwise discard
+  // it, leaving a submodule looking like a file that could not be stat-ed: it
+  // sorted last under size and modified, and opening its row asked the worker
+  // to read a directory as a file.
+  bool is_dir = 11;
 }
 
 // Why a hydration request did or did not return a record for one tab.
