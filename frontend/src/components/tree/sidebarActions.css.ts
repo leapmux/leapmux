@@ -83,3 +83,39 @@ globalStyle(`:hover > ${sidebarActions}`, {
 globalStyle(`:hover > ${sidebarActions} ${menuTrigger}`, {
   opacity: 1,
 })
+
+/**
+ * The kebab on a COARSE pointer, where the hover rule above can never fire.
+ *
+ * Without this, a touch user's only way into a row menu is the long press, and
+ * nothing on screen says so. Revealing every row's kebab would say it, at the cost
+ * of one button per row -- clutter in a phone-width sidebar, and a 20px target
+ * besides.
+ *
+ * So the SELECTED row only. Exactly one kebab is visible at a time, on the row the
+ * user just tapped and the one they are most likely to act on. It teaches the
+ * gesture by example without ever crowding the list.
+ *
+ * Every row that HAS a selection states it with the one `data-active` marker:
+ * the workspace row, the tab leaf, the file-tree node and the file-tree root. A
+ * worker, tunnel or branch-group row has no such state -- selecting one means
+ * nothing -- so those keep the gesture alone.
+ */
+globalStyle(`[data-active="true"] > ${sidebarActions} ${menuTrigger}`, {
+  '@media': {
+    '(pointer: coarse)': {
+      opacity: 1,
+    },
+  },
+})
+
+// The resting indicator and the trigger are exact inverses wherever they share a
+// cell, so the coarse-pointer reveal has to hide the indicator too -- otherwise
+// the indicator would paint underneath the revealed kebab.
+globalStyle(`[data-active="true"] > ${sidebarActions} ${actionSlotResting}`, {
+  '@media': {
+    '(pointer: coarse)': {
+      opacity: 0,
+    },
+  },
+})

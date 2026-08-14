@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { TabPopAction } from '~/components/common/TabContextMenu'
 import type { SplitOrientation, TileCloseMode } from '~/stores/layout.store'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import LayoutGrid from 'lucide-solid/icons/layout-grid'
@@ -60,11 +61,15 @@ export const SPLIT_ACTIONS: readonly SplitActionDef[] = [
  * (`createTileRenderer`) picks `label`/`testId` to match the direction;
  * absent when the tile cannot pop in either direction (workspace
  * archived, no active tab, etc.).
+ *
+ * Extends `TabPopAction` -- the shape each tab's own context menu reads -- so
+ * the two surfaces share one declared affordance instead of passing by
+ * structural coincidence. The shell layer may depend on common; common must not
+ * depend on the shell.
  */
-export interface TilePopAction {
-  label: string
+export interface TilePopAction extends TabPopAction {
+  /** The tile-level menu's trigger carries a test id; a tab's own menu derives its own. */
   testId: string
-  onClick: () => void
 }
 
 interface TileActionsMenuProps {

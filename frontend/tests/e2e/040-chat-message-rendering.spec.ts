@@ -166,4 +166,53 @@ test.describe('Chat Message Rendering', () => {
     // A rounded corner flush against the edge would read as a mistake.
     expect(box.radius).toBe('0px')
   })
+
+  /**
+   * The chat list is the one surface where the row menu has to share the press
+   * with text selection, and the one whose rows are tall enough that anchoring to
+   * the row instead of the cursor would be obviously wrong.
+   */
+  test('right-click on a message opens its menu at the cursor, and leaves a selection to the browser', async ({ page, authenticatedWorkspace }) => {
+    await sendAndSettle(page)
+
+    const bubble = firstAssistantBubble(page)
+    await expect(bubble).toBeVisible()
+
+    const box = (await bubble.boundingBox())!
+    const x = box.x + box.width / 2
+    const y = box.y + Math.min(20, box.height / 2)
+
+    await page.mouse.click(x, y, { button: 'right' })
+
+    const menu = page.locator('[data-testid="message-context-menu"]:popover-open')
+    await expect(menu).toBeVisible()
+    // The same actions the hover toolbar carries, plus the send time.
+    await expect(menu.locator('[data-testid="message-menu-copy-json"]')).toBeVisible()
+    await expect(menu.locator('[data-testid="message-menu-info"]')).toBeVisible()
+
+    // At the cursor. A message row is tall, so anchoring to the row would put the
+    // menu far from the pointer.
+    const menuBox = (await menu.boundingBox())!
+    expect(Math.abs(menuBox.x - x)).toBeLessThan(4)
+    expect(Math.abs(menuBox.y - y)).toBeLessThan(4)
+
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+
+    // With text selected under the cursor, the browser's own menu wins so Copy
+    // still works. The app suppresses neither the selection nor the native menu.
+    await bubble.evaluate((el) => {
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      const selection = window.getSelection()!
+      selection.removeAllRanges()
+      selection.addRange(range)
+    })
+    const selectionBox = await bubble.evaluate(() => {
+      const rect = window.getSelection()!.getRangeAt(0).getClientRects()[0]
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+    })
+    await page.mouse.click(selectionBox.x, selectionBox.y, { button: 'right' })
+    await expect(menu).toBeHidden()
+  })
 })

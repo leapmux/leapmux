@@ -1,5 +1,20 @@
-import { style } from '@vanilla-extract/css'
+import { globalStyle, style } from '@vanilla-extract/css'
 import { POPOVER_CARD_PADDING } from '~/styles/popoverTokens'
+
+/**
+ * A dropdown host with no trigger produces no box.
+ *
+ * `ot-dropdown` is an unknown element to the UA, so it defaults to
+ * `display: inline`. A trigger-less `DropdownMenu` -- one opened only by
+ * right-click or long press -- holds nothing but its `position: fixed` popover, so
+ * that inline box is empty. Inside a flex row it is still a flex ITEM, and it adds
+ * one `gap` of dead space to every row that mounts such a menu.
+ *
+ * `DropdownMenu` sets the attribute; see `data-headless` there.
+ */
+globalStyle('ot-dropdown[data-headless]', {
+  display: 'contents',
+})
 
 /**
  * The base class a `popover="auto"` element needs when it is positioned by JS (an

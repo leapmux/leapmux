@@ -1,22 +1,12 @@
 /// <reference types="vitest/globals" />
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { popoverCard } from '~/styles/popover.css'
 import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from './DropdownMenu'
 
-// jsdom does not implement the native Popover API.
-// Stub the methods so the component can render without errors.
-beforeAll(() => {
-  if (!HTMLElement.prototype.showPopover) {
-    HTMLElement.prototype.showPopover = vi.fn()
-  }
-  if (!HTMLElement.prototype.hidePopover) {
-    HTMLElement.prototype.hidePopover = vi.fn()
-  }
-  if (!HTMLElement.prototype.togglePopover) {
-    HTMLElement.prototype.togglePopover = vi.fn()
-  }
-})
+// The jsdom popover stubs (showPopover/hidePopover/togglePopover plus the
+// `:popover-open` matches interceptor) come from vitest.setup.ts, which runs
+// before every test file.
 
 describe('dropdownMenu', () => {
   it('renders trailing shortcut text in menu item content', () => {
@@ -425,6 +415,182 @@ describe('dropdownMenu content-click dismiss', () => {
     await fireEvent.click(screen.getByTestId('content-menu-trigger'))
     await fireEvent.click(screen.getByTestId('content-menu-item'))
     expect(hide).toHaveBeenCalled()
+  })
+})
+
+describe('dropdownMenu contextMenuFor', () => {
+  /**
+   * Render a row plus a menu whose `contextMenuFor` points at it. The row gets a
+   * stubbed rect because jsdom does no layout and the press anchor is built from
+   * the row's vertical band.
+   */
+  function renderRowMenu() {
+    let rowEl!: HTMLDivElement
+
+    render(() => (
+      <>
+        <div ref={rowEl} data-testid="row" onClick={() => {}}>row</div>
+        <DropdownMenu
+          id="row-menu"
+          data-testid="row-menu-popover"
+          contextMenuFor={() => rowEl}
+          trigger={triggerProps => <button data-testid="row-kebab" {...triggerProps}>Open</button>}
+        >
+          <button role="menuitem" data-testid="row-menu-item">Rename</button>
+        </DropdownMenu>
+      </>
+    ))
+
+    const row = screen.getByTestId('row')
+    row.getBoundingClientRect = () => ({
+      top: 100,
+      bottom: 122,
+      left: 40,
+      right: 240,
+      width: 200,
+      height: 22,
+      x: 40,
+      y: 100,
+      toJSON: () => ({}),
+    })
+
+    const popover = screen.getByTestId('row-menu-popover')
+    popover.getBoundingClientRect = () => ({
+      top: 0,
+      bottom: 150,
+      left: 0,
+      right: 200,
+      width: 200,
+      height: 150,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
+
+    return { row, popover }
+  }
+
+  it('opens the menu on right-click', async () => {
+    vi.useFakeTimers()
+    try {
+      const { row, popover } = renderRowMenu()
+      const show = vi.spyOn(popover, 'showPopover')
+
+      row.dispatchEvent(new MouseEvent('contextmenu', { clientX: 150, bubbles: true, cancelable: true }))
+      vi.runAllTimers()
+
+      expect(show).toHaveBeenCalled()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('anchors the menu at the cursor, not at the row', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('innerHeight', 800)
+    vi.stubGlobal('innerWidth', 1200)
+    try {
+      const { row, popover } = renderRowMenu()
+
+      row.dispatchEvent(new MouseEvent('contextmenu', { clientX: 150, clientY: 108, bubbles: true, cancelable: true }))
+      vi.runAllTimers()
+
+      expect(popover.style.left).toBe('150px') // the click x, not the row's left edge
+      expect(popover.style.top).toBe('108px') // the click y, not the row's bottom
+    }
+    finally {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
+
+  it('suppresses the native menu on the row', () => {
+    const { row } = renderRowMenu()
+
+    const e = new MouseEvent('contextmenu', { clientX: 150, bubbles: true, cancelable: true })
+    row.dispatchEvent(e)
+
+    expect(e.defaultPrevented).toBe(true)
+  })
+
+  it('hides a press-anchored menu when anything else scrolls', () => {
+    vi.useFakeTimers()
+    try {
+      const { row, popover } = renderRowMenu()
+      const hide = vi.spyOn(popover, 'hidePopover')
+
+      row.dispatchEvent(new MouseEvent('contextmenu', { clientX: 150, bubbles: true, cancelable: true }))
+      vi.runAllTimers()
+      expect(popover.matches(':popover-open')).toBe(true)
+
+      // A press anchor is a frozen point, not an element to follow: the row it
+      // pointed at has scrolled away, so the menu closes instead of floating
+      // over whatever took its place. Element-anchored menus keep repositioning.
+      document.dispatchEvent(new Event('scroll'))
+
+      expect(hide).toHaveBeenCalled()
+      expect(popover.matches(':popover-open')).toBe(false)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('attaches nothing when the accessor has no element yet', () => {
+    // A row whose ref has not resolved must not throw or bind to anything.
+    expect(() =>
+      render(() => (
+        <DropdownMenu id="empty-menu" contextMenuFor={() => undefined}>
+          <button role="menuitem">Item</button>
+        </DropdownMenu>
+      )),
+    ).not.toThrow()
+  })
+
+  /**
+   * A trigger-less dropdown holds nothing but its `position: fixed` popover, and
+   * `ot-dropdown` defaults to `display: inline`. Inside a flex row that empty
+   * inline box is still a flex ITEM, adding one `gap` of dead space to every row
+   * that mounts such a menu -- which is every tab row. The attribute is what the
+   * `display: contents` rule in ~/styles/popover.css.ts keys on.
+   */
+  it('marks a trigger-less host headless so it takes no room in the row', () => {
+    const { container } = render(() => (
+      <DropdownMenu id="headless-menu" contextMenuFor={() => undefined}>
+        <button role="menuitem">Item</button>
+      </DropdownMenu>
+    ))
+
+    expect(container.querySelector('ot-dropdown')).toHaveAttribute('data-headless')
+  })
+
+  it('leaves a host with a trigger laid out as usual', () => {
+    const { container } = render(() => (
+      <DropdownMenu id="triggered-menu" trigger={<button>Open</button>}>
+        <button role="menuitem">Item</button>
+      </DropdownMenu>
+    ))
+
+    expect(container.querySelector('ot-dropdown')).not.toHaveAttribute('data-headless')
+  })
+
+  it('detaches on unmount', () => {
+    vi.useFakeTimers()
+    try {
+      const { row, popover } = renderRowMenu()
+      const show = vi.spyOn(popover, 'showPopover')
+
+      cleanup()
+
+      row.dispatchEvent(new MouseEvent('contextmenu', { clientX: 150, bubbles: true, cancelable: true }))
+      vi.runAllTimers()
+
+      expect(show).not.toHaveBeenCalled()
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 })
 

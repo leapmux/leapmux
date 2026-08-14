@@ -1,41 +1,32 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
+import type { ToolHeaderActionsCallerProps } from './messageActions'
 import type { RenderContext } from './messageRenderers'
 import type { CommandResultSource } from './results/commandResult'
 import type { FileEditDiffSource } from './results/fileEditDiff'
 import type { TokenGate } from './useAsyncCodeTokens'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { CachedToken } from '~/lib/tokenCache'
-import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
-import Columns2 from 'lucide-solid/icons/columns-2'
-import Copy from 'lucide-solid/icons/copy'
-import FoldVertical from 'lucide-solid/icons/fold-vertical'
 import ListTodo from 'lucide-solid/icons/list-todo'
-import Quote from 'lucide-solid/icons/quote'
-import Rows2 from 'lucide-solid/icons/rows-2'
-import UnfoldVertical from 'lucide-solid/icons/unfold-vertical'
 import { createMemo, For, Show } from 'solid-js'
 import { Alert } from '~/components/common/Alert'
 import { Icon } from '~/components/common/Icon'
-import { IconButton } from '~/components/common/IconButton'
 import { Tooltip } from '~/components/common/Tooltip'
 import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
 import { inlineFlex } from '~/styles/shared.css'
 import { getToolResultExpanded, shouldPauseSyntaxHighlighting } from './messageRenderers'
-import { RelativeTime } from './RelativeTime'
 import { canHighlightBySize, COLLAPSED_RESULT_ROWS } from './results/collapse'
 import { CollapsibleContent } from './results/CollapsibleContent'
 import { CommandResultBody } from './results/commandResult'
 import { FileEditDiffBody, fileEditHasDiff } from './results/fileEditDiff'
 import { parseReadContent, ReadResultView } from './results/ReadResultView'
 import { useCollapsedLines } from './results/useCollapsedLines'
+import { ToolHeaderActions } from './ToolHeaderActions'
 import {
   toolBodyBorder,
   toolBodyContent,
-  toolHeaderActions,
-  toolHeaderTimestamp,
   toolInputText,
   toolMessage,
   toolResultCollapsed,
@@ -159,176 +150,6 @@ export function ToolUseLayout(props: {
             {props.children}
           </Show>
         </div>
-      </Show>
-    </div>
-  )
-}
-
-/**
- * Caller-controlled buttons forwarded into `ToolHeaderActions`. These are
- * the subset of actions whose source is the *renderer* (e.g. an Edit tool's
- * "Copy diff", a markdown tool's "Copy markdown", a reply quote callback).
- *
- * `ToolUseLayout` re-exposes this bag verbatim as `headerActions=`.
- */
-export interface ToolHeaderActionsCallerProps {
-  onCopyContent?: () => void
-  contentCopied?: boolean
-  copyContentLabel?: string
-  onReply?: () => void
-  onCopyMarkdown?: () => void
-  markdownCopied?: boolean
-}
-
-/**
- * Layout-controlled state forwarded into `ToolHeaderActions`. These come
- * from the wrapping layout/bubble (timestamp, expand state, JSON copy,
- * diff-view toggle), not the per-renderer caller.
- */
-export interface ToolHeaderActionsLayoutProps {
-  createdAt?: string
-  expanded?: boolean
-  onToggleExpand?: () => void
-  expandLabel?: string
-  onCopyJson?: () => void
-  jsonCopied?: boolean
-  hasDiff?: boolean
-  diffView?: DiffViewPreference
-  onToggleDiffView?: () => void
-  /**
-   * The row mirrors its toolbar beside a right-aligned bubble (a user message --
-   * see isMirroredMessageRow). Such a row reverses the button order so Quote
-   * still lands nearest the bubble; every other row leads with the timestamp.
-   */
-  mirrored?: boolean
-}
-
-/**
- * Actions area for a message row or a tool header: timestamp, the copies, Quote,
- * then the diff and expand toggles -- all with tooltips.
- */
-export function ToolHeaderActions(props: {
-  caller?: ToolHeaderActionsCallerProps
-  layout?: ToolHeaderActionsLayoutProps
-}): JSX.Element {
-  const caller = () => props.caller
-  const layout = () => props.layout
-
-  const replyButton = (
-    <Show when={caller()?.onReply}>
-      <IconButton
-        icon={Quote}
-        size="sm"
-        data-testid="message-quote"
-        onClick={() => caller()?.onReply?.()}
-        title="Quote"
-      />
-    </Show>
-  )
-  const timestampEl = (
-    <Show when={layout()?.createdAt}>
-      <RelativeTime
-        timestamp={layout()!.createdAt!}
-        class={toolHeaderTimestamp}
-      />
-    </Show>
-  )
-  const copyJsonButton = (
-    <Show when={layout()?.onCopyJson}>
-      <IconButton
-        icon={layout()?.jsonCopied ? Check : Braces}
-        size="sm"
-        data-testid="message-copy-json"
-        onClick={() => layout()?.onCopyJson?.()}
-        title={layout()?.jsonCopied ? 'Copied' : 'Copy Raw JSON'}
-      />
-    </Show>
-  )
-  const copyMarkdownButton = (
-    <Show when={caller()?.onCopyMarkdown}>
-      <IconButton
-        icon={caller()?.markdownCopied ? Check : Copy}
-        size="sm"
-        data-testid="message-copy-markdown"
-        onClick={() => caller()?.onCopyMarkdown?.()}
-        title={caller()?.markdownCopied ? 'Copied' : 'Copy Markdown'}
-      />
-    </Show>
-  )
-  const copyContentButton = (
-    <Show when={caller()?.onCopyContent}>
-      <IconButton
-        icon={caller()?.contentCopied ? Check : Copy}
-        size="sm"
-        onClick={() => caller()?.onCopyContent?.()}
-        title={caller()?.contentCopied ? 'Copied' : (caller()?.copyContentLabel || 'Copy')}
-      />
-    </Show>
-  )
-
-  return (
-    <div class={toolHeaderActions} data-testid="message-toolbar">
-      {/*
-        One order, READ LEFT TO RIGHT ON SCREEN, for every row: timestamp, then
-        the copies from broadest (the whole envelope) to narrowest (the rendered
-        content), then Quote. A tool header and a message row used to disagree
-        here, which put the same two buttons in different places depending on the
-        row above.
-
-        A MIRRORED row (a right-aligned user message) moves Quote only, from last
-        to second, so it still lands nearest the bubble on its right. Everything
-        else keeps its place: timestamp, Quote, JSON, Markdown, Content.
-
-        Its source order looks scrambled because it is NOT the render order. That
-        toolbar is a two-column `direction: rtl` grid (see `messageRowEnd >
-        toolHeaderActions` in ~/components/chat/messageStyles.css.ts), so the
-        FIRST item of each pair lands in the RIGHT cell:
-
-          source [Quote, timestamp]  renders  timestamp  Quote
-          source [Markdown, JSON]    renders  JSON       Markdown
-          source [Content]           renders             Content
-
-        Reading those rows left to right gives the one order above. The two arms
-        must therefore stay pairwise-swapped against each other; writing them the
-        "same" way is what would break them apart.
-      */}
-      {layout()?.mirrored
-        ? (
-            <>
-              {replyButton}
-              {timestampEl}
-              {copyMarkdownButton}
-              {copyJsonButton}
-              {copyContentButton}
-            </>
-          )
-        : (
-            <>
-              {timestampEl}
-              {copyJsonButton}
-              {copyMarkdownButton}
-              {copyContentButton}
-              {replyButton}
-            </>
-          )}
-      <Show when={layout()?.hasDiff && layout()?.onToggleDiffView}>
-        <IconButton
-          icon={layout()?.diffView === 'unified' ? Columns2 : Rows2}
-          size="sm"
-          onClick={() => layout()!.onToggleDiffView!()}
-          title={layout()?.diffView === 'unified' ? 'Switch to split view' : 'Switch to unified view'}
-        />
-      </Show>
-      <Show when={layout()?.onToggleExpand}>
-        <IconButton
-          icon={layout()?.expanded ? FoldVertical : UnfoldVertical}
-          size="sm"
-          onClick={(e: MouseEvent) => {
-            e.stopPropagation()
-            layout()!.onToggleExpand!()
-          }}
-          title={layout()?.expanded ? 'Collapse' : (layout()?.expandLabel || 'Expand')}
-        />
       </Show>
     </div>
   )

@@ -10,16 +10,34 @@ export interface PopoverPositionOptions {
 }
 
 /**
+ * A viewport rect that a popover points at, for an anchor that is not an
+ * element -- a right-click or a touch long press, which anchors to the pressed
+ * row's vertical band at the pointer's x.
+ *
+ * `DOMRect` satisfies this shape structurally, so an element anchor and a
+ * pointer anchor run the same flip and clamp arithmetic below. Only these three
+ * edges are read: the popover goes below `bottom` (flipping above `top` when
+ * clipped), left-aligned to `left`.
+ */
+export interface PopoverAnchorRect {
+  top: number
+  bottom: number
+  left: number
+}
+
+export type PopoverAnchor = Element | PopoverAnchorRect
+
+/**
  * Calculate the top/left for a fixed-position popover so it doesn't
  * overflow the bottom of the viewport.
  */
 export function calcPopoverPosition(
-  trigger: Element,
+  anchor: PopoverAnchor,
   popover: HTMLElement,
   options: PopoverPositionOptions = {},
 ): { top: number, left: number, flipped: boolean } {
   const { placement = 'auto', offset = 0, xOffset = 0, yOffset = 0 } = options
-  const triggerRect = trigger.getBoundingClientRect()
+  const triggerRect = 'getBoundingClientRect' in anchor ? anchor.getBoundingClientRect() : anchor
   const popoverRect = popover.getBoundingClientRect()
   const viewportHeight = window.innerHeight
 
@@ -88,20 +106,4 @@ export function calcPopoverPosition(
   }
 
   return { top, left, flipped }
-}
-
-/**
- * Position a popover directly above a trigger element.
- * Convenience wrapper for imperative use (e.g. the link popover).
- */
-export function positionPopoverAbove(
-  trigger: Element,
-  popover: HTMLElement,
-  offset = 4,
-): void {
-  const triggerRect = trigger.getBoundingClientRect()
-  const popoverRect = popover.getBoundingClientRect()
-  popover.style.top = `${triggerRect.top - popoverRect.height - offset}px`
-  popover.style.left = `${triggerRect.left}px`
-  popover.setAttribute('data-flipped', '')
 }

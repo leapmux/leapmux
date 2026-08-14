@@ -1,5 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { attachContextMenuGesture } from '~/components/common/contextMenuGesture'
+import { motion } from '~/styles/tokens'
 import { Tooltip } from './Tooltip'
 
 describe('tooltip', () => {
@@ -297,6 +299,40 @@ describe('tooltip', () => {
       tap(screen.getByRole('button', { name: 'Trigger' }))
 
       expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+    })
+
+    it('does not present on the release of a long press whose menu is opening', () => {
+      // The gesture must let that release propagate (the drag sensor and the
+      // chat scroller consume it), so it flags it and the tooltip stands down:
+      // a `popover="manual"` tooltip entering the top layer a frame after the
+      // menu would stack above it.
+      const row = document.createElement('div')
+      document.body.appendChild(row)
+      const detach = attachContextMenuGesture(row, { onOpen: () => {} })
+      try {
+        row.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', pointerId: 1, isPrimary: true, bubbles: true, cancelable: true }))
+        vi.advanceTimersByTime(motion.longPress)
+        row.dispatchEvent(new PointerEvent('pointerup', { pointerType: 'touch', pointerId: 1, bubbles: true, cancelable: true }))
+
+        render(() => (
+          <Tooltip text="Tooltip text">
+            <button type="button">Trigger</button>
+          </Tooltip>
+        ))
+
+        const button = screen.getByRole('button', { name: 'Trigger' })
+        fireEvent(button, new PointerEvent('pointerup', { pointerType: 'touch', bubbles: true }))
+        expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+
+        // The menu's open task clears the flag; a tap after it presents as usual.
+        vi.runAllTimers()
+        tap(button)
+        expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
+      }
+      finally {
+        detach()
+        row.remove()
+      }
     })
 
     it('leaves a mouse click dismissing the tooltip', () => {

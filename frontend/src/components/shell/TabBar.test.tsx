@@ -27,45 +27,52 @@ vi.mock('~/components/shell/TabDragContext', () => ({
 }))
 
 // Mock DropdownMenu to render children directly (jsdom lacks popover API)
-vi.mock('~/components/common/DropdownMenu', () => ({
-  DropdownMenu(props: any) {
-    const trigger = () => typeof props.trigger === 'function'
-      ? props.trigger({
-          'aria-expanded': false,
-          'ref': () => {},
-          'onPointerDown': () => {},
-          'onClick': () => {},
-        })
-      : props.trigger
-    return (
-      <>
-        {trigger()}
-        {props.children}
-      </>
-    )
-  },
-  DropdownMenuItemContent(props: any) {
-    return (
-      <span>
-        <span>{props.label}</span>
-        {props.shortcut ? <span>{props.shortcut}</span> : null}
-      </span>
-    )
-  },
-  DropdownMenuCheckableItem(props: any) {
-    return (
-      <button
-        role={props.kind === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio'}
-        aria-checked={props.checked}
-        disabled={props.disabled}
-        onClick={() => props.onSelect()}
-      >
-        <input type={props.kind} checked={props.checked} disabled />
-        <span>{props.label}</span>
-      </button>
-    )
-  },
-}))
+vi.mock('~/components/common/DropdownMenu', async () => {
+  const { createSignal } = await import('solid-js')
+  return {
+    createContextMenuAnchor: () => {
+      const [anchor, setAnchor] = createSignal<HTMLElement>()
+      return [anchor, setAnchor]
+    },
+    DropdownMenu(props: any) {
+      const trigger = () => typeof props.trigger === 'function'
+        ? props.trigger({
+            'aria-expanded': false,
+            'ref': () => {},
+            'onPointerDown': () => {},
+            'onClick': () => {},
+          })
+        : props.trigger
+      return (
+        <>
+          {trigger()}
+          {props.children}
+        </>
+      )
+    },
+    DropdownMenuItemContent(props: any) {
+      return (
+        <span>
+          <span>{props.label}</span>
+          {props.shortcut ? <span>{props.shortcut}</span> : null}
+        </span>
+      )
+    },
+    DropdownMenuCheckableItem(props: any) {
+      return (
+        <button
+          role={props.kind === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio'}
+          aria-checked={props.checked}
+          disabled={props.disabled}
+          onClick={() => props.onSelect()}
+        >
+          <input type={props.kind} checked={props.checked} disabled />
+          <span>{props.label}</span>
+        </button>
+      )
+    },
+  }
+})
 
 // Mock TabBar.css to provide minimal class names
 vi.mock('~/components/shell/TabBar.css', () => ({

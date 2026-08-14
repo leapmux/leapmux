@@ -577,6 +577,22 @@ describe('workspaceTabTree interactions', () => {
     } as Tab
   }
 
+  /**
+   * The branch rows' own menus. Scoped to the branch-group element rather than
+   * counted document-wide: every tab leaf now mounts its own `TabContextMenu`
+   * popover too, so a document-wide count no longer answers "did the BRANCH row
+   * get a menu". The leaf menus live in the sibling children wrapper, outside this
+   * element.
+   */
+  function branchRowMenus(): NodeListOf<Element> {
+    return document.querySelectorAll('[data-testid="tab-tree-branch-group"] menu[popover]')
+  }
+
+  /** Every tab leaf's own context menu. */
+  function leafRowMenus(): NodeListOf<Element> {
+    return document.querySelectorAll('[data-testid="tab-tree-leaf"] menu[popover]')
+  }
+
   it('mounts one BranchContextMenu per branch row', () => {
     // Each branch row owns its own DropdownMenu, so N rows = N menu
     // instances. The trade-off vs. the prior hoisted-singleton design:
@@ -602,7 +618,7 @@ describe('workspaceTabTree interactions', () => {
     expect(screen.getAllByTestId('tab-tree-branch-group')).toHaveLength(4)
     expect(screen.getAllByText('Change branch...')).toHaveLength(4)
     expect(screen.getAllByText('Delete branch...')).toHaveLength(4)
-    expect(document.querySelectorAll('menu[popover]')).toHaveLength(4)
+    expect(branchRowMenus()).toHaveLength(4)
   })
 
   it('does not mount a row menu when neither callback is supplied', () => {
@@ -617,7 +633,7 @@ describe('workspaceTabTree interactions', () => {
         workspaceId="ws-1"
       />
     ))
-    expect(document.querySelectorAll('menu[popover]')).toHaveLength(0)
+    expect(branchRowMenus()).toHaveLength(0)
     expect(screen.queryByText('Change branch...')).toBeNull()
   })
 
@@ -651,7 +667,7 @@ describe('workspaceTabTree interactions', () => {
       />
     ))
     expect(screen.getAllByTestId('tab-tree-branch-group')).toHaveLength(1)
-    expect(document.querySelectorAll('menu[popover]')).toHaveLength(0)
+    expect(branchRowMenus()).toHaveLength(0)
     expect(screen.queryByText('Change branch...')).toBeNull()
     expect(screen.queryByText('Delete branch...')).toBeNull()
   })
@@ -668,7 +684,59 @@ describe('workspaceTabTree interactions', () => {
         onDeleteBranch={vi.fn()}
       />
     ))
-    expect(document.querySelectorAll('menu[popover]')).toHaveLength(0)
+    expect(branchRowMenus()).toHaveLength(0)
+    // Nor a leaf menu: a read-only tree can neither rename nor close a tab, and
+    // `TabContextMenu` renders nothing rather than an empty popover.
+    expect(leafRowMenus()).toHaveLength(0)
+  })
+
+  it('offers no Rename on a FILE leaf, whose title IS its path', () => {
+    // The same guard `startEditing` applies, surfaced so the menu hides an item
+    // that would do nothing rather than showing a dead one.
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[makeTab(TabType.FILE, 'f1', 'readme.md')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        tabItemOps={{ onClose: vi.fn(), onRename: vi.fn() }}
+      />
+    ))
+
+    expect(screen.queryByTestId('tab-menu-rename')).not.toBeInTheDocument()
+    // Close still stands: a file tab closes like any other.
+    expect(screen.getByTestId('tab-menu-close')).toBeInTheDocument()
+  })
+
+  it('offers no Rename when the tree has no rename handler', () => {
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[makeTab(TabType.AGENT, 'a1', 'Agent')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        tabItemOps={{ onClose: vi.fn() }}
+      />
+    ))
+
+    expect(screen.queryByTestId('tab-menu-rename')).not.toBeInTheDocument()
+    expect(screen.getByTestId('tab-menu-close')).toBeInTheDocument()
+  })
+
+  it('mounts a context menu on each tab leaf', () => {
+    render(() => (
+      <WorkspaceTabTree
+        tabs={[gitTabOnBranch('a1', 'feature-1'), gitTabOnBranch('a2', 'feature-1')]}
+        activeTabKey={null}
+        onTabClick={() => {}}
+        workspaceId="ws-1"
+        tabItemOps={{ onClose: vi.fn(), onRename: vi.fn() }}
+      />
+    ))
+    expect(screen.getAllByTestId('tab-tree-leaf')).toHaveLength(2)
+    expect(leafRowMenus()).toHaveLength(2)
+    expect(screen.getAllByTestId('tab-menu-rename')).toHaveLength(2)
+    expect(screen.getAllByTestId('tab-menu-close')).toHaveLength(2)
   })
 
   it('dispatches with each row’s own identity (closure capture, not shared state)', async () => {

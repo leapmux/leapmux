@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { ContextMenuTargetProps } from '~/components/common/DropdownMenu'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import { For, Show } from 'solid-js'
@@ -8,7 +9,7 @@ import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger
 import { isMoveTargetSection } from '~/components/shell/sectionUtils'
 import { dangerMenuItem } from '~/styles/shared.css'
 
-interface WorkspaceContextMenuProps {
+interface WorkspaceContextMenuProps extends ContextMenuTargetProps {
   isArchived: boolean
   sections: Section[]
   currentSectionId: string | undefined
@@ -21,7 +22,7 @@ interface WorkspaceContextMenuProps {
 
 export const WorkspaceContextMenu: Component<WorkspaceContextMenuProps> = (props) => {
   return (
-    <DropdownMenu trigger={rowContextMenuTrigger()}>
+    <DropdownMenu trigger={rowContextMenuTrigger()} contextMenuFor={props.contextMenuFor}>
       <button role="menuitem" onClick={() => props.onRename()}>
         Rename
       </button>

@@ -22,10 +22,36 @@ export function stubBoundingRect(el: HTMLElement, width: number, height: number)
   })
 }
 
-interface PointerOpts {
+export interface PointerOpts {
   x?: number
   y?: number
   pointerId?: number
+  /** Defaults to `mouse`. The gesture and sensor tests pass `touch` explicitly. */
+  pointerType?: string
+  /** Defaults to true; a secondary finger reports false. */
+  isPrimary?: boolean
+  /** The button that changed: 0 contact/left, 2 secondary. */
+  button?: number
+  /** Buttons held AFTER the event, as `PointerEvent.buttons` reports them. */
+  buttons?: number
+}
+
+/**
+ * Build a real PointerEvent. The one definition every pointer-driven test uses;
+ * a local factory in a test file drifts from the defaults the hooks rely on.
+ */
+export function pointerEvent(type: string, opts: PointerOpts = {}): PointerEvent {
+  return new PointerEvent(type, {
+    clientX: opts.x ?? 0,
+    clientY: opts.y ?? 0,
+    pointerId: opts.pointerId ?? 1,
+    pointerType: opts.pointerType ?? 'mouse',
+    isPrimary: opts.isPrimary ?? true,
+    button: opts.button ?? 0,
+    buttons: opts.buttons,
+    bubbles: true,
+    cancelable: true,
+  })
 }
 
 function makePointerEvent(type: string, opts: PointerOpts = {}, init: PointerEventInit = {}): PointerEvent {

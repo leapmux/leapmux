@@ -1,10 +1,11 @@
 import type { JSX } from 'solid-js'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
-import { closestCenter, DragDropProvider, DragDropSensors, DragOverlay } from '@thisbeyond/solid-dnd'
+import { closestCenter, DragDropProvider, DragOverlay } from '@thisbeyond/solid-dnd'
 import { createSignal, useContext } from 'solid-js'
 import { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import { createStableContext } from '~/lib/createStableContext'
 import { mid } from '~/lib/lexorank'
+import { DragPointerSensor } from './dragPointerSensor'
 import { dragOverlayAboveFloating } from './FloatingWindowContainer.css'
 import {
   computeInsertPosition,
@@ -415,7 +416,7 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
         onDragEnd={handleDragEnd}
         collisionDetector={collisionDetector as any}
       >
-        <DragDropSensors />
+        <DragPointerSensor />
         {props.children}
         <DragOverlay class={dragOverlayAboveFloating}>
           {(draggable: any) => {

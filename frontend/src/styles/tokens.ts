@@ -19,11 +19,19 @@ export const headerHeight = `${headerHeightPx}px`
 // tests) and `${motion.X}ms` in vanilla-extract CSS template strings,
 // so the JS timeout and the CSS animation can never drift apart.
 //
-//   fast    — popover / dialog fade, small chrome animations.
-//   medium  — drawer slide, overlay fade, panel resize.
+//   fast      — popover / dialog fade, small chrome animations.
+//   medium    — drawer slide, overlay fade, panel resize.
+//   longPress — the touch hold that opens a row's context menu. The
+//               press indicator's ramp IS this duration, so the tint
+//               reaching full and the menu becoming ready are the same
+//               number by construction. 500ms is what iOS
+//               (`UILongPressGestureRecognizer.minimumPressDuration`),
+//               Android (`ViewConfiguration.getLongPressTimeout()`),
+//               Blink and WebKit all use for a touch long press.
 export const motion = {
   fast: 150,
   medium: 200,
+  longPress: 500,
 }
 
 // Min-width thresholds in CSS pixels, matching Tailwind's defaults.

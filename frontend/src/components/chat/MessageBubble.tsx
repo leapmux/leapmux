@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { ToolHeaderActionsCallerProps, ToolHeaderActionsLayoutProps } from './messageActions'
 import type { MessageCategory } from './messageClassification'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiWriteOptions, RenderContext } from './messageRenderers'
@@ -14,6 +15,7 @@ import Copy from 'lucide-solid/icons/copy'
 import { createEffect, createMemo, createResource, ErrorBoundary, onCleanup, onMount, Show, untrack } from 'solid-js'
 import { render } from 'solid-js/web'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
+import { attachContextMenuGesture } from '~/components/common/contextMenuGesture'
 import { IconButton } from '~/components/common/IconButton'
 import { usePreferences } from '~/context/PreferencesContext'
 import { MessageSource } from '~/generated/leapmux/v1/agent_pb'
@@ -26,15 +28,18 @@ import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
 import { buildRawJsonEnvelope } from './chatRawJson'
 import { codeCopyHostClass } from './markdownEditor/markdownContent.css'
+import { buildMessageActions } from './messageActions'
 import * as styles from './MessageBubble.css'
 import { bubbleRunsToRightEdge, classifyParsedMessage, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageClassification'
+import { useMessageContextMenu } from './MessageContextMenuHost'
 import { renderMessageContent } from './messageRenderers'
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { renderNotificationThread } from './notificationRenderers'
 import { providerFor } from './providers/registry'
 import { renderResultDivider } from './resultDividerRenderers'
-import { JsonHighlightHtml, ToolHeaderActions } from './toolRenderers'
+import { ToolHeaderActions } from './ToolHeaderActions'
+import { JsonHighlightHtml } from './toolRenderers'
 
 const logger = createLogger('MessageBubble')
 
@@ -475,12 +480,71 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     })
   })
 
+  // The two action bags, read by the hover toolbar AND by the row's context menu
+  // (below). One definition, so the menu can never offer a different set from the
+  // toolbar -- see `buildMessageActions` in ~/components/chat/messageActions.ts.
+  const actionsCaller = createMemo((): ToolHeaderActionsCallerProps => ({
+    onCopyContent: hasCopyableResult() ? copyResultContent : undefined,
+    contentCopied: resultCopied(),
+    onReply: extractQuotableText() ? (props.premeasureMode ? () => {} : handleReply) : undefined,
+    onCopyMarkdown: extractQuotableText() ? copyMarkdown : undefined,
+    markdownCopied: markdownCopied(),
+  }))
+
+  const actionsLayout = createMemo((): ToolHeaderActionsLayoutProps => ({
+    // A right-aligned user row mirrors its toolbar beside the bubble, so it
+    // reverses the button order -- read from the same predicate that picks the row
+    // class, never re-derived here.
+    mirrored: isMirroredMessageRow(category().kind, props.message.source),
+    createdAt: props.message.createdAt,
+    expanded: toolResultExpanded(),
+    onToggleExpand: isCollapsibleToolResult() ? toggleToolResultExpanded : undefined,
+    onCopyJson: copyJson,
+    jsonCopied: jsonCopied(),
+    hasDiff: hasToolResultDiff(),
+    diffView: diffView(),
+    onToggleDiffView: hasToolResultDiff() ? toggleDiffView : undefined,
+  }))
+
+  // Right-click / long-press anywhere on the row opens the same actions the hover
+  // toolbar carries. Attached here rather than through `DropdownMenu`'s
+  // `contextMenuFor`, because the menu itself is a singleton for the whole list --
+  // see ~/components/chat/MessageContextMenuHost.tsx for why a per-row menu is not
+  // affordable in a virtualized list.
+  const contextMenu = useMessageContextMenu()
+
+  function attachRowMenu(el: HTMLElement) {
+    // The hidden premeasure pass renders a second copy of every unmeasured row. It
+    // is `visibility: hidden` and `pointer-events: none`, so it can never receive
+    // the gesture -- but arming one per copy would still churn listeners on every
+    // fling for nothing.
+    if (!contextMenu || props.premeasureMode)
+      return
+    const detach = attachContextMenuGesture(el, {
+      // Message bodies are prose. Keep them selectable, and let a right-click on a
+      // live selection fall through to the browser's own Copy.
+      selectableText: true,
+      onOpen: press => contextMenu.open({
+        press,
+        // The menu is the ONE surface that also carries the recovery actions: the
+        // failed row renders them as visible buttons, but a user who reached for
+        // the menu should not have to go looking for them somewhere else.
+        actions: buildMessageActions(actionsCaller(), actionsLayout(), props.error
+          ? { onRetry: props.onRetry, onDelete: props.onDelete }
+          : undefined),
+        createdAt: props.message.createdAt,
+      }),
+    })
+    onCleanup(detach)
+  }
+
   return (
     <div
       class={props.error ? styles.messageWithError : undefined}
       style={!props.error ? { display: 'contents' } : undefined}
     >
-      <div class={rowClass()}>
+      {/* eslint-disable-next-line solid/reactivity -- a ref callback, not a signal to read */}
+      <div class={rowClass()} ref={attachRowMenu}>
         <div
           class={bubbleClass()}
           data-testid="message-bubble"
@@ -501,34 +565,17 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           </div>
         </div>
         <Show when={!hasInternalActions()}>
-          <ToolHeaderActions
-            caller={{
-              onCopyContent: hasCopyableResult() ? copyResultContent : undefined,
-              contentCopied: resultCopied(),
-              onReply: extractQuotableText() ? (props.premeasureMode ? () => {} : handleReply) : undefined,
-              onCopyMarkdown: extractQuotableText() ? copyMarkdown : undefined,
-              markdownCopied: markdownCopied(),
-            }}
-            layout={{
-              // A right-aligned user row mirrors its toolbar beside the bubble,
-              // so it reverses the button order -- read from the same predicate
-              // that picks the row class, never re-derived here.
-              mirrored: isMirroredMessageRow(category().kind, props.message.source),
-              createdAt: props.message.createdAt,
-              expanded: toolResultExpanded(),
-              onToggleExpand: isCollapsibleToolResult() ? toggleToolResultExpanded : undefined,
-              onCopyJson: copyJson,
-              jsonCopied: jsonCopied(),
-              hasDiff: hasToolResultDiff(),
-              diffView: diffView(),
-              onToggleDiffView: hasToolResultDiff() ? toggleDiffView : undefined,
-            }}
-          />
+          <ToolHeaderActions caller={actionsCaller()} layout={actionsLayout()} />
         </Show>
       </div>
 
+      {/* The strip is a SIBLING of the row div, so the row's gesture never sees a
+          press on it. It carries the recovery actions, which the menu also offers,
+          so a press there opens the same menu -- `attachRowMenu` is idempotent
+          about the premeasure/no-host guards and registers its own cleanup. */}
       <Show when={props.error}>
-        <div class={styles.messageError} data-testid="message-error">
+        {/* eslint-disable-next-line solid/reactivity -- a ref callback, not a signal to read */}
+        <div class={styles.messageError} data-testid="message-error" ref={attachRowMenu}>
           <span class={styles.messageErrorText}>Failed to deliver</span>
           <span class={styles.messageErrorDot}>&middot;</span>
           <button class={styles.messageRetryButton} onClick={() => props.onRetry?.()} data-testid="message-retry-button">Retry</button>

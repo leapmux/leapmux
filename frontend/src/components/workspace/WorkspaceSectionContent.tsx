@@ -8,6 +8,7 @@ import type { Tab, TabItemOps } from '~/stores/tab.types'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
+import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
@@ -188,10 +189,14 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                   wasDragging = true
               })
 
+              // The row element, for the right-click / long-press menu below.
+              const [rowEl, setRowEl] = createContextMenuAnchor()
+
               return (
                 <>
                   <div
                     ref={(el: HTMLElement) => {
+                      setRowEl(el)
                       applyDirective(sortable, el)
                       applyDirective(wsDroppable, el)
                     }}
@@ -270,6 +275,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       >
                         <Show when={!isRenaming()}>
                           <WorkspaceContextMenu
+                            contextMenuFor={rowEl}
                             isArchived={props.isArchived(id)}
                             sections={props.sections}
                             currentSectionId={props.sectionId}

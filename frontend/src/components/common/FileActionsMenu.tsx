@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { ContextMenuTargetProps } from '~/components/common/DropdownMenu'
 import type { FileSaveActions } from '~/components/common/fileSaveActions'
 import type { MenuInfoRow } from '~/components/common/MenuInfoRows'
 import type { PathFlavor } from '~/lib/paths'
@@ -34,7 +35,7 @@ import { relativizePath } from '~/lib/paths'
  *   - `rootPath`       → "Copy relative path"
  *   - `!isDir`         → "Download" (web) or "Save as..." + "Save to Downloads" (desktop)
  */
-export interface FileActionsMenuProps {
+export interface FileActionsMenuProps extends ContextMenuTargetProps {
   workerId: string
   path: string
   flavor: PathFlavor
@@ -158,6 +159,7 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
     <DropdownMenu
       placement={props.placement}
       onToggle={setMenuOpen}
+      contextMenuFor={props.contextMenuFor}
       trigger={moreHorizontalTrigger({
         'class': props.triggerClass,
         'data-testid': props.triggerTestId ?? 'file-actions-trigger',

@@ -178,4 +178,61 @@ describe('calcPopoverPosition', () => {
 
     expect(result.left).toBe(200) // unchanged
   })
+
+  // A rect anchor is what a right-click or a touch long press supplies: the
+  // pressed row's vertical band, with the pointer's x as the left edge.
+  describe('rect anchor', () => {
+    it('positions below the rect, left-aligned to its left edge', () => {
+      vi.stubGlobal('innerHeight', 800)
+      vi.stubGlobal('innerWidth', 1200)
+
+      const popover = mockPopover({ width: 200, height: 150 })
+
+      const result = calcPopoverPosition({ top: 100, bottom: 122, left: 340 }, popover)
+
+      expect(result.top).toBe(122) // the row's bottom, not the pointer's y
+      expect(result.left).toBe(340) // the pointer's x
+      expect(result.flipped).toBe(false)
+    })
+
+    it('flips above the rect when clipped at the bottom', () => {
+      vi.stubGlobal('innerHeight', 400)
+      vi.stubGlobal('innerWidth', 1200)
+
+      const popover = mockPopover({ width: 200, height: 150 })
+
+      const result = calcPopoverPosition({ top: 300, bottom: 322, left: 50 }, popover)
+
+      expect(result.top).toBe(150) // 300 - 150
+      expect(result.flipped).toBe(true)
+    })
+
+    it('clamps a rect anchor near the right edge', () => {
+      vi.stubGlobal('innerHeight', 800)
+      vi.stubGlobal('innerWidth', 500)
+
+      const popover = mockPopover({ width: 200, height: 150 })
+
+      const result = calcPopoverPosition({ top: 100, bottom: 122, left: 460 }, popover)
+
+      // 460 + 200 = 660 > 500, overflow = 160 -> left = 300
+      expect(result.left).toBe(300)
+    })
+
+    it('honours offset and placement for a rect anchor', () => {
+      vi.stubGlobal('innerHeight', 800)
+      vi.stubGlobal('innerWidth', 1200)
+
+      const popover = mockPopover({ width: 200, height: 100 })
+
+      const result = calcPopoverPosition(
+        { top: 300, bottom: 322, left: 100 },
+        popover,
+        { placement: 'above', offset: 8 },
+      )
+
+      expect(result.top).toBe(192) // 300 - 100 - 8
+      expect(result.flipped).toBe(true)
+    })
+  })
 })
