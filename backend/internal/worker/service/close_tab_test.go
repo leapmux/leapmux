@@ -126,6 +126,8 @@ func TestCloseAgent_WithWorktreeActionRemove_RefusesALockedWorktree(t *testing.T
 	require.NoError(t, proto.Unmarshal(fx.w.responses[0].GetPayload(), &resp))
 
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, resp.GetResult().GetWorktreeRemoval())
+	assert.Equal(t, "Worktree kept: git refuses to remove it", resp.GetResult().GetFailureMessage(),
+		"the refusal names git, not unsaved work -- the lock is what kept the directory")
 	// The curated sentence, not git's raw stderr. One source states the reason,
 	// so every surface says the same thing and every one of them is actionable.
 	assert.Contains(t, resp.GetResult().GetFailureDetail(), "held for review")
@@ -699,11 +701,25 @@ func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
 	defer drainAllInFlight(svc)
 
 	// Create a worktree DB row pointing at a path that is NOT a git
-	// worktree. This makes `git worktree remove` fail; since the path
-	// still exists, removeWorktreeFromDisk must return an error.
+	// worktree — the row a `mv` of the directory leaves behind. The removal
+	// preflight answers for git up front (worktreeRemovalBlockedReason): it
+	// sees git does not list the path and refuses the close, so `git
+	// worktree remove` never runs and the refusal, not git's stderr, is the
+	// failure the close must report.
+	//
+	// The row is stored CANONICALIZED, as ensureTrackedWorktreeWith stores
+	// every production row. worktreeListingFor's DB fallback looks the row
+	// up by CanonicalizeAbsent, so a raw-spelled path (t.TempDir under
+	// macOS's /var symlink) dodges the fallback, fails the preflight open,
+	// and the removal reaches `git worktree remove` — a different outcome
+	// per platform off one setup.
 	repoDir := initRepo(t)
-	bogusPath := filepath.Join(t.TempDir(), "not-a-worktree")
-	require.NoError(t, os.MkdirAll(bogusPath, 0o755))
+	// Canonicalize only after the directory exists: Canonicalize falls back
+	// to Clean while the path is absent, which on macOS keeps the /var
+	// spelling rather than resolving to /private/var.
+	rawPath := filepath.Join(t.TempDir(), "not-a-worktree")
+	require.NoError(t, os.MkdirAll(rawPath, 0o755))
+	bogusPath := pathutil.Canonicalize(rawPath)
 	wtID := "wt-bogus"
 	_, cwErr := svc.Queries.CreateWorktree(context.Background(), db.CreateWorktreeParams{
 		ID:           wtID,
@@ -729,9 +745,11 @@ func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
 	require.Len(t, w.responses, 1)
 	var resp leapmuxv1.CloseAgentResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	assert.NotEmpty(t, resp.GetResult().GetFailureMessage(), "expected failure message for unremovable worktree")
-	assert.Contains(t, resp.GetResult().GetFailureDetail(), bogusPath, "detail should include worktree path")
-	assert.Equal(t, bogusPath, resp.GetResult().GetWorktreePath())
+	assert.Equal(t, "Worktree kept: git refuses to remove it", resp.GetResult().GetFailureMessage(),
+		"the refusal names git, not unsaved work -- nothing probed the directory for work")
+	assert.Contains(t, resp.GetResult().GetFailureDetail(), "no longer lists this directory",
+		"detail should state the preflight's refusal, not git's raw stderr")
+	assert.Equal(t, bogusPath, resp.GetResult().GetWorktreePath(), "the path the user must clean up by hand rides the structured field")
 	assert.Equal(t, wtID, resp.GetResult().GetWorktreeId())
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, resp.GetResult().GetWorktreeRemoval(), "a failed removal should report FAILED")
 
@@ -1473,6 +1491,8 @@ func TestCloseTabCommon_RemoveOnAlreadyClosedTabDoesNotDiscardUnsavedWork(t *tes
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED,
 		result.GetWorktreeRemoval(),
 		"a REMOVE that retired no live row must not silently report the directory gone")
+	assert.Equal(t, "Worktree kept: it may hold unsaved work", result.GetFailureMessage(),
+		"this refusal is about unconfirmed work, unlike the git-refusal copy")
 	assert.DirExists(t, wt.WorktreePath,
 		"the worktree holds uncommitted work and nobody confirmed its deletion, so it must survive")
 
