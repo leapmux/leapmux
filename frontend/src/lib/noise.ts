@@ -14,6 +14,7 @@ import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { blake2b } from '@noble/hashes/blake2.js'
 import { hmac } from '@noble/hashes/hmac.js'
+import { concatBytes } from './bytes'
 import { monotonicNow } from './monotonicNow'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
@@ -61,18 +62,6 @@ function decrypt(key: Uint8Array, nonce: number, ad: Uint8Array, ciphertext: Uin
   new DataView(nonceBytes.buffer).setUint32(4, nonce, true)
   const cipher = chacha20poly1305(key, nonceBytes, ad)
   return cipher.decrypt(ciphertext)
-}
-
-export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
-  let totalLen = 0
-  for (const a of arrays) totalLen += a.length
-  const result = new Uint8Array(totalLen)
-  let offset = 0
-  for (const a of arrays) {
-    result.set(a, offset)
-    offset += a.length
-  }
-  return result
 }
 
 // ---- Noise Protocol State Machines ----

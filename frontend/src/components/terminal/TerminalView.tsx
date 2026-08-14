@@ -10,6 +10,7 @@ import { createKeyedRows } from '~/lib/keyedRows'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { isMac } from '~/lib/shortcuts/platform'
 import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, DEFAULT_FONT_SIZE, refreshTerminalFont, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer } from '~/lib/terminal'
+import { attachTerminalIme } from '~/lib/terminalIme'
 import { webglPool } from '~/lib/webglTerminalPool'
 import * as styles from './TerminalView.css'
 import '@xterm/xterm/css/xterm.css'
@@ -221,7 +222,17 @@ const TerminalContainer: Component<{
     if (!ref)
       return
 
-    let instance = instances.get(props.terminalId)
+    const id = props.terminalId
+    const onInput = props.onInput
+
+    // The one gate every keystroke passes through, so xterm's onData and the
+    // IME layer cannot drift apart on whether snapshot replay is in flight.
+    const emit = (data: string) => {
+      if (!instances.get(id)?.suppressInput)
+        onInput(id, new TextEncoder().encode(data))
+    }
+
+    let instance = instances.get(id)
     if (!instance) {
       instance = createTerminalInstance({
         fontFamily: props.fontFamily,
@@ -230,28 +241,26 @@ const TerminalContainer: Component<{
         rows: props.rows,
         theme: props.theme,
       })
-      instances.set(props.terminalId, instance)
-      notifyTerminalInstanceReady(props.terminalId)
+      instances.set(id, instance)
+      notifyTerminalInstanceReady(id)
 
-      const id = props.terminalId
-      const onInput = props.onInput
       instance.sendInput = data => onInput(id, data)
 
-      // On macOS, suppress CMD+Arrow and ALT+Arrow so xterm.js doesn't
-      // process them — the shortcut system sends the correct escape sequences.
-      if (isMac()) {
-        instance.terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-          if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && (e.metaKey || e.altKey))
-            return false
-          return true
-        })
-      }
-
-      instance.terminal.onData((data) => {
-        if (!instances.get(id)?.suppressInput) {
-          onInput(id, new TextEncoder().encode(data))
-        }
+      // Attached on every platform: the IME rules below are not macOS-specific,
+      // and this handler is the only hook that runs before xterm's composition
+      // machinery (CoreBrowserTerminal._keyDown consults it first).
+      instance.terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        // Composed keystrokes belong to the IME layer; see ~/lib/terminalIme.
+        if (instances.get(id)?.ime?.shouldBypassKeyEvent(e))
+          return false
+        // On macOS, suppress CMD+Arrow and ALT+Arrow so xterm.js doesn't
+        // process them — the shortcut system sends the correct escape sequences.
+        if (isMac() && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && (e.metaKey || e.altKey))
+          return false
+        return true
       })
+
+      instance.terminal.onData(emit)
     }
 
     // xterm's `Terminal.open()` is idempotent in a way that breaks
@@ -266,6 +275,14 @@ const TerminalContainer: Component<{
       ref.appendChild(instance.terminal.element)
     else
       instance.terminal.open(ref)
+
+    // Take over composed input, which xterm mishandles badly enough that CJK is
+    // unusable on WebKit (see ~/lib/terminalIme). Attached after open() because
+    // it hooks `terminal.element`, and only once per instance: those listeners
+    // live on that element, so they travel with it when a layout edit re-parents
+    // the terminal into a new container above.
+    if (!instance.ime)
+      instance.ime = attachTerminalIme(instance.terminal, emit)
 
     // Write screen snapshot if available (restore on refresh). Seed the
     // resume cursor from lastOffset (from the backend, carried through

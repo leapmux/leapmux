@@ -19,6 +19,28 @@ describe('createTerminalInstance', () => {
     instance.dispose()
   })
 
+  it('tears the IME layer down before the terminal', () => {
+    const instance = createTerminalInstance()
+    const order: string[] = []
+    instance.ime = {
+      composing: false,
+      shouldBypassKeyEvent: () => false,
+      dispose: () => order.push('ime'),
+    }
+    const terminalDispose = instance.terminal.dispose.bind(instance.terminal)
+    instance.terminal.dispose = () => {
+      order.push('terminal')
+      terminalDispose()
+    }
+
+    instance.dispose()
+
+    // The layer's listeners and its preview node hang off `terminal.element`,
+    // which xterm removes as it tears down, so the order matters.
+    expect(order).toEqual(['ime', 'terminal'])
+    expect(instance.ime).toBeUndefined()
+  })
+
   it('suppresses onData forwarding during snapshot replay', async () => {
     const instance = createTerminalInstance()
     const forwarded: string[] = []

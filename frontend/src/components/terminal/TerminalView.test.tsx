@@ -43,16 +43,46 @@ beforeAll(() => {
   }) as any
 })
 
+/**
+ * The DOM shape xterm builds inside `open()`, which the IME layer hooks:
+ * `.xterm > .xterm-screen > .xterm-helpers > .xterm-helper-textarea`. The mock
+ * terminal below has to provide it, because `attachTerminalIme` binds on
+ * `terminal.element` and positions its preview against `terminal.textarea`.
+ */
+function makeMockTerminalDom(): { element: HTMLElement, textarea: HTMLTextAreaElement } {
+  const element = document.createElement('div')
+  element.className = 'xterm'
+  const screen = document.createElement('div')
+  screen.className = 'xterm-screen'
+  const helpers = document.createElement('div')
+  helpers.className = 'xterm-helpers'
+  const textarea = document.createElement('textarea')
+  textarea.className = 'xterm-helper-textarea'
+  helpers.appendChild(textarea)
+  screen.appendChild(helpers)
+  element.appendChild(screen)
+  return { element, textarea }
+}
+
 function makeMockTerminalInstance(): TerminalInstance {
   let bellHandler: (() => void) | undefined
+  const { element, textarea } = makeMockTerminalDom()
 
   const terminal = {
+    // Undefined until open(), exactly as real xterm behaves — TerminalView
+    // branches on it to tell a first mount from a re-parent.
+    element: undefined as HTMLElement | undefined,
+    textarea,
+    attachCustomKeyEventHandler: vi.fn(),
     onData: vi.fn(),
     onTitleChange: vi.fn(),
     onBell: vi.fn((cb: () => void) => {
       bellHandler = cb
     }),
-    open: vi.fn(),
+    open: vi.fn((parent: HTMLElement) => {
+      terminal.element = element
+      parent.appendChild(element)
+    }),
     reset: vi.fn(),
     write: vi.fn((data: string | Uint8Array, cb?: () => void) => {
       const text = typeof data === 'string' ? data : new TextDecoder().decode(data)
@@ -773,5 +803,115 @@ describe('disposeTerminalInstance scrollback capture', () => {
     expect(() => disposeTerminalInstance('term-throws')).not.toThrow()
     expect(getTerminalInstance('term-throws'), 'the instance must not leak').toBeUndefined()
     expect(instance.dispose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('terminalView IME wiring', () => {
+  beforeEach(() => {
+    mockCreateTerminalInstance.mockReset()
+    mockBufferHasVisibleContent.mockReset().mockReturnValue(undefined)
+    mockSerializeXtermBuffer.mockReset().mockReturnValue(undefined)
+    webglPool.disposeAll()
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }) as any
+  })
+
+  async function mount(id: string, onInput = vi.fn()) {
+    const instance = makeMockTerminalInstance()
+    mockCreateTerminalInstance.mockReturnValue(instance)
+    render(() => (
+      <PreferencesProvider>
+        <TerminalView
+          terminals={[{ id, type: TabType.TERMINAL, workspaceId: 'ws-1', screen: new Uint8Array() } as TerminalTab]}
+          activeTerminalId={id}
+          visible
+          tileFocused={false}
+          onInput={onInput}
+          onResize={vi.fn()}
+          onContentReady={vi.fn()}
+        />
+      </PreferencesProvider>
+    ))
+    await waitFor(() => expect(getTerminalInstance(id)).toBe(instance))
+    return { instance, onInput }
+  }
+
+  /** The handler TerminalView passed to xterm's attachCustomKeyEventHandler. */
+  function keyHandler(instance: TerminalInstance): (e: KeyboardEvent) => boolean {
+    const attach = instance.terminal.attachCustomKeyEventHandler as unknown as ReturnType<typeof vi.fn>
+    expect(attach).toHaveBeenCalledTimes(1)
+    return attach.mock.calls[0][0]
+  }
+
+  it('attaches the key handler and the IME layer on every platform', async () => {
+    // jsdom is not macOS. Before the IME work this handler was attached only on
+    // macOS, so CJK input had no interception path at all on Linux or Windows.
+    const { instance } = await mount('term-ime-attach')
+    expect(instance.terminal.attachCustomKeyEventHandler).toHaveBeenCalledTimes(1)
+    expect(instance.ime).toBeDefined()
+
+    disposeTerminalInstance('term-ime-attach')
+  })
+
+  it('takes composed keystrokes away from xterm', async () => {
+    const { instance } = await mount('term-ime-keys')
+    const handle = keyHandler(instance)
+
+    // false means "xterm must not process this".
+    expect(handle(new KeyboardEvent('keydown', { key: 'Process', keyCode: 229 } as KeyboardEventInit))).toBe(false)
+    expect(handle(new KeyboardEvent('keydown', { key: 'd', isComposing: true } as KeyboardEventInit))).toBe(false)
+    expect(handle(new KeyboardEvent('keydown', { key: 'd', keyCode: 68 }))).toBe(true)
+
+    disposeTerminalInstance('term-ime-keys')
+  })
+
+  it('leaves the arrow keys to xterm off macOS', async () => {
+    // The CMD/ALT+Arrow rule stays macOS-only even though the handler is now
+    // attached everywhere; the shortcut system only sends those sequences there.
+    const { instance } = await mount('term-ime-arrows')
+    const handle = keyHandler(instance)
+
+    expect(handle(new KeyboardEvent('keydown', { key: 'ArrowLeft', metaKey: true }))).toBe(true)
+    expect(handle(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true }))).toBe(true)
+
+    disposeTerminalInstance('term-ime-arrows')
+  })
+
+  it('sends composed text through the same suppressInput gate as onData', async () => {
+    const onInput = vi.fn()
+    const { instance } = await mount('term-ime-gate', onInput)
+
+    const commit = () => instance.terminal.textarea!.dispatchEvent(
+      new CompositionEvent('compositionend', { data: '안', bubbles: true, composed: true }),
+    )
+
+    commit()
+    expect(onInput).toHaveBeenCalledTimes(1)
+    expect(new TextDecoder().decode(onInput.mock.calls[0][1])).toBe('안')
+
+    // Snapshot replay must swallow composed input exactly as it swallows
+    // ordinary keystrokes, or a reconnect replays the user's typing at the PTY.
+    onInput.mockClear()
+    instance.suppressInput = true
+    commit()
+    expect(onInput).not.toHaveBeenCalled()
+
+    disposeTerminalInstance('term-ime-gate')
+  })
+
+  it('releases the IME layer when the instance is disposed', async () => {
+    const { instance } = await mount('term-ime-dispose')
+    const preview = () => instance.terminal.element!.querySelector('[data-testid="terminal-composition-preview"]')
+    expect(preview()).not.toBeNull()
+
+    // The real dispose() tears the IME layer down; the mock instance's dispose
+    // is a spy, so drive the layer directly to assert the teardown contract.
+    instance.ime!.dispose()
+    expect(preview()).toBeNull()
+
+    disposeTerminalInstance('term-ime-dispose')
   })
 })

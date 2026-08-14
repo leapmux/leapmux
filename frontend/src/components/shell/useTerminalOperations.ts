@@ -16,6 +16,7 @@ import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
+import { concatBytes } from '~/lib/bytes'
 import { createInflightCache } from '~/lib/inflightCache'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
 import { openedTerminalMetadata, resolveOptimisticGitInfo } from '~/stores/tab.helpers'
@@ -134,18 +135,69 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const handleOpenTerminalWithShell = (shell: string) =>
     openTerminalCore({ shell, setLoading: props.setNewShellLoading })
 
+  /**
+   * Drain the queued bytes for one terminal, one SendInput at a time.
+   *
+   * The worker dispatches every inner RPC on its own goroutine, so two
+   * SendInput calls in flight together reach the PTY in whichever order their
+   * goroutines win — the per-terminal mutex gives mutual exclusion, not FIFO.
+   * Keeping a single call in flight per terminal removes the race at the only
+   * point that can see the true order, which is here.
+   *
+   * It costs nothing in the common case: with nothing in flight the first
+   * keystroke goes out immediately. Only a burst that outruns the round trip
+   * queues, and that burst then leaves as ONE larger write rather than several
+   * racing ones, which is also what the PTY prefers. Serializing on the
+   * response instead — awaiting each keystroke before reading the next — would
+   * have gated typing on the round-trip time.
+   */
+  const inputQueues = new Map<string, Uint8Array[]>()
+
+  const drainTerminalInput = async (terminalId: string) => {
+    const pending = inputQueues.get(terminalId)
+    if (!pending)
+      return
+    try {
+      while (pending.length > 0) {
+        const batch = concatBytes(...pending)
+        pending.length = 0
+        // Re-read the tab each time round: a terminal that exited mid-drain
+        // must not keep receiving the rest of the burst.
+        const tab = props.view.getTerminalTab(terminalId)
+        if (!tab || tab.status !== TerminalStatus.READY)
+          return
+        try {
+          await workerRpc.sendInput(tab.workerId ?? '', { terminalId, data: batch })
+        }
+        catch {
+          // Ignore input errors, and keep draining: dropping the rest of what
+          // the user typed because one write failed is the worse outcome.
+        }
+      }
+    }
+    finally {
+      // Safe to drop: the loop only exits with the queue empty or the terminal
+      // gone, and nothing can push in between (no await separates the check
+      // from here). A later keystroke simply creates a fresh queue.
+      inputQueues.delete(terminalId)
+    }
+  }
+
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
     const tab = props.view.getTerminalTab(terminalId)
     if (!tab)
       return
 
     if (tab.status === TerminalStatus.READY) {
-      try {
-        await workerRpc.sendInput(tab.workerId ?? '', { terminalId, data })
+      const pending = inputQueues.get(terminalId)
+      if (pending) {
+        // A drain is already running and owns this queue; it will pick these
+        // bytes up on its next turn, after the in-flight call resolves.
+        pending.push(data)
+        return
       }
-      catch {
-        // ignore input errors
-      }
+      inputQueues.set(terminalId, [data])
+      await drainTerminalInput(terminalId)
       return
     }
 

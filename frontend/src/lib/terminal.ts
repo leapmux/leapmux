@@ -1,5 +1,6 @@
 import type { ITheme } from '@xterm/xterm'
 import type { BrowserPreferences, TerminalRendererPreference } from './browserStorage'
+import type { TerminalImeHandle } from './terminalIme'
 import type { ThemePreference } from '~/app'
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
@@ -68,6 +69,12 @@ export interface TerminalInstance {
   webglAddon?: WebglAddon
   /** Send raw input data to the PTY backing this terminal. */
   sendInput?: (data: Uint8Array) => void
+  /**
+   * The IME layer, attached once the terminal has been opened (it needs
+   * `terminal.element`). Owns every composed keystroke; see `./terminalIme`
+   * for why xterm's own composition handling cannot be left in charge.
+   */
+  ime?: TerminalImeHandle
   dispose: () => void
 }
 
@@ -327,7 +334,7 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     void copyTextToClipboard(terminal.getSelection())
   })
 
-  return {
+  const instance: TerminalInstance = {
     terminal,
     fitAddon,
     serializeAddon,
@@ -336,9 +343,15 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     fontsReady,
     webglAddon: undefined,
     dispose() {
+      // Before terminal.dispose(): the IME layer's listeners and its preview
+      // node hang off `terminal.element`, which xterm removes from the document
+      // as it tears down.
+      instance.ime?.dispose()
+      instance.ime = undefined
       terminal.dispose()
     },
   }
+  return instance
 }
 
 /**

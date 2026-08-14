@@ -368,6 +368,93 @@ describe('useterminaloperations.handleterminalinput', () => {
     expect(arg.terminalId).toBe('tid-1')
   })
 
+  it('keeps one SendInput in flight per terminal so the PTY sees arrival order', async () => {
+    // The worker dispatches every inner RPC on its own goroutine, so two calls
+    // in flight together can reach the PTY transposed. Two syllables swapped is
+    // exactly the corruption CJK typing shows.
+    const { ops } = setup(TerminalStatus.READY)
+    let release: (() => void) | undefined
+    sendInputMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return {}
+    })
+
+    const first = ops.handleTerminalInput('tid-1', new TextEncoder().encode('\uC548'))
+    await Promise.resolve()
+    expect(sendInputMock).toHaveBeenCalledTimes(1)
+
+    // Typed while the first call is still out. Neither may start a second call.
+    void ops.handleTerminalInput('tid-1', new TextEncoder().encode('\uB155'))
+    void ops.handleTerminalInput('tid-1', new TextEncoder().encode('!'))
+    await Promise.resolve()
+    expect(sendInputMock).toHaveBeenCalledTimes(1)
+
+    release!()
+    await first
+
+    // The queued bytes left together, in the order they were typed.
+    expect(sendInputMock).toHaveBeenCalledTimes(2)
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[0][1].data)).toBe('\uC548')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('\uB155!')
+  })
+
+  it('starts a fresh queue once a burst has drained', async () => {
+    // The queue is dropped when it empties, so a later keystroke must not land
+    // in a stale one -- nor be batched onto bytes that already went out.
+    const { ops } = setup(TerminalStatus.READY)
+
+    await ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
+    await ops.handleTerminalInput('tid-1', new TextEncoder().encode('b'))
+
+    expect(sendInputMock).toHaveBeenCalledTimes(2)
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[0][1].data)).toBe('a')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('b')
+  })
+
+  it('keeps draining after a failed send', async () => {
+    const { ops } = setup(TerminalStatus.READY)
+    let release: (() => void) | undefined
+    sendInputMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      throw new Error('worker offline')
+    })
+
+    const first = ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
+    await Promise.resolve()
+    void ops.handleTerminalInput('tid-1', new TextEncoder().encode('b'))
+    release!()
+    // One failed write must not discard the rest of what the user typed, and
+    // must not propagate: xterm's onData callback has no error sink.
+    await expect(first).resolves.toBeUndefined()
+    expect(sendInputMock).toHaveBeenCalledTimes(2)
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('b')
+  })
+
+  it('stops draining when the terminal exits mid-burst', async () => {
+    const { ops, metadata } = setup(TerminalStatus.READY)
+    let release: (() => void) | undefined
+    sendInputMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return {}
+    })
+
+    const first = ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
+    await Promise.resolve()
+    void ops.handleTerminalInput('tid-1', new TextEncoder().encode('b'))
+    // The shell exits while the first write is still out.
+    metadata.patch('tid-1', { terminalStatus: TerminalStatus.EXITED })
+    release!()
+    await first
+
+    expect(sendInputMock).toHaveBeenCalledTimes(1)
+  })
+
   it('calls restartTerminal when Enter (CR) is pressed on an EXITED terminal', async () => {
     const { ops } = setup(TerminalStatus.EXITED)
     await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))

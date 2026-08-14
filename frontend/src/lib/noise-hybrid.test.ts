@@ -11,7 +11,8 @@ import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 import { slh_dsa_shake_256f } from '@noble/post-quantum/slh-dsa.js'
 
 import { describe, expect, it } from 'vitest'
-import { concatBytes, hkdf } from './noise'
+import { concatBytes } from './bytes'
+import { hkdf } from './noise'
 import { clearHandshakeState, initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'

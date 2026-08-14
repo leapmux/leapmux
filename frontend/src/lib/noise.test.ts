@@ -12,6 +12,9 @@ import { CipherState, initiatorHandshake1, initiatorHandshake2 } from './noise'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
 
+// Deliberately local, not the export from ~/lib/bytes. This file is an
+// independent reimplementation of the responder side, and it is only a useful
+// oracle for the initiator while it shares no code with it.
 function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   let totalLen = 0
   for (const a of arrays) totalLen += a.length
