@@ -62,8 +62,17 @@ test.describe('Terminal signals while backgrounded', () => {
     // Bell badges the backgrounded terminal.
     await expect(termTab.locator('[data-testid="tab-notification"]')).toBeVisible()
 
-    // Title update arrives without the tab being visible.
-    await expect.poll(() => terminalTabLabel(page, 0)).toBe('newtitle')
+    // The OSC title arrives without the tab being visible -- as the tab's
+    // TOOLTIP, not its label. The worker gives every terminal the name `Terminal <Name>`
+    // at creation and `tabDisplayLabel` prefers that name, so a PTY title is a
+    // live overlay (`ptyTitle`) that yields to it; the worker never persists it
+    // either (see the SignalTitle case in terminal.go).
+    await termTab.hover()
+    await expect(page.locator('[role="tooltip"]').filter({ hasText: 'newtitle' })).toBeVisible()
+
+    // ...and the label is still the name the worker assigned, which is the
+    // half of the rule that keeps a user's rename from being clobbered.
+    expect(await terminalTabLabel(page, 0)).toMatch(/^Terminal /)
 
     // OSC 9 badges (already) and toasts when OS notifications are not opted in.
     await expect(page.locator('output .toast-message').filter({ hasText: 'hi' })).toBeVisible()

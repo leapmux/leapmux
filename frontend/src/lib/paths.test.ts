@@ -7,7 +7,6 @@ import {
   isAbsolute,
   join,
   parentDirectory,
-  pathSegments,
   relativeUnder,
   relativizePath,
   split,
@@ -95,35 +94,6 @@ describe('split', () => {
 
   it('returns empty for empty input', () => {
     expect(split('')).toEqual([])
-  })
-})
-
-describe('pathSegments', () => {
-  it('builds cumulative POSIX segments', () => {
-    expect(pathSegments('/home/alice/foo')).toEqual([
-      { name: 'home', path: '/home' },
-      { name: 'alice', path: '/home/alice' },
-      { name: 'foo', path: '/home/alice/foo' },
-    ])
-  })
-
-  it('builds cumulative Win32 segments starting at the volume root', () => {
-    expect(pathSegments('C:\\Users\\alice')).toEqual([
-      { name: 'C:\\', path: 'C:\\' },
-      { name: 'Users', path: 'C:\\Users' },
-      { name: 'alice', path: 'C:\\Users\\alice' },
-    ])
-  })
-
-  it('handles UNC roots', () => {
-    expect(pathSegments('\\\\srv\\share\\foo')).toEqual([
-      { name: '\\\\srv\\share\\', path: '\\\\srv\\share\\' },
-      { name: 'foo', path: '\\\\srv\\share\\foo' },
-    ])
-  })
-
-  it('returns empty for root-only inputs', () => {
-    expect(pathSegments('/')).toEqual([])
   })
 })
 

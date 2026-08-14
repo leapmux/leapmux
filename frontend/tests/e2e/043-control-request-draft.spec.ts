@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
-import { sendMessage, waitForControlBanner } from './helpers/ui'
+import { sendMessage, waitForControlBanner, waitForEditorDraft } from './helpers/ui'
 
 test.describe('Control Request Draft Persistence', () => {
   test('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace }) => {
@@ -13,8 +13,8 @@ test.describe('Control Request Draft Persistence', () => {
     await editor.click()
     await page.keyboard.type('draft rejection reason', { delay: 100 })
 
-    // Wait for debounced save (500ms debounce + margin).
-    await page.waitForTimeout(700)
+    // Wait for the debounced save to actually land, not for a fixed margin.
+    await waitForEditorDraft(page, 'draft rejection reason')
 
     // Reload the page.
     await page.reload()
@@ -43,8 +43,8 @@ test.describe('Control Request Draft Persistence', () => {
     await editor.click()
     await page.keyboard.type('my custom color answer', { delay: 100 })
 
-    // Wait for debounced save.
-    await page.waitForTimeout(700)
+    // Wait for the debounced save to actually land, not for a fixed margin.
+    await waitForEditorDraft(page, 'my custom color answer')
 
     // Reload the page.
     await page.reload()
@@ -65,8 +65,8 @@ test.describe('Control Request Draft Persistence', () => {
     await editor.click()
     await page.keyboard.type('conversation draft text', { delay: 100 })
 
-    // Wait for debounced save.
-    await page.waitForTimeout(700)
+    // Wait for the debounced save to actually land, not for a fixed margin.
+    await waitForEditorDraft(page, 'conversation draft text')
 
     // Clear the editor and send a message to trigger AskUserQuestion.
     await page.keyboard.press('Meta+a')
@@ -79,18 +79,17 @@ test.describe('Control Request Draft Persistence', () => {
     // Wait for the control banner.
     await waitForControlBanner(page)
 
-    // Editor should be empty (control request has its own draft key).
-    await page.waitForTimeout(300)
-    const editorText = await page.locator('[data-testid="chat-editor"] .ProseMirror').textContent()
-    expect(editorText?.trim()).toBe('')
+    // Editor should be empty (control request has its own draft key). The
+    // web-first assertion retries, so it needs no settling sleep.
+    await expect(page.locator('[data-testid="chat-editor"] .ProseMirror')).toHaveText('')
 
     // Type control request draft text.
     const editorForCtrl = page.locator('[data-testid="chat-editor"] .ProseMirror')
     await editorForCtrl.click()
     await page.keyboard.type('control request draft text', { delay: 100 })
 
-    // Wait for debounced save.
-    await page.waitForTimeout(700)
+    // Wait for the debounced save to actually land, not for a fixed margin.
+    await waitForEditorDraft(page, 'control request draft text')
 
     // Reload the page.
     await page.reload()

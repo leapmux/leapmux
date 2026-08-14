@@ -60,7 +60,7 @@ The dialog has these fields:
 | --- | --- |
 | **"Worker"** | Selects which Worker spawns the shell. Options show `name (version, os, arch)`. A **"Refresh workers"** button re-queries online Workers. When none are connected: **"No workers online"**. |
 | **"Shell"** | Picks the shell binary. See [Shell selection](#shell-selection). |
-| **"Working Directory"** | Browses the Worker's filesystem (tree root is `~`). Includes a show/hide-hidden-files toggle and a **"Refresh directory tree"** button. When no Worker is selected: **"No workers online. Connect a worker to browse directories."** |
+| **"Working Directory"** | Browses the Worker's filesystem (tree root is `~`). A text box above the tree shows the selected path, abbreviated with `~` for your home directory; type a path and press Enter (or click away) to go there. If the path style does not match the Worker's OS, a hint appears, for example `This looks like a POSIX path but the worker expects Windows paths.` Includes a show/hide-hidden-files toggle and a **"Refresh directory tree"** button. When no Worker is selected: **"No workers online. Connect a worker to browse directories."** |
 | **"Git options"** | Appears in the right column when the selected path is (or becomes) a git repository. Lets you open the terminal in a branch or worktree. See [Git options](#git-options-open-a-terminal-in-a-branch-or-worktree). |
 
 Submit with the **"Create"** button (it reads **"Creating..."** while in flight); cancel with **"Cancel"**. The Create button stays disabled until you have a Worker, a non-blank working directory, a selected shell, a valid git-mode choice, and a workspace. If creation fails you'll see **"Failed to create terminal"**.

@@ -136,17 +136,26 @@ describe('flatEntryOpenTarget', () => {
   const unix = 'posix' as const
 
   it('resolves a file entry against the repo root', () => {
-    expect(flatEntryOpenTarget('src/main.ts', '/repo', unix)).toBe('/repo/src/main.ts')
+    expect(flatEntryOpenTarget({ path: 'src/main.ts', isDir: false }, '/repo', unix)).toBe('/repo/src/main.ts')
   })
 
   it('refuses an untracked-directory entry', () => {
     // Git lists a whole untracked directory as one "build/" entry beside the
     // files. Opening it as a file tab produced a permanently broken editor —
     // the worker answers ReadFile with "path is a directory".
-    expect(flatEntryOpenTarget('build/', '/repo', unix)).toBeUndefined()
+    expect(flatEntryOpenTarget({ path: 'build/', isDir: false }, '/repo', unix)).toBeUndefined()
   })
 
   it('still opens a FILE whose name resembles a directory entry', () => {
-    expect(flatEntryOpenTarget('build', '/repo', unix)).toBe('/repo/build')
+    expect(flatEntryOpenTarget({ path: 'build', isDir: false }, '/repo', unix)).toBe('/repo/build')
+  })
+
+  /**
+   * A submodule is a directory that git names WITHOUT a trailing slash, so the
+   * slash alone never caught it and its row opened the same broken editor the
+   * `build/` case exists to prevent. `isDir` is the worker's own answer.
+   */
+  it('refuses a directory that carries no trailing slash', () => {
+    expect(flatEntryOpenTarget({ path: 'vendor/lib', isDir: true }, '/repo', unix)).toBeUndefined()
   })
 })

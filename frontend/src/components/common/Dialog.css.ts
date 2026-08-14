@@ -263,12 +263,24 @@ export const labelRow = style({
   gap: 'var(--space-2)',
 })
 
+// A flex COLUMN, not a block: the box holds the path input, the optional
+// flavor hint, and the tree. As a block it would give the tree its full height
+// beside those siblings, push the last rows past the bottom edge, and clip them
+// out of reach behind `overflow: hidden`.
 export const treeContainer = style({
+  display: 'flex',
+  flexDirection: 'column',
   flex: 1,
   minHeight: 0,
   border: '1px solid var(--border)',
   borderRadius: 'var(--radius-medium)',
   overflow: 'hidden',
+})
+
+/** For a lone child of {@link treeContainer} that should fill the box. */
+export const treeContainerFill = style({
+  flex: 1,
+  minHeight: 0,
 })
 
 // The element wrapping the DirectoryTree needs to grow and use flex layout.

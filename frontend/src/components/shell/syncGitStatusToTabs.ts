@@ -1,5 +1,5 @@
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
-import type { createGitFileStatusStore } from '~/stores/gitFileStatus.store'
+import type { createGitFileStatusStore, DiffStats } from '~/stores/gitFileStatus.store'
 import type { Tab } from '~/stores/tab.types'
 import type { TabMetadata, TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
@@ -48,7 +48,31 @@ export interface GitStatusForTabStamping {
   toplevel: string
   originUrl: string
   currentBranch: string
-  files: readonly GitFileStatusEntry[]
+  /**
+   * The repo-wide totals the stamp writes, already reduced from the file list.
+   *
+   * The aggregate rather than the files themselves, because the stamp never
+   * needed a per-file view -- and because the reduction is what establishes
+   * this shape's reactive dependency. See {@link gitStatusFromStore}.
+   */
+  diffStats: DiffStats
+}
+
+/** Reduce a file list to the repo-wide totals a tab stamp carries. */
+export function aggregateDiffStats(files: readonly GitFileStatusEntry[]): DiffStats {
+  let added = 0
+  let deleted = 0
+  let untracked = 0
+  for (const f of files) {
+    if (f.unstagedStatus === GitFileStatusCode.UNTRACKED) {
+      untracked++
+    }
+    else {
+      added += f.linesAdded + f.stagedLinesAdded
+      deleted += f.linesDeleted + f.stagedLinesDeleted
+    }
+  }
+  return { added, deleted, untracked }
 }
 
 /**
@@ -82,7 +106,16 @@ export function gitStatusFromStore(
     toplevel: state.toplevel,
     originUrl: state.originUrl,
     currentBranch: state.currentBranch,
-    files: state.files,
+    // Reduced HERE, inside the caller's tracking scope, and that placement is
+    // load-bearing. `refresh` writes the file list with a keyed `reconcile`, so
+    // `state.files` keeps its identity across a refresh and a bare read of the
+    // property subscribes to nothing that ever changes. Walking the entries and
+    // reading the counted fields is what subscribes the effect to them.
+    //
+    // It also narrows the dependency to what the stamp actually uses: a file
+    // whose size or modification time moved -- the common shape of a turn that
+    // wrote one byte -- no longer re-stamps every tab in the account.
+    diffStats: aggregateDiffStats(state.files),
   }
 }
 
@@ -164,25 +197,14 @@ export function applyGitStatusToTabs(
   target: TabStampTarget,
   status: GitStatusForTabStamping,
 ): void {
-  const { workerId, toplevel, originUrl, currentBranch, files } = status
+  const { workerId, toplevel, originUrl, currentBranch, diffStats } = status
   // (workerId, toplevel) is the stamping identity. Either one empty means
   // nothing to anchor to — the worker didn't resolve a working tree, or we
   // don't know which worker answered — and an unanchored stamp would match
   // across workers.
   if (!toplevel || !workerId)
     return
-  let added = 0
-  let deleted = 0
-  let untracked = 0
-  for (const f of files) {
-    if (f.unstagedStatus === GitFileStatusCode.UNTRACKED) {
-      untracked++
-    }
-    else {
-      added += f.linesAdded + f.stagedLinesAdded
-      deleted += f.linesDeleted + f.stagedLinesDeleted
-    }
-  }
+  const { added, deleted, untracked } = diffStats
   // `''`, not `undefined`, for the two clearable fields: the write goes through
   // `metadata.patch`, which SKIPS undefined so a partial row can't blank fields
   // another source owns. Sending undefined here means a repo that loses its

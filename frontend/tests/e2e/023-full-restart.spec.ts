@@ -1,5 +1,6 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, expectUserMessage, loginViaToken, openTerminalViaUI, openWorkspace, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, waitForLayoutSave } from './helpers/ui'
+import { ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, expectUserMessage, loginViaToken, openTerminalViaUI, openWorkspace, renameTabViaUI, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, waitForLayoutSave } from './helpers/ui'
+import { listTerminalsViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
 test.describe('Full Hub+Worker Restart', () => {
@@ -73,6 +74,7 @@ test.describe('Full Hub+Worker Restart', () => {
   })
 
   test('should preserve terminal tab title after full restart', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
+    const { hubUrl, adminToken, workerId } = separateHubWorker
     // Listen for layout save before opening terminal
     const saved = waitForLayoutSave(page)
 
@@ -87,28 +89,23 @@ test.describe('Full Hub+Worker Restart', () => {
     // Wait for layout save so the tab is persisted
     await saved
 
-    // Set the terminal title explicitly via an escape sequence.
-    // This simulates what shells do automatically with precmd hooks.
-    // Focus the terminal textarea and type the escape sequence.
-    await page.evaluate(() => {
-      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-      for (const container of containers) {
-        if (container.dataset.active === 'true') {
-          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-          if (textarea) {
-            textarea.focus()
-            return
-          }
-        }
-      }
-    })
-    await page.keyboard.type('printf "\\e]0;My Custom Title\\a"\n', { delay: 30 })
+    // Rename the tab. A rename is the only thing that writes a terminal's
+    // PERSISTED title: a PTY-driven OSC title is broadcast as a live overlay
+    // and deliberately never written to the DB (see the SignalTitle case in
+    // the worker's terminal.go), so it could not survive a restart by design.
+    await renameTabViaUI(page, terminalTab, 'My Custom Title')
 
-    // Wait for the title to update in the tab
-    await expect(terminalTab).toContainText('My Custom Title')
-
-    // Wait for the UpdateTerminalTitle RPC to reach the backend
-    await page.waitForTimeout(2000)
+    // Wait for the WORKER to hold the new title before tearing anything down.
+    // `renameTabViaUI` only proves the TAB BAR updated, and that text comes
+    // from the local metadata patch the rename handler applies before it fires
+    // `UpdateTerminalTitle` without awaiting it. Stopping the worker inside
+    // that window drops the durable write, and the restored-title assertion
+    // below then fails as if persistence had regressed. `waitForLayoutSave`
+    // does not cover this -- the CRDT layout carries no title.
+    await expect.poll(async () => {
+      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
+      return terminals.map(t => t.title)
+    }, 'the renamed title must reach the worker before the restart').toContain('My Custom Title')
 
     // Stop worker first, then hub
     await stopWorker()
@@ -128,6 +125,7 @@ test.describe('Full Hub+Worker Restart', () => {
   })
 
   test('should recover exited terminal title and screen after reloading before worker reconnects', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
+    const { hubUrl, adminToken, workerId } = separateHubWorker
     const saved = waitForLayoutSave(page)
 
     await openTerminalViaUI(page)
@@ -140,20 +138,20 @@ test.describe('Full Hub+Worker Restart', () => {
     const terminalId = await terminalTab.getAttribute('data-tab-id')
     expect(terminalId).toBeTruthy()
 
-    await page.evaluate(() => {
-      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-      for (const container of containers) {
-        if (container.dataset.active === 'true') {
-          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-          if (textarea) {
-            textarea.focus()
-            return
-          }
-        }
-      }
-    })
-    await page.keyboard.type('printf "\\e]0;Recovered Title\\a"\n', { delay: 30 })
-    await expect(terminalTab).toContainText('Recovered Title')
+    // See the note in the previous test: only a rename persists.
+    await renameTabViaUI(page, terminalTab, 'Recovered Title')
+
+    // Wait for the WORKER to hold the new title before tearing anything down.
+    // `renameTabViaUI` only proves the TAB BAR updated, and that text comes
+    // from the local metadata patch the rename handler applies before it fires
+    // `UpdateTerminalTitle` without awaiting it. Stopping the worker inside
+    // that window drops the durable write, and the restored-title assertion
+    // below then fails as if persistence had regressed. `waitForLayoutSave`
+    // does not cover this -- the CRDT layout carries no title.
+    await expect.poll(async () => {
+      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
+      return terminals.map(t => t.title)
+    }, 'the renamed title must reach the worker before the restart').toContain('Recovered Title')
 
     await page.evaluate(() => {
       const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')

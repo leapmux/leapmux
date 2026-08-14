@@ -24,8 +24,7 @@ When the active tab is still starting up — for example, an agent that is creat
 
 ```text
 ┌──────────────────────────────────────────────────┐
-│ Files                collapse · hidden · refresh │
-│ Enter path...                          ~/project │
+│ Files        collapse · hidden · sort · refresh  │
 │                                                  │
 │ project/                                         │
 │ ├── src/                                         │
@@ -47,22 +46,44 @@ The Files section header carries a row of action buttons, shown on the right. So
 | **Locate active file** | Only when a file tab is active | Selects and scrolls to the active file's path in the tree. |
 | **Collapse all** | Always | Collapses every expanded directory except the root. |
 | **Show hidden files** / **Hide hidden files** | Always | Shows or hides hidden files (dotfiles and OS-hidden entries). Bound to `$mod+Shift+h`. |
+| **Sort by** | Always | Opens the sort menu described below. The arrow points up for an ascending order and down for a descending one. |
 | **Refresh** | Always | Re-fetches git status and reloads the directory tree. Bound to `$mod+r` and `F5`. |
 
 The show/hidden and refresh buttons have keyboard shortcuts that work anywhere in the workspace. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the full keybindings table and how to customize them.
 
-> **Tip:** The hidden-files setting is remembered per Worker and working directory, so each repo keeps its own preference across reloads.
+> **Tip:** LeapMux stores the hidden-files setting and the sort order per Worker and working directory, so each repo keeps its own preferences across reloads.
+
+### Sort order
+
+The **Sort by** button opens a menu with two groups. The first picks what to sort by, the second picks the direction:
+
+| Sort by | Direction |
+|---------|-----------|
+| **Name** | A → Z / Z → A |
+| **Last modified** | Oldest first / Newest first |
+| **Size** | Smallest first / Largest first |
+| **Type** | A → Z / Z → A |
+
+The menu stays open while you set both, and closes on `Esc` or a click outside it.
+
+Two rules hold under every order:
+
+- **Directories come first**, and files follow.
+- **Directories sort by path, ascending**, unless the criterion is **Name**. A directory has no size and no type, and its modification time moves only when its direct children are added or removed — so ordering folders by any of those three would read as arbitrary.
+
+Name and type comparisons ignore case. Type means the file extension, and a dotfile such as `.gitignore` counts as having none, so dotfiles group with the other extensionless files.
+
+The order applies everywhere the section lists files: the tree, all four git filter tabs, and the flat list.
 
 ## The directory tree
 
 The tree shows the active tab's working directory and its contents.
 
-- **Path input.** A text box at the top of the tree shows the selected path, abbreviated with `~` for your home directory. You can type a path and press Enter (or click away) to navigate there; `~` is expanded automatically. The placeholder is `Enter path...`. If you type an absolute path whose style does not match the Worker's OS, a hint appears, for example: `This looks like a POSIX path but the worker expects Windows paths.`
 - **Root row.** The first row is the working directory itself, shown with an open-folder icon, the directory's base name, and a diff-stats badge summarizing the whole repo.
 - **Directories and files.** Directories show a chevron that rotates when expanded. Clicking a directory expands or collapses it; clicking a file selects it and opens it as a file tab.
 - **Single-child folding.** Long single-child chains like `src/main/java` are collapsed into one row to save space. Row labels always use `/` separators regardless of the Worker's OS.
 - **Lazy loading.** A directory's children are fetched the first time you expand it. While fetching, the row shows `Loading...`; an empty directory shows `Empty`.
-- **Large directories.** A directory with more than 256 entries is truncated, and the tree shows an inline `<N>+ entries, listing truncated` row.
+- **Large directories.** A directory with more than 256 entries is truncated, and the tree shows an inline `<N>+ entries, listing truncated` row. The Worker picks those 256 by name before it reads any file sizes, so under any other sort order the row reads `<N>+ entries, truncated by name before sorting` — the order you chose applies within that window, not across the whole directory.
 
 The tree refreshes itself automatically: it silently re-fetches expanded directories whenever an agent finishes a turn, and reloads in full when you click **Refresh**. Old contents stay visible during the refresh so the view never flickers blank.
 
@@ -74,6 +95,7 @@ Each tree row has a three-dot menu (and the file viewer exposes the same menu). 
 
 | Item | When shown | What it does |
 |------|-----------|--------------|
+| **Size** and **Modified** | When the Worker could read the entry (a directory shows only **Modified**) | Informational. Clicking the block copies the path, size, and modification time as JSON. |
 | **Mention in chat** | When a chat target is available | Inserts a `@`-mention of the path into the active agent's chat editor. |
 | **Open a terminal tab here** | Directories only | Opens a new terminal tab rooted at that directory. |
 | **Copy path** | Always | Copies the absolute path. |

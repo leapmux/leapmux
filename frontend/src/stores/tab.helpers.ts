@@ -658,6 +658,22 @@ export function tabTooltipText(tab: Tab): string {
   return tabDisplayLabel(tab)
 }
 
+/**
+ * When a tab's tooltip may hide behind clip detection.
+ *
+ * `showWhen="clipped"` is for a tooltip that REPEATS its label -- that is the
+ * mode's contract, and it also withholds the text from a screen reader. A
+ * terminal's tooltip carries its live PTY title, which the label never shows
+ * (the label is the worker-assigned name or a user rename), so gating that on
+ * the label happening to overflow hides the OSC title outright.
+ *
+ * Every surface that pairs {@link tabTooltipText} with {@link tabDisplayLabel}
+ * needs this, so the rule lives here rather than as a ternary at each one.
+ */
+export function tabTooltipShowWhen(tab: Tab): 'always' | 'clipped' {
+  return tabTooltipText(tab) === tabDisplayLabel(tab) ? 'clipped' : 'always'
+}
+
 /** Whether a terminal tab should show the OSC 9;4 progress affordance. */
 export function terminalProgressVisible(tab: Tab): boolean {
   if (!isTerminalTab(tab) || tab.progressState === undefined)

@@ -184,22 +184,19 @@ export function buildSectionDef(
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       headerActions: (
         <FilesSectionHeaderActions
-          onCollapseAll={() => ctx.filesSectionHandle()?.collapseAll()}
+          handle={ctx.filesSectionHandle}
           onLocateFile={() => {
             if (ctx.activeFilePath)
               ctx.onFileSelect(ctx.activeFilePath)
           }}
+          // Not on the handle: a refresh also re-reads git status, which the
+          // section does not own.
           onRefresh={() => {
             if (ctx.workerId && ctx.workingDir)
               ctx.gitStatusStore?.refresh(ctx.workerId, ctx.workingDir)
             ctx.filesSectionHandle()?.refresh()
           }}
           hasActiveFileTab={ctx.hasActiveFileTab ?? false}
-          isFiltered={() => ctx.filesSectionHandle()?.isFiltered() ?? false}
-          flatListMode={() => ctx.filesSectionHandle()?.flatListMode() ?? false}
-          onToggleFlatList={() => ctx.filesSectionHandle()?.toggleFlatListMode()}
-          showHiddenFiles={() => ctx.filesSectionHandle()?.showHiddenFiles() ?? true}
-          onToggleShowHidden={() => ctx.filesSectionHandle()?.toggleShowHiddenFiles()}
         />
       ),
       content: () => (

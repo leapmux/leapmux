@@ -1,6 +1,6 @@
 import type { GitFileStatusEntry } from '~/generated/leapmux/v1/common_pb'
 import { createMemo, createSignal } from 'solid-js'
-import { createStore, produce } from 'solid-js/store'
+import { createStore, produce, reconcile } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
 import { GitFileStatusCode } from '~/generated/leapmux/v1/common_pb'
 import { detectFlavor, relativeUnder, toPosixSeparators } from '~/lib/paths'
@@ -46,34 +46,6 @@ export function diffStatsFromTabFields(
   t: { diffAdded: number, diffDeleted: number, diffUntracked: number },
 ): DiffStats {
   return { added: t.diffAdded, deleted: t.diffDeleted, untracked: t.diffUntracked }
-}
-
-// Refresh fires every turn-end. On a quiet repo, resp.files is a fresh
-// array with identical contents; reassigning would invalidate prefixIndex
-// (walks every file × every ancestor), cascade every TreeNode's diffStats
-// memo, and repaint unchanged rows.
-function sameFileEntries(a: readonly GitFileStatusEntry[], b: readonly GitFileStatusEntry[]): boolean {
-  if (a === b)
-    return true
-  if (a.length !== b.length)
-    return false
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i]
-    const y = b[i]
-    if (x === y)
-      continue
-    if (x.path !== y.path
-      || x.stagedStatus !== y.stagedStatus
-      || x.unstagedStatus !== y.unstagedStatus
-      || x.linesAdded !== y.linesAdded
-      || x.linesDeleted !== y.linesDeleted
-      || x.stagedLinesAdded !== y.stagedLinesAdded
-      || x.stagedLinesDeleted !== y.stagedLinesDeleted
-      || x.oldPath !== y.oldPath) {
-      return false
-    }
-  }
-  return true
 }
 
 interface GitFileStatusState {
@@ -196,11 +168,25 @@ export function createGitFileStatusStore() {
           s.currentBranch = resp.currentBranch
         if (s.isWorktree !== resp.isWorktree)
           s.isWorktree = resp.isWorktree
-        // Preserve the existing reference when the file list is unchanged so
-        // the prefixIndex memo (and any downstream signals) don't rebuild.
-        if (!sameFileEntries(s.files, resp.files))
-          s.files = resp.files
       }))
+      // Keyed reconcile, NOT a wholesale array replace -- the same rule
+      // `setChildrenInStore` follows in DirectoryTree, and for the same two
+      // reasons. Refresh fires every turn-end, so on a quiet repo `resp.files`
+      // is a fresh array with identical contents: assigning it would rebuild
+      // `filesByPath` and `prefixIndex` (which walks every file x every
+      // ancestor), cascade every TreeNode's diffStats memo, and hand `<For>`
+      // fresh objects, which disposes and re-creates every flat-list row. Now
+      // that the sidebar SORTS by size and modTime, a plain edit that leaves the
+      // line counts alone changes those fields on one entry -- so the old
+      // field-by-field guard missed its fast path on any turn that wrote a
+      // single byte. Reconciling by `path` writes only the fields that really
+      // differ, on only the entries that really differ, so an unrelated file's
+      // mtime no longer repaints the list.
+      //
+      // This also retires the hand-maintained field list the guard carried: a
+      // field added to the proto and forgotten there used to pin the stale
+      // value on screen. Reconcile compares every field by construction.
+      setState('files', reconcile(resp.files, { key: 'path' }))
     }
     catch {
       if (mine !== gen)
@@ -239,18 +225,37 @@ export function createGitFileStatusStore() {
     }
   }
 
+  // Resets every field, `errorHint` included. The catch path above already
+  // clears it, and leaving it behind here kept the previous directory's
+  // diagnostic beside an otherwise empty store.
   const clear = () => {
-    setState({ isGitRepo: false, workerId: '', repoRoot: '', toplevel: '', originUrl: '', currentBranch: '', isWorktree: false, files: [] })
+    setState({ isGitRepo: false, workerId: '', repoRoot: '', toplevel: '', originUrl: '', currentBranch: '', errorHint: '', isWorktree: false, files: [] })
   }
 
-  // Memoized so the regex runs once per repoRoot change, not once per
+  /**
+   * The root every status path in `state.files` is relative to.
+   *
+   * `toplevel`, NOT `repoRoot`: `git status --porcelain=v2` emits paths
+   * relative to the WORKING-TREE root, and in a linked worktree `repoRoot` is
+   * the parent repo instead (`parseGitPathInfoOutput` rewrites it to
+   * `dirname(--git-common-dir)`). A worktree lives at
+   * `<repo-parent>/<repo>-worktrees/<branch>`, a SIBLING of the repo, so
+   * `relativeUnder` against `repoRoot` returns null for every row -- which
+   * blanked the diff badges, the file-status icons and the git filter tabs on
+   * every worktree tab. `repoRoot` stays the identity the sidebar groups by;
+   * it is not a path base. Falls back only when `toplevel` is empty, which is
+   * the "not a git repo" reply that carries no files either.
+   */
+  const statusRoot = () => state.toplevel || state.repoRoot
+
+  // Memoized so the regex runs once per root change, not once per
   // TreeNode's hasChanges/getFileStatus/getDirDiffStats call.
-  const rootFlavor = createMemo(() => detectFlavor(state.repoRoot))
+  const rootFlavor = createMemo(() => detectFlavor(statusRoot()))
 
   // Relativize a flavor-native absolute path to a git-style (posix-separated)
-  // path under repoRoot, or null if it isn't under the repo.
+  // path under the working-tree root, or null if it isn't under that tree.
   const relToRepo = (absPath: string): string | null => {
-    const root = state.repoRoot
+    const root = statusRoot()
     if (!root)
       return null
     const flavor = rootFlavor()
@@ -260,9 +265,9 @@ export function createGitFileStatusStore() {
     return flavor === 'posix' ? rel : toPosixSeparators(rel)
   }
 
-  // O(1) lookup by relative path. Rebuilds whenever state.files changes;
-  // sameFileEntries() in refresh() keeps the array reference stable on
-  // no-op refreshes, so this memo doesn't re-run on a quiet repo.
+  // O(1) lookup by relative path. Reads only `path`, so the keyed reconcile in
+  // refresh() keeps this memo from re-running when a file's size or mtime moves
+  // but the entry set does not.
   const filesByPath = createMemo(() => {
     const m = new Map<string, GitFileStatusEntry>()
     for (const f of state.files)
@@ -395,6 +400,7 @@ export function createGitFileStatusStore() {
     loading,
     refresh,
     clear,
+    statusRoot,
     getFileStatus,
     getChangedFiles,
     getNodeDiffStats,

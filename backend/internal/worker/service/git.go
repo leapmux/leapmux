@@ -245,6 +245,11 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			sendInternalError(sender, infoErr.Error())
 			return
 		}
+		// Stat the changed files here rather than inside
+		// getGitFileStatusEntries: only this handler knows the working-tree
+		// root the status paths are relative to, and the unsaved-work caller
+		// of that function never reads these fields.
+		annotateFileStats(info.TopLevel, files)
 		// queryGitPathInfo canonicalises with pathutil.Canonicalize, which
 		// uses forward-slash separators. The frontend matches this path
 		// against agent.workingDir (native separators), so normalize.
@@ -2698,6 +2703,121 @@ func getGitFileStatusEntries(ctx context.Context, repoRoot string) ([]*leapmuxv1
 	applyNumstat(unstagedOut, fileMap, false)
 	applyNumstat(stagedOut, fileMap, true)
 	return files, nil
+}
+
+// isUntrackedDirPath reports whether a status path is git's collapsed form
+// for a whole untracked directory ("build/"). Git writes the trailing slash
+// itself, so it is "/" on every platform regardless of the worker's OS. The
+// frontend decodes the same convention in isUntrackedDirEntry.
+func isUntrackedDirPath(path string) bool {
+	return strings.HasSuffix(path, "/")
+}
+
+// annotateFileStats fills in Size and ModTime for each entry it can stat.
+//
+// topLevel MUST be the working-tree root, because `git status --porcelain=v2`
+// emits paths relative to that root -- not to the directory the caller
+// queried. Passing the queried directory instead silently produces
+// "<repo>/frontend/frontend/src/..." whenever a tab's working directory is a
+// subdirectory of the repo, and every stat then fails. The repo root is wrong
+// for the same reason in a worktree, where it is the parent repo rather than
+// the working tree.
+//
+// An entry that cannot be stat-ed keeps both fields unset. That covers a
+// deleted file, a collapsed untracked directory, and a race with an agent
+// removing the file mid-refresh. See the field comments in common.proto for
+// why unset rather than zero.
+// The sweep is BOUNDED as a whole, because os.Stat ignores the handler's
+// context: the RPC's context.WithTimeout cannot interrupt an in-flight stat, so
+// a stalled mount (NFS, SMB, a macOS TCC-protected path) would hang the handler
+// with no reply and leak one goroutine per refresh. See statSweepTimeout.
+func annotateFileStats(topLevel string, files []*leapmuxv1.GitFileStatusEntry) {
+	annotateFileStatsWithTimeout(topLevel, files, statSweepTimeout, os.Stat)
+}
+
+// statSweepTimeout bounds the whole stat sweep, not one entry.
+//
+// These stats are decorative: `size` and `mod_time` carry explicit presence
+// precisely so "unknown" is representable, and the frontend already sorts an
+// unset value last. So dropping the whole sweep degrades the sidebar's size and
+// modified orders to the name tiebreak, which is a far better outcome than an
+// RPC that never answers. The budget is generous because a large status sweep
+// on a cold filesystem can legitimately take a while.
+const statSweepTimeout = 5 * time.Second
+
+// annotateFileStatsWithTimeout is annotateFileStats with a caller-supplied
+// timeout and stat function, exposed for tests.
+//
+// The goroutine writes into its OWN slice and hands it back on a buffered
+// channel; the caller applies it only when the sweep finishes in time. An
+// abandoned goroutine therefore mutates nothing the caller reads -- it only
+// reads f.Path, which nothing else writes.
+func annotateFileStatsWithTimeout(
+	topLevel string,
+	files []*leapmuxv1.GitFileStatusEntry,
+	timeout time.Duration,
+	stat func(string) (os.FileInfo, error),
+) {
+	if topLevel == "" {
+		return
+	}
+
+	type fileStat struct {
+		index   int
+		isDir   bool
+		size    int64
+		modTime string
+	}
+	ch := make(chan []fileStat, 1)
+
+	go func() {
+		out := make([]fileStat, 0, len(files))
+		for i, f := range files {
+			// Git already said this is a whole untracked directory, so skip the
+			// syscall. The IsDir check below catches a directory git did NOT
+			// mark -- a submodule carries no trailing slash. Either way a
+			// directory reports no size: its inode size would sort as a
+			// fictional file size in the sidebar's flat list.
+			if isUntrackedDirPath(f.Path) {
+				out = append(out, fileStat{index: i, isDir: true})
+				continue
+			}
+			info, err := stat(filepath.Join(topLevel, filepath.FromSlash(f.Path)))
+			if err != nil {
+				continue
+			}
+			if info.IsDir() {
+				out = append(out, fileStat{index: i, isDir: true})
+				continue
+			}
+			out = append(out, fileStat{
+				index:   i,
+				size:    info.Size(),
+				modTime: formatModTime(info.ModTime()),
+			})
+		}
+		ch <- out
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case stats := <-ch:
+		for _, s := range stats {
+			f := files[s.index]
+			if s.isDir {
+				f.IsDir = true
+				continue
+			}
+			f.Size = proto.Int64(s.size)
+			f.ModTime = proto.String(s.modTime)
+		}
+	case <-timer.C:
+		// Every entry keeps its fields unset, which the wire format already
+		// means "not stat-able".
+		slog.Warn("git file stat sweep timed out; sizes and modification times omitted",
+			"top_level", topLevel, "files", len(files), "timeout", timeout)
+	}
 }
 
 // readGitConfigRegexp runs `git config -z --get-regexp <pattern>` and

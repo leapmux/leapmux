@@ -1,13 +1,14 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -69,7 +70,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// Resolve symlinks so paths are consistent (e.g. /var → /private/var on macOS).
 		dirPath = pathutil.Canonicalize(dirPath)
 
-		entries, truncated, err := listDirectory(dirPath, dirPath, r.GetMaxDepth(), 0, r.GetDirsOnly())
+		entries, truncated, totalEntries, err := listDirectory(dirPath, dirPath, r.GetMaxDepth(), 0, r.GetDirsOnly())
 		if err != nil {
 			slog.Error("failed to list directory", "path", dirPath, "error", err)
 			sendInternalError(sender, "failed to list directory")
@@ -77,9 +78,10 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListDirectoryResponse{
-			Path:      dirPath,
-			Entries:   entries,
-			Truncated: truncated,
+			Path:         dirPath,
+			Entries:      entries,
+			Truncated:    truncated,
+			TotalEntries: int32(totalEntries),
 		})
 	})
 
@@ -151,6 +153,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 				Path:      filePath,
 				Content:   nil,
 				TotalSize: totalSize,
+				ModTime:   formatModTime(info.ModTime()),
 			})
 			return
 		}
@@ -175,6 +178,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 			Path:      filePath,
 			Content:   buf[:n],
 			TotalSize: totalSize,
+			ModTime:   formatModTime(info.ModTime()),
 		})
 	})
 
@@ -210,6 +214,30 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 	})
 }
 
+// modTimeLayout is the layout every modification time on the wire uses.
+//
+// RFC3339 with a FIXED-WIDTH nanosecond field. Two properties matter, and both
+// break if someone substitutes a stock layout:
+//
+//   - time.RFC3339 truncates to whole seconds. A formatter or a codemod writes
+//     many files inside one second, and the sidebar's "Newest first" order then
+//     ties them all and falls back to the name -- which is the alphabetical
+//     order the user chose a time order to escape.
+//   - time.RFC3339Nano TRIMS trailing zeros, so the width varies. The frontend
+//     comparator compares these strings LEXICOGRAPHICALLY instead of parsing
+//     them, which is only chronological while the width is constant. The
+//     literal ".000000000" forces all nine digits; UTC renders the offset as a
+//     one-character "Z", so every value is exactly 30 characters.
+//
+// time.Parse(time.RFC3339, …) accepts the fractional part, so this stays
+// readable by any RFC3339 consumer.
+const modTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// formatModTime renders a modification time in modTimeLayout, in UTC.
+func formatModTime(t time.Time) string {
+	return t.UTC().Format(modTimeLayout)
+}
+
 // fileInfoToProto converts an os.FileInfo into a protobuf FileInfo.
 func fileInfoToProto(info os.FileInfo, absPath string) *leapmuxv1.FileInfo {
 	return &leapmuxv1.FileInfo{
@@ -217,7 +245,7 @@ func fileInfoToProto(info os.FileInfo, absPath string) *leapmuxv1.FileInfo {
 		Path:        absPath,
 		IsDir:       info.IsDir(),
 		Size:        info.Size(),
-		ModTime:     info.ModTime().UTC().Format(time.RFC3339),
+		ModTime:     formatModTime(info.ModTime()),
 		Permissions: fmt.Sprintf("%04o", info.Mode().Perm()),
 		Hidden:      isHidden(absPath, info.Name()),
 	}
@@ -236,47 +264,74 @@ func isDirEntry(de os.DirEntry, parentDir string) bool {
 	return err == nil && info.IsDir()
 }
 
+// sortableDirEntry carries the two values the listing order needs, computed
+// once per entry. Both are expensive to derive in a comparator: isDirEntry
+// runs os.Stat for a symlink, and strings.ToLower allocates.
+type sortableDirEntry struct {
+	de        os.DirEntry
+	isDir     bool
+	lowerName string
+}
+
 // listDirectory reads directory entries, sorts them (directories first, then
 // alphabetically), truncates to maxDirEntries, and optionally merges
-// single-child directories. Sorting and truncating happen on the lightweight
-// DirEntry values before calling os.Stat, so we avoid stat-ing entries that
-// will be discarded.
-func listDirectory(dirPath, basePath string, maxDepth int32, currentDepth int32, dirsOnly bool) ([]*leapmuxv1.FileInfo, bool, error) {
+// single-child directories. The third return value is how many entries the
+// directory held BEFORE truncation, so the caller can report the size of what
+// it is not showing.
+//
+// Symlink resolution happens exactly once per entry, before the sort, and the
+// os.Stat that builds each returned FileInfo happens only after truncation, so
+// we never stat an entry that will be discarded.
+func listDirectory(dirPath, basePath string, maxDepth int32, currentDepth int32, dirsOnly bool) ([]*leapmuxv1.FileInfo, bool, int, error) {
 	dirEntries, err := os.ReadDir(dirPath)
 	if err != nil {
-		return nil, false, err
+		return nil, false, 0, err
 	}
 
-	// When dirsOnly is set, filter out non-directory entries before sorting
-	// and truncating so the entry limit counts only directories.
-	if dirsOnly {
-		n := 0
-		for _, de := range dirEntries {
-			if isDirEntry(de, dirPath) {
-				dirEntries[n] = de
-				n++
+	// One pass computes the sort keys and applies the dirs-only filter, so
+	// isDirEntry runs N times rather than once per comparison. It resolves a
+	// symlink with os.Stat, and a comparator would repeat that O(N log N)
+	// times for a directory of symlinks.
+	//
+	// The dirs-only filter MUST stay here, before the sort and the truncation
+	// below, so that maxDirEntries counts only directories. Move it after the
+	// truncation and a directory that holds 256 files plus one subdirectory
+	// returns no subdirectory at all to the picker.
+	decorated := make([]sortableDirEntry, 0, len(dirEntries))
+	for _, de := range dirEntries {
+		isDir := isDirEntry(de, dirPath)
+		if dirsOnly && !isDir {
+			continue
+		}
+		decorated = append(decorated, sortableDirEntry{
+			de:        de,
+			isDir:     isDir,
+			lowerName: strings.ToLower(de.Name()),
+		})
+	}
+
+	slices.SortFunc(decorated, func(a, b sortableDirEntry) int {
+		if a.isDir != b.isDir {
+			if a.isDir {
+				return -1
 			}
+			return 1
 		}
-		dirEntries = dirEntries[:n]
-	}
-
-	// Sort using DirEntry metadata (no extra syscalls).
-	sort.Slice(dirEntries, func(i, j int) bool {
-		iDir, jDir := isDirEntry(dirEntries[i], dirPath), isDirEntry(dirEntries[j], dirPath)
-		if iDir != jDir {
-			return iDir
-		}
-		return strings.ToLower(dirEntries[i].Name()) < strings.ToLower(dirEntries[j].Name())
+		return cmp.Compare(a.lowerName, b.lowerName)
 	})
 
+	// Counted before the slice below, and after the dirs-only filter, so it
+	// describes the same population the entries come from.
+	totalEntries := len(decorated)
 	// Truncate before stat-ing to avoid unnecessary syscalls.
-	truncated := len(dirEntries) > maxDirEntries
+	truncated := totalEntries > maxDirEntries
 	if truncated {
-		dirEntries = dirEntries[:maxDirEntries]
+		decorated = decorated[:maxDirEntries]
 	}
 
 	var entries []*leapmuxv1.FileInfo
-	for _, de := range dirEntries {
+	for _, sde := range decorated {
+		de := sde.de
 		entryPath := filepath.Join(dirPath, de.Name())
 		info, err := os.Stat(entryPath)
 		if err != nil {
@@ -297,7 +352,7 @@ func listDirectory(dirPath, basePath string, maxDepth int32, currentDepth int32,
 		entries = append(entries, fi)
 	}
 
-	return entries, truncated, nil
+	return entries, truncated, totalEntries, nil
 }
 
 // mergeReadTimeout bounds how long a single readDirN call may block.

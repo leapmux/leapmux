@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path, { join } from 'node:path'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { clickTreeContextItem, loginViaToken, openTreeContextMenu, openWorkspace, treeRow } from './helpers/ui'
+import { clickTreeContextItem, loginViaToken, openTreeContextMenu, openWorkspace, treeRow, treeRowNames } from './helpers/ui'
 
 const frontendDir = path.resolve(import.meta.dirname, '../..')
 const ABSOLUTE_PATH_RE = /^\//
@@ -33,7 +33,7 @@ test.describe('DirectoryTree', () => {
     }
   })
 
-  test('directory context menu shows 4 items including terminal', async ({ page, leapmuxServer }) => {
+  test('directory context menu shows the info block and the terminal item', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Dir Menu Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
@@ -48,7 +48,12 @@ test.describe('DirectoryTree', () => {
       // Hover the root node and open context menu
       await openTreeContextMenu(page, rootNode)
 
-      // All 4 menu items should be visible for a directory (use :visible to scope to the open popover)
+      // Every directory item should be visible (use :visible to scope to the open popover).
+      // The info block leads: a directory reports a modification time but no size.
+      const dirInfo = page.locator('[data-testid="tree-info-button"]:visible')
+      await expect(dirInfo).toBeVisible()
+      await expect(dirInfo).toContainText('Modified:')
+      await expect(dirInfo).not.toContainText('Size:')
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toBeVisible()
       await expect(page.locator('[data-testid="tree-open-terminal-button"]:visible')).toBeVisible()
       await expect(page.locator('[data-testid="tree-copy-path-button"]:visible')).toBeVisible()
@@ -59,7 +64,7 @@ test.describe('DirectoryTree', () => {
     }
   })
 
-  test('file context menu shows 3 items without terminal', async ({ page, leapmuxServer }) => {
+  test('file context menu shows size and modified but no terminal item', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'File Menu Test')
     await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
@@ -76,7 +81,10 @@ test.describe('DirectoryTree', () => {
       // row hosting the context button.
       await openTreeContextMenu(page, treeRow(page, 'package.json'))
 
-      // 3 items: mention, copy path, copy relative path — but NOT terminal
+      // Info block (size + modified), mention, copy path, copy relative path — but NOT terminal
+      const fileInfo = page.locator('[data-testid="tree-info-button"]:visible')
+      await expect(fileInfo).toContainText('Size:')
+      await expect(fileInfo).toContainText('Modified:')
       await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toBeVisible()
       await expect(page.locator('[data-testid="tree-copy-path-button"]:visible')).toBeVisible()
       await expect(page.locator('[data-testid="tree-copy-relative-path-button"]:visible')).toBeVisible()
@@ -344,6 +352,61 @@ test.describe('DirectoryTree', () => {
       // "src" should still be collapsed (state persisted via sessionStorage)
       await expect(srcNode).toBeVisible()
       await expect(componentsNode).not.toBeVisible()
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
+  })
+
+  test('sort menu reorders the tree and the choice survives a reload', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    // A directory whose size order differs from its name order, so an
+    // assertion on the row order cannot pass with the sort key ignored.
+    const sortDir = join(tmpdir(), `leapmux-e2e-sortdir-${Date.now()}`)
+    mkdirSync(sortDir)
+    writeFileSync(join(sortDir, 'apple.txt'), 'x'.repeat(900))
+    writeFileSync(join(sortDir, 'banana.txt'), 'x'.repeat(10))
+    writeFileSync(join(sortDir, 'cherry.txt'), 'x'.repeat(100))
+
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Sort Test')
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, sortDir)
+    try {
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, workspaceId)
+
+      const names = treeRowNames(page)
+      await expect(names).toHaveText(['apple.txt', 'banana.txt', 'cherry.txt'])
+
+      // Criterion and direction live in one popover, so both are reachable
+      // without reopening it.
+      await page.locator('[data-testid="files-sort-toggle"]:visible').click()
+      await page.locator('[data-testid="files-sort-key-size"]:visible').click()
+      await page.locator('[data-testid="files-sort-direction-desc"]:visible').click()
+      await expect(names).toHaveText(['apple.txt', 'cherry.txt', 'banana.txt'])
+
+      await page.keyboard.press('Escape')
+      await page.reload()
+      await expect(names).toHaveText(['apple.txt', 'cherry.txt', 'banana.txt'])
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+      rmSync(sortDir, { recursive: true, force: true })
+    }
+  })
+
+  test('the sidebar tree has no path input', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'No Path Input Test')
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
+    try {
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, workspaceId)
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
+
+      // The box belongs to the dialog picker, where a typed path retargets the
+      // tree. The sidebar shows the active tab's working directory, which the
+      // user cannot retarget by typing.
+      await expect(page.getByPlaceholder('Enter path...')).toHaveCount(0)
     }
     finally {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})

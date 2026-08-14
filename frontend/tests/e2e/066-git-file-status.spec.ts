@@ -251,6 +251,54 @@ test.describe('Git File Status', () => {
     }
   })
 
+  test('flat list honours the sort order', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    // The fixture's three changed files are 28, 31 and 24 bytes, so every sort
+    // order below differs from the name order — an assertion here cannot pass
+    // with the sort key ignored.
+    const tempDir = createTempGitRepo()
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Flat List Sort Test')
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, tempDir)
+    try {
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, workspaceId)
+      await expect(page.locator('[data-testid="tree-root-node"]')).toBeVisible()
+
+      await page.locator('[data-testid="files-filter-changed"]').click()
+      await page.locator('[data-testid="files-flat-list-toggle"]').click()
+      const rows = page.locator('[data-testid="files-flat-list"] > div')
+      await expect(rows).toHaveCount(3)
+
+      // Default: repo-relative path, ascending.
+      await expect(rows.nth(0)).toContainText('file_a.txt')
+      await expect(rows.nth(1)).toContainText('file_b.txt')
+      await expect(rows.nth(2)).toContainText('untracked.txt')
+
+      // Largest first — the sizes come from the worker's stat of each entry.
+      await page.locator('[data-testid="files-sort-toggle"]:visible').click()
+      await page.locator('[data-testid="files-sort-key-size"]:visible').click()
+      await page.locator('[data-testid="files-sort-direction-desc"]:visible').click()
+      await page.keyboard.press('Escape')
+
+      await expect(rows.nth(0)).toContainText('file_b.txt')
+      await expect(rows.nth(1)).toContainText('file_a.txt')
+      await expect(rows.nth(2)).toContainText('untracked.txt')
+
+      // Smallest first reverses the files.
+      await page.locator('[data-testid="files-sort-toggle"]:visible').click()
+      await page.locator('[data-testid="files-sort-direction-asc"]:visible').click()
+      await page.keyboard.press('Escape')
+
+      await expect(rows.nth(0)).toContainText('untracked.txt')
+      await expect(rows.nth(1)).toContainText('file_a.txt')
+      await expect(rows.nth(2)).toContainText('file_b.txt')
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
   test('collapse all button resets tree expansion', async ({ page, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Collapse All Test')

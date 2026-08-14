@@ -18,7 +18,7 @@ import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { diffStatsFromTabFields } from '~/stores/gitFileStatus.store'
-import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
+import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
 import { isAgentTab, isTerminalTab } from '~/stores/tab.types'
 import * as tabBarStyles from '../shell/TabBar.css'
 import { terminalStatusClassList } from '../shell/terminalStatus'
@@ -285,7 +285,7 @@ const TabLeaf: Component<{
           />
         )}
       >
-        <Tooltip text={tabTooltipText(props.tab)} showWhen="clipped">
+        <Tooltip text={tabTooltipText(props.tab)} showWhen={tabTooltipShowWhen(props.tab)}>
           <span
             class={css.tabLabel}
             classList={terminalStatusClassList(isTerminalTab(props.tab) ? props.tab.status : undefined)}

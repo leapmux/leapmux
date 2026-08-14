@@ -39,6 +39,7 @@ describe('storageCleanup', () => {
       expect(getTtlForKey('leapmux:worker-info:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('leapmux:local-messages:abc')).toBe(7 * DAY_MS)
       expect(getTtlForKey('leapmux:files-show-hidden:abc')).toBe(7 * DAY_MS)
+      expect(getTtlForKey('leapmux:files-sort-order:abc')).toBe(7 * DAY_MS)
       // The odd one out in this table, and deliberately so: it is a per-user
       // preference rather than a cache, and it is the only record of which
       // workspace to reopen now that the URL carries no workspace id. A day-
@@ -183,6 +184,7 @@ describe('storageCleanup', () => {
         ['leapmux:worker-info:worker-1', { name: 'w' }],
         ['leapmux:local-messages:ws-1', []],
         ['leapmux:files-show-hidden:ws-1', true],
+        ['leapmux:files-sort-order:ws-1', { key: 'size', direction: 'desc' }],
         ['leapmux:chat-row-heights:ws-1', {}],
         ...[...EXACT_KEY_TTLS.keys()].map(key => [key, 'sample'] as [string, unknown]),
       ]
