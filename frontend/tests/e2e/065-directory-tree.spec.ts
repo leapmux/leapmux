@@ -412,4 +412,33 @@ test.describe('DirectoryTree', () => {
       await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
     }
   })
+
+  /**
+   * The tree is the clean control for the right-click path: its rows carry no
+   * drag, so nothing else competes for the press.
+   */
+  test('right-click opens a row menu without selecting the row', async ({ page, leapmuxServer }) => {
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Tree Right Click Test')
+    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
+    try {
+      await loginViaToken(page, adminToken)
+      await openWorkspace(page, workspaceId)
+
+      const row = treeRow(page, 'package.json')
+      await expect(row).toBeVisible()
+
+      await row.click({ button: 'right' })
+      await expect(page.locator('[data-testid="tree-copy-path-button"]:visible')).toBeVisible()
+
+      // The root row owns its own menu, so a right-click there is not the same
+      // element's menu re-anchored.
+      await page.keyboard.press('Escape')
+      await page.locator('[data-testid="tree-root-node"]:visible').click({ button: 'right' })
+      await expect(page.locator('[data-testid="tree-copy-path-button"]:visible')).toBeVisible()
+    }
+    finally {
+      await deleteWorkspaceViaAPI(hubUrl, adminToken, workspaceId).catch(() => {})
+    }
+  })
 })

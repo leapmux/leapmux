@@ -39,6 +39,7 @@ import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_M
 import { markdownContent } from './markdownEditor/markdownContent.css'
 import { MessageBubble } from './MessageBubble'
 import { messageBubbleClass, messageRowChrome } from './messageClassification'
+import { MessageContextMenuHostProvider } from './MessageContextMenuHost'
 import { createMessageRenderCacheStore } from './messageRenderCache'
 import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
 import { ToolUseLayout } from './toolRenderers'
@@ -988,55 +989,59 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   return (
     <div class={styles.container} data-testid="chat-container">
-      <div class={styles.messageListWrapper}>
-        <div
-          ref={(el) => {
-            listEl = el
-            setScrollEl(el)
-            scroll.attachListRef(el)
-            viewportSizeObserver.observe(el)
-            attachPassiveScrollListeners(el)
-          }}
-          // Hide the native scrollbar when the rail is active and either can draw a thumb
-          // from a server anchor, or there is no scrollable local-only overflow that would
-          // need the native scrollbar as a fallback.
-          class={`${styles.messageList} ${hideNativeScrollbar() ? styles.messageListRailActive : ''}`}
-          data-chat-scroll-container="true"
-          tabIndex={0}
-          {...scrollHandlers}
-        >
-          {/*
+      {/* One shared menu for every row below, including the streaming tail. The
+          host renders a trigger-less popover, so it adds no box to this column --
+          see `data-headless` in ~/components/common/DropdownMenu.tsx. */}
+      <MessageContextMenuHostProvider>
+        <div class={styles.messageListWrapper}>
+          <div
+            ref={(el) => {
+              listEl = el
+              setScrollEl(el)
+              scroll.attachListRef(el)
+              viewportSizeObserver.observe(el)
+              attachPassiveScrollListeners(el)
+            }}
+            // Hide the native scrollbar when the rail is active and either can draw a thumb
+            // from a server anchor, or there is no scrollable local-only overflow that would
+            // need the native scrollbar as a fallback.
+            class={`${styles.messageList} ${hideNativeScrollbar() ? styles.messageListRailActive : ''}`}
+            data-chat-scroll-container="true"
+            tabIndex={0}
+            {...scrollHandlers}
+          >
+            {/*
             AgentStartupBanner is rendered in two places below: once in the
             empty-state fallback and once trailing the message list. They
             are NOT redundant — the outer <Show> only renders one branch at
             a time, so at most one banner is in the DOM for any given state.
           */}
-          <Show
-            when={hasVisibleEntries() || props.streamingText || props.agentLifecycle?.agentWorking
-              || props.pagination?.hasOlderMessages || props.pagination?.hasNewerMessages
-              || props.pagination?.fetchingOlder || props.pagination?.fetchingNewer}
-            fallback={(
-              <Switch fallback={<div class={styles.emptyChat}>Send a message to start</div>}>
-                <Match when={props.agentLifecycle?.agentStatus === AgentStatus.STARTING || props.agentLifecycle?.agentStatus === AgentStatus.STARTUP_FAILED}>
-                  <AgentStartupBanner
-                    status={props.agentLifecycle?.agentStatus}
-                    providerLabel={props.agentLifecycle?.providerLabel}
-                    startupError={props.agentLifecycle?.startupError}
-                    startupMessage={props.agentLifecycle?.startupMessage}
-                    containerClass={styles.emptyChat}
-                  />
-                </Match>
-              </Switch>
-            )}
-          >
-            <div class={styles.messageListSpacer} />
-            <SelectionQuotePopover
-              class={styles.messageListSelectionRoot}
-              onQuote={text => props.onQuote?.(formatChatQuote(text))}
-              onSelectionActiveChange={setTextSelectionActive}
+            <Show
+              when={hasVisibleEntries() || props.streamingText || props.agentLifecycle?.agentWorking
+                || props.pagination?.hasOlderMessages || props.pagination?.hasNewerMessages
+                || props.pagination?.fetchingOlder || props.pagination?.fetchingNewer}
+              fallback={(
+                <Switch fallback={<div class={styles.emptyChat}>Send a message to start</div>}>
+                  <Match when={props.agentLifecycle?.agentStatus === AgentStatus.STARTING || props.agentLifecycle?.agentStatus === AgentStatus.STARTUP_FAILED}>
+                    <AgentStartupBanner
+                      status={props.agentLifecycle?.agentStatus}
+                      providerLabel={props.agentLifecycle?.providerLabel}
+                      startupError={props.agentLifecycle?.startupError}
+                      startupMessage={props.agentLifecycle?.startupMessage}
+                      containerClass={styles.emptyChat}
+                    />
+                  </Match>
+                </Switch>
+              )}
             >
-              <div class={styles.messageListContent}>
-                {/*
+              <div class={styles.messageListSpacer} />
+              <SelectionQuotePopover
+                class={styles.messageListSelectionRoot}
+                onQuote={text => props.onQuote?.(formatChatQuote(text))}
+                onSelectionActiveChange={setTextSelectionActive}
+              >
+                <div class={styles.messageListContent}>
+                  {/*
                   Virtualized list: only rows in/near the viewport are mounted,
                   absolutely positioned by translateY inside a spacer sized to
                   the whole window's height (so the native scrollbar is correct).
@@ -1047,20 +1052,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   fast fling cannot scroll past the loaded edge into unloaded history
                   -- it stalls there until the buffer filler loads more, never skips.
                 */}
-                <div class={styles.virtualSpacer} style={{ height: `${virt.totalHeight()}px` }}>
-                  {/* Inter-row rail segments, outside the paint-contained rows
+                  <div class={styles.virtualSpacer} style={{ height: `${virt.totalHeight()}px` }}>
+                    {/* Inter-row rail segments, outside the paint-contained rows
                       (before the <For>, so rows paint over any overlap). Keyed
                       on the same stable entry references as the row <For>, so
                       geometry changes move anchors in place instead of
                       recreating the overlay DOM. */}
-                  <SpanLineGapBridges
-                    entries={visibleSlice()}
-                    precedingEntry={visibleEntries()[virt.range().start - 1]}
-                    topOf={id => virt.offsetOfId(id) ?? 0}
-                    hiddenOf={rowSpanColumnHidden}
-                    gapAboveOf={virt.gapAboveOf}
-                  />
-                  {/*
+                    <SpanLineGapBridges
+                      entries={visibleSlice()}
+                      precedingEntry={visibleEntries()[virt.range().start - 1]}
+                      topOf={id => virt.offsetOfId(id) ?? 0}
+                      hiddenOf={rowSpanColumnHidden}
+                      gapAboveOf={virt.gapAboveOf}
+                    />
+                    {/*
                     Loading skeletons: a premeasure-hidden row whose wait has
                     exceeded SKELETON_SHOW_DELAY_MS paints its reserved slot as
                     shimmer lines instead of blank space (a fast re-measure never
@@ -1069,82 +1074,82 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     by the same offsets, so they vanish seamlessly the moment the
                     real row's measurement commits and it fades in.
                   */}
-                  <For each={skeletonSlice()}>
-                    {entry => positionedRowSkeleton(entry)}
-                  </For>
-                  {/*
+                    <For each={skeletonSlice()}>
+                      {entry => positionedRowSkeleton(entry)}
+                    </For>
+                    {/*
                     Crossfade tail: skeletons whose row just measured fade OUT
                     here while the real row's opacity fades in — the two
                     overlap for one beat, so the swap never pops.
                   */}
-                  <For each={lingeringSkeletonSlice()}>
-                    {entry => positionedRowSkeleton(entry, true)}
-                  </For>
-                  <For each={visibleSlice()}>
-                    {(entry) => {
-                      const { msg, parsedSpanLines } = entry
-                      // Offset is resolved by the row's own id, not by
-                      // range().start + localIndex(): the id is the stable,
-                      // unique key into the offset map (seq is 0n for every
-                      // optimistic local), so it can't transiently disagree with
-                      // the slice bounds during a scroll/measure flush.
-                      const top = () => virt.offsetOfId(msg.id) ?? 0
-                      // Fling skeleton: a MEASURED row entering the window
-                      // during a FAST user scroll mounts as line placeholders at
-                      // its known height instead of paying full bubble
-                      // construction on the scroll-critical path, then upgrades
-                      // in place (skeleton -> crossfade -> real) once the scroll
-                      // settles. The per-row phase machine lives in
-                      // createRowUpgradePhase (see rowSkeletonUpgradeOverlay for
-                      // the crossfade copy). trackRow also registers this row's phase
-                      // in flingSkeletons.skeletonIds so the gap-bridge overlay hides
-                      // this row's bridge while the skeleton shows.
-                      const upgradePhase = flingSkeletons.trackRow(msg.id)
+                    <For each={lingeringSkeletonSlice()}>
+                      {entry => positionedRowSkeleton(entry, true)}
+                    </For>
+                    <For each={visibleSlice()}>
+                      {(entry) => {
+                        const { msg, parsedSpanLines } = entry
+                        // Offset is resolved by the row's own id, not by
+                        // range().start + localIndex(): the id is the stable,
+                        // unique key into the offset map (seq is 0n for every
+                        // optimistic local), so it can't transiently disagree with
+                        // the slice bounds during a scroll/measure flush.
+                        const top = () => virt.offsetOfId(msg.id) ?? 0
+                        // Fling skeleton: a MEASURED row entering the window
+                        // during a FAST user scroll mounts as line placeholders at
+                        // its known height instead of paying full bubble
+                        // construction on the scroll-critical path, then upgrades
+                        // in place (skeleton -> crossfade -> real) once the scroll
+                        // settles. The per-row phase machine lives in
+                        // createRowUpgradePhase (see rowSkeletonUpgradeOverlay for
+                        // the crossfade copy). trackRow also registers this row's phase
+                        // in flingSkeletons.skeletonIds so the gap-bridge overlay hides
+                        // this row's bridge while the skeleton shows.
+                        const upgradePhase = flingSkeletons.trackRow(msg.id)
 
-                      // An assistant message / thought paints a full-bleed band
-                      // BEHIND the row: the band is the row's own background and
-                      // border, so paint containment can't clip it and the span
-                      // rails and toolbar sit on top of the gray. Read once --
-                      // reclassifying a row replaces its entry, which remounts
-                      // this row. data-band is the e2e hook, because every style
-                      // class is a hashed name.
-                      const chrome = messageRowChrome(styles.virtualRow, entry.category.kind, msg.source)
+                        // An assistant message / thought paints a full-bleed band
+                        // BEHIND the row: the band is the row's own background and
+                        // border, so paint containment can't clip it and the span
+                        // rails and toolbar sit on top of the gray. Read once --
+                        // reclassifying a row replaces its entry, which remounts
+                        // this row. data-band is the e2e hook, because every style
+                        // class is a hashed name.
+                        const chrome = messageRowChrome(styles.virtualRow, entry.category.kind, msg.source)
 
-                      return (
-                        <div
-                          class={chrome.class}
-                          data-band={chrome.band}
-                          style={{
-                            transform: `translateY(${top()}px)`,
-                            // Absolute rows do not reserve flow height for
-                            // siblings — see rowHiddenUntilMeasured for why an
-                            // unmeasured premeasuring row stays invisible.
-                            visibility: rowHiddenUntilMeasured(msg.id) ? 'hidden' : undefined,
-                            opacity: rowHiddenUntilMeasured(msg.id) ? '0' : '1',
-                          }}
-                          data-seq={msg.seq.toString()}
-                          ref={(el) => {
-                            virt.attachRow(msg.id, el)
-                            onCleanup(() => virt.detachRow(el))
-                          }}
-                        >
-                          <Show
-                            when={upgradePhase() !== 'skeleton'}
-                            fallback={(
-                              <ChatRowSkeleton
-                                height={virt.heightOfId(msg.id)}
-                                seed={msg.id}
-                              />
-                            )}
+                        return (
+                          <div
+                            class={chrome.class}
+                            data-band={chrome.band}
+                            style={{
+                              transform: `translateY(${top()}px)`,
+                              // Absolute rows do not reserve flow height for
+                              // siblings — see rowHiddenUntilMeasured for why an
+                              // unmeasured premeasuring row stays invisible.
+                              visibility: rowHiddenUntilMeasured(msg.id) ? 'hidden' : undefined,
+                              opacity: rowHiddenUntilMeasured(msg.id) ? '0' : '1',
+                            }}
+                            data-seq={msg.seq.toString()}
+                            ref={(el) => {
+                              virt.attachRow(msg.id, el)
+                              onCleanup(() => virt.detachRow(el))
+                            }}
                           >
-                            {(() => {
+                            <Show
+                              when={upgradePhase() !== 'skeleton'}
+                              fallback={(
+                                <ChatRowSkeleton
+                                  height={virt.heightOfId(msg.id)}
+                                  seed={msg.id}
+                                />
+                              )}
+                            >
+                              {(() => {
                               // Constructed lazily: while the skeleton shows,
                               // the bubble (markdown, tokens, toolbars) is
                               // never built for this row.
-                              const bubble = renderMessageBubble(entry)
-                              return (
-                                <>
-                                  {/*
+                                const bubble = renderMessageBubble(entry)
+                                return (
+                                  <>
+                                    {/*
                                     data-span-columns carries how many rails
                                     this row draws (0 when it draws none, e.g. a
                                     subagent spawn with nothing else open). Every
@@ -1152,7 +1157,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                     name, so an e2e spec has no other stable way
                                     to read the rail count of one row.
                                   */}
-                                  {/*
+                                    {/*
                                     Both arms publish ROW_BLEED_LEFT_VAR: how far
                                     the panel's left edge is from where this row's
                                     content starts. The rails push that start
@@ -1160,126 +1165,126 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                     bleeding child reads it instead of assuming
                                     the bare gutter.
                                   */}
-                                  <Show
-                                    when={parsedSpanLines.length > 0}
-                                    fallback={(
-                                      <div
-                                        data-span-columns={parsedSpanLines.length}
-                                        style={reservedRowContentColumnStyle(0)}
-                                      >
-                                        {bubble}
+                                    <Show
+                                      when={parsedSpanLines.length > 0}
+                                      fallback={(
+                                        <div
+                                          data-span-columns={parsedSpanLines.length}
+                                          style={reservedRowContentColumnStyle(0)}
+                                        >
+                                          {bubble}
+                                        </div>
+                                      )}
+                                    >
+                                      <div class={styles.railedRow} data-span-columns={parsedSpanLines.length}>
+                                        <SpanLines lines={parsedSpanLines} />
+                                        <div class={styles.railedRowContent} style={rowBleedLeftStyle(parsedSpanLines.length)}>
+                                          {bubble}
+                                        </div>
                                       </div>
-                                    )}
-                                  >
-                                    <div class={styles.railedRow} data-span-columns={parsedSpanLines.length}>
-                                      <SpanLines lines={parsedSpanLines} />
-                                      <div class={styles.railedRowContent} style={rowBleedLeftStyle(parsedSpanLines.length)}>
-                                        {bubble}
+                                    </Show>
+                                    <Show when={upgradePhase() === 'crossfade'}>
+                                      <div class={`${styles.rowSkeletonUpgradeOverlay} ${styles.rowSkeletonClosing}`}>
+                                        <ChatRowSkeleton
+                                          height={virt.heightOfId(msg.id)}
+                                          seed={msg.id}
+                                        />
                                       </div>
-                                    </div>
-                                  </Show>
-                                  <Show when={upgradePhase() === 'crossfade'}>
-                                    <div class={`${styles.rowSkeletonUpgradeOverlay} ${styles.rowSkeletonClosing}`}>
-                                      <ChatRowSkeleton
-                                        height={virt.heightOfId(msg.id)}
-                                        seed={msg.id}
-                                      />
-                                    </div>
-                                  </Show>
-                                </>
-                              )
-                            })()}
-                          </Show>
-                        </div>
-                      )
-                    }}
-                  </For>
-                </div>
-                {/*
+                                    </Show>
+                                  </>
+                                )
+                              })()}
+                            </Show>
+                          </div>
+                        )
+                      }}
+                    </For>
+                  </div>
+                  {/*
                   Streaming text and the thinking indicator belong at the live
                   tail. While windowed away from the tail (hasNewerMessages) the
                   bottom of the in-memory list isn't the real bottom, so hide
                   them — the scroll-to-bottom button jumps back to the tail.
                 */}
-                <Show when={!props.pagination?.hasNewerMessages}>
-                  <Show when={streamingTailRender()}>
-                    {streamingTail => (
-                      <Show
-                        when={streamingTail().type === 'plan'}
-                        fallback={(() => {
+                  <Show when={!props.pagination?.hasNewerMessages}>
+                    <Show when={streamingTailRender()}>
+                      {streamingTail => (
+                        <Show
+                          when={streamingTail().type === 'plan'}
+                          fallback={(() => {
                           // The live tail wears the SAME chrome as the persisted
                           // assistant row that replaces it, so the band does not
                           // appear only after the message lands. Derived from the
                           // kind it will become, never hardcoded: this is a row
                           // mount site like the other three, and a hand-written
                           // copy is what lets them drift.
-                          const chrome = messageRowChrome('', 'assistant_text', MessageSource.AGENT)
-                          return (
-                            <div
+                            const chrome = messageRowChrome('', 'assistant_text', MessageSource.AGENT)
+                            return (
+                              <div
                               // The tail sits in FLOW, not in the offset map, so the
                               // virtualizer's band overlap cannot reach it. Cancel
                               // the flow gap and one border here instead, or the
                               // reader sees two lines and a gap that snap into one
                               // line the instant the message lands.
-                              class={tailMergesWithRowAbove() ? `${chrome.class} ${styles.bandTailMerged}` : chrome.class}
-                              data-band={chrome.band}
-                            >
-                              <div class={messageBubbleClass('assistant_text', MessageSource.AGENT)}>
-                                {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
-                                <div class={markdownContent} innerHTML={streamingTail().html} />
+                                class={tailMergesWithRowAbove() ? `${chrome.class} ${styles.bandTailMerged}` : chrome.class}
+                                data-band={chrome.band}
+                              >
+                                <div class={messageBubbleClass('assistant_text', MessageSource.AGENT)}>
+                                  {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
+                                  <div class={markdownContent} innerHTML={streamingTail().html} />
+                                </div>
                               </div>
-                            </div>
-                          )
-                        })()}
-                      >
-                        <ToolUseLayout
-                          icon={PlaneTakeoff}
-                          toolName="Plan"
-                          title="Proposed Plan"
-                          alwaysVisible={true}
-                          bordered={false}
+                            )
+                          })()}
                         >
-                          <>
-                            <hr />
-                            {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
-                            <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={streamingTail().html} />
-                          </>
-                        </ToolUseLayout>
-                      </Show>
-                    )}
-                  </Show>
-                  <ThinkingIndicator
-                    id={props.agentId}
-                    visible={props.agentLifecycle?.agentWorking ?? false}
-                    thinkingTokens={props.agentLifecycle?.thinkingTokens}
-                    paused={props.tabActive === false}
-                    backgroundTasks={props.agentLifecycle?.backgroundTasks}
-                    onOpenSubagent={props.agentLifecycle?.onOpenSubagent}
-                    todos={props.agentLifecycle?.todos}
-                    onExpandTick={() => {
-                      if (scroll.isAtBottomFresh())
-                        scroll.jumpToBottom()
-                    }}
-                  />
-                  {/*
+                          <ToolUseLayout
+                            icon={PlaneTakeoff}
+                            toolName="Plan"
+                            title="Proposed Plan"
+                            alwaysVisible={true}
+                            bordered={false}
+                          >
+                            <>
+                              <hr />
+                              {/* eslint-disable-next-line solid/no-innerhtml -- streaming text rendered via remark */}
+                              <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} innerHTML={streamingTail().html} />
+                            </>
+                          </ToolUseLayout>
+                        </Show>
+                      )}
+                    </Show>
+                    <ThinkingIndicator
+                      id={props.agentId}
+                      visible={props.agentLifecycle?.agentWorking ?? false}
+                      thinkingTokens={props.agentLifecycle?.thinkingTokens}
+                      paused={props.tabActive === false}
+                      backgroundTasks={props.agentLifecycle?.backgroundTasks}
+                      onOpenSubagent={props.agentLifecycle?.onOpenSubagent}
+                      todos={props.agentLifecycle?.todos}
+                      onExpandTick={() => {
+                        if (scroll.isAtBottomFresh())
+                          scroll.jumpToBottom()
+                      }}
+                    />
+                    {/*
                     The startup banner is tail-anchored like the streaming/thinking
                     UI above: while windowed away from the live tail (hasNewerMessages)
                     the in-memory bottom isn't the real bottom, so it stays gated --
                     otherwise a STARTING restart would paint the banner mid-history.
                   */}
-                  <AgentStartupBanner
-                    status={props.agentLifecycle?.agentStatus}
-                    providerLabel={props.agentLifecycle?.providerLabel}
-                    startupError={props.agentLifecycle?.startupError}
-                    startupMessage={props.agentLifecycle?.startupMessage}
-                    containerClass={styles.startupPanelInline}
-                  />
-                </Show>
-              </div>
-            </SelectionQuotePopover>
-          </Show>
-        </div>
-        {/*
+                    <AgentStartupBanner
+                      status={props.agentLifecycle?.agentStatus}
+                      providerLabel={props.agentLifecycle?.providerLabel}
+                      startupError={props.agentLifecycle?.startupError}
+                      startupMessage={props.agentLifecycle?.startupMessage}
+                      containerClass={styles.startupPanelInline}
+                    />
+                  </Show>
+                </div>
+              </SelectionQuotePopover>
+            </Show>
+          </div>
+          {/*
           History loading indicators: absolute OVERLAYS pinned to the top / bottom of
           the viewport, NOT in the scroll flow. In-flow they would shift the virtualized
           content by their height as fetching toggles -- a shift the anchor re-pin can't
@@ -1289,76 +1294,77 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           they show ONLY when the view is clamped against the loaded edge waiting on the
           fetch -- a background pre-fetch (the common case) stays silent.
         */}
-        <Show when={scroll.stalledOlder()}>
-          <div class={styles.loadingOlderIndicator}>
-            <Spinner />
-            Loading older messages...
-          </div>
-        </Show>
-        <Show when={scroll.stalledNewer()}>
-          <div class={styles.loadingNewerIndicator}>
-            <Spinner />
-            Loading newer messages...
-          </div>
-        </Show>
-        {/*
+          <Show when={scroll.stalledOlder()}>
+            <div class={styles.loadingOlderIndicator}>
+              <Spinner />
+              Loading older messages...
+            </div>
+          </Show>
+          <Show when={scroll.stalledNewer()}>
+            <div class={styles.loadingNewerIndicator}>
+              <Spinner />
+              Loading newer messages...
+            </div>
+          </Show>
+          {/*
           Hide the scroll-to-bottom button while the newer-loading indicator is up: both
           float at bottom-center, so the indicator takes the slot for the brief stall and
           the button reappears once the page lands (or the fetch times out).
         */}
-        <Show when={!scroll.stalledNewer() && (!scroll.atBottom() || props.pagination?.hasNewerMessages)}>
-          <button
-            type="button"
-            class={`outline icon ${styles.scrollToBottomButton}`}
-            onClick={() => scroll.scrollToBottom()}
-          >
-            <Icon icon={ArrowDown} size="lg" />
-          </button>
-        </Show>
-        <Show when={props.rail?.loaded}>
-          <ChatScrollRail
-            scrollEl={scrollEl()}
-            items={virtualItems()}
-            offsetOfIndex={virt.offsetOfIndex}
-            totalHeight={virt.totalHeight()}
-            geometryVersion={virt.geometryVersion()}
-            // The row-seq map the owner resolution above already computes (railRowSeqs), reused by
-            // the rail's geometry so the O(n) scan runs once per item-list change, not twice.
-            railRowSeqs={railRowSeqs()}
-            // ChatRailProps extends ChatRailData, so pass the whole object straight through as the
-            // rail's `rail` prop rather than re-flattening its six fields (which the view would then
-            // have to keep in hand-sync). previewFor/warmPreview are the orthogonal on-demand
-            // callbacks and stay separate.
-            rail={props.rail!}
-            // Whether the rail hides itself, the exact complement of hideNativeScrollbar: both are
-            // derived from ONE railOwner resolution (single viewport-height source), so the rail is
-            // shown exactly when the native bar is hidden -- never zero, never two scrollbars.
-            hidden={railOwner() !== 'rail'}
-            // Paint-only auto-hide; never an unmount (see the rail's scrollActive prop).
-            // Driven by railActivity, which takes user input plus a momentum-gated scroll, so
-            // a streaming turn's stick-to-bottom writes cannot light it. Every viewport and
-            // pointer fades the idle rail the same way -- only the `pointer-events` half of
-            // railIdle is coarse-only -- so there is no JS branch here.
-            scrollActive={railActivity.active()}
-            // The rail's own interactions (grab, drag move, dot hover or focus) reopen the
-            // window -- a captured thumb drag fires no events on the scroll container.
-            onActivity={() => railActivity.noteInput()}
-            hasMoreOlder={!!props.pagination?.hasOlderMessages}
-            hasMoreNewer={!!props.pagination?.hasNewerMessages}
-            onJumpToSeq={seq => scroll.jumpToSeq(seq)}
-            previewScrollTo={top => scroll.previewScrollTo(top)}
-            onSeekInterrupt={() => scroll.cancelPendingSeek()}
-            previewFor={props.rail!.previewFor}
-            warmPreview={props.rail!.warmPreview}
-          />
-        </Show>
-      </div>
-      <ChatHiddenPremeasure
-        candidates={premeasureCandidates()}
-        contentWidthPx={effectiveContentWidth()}
-        renderBubble={entry => renderMessageBubble(entry, { premeasureMode: true })}
-        onMeasure={premeasure.onMeasure}
-      />
+          <Show when={!scroll.stalledNewer() && (!scroll.atBottom() || props.pagination?.hasNewerMessages)}>
+            <button
+              type="button"
+              class={`outline icon ${styles.scrollToBottomButton}`}
+              onClick={() => scroll.scrollToBottom()}
+            >
+              <Icon icon={ArrowDown} size="lg" />
+            </button>
+          </Show>
+          <Show when={props.rail?.loaded}>
+            <ChatScrollRail
+              scrollEl={scrollEl()}
+              items={virtualItems()}
+              offsetOfIndex={virt.offsetOfIndex}
+              totalHeight={virt.totalHeight()}
+              geometryVersion={virt.geometryVersion()}
+              // The row-seq map the owner resolution above already computes (railRowSeqs), reused by
+              // the rail's geometry so the O(n) scan runs once per item-list change, not twice.
+              railRowSeqs={railRowSeqs()}
+              // ChatRailProps extends ChatRailData, so pass the whole object straight through as the
+              // rail's `rail` prop rather than re-flattening its six fields (which the view would then
+              // have to keep in hand-sync). previewFor/warmPreview are the orthogonal on-demand
+              // callbacks and stay separate.
+              rail={props.rail!}
+              // Whether the rail hides itself, the exact complement of hideNativeScrollbar: both are
+              // derived from ONE railOwner resolution (single viewport-height source), so the rail is
+              // shown exactly when the native bar is hidden -- never zero, never two scrollbars.
+              hidden={railOwner() !== 'rail'}
+              // Paint-only auto-hide; never an unmount (see the rail's scrollActive prop).
+              // Driven by railActivity, which takes user input plus a momentum-gated scroll, so
+              // a streaming turn's stick-to-bottom writes cannot light it. Every viewport and
+              // pointer fades the idle rail the same way -- only the `pointer-events` half of
+              // railIdle is coarse-only -- so there is no JS branch here.
+              scrollActive={railActivity.active()}
+              // The rail's own interactions (grab, drag move, dot hover or focus) reopen the
+              // window -- a captured thumb drag fires no events on the scroll container.
+              onActivity={() => railActivity.noteInput()}
+              hasMoreOlder={!!props.pagination?.hasOlderMessages}
+              hasMoreNewer={!!props.pagination?.hasNewerMessages}
+              onJumpToSeq={seq => scroll.jumpToSeq(seq)}
+              previewScrollTo={top => scroll.previewScrollTo(top)}
+              onSeekInterrupt={() => scroll.cancelPendingSeek()}
+              previewFor={props.rail!.previewFor}
+              warmPreview={props.rail!.warmPreview}
+            />
+          </Show>
+        </div>
+        <ChatHiddenPremeasure
+          candidates={premeasureCandidates()}
+          contentWidthPx={effectiveContentWidth()}
+          renderBubble={entry => renderMessageBubble(entry, { premeasureMode: true })}
+          onMeasure={premeasure.onMeasure}
+        />
+      </MessageContextMenuHostProvider>
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import type { Component } from 'solid-js'
+import type { Accessor, Component } from 'solid-js'
 import type { FileSortFields, FileSortKey, FileSortOrder } from '~/lib/fileSort'
 import type { PathFlavor } from '~/lib/paths'
 import type { createGitFileStatusStore, DiffStats } from '~/stores/gitFileStatus.store'
@@ -9,6 +9,7 @@ import FolderOpen from 'lucide-solid/icons/folder-open'
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
 import { createStore, produce, reconcile } from 'solid-js/store'
 import * as workerRpc from '~/api/workerRpc'
+import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
 import { Icon } from '~/components/common/Icon'
 import { StartupSpinner } from '~/components/common/StartupPanel'
@@ -322,10 +323,12 @@ const TreeContextMenu: Component<{
   isDir: boolean
   size?: number
   modTime?: string
+  contextMenuFor?: Accessor<HTMLElement | undefined>
 }> = (props) => {
   const tree = useTree()
   return (
     <FileActionsMenu
+      contextMenuFor={props.contextMenuFor}
       workerId={tree.workerId}
       path={props.path}
       flavor={tree.flavor()}
@@ -354,7 +357,10 @@ const TreeNode: Component<{
   const tree = useTree()
   const [loading, setLoading] = createSignal(false)
   let wrapperRef!: HTMLDivElement
+  // `nodeRef` stays for the imperative scroll-into-view callers.
   let nodeRef!: HTMLDivElement
+  // The same element as `nodeRef`, for the row menu's attach effect.
+  const [nodeEl, setNodeEl] = createContextMenuAnchor()
   let childrenRef: HTMLDivElement | undefined
 
   const expanded = () => tree.isNodeExpanded(props.node.path)
@@ -550,9 +556,16 @@ const TreeNode: Component<{
   return (
     <div ref={wrapperRef}>
       <div
-        ref={nodeRef}
+        ref={(el) => {
+          nodeRef = el
+          setNodeEl(el)
+        }}
         class={styles.node}
         classList={{ [styles.nodeSelected]: isSelected() }}
+        // The row's own statement of selection, so the coarse-pointer kebab
+        // reveal (~/components/tree/sidebarActions.css.ts) keys on ONE marker
+        // for every row type, not on each type's style class.
+        data-active={isSelected() ? 'true' : 'false'}
         style={{ 'padding-left': indent() }}
         data-testid="tree-row"
         onClick={toggle}
@@ -585,6 +598,7 @@ const TreeNode: Component<{
         />
         <div class={sidebarActions}>
           <TreeContextMenu
+            contextMenuFor={nodeEl}
             path={props.node.path}
             isDir={props.node.isDir}
             size={props.node.size}
@@ -631,6 +645,8 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   const [error, setError] = createSignal<string | null>(null)
   let loadVersion = 0
   let treeRef!: HTMLDivElement
+  // The root row element, for its right-click / long-press menu.
+  const [rootNodeEl, setRootNodeEl] = createContextMenuAnchor()
 
   // When the tree container shrinks (e.g. WorktreeOptions appearing below),
   // re-scroll the selected node into view if it was pushed out.
@@ -932,8 +948,10 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
             <div class={styles.treeInner}>
               {/* Root directory row */}
               <div
+                ref={setRootNodeEl}
                 class={styles.node}
                 classList={{ [styles.nodeSelected]: props.selectedPath === rootPath() }}
+                data-active={props.selectedPath === rootPath() ? 'true' : 'false'}
                 style={{ 'padding-left': '8px' }}
                 data-testid="tree-root-node"
                 onClick={() => props.onSelect(rootPath())}
@@ -946,6 +964,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                 />
                 <div class={sidebarActions}>
                   <TreeContextMenu
+                    contextMenuFor={rootNodeEl}
                     path={rootPath()}
                     isDir
                     modTime={rootModTime()}

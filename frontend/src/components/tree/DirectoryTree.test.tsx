@@ -95,6 +95,28 @@ describe('directoryTree', () => {
     expect(rowFor('a.txt')).toBe(before)
     expect(before.isConnected).toBe(true)
   })
+
+  it('marks the selected row with data-active, the one marker the coarse-pointer kebab reveal keys on', async () => {
+    const root = '/repo-active'
+    listDirectory.mockResolvedValue({
+      entries: [entry(root, 'a.txt'), entry(root, 'b.txt')],
+      truncated: false,
+    })
+
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        showFiles
+        rootPath={root}
+        selectedPath={`${root}/a.txt`}
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('a.txt')).toBeTruthy())
+
+    expect(rowFor('a.txt')).toHaveAttribute('data-active', 'true')
+    expect(rowFor('b.txt')).toHaveAttribute('data-active', 'false')
+  })
 })
 
 describe('directoryTree sorting', () => {

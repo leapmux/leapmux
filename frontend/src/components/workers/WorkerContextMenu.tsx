@@ -1,4 +1,5 @@
 import type { Component } from 'solid-js'
+import type { ContextMenuTargetProps } from '~/components/common/DropdownMenu'
 import type { MenuInfoRow } from '~/components/common/MenuInfoRows'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import { createMemo, Show } from 'solid-js'
@@ -10,7 +11,7 @@ import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger
 import { prettifyJson } from '~/lib/jsonFormat'
 import { dangerMenuItem } from '~/styles/shared.css'
 
-interface WorkerContextMenuProps {
+interface WorkerContextMenuProps extends ContextMenuTargetProps {
   workerInfo: WorkerInfo | null
   // True for the in-process worker the solo launcher auto-registers.
   // The deregister handler refuses these (it would just re-register on
@@ -61,7 +62,7 @@ export const WorkerContextMenu: Component<WorkerContextMenuProps> = (props) => {
   }
 
   return (
-    <DropdownMenu trigger={rowContextMenuTrigger()}>
+    <DropdownMenu trigger={rowContextMenuTrigger()} contextMenuFor={props.contextMenuFor}>
       <MenuInfoButton
         rows={infoRows()}
         copyText={infoJson}

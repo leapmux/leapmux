@@ -9,6 +9,7 @@ import ChevronsLeftRightEllipsis from 'lucide-solid/icons/chevrons-left-right-el
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
+import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { StatusDot } from '~/components/common/StatusDot'
 import * as shared from '~/components/tree/sharedTree.css'
 import { actionSlot, actionSlotResting, sidebarActions } from '~/components/tree/sidebarActions.css'
@@ -75,9 +76,12 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
             const workerTunnels = () => tunnel?.tunnelsForWorker(worker.id) ?? []
             const workerName = createMemo(() => props.workerInfo(worker.id)?.name ?? '\u2014')
             const status = () => props.channelStatus(worker.id)
+            // The row element, for its right-click / long-press menu.
+            const [rowEl, setRowEl] = createContextMenuAnchor()
             return (
               <>
                 <div
+                  ref={setRowEl}
                   class={listStyles.item}
                   data-testid="worker-row"
                   onClick={() => toggleExpanded(worker.id)}
@@ -105,6 +109,7 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                         status={status()}
                       />
                       <WorkerContextMenu
+                        contextMenuFor={rowEl}
                         workerInfo={props.workerInfo(worker.id)}
                         autoRegistered={worker.autoRegistered}
                         hasTunnels={workerTunnels().length > 0}
@@ -121,14 +126,18 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                       <For each={workerTunnels()}>
                         {(t) => {
                           const label = tunnelLabel(t)
+                          const [tunnelRowEl, setTunnelRowEl] = createContextMenuAnchor()
                           return (
-                            <div class={`${shared.node} ${styles.tunnelItem}`}>
+                            <div ref={setTunnelRowEl} class={`${shared.node} ${styles.tunnelItem}`}>
                               {t.type === 'socks5'
                                 ? <ChevronsLeftRightEllipsis size={14} class={styles.tunnelIcon} />
                                 : <ArrowBigRightDash size={14} class={styles.tunnelIcon} />}
                               <ClippedText text={label} class={listStyles.itemTitle} />
                               <div class={sidebarActions}>
-                                <TunnelContextMenu onDelete={() => setDeleteTunnelTarget(t)} />
+                                <TunnelContextMenu
+                                  contextMenuFor={tunnelRowEl}
+                                  onDelete={() => setDeleteTunnelTarget(t)}
+                                />
                               </div>
                             </div>
                           )

@@ -554,6 +554,26 @@ export function createTileRenderer(opts: TileRendererOpts) {
   const todosFor = (agentId: string) => chatStore.todos.get(bgRootFor(agentId))
   const onOpenBackgroundTask = opts.onOpenBackgroundTask
 
+  /**
+   * The pop-out / pop-in affordance for ONE tab of a tile.
+   *
+   * Whether a tile is floating is a property of the TILE, not of a tab
+   * (`getWindowIdForTile`), so every tab in it shares the predicate and the label;
+   * only the handler's argument differs. Both the tile-level menu (through the
+   * tile's active tab) and each tab's own context menu read this one function.
+   */
+  const tabPopFor = (tileId: string, tab: Tab): TilePopAction | undefined => {
+    const inMain = getWindowIdForTile(tileId) === null
+    const handler = inMain ? onDetachTab : onAttachTab
+    if (!handler)
+      return undefined
+    return {
+      label: inMain ? 'Pop out to floating window' : 'Pop in to main window',
+      testId: inMain ? 'pop-out-button' : 'pop-in-button',
+      onClick: () => handler(tab),
+    }
+  }
+
   const createTabBarForTile = (tileId: string, actions?: () => TileActions) => {
     // Reactive accessor either way: callers from `renderTile` pass their
     // own memo (so predicate updates propagate to surviving leaves); the
@@ -616,6 +636,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             }
           : undefined}
         tileActions={liveActions()}
+        tabPop={tab => tabPopFor(tileId, tab)}
       />
     )
   }
@@ -1167,21 +1188,14 @@ export function createTileRenderer(opts: TileRendererOpts) {
     // and the TabBar overflow menu read the bag through reactive prop
     // getters, so passing `actions()` here keeps both surfaces in sync.
     const actions = createMemo(() => buildTileActions(tileId))
-    // Memoise the per-tile lookups used in pop affordance bindings so each
-    // prop re-evaluation reuses one cached projection per tile.
-    const windowId = createMemo(() => getWindowIdForTile(tileId))
+    // Memoise the per-tile lookup so each prop re-evaluation reuses one cached
+    // projection per tile.
     const activeTab = createMemo(() => getActiveTabForTile(tileId))
+    // The tile-level affordance IS the per-tab one applied to the active tab, so
+    // the two surfaces cannot drift.
     const pop = createMemo<TilePopAction | undefined>(() => {
       const tab = activeTab()
-      if (!tab)
-        return undefined
-      const inMain = windowId() === null
-      const handler = inMain ? onDetachTab : onAttachTab
-      if (!handler)
-        return undefined
-      const label = inMain ? 'Pop out to floating window' : 'Pop in to main window'
-      const testId = inMain ? 'pop-out-button' : 'pop-in-button'
-      return { label, testId, onClick: () => handler(tab) }
+      return tab ? tabPopFor(tileId, tab) : undefined
     })
     return (
       <Tile

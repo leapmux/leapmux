@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import { createEffect, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
 import { Portal } from 'solid-js/web'
+import { touchReleaseOpensMenu } from '~/components/common/contextMenuGesture'
 import * as styles from './Tooltip.css'
 
 /** Exported so a test advances its fake timers by the real delay. */
@@ -304,6 +305,14 @@ export function Tooltip(props: TooltipProps) {
    */
   const showOnTouch = (e: PointerEvent) => {
     if (e.pointerType !== 'touch')
+      return
+    // The release of a long press whose context menu is about to open. The
+    // gesture must let that release propagate (the drag sensor and the chat
+    // scroller consume it), so it flags it here instead of stopping it. A
+    // tooltip presented now enters the top layer a frame AFTER the menu and
+    // would stack above it. See `touchReleaseOpensMenu` in
+    // ~/components/common/contextMenuGesture.ts.
+    if (touchReleaseOpensMenu())
       return
     if (!props.text && !props.content)
       return

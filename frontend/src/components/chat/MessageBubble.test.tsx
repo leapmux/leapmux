@@ -4,6 +4,7 @@ import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownCont
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import * as bubbleStyles from '~/components/chat/MessageBubble.css'
 import { classifyAgentMessage, messageRowChromeClass } from '~/components/chat/messageClassification'
+import { MessageContextMenuHostProvider } from '~/components/chat/MessageContextMenuHost'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent, toolHeaderTimestamp } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
@@ -1404,5 +1405,159 @@ describe('edit/write tool_use rendering', () => {
     // No diff view should be rendered for empty content without child result
     const diffView = container.querySelector('[data-diff-view]')
     expect(diffView).not.toBeInTheDocument()
+  })
+
+  describe('row context menu', () => {
+    // The jsdom popover stubs come from vitest.setup.ts, which runs before
+    // every test file.
+
+    function renderWithHost(msg: ReturnType<typeof makeMsg>, opts: { premeasureMode?: boolean } = {}) {
+      return render(() => (
+        <PreferencesProvider>
+          <MessageContextMenuHostProvider>
+            <MessageBubble message={msg} onReply={() => {}} premeasureMode={opts.premeasureMode} />
+          </MessageContextMenuHostProvider>
+        </PreferencesProvider>
+      ))
+    }
+
+    function agentMsg() {
+      return makeMsg({
+        source: MessageSource.AGENT,
+        content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } }),
+      })
+    }
+
+    /** The row element the gesture attaches to. */
+    function rowOf(container: HTMLElement): HTMLElement {
+      return container.querySelector(`.${chatStyles.messageRow}`) as HTMLElement
+    }
+
+    it('opens the same actions the hover toolbar carries', async () => {
+      const { container } = renderWithHost(agentMsg())
+
+      const toolbarIds = [...screen.getByTestId('message-toolbar').querySelectorAll('[data-testid]')]
+        .map(el => el.getAttribute('data-testid')!)
+        .map(id => id.replace('message-', ''))
+
+      rowOf(container).dispatchEvent(
+        new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true }),
+      )
+      await waitFor(() => expect(screen.queryByTestId('message-context-menu')?.querySelector('[data-testid]')).toBeTruthy())
+
+      const menu = screen.getByTestId('message-context-menu')
+      const menuIds = [...menu.querySelectorAll('[data-testid]')]
+        .map(el => el.getAttribute('data-testid')!.replace('message-menu-', ''))
+        // The info block is the menu's form of the toolbar's leading timestamp,
+        // which is a plain element there and carries no test id; asserted below.
+        .filter(id => id !== 'info')
+
+      // The menu is the same set, so a touch user reaches every action the mouse
+      // user reaches on hover. Order is each surface's own concern.
+      expect([...menuIds].sort()).toEqual([...toolbarIds].sort())
+
+      // Both surfaces carry the send time.
+      expect(screen.getByTestId('message-toolbar').querySelector(`.${toolHeaderTimestamp}`)).not.toBeNull()
+      expect(menu.querySelector('[data-testid="message-menu-info"]')).not.toBeNull()
+    })
+
+    it('suppresses the native menu on the row', () => {
+      const { container } = renderWithHost(agentMsg())
+
+      const e = new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true })
+      rowOf(container).dispatchEvent(e)
+
+      expect(e.defaultPrevented).toBe(true)
+    })
+
+    it('arms no gesture on a hidden premeasure copy', () => {
+      const { container } = renderWithHost(agentMsg(), { premeasureMode: true })
+
+      const e = new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true })
+      rowOf(container).dispatchEvent(e)
+
+      expect(e.defaultPrevented).toBe(false)
+    })
+
+    it('carries Retry and Delete for a failed message, but keeps them off the toolbar', async () => {
+      const onRetry = vi.fn()
+      const onDelete = vi.fn()
+      const msg = agentMsg()
+
+      const { container } = render(() => (
+        <PreferencesProvider>
+          <MessageContextMenuHostProvider>
+            <MessageBubble message={msg} onReply={() => {}} error="send failed" onRetry={onRetry} onDelete={onDelete} />
+          </MessageContextMenuHostProvider>
+        </PreferencesProvider>
+      ))
+
+      // The row's own visible buttons are unchanged, and the toolbar did not grow.
+      expect(screen.getByTestId('message-retry-button')).toBeInTheDocument()
+      expect(screen.getByTestId('message-delete-button')).toBeInTheDocument()
+      const toolbar = screen.getByTestId('message-toolbar')
+      expect(toolbar.querySelector('[data-testid="message-menu-retry"]')).toBeNull()
+      expect(toolbar.querySelector('[data-testid="message-menu-delete"]')).toBeNull()
+
+      // Activating an item closes the menu, so each is exercised from its own open.
+      const openMenu = async () => {
+        rowOf(container).dispatchEvent(
+          new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true }),
+        )
+        await waitFor(() => expect(screen.queryByTestId('message-menu-delete')).toBeInTheDocument())
+      }
+
+      await openMenu()
+      fireEvent.click(screen.getByTestId('message-menu-retry'))
+      expect(onRetry).toHaveBeenCalledTimes(1)
+
+      await openMenu()
+      fireEvent.click(screen.getByTestId('message-menu-delete'))
+      expect(onDelete).toHaveBeenCalledTimes(1)
+    })
+
+    it('offers no recovery actions for a message that delivered', async () => {
+      const { container } = renderWithHost(agentMsg())
+
+      rowOf(container).dispatchEvent(
+        new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true }),
+      )
+      await waitFor(() => expect(screen.queryByTestId('message-menu-copy-json')).toBeInTheDocument())
+
+      expect(screen.queryByTestId('message-menu-retry')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('message-menu-delete')).not.toBeInTheDocument()
+    })
+
+    it('opens the menu from the failed-delivery strip, which is a row sibling', async () => {
+      // The strip sits OUTSIDE the row div the gesture normally attaches to, so
+      // it carries the gesture of its own -- a press on the one place a user
+      // most expects Retry and Delete must not fall through to the browser.
+      render(() => (
+        <PreferencesProvider>
+          <MessageContextMenuHostProvider>
+            <MessageBubble message={agentMsg()} onReply={() => {}} error="send failed" onRetry={() => {}} onDelete={() => {}} />
+          </MessageContextMenuHostProvider>
+        </PreferencesProvider>
+      ))
+
+      const e = new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true })
+      screen.getByTestId('message-error').dispatchEvent(e)
+      expect(e.defaultPrevented).toBe(true)
+
+      await waitFor(() => expect(screen.queryByTestId('message-menu-retry')).toBeInTheDocument())
+    })
+
+    it('renders without a host, so a bare bubble is unaffected', () => {
+      const { container } = render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={agentMsg()} onReply={() => {}} />
+        </PreferencesProvider>
+      ))
+
+      const e = new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true })
+      rowOf(container).dispatchEvent(e)
+
+      expect(e.defaultPrevented).toBe(false)
+    })
   })
 })

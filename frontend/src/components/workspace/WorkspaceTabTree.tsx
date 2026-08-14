@@ -7,7 +7,9 @@ import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import X from 'lucide-solid/icons/x'
 import { createMemo, createSignal, on, Show, useContext } from 'solid-js'
+import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { TabContextMenu } from '~/components/common/TabContextMenu'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
@@ -197,6 +199,8 @@ const TabLeaf: Component<{
   editingValue: string
   onClick: () => void
   onDblClick: () => void
+  /** Start the inline rename from the row's context menu. Undefined hides the item. */
+  onRename?: () => void
   onClose?: () => void
   isClosing?: boolean
   canClose: boolean
@@ -204,6 +208,8 @@ const TabLeaf: Component<{
   onEditCommit: () => void
   onEditCancel: () => void
 }> = (props) => {
+  // The row element, for its right-click / long-press menu.
+  const [rowEl, setRowEl] = createContextMenuAnchor()
   /* eslint-disable solid/reactivity -- stable identifier for createDraggable */
   const draggable = createDraggable(
     `${SIDEBAR_TAB_PREFIX}${props.workspaceId}:${props.tab.type}:${props.tab.id}`,
@@ -228,7 +234,10 @@ const TabLeaf: Component<{
 
   return (
     <div
-      ref={draggable}
+      ref={(el) => {
+        setRowEl(el)
+        draggable(el)
+      }}
       class={`${shared.node} ${css.leafNode} ${props.isActive ? css.leafActive : ''} ${draggable.isActiveDraggable ? css.leafDragging : ''}`}
       style={{ 'padding-left': `${4 + props.depth * 16}px` }}
       onClick={() => {
@@ -320,6 +329,16 @@ const TabLeaf: Component<{
           />
         </div>
       </Show>
+      {/* Outside the `canClose` block: a row that cannot be closed can still be
+          renamed, and the menu host collapses to `display: contents`, so it costs
+          the row no layout either way. */}
+      <TabContextMenu
+        contextMenuFor={rowEl}
+        data-testid="tab-tree-leaf-menu"
+        onRename={props.onRename}
+        onClose={props.canClose ? props.onClose : undefined}
+        isClosing={props.isClosing}
+      />
     </div>
   )
 }
@@ -359,6 +378,12 @@ interface RowEditingContextValue {
   editingTabKey: Accessor<string | null>
   editingValue: Accessor<string>
   setEditingValue: (v: string) => void
+  /**
+   * Whether `startEditing` would do anything for this tab. `startEditing` returns
+   * early on the same condition, so a caller that only needs to ACT can ignore
+   * this; the row menu needs it to hide a Rename item that would do nothing.
+   */
+  canRename: (tab: Tab) => boolean
   startEditing: (tab: Tab) => void
   commitEdit: (tab: Tab) => void
   cancelEdit: () => void
@@ -412,6 +437,7 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
       editingValue={edit.editingValue()}
       onClick={() => sel.onTabClick(props.tab.type, props.tab.id)}
       onDblClick={() => edit.startEditing(props.tab)}
+      onRename={edit.canRename(props.tab) ? () => edit.startEditing(props.tab) : undefined}
       onClose={() => sel.tabItemOps()?.onClose?.(props.tab)}
       isClosing={sel.tabItemOps()?.closingKeys?.has(tabKey(props.tab))}
       canClose={sel.canClose(props.tab)}
@@ -520,9 +546,12 @@ const BranchGroupRow: Component<{
       return undefined
     return WORKER_OFFLINE_BRANCH_REASON
   })
+  // The row element, for its right-click / long-press menu.
+  const [rowEl, setRowEl] = createContextMenuAnchor()
   return (
     <>
       <div
+        ref={setRowEl}
         class={shared.node}
         style={{ 'padding-left': '36px' }}
         onClick={() => sel.toggleCollapsed(collapseKey())}
@@ -553,6 +582,7 @@ const BranchGroupRow: Component<{
         <Show when={!sel.readOnly() && props.branch().branchName !== null && props.branch().gitToplevel !== '' && actions.onChangeBranch && actions.onDeleteBranch}>
           <div class={sidebarActions}>
             <BranchContextMenu
+              contextMenuFor={rowEl}
               disabledReason={menuDisabledReason()}
               onChangeBranch={() => actions.onChangeBranch!(buildBranchRef(sel.workspaceId(), props.branch(), sel.liveTab))}
               onDeleteBranch={() => actions.onDeleteBranch!(buildBranchRef(sel.workspaceId(), props.branch(), sel.liveTab))}
@@ -765,8 +795,12 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   let editCancelled = false
   const canClose = (tab: Tab) => canCloseTab(props.readOnly, tab)
 
+  // A FILE tab's title IS its path, and a read-only tree owns nothing to rename.
+  const canRename = (tab: Tab) =>
+    !props.readOnly && tab.type !== TabType.FILE && Boolean(props.tabItemOps?.onRename)
+
   const startEditing = (tab: Tab) => {
-    if (props.readOnly || tab.type === TabType.FILE || !props.tabItemOps?.onRename)
+    if (!canRename(tab))
       return
     setEditingTabKey(tabKey(tab))
     setEditingValue(tabDisplayLabel(tab))
@@ -823,6 +857,7 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
     editingTabKey,
     editingValue,
     setEditingValue,
+    canRename,
     startEditing,
     commitEdit,
     cancelEdit,

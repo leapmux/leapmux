@@ -4,9 +4,18 @@ import { describe, expect, it, vi } from 'vitest'
 import { WorkspaceContextMenu } from '~/components/workspace/WorkspaceContextMenu'
 import { SectionSchema, SectionType, Sidebar } from '~/generated/leapmux/v1/section_pb'
 
+/**
+ * Records what the mocked DropdownMenu last received for `contextMenuFor`. A
+ * holder object rather than a bare `let`: TS cannot see the assignment inside the
+ * `vi.mock` factory, so it would narrow a `let` to `undefined` at every read.
+ */
+const captured: { contextMenuFor?: () => HTMLElement | undefined } = {}
+
 // Mock DropdownMenu to render children directly (jsdom lacks popover API).
 vi.mock('~/components/common/DropdownMenu', () => ({
   DropdownMenu(props: any) {
+    // eslint-disable-next-line solid/reactivity -- capturing the accessor itself for the assertion, not reading it
+    captured.contextMenuFor = props.contextMenuFor
     // Render trigger (if function, call with dummy props) and children
     const trigger = () => typeof props.trigger === 'function'
       ? props.trigger({
@@ -162,5 +171,24 @@ describe('workspaceContextMenu', () => {
     expect(screen.getByText('Rename')).toBeInTheDocument()
     expect(screen.getByText('Delete')).toBeInTheDocument()
     expect(screen.getByText('Archive')).toBeInTheDocument()
+  })
+
+  // One representative for the six row menus. The other five wrappers forward the
+  // same prop through the same two lines, and `DropdownMenu` owns everything that
+  // happens after -- covered in ~/components/common/DropdownMenu.test.tsx.
+  it('forwards contextMenuFor so the row itself opens the menu', () => {
+    // No reset first: the assertion is identity against a FRESH element, so a
+    // stale capture from an earlier render fails rather than passing by accident.
+    const row = document.createElement('div')
+
+    render(() => (
+      <WorkspaceContextMenu
+        {...defaultProps}
+        contextMenuFor={() => row}
+        sections={[makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)]}
+      />
+    ))
+
+    expect(captured.contextMenuFor?.()).toBe(row)
   })
 })

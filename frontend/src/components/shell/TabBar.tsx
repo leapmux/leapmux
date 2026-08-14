@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { TileActions } from './TileActionsMenu'
+import type { TabPopAction } from '~/components/common/TabContextMenu'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import type { Tab } from '~/stores/tab.types'
@@ -13,8 +14,9 @@ import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
 import { createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
-import { DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
+import { createContextMenuAnchor, DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
+import { TabContextMenu } from '~/components/common/TabContextMenu'
 import { TabTypeIcon } from '~/components/common/TabTypeIcon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
@@ -114,6 +116,11 @@ interface TabBarProps {
   mobile?: TabBarMobileProps
   /** Tile-level actions in the overflow menu. */
   tileActions?: TileActions
+  /**
+   * The pop-out / pop-in affordance for one tab, for that tab's context menu.
+   * Built by `TileRenderer` from the same function that builds the tile-level one.
+   */
+  tabPop?: (tab: Tab) => TabPopAction | undefined
 }
 
 export const TabBar: Component<TabBarProps> = (props) => {
@@ -218,10 +225,17 @@ export const TabBar: Component<TabBarProps> = (props) => {
   // it to stay live. Reading it once here would freeze the row at whatever the
   // tab looked like when it mounted.
   const renderTab = (tab: () => Tab, sortable?: ReturnType<typeof createSortable>) => {
+    // The tab element, for its right-click / long-press menu.
+    const [tabEl, setTabEl] = createContextMenuAnchor()
+    const isClosing = () => props.closingTabKeys?.has(tabKey(tab())) ?? false
+    const canRename = () => tab().type !== TabType.FILE && !props.readOnly
     return (
       <div
         role="tab"
-        ref={sortable}
+        ref={(el) => {
+          setTabEl(el)
+          sortable?.(el)
+        }}
         tabIndex={0}
         aria-selected={props.activeTabKey === tabKey(tab())}
         class={styles.tab}
@@ -245,9 +259,6 @@ export const TabBar: Component<TabBarProps> = (props) => {
               return
             props.onClose(tab())
           }
-        }}
-        onContextMenu={(e: MouseEvent) => {
-          e.preventDefault()
         }}
         onDblClick={(e: MouseEvent) => {
           e.preventDefault()
@@ -314,6 +325,17 @@ export const TabBar: Component<TabBarProps> = (props) => {
             }}
           />
         </Show>
+        {/* Outside the close block: a tab that cannot be closed can still be
+            renamed or popped out. The menu host collapses to `display: contents`,
+            so it costs the tab strip no layout either way. */}
+        <TabContextMenu
+          contextMenuFor={tabEl}
+          data-testid="tab-bar-tab-menu"
+          onRename={canRename() ? () => startEditing(tab()) : undefined}
+          onClose={canCloseTab(props.readOnly, tab()) ? () => props.onClose(tab()) : undefined}
+          isClosing={isClosing()}
+          pop={props.tabPop?.(tab())}
+        />
       </div>
     )
   }

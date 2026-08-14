@@ -1,10 +1,10 @@
 import type { Component, JSX } from 'solid-js'
-import type { DropdownTriggerProps } from '~/components/common/DropdownMenu'
+import type { ContextMenuTargetProps, DropdownTriggerProps } from '~/components/common/DropdownMenu'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { rowContextMenuTrigger } from '~/components/common/moreHorizontalTrigger'
 import { dangerMenuItem } from '~/styles/shared.css'
 
-interface BranchContextMenuProps {
+interface BranchContextMenuProps extends ContextMenuTargetProps {
   'onChangeBranch': () => void
   'onDeleteBranch': () => void
   /**
@@ -42,7 +42,11 @@ interface BranchContextMenuProps {
 // close over their row's branch data via the calling component's
 // closure, so there's no shared overlay state to thread.
 export const BranchContextMenu: Component<BranchContextMenuProps> = props => (
-  <DropdownMenu trigger={props.trigger ?? rowContextMenuTrigger()} data-testid={props['data-testid']}>
+  <DropdownMenu
+    trigger={props.trigger ?? rowContextMenuTrigger()}
+    contextMenuFor={props.contextMenuFor}
+    data-testid={props['data-testid']}
+  >
     <button
       role="menuitem"
       disabled={Boolean(props.disabledReason)}

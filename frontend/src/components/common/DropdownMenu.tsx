@@ -1,10 +1,12 @@
 import type { Accessor, JSX } from 'solid-js'
-import type { PopoverPositionOptions } from '~/lib/popoverPosition'
+import type { ContextMenuPress } from './contextMenuGesture'
+import type { PopoverAnchor, PopoverPositionOptions } from '~/lib/popoverPosition'
 import { createEffect, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
 import { popoverCard } from '~/styles/popover.css'
 import { clippedText, menuItemContent, menuItemShortcut } from '~/styles/shared.css'
+import { attachContextMenuGesture, pressAnchorRect } from './contextMenuGesture'
 
 /**
  * Marks a dropdown's trigger element. An enclosing popover's dismiss handler
@@ -24,6 +26,31 @@ export interface DropdownTriggerProps {
   'onClick': () => void
 }
 
+/**
+ * The row-menu half of `DropdownMenuProps`, for the thin wrappers that own one
+ * row's menu (`WorkspaceContextMenu`, `BranchContextMenu`, `WorkerContextMenu`,
+ * `TunnelContextMenu`, `FileActionsMenu`, `TabContextMenu`). Each extends this
+ * instead of redeclaring the prop, so the contract and its documentation stay in
+ * one place.
+ */
+export interface ContextMenuTargetProps {
+  /** See `DropdownMenuProps.contextMenuFor`. */
+  contextMenuFor?: Accessor<HTMLElement | undefined>
+}
+
+/**
+ * The row element for a `contextMenuFor` menu, as a signal so the menu's attach
+ * effect tracks it -- a plain `let` depends on the ref happening to be assigned
+ * before effects flush. Pass the accessor to `contextMenuFor`, and use the setter
+ * as the row's `ref`, or call it first inside a composed ref callback beside the
+ * row's own directives (`sortable`, `draggable`, an imperative `let` for
+ * scroll-into-view, ...).
+ */
+export function createContextMenuAnchor(): [Accessor<HTMLElement | undefined>, (el: HTMLElement) => void] {
+  const [anchor, setAnchor] = createSignal<HTMLElement>()
+  return [anchor, setAnchor]
+}
+
 export interface DropdownMenuProps {
   /**
    * The trigger element. Two forms:
@@ -40,16 +67,30 @@ export interface DropdownMenuProps {
   'trigger'?: JSX.Element | ((props: DropdownTriggerProps) => JSX.Element)
 
   /**
-   * Anchor element for positioning when no trigger is provided.
+   * Anchor for positioning when no trigger is provided.
    * Used for programmatic popovers (e.g. CodeLanguagePopover).
    */
-  'anchorRef'?: Accessor<HTMLElement | undefined>
+  'anchorRef'?: Accessor<PopoverAnchor | undefined>
 
   /**
    * Programmatic open/close control. When provided without a trigger,
    * the component calls showPopover()/hidePopover() reactively.
    */
   'open'?: Accessor<boolean>
+
+  /**
+   * The element whose RIGHT-CLICK or touch LONG-PRESS opens this menu -- normally
+   * the row the menu belongs to. The menu then opens at the press point rather
+   * than at `trigger`; see `pressAnchorRect`.
+   *
+   * The kebab `trigger` keeps working unchanged. This is a second way in, for the
+   * two inputs that have no hover: a mouse's secondary button, and a finger.
+   *
+   * Rows whose text must stay selectable attach the gesture directly with
+   * `selectableText` instead (see ~/components/common/contextMenuGesture.ts) --
+   * the chat message rows, whose menu is a singleton host and not this component.
+   */
+  'contextMenuFor'?: Accessor<HTMLElement | undefined>
 
   /** Popover content. */
   'children': JSX.Element
@@ -209,6 +250,10 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // intended to close (toggle off) vs open (toggle on) the popover.
   let wasOpenOnPointerDown = false
 
+  // Where a right-click or long-press that opened this menu landed. Cleared when
+  // the popover closes, so the next kebab click re-anchors to the kebab.
+  const [pressAnchor, setPressAnchor] = createSignal<ContextMenuPress>()
+
   const setTriggerRef = (el: HTMLElement) => {
     triggerEl = el
     // Mark the trigger so an ancestor popover's dismiss handler can recognize
@@ -218,10 +263,15 @@ export function DropdownMenu(props: DropdownMenuProps) {
     el.setAttribute(TRIGGER_ATTR, '')
   }
 
-  // Resolve the positioning anchor: for the JSX-element trigger path,
-  // triggerEl is the display:contents wrapper whose bounding rect is zero.
-  // Fall back to its first visible child element.
-  const getAnchor = (): HTMLElement | undefined => {
+  // Resolve the positioning anchor. A press anchor wins while it is set, because
+  // the menu the user just opened by right-click or long-press must point at that
+  // press and not at the kebab they never touched.
+  const getAnchor = (): PopoverAnchor | undefined => {
+    const press = pressAnchor()
+    if (press)
+      return pressAnchorRect(press)
+    // For the JSX-element trigger path, triggerEl is the display:contents wrapper
+    // whose bounding rect is zero. Fall back to its first visible child element.
     if (triggerEl) {
       const rect = triggerEl.getBoundingClientRect()
       if (rect.width === 0 && rect.height === 0 && triggerEl.firstElementChild) {
@@ -230,6 +280,13 @@ export function DropdownMenu(props: DropdownMenuProps) {
       return triggerEl
     }
     return props.anchorRef?.()
+  }
+
+  // `aria-expanded` is an element concern; a press anchor is a bare rect and has no
+  // attributes to carry it.
+  const getAnchorElement = (): Element | undefined => {
+    const anchor = getAnchor()
+    return anchor instanceof Element ? anchor : undefined
   }
 
   const reposition = () => {
@@ -255,6 +312,15 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // inside the popover content by dragging.
   const repositionOnExternalScroll = (e: Event) => {
     if (popoverEl && e.target instanceof Node && popoverEl.contains(e.target)) {
+      return
+    }
+    // A press anchor is a frozen point in the viewport, not an element: the row
+    // the user pressed has scrolled away, and re-running the arithmetic would
+    // glue the menu to that dead point over whatever scrolled into place. Every
+    // OS context menu closes on scroll instead, and so does this one. An
+    // element anchor follows its element, so it keeps repositioning.
+    if (!(getAnchor() instanceof Element)) {
+      popoverEl?.hidePopover()
       return
     }
     reposition()
@@ -287,20 +353,18 @@ export function DropdownMenu(props: DropdownMenuProps) {
         resizeObserver.observe(popoverEl)
       }
 
-      const anchor = getAnchor()
-      if (anchor) {
-        anchor.setAttribute('aria-expanded', 'true')
-      }
+      getAnchorElement()?.setAttribute('aria-expanded', 'true')
     }
     else {
       window.removeEventListener('scroll', repositionOnExternalScroll, true)
       resizeObserver?.disconnect()
       resizeObserver = undefined
 
-      const anchor = getAnchor()
-      if (anchor) {
-        anchor.setAttribute('aria-expanded', 'false')
-      }
+      getAnchorElement()?.setAttribute('aria-expanded', 'false')
+      // Drop the press so the next kebab click anchors to the kebab again. A menu
+      // opened by a press has no element anchor to clear `aria-expanded` on -- the
+      // trigger's own copy is reactive on `isOpen()` and falls with it.
+      setPressAnchor(undefined)
     }
 
     props.onToggle?.(opening)
@@ -318,7 +382,12 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // Programmatic open/close when `open` accessor is provided
   // eslint-disable-next-line solid/reactivity -- guards presence of accessor; on() tracks it reactively
   if (props.open) {
-    createEffect(on(props.open, (shouldOpen) => { // eslint-disable-line solid/reactivity -- passing accessor to on() is correct
+    // Track the ANCHOR, not just the boolean: an already-open menu whose anchor
+    // changed (a singleton host serving a second row's press) repositions IN
+    // PLACE, so no host has to close and reopen just to re-trigger this effect.
+    // A caller whose anchor is a stable element gains no new subscription -- the
+    // anchor read was already part of every reposition.
+    createEffect(on(() => [props.open?.(), props.anchorRef?.()], ([shouldOpen]) => {
       if (!popoverEl)
         return
       // Guard against redundant show/hide: showPopover() on an already-open popover
@@ -337,11 +406,53 @@ export function DropdownMenu(props: DropdownMenuProps) {
         // ResizeObserver then refine it for any late layout.
         reposition()
       }
+      else if (shouldOpen && nativeOpen) {
+        // Open the whole time, anchor moved: re-anchor with no teardown. The
+        // ResizeObserver from the first open re-refines once swapped content
+        // settles its size, same as it does after a scroll.
+        reposition()
+      }
       else if (!shouldOpen && nativeOpen) {
         popoverEl.hidePopover()
       }
     }))
   }
+
+  // Right-click / long-press on the owning row. The gesture defers its callback
+  // past the pointer event that completed it, so by the time this runs the
+  // browser's light-dismiss pass is over and showPopover() sticks -- see
+  // `scheduleOpen` in ~/components/common/contextMenuGesture.ts.
+  createEffect(() => {
+    const el = props.contextMenuFor?.()
+    if (!el)
+      return
+    const detach = attachContextMenuGesture(el, {
+      onOpen: (press) => {
+        setPressAnchor(press)
+        if (popoverEl?.matches(':popover-open')) {
+          // Already up from the kebab, or from a right-click on another row that
+          // shares this menu: re-point it at the new press.
+          reposition()
+        }
+        else {
+          popoverEl?.showPopover()
+          // Position synchronously, before the browser paints this frame, so the
+          // popover never appears at the UA-default position and then jumps. The
+          // content is already in the DOM (rendered before this effect), so it
+          // measures at its real size here. The rAF reposition in handleToggle + the
+          // ResizeObserver then refine it for any late layout.
+          reposition()
+          // `showPopover` queues the `toggle` event as a task, and a menu that
+          // gates content on `onToggle` (FileActionsMenu's info block) has not
+          // rendered it yet, so the measurement above saw a shorter popover.
+          // Re-measure one task later, after that event and its render, before
+          // any paint can show the miss.
+          setTimeout(reposition, 0)
+        }
+      },
+    })
+    onCleanup(detach)
+  })
 
   onCleanup(() => {
     popoverEl?.removeEventListener('toggle', handleToggle)
@@ -417,8 +528,16 @@ export function DropdownMenu(props: DropdownMenuProps) {
     return null
   }
 
+  // `data-headless` marks a dropdown with no trigger -- one opened only by
+  // right-click or long press. The host then collapses to `display: contents` and
+  // adds no flex item to the row that mounts it; see ~/styles/popover.css.ts.
+  //
+  // `attr:` is required, not stylistic: `ot-dropdown` has a dash in its name, so
+  // Solid treats it as a custom element and assigns unknown props as PROPERTIES.
+  // Without the namespace this sets `el.dataHeadless` and no attribute, and the
+  // CSS rule never matches.
   return (
-    <ot-dropdown>
+    <ot-dropdown attr:data-headless={props.trigger === undefined ? 'true' : undefined}>
       {renderTrigger()}
       {/* `menu` (default) and `div` popovers differ ONLY by tag; everything else (the
           popover attr, id, ref, class, testid, and the Escape/outside-click dismiss
