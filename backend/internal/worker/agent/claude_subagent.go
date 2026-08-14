@@ -35,10 +35,15 @@ func claudeToolSpawnsSubagent(toolName string) bool {
 }
 
 // The task_type values a Claude task_started event carries. local_bash is a
-// backgrounded shell; local_agent is a Task subagent; local_workflow is a
-// Workflow run. Only local_bash is NOT a spawn, so the code tests for that one
-// and treats every other value -- including one this list does not name -- as a
-// spawn that owns no span and gets a child transcript.
+// shell, which is NOT the same as a BACKGROUNDED shell; local_agent is a Task
+// subagent; local_workflow is a Workflow run. Only local_bash is NOT a spawn, so
+// the code tests for that one and treats every other value -- including one this
+// list does not name -- as a spawn that owns no span and gets a child
+// transcript.
+//
+// A foreground shell reports local_bash too, once the command runs for 2
+// seconds. claudeHandleTaskEvent gives the mechanism and says why the registry
+// keeps the row anyway.
 const (
 	claudeTaskTypeBash     = "local_bash"
 	claudeTaskTypeWorkflow = "local_workflow"
@@ -77,15 +82,16 @@ type claudeTaskUsage struct {
 //
 // Findings (Claude 2.1.220, --forward-subagent-text):
 //   - task_started {task_id, tool_use_id, task_type, description, workflow_name?}
-//     fires for Task subagents (local_agent), bg shells (local_bash), and
-//     Workflow runs (local_workflow).
+//     fires for Task subagents (local_agent), shells (local_bash, foreground
+//     ones included), and Workflow runs (local_workflow).
 //   - task_progress {task_id, description, last_tool_name?, usage?, workflow_progress?}
 //   - task_notification {task_id, tool_use_id, status, summary, output_file, usage?}
 //     is final and fires for foreground Tasks too.
-//   - task_updated {task_id, patch:{status,end_time}} is redundant with the
-//     notification; consumed as a no-op refresh.
-//   - background_tasks_changed is Claude's own bg-shell list push; redundant
-//     with task_* events here, so consumed silently.
+//   - task_updated {task_id, patch:{status,end_time,is_backgrounded?}} repeats
+//     the notification's status; consumed as a no-op refresh.
+//   - background_tasks_changed is Claude's own live background-task list. It is
+//     the one event that separates a backgrounded shell from a foreground one,
+//     and it is consumed silently all the same -- see the case below.
 //   - Workflow agents do NOT forward their transcripts (0 parent_tool_use_id
 //     rows); they are registry-only, grouped by workflow_name.
 func (a *ClaudeCodeAgent) claudeHandleTaskEvent(content []byte) bool {
@@ -104,8 +110,27 @@ func (a *ClaudeCodeAgent) claudeHandleTaskEvent(content []byte) bool {
 		a.handleClaudeTaskNotification(&ev)
 		return true
 	case "task_updated", "background_tasks_changed":
-		// Consumed: redundant with the task_* events above. Our registry is
-		// authoritative, so these carry no extra information.
+		// Consumed as a no-op: the task_* bookends above drive the registry, and
+		// neither event changes a row.
+		//
+		// background_tasks_changed is not redundant, and the difference decides
+		// which shells the sidebar lists. The CLI registers a FOREGROUND shell as
+		// a local_bash task once the command runs for 2 seconds, so the user can
+		// background it with ctrl-b, and that registration emits task_started
+		// (2.1.220: the Bash progress loop calls the registrar at 2000 ms with
+		// isBackgrounded false). A shell row therefore appears for any command
+		// slower than 2 seconds, although nothing backgrounded it. These two
+		// events carry the only signal that separates the two cases:
+		// background_tasks_changed lists the live tasks whose isBackgrounded is
+		// true, and task_updated reports the foreground -> background flip in
+		// patch.is_backgrounded.
+		//
+		// The registry lists every local_bash task on purpose. The CLI's own task
+		// dialog hides a foreground one, so this is a divergence from the CLI, not
+		// parity with it. Filtering on background_tasks_changed would trade the
+		// divergence for a worse failure: the CLI's task-event queue holds 1000
+		// events and drops a NON-bookend event first when it fills, so one lost
+		// level event would hide a real background shell for its whole run.
 		return true
 	case "session_state_changed":
 		// Consumed silently: carries session bookkeeping we don't surface.
@@ -196,10 +221,11 @@ func (a *ClaudeCodeAgent) handleClaudeTaskStarted(ev *claudeTaskEnvelope) {
 	}
 
 	// task_started is the authority on which Claude tool calls own a span. A
-	// backgrounded shell is a plain Bash span whose tool_result returns at once,
-	// so it keeps its rail; every other task type starts a subagent and owns no
-	// span. The same startedKind that classifies the registry row above decides
-	// it here, so a task type nobody matched by name is still handled.
+	// shell is a plain Bash span whose own tool_result closes it -- at once for a
+	// backgrounded one, at the end of the command for a foreground one -- so it
+	// keeps its rail; every other task type starts a subagent and owns no span.
+	// The same startedKind that classifies the registry row above decides it
+	// here, so a task type nobody matched by name is still handled.
 	//
 	// A spawn that claudeToolSpawnsSubagent already matched never opened a span,
 	// so this is a no-op for it. A Workflow run is why the call exists: the CLI
