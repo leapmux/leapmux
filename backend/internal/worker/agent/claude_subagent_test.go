@@ -222,6 +222,117 @@ func TestClaude_TaskNotificationWithOutputFileKeepsTheShellKind(t *testing.T) {
 	assert.Equal(t, bgtask.KindShell, tasks[0].Kind)
 }
 
+// background_tasks_changed is a LEVEL signal with replace semantics: it lists
+// the tasks the CLI counts as live BACKGROUND work, and it drops a task whose
+// isBackgrounded is false. A foreground shell -- which the CLI registers as a
+// local_bash task once its command runs for 2 seconds -- is therefore absent
+// from every payload, although its task_started already opened a row here.
+//
+// The registry keeps that row on purpose, so this event must stay a no-op.
+// Applying the payload's replace semantics to the registry would delete a row
+// the sidebar is showing, and a payload that a full event queue dropped (the
+// CLI evicts a non-bookend event first) would delete a genuine background
+// shell's row mid-run.
+func TestClaude_BackgroundTasksChangedLeavesTheRegistryAlone(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-sh",
+		"tool_use_id": "tu-shell",
+		"task_type": "local_bash",
+		"description": "task test-e2e"
+	}`))
+	require.Len(t, sink.BackgroundTasks(), 1)
+
+	// The empty list is the payload a FOREGROUND shell produces: nothing is
+	// backgrounded, so the CLI reports no live background task.
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "background_tasks_changed",
+		"tasks": []
+	}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1, "the level signal must not evict the row")
+	assert.Equal(t, "task-sh", tasks[0].RowKey)
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status)
+	assert.Equal(t, "task test-e2e", tasks[0].Title)
+	assertTaskEventConsumed(t, sink)
+}
+
+// task_updated repeats what the closing task_notification carries, plus the
+// foreground -> background flip in patch.is_backgrounded. It is a no-op refresh:
+// the notification is the authority on a final status, so a patch must not close
+// a row on its own, and the flip changes nothing because the row already exists.
+func TestClaude_TaskUpdatedDoesNotChangeTheRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_started",
+		"task_id": "task-sh",
+		"tool_use_id": "tu-shell",
+		"task_type": "local_bash",
+		"description": "sleep 30"
+	}`))
+	require.Len(t, sink.BackgroundTasks(), 1)
+
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_updated",
+		"task_id": "task-sh",
+		"patch": {"status": "completed", "end_time": 1760000000000, "is_backgrounded": true}
+	}`))
+
+	tasks := sink.BackgroundTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, bgtask.StatusRunning, tasks[0].Status,
+		"only task_notification ends a row")
+	assert.True(t, tasks[0].EndedAt.IsZero(), "the row is still active")
+	assertTaskEventConsumed(t, sink)
+}
+
+// A task event for a row that no task_started opened creates nothing. The
+// registry is opened by the bookends alone, so a task_updated or a
+// background_tasks_changed that names an unknown task cannot invent a row.
+func TestClaude_TaskUpdatedForAnUnknownTaskCreatesNoRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	a := newTestAgent(sink)
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "task_updated",
+		"task_id": "task-never-started",
+		"patch": {"is_backgrounded": true}
+	}`))
+	a.HandleOutput([]byte(`{
+		"type": "system",
+		"subtype": "background_tasks_changed",
+		"tasks": [{"task_id": "task-never-started", "task_type": "local_bash", "description": "sleep 30"}]
+	}`))
+
+	assert.Empty(t, sink.BackgroundTasks())
+	assertTaskEventConsumed(t, sink)
+}
+
+// assertTaskEventConsumed checks that a task event reached NO persist path. A
+// `system` line that claudeHandleTaskEvent declines falls through to one of two
+// sinks -- PersistNotification when the classifier calls it consolidatable, and
+// PersistMessage otherwise -- so an assertion on either one alone would pass
+// vacuously when a regression routed the line to the other.
+func assertTaskEventConsumed(t *testing.T, sink *testSink) {
+	t.Helper()
+	assert.Empty(t, sink.Messages(), "a consumed event never reaches the transcript")
+	assert.Empty(t, sink.PersistedNotifications(), "nor the notification thread")
+}
+
 // A replayed task_started (a re-attach after a worker restart) must not stack a
 // second copy of the prompt on top of the transcript it already introduced.
 func TestClaude_ReplayedTaskStartedDoesNotDuplicateThePrompt(t *testing.T) {
@@ -454,9 +565,11 @@ func TestClaude_WorkflowTaskStartedGivesTheSpanBack(t *testing.T) {
 	assert.Empty(t, msgs[1].SpansOpenAtPersist, "the workflow rail is gone")
 }
 
-// A backgrounded shell is an ordinary Bash span whose tool_result returns at
-// once. It reports task_started too, and it must KEEP its rail.
-func TestClaude_BackgroundShellTaskStartedKeepsTheSpan(t *testing.T) {
+// A shell is an ordinary Bash span whose own tool_result closes it. It reports
+// task_started too, and it must KEEP its rail. The event is identical for a
+// backgrounded shell and for a foreground one that passed the CLI's 2-second
+// registration threshold, so this covers both.
+func TestClaude_ShellTaskStartedKeepsTheSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &testSink{}
