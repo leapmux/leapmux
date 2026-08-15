@@ -1,7 +1,5 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { attachContextMenuGesture } from '~/components/common/contextMenuGesture'
-import { motion } from '~/styles/tokens'
 import { Tooltip } from './Tooltip'
 
 describe('tooltip', () => {
@@ -247,17 +245,20 @@ describe('tooltip', () => {
   })
 
   /**
-   * A tap must reach a clipped label's tooltip. Hover cannot: a tap synthesizes
-   * `mouseenter` and then `click`, and the `click` handler dismisses long
-   * before the 700 ms hover timer, so nothing ever appeared on a touch screen.
+   * Touch pointers get no tooltip. A tap once opened it — with no hover
+   * delay — but the tooltip covered the very element the user had just
+   * pressed, so a tap must leave it closed. A tap synthesizes `mouseenter`
+   * before `click`; the `click` dismissal clears that pending hover timer,
+   * so nothing appears later either.
    */
   describe('touch', () => {
     const tap = (el: Element) => {
+      fireEvent.mouseEnter(el)
       fireEvent(el, new PointerEvent('pointerup', { pointerType: 'touch', bubbles: true }))
       fireEvent.click(el)
     }
 
-    it('opens on a tap, with no hover delay', () => {
+    it('does not open on a tap', () => {
       render(() => (
         <Tooltip text="Tooltip text">
           <button type="button">Trigger</button>
@@ -265,89 +266,28 @@ describe('tooltip', () => {
       ))
 
       tap(screen.getByRole('button', { name: 'Trigger' }))
-
-      // No timer advance: a tap is deliberate and needs no delay to prove it.
-      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
-    })
-
-    it('closes on the next press outside the trigger', () => {
-      render(() => (
-        <Tooltip text="Tooltip text">
-          <button type="button">Trigger</button>
-        </Tooltip>
-      ))
-
-      const button = screen.getByRole('button', { name: 'Trigger' })
-      tap(button)
-      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
-
-      // The trigger's rect is 0x0 in jsdom, so any coordinate is outside it.
-      fireEvent(document, new PointerEvent('pointerdown', { clientX: 500, clientY: 500, bubbles: true }))
+      vi.advanceTimersByTime(700)
 
       expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+      expect(screen.getByRole('button', { name: 'Trigger' })).not.toHaveAttribute('aria-describedby')
     })
 
-    it('stays closed on a tap when the label is not clipped', () => {
+    it('does not open on a tap even when the label is clipped', () => {
       render(() => (
         <Tooltip text="Tooltip text" showWhen="clipped">
-          <button type="button">Trigger</button>
+          {/* jsdom doesn't expand the `overflow` shorthand, so set the longhand. */}
+          <button type="button" style={{ 'overflow-x': 'hidden', 'overflow-y': 'hidden' }}>
+            A very long label that gets cut off
+          </button>
         </Tooltip>
       ))
 
-      // A mouse click dismisses; a tap that opens nothing must do the same, so
-      // the swallow-the-click guard must not latch on a suppressed tooltip.
-      tap(screen.getByRole('button', { name: 'Trigger' }))
+      const button = screen.getByRole('button')
+      Object.defineProperty(button, 'scrollWidth', { value: 200, configurable: true })
+      Object.defineProperty(button, 'clientWidth', { value: 50, configurable: true })
 
-      expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
-    })
-
-    it('does not present on the release of a long press whose menu is opening', () => {
-      // The gesture must let that release propagate (the drag sensor and the
-      // chat scroller consume it), so it flags it and the tooltip stands down:
-      // a `popover="manual"` tooltip entering the top layer a frame after the
-      // menu would stack above it.
-      const row = document.createElement('div')
-      document.body.appendChild(row)
-      const detach = attachContextMenuGesture(row, { onOpen: () => {} })
-      try {
-        row.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', pointerId: 1, isPrimary: true, bubbles: true, cancelable: true }))
-        vi.advanceTimersByTime(motion.longPress)
-        row.dispatchEvent(new PointerEvent('pointerup', { pointerType: 'touch', pointerId: 1, bubbles: true, cancelable: true }))
-
-        render(() => (
-          <Tooltip text="Tooltip text">
-            <button type="button">Trigger</button>
-          </Tooltip>
-        ))
-
-        const button = screen.getByRole('button', { name: 'Trigger' })
-        fireEvent(button, new PointerEvent('pointerup', { pointerType: 'touch', bubbles: true }))
-        expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
-
-        // The menu's open task clears the flag; a tap after it presents as usual.
-        vi.runAllTimers()
-        tap(button)
-        expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
-      }
-      finally {
-        detach()
-        row.remove()
-      }
-    })
-
-    it('leaves a mouse click dismissing the tooltip', () => {
-      render(() => (
-        <Tooltip text="Tooltip text">
-          <button type="button">Trigger</button>
-        </Tooltip>
-      ))
-
-      const button = screen.getByRole('button', { name: 'Trigger' })
-      fireEvent.mouseEnter(button)
+      tap(button)
       vi.advanceTimersByTime(700)
-      expect(screen.getByRole('tooltip', { hidden: true })).toBeInTheDocument()
-
-      fireEvent.click(button)
 
       expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
     })
