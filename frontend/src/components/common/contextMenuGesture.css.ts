@@ -43,7 +43,7 @@ const REDUCED_MOTION_STEP_LEAD_MS = 120
  * emits before the menu appears.
  *
  * (`globalStyle`'s rule type takes no nested `selectors` under `@media`, so each
- * media-scoped block is its own call with the query in the selector string.)
+ * media-scoped block is its own call with the query in an `'@media'` key.)
  */
 globalStyle('[data-ctx-menu]', {
   position: 'relative',
@@ -72,12 +72,20 @@ globalStyle('[data-ctx-menu][data-press-hold]::before', {
   transition: `opacity 1ms linear ${motion.longPress - REDUCED_MOTION_STEP_LEAD_MS}ms`,
 })
 
-globalStyle('@media (prefers-reduced-motion: no-preference) { [data-ctx-menu]::before }', {
-  transition: `opacity ${motion.fast}ms ease-out`,
+globalStyle('[data-ctx-menu]::before', {
+  '@media': {
+    '(prefers-reduced-motion: no-preference)': {
+      transition: `opacity ${motion.fast}ms ease-out`,
+    },
+  },
 })
 
-globalStyle('@media (prefers-reduced-motion: no-preference) { [data-ctx-menu][data-press-hold]::before }', {
-  transition: `opacity ${motion.longPress}ms linear`,
+globalStyle('[data-ctx-menu][data-press-hold]::before', {
+  '@media': {
+    '(prefers-reduced-motion: no-preference)': {
+      transition: `opacity ${motion.longPress}ms linear`,
+    },
+  },
 })
 
 /**
@@ -105,8 +113,12 @@ globalStyle('[data-ctx-menu="owned"]', {
  * -- including a hybrid laptop's, where `pointer` is `fine` and only `any-pointer`
  * is coarse -- keeps selection intact and reaches the menu through right-click.
  */
-globalStyle('@media (pointer: coarse) { [data-ctx-menu="selectable"] }', {
-  WebkitTouchCallout: 'none',
-  userSelect: 'none',
-  WebkitUserSelect: 'none',
+globalStyle('[data-ctx-menu="selectable"]', {
+  '@media': {
+    '(pointer: coarse)': {
+      WebkitTouchCallout: 'none',
+      userSelect: 'none',
+      WebkitUserSelect: 'none',
+    },
+  },
 })

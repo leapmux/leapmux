@@ -22,7 +22,11 @@ export default defineConfig({
   ssr: false,
   server: { static: true },
   vite: {
-    build: { sourcemap: true },
+    // 2048 kB: the (app) chunk (the whole one-route SPA) and the two largest
+    // Shiki grammar chunks (cpp, emacs-lisp) legitimately exceed the 500 kB
+    // default. The grammars are single lazy-loaded files that cannot be split
+    // further, so the default limit only reports noise for them.
+    build: { sourcemap: true, chunkSizeWarningLimit: 2048 },
     plugins: [
       {
         // Workaround: vinxi passes configFile: false to Vite, so
