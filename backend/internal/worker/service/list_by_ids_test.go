@@ -14,6 +14,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -273,6 +274,17 @@ func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 	svc, d, w := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "t-live")
 
+	// Freeze before injecting so the exact offset below is arithmetic,
+	// not a guess about which shell bytes have landed. The manager keeps
+	// the entry, so ListTerminals still takes its live-PTY branch.
+	baseline := testutil.FreezeTerminalOutput(t, svc.Terminals, "t-live")
+
+	// The alt-screen toggle leaves the modeTracker non-default, so screen
+	// carries a restore prefix on every platform. A Windows cmd.exe sets
+	// sticky modes by itself and a POSIX /bin/sh sets none, so without
+	// this the prefix arithmetic below is only exercised on Windows.
+	require.True(t, svc.Terminals.AppendOutput("t-live", []byte(altScreenEnter)))
+
 	marker := []byte("live_offset_test_marker")
 	require.True(t, svc.Terminals.AppendOutput("t-live", marker))
 
@@ -286,15 +298,19 @@ func TestListTerminals_ScreenEndOffset_LiveTerminal(t *testing.T) {
 	require.Len(t, resp.GetTerminals(), 1)
 	ti := resp.GetTerminals()[0]
 
-	// Screen and ScreenEndOffset are sampled atomically inside
-	// buildEntryLocked (single Terminal.ScreenSnapshot call), so the
-	// len(screen) == offset invariant holds regardless of concurrent
-	// shell output. The marker presence confirms we got the Manager's
-	// buffer, not the DB row's empty Screen.
-	assert.Contains(t, string(ti.GetScreen()), string(marker),
+	// The marker presence confirms we got the Manager's buffer, not the
+	// DB row's empty Screen, and the offset is the frozen baseline plus
+	// exactly what this test injected.
+	assert.True(t, bytes.HasSuffix(ti.GetScreen(), marker),
 		"live terminal must return Manager's screen (DB row has Screen=[]byte{})")
-	assert.Equal(t, int64(len(ti.GetScreen())), ti.GetScreenEndOffset(),
-		"before ring wrap: screen_end_offset equals len(screen)")
+	assert.Equal(t, baseline+int64(len(altScreenEnter)+len(marker)), ti.GetScreenEndOffset(),
+		"screen_end_offset must come from the Manager's cumulative counter")
+	// screen_end_offset counts stream bytes only. Screen leads with the
+	// mode tracker's synthesized restore prefix on top of them, so before
+	// the ring wraps it is strictly longer than the offset. Equating the
+	// two asserts an empty prefix.
+	assert.Greater(t, int64(len(ti.GetScreen())), ti.GetScreenEndOffset(),
+		"before ring wrap: screen holds every counted byte plus the mode prefix")
 }
 
 // TestListTerminals_AltScreenRecoveryAfterRingWrap: page-refresh is the

@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"path/filepath"
@@ -358,6 +359,7 @@ func TestManager_ScreenSnapshotSince(t *testing.T) {
 		mu.Unlock()
 	}, nil)
 	require.NoError(t, err, "StartTerminal")
+	require.True(t, m.AppendOutput("tm-snap", []byte(conPTYStyleModeBytes)))
 
 	// Send a command to produce output.
 	require.NoError(t, m.SendInput("tm-snap", []byte("echo snapshot_test"+testutil.TestShellEnter())), "SendInput")
@@ -369,12 +371,26 @@ func TestManager_ScreenSnapshotSince(t *testing.T) {
 		return strings.Contains(string(output), "snapshot_test")
 	}, "expected output to contain 'snapshot_test'")
 
-	// Verify a cold subscribe (afterOffset=0) returns the retained
-	// bytes and a matching offset.
-	snap, offset, _ := m.ScreenSnapshotSince("tm-snap", 0)
+	// Verify a cold subscribe (afterOffset=0) returns the retained bytes
+	// and a matching offset. The shell stays live, so assert only what a
+	// single atomic read of the buffer states — a second read could see
+	// more bytes.
+	snap, offset, isSnap := m.ScreenSnapshotSince("tm-snap", 0)
 	assert.NotEmpty(t, snap, "expected non-empty screen snapshot")
 	assert.Contains(t, string(snap), "snapshot_test", "snapshot should contain the echoed text")
-	assert.Equal(t, int64(len(snap)), offset, "first snapshot's offset should equal its length before the ring wraps")
+	assert.True(t, isSnap, "afterOffset 0 is a forced resync, not an incremental delta")
+	require.Less(t, offset, int64(screenBufferSize), "test output must stay inside the ring")
+	// The snapshot is the tracker's synthesized mode prefix followed by
+	// the retained PTY bytes, and the offset counts those PTY bytes
+	// alone. So the snapshot is strictly LONGER than the offset once any
+	// sticky mode is set — cmd.exe sets a window title and hides the
+	// cursor at startup, /bin/sh sets neither, and the injection above
+	// makes the case identical on both. Equating len(snap) with the
+	// offset asserts an empty prefix, which is what broke on Windows;
+	// inflating the offset by the prefix breaks this too, in the other
+	// direction.
+	assert.Greater(t, int64(len(snap)), offset,
+		"the injected mode bytes must produce a restore prefix on top of the counted bytes")
 
 	m.StopTerminal("tm-snap")
 	testutil.AssertEventually(t, func() bool {
@@ -420,17 +436,35 @@ func TestManager_SnapshotAfterExit(t *testing.T) {
 		return strings.Contains(string(output), "before_exit")
 	}, "expected output before exit")
 
-	m.StopTerminal("tm-exit")
-	testutil.AssertEventually(t, func() bool {
-		return m.IsExited("tm-exit")
-	}, "expected terminal to exit")
+	// Freeze the PTY, THEN inject the mode bytes. After the freeze the
+	// test goroutine is the only writer, so the handler receives the
+	// injection last and `output` holds the byte stream in buffer order.
+	// Injecting while the shell still runs would leave that order to a
+	// race: the ring write and the handler call are not one atomic step.
+	testutil.FreezeTerminalOutput(t, m, "tm-exit")
+	require.True(t, m.IsExited("tm-exit"), "expected terminal to exit")
+	require.True(t, m.AppendOutput("tm-exit", []byte(conPTYStyleModeBytes)))
+
+	mu.Lock()
+	seen := append([]byte(nil), output...)
+	mu.Unlock()
 
 	// Snapshot must still work between exit and RemoveTerminal; this is
 	// the window where a reconnecting client asks for the final screen.
 	snap, offset, _ := m.ScreenSnapshotSince("tm-exit", 0)
 	assert.NotEmpty(t, snap, "post-exit snapshot must be retained until RemoveTerminal")
 	assert.Contains(t, string(snap), "before_exit")
-	assert.Equal(t, int64(len(snap)), offset)
+	require.Less(t, offset, int64(screenBufferSize), "test output must stay inside the ring")
+	// Nothing writes any more, so the counts are exact: the offset counts
+	// every byte of the stream — the shell's output and the injection —
+	// and the snapshot puts only the synthesized restore prefix in front
+	// of them.
+	assert.Equal(t, int64(len(seen)), offset,
+		"offset counts stream bytes only, never the synthesized mode prefix")
+	assert.True(t, bytes.HasSuffix(snap, seen),
+		"snapshot must end with every retained stream byte")
+	assert.Greater(t, int64(len(snap)), offset,
+		"the injected mode bytes must produce a restore prefix on top of the counted bytes")
 
 	// SnapshotSince(offset) must also return empty (caught up) even after exit.
 	data, endOffset, isSnap := m.ScreenSnapshotSince("tm-exit", offset)
@@ -573,6 +607,15 @@ func pushAltScreenPastRing(t *testing.T, m *Manager, id string) {
 	require.True(t, m.AppendOutput(id, []byte("\x1b[?1049h")))
 	require.True(t, m.AppendOutput(id, ringOverflowFiller()))
 }
+
+// conPTYStyleModeBytes is what cmd.exe under ConPTY writes soon after it
+// starts: a window-title OSC and a cursor hide. A test that injects them
+// leaves the modeTracker non-default, so its snapshots carry a restore
+// prefix on every platform, exactly as they do on a Windows runner. The
+// POSIX test shell (/bin/sh) sets no sticky mode at all, so without the
+// injection a Linux or macOS run only ever sees the empty-prefix case
+// and cannot catch a regression in the prefix-versus-offset arithmetic.
+const conPTYStyleModeBytes = "\x1b]0;leapmux test\x07\x1b[?25l"
 
 func TestManager_IsExited_UnknownTerminal(t *testing.T) {
 	m := NewManager()

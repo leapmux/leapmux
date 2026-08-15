@@ -424,10 +424,14 @@ type TerminalEntry struct {
 	Meta   TerminalMeta
 	Screen []byte
 	// ScreenEndOffset is the cumulative PTY byte offset at the end of
-	// Screen. Equal to len(Screen) before the ring wraps and strictly
-	// greater once old bytes have fallen off. Subscribers use this to
-	// seed their WatchEvents after_offset so resubscribes pick up
-	// exactly where the snapshot left off instead of replaying Screen.
+	// Screen. It counts PTY bytes only, and Screen leads with the mode
+	// tracker's synthesized restore prefix (see ScreenBuffer.Snapshot).
+	// Before the ring wraps, len(Screen) is therefore larger than this
+	// offset by the length of that prefix; after the ring wraps, this
+	// offset is the larger of the two because old bytes fell out of
+	// Screen. Subscribers use this to seed their WatchEvents
+	// after_offset so resubscribes pick up exactly where the snapshot
+	// left off instead of replaying Screen.
 	ScreenEndOffset int64
 	Exited          bool
 }

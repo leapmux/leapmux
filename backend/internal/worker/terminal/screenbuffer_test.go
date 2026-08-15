@@ -351,19 +351,73 @@ func TestScreenBuffer_SnapshotSince_InWindowHasNoPrefix(t *testing.T) {
 // returned endOffset must equal sb.total even when a prefix was added.
 // The prefix is synthesized; counting it would advance the resume
 // cursor past bytes the client never saw and break delta math on the
-// next subscribe.
+// next subscribe. len(data) is then endOffset plus the prefix length,
+// never endOffset itself.
+//
+// Both snapshot regimes are covered. The retained-history case is the
+// one a Windows shell hits on every cold subscribe: cmd.exe under
+// ConPTY opens with a title OSC and a cursor-hide, so the tracker is
+// already non-default while the whole history still fits in the ring.
+// A POSIX /bin/sh emits neither, which is why an assertion that equates
+// len(data) with endOffset passes on Linux and macOS and fails only on
+// Windows.
 func TestScreenBuffer_SnapshotSince_PrefixDoesNotInflateOffset(t *testing.T) {
 	t.Parallel()
 
-	sb := NewScreenBuffer()
-	sb.Write([]byte("\x1b[?1049h"))
-	sb.Write(ringOverflowFiller())
-	expectedTotal := sb.TotalBytes()
+	tests := []struct {
+		name   string
+		modes  []byte
+		body   []byte
+		prefix []byte
+	}{
+		{
+			// Prefix order follows snapshotPrefix: modes first, title last.
+			name:   "whole history still retained",
+			modes:  []byte("\x1b]0;C:\\Windows\\system32\\cmd.exe\x07\x1b[?25l"),
+			body:   []byte("Microsoft Windows\r\n\r\nC:\\>echo hi\r\nhi\r\n\r\nC:\\>"),
+			prefix: []byte("\x1b[?25l\x1b]0;C:\\Windows\\system32\\cmd.exe\x07"),
+		},
+		{
+			name:   "mode bytes overwritten in the ring",
+			modes:  []byte("\x1b[?1049h"),
+			body:   ringOverflowFiller(),
+			prefix: []byte("\x1b[?1049h"),
+		},
+	}
 
-	_, end, isSnap := sb.SnapshotSince(0)
-	require.True(t, isSnap)
-	assert.Equal(t, expectedTotal, end,
-		"snapshot endOffset must equal total bytes written, not total+len(prefix)")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sb := NewScreenBuffer()
+			sb.Write(tc.modes)
+			sb.Write(tc.body)
+			expectedTotal := sb.TotalBytes()
+
+			data, end, isSnap := sb.SnapshotSince(0)
+			require.True(t, isSnap, "afterOffset 0 is a forced resync")
+			assert.Equal(t, expectedTotal, end,
+				"snapshot endOffset must equal total bytes written, not total+len(prefix)")
+
+			// The retained body is the tail of everything written, and the
+			// prefix sits in front of it. endOffset counts the body alone.
+			retained := expectedTotal
+			if retained > screenBufferSize {
+				retained = screenBufferSize
+			}
+			require.Len(t, data, len(tc.prefix)+int(retained),
+				"snapshot is the synthesized prefix plus every retained byte")
+			assert.Equal(t, tc.prefix, data[:len(tc.prefix)],
+				"snapshot must lead with the mode-restore prefix")
+
+			stream := append(append([]byte{}, tc.modes...), tc.body...)
+			wantBody := stream[int64(len(stream))-retained:]
+			// bytes.Equal, not assert.Equal: the wrapped case compares 100KB
+			// and a testify diff of that size buries the failure.
+			assert.True(t, bytes.Equal(wantBody, data[len(tc.prefix):]),
+				"the %d bytes after the prefix must be the retained PTY bytes, verbatim", retained)
+		})
+	}
 }
 
 // TestScreenBuffer_SnapshotSince_DefaultStateNoPrefix: a tracker at
