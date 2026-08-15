@@ -84,7 +84,7 @@ describe('useWatchEventsStreams', () => {
     await Promise.resolve()
   }
 
-  function mount(plansFn: () => Map<string, { agents: never[], terminals: never[] }>, opts: Partial<{
+  function mount(plansFn: () => Map<string, { agents: never[], terminals: never[], terminalResync: Set<string> }>, opts: Partial<{
     onEvent: (workerId: string, resp: unknown) => void
     onWorkerOnline: (workerId: string, online: boolean) => void
     onPromoted: (workerId: string, agentIds: string[]) => void
@@ -107,8 +107,8 @@ describe('useWatchEventsStreams', () => {
 
   it('opens one stream per worker', async () => {
     const { harness } = mount(() => new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
     ]))
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
@@ -124,7 +124,7 @@ describe('useWatchEventsStreams', () => {
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [] }],
+        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
       ]))
       useWatchEventsStreams({
         view: stores.view,
@@ -145,7 +145,7 @@ describe('useWatchEventsStreams', () => {
   it('transport error marks worker offline and reconnects', async () => {
     const online: boolean[] = []
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
       { onWorkerOnline: (_w, o) => online.push(o) },
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
@@ -167,7 +167,7 @@ describe('useWatchEventsStreams', () => {
   it('a fatal relay close marks the worker offline without a reconnecting toast', async () => {
     const online: boolean[] = []
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
       { onWorkerOnline: (_w, o) => online.push(o) },
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
@@ -183,7 +183,7 @@ describe('useWatchEventsStreams', () => {
   // scoped to the fatal case, not to transport errors at large.
   it('a recoverable transport error still toasts', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
@@ -197,7 +197,7 @@ describe('useWatchEventsStreams', () => {
   // 30s for the life of the page that can never succeed.
   it('a fatal stream error arms no reconnect timer', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
@@ -216,7 +216,7 @@ describe('useWatchEventsStreams', () => {
       throw new ChannelError('transport', 'too many places', 0, true)
     })
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
@@ -238,7 +238,7 @@ describe('useWatchEventsStreams', () => {
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [] }],
+        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
       ]))
       useWatchEventsStreams({
         view: stores.view,
@@ -268,7 +268,7 @@ describe('useWatchEventsStreams', () => {
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [] }],
+        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
       ]))
       useWatchEventsStreams({
         view: stores.view,
@@ -296,8 +296,8 @@ describe('useWatchEventsStreams', () => {
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
     const [plans, setPlans] = createSignal(new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
     ]))
     createRoot((dispose) => {
       disposeRoot = dispose
@@ -312,7 +312,7 @@ describe('useWatchEventsStreams', () => {
     await flush()
     expect(handles).toHaveLength(2)
     setPlans(new Map([
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
     ]))
     await flush()
     expect(handles[0]!.close).toHaveBeenCalled()
@@ -321,7 +321,7 @@ describe('useWatchEventsStreams', () => {
 
   it('retries LOOKUP_FAILED when the tab still exists', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
@@ -342,7 +342,7 @@ describe('useWatchEventsStreams', () => {
 
   it('does not retry NOT_FOUND even when the tab exists', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
@@ -363,7 +363,7 @@ describe('useWatchEventsStreams', () => {
 
   it('does not retry LOOKUP_FAILED when the tab is gone', async () => {
     mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     await flush()
     // No emitAddTab — the plan mentions a1 but no local tab exists.
@@ -384,7 +384,7 @@ describe('useWatchEventsStreams', () => {
 
   it('stops retrying LOOKUP_FAILED after the retry budget is exhausted', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
@@ -417,7 +417,7 @@ describe('useWatchEventsStreams', () => {
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [] }],
+        ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
       ]))
       useWatchEventsStreams({
         view: stores.view,
@@ -449,7 +449,7 @@ describe('useWatchEventsStreams', () => {
   it('reconnects after a clean stream end without marking offline', async () => {
     const online: boolean[] = []
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
       { onWorkerOnline: (_w, o) => online.push(o) },
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
@@ -467,7 +467,7 @@ describe('useWatchEventsStreams', () => {
   // the refusal that was already latched when it was armed.
   it('does not arm a reconnect when the relay has latched, even with no error to pass', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
@@ -486,7 +486,7 @@ describe('useWatchEventsStreams', () => {
 
   it('resets LOOKUP_FAILED retry budget after a settled updateAck', async () => {
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
@@ -539,8 +539,8 @@ describe('useWatchEventsStreams', () => {
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
     const [plans, setPlans] = createSignal(new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
-      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+      ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
     ]))
     createRoot((dispose) => {
       disposeRoot = dispose
@@ -560,7 +560,7 @@ describe('useWatchEventsStreams', () => {
     // Cancelling w2 must not wipe w1's pending reconnect timer.
     handles[0]!._end()
     setPlans(new Map([
-      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
     ]))
     await flush()
     expect(handles[1]!.close).toHaveBeenCalled()
@@ -579,8 +579,8 @@ describe('useWatchEventsStreams', () => {
     createRoot((dispose) => {
       disposeRoot = dispose
       const plans = createMemo(() => new Map([
-        ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] }],
-        ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [] }],
+        ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+        ['w2', { agents: [{ agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
       ]))
       useWatchEventsStreams({
         view: stores.view,

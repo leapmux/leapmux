@@ -1,18 +1,26 @@
 import type { Terminal } from '@xterm/xterm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { KEY_BROWSER_PREFS, localStorageSet } from './browserStorage'
-import { attachWebgl, createTerminalInstance, detachWebgl, getTerminalRendererPreference, loadTerminalFonts, refreshTerminalFont, resolveTerminalRendererPreference, resolveTerminalThemeMode, serializeXtermBuffer } from './terminal'
+import { stubMatchMedia } from '~/test-support/matchMediaStub'
+import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet } from './browserStorage'
+import { applyTerminalData, attachWebgl, createTerminalInstance, detachWebgl, getTerminalRendererPreference, loadTerminalFonts, refreshTerminalFont, resolveTerminalRendererPreference, resolveTerminalThemeMode, serializeXtermBuffer } from './terminal'
 
 // xterm.js requires a DOM element for open(), but we can still test
 // the suppressInput mechanism without rendering.
 
-describe('createTerminalInstance', () => {
-  beforeEach(() => {
-    localStorage.clear()
-    // jsdom doesn't implement matchMedia
-    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as any
-  })
+let matchMedia: ReturnType<typeof stubMatchMedia>
 
+// Every suite in this file needs a clean storage state and a matchMedia stub
+// (jsdom implements neither), so the pair is installed once at file level.
+beforeEach(() => {
+  localStorageClearForTests()
+  matchMedia = stubMatchMedia()
+})
+
+afterEach(() => {
+  matchMedia?.restore()
+})
+
+describe('createTerminalInstance', () => {
   it('initializes suppressInput to false', () => {
     const instance = createTerminalInstance()
     expect(instance.suppressInput).toBe(false)
@@ -76,12 +84,96 @@ describe('createTerminalInstance', () => {
   })
 })
 
-describe('serializeXtermBuffer', () => {
-  beforeEach(() => {
-    localStorage.clear()
-    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as any
+describe('applyTerminalData delta overlap', () => {
+  /** A real instance whose terminal.write records every payload. */
+  function recordingInstance() {
+    const instance = createTerminalInstance()
+    const writes: Uint8Array[] = []
+    const originalWrite = instance.terminal.write.bind(instance.terminal)
+    instance.terminal.write = ((data: string | Uint8Array, cb?: () => void) => {
+      writes.push(typeof data === 'string' ? new TextEncoder().encode(data) : data)
+      return originalWrite(data, cb)
+    }) as typeof instance.terminal.write
+    return { instance, writes }
+  }
+
+  it('writes a delta that starts at the current offset', () => {
+    const { instance, writes } = recordingInstance()
+    const out = applyTerminalData(instance, { kind: 'delta', data: new TextEncoder().encode('abc'), endOffset: 13, currentOffset: 10 })
+    expect(new TextDecoder().decode(writes[0])).toBe('abc')
+    expect(out).toBe(13)
+    instance.dispose()
   })
 
+  it('trims the prefix of a delta that overlaps rendered bytes', () => {
+    // The worker registers a watcher for live events first and takes its
+    // catch-up snapshot after, so a delta can re-include bytes the live
+    // path already delivered. Rendering the delta again duplicates them.
+    const { instance, writes } = recordingInstance()
+    // Current offset 12; the delta covers [10, 15): bytes 10..11 already
+    // rendered, so only "cde" (offsets 12..14) may write.
+    const out = applyTerminalData(instance, { kind: 'delta', data: new TextEncoder().encode('abcde'), endOffset: 15, currentOffset: 12 })
+    expect(new TextDecoder().decode(writes[0])).toBe('cde')
+    expect(out).toBe(15)
+    instance.dispose()
+  })
+
+  it('writes nothing when the delta lies entirely in the past', () => {
+    const { instance, writes } = recordingInstance()
+    let parsed = 0
+    // Offset 20; the delta covers [10, 14) — fully applied already.
+    const out = applyTerminalData(instance, { kind: 'delta', data: new TextEncoder().encode('abcd'), endOffset: 14, currentOffset: 20, onParsed: () => {
+      parsed++
+    } })
+    expect(writes).toEqual([])
+    // The parse callback still fires: callers gate content-ready on it.
+    expect(parsed).toBe(1)
+    // A stale duplicate must not rewind the cursor.
+    expect(out).toBe(20)
+    instance.dispose()
+  })
+
+  it('marks the parsed offset only once xterm parses the write', async () => {
+    const { instance } = recordingInstance()
+
+    // The write is queued, not parsed: the marker must stay unset so a
+    // dispose right here skips the capture instead of storing a screen whose
+    // coverage the tab's cursor overstates.
+    const out = applyTerminalData(instance, { kind: 'delta', data: new TextEncoder().encode('abc'), endOffset: 13, currentOffset: 10 })
+    expect(out).toBe(13)
+    expect(instance.lastParsedOffset).toBeUndefined()
+
+    // Flush xterm's async parser; the write's callback marks the cursor.
+    await new Promise<void>(resolve => instance.terminal.write('', resolve))
+    expect(instance.lastParsedOffset).toBe(13)
+
+    // A snapshot resets the buffer, so the marker is unsettled again until
+    // the snapshot's own write parses.
+    applyTerminalData(instance, { kind: 'snapshot', data: new TextEncoder().encode('rebuilt'), endOffset: 7 })
+    expect(instance.lastParsedOffset).toBeUndefined()
+    await new Promise<void>(resolve => instance.terminal.write('', resolve))
+    expect(instance.lastParsedOffset).toBe(7)
+
+    instance.dispose()
+  })
+
+  it('treats a snapshot as authoritative regardless of the current offset', async () => {
+    // After overlapping live deltas, a snapshot (the worker rebuilt the
+    // screen because the cursor fell outside the retained ring) resets the
+    // buffer and adopts the snapshot's cursor, even when the snapshot ends
+    // BEHIND the stale local offset.
+    const { instance } = recordingInstance()
+    instance.terminal.write('live')
+    await new Promise<void>(resolve => instance.terminal.write('', resolve))
+    const out = applyTerminalData(instance, { kind: 'snapshot', data: new TextEncoder().encode('rebuilt'), endOffset: 5 })
+    await new Promise<void>(resolve => instance.terminal.write('', resolve))
+    expect(instance.terminal.buffer.active.getLine(0)?.translateToString(true)).toContain('rebuilt')
+    expect(out).toBe(5)
+    instance.dispose()
+  })
+})
+
+describe('serializeXtermBuffer', () => {
   // Helper: synchronously write then await xterm's async parser via the
   // write callback. xterm processes its write queue asynchronously, so
   // calling serialize immediately after write() races the parser.
@@ -172,7 +264,6 @@ describe('resolveTerminalThemeMode', () => {
 
 describe('getTerminalRendererPreference', () => {
   beforeEach(() => {
-    localStorage.clear()
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
       configurable: true,
       value: undefined,
@@ -232,8 +323,6 @@ describe('getTerminalRendererPreference', () => {
 
 describe('lazy WebGL renderer', () => {
   beforeEach(() => {
-    localStorage.clear()
-    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as any
     // Reset globals a prior describe may have left set (Object.defineProperty
     // leaks across blocks in jsdom), so the renderer preference resolves as a
     // plain non-Tauri browser rather than Linux desktop Tauri (→ canvas).

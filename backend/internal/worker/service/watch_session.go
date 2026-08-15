@@ -8,7 +8,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -199,24 +198,51 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 	}
 
 	sink := newReplaySink(s.sender)
+
+	// The git-status batch feeds only the agent replay below, so start it
+	// BEFORE the terminal catch-up and let the two overlap: the terminal
+	// sends stream while git works, and the agent replay waits for neither
+	// stage to re-run. The shell-outs stay cancellable — a transport that
+	// died mid-terminal-replay gets no agent replay, so its git batch is
+	// pure waste and is cancelled below.
+	gitCtx, cancelGit := context.WithCancel(bgCtx())
+	defer cancelGit()
 	var replayGitStatuses []*leapmuxv1.AgentGitStatus
-	if sink.alive() && len(promotedAgentRows) > 0 {
+	var gitDone chan struct{}
+	if len(promotedAgentRows) > 0 {
 		dirs := make([]string, len(promotedAgentRows))
 		for i, row := range promotedAgentRows {
 			dirs[i] = row.WorkingDir
 		}
-		replayGitStatuses = gitutil.BatchGetGitStatus(bgCtx(), dirs)
+		gitDone = make(chan struct{})
+		go func() {
+			defer close(gitDone)
+			replayGitStatuses = s.svc.batchGitStatusFn(gitCtx, dirs)
+		}()
 	} else {
 		replayGitStatuses = make([]*leapmuxv1.AgentGitStatus, len(promotedAgentRows))
 	}
 
-	// Terminal catch-up first so screen restore is not HOL-blocked behind
-	// a multi-page agent message replay on the same revision.
+	// Terminal catch-up FIRST on the wire. This session registered for live
+	// terminal events above, and the catch-up snapshot re-includes every byte
+	// the live path already delivered in between — the client trims that
+	// overlap by offset, but the window (and the duplicated bytes on the
+	// wire) still grows with everything that runs here. Streaming this loop
+	// immediately minimizes it, and keeps screen restore from waiting behind
+	// the concurrent git batch or a multi-page agent replay on the same
+	// revision.
 	for i, termID := range promotedTermIDs {
 		if !sink.alive() {
 			break
 		}
 		s.svc.replayTerminalCatchUp(sink, termID, promotedOffsets[termID], promotedTermRows[i])
+	}
+
+	if gitDone != nil {
+		if !sink.alive() {
+			cancelGit()
+		}
+		<-gitDone
 	}
 	for i, agentEntry := range promotedAgents {
 		if !sink.alive() {

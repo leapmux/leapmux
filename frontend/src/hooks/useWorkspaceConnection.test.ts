@@ -112,8 +112,8 @@ describe('watch plan helpers', () => {
   })
 
   it('watchPlanKey moves when a mode changes', () => {
-    const notify = { agents: [{ agentId: 'a1', mode: WatchMode.NOTIFY } as never], terminals: [] as never[] }
-    const full = { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] as never[] }
+    const notify = { agents: [{ agentId: 'a1', mode: WatchMode.NOTIFY } as never], terminals: [] as never[], terminalResync: new Set<string>() }
+    const full = { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [] as never[], terminalResync: new Set<string>() }
     expect(watchPlanKey(notify)).not.toBe(watchPlanKey(full))
   })
 })
@@ -2082,11 +2082,22 @@ describe('extracted handleAgentEvent arm handlers', () => {
     it('caps the queue so a never-mounting terminal cannot grow it without bound', () => {
       const pending = new Map<string, Array<{ data: Uint8Array, isSnapshot: boolean, endOffset: bigint }>>()
       // Enqueue well over the cap; only the newest MAX_PENDING_TERMINAL_FRAMES survive.
+      let evicted = false
       for (let i = 0; i < MAX_PENDING_TERMINAL_FRAMES + 50; i++)
-        enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([i]), isSnapshot: false, endOffset: BigInt(i) })
+        evicted = enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([i]), isSnapshot: false, endOffset: BigInt(i) }) || evicted
       expect(pending.get('t1')).toHaveLength(MAX_PENDING_TERMINAL_FRAMES)
       // The oldest frames were dropped; the last surviving frame is the most recent.
       expect(pending.get('t1')!.at(-1)!.endOffset).toBe(BigInt(MAX_PENDING_TERMINAL_FRAMES + 49))
+      // The eviction is reported: the caller must flag the terminal for a
+      // full-snapshot resubscribe, because the dropped bytes leave a hole no
+      // incremental delta can fill.
+      expect(evicted).toBe(true)
+    })
+
+    it('reports no eviction while the queue stays under the cap', () => {
+      const pending = new Map<string, Array<{ data: Uint8Array, isSnapshot: boolean, endOffset: bigint }>>()
+      for (let i = 0; i < 3; i++)
+        expect(enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([i]), isSnapshot: false, endOffset: BigInt(i) })).toBe(false)
     })
   })
 

@@ -29,6 +29,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/config"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/util/validate"
@@ -82,6 +83,10 @@ type Service struct {
 	startTerminalFn     func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
 	createAgentRecordFn func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn      func(context.Context, string) (db.Agent, error)
+	// batchGitStatusFn runs the concurrent git-status batch for a watch
+	// catch-up. A seam (same contract as its siblings above) so tests can
+	// observe the overlap's cancellation without spawning real git processes.
+	batchGitStatusFn func(ctx context.Context, dirs []string) []*leapmuxv1.AgentGitStatus
 
 	// ---- Mutable runtime state: everything that changes over the worker's
 	// life, touched concurrently by the handler goroutines DispatchAsync
@@ -462,6 +467,7 @@ func New(cfg Config) *Service {
 	svc.startTerminalFn = svc.Terminals.StartTerminal
 	svc.createAgentRecordFn = svc.Queries.CreateAgent
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
+	svc.batchGitStatusFn = gitutil.BatchGetGitStatus
 
 	// Wire auto-continue so OutputHandler can send synthetic user messages.
 	// An auto-continue injection is not a human-typed input, so it stays

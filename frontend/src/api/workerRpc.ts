@@ -405,8 +405,8 @@ export function restartTerminal(workerId: string, req: MessageInitShape<typeof R
   return callWorker(workerId, 'RestartTerminal', RestartTerminalRequestSchema, RestartTerminalResponseSchema, req)
 }
 
-export function sendInput(workerId: string, req: MessageInitShape<typeof SendInputRequestSchema>): Promise<SendInputResponse> {
-  return callWorker(workerId, 'SendInput', SendInputRequestSchema, SendInputResponseSchema, req)
+export function sendInput(workerId: string, req: MessageInitShape<typeof SendInputRequestSchema>, opts?: { timeoutMs?: number, signal?: AbortSignal }): Promise<SendInputResponse> {
+  return callWorker(workerId, 'SendInput', SendInputRequestSchema, SendInputResponseSchema, req, opts)
 }
 
 export function resizeTerminal(workerId: string, req: MessageInitShape<typeof ResizeTerminalRequestSchema>): Promise<ResizeTerminalResponse> {

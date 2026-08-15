@@ -137,7 +137,7 @@ describe('buildWatchPlans', () => {
     }
     const getAgentTab = (id: string): AgentTab | undefined =>
       tabs.find(t => t.id === id) as AgentTab | undefined
-    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0, getAgentTab)
+    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0, () => false, getAgentTab)
     const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
     // root-1 appears twice (its own FULL + the child-driven NOTIFY). The dedup
     // keeps it to one entry — the root's own tab already placed it.
@@ -157,7 +157,7 @@ describe('buildWatchPlans', () => {
         return { ...child, id: 'root-1', parentAgentId: undefined } as AgentTab
       return undefined
     }
-    const plans = buildWatchPlans([child], 'ws-1', () => '1:child-1', () => 0n, () => 0, getAgentTab)
+    const plans = buildWatchPlans([child], 'ws-1', () => '1:child-1', () => 0n, () => 0, () => false, getAgentTab)
     const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
     // The child's own entry + a NOTIFY root entry.
     expect(agentIds).toContainEqual({ id: 'child-1', mode: WatchMode.FULL })
@@ -181,7 +181,7 @@ describe('buildWatchPlans', () => {
         return { type: TabType.AGENT, id: 'root-1' } as AgentTab
       return tabs.find(t => t.id === id) as AgentTab | undefined
     }
-    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0, getAgentTab)
+    const plans = buildWatchPlans(tabs, 'ws-1', activeKey, () => 0n, () => 0, () => false, getAgentTab)
     const rootEntries = plans.get('w1')!.agents.filter(a => a.agentId === 'root-1')
     expect(rootEntries).toHaveLength(1)
     expect(rootEntries[0].mode).toBe(WatchMode.NOTIFY)
@@ -193,17 +193,60 @@ describe('watchPlanKey', () => {
     const a = {
       agents: [{ agentId: 'a1', mode: WatchMode.FULL, cursorSeq: BigInt(1) } as never],
       terminals: [] as never[],
+      terminalResync: new Set<string>(),
     }
     const b = {
       agents: [{ agentId: 'a1', mode: WatchMode.FULL, cursorSeq: BigInt(99) } as never],
       terminals: [] as never[],
+      terminalResync: new Set<string>(),
     }
     const c = {
       agents: [{ agentId: 'a1', mode: WatchMode.NOTIFY, cursorSeq: BigInt(99) } as never],
       terminals: [] as never[],
+      terminalResync: new Set<string>(),
     }
     expect(watchPlanKey(a)).toBe(watchPlanKey(b))
     expect(watchPlanKey(a)).not.toBe(watchPlanKey(c))
+  })
+
+  it('moves when a terminal is flagged for resync, so the cold plan goes out', () => {
+    const clean = {
+      agents: [] as never[],
+      terminals: [{ terminalId: 't1', afterOffset: BigInt(400), mode: WatchMode.FULL } as never],
+      terminalResync: new Set<string>(),
+    }
+    const flagged = {
+      agents: [] as never[],
+      terminals: [{ terminalId: 't1', afterOffset: BigInt(0), mode: WatchMode.FULL } as never],
+      terminalResync: new Set(['t1']),
+    }
+    // Without the resync arm in the key, both plans would key identically
+    // (`t1:FULL`) and the stream would never re-send the cold afterOffset.
+    expect(watchPlanKey(clean)).not.toBe(watchPlanKey(flagged))
+  })
+})
+
+describe('terminal resync plans', () => {
+  it('subscribes a flagged terminal cold and records it in the plan', () => {
+    const tab = {
+      type: TabType.TERMINAL,
+      id: 't1',
+      workerId: 'w1',
+      tileId: 'tile-1',
+      position: 'p1',
+    } as never
+    const plans = buildWatchPlans(
+      [tab],
+      'ws-1',
+      () => '1:t1',
+      () => 0n,
+      () => 400,
+      () => true,
+    )
+    const plan = plans.get('w1')!
+    expect(plan.terminals).toHaveLength(1)
+    expect(plan.terminals[0].afterOffset).toBe(BigInt(0))
+    expect(plan.terminalResync.has('t1')).toBe(true)
   })
 })
 

@@ -496,6 +496,132 @@ func TestWatchEvents_DualPromote_TerminalCatchUpBeforeAgent(t *testing.T) {
 	assert.Less(t, termIdx, agentStartIdx, "terminal catch-up must precede agent catch-up on dual promote")
 }
 
+// TestWatchEvents_DualPromote_GitBatchOverlapsTerminalCatchUp pins the
+// overlap's throughput half: the git-status batch and the terminal catch-up
+// are independent stages, so the terminal frames must stream WHILE the git
+// batch is still running, not after it. The seam parks the batch open until
+// the test releases it; if the stages were sequential again, the terminal
+// frame could not appear before the release.
+func TestWatchEvents_DualPromote_GitBatchOverlapsTerminalCatchUp(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-overlap", WorkingDir: "/tmp", HomeDir: "/tmp",
+	}))
+	startTestTerminal(t, svc, ctx, "term-overlap")
+	require.True(t, svc.Terminals.AppendOutput("term-overlap", []byte("screen")))
+
+	gitStarted := make(chan struct{})
+	release := make(chan struct{})
+	svc.batchGitStatusFn = func(_ context.Context, dirs []string) []*leapmuxv1.AgentGitStatus {
+		close(gitStarted)
+		<-release
+		return make([]*leapmuxv1.AgentGitStatus, len(dirs))
+	}
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-overlap", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-overlap", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+	}, w)
+	waitAgentWatchCount(t, svc, "agent-overlap", 1)
+	waitTerminalWatchCount(t, svc, "term-overlap", 1)
+
+	promote, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
+		UpdateId: 1,
+		Agents:   []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-overlap", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: "term-overlap", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
+	})
+	require.NoError(t, err)
+	w.deliverStreamRequest(promote, false)
+
+	select {
+	case <-gitStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("git batch never started")
+	}
+
+	// The git batch is parked open, yet the terminal catch-up data must
+	// already be on the wire — the two stages overlap.
+	require.Eventually(t, func() bool {
+		for _, m := range w.streamsSnapshot() {
+			var resp leapmuxv1.WatchEventsResponse
+			if err := proto.Unmarshal(m.GetPayload(), &resp); err != nil {
+				continue
+			}
+			if te := resp.GetTerminalEvent(); te != nil && te.GetTerminalId() == "term-overlap" && te.GetData() != nil {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond, "terminal catch-up must stream while the git batch is in flight")
+
+	close(release)
+	require.Eventually(t, func() bool {
+		return countCatchUpCompletes(w) >= 1
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// TestWatchEvents_DualPromote_CancelsGitBatchWhenTransportDies pins the
+// overlap's cancellation half: a transport that dies during the terminal
+// replay gets no agent replay, so its still-running git batch is pure waste
+// and must be cancelled — and the cancelled join must not hang the session.
+func TestWatchEvents_DualPromote_CancelsGitBatchWhenTransportDies(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-git-cancel", WorkingDir: "/tmp", HomeDir: "/tmp",
+	}))
+	startTestTerminal(t, svc, ctx, "term-git-cancel")
+	require.True(t, svc.Terminals.AppendOutput("term-git-cancel", []byte("screen")))
+
+	gitStarted := make(chan struct{})
+	gitCancelled := make(chan struct{})
+	svc.batchGitStatusFn = func(gitCtx context.Context, dirs []string) []*leapmuxv1.AgentGitStatus {
+		close(gitStarted)
+		<-gitCtx.Done()
+		close(gitCancelled)
+		return make([]*leapmuxv1.AgentGitStatus, len(dirs))
+	}
+
+	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
+		Agents:    []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-git-cancel", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{TerminalId: "term-git-cancel", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+	}, w)
+	waitAgentWatchCount(t, svc, "agent-git-cancel", 1)
+	waitTerminalWatchCount(t, svc, "term-git-cancel", 1)
+
+	// Every stream send dies from here on: the terminal replay's first frame
+	// kills the sink, so the agent replay never runs.
+	w.killStreamSends()
+
+	promote, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
+		UpdateId: 1,
+		Agents:   []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-git-cancel", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Terminals: []*leapmuxv1.WatchTerminalEntry{{
+			TerminalId: "term-git-cancel", AfterOffset: 0, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL,
+		}},
+	})
+	require.NoError(t, err)
+	w.deliverStreamRequest(promote, false)
+
+	select {
+	case <-gitStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("git batch never started")
+	}
+	select {
+	case <-gitCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("git batch was not cancelled after the transport died")
+	}
+}
+
 func TestWatchEvents_LookupFailedRetryPerformsOwedReplay(t *testing.T) {
 	t.Parallel()
 

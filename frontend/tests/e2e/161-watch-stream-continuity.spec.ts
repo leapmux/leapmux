@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { waitForTerminalText } from './helpers/terminal'
+import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { armTurnEndSound, expectDoorbellCount } from './helpers/turnEndSound'
 import {
   loginViaToken,
@@ -26,23 +26,6 @@ async function installWatchOpenCounter(page: Page) {
       w.__watchOpens = (w.__watchOpens ?? 0) + 1
     })
   })
-}
-
-async function typeInTerminal(page: Page, command: string) {
-  await page.evaluate(() => {
-    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-    for (const container of containers) {
-      if (container.dataset.active === 'true') {
-        const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-        if (textarea) {
-          textarea.focus()
-          return
-        }
-      }
-    }
-  })
-  await page.keyboard.type(command, { delay: 20 })
-  await page.keyboard.press('Enter')
 }
 
 const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'

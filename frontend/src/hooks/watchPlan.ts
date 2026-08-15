@@ -23,6 +23,14 @@ import { rootAgentIdFor } from '~/stores/tab.helpers'
 export interface WatchPlan {
   agents: WatchAgentEntry[]
   terminals: WatchTerminalEntry[]
+  /**
+   * Terminals whose next subscribe must force a full snapshot (the client
+   * lost bytes and an incremental catch-up cannot fill the hole). Kept beside
+   * the entries — never sent on the wire — so `watchPlanKey` can re-key the
+   * plan when the resync state flips; it is NOT part of the entries because
+   * those are serialized straight into the WatchEvents request.
+   */
+  terminalResync: Set<string>
 }
 
 /**
@@ -99,6 +107,7 @@ export function buildWatchPlans(
   activeKeyForTile: (tileId: string) => string | null,
   agentResumeSeq: (agentId: string) => bigint = () => 0n,
   terminalAfterOffset: (terminalId: string) => bigint | number = () => 0,
+  terminalNeedsResync: (terminalId: string) => boolean = () => false,
   getAgentTab: ((agentId: string) => AgentTab | undefined) | undefined = undefined,
 ): Map<string, WatchPlan> {
   const plans = new Map<string, WatchPlan>()
@@ -123,7 +132,7 @@ export function buildWatchPlans(
     const workerId = tab.workerId
     let plan = plans.get(workerId)
     if (!plan) {
-      plan = { agents: [], terminals: [] }
+      plan = { agents: [], terminals: [], terminalResync: new Set() }
       plans.set(workerId, plan)
     }
     if (tab.type === TabType.AGENT) {
@@ -144,7 +153,13 @@ export function buildWatchPlans(
       }
     }
     else if (tab.type === TabType.TERMINAL) {
-      const after = terminalAfterOffset(tab.id)
+      // A flagged terminal subscribes cold (afterOffset 0), which the worker
+      // answers with a full snapshot — the only thing that can rebuild a
+      // screen with a hole in it.
+      const resync = terminalNeedsResync(tab.id)
+      const after = resync ? 0 : terminalAfterOffset(tab.id)
+      if (resync)
+        plan.terminalResync.add(tab.id)
       plan.terminals.push({
         terminalId: tab.id,
         afterOffset: typeof after === 'bigint' ? after : BigInt(after),
@@ -156,9 +171,11 @@ export function buildWatchPlans(
 }
 
 /**
- * Change key for one plan: ids AND modes, deliberately NOT cursors. Cursors
- * move on every message, and keying on them would re-send an update per chat
- * frame.
+ * Change key for one plan: ids, modes, and forced-resync state — deliberately
+ * NOT cursors. Cursors move on every message, and keying on them would re-send
+ * an update per chat frame. The resync arm re-keys only when a terminal is
+ * flagged or unflagged, so the plan carrying afterOffset 0 actually goes out
+ * (and the plan that returns to the normal cursor goes out after it).
  */
 export function watchPlanKey(plan: WatchPlan): string {
   const agents = plan.agents
@@ -166,7 +183,7 @@ export function watchPlanKey(plan: WatchPlan): string {
     .toSorted()
     .join(',')
   const terminals = plan.terminals
-    .map(t => `${t.terminalId}:${t.mode}`)
+    .map(t => `${t.terminalId}:${t.mode}${plan.terminalResync.has(t.terminalId) ? ':r' : ''}`)
     .toSorted()
     .join(',')
   return `a:${agents}|t:${terminals}`

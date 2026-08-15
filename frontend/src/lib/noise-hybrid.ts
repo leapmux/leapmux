@@ -14,7 +14,8 @@ import { blake2b } from '@noble/hashes/blake2.js'
 import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 
 import { slh_dsa_shake_256f } from '@noble/post-quantum/slh-dsa.js'
-import { concatBytes, SymmetricState } from './noise'
+import { concatBytes } from './bytes'
+import { SymmetricState } from './noise'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
 const DH_LEN = 32

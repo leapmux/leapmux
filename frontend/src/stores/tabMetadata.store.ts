@@ -139,6 +139,14 @@ export interface TerminalMeta {
    * the resubscribe cursor: it cannot lag behind a join that has not recomputed.
    */
   lastOffset?: number
+  /**
+   * Set when this client knows it lost terminal bytes (the pending-frame
+   * queue evicted oldest frames for a terminal that never mounted). The next
+   * watch plan subscribes with afterOffset 0, which the worker answers with a
+   * full snapshot; the flag clears when that snapshot applies. Local
+   * recovery state, like lastOffset — never synced.
+   */
+  needsResync?: boolean
   /** PTY-driven title from OSC 0/2; does not replace a user rename (`title`). */
   ptyTitle?: string
   /** Task progress from OSC 9;4 (ConEmu / Windows Terminal protocol). */

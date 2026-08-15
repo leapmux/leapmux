@@ -24,14 +24,14 @@ func TestScreenBuffer_SnapshotSince_CaughtUp(t *testing.T) {
 	assert.False(t, isSnap)
 }
 
-// TestScreenBuffer_SnapshotSince_ColdSubscribeWithinWindow: after_offset=0
-// on a buffer whose ring has NOT wrapped returns the full retained bytes
-// as an incremental delta, NOT a snapshot. The snapshot flag exists to
-// tell a frontend to reset pre-existing state; a cold subscriber has no
-// state to reset, and a frontend that happens to hold the first N bytes
-// legitimately is resuming in-window. The distinction only matters once
-// the ring has wrapped (see BehindRing test).
-func TestScreenBuffer_SnapshotSince_ColdSubscribeWithinWindow(t *testing.T) {
+// TestScreenBuffer_SnapshotSince_ForcedResyncAtZero: after_offset=0 is the
+// forced-resync subscribe. A client that lost bytes (its pending-frame queue
+// evicted frames) asks for a full rebuild, and the answer must be the whole
+// retained buffer with the snapshot flag EVEN while the ring still holds
+// byte 0 — an incremental-from-zero delta would come back instead, and the
+// client's stale cursor would trim the rebuilt bytes as "already rendered",
+// which is exactly the garbled state the resync exists to repair.
+func TestScreenBuffer_SnapshotSince_ForcedResyncAtZero(t *testing.T) {
 	t.Parallel()
 
 	sb := NewScreenBuffer()
@@ -39,10 +39,11 @@ func TestScreenBuffer_SnapshotSince_ColdSubscribeWithinWindow(t *testing.T) {
 	sb.Write([]byte(" world"))
 
 	data, offset, isSnap := sb.SnapshotSince(0)
-	assert.Equal(t, []byte("hello world"), data)
+	assert.True(t, isSnap,
+		"offset 0 is a forced resync and must rebuild the client's state")
 	assert.Equal(t, int64(11), offset)
-	assert.False(t, isSnap,
-		"offset 0 while the ring still holds byte 0 is valid in-window resume")
+	assert.Contains(t, string(data), "hello world",
+		"the resync snapshot carries the full retained bytes")
 }
 
 // TestScreenBuffer_SnapshotSince_IncrementalDelta: after_offset inside the
@@ -201,8 +202,9 @@ func TestScreenBuffer_SnapshotSince_NegativeOffset(t *testing.T) {
 
 // TestScreenBuffer_SnapshotSince_WrapsAtExactBoundary: when a write
 // exactly fills the ring (pos==len(buf), full transitions false→true),
-// SnapshotSince(0) must still return all bytes as an in-window resume —
-// not a snapshot, because byte 0 is still the retention window's start.
+// SnapshotSince(0) still answers the forced-resync subscribe with the
+// full buffer and the snapshot flag — byte 0 being the retention window's
+// start does not change what a zero-offset subscriber asked for.
 func TestScreenBuffer_SnapshotSince_WrapsAtExactBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -217,8 +219,8 @@ func TestScreenBuffer_SnapshotSince_WrapsAtExactBoundary(t *testing.T) {
 	data, end, isSnap := sb.SnapshotSince(0)
 	assert.Len(t, data, screenBufferSize)
 	assert.Equal(t, int64(screenBufferSize), end)
-	assert.False(t, isSnap,
-		"ring exactly full: byte 0 is at windowStart, still in-window")
+	assert.True(t, isSnap,
+		"offset 0 is a forced resync regardless of where the window starts")
 }
 
 // TestScreenBuffer_SnapshotSince_MultiWrap: after the ring has wrapped

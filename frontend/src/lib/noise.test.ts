@@ -8,21 +8,10 @@ import { blake2b } from '@noble/hashes/blake2.js'
 import { hmac } from '@noble/hashes/hmac.js'
 
 import { describe, expect, it } from 'vitest'
+import { concatBytes } from './bytes'
 import { CipherState, initiatorHandshake1, initiatorHandshake2 } from './noise'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
-
-function concatBytes(...arrays: Uint8Array[]): Uint8Array {
-  let totalLen = 0
-  for (const a of arrays) totalLen += a.length
-  const result = new Uint8Array(totalLen)
-  let offset = 0
-  for (const a of arrays) {
-    result.set(a, offset)
-    offset += a.length
-  }
-  return result
-}
 
 function hkdf2(ck: Uint8Array, ikm: Uint8Array): [Uint8Array, Uint8Array] {
   const tempKey = hmac(blake2b, ck, ikm)

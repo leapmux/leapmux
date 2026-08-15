@@ -12,7 +12,7 @@
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { KEY_KEY_PINS, localStorageGet, localStorageRemove, localStorageSet } from './browserStorage'
-import { concatBytes } from './noise'
+import { concatBytes } from './bytes'
 
 export type KeyPinDecision = 'accept' | 'reject'
 
