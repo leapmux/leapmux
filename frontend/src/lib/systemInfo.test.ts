@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { isSoloMode, loadSystemInfo } from './systemInfo'
+import { getCaptchaAlgorithm, isCaptchaEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
 vi.mock('~/api/clients', () => ({
@@ -24,6 +24,8 @@ function systemInfoResponse(overrides: Record<string, unknown> = {}) {
     setupRequired: false,
     workerHubUrl: '',
     emailEnabled: false,
+    captchaEnabled: false,
+    captchaAlgorithm: '',
     version: '',
     commitHash: '',
     commitTime: '',
@@ -70,5 +72,35 @@ describe('loadSystemInfo', () => {
 
     expect(mockGetSystemInfo).toHaveBeenCalledOnce()
     expect(isSoloMode()).toBe(true)
+  })
+
+  // Last on purpose: a successful load flips the module's one-way `loaded`
+  // latch, and earlier tests assert retry behavior that assumes it is off.
+  it('caches the hub\'s captcha flags for the pre-login gating', async () => {
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+      captchaEnabled: true,
+      captchaAlgorithm: 'PBKDF2/SHA-256',
+    }))
+    await loadSystemInfo(true)
+    expect(isCaptchaEnabled()).toBe(true)
+    expect(getCaptchaAlgorithm()).toBe('PBKDF2/SHA-256')
+    expect(isSystemInfoLoaded()).toBe(true)
+  })
+
+  // A force reload rewrites the captcha signals, which is what the
+  // denial-driven refresh after an admin toggles captcha at runtime
+  // depends on: a `<Show>` gate reading isCaptchaEnabled() re-evaluates
+  // instead of staying frozen at the first answer.
+  it('flips the captcha flags on a forced reload', async () => {
+    // The previous test loaded the module; the flip below is what matters.
+    expect(isSystemInfoLoaded()).toBe(true)
+
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ captchaEnabled: false }))
+    await loadSystemInfo(true)
+    expect(isCaptchaEnabled()).toBe(false)
+
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ captchaEnabled: true }))
+    await loadSystemInfo(true)
+    expect(isCaptchaEnabled()).toBe(true)
   })
 })

@@ -3,10 +3,12 @@ import type { Component } from 'solid-js'
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
+import { CaptchaField, CaptchaHoneypot } from '~/components/common/CaptchaField'
 import * as styles from '~/components/common/LoginPage.css'
 import { Spinner } from '~/components/common/Spinner'
 import { UsernameField } from '~/components/common/UsernameField'
 import { useAuth } from '~/context/AuthContext'
+import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { setPageTitle } from '~/lib/pageTitle'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
@@ -26,6 +28,7 @@ const OAuthCompleteSignupPage: Component = () => {
   const [error, setError] = createSignal<string | null>(null)
   const [loading, setLoading] = createSignal(true)
   const [tokenError, setTokenError] = createSignal<string | null>(null)
+  const captcha = createCaptchaForm()
 
   onMount(async () => {
     setPageTitle('Complete Sign Up')
@@ -74,6 +77,7 @@ const OAuthCompleteSignupPage: Component = () => {
         signupToken: signupToken(),
         username: slug,
         displayName: sanitizedDisplayName,
+        ...captcha.fields(),
       })
       auth.setAuth(resp.user!)
       // OAuth signup mirrors the SignUp flow: when the provider returned
@@ -90,6 +94,7 @@ const OAuthCompleteSignupPage: Component = () => {
     }
     catch (e) {
       setError(formatErrorMessage(e, 'Sign up failed'))
+      captcha.reset()
       setSubmitting(false)
     }
   }
@@ -138,10 +143,18 @@ const OAuthCompleteSignupPage: Component = () => {
                 />
               </label>
             </Show>
+            <CaptchaHoneypot value={captcha.honeypot()} onInput={captcha.setHoneypot} />
+            <Show when={captcha.required()}>
+              <CaptchaField
+                ref={captcha.bindField}
+                onPayload={captcha.setPayload}
+                onUnavailable={captcha.noteUnavailable}
+              />
+            </Show>
             <Show when={error()}>
               <div class={errorText}>{error()}</div>
             </Show>
-            <button type="submit" disabled={submitting() || !username()}>
+            <button type="submit" disabled={submitting() || !username() || captcha.blocksSubmit()}>
               <Show when={submitting()}><Spinner /></Show>
               {submitting() ? 'Creating account...' : 'Create account'}
             </button>

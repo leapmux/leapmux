@@ -198,6 +198,24 @@ Env prefix: `LEAPMUX_HUB_`. Defaults shown are the built-in values. Each key's C
 
 See [Accounts & Authentication](/docs/using/accounts/) for the sign-up/verification flows, and [Authentication Providers](/docs/operating/authentication-providers/) for OAuth/OIDC.
 
+### Bot protection (captcha & rate limits)
+
+Captcha and rate-limit settings are **not config-file keys** — they live in the Hub's database so they can be changed at runtime (a running Hub picks up changes within ~30 seconds) via the admin CLI:
+
+```bash
+leapmux admin captcha show
+leapmux admin captcha set --algorithm PBKDF2/SHA-256 --cost 10000
+leapmux admin rate-limit list
+```
+
+Out of the box, with no configuration at all: captcha is **enabled** with `PBKDF2/SHA-256` at cost `10000` (challenges expire after 20 minutes), and `change-password` is limited to 5 failed attempts per 15 minutes per user. Solo mode enforces neither. Two knobs deserve a warning before you turn them:
+
+- **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans.
+- The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side), so issuing challenges stays cheap even at high costs.
+- **Browsers only solve challenges in a secure context** (HTTPS, or localhost): the solvers need WebCrypto. A hub reached over plain HTTP from another machine cannot present a solvable captcha — put TLS in front (reverse proxy) or disable captcha for such deployments. The honeypot check works everywhere.
+
+See the [`captcha`](/docs/operating/admin-cli/#captcha--altcha-bot-protection) and [`rate-limit`](/docs/operating/admin-cli/#rate-limit--per-user-operation-limits) admin CLI chapters for the full flag reference.
+
 ### SMTP options
 
 Email is needed for verification and notifications. Set `smtp_host` to enable it; when set, `smtp_from_address` is required and must be a valid email.

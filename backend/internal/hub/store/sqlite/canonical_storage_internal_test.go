@@ -265,6 +265,30 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ProviderSubject: "canon-subject",
 	}))
 
+	// captcha_config.updated_at via its column DEFAULT on first-use
+	// provisioning; rate_limit_config.updated_at via the CLI upsert.
+	require.NoError(t, st.CaptchaConfig().Insert(ctx, store.InsertCaptchaConfigParams{
+		Enabled:                true,
+		Algorithm:              "PBKDF2/SHA-256",
+		Cost:                   10000,
+		ChallengeExpirySeconds: 1200,
+		Secret:                 []byte("canon-secret"),
+	}))
+	require.NoError(t, st.RateLimitConfig().Upsert(ctx, store.UpsertRateLimitConfigParams{
+		Operation:     "change-password",
+		Enabled:       true,
+		MaxAttempts:   5,
+		WindowSeconds: 900,
+	}))
+
+	// captcha_used_salts.expires_at is Go-bound by ConsumeCaptchaSalt.
+	consumedSalt, err := st.CaptchaConfig().ConsumeCaptchaSalt(ctx, store.ConsumeCaptchaSaltParams{
+		Salt:      "canon-salt",
+		ExpiresAt: future,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, consumedSalt)
+
 	// users.pending_email_expires_at is Go-bound by SetPendingEmail.
 	require.NoError(t, st.Users().SetPendingEmail(ctx, store.SetPendingEmailParams{
 		ID:                    user.ID,

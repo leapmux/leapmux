@@ -337,7 +337,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	// Register AuthService ConnectRPC routes.
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(service.AuthServiceDeps{Store: st, Config: cfg, Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil), Keystore: ks, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 

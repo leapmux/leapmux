@@ -123,6 +123,14 @@ func createTestWorker(t *testing.T, q *gendb.Queries, userID string) string {
 
 // ---- OAuth provider tests ----
 
+// enabledWord renders the toggle outcome for every enable/disable command's
+// output line; the polarity contract is pinned because the OAuth call site
+// used to encode it with an inverted if.
+func TestEnabledWord(t *testing.T) {
+	assert.Equal(t, "Enabled", enabledWord(true))
+	assert.Equal(t, "Disabled", enabledWord(false))
+}
+
 // mintResolvedUserID is the single refusal every admin command that resolves a
 // user by --id/--username routes its owner-scoped work through, so both arms
 // are pinned here: an inverted check would silently hand "" to bulk mutations

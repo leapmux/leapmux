@@ -49,6 +49,15 @@ func RefreshTokenAAD(userID, providerID string) []byte {
 	return []byte("refresh_token:" + userID + ":" + providerID)
 }
 
+// CaptchaSecretAAD returns the AAD for the captcha HMAC signing secret.
+// A constant domain separator is correct here — unlike the per-row AADs
+// above, the captcha config is a singleton (CHECK id = 1), so there is no
+// second row to cross-substitute ciphertexts with; the separator's job is
+// only to keep the blob distinct from every other keystore use.
+func CaptchaSecretAAD() []byte {
+	return []byte("captcha:hmac_secret")
+}
+
 // Keystore manages a versioned key ring for XChaCha20-Poly1305 envelope
 // encryption plus a dedicated, stable pepper for bearer-token hashing.
 type Keystore struct {

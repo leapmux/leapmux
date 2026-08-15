@@ -33,6 +33,8 @@ type Store interface {
 	OAuthTokens() OAuthTokenStore
 	OAuthUserLinks() OAuthUserLinkStore
 	PendingOAuthSignups() PendingOAuthSignupStore
+	CaptchaConfig() CaptchaConfigStore
+	RateLimitConfig() RateLimitConfigStore
 	APITokens() APITokenStore
 	DelegationTokens() DelegationTokenStore
 	RevocationEvents() RevocationEventStore
@@ -568,6 +570,30 @@ type PendingOAuthSignupStore interface {
 	Delete(ctx context.Context, token string) error
 }
 
+// CaptchaConfigStore manages the singleton ALTCHA captcha configuration
+// row and the consumed-salt ledger. Get returns ErrNotFound when no row
+// exists (the caller applies code-side defaults); Update is a full-row
+// overwrite — read-modify-write is the CLI caller's job.
+type CaptchaConfigStore interface {
+	Get(ctx context.Context) (*CaptchaConfig, error)
+	Insert(ctx context.Context, p InsertCaptchaConfigParams) error
+	Update(ctx context.Context, p UpdateCaptchaConfigParams) error
+	Delete(ctx context.Context) error
+	// ConsumeCaptchaSalt marks a salt as used; it returns 1 when the salt
+	// was unused (first use) and 0 when a row already exists (replay).
+	ConsumeCaptchaSalt(ctx context.Context, p ConsumeCaptchaSaltParams) (int64, error)
+}
+
+// RateLimitConfigStore manages per-operation rate-limit overrides.
+// Get returns ErrNotFound when the operation has no row; List returns
+// only the customized operations.
+type RateLimitConfigStore interface {
+	Get(ctx context.Context, operation string) (*RateLimitConfig, error)
+	List(ctx context.Context) ([]RateLimitConfig, error)
+	Upsert(ctx context.Context, p UpsertRateLimitConfigParams) error
+	Delete(ctx context.Context, operation string) error
+}
+
 // CleanupStore provides methods for hard-deleting soft-deleted records
 // and expired ephemeral data. Backends may augment these with native
 // mechanisms but must implement all methods for consistent cross-backend
@@ -603,6 +629,10 @@ type CleanupStore interface {
 	DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// DeleteExpiredCaptchaSalts purges consumed salts whose challenge
+	// window has passed; the salt can no longer verify after expiry, so
+	// the row only bounds table growth until this sweep drops it.
+	DeleteExpiredCaptchaSalts(ctx context.Context) (int64, error)
 	// CompactPublishedRevocationEvents removes an expired Hub runtime lease,
 	// then deletes retained events only through the live Hub cursor.
 	CompactPublishedRevocationEvents(ctx context.Context, p CompactRevocationEventsParams) (int64, error)

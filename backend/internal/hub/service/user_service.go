@@ -343,7 +343,7 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 				return connect.NewError(connect.CodeInternal, fmt.Errorf("verify password: %w", err))
 			}
 			if !match {
-				return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("current password is incorrect"))
+				return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("%w", auth.ErrInvalidCurrentPassword))
 			}
 		}
 		if err := tx.Users().UpdatePassword(ctx, store.UpdateUserPasswordParams{

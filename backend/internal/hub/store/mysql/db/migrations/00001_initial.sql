@@ -560,6 +560,42 @@ CREATE TABLE pending_oauth_signups (
     FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)
 ) COLLATE=utf8mb4_bin;
 
+-- ALTCHA proof-of-work captcha configuration (singleton row, id = 1).
+-- An absent row means the built-in defaults apply: enabled, PBKDF2/SHA-256,
+-- cost 10000. The secret is generated on first use by the hub.
+CREATE TABLE captcha_config (
+    id                       BIGINT PRIMARY KEY,
+    enabled                  BOOLEAN NOT NULL DEFAULT TRUE,
+    algorithm                VARCHAR(255) NOT NULL DEFAULT 'PBKDF2/SHA-256',
+    cost                     BIGINT NOT NULL DEFAULT 10000,
+    memory_cost              BIGINT NOT NULL DEFAULT 0,
+    parallelism              BIGINT NOT NULL DEFAULT 0,
+    challenge_expiry_seconds BIGINT NOT NULL DEFAULT 1200,
+    secret                   BLOB NOT NULL,
+    updated_at               DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    CONSTRAINT captcha_config_singleton CHECK (id = 1)
+) COLLATE=utf8mb4_bin;
+
+-- Consumed captcha salts: single-use enforcement for solved challenges,
+-- shared across hub instances and restarts. A row's presence means the
+-- salt's solution was accepted once; the cleanup loop purges rows past
+-- their challenge expiry.
+CREATE TABLE captcha_used_salts (
+    salt       VARCHAR(255) PRIMARY KEY,
+    expires_at DATETIME(3) NOT NULL
+) COLLATE=utf8mb4_bin;
+CREATE INDEX idx_captcha_used_salts_expires_at ON captcha_used_salts(expires_at);
+
+-- Per-operation rate-limit overrides. Absent rows fall back to the code-side
+-- defaults; operations are catalogued in Go (internal/hub/ratelimit).
+CREATE TABLE rate_limit_config (
+    operation      VARCHAR(255) PRIMARY KEY,
+    enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+    max_attempts   BIGINT NOT NULL,
+    window_seconds BIGINT NOT NULL,
+    updated_at     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) COLLATE=utf8mb4_bin;
+
 -- +goose Down
 DROP TABLE IF EXISTS cli_authorization_codes;
 DROP TABLE IF EXISTS device_authorizations;
@@ -569,6 +605,9 @@ DROP TABLE IF EXISTS hub_runtime_lease;
 DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;
 DROP TABLE IF EXISTS pending_oauth_signups;
+DROP TABLE IF EXISTS rate_limit_config;
+DROP TABLE IF EXISTS captcha_used_salts;
+DROP TABLE IF EXISTS captcha_config;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;

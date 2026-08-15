@@ -1,5 +1,6 @@
 import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 import type { BuildInfo } from '~/lib/buildEnv'
+import { createSignal } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
 import { frontendBuildInfo } from '~/lib/buildEnv'
@@ -10,9 +11,14 @@ let signupEnabled = false
 let setupRequired = false
 let workerHubUrl = ''
 let emailEnabled = false
-let loaded = false
-
 let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' }
+
+// The captcha state is a signal, not a plain variable, so `<Show>` gates in
+// the auth forms re-evaluate when a (re)load of the system info flips the
+// flag — a plain module read evaluates once at mount and never again.
+const [captchaEnabledSignal, setCaptchaEnabled] = createSignal(false)
+const [captchaAlgorithmSignal, setCaptchaAlgorithm] = createSignal('')
+const [systemInfoLoadedSignal, setSystemInfoLoaded] = createSignal(false)
 
 // loadSystemInfo fetches the hub's system info and caches it (unless `force`).
 //
@@ -21,10 +27,15 @@ let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '',
 // caller that cannot tell "the hub said non-solo" from "we never asked" makes
 // unrecoverable decisions on them: on a solo hub the app would render a "Log
 // out" button whose one click sends the user to a login form no credentials
-// can satisfy. `loaded` still flips only on success, so a failed load is
-// retried by the next unforced call.
+// can satisfy. The loaded flag still flips only on success, so a failed load
+// is retried by the next unforced call.
+//
+// `force` re-fetches and rewrites the signals, so a caller that suspects its
+// snapshot is stale (a login denied as "captcha verification failed" after
+// the admin toggled captcha at runtime) can converge on the hub's current
+// state without a page reload.
 export async function loadSystemInfo(force = false): Promise<void> {
-  if (loaded && !force)
+  if (systemInfoLoadedSignal() && !force)
     return
   const resp = await authClient.getSystemInfo({})
   soloMode = resp.soloMode
@@ -32,6 +43,8 @@ export async function loadSystemInfo(force = false): Promise<void> {
   setupRequired = resp.setupRequired
   workerHubUrl = resp.workerHubUrl
   emailEnabled = resp.emailEnabled
+  setCaptchaEnabled(resp.captchaEnabled)
+  setCaptchaAlgorithm(resp.captchaAlgorithm)
   backendBuildInfo = {
     version: resp.version,
     commitHash: resp.commitHash,
@@ -39,7 +52,7 @@ export async function loadSystemInfo(force = false): Promise<void> {
     buildTime: resp.buildTime,
     branch: resp.branch,
   }
-  loaded = true
+  setSystemInfoLoaded(true)
 }
 
 export function isSoloMode(): boolean {
@@ -61,6 +74,28 @@ export function isSetupRequired(): boolean {
 // can't possibly work would mislead users.
 export function isEmailEnabled(): boolean {
   return emailEnabled
+}
+
+// isSystemInfoLoaded reports whether a system-info answer has arrived.
+// The value is a signal, so form gates re-evaluate when bootstrap lands.
+// Read any other getter only after this flips, or you read the fabricated
+// pre-fetch default.
+export function isSystemInfoLoaded(): boolean {
+  return systemInfoLoadedSignal()
+}
+
+// isCaptchaEnabled returns whether the hub requires ALTCHA proof-of-work on
+// Login/SignUp/CompleteOAuthSignup. Backed by a signal, so a `<Show>` that
+// reads it re-evaluates when the system info (re)loads — including the
+// denial-driven refresh after an admin toggles captcha at runtime.
+export function isCaptchaEnabled(): boolean {
+  return captchaEnabledSignal()
+}
+
+// getCaptchaAlgorithm returns the hub's active ALTCHA algorithm name
+// (informational; the authoritative parameters arrive with each challenge).
+export function getCaptchaAlgorithm(): string {
+  return captchaAlgorithmSignal()
 }
 
 // getWorkerHubUrl returns the URL workers should target when registering.

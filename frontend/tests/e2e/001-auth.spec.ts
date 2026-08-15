@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI, logoutViaUI } from './helpers/ui'
+import { loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
 
 // Where a successful login lands, and stays: `/` is the whole app, and
 // activating a workspace no longer changes the URL.
@@ -20,6 +20,7 @@ test.describe('Authentication', () => {
     await page.goto('/login')
     await page.getByLabel('Username').fill('admin')
     await page.getByLabel('Password').fill('wrongpassword')
+    await solveCaptchaViaUI(page)
     await page.getByRole('button', { name: 'Sign in' }).click()
 
     // Should remain on the login page with an error. The error message is
@@ -66,6 +67,7 @@ test.describe('Authentication', () => {
     // Login
     await page.getByLabel('Username').fill('admin')
     await page.getByLabel('Password').fill('admin123')
+    await solveCaptchaViaUI(page)
     await page.getByRole('button', { name: 'Sign in' }).click()
 
     // Should redirect back to the original page, query intact, not to the bare

@@ -22,11 +22,21 @@ service AuthService {
   rpc GetPendingOAuthSignup(GetPendingOAuthSignupRequest) returns (GetPendingOAuthSignupResponse);
   // Complete OAuth signup by choosing a username (no auth required).
   rpc CompleteOAuthSignup(CompleteOAuthSignupRequest) returns (CompleteOAuthSignupResponse);
+  // Issue a fresh ALTCHA proof-of-work challenge (no auth required).
+  // Called by the frontend captcha widget before Login/SignUp-family
+  // submissions when GetSystemInfo reports captcha_enabled.
+  rpc GetCaptchaChallenge(GetCaptchaChallengeRequest) returns (GetCaptchaChallengeResponse);
 }
 
 message LoginRequest {
   string username = 1;
   string password = 2;
+  // Base64 ALTCHA payload proving the client solved a challenge issued by
+  // GetCaptchaChallenge. Required when the hub reports captcha_enabled.
+  string captcha_payload = 3;
+  // Value of the hidden anti-bot honeypot field rendered alongside the
+  // captcha. Must be empty; a non-empty value fails verification.
+  string honeypot = 4;
 }
 
 message LoginResponse {
@@ -49,6 +59,10 @@ message SignUpRequest {
   string password = 2;
   string display_name = 3;
   string email = 4;
+  // Base64 ALTCHA payload; see LoginRequest.captcha_payload.
+  string captcha_payload = 5;
+  // Hidden anti-bot field value; see LoginRequest.honeypot.
+  string honeypot = 6;
 }
 
 message SignUpResponse {
@@ -105,6 +119,13 @@ message GetSystemInfoResponse {
   // EmailRegistrationInstructions on a hub without SMTP returns
   // FailedPrecondition, so showing the button would mislead users.
   bool email_enabled = 11;
+  // True when the hub requires ALTCHA proof-of-work verification on
+  // Login, SignUp, and CompleteOAuthSignup. Always false in solo mode.
+  bool captcha_enabled = 12;
+  // Active ALTCHA algorithm name (e.g. "PBKDF2/SHA-256"). Informational;
+  // the authoritative parameters arrive with each GetCaptchaChallenge
+  // response.
+  string captcha_algorithm = 13;
 }
 
 message GetOAuthProvidersRequest {}
@@ -135,6 +156,21 @@ message CompleteOAuthSignupRequest {
   string username = 2;
   string display_name = 3;
   string email = 4;
+  // Base64 ALTCHA payload; see LoginRequest.captcha_payload.
+  string captcha_payload = 5;
+  // Hidden anti-bot field value; see LoginRequest.honeypot.
+  string honeypot = 6;
+}
+
+message GetCaptchaChallengeRequest {}
+
+message GetCaptchaChallengeResponse {
+  // The ALTCHA v2 Challenge serialized as JSON by the server library,
+  // passed through to the widget's configure({challenge}) API verbatim.
+  // Kept as an opaque string (rather than mirrored as typed proto fields)
+  // so the interchange stays byte-exact with the widget regardless of how
+  // ALTCHA evolves the challenge schema. Empty when captcha is disabled.
+  string challenge_json = 1;
 }
 
 message CompleteOAuthSignupResponse {

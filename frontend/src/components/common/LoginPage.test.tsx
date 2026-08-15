@@ -17,6 +17,8 @@ vi.mock('~/api/clients', () => ({
 const mockIsSignupEnabled = vi.fn<() => boolean>(() => false)
 const mockIsSoloMode = vi.fn<() => boolean>(() => false)
 const mockIsSetupRequired = vi.fn<() => boolean>(() => false)
+const mockIsCaptchaEnabled = vi.fn<() => boolean>(() => false)
+const mockIsSystemInfoLoaded = vi.fn<() => boolean>(() => true)
 const mockLoadOAuthProviders = vi.fn(() => Promise.resolve([] as Record<string, unknown>[]))
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
@@ -24,7 +26,40 @@ vi.mock('~/lib/systemInfo', () => ({
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => mockIsSignupEnabled(),
   loadOAuthProviders: () => mockLoadOAuthProviders(),
+  isCaptchaEnabled: () => mockIsCaptchaEnabled(),
+  isSystemInfoLoaded: () => mockIsSystemInfoLoaded(),
+  getCaptchaAlgorithm: () => '',
 }))
+
+// The fake widget holds its payload in a signal the test controls, so a
+// test can keep the form unsolved (button disabled) and release it. The
+// unavailable callback is captured so a test can simulate the hub
+// answering "no challenge" (captcha disabled at runtime).
+const [mockCaptchaPayload, setMockCaptchaPayload] = createSignal<string | null>(null)
+let mockCaptchaUnavailable: (() => void) | undefined
+vi.mock('~/components/common/CaptchaField', async () => {
+  const { createEffect } = await import('solid-js')
+  return {
+    CaptchaField: (props: { onPayload: (p: string | null) => void, onUnavailable: () => void }) => {
+      // Captured for the stand-down test; the primitive's callback is a
+      // stable closure, so an untracked read is fine.
+      /* eslint-disable solid/reactivity -- stable callback captured for tests */
+      mockCaptchaUnavailable = props.onUnavailable
+      /* eslint-enable solid/reactivity */
+      createEffect(() => props.onPayload(mockCaptchaPayload()))
+      return <div data-testid="captcha-field" />
+    },
+    CaptchaHoneypot: (props: { value: string, onInput: (v: string) => void }) => (
+      <input
+        data-testid="captcha-honeypot"
+        type="text"
+        name="website"
+        value={props.value}
+        onInput={e => props.onInput(e.currentTarget.value)}
+      />
+    ),
+  }
+})
 
 const mockLogin = vi.fn()
 const mockUser = vi.fn<() => { id: string, username: string } | null>(() => null)
@@ -63,6 +98,10 @@ describe('loginPage', () => {
     mockIsSoloMode.mockReturnValue(false)
     mockIsSetupRequired.mockReturnValue(false)
     mockLoadOAuthProviders.mockResolvedValue([])
+    mockIsCaptchaEnabled.mockReturnValue(false)
+    mockIsSystemInfoLoaded.mockReturnValue(true)
+    setMockCaptchaPayload(null)
+    mockCaptchaUnavailable = undefined
     setAuthLoading(false)
   })
 
@@ -230,6 +269,98 @@ describe('loginPage', () => {
     fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
     fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+  })
+
+  it('requires a solved captcha before Sign in unlocks when the hub enables captcha', async () => {
+    mockIsCaptchaEnabled.mockReturnValue(true)
+    setMockCaptchaPayload(null)
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+
+    // Captcha enabled and unsolved: the button stays disabled with both
+    // credentials filled — the disable half of the predicate the old test
+    // never drove.
+    expect(screen.getByTestId('captcha-field')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
+
+    // The widget reports a solve: the button unlocks and the payload and
+    // honeypot ride on the login call.
+    setMockCaptchaPayload('ZmFrZS1wYXlsb2Fk')
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+    })
+
+    mockLogin.mockImplementation(() => Promise.resolve())
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    await vi.waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledWith('alice', 'secret', { captchaPayload: 'ZmFrZS1wYXlsb2Fk', honeypot: '' })
+    })
+  })
+
+  it('keeps Sign in disabled while bootstrap has not answered the captcha question', async () => {
+    // Fail closed: submitting against an unknown captcha policy would send
+    // an empty payload the hub denies, so the button waits for the answer.
+    mockIsSystemInfoLoaded.mockReturnValue(false)
+    mockIsCaptchaEnabled.mockReturnValue(false)
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    // Both credentials are filled; the only blocker is the unanswered
+    // captcha question.
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
+
+    // The mock fn is not a signal, so pairing the flip with a real signal
+    // change (an edit) re-runs the disabled expression — the same pattern
+    // the bootstrap-race tests above use for auth.loading().
+    mockIsSystemInfoLoaded.mockReturnValue(true)
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice2' } })
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+    })
+  })
+
+  it('stands down and unlocks when the hub reports no challenge', async () => {
+    // The admin disabled captcha after the page loaded: the widget's
+    // fetch answers "no challenge" and the form must lift the requirement
+    // instead of dead-locking on a solve that cannot arrive.
+    mockIsCaptchaEnabled.mockReturnValue(true)
+    setMockCaptchaPayload(null)
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('captcha-field')).toBeInTheDocument()
+    })
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled()
+
+    mockCaptchaUnavailable?.()
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+    })
+  })
+
+  it('sends whatever the honeypot captured with the login attempt', async () => {
+    mockLogin.mockImplementation(() => Promise.resolve())
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByLabelText('Username')).toBeInTheDocument()
+    })
+    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Password'), { target: { value: 'secret' } })
+    // An autofill heuristic dropping a value into the hidden input must
+    // reach the request — the server checks it even with captcha off.
+    fireEvent.input(screen.getByTestId('captcha-honeypot'), { target: { value: 'http://spam.example' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    await vi.waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledWith('alice', 'secret', { captchaPayload: '', honeypot: 'http://spam.example' })
+    })
   })
 
   it('keeps button disabled after successful login', async () => {

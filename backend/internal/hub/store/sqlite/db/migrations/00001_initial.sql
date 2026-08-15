@@ -565,7 +565,42 @@ CREATE TABLE pending_oauth_signups (
     key_version      INTEGER NOT NULL DEFAULT 1,
     redirect_uri     TEXT NOT NULL DEFAULT '',
     expires_at       DATETIME NOT NULL,
-    created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at       DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- ALTCHA proof-of-work captcha configuration (singleton row, id = 1).
+-- An absent row means the built-in defaults apply: enabled, PBKDF2/SHA-256,
+-- cost 10000. The secret is generated on first use by the hub.
+CREATE TABLE captcha_config (
+    id                       INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled                  INTEGER NOT NULL DEFAULT 1,
+    algorithm                TEXT NOT NULL DEFAULT 'PBKDF2/SHA-256',
+    cost                     INTEGER NOT NULL DEFAULT 10000,
+    memory_cost              INTEGER NOT NULL DEFAULT 0,   -- 0 = algorithm default
+    parallelism              INTEGER NOT NULL DEFAULT 0,   -- 0 = algorithm default
+    challenge_expiry_seconds INTEGER NOT NULL DEFAULT 1200,
+    secret                   BLOB NOT NULL,                -- encrypted, AAD: 'captcha:hmac_secret'
+    updated_at               DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- Consumed captcha salts: single-use enforcement for solved challenges,
+-- shared across hub instances and restarts. A row's presence means the
+-- salt's solution was accepted once; the cleanup loop purges rows past
+-- their challenge expiry.
+CREATE TABLE captcha_used_salts (
+    salt       TEXT PRIMARY KEY,
+    expires_at DATETIME NOT NULL
+);
+CREATE INDEX idx_captcha_used_salts_expires_at ON captcha_used_salts(expires_at);
+
+-- Per-operation rate-limit overrides. Absent rows fall back to the code-side
+-- defaults; operations are catalogued in Go (internal/hub/ratelimit).
+CREATE TABLE rate_limit_config (
+    operation      TEXT PRIMARY KEY,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    max_attempts   INTEGER NOT NULL,
+    window_seconds INTEGER NOT NULL,
+    updated_at     DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 -- +goose Down
@@ -577,6 +612,9 @@ DROP TABLE IF EXISTS hub_runtime_lease;
 DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;
 DROP TABLE IF EXISTS pending_oauth_signups;
+DROP TABLE IF EXISTS rate_limit_config;
+DROP TABLE IF EXISTS captcha_used_salts;
+DROP TABLE IF EXISTS captcha_config;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;

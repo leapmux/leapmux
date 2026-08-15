@@ -41,6 +41,9 @@ vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockSoloMode(),
   getWorkerHubUrl: () => mockWorkerHubUrl(),
   isEmailEnabled: () => mockEmailEnabled(),
+  isSystemInfoLoaded: () => true,
+  isCaptchaEnabled: () => false,
+  getCaptchaAlgorithm: () => '',
 }))
 
 // Helpers --------------------------------------------------------------

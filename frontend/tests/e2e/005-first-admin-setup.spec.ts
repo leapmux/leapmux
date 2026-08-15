@@ -2,6 +2,7 @@ import type { UnseededDevServerHandle } from './helpers/devServer'
 import { test as base, expect } from '@playwright/test'
 import { getCurrentUser } from './helpers/api'
 import { startUnseededDevServer, stopDevServer } from './helpers/devServer'
+import { solveCaptchaViaUI } from './helpers/ui'
 
 /**
  * Uses a standalone unseeded dev server (no pre-registered admin) so we can
@@ -42,6 +43,7 @@ test.describe('First-admin setup', () => {
     await page.getByLabel('Display Name').fill('Solo')
     await page.getByLabel('New Password').fill('strongpass1')
     await page.getByLabel('Confirm Password').fill('strongpass1')
+    await solveCaptchaViaUI(page)
     await page.getByRole('button', { name: 'Create account' }).click()
     await expect(page.getByText(/reserved username/i)).toBeVisible()
     await expect(page).toHaveURL(/\/setup$/)
@@ -53,6 +55,7 @@ test.describe('First-admin setup', () => {
     await page.getByLabel('Display Name').fill('Admin')
     await page.getByLabel('New Password').fill('strongpass1')
     await page.getByLabel('Confirm Password').fill('strongpass1')
+    await solveCaptchaViaUI(page)
     await page.getByRole('button', { name: 'Create account' }).click()
     // Flat home route: post-setup lands on `/` (the authenticated home),
     // not an org-scoped path. Matches APP_HOME_URL_RE in the auth specs.

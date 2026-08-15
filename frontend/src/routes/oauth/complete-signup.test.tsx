@@ -25,6 +25,9 @@ vi.mock('~/lib/systemInfo', () => ({
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => false,
   loadOAuthProviders: () => Promise.resolve([]),
+  isSystemInfoLoaded: () => true,
+  isCaptchaEnabled: () => false,
+  getCaptchaAlgorithm: () => '',
 }))
 
 const mockSetAuth = vi.fn()
@@ -122,6 +125,8 @@ describe('oAuthCompleteSignupPage', () => {
         signupToken: 'test-token',
         username: 'testuser',
         displayName: 'Test User',
+        captchaPayload: '',
+        honeypot: '',
       })
     })
 

@@ -326,6 +326,32 @@ type OAuthProvider struct {
 	ClientSecret []byte
 }
 
+// CaptchaConfig is the singleton ALTCHA proof-of-work configuration row.
+// Secret is the encrypted HMAC signing secret for challenges; a zero
+// Enabled/Algorithm etc. is never read from an absent row — callers layer
+// code-side defaults over a missing row instead.
+type CaptchaConfig struct {
+	Enabled                bool
+	Algorithm              string
+	Cost                   int64
+	MemoryCost             int64
+	Parallelism            int64
+	ChallengeExpirySeconds int64
+	Secret                 []byte
+	UpdatedAt              time.Time
+}
+
+// RateLimitConfig overrides the code-side default limits for one operation
+// (e.g. "change-password"). Absent rows fall back to the defaults catalogued
+// in internal/hub/ratelimit.
+type RateLimitConfig struct {
+	Operation     string
+	Enabled       bool
+	MaxAttempts   int64
+	WindowSeconds int64
+	UpdatedAt     time.Time
+}
+
 // OAuthState represents a short-lived CSRF + PKCE state during auth flow.
 type OAuthState struct {
 	State        string
@@ -919,6 +945,49 @@ type CreateOAuthProviderParams struct {
 type UpdateOAuthProviderEnabledParams struct {
 	ID      string
 	Enabled bool
+}
+
+// InsertCaptchaConfigParams inserts the singleton captcha row. The ON
+// CONFLICT clause in every dialect makes the insert a no-op when the row
+// already exists, so a racing first-use provisioning cannot clobber an
+// existing secret.
+type InsertCaptchaConfigParams struct {
+	Enabled                bool
+	Algorithm              string
+	Cost                   int64
+	MemoryCost             int64
+	Parallelism            int64
+	ChallengeExpirySeconds int64
+	Secret                 []byte
+}
+
+// UpdateCaptchaConfigParams overwrites the configurable columns of the
+// singleton captcha row (read-modify-write upserts come from the CLI). It
+// deliberately carries no Secret: provisioning is the signing secret's
+// only writer, and the UPDATE statement leaves the column untouched.
+type UpdateCaptchaConfigParams struct {
+	Enabled                bool
+	Algorithm              string
+	Cost                   int64
+	MemoryCost             int64
+	Parallelism            int64
+	ChallengeExpirySeconds int64
+}
+
+// UpsertRateLimitConfigParams creates or overrides one operation's limits.
+type UpsertRateLimitConfigParams struct {
+	Operation     string
+	Enabled       bool
+	MaxAttempts   int64
+	WindowSeconds int64
+}
+
+// ConsumeCaptchaSaltParams records a solved challenge's salt as used
+// until its expiry, so single-use enforcement survives restarts and holds
+// across hub instances sharing the database.
+type ConsumeCaptchaSaltParams struct {
+	Salt      string
+	ExpiresAt time.Time
 }
 
 type CreateOAuthStateParams struct {

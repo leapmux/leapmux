@@ -21,6 +21,9 @@ vi.mock('~/lib/systemInfo', () => ({
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => mockIsSignupEnabled(),
   loadOAuthProviders: () => mockLoadOAuthProviders(),
+  isSystemInfoLoaded: () => true,
+  isCaptchaEnabled: () => false,
+  getCaptchaAlgorithm: () => '',
 }))
 
 vi.mock('~/context/AuthContext', () => ({

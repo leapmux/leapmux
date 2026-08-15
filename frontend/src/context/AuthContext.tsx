@@ -37,7 +37,7 @@ export interface AuthState {
   bootstrapError: () => string | null
   /** Retry the bootstrap session-restore after a `bootstrapError`. */
   retryBootstrap: () => Promise<void>
-  login: (username: string, password: string) => Promise<void>
+  login: (username: string, password: string, captcha?: { captchaPayload: string, honeypot: string }) => Promise<void>
   logout: () => Promise<void>
   setAuth: (user: User) => void
   refreshUser: () => Promise<void>
@@ -163,11 +163,19 @@ export const AuthProvider: ParentComponent = (props) => {
     setLoading(false)
   }
 
-  const login = async (username: string, password: string) => {
+  const login = async (username: string, password: string, captcha?: { captchaPayload: string, honeypot: string }) => {
     setError(null)
     setLoading(true)
     try {
-      const req = create(LoginRequestSchema, { username, password })
+      const req = create(LoginRequestSchema, {
+        username,
+        password,
+        // The honeypot rides on every attempt; the payload is empty until
+        // the widget verifies (the hub ignores it while captcha is
+        // disabled — see createCaptchaForm's requirement gate).
+        captchaPayload: captcha?.captchaPayload ?? '',
+        honeypot: captcha?.honeypot ?? '',
+      })
       const resp = await authClient.login(req)
       // Logging in over a still-authenticated session (a bookmarked /login, a stale
       // tab) is an identity transition just like logout: setUser drives the eager
@@ -180,6 +188,12 @@ export const AuthProvider: ParentComponent = (props) => {
     catch (e) {
       const msg = formatErrorMessage(e, 'Login failed')
       setError(msg)
+      // The captcha snapshot in systemInfo can be stale — the admin may
+      // have enabled or disabled captcha since the page loaded, and the
+      // hub answers per request. A denied attempt is the signal to
+      // converge: the refreshed flags make the widget mount (or stand
+      // down) for the retry instead of failing identically forever.
+      void loadSystemInfo(true).catch(() => {})
       throw e
     }
     finally {

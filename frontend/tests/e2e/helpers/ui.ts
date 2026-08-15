@@ -373,6 +373,7 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
   await page.goto('/login')
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Password').fill(password)
+  await solveCaptchaViaUI(page)
   await page.getByRole('button', { name: 'Sign in' }).click()
 
   // After login the user lands on `/` and stays there: `/` is the whole app,
@@ -404,6 +405,50 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
       // Otherwise, keep waiting (next iteration will check URL again)
     }
   }
+}
+
+/**
+ * Solve the ALTCHA proof-of-work captcha when the hub presents one.
+ *
+ * The widget mounts only after the app's bootstrap answers the captcha
+ * question, and on a captcha-disabled hub it never mounts at all — so a
+ * single un-waited presence check races the system-info fetch on a cold
+ * load and silently skips solving. Poll for either outcome instead: the
+ * widget appearing (solve it), or the form's submit button enabling
+ * (bootstrap answered "no captcha"; the caller's fields are already
+ * filled). A no-op when captcha is disabled, so specs run identically
+ * either way.
+ *
+ * Playwright pierces the widget's open shadow DOM; clicking the checkbox
+ * kicks off the PoW (PBKDF2 at the default cost lands well under the
+ * global timeout in headless Chromium) and the checkbox ending up checked
+ * is the verified state the forms gate their submit buttons on.
+ */
+export async function solveCaptchaViaUI(page: Page) {
+  const widget = page.locator('altcha-widget')
+  const submit = page.locator('form button[type="submit"]')
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    if (await widget.count() > 0) {
+      break
+    }
+    if (await submit.count() > 0 && await submit.first().isEnabled()) {
+      return
+    }
+    await page.waitForTimeout(200)
+  }
+  if (await widget.count() === 0) {
+    return
+  }
+  const checkbox = widget.locator('input[type="checkbox"]')
+  await checkbox.waitFor({ state: 'visible' })
+  if (await checkbox.isChecked()) {
+    return
+  }
+  // The widget's checkmark svg overlays the input, so a plain click lands
+  // on the svg; force dispatches on the input itself.
+  await checkbox.click({ force: true })
+  await expect(checkbox).toBeChecked()
 }
 
 /**
@@ -501,6 +546,7 @@ export async function signUpViaUI(page: Page, username: string, password: string
   }
   await page.getByLabel('New Password').fill(password)
   await page.getByLabel('Confirm Password').fill(password)
+  await solveCaptchaViaUI(page)
   await page.getByRole('button', { name: 'Sign up' }).click()
 }
 

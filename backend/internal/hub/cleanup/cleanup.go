@@ -60,6 +60,9 @@ func run(ctx context.Context, st store.Store) {
 	// Expired delegation tokens (TTL passed without an explicit revoke)
 	// are also worth pruning eagerly since they accumulate one-per-spawn.
 	cleanupStep("expired delegation tokens", func() (int64, error) { return cs.DeleteExpiredDelegationTokensBefore(ctx, now) })
+	// Consumed captcha salts past their challenge expiry can no longer
+	// verify anything, so the rows only bound table growth until dropped.
+	cleanupStep("expired captcha salts", func() (int64, error) { return cs.DeleteExpiredCaptchaSalts(ctx) })
 	// CRDT op-batch retention. Manager.maybeCompact deletes by HLC on the commit
 	// path, but its tick short-circuits once compaction_watermark reaches
 	// max_hlc -- so an account that stops being used keeps its final

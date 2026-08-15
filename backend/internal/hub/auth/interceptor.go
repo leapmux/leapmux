@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,6 +55,23 @@ var publicProcedures = map[string]bool{
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                  true,
 	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:              true,
 	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:                true,
+	// Public by design: challenges carry no secret and must be fetchable
+	// before login. The captcha interceptor guards the procedures that
+	// consume solutions, not the one that issues challenges.
+	leapmuxv1connect.AuthServiceGetCaptchaChallengeProcedure: true,
+}
+
+// PublicProcedures lists every procedure the auth interceptor waives, so
+// sibling packages can tripwire against the exact set (the captcha
+// package's classification test uses it to keep its protected subset
+// honest). Sorted for stable iteration.
+func PublicProcedures() []string {
+	out := make([]string, 0, len(publicProcedures))
+	for p := range publicProcedures {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 var delegationAllowedProcedures = map[string]bool{

@@ -181,11 +181,7 @@ func runSetOAuthProviderEnabled(cmd adminCmdCtx, args []string, enabled bool) er
 			return fmt.Errorf("update provider: %w", err)
 		}
 
-		action := "Disabled"
-		if enabled {
-			action = "Enabled"
-		}
-		fmt.Printf("%s OAuth provider %s\n", action, *providerID)
+		fmt.Printf("%s OAuth provider %s\n", enabledWord(enabled), *providerID)
 		return nil
 	})
 }

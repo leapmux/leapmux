@@ -42,7 +42,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, closers ...auth.C
 	if len(closers) > 0 {
 		closer = closers[0]
 	}
-	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(sc, closer, nil), nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(service.AuthServiceDeps{Store: st, Config: cfg, Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -57,7 +57,7 @@ func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
 	t.Parallel()
 
 	assert.Panics(t, func() {
-		service.NewAuthService(nil, nil, nil, nil, nil, mail.Renderer{})
+		service.NewAuthService(service.AuthServiceDeps{Renderer: mail.Renderer{}})
 	})
 	assert.Panics(t, func() {
 		service.NewUserService(nil, nil, nil, nil, mail.Renderer{})
@@ -532,7 +532,7 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
-	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(service.AuthServiceDeps{Store: st, Config: cfg, Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil})
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -806,7 +806,7 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: wrapped})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(wrapped, testConfig(), auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(service.AuthServiceDeps{Store: wrapped, Config: testConfig(), Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -952,7 +952,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(service.AuthServiceDeps{Store: st, Config: cfg, Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil})
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 

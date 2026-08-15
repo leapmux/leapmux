@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
+	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
@@ -23,6 +24,42 @@ import (
 	"github.com/leapmux/leapmux/util/version"
 )
 
+// CaptchaService is the captcha surface AuthService consumes. The hub
+// passes the SAME *captcha.Manager the captcha interceptor enforces with,
+// so challenge issuance and enforcement cannot disagree; tests pass a stub.
+type CaptchaService interface {
+	Describe(ctx context.Context) (captcha.Config, bool, error)
+	ChallengeJSON(ctx context.Context) (string, error)
+}
+
+// disabledCaptcha serves the nil Captcha case: test and embedding wiring
+// without the captcha subsystem report captcha as disabled and issue no
+// challenges.
+type disabledCaptcha struct{}
+
+func (disabledCaptcha) Describe(context.Context) (captcha.Config, bool, error) {
+	cfg := captcha.DefaultConfig()
+	cfg.Enabled = false
+	return cfg, false, nil
+}
+
+func (disabledCaptcha) ChallengeJSON(context.Context) (string, error) {
+	return "", nil
+}
+
+// AuthServiceDeps carries AuthService's collaborators. The struct keeps
+// the constructor readable as dependencies accumulate, and Captcha is an
+// interface with a disabled default so callers omit it without nil checks.
+type AuthServiceDeps struct {
+	Store     store.Store
+	Config    *config.Config
+	Lifecycle *auth.CredentialLifecycleEffects
+	Keystore  *keystore.Keystore
+	Mail      mail.Sender
+	Renderer  mail.Renderer
+	Captcha   CaptchaService // nil reports captcha as disabled
+}
+
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
 type AuthService struct {
 	store      store.Store
@@ -31,16 +68,21 @@ type AuthService struct {
 	keystore   *keystore.Keystore
 	mail       mail.Sender
 	renderer   mail.Renderer
+	captcha    CaptchaService
 	hasAnyUser atomic.Bool // one-way latch: once true, never re-queried
 }
 
 // NewAuthService creates a new AuthService. renderer carries the hub's
 // public URL used to build absolute deep-links in verification emails.
-func NewAuthService(st store.Store, cfg *config.Config, lifecycle *auth.CredentialLifecycleEffects, ks *keystore.Keystore, sender mail.Sender, renderer mail.Renderer) *AuthService {
-	if lifecycle == nil {
+func NewAuthService(deps AuthServiceDeps) *AuthService {
+	if deps.Lifecycle == nil {
 		panic("auth service requires credential lifecycle effects")
 	}
-	return &AuthService{store: st, cfg: cfg, lifecycle: lifecycle, keystore: ks, mail: sender, renderer: renderer}
+	captchaSvc := deps.Captcha
+	if captchaSvc == nil {
+		captchaSvc = disabledCaptcha{}
+	}
+	return &AuthService{store: deps.Store, cfg: deps.Config, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc}
 }
 
 // checkHasAnyUser returns true if at least one user exists. The result is
@@ -342,6 +384,19 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		setupRequired = !hasUser
 	}
 
+	// A captcha-config read failure degrades to "disabled" instead of
+	// failing the whole endpoint, mirroring the providers flag above: the
+	// rest of the system info stays usable, and the captcha interceptor
+	// still fails closed on its own for the procedures it protects.
+	var captchaEnabled bool
+	var captchaAlgorithm string
+	captchaCfg, _, err := s.captcha.Describe(ctx)
+	if err != nil {
+		slog.Warn("describe captcha config failed; reporting captcha disabled", "error", err)
+	} else {
+		captchaEnabled, captchaAlgorithm = captchaCfg.Enabled, captchaCfg.Algorithm
+	}
+
 	// Decide what URL workers should target. Precedence:
 	//   1. An explicit --public-url wins (admin's canonical external URL,
 	//      typically used when the hub is behind a reverse proxy).
@@ -362,17 +417,32 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
-		SignupEnabled: s.cfg.SignupEnabled,
-		SoloMode:      s.cfg.SoloMode,
-		SetupRequired: setupRequired,
-		Version:       version.Value,
-		CommitHash:    version.CommitHash,
-		CommitTime:    version.CommitTime,
-		BuildTime:     version.BuildTime,
-		Branch:        version.Branch,
-		OauthEnabled:  len(providers) > 0,
-		WorkerHubUrl:  workerHubURL,
-		EmailEnabled:  s.cfg.SmtpHost != "",
+		SignupEnabled:    s.cfg.SignupEnabled,
+		SoloMode:         s.cfg.SoloMode,
+		SetupRequired:    setupRequired,
+		Version:          version.Value,
+		CommitHash:       version.CommitHash,
+		CommitTime:       version.CommitTime,
+		BuildTime:        version.BuildTime,
+		Branch:           version.Branch,
+		OauthEnabled:     len(providers) > 0,
+		WorkerHubUrl:     workerHubURL,
+		EmailEnabled:     s.cfg.SmtpHost != "",
+		CaptchaEnabled:   captchaEnabled,
+		CaptchaAlgorithm: captchaAlgorithm,
+	}), nil
+}
+
+// GetCaptchaChallenge issues a fresh ALTCHA challenge for the caller to
+// solve before submitting Login/SignUp-family requests. It is public: the
+// challenge carries no secret, and issuance costs one HMAC.
+func (s *AuthService) GetCaptchaChallenge(ctx context.Context, req *connect.Request[leapmuxv1.GetCaptchaChallengeRequest]) (*connect.Response[leapmuxv1.GetCaptchaChallengeResponse], error) {
+	challengeJSON, err := s.captcha.ChallengeJSON(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&leapmuxv1.GetCaptchaChallengeResponse{
+		ChallengeJson: challengeJSON,
 	}), nil
 }
 

@@ -30,6 +30,9 @@ const mockIsSetupRequired = vi.fn<() => boolean>(() => false)
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
   isSetupRequired: () => mockIsSetupRequired(),
+  isSystemInfoLoaded: () => true,
+  isCaptchaEnabled: () => false,
+  getCaptchaAlgorithm: () => '',
 }))
 
 /**
