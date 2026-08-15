@@ -33,6 +33,31 @@ export async function waitForTerminalText(page: Page, text: string, timeout?: nu
 }
 
 /**
+ * Focus the helper textarea of the active terminal, so keyboard input (and a
+ * real input method driven over CDP) lands in xterm.
+ */
+export async function focusActiveTerminal(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
+    for (const container of containers) {
+      if (container.dataset.active === 'true') {
+        container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()
+        return
+      }
+    }
+  })
+}
+
+/**
+ * Type a command into the active terminal and press Enter.
+ */
+export async function typeInTerminal(page: Page, command: string, delay = 30): Promise<void> {
+  await focusActiveTerminal(page)
+  await page.keyboard.type(command, { delay })
+  await page.keyboard.press('Enter')
+}
+
+/**
  * Send input to the active terminal via the same callback xterm's
  * onData fires. Returns false when no terminal is registered with the
  * window hook (e.g. xterm not mounted yet).

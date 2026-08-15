@@ -12,7 +12,7 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { handleTerminalBell } from '~/hooks/terminalEvents'
 import { emitAddTab } from '~/stores/tabOps'
-import { flush } from '~/test-support/async'
+import { deferred, flush } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
 
@@ -49,6 +49,20 @@ const openTerminalMock = workerRpc.openTerminal as unknown as ReturnType<typeof 
 const closeTerminalMock = workerRpc.closeTerminal as unknown as ReturnType<typeof vi.fn>
 const listAvailableShellsMock = workerRpc.listAvailableShells as unknown as ReturnType<typeof vi.fn>
 const showWarnToastMock = showWarnToast as unknown as ReturnType<typeof vi.fn>
+
+/**
+ * Park the next SendInput until `release` fires, so a test can type into the
+ * queue while the RPC is still in flight.
+ */
+function parkSendInputOnce(opts: { failAfterRelease?: boolean } = {}): { release: () => void } {
+  const gate = deferred<void>()
+  sendInputMock.mockImplementationOnce(() => gate.promise.then(() => {
+    if (opts.failAfterRelease)
+      throw new Error('worker offline')
+    return {}
+  }))
+  return { release: gate.resolve }
+}
 
 interface TabOverrides {
   id?: string
@@ -373,13 +387,7 @@ describe('useterminaloperations.handleterminalinput', () => {
     // in flight together can reach the PTY transposed. Two syllables swapped is
     // exactly the corruption CJK typing shows.
     const { ops } = setup(TerminalStatus.READY)
-    let release: (() => void) | undefined
-    sendInputMock.mockImplementationOnce(async () => {
-      await new Promise<void>((resolve) => {
-        release = resolve
-      })
-      return {}
-    })
+    const parked = parkSendInputOnce()
 
     const first = ops.handleTerminalInput('tid-1', new TextEncoder().encode('\uC548'))
     await Promise.resolve()
@@ -391,7 +399,7 @@ describe('useterminaloperations.handleterminalinput', () => {
     await Promise.resolve()
     expect(sendInputMock).toHaveBeenCalledTimes(1)
 
-    release!()
+    parked.release()
     await first
 
     // The queued bytes left together, in the order they were typed.
@@ -413,46 +421,89 @@ describe('useterminaloperations.handleterminalinput', () => {
     expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('b')
   })
 
-  it('keeps draining after a failed send', async () => {
+  it('retries a failed batch once so a transient RPC failure loses nothing', async () => {
     const { ops } = setup(TerminalStatus.READY)
-    let release: (() => void) | undefined
-    sendInputMock.mockImplementationOnce(async () => {
-      await new Promise<void>((resolve) => {
-        release = resolve
-      })
-      throw new Error('worker offline')
-    })
+    const parked = parkSendInputOnce({ failAfterRelease: true })
 
     const first = ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
     await Promise.resolve()
     void ops.handleTerminalInput('tid-1', new TextEncoder().encode('b'))
-    release!()
-    // One failed write must not discard the rest of what the user typed, and
-    // must not propagate: xterm's onData callback has no error sink.
+    parked.release()
+    // One failed write must not discard what the user typed, and must not
+    // propagate: xterm's onData callback has no error sink. A clean rejection
+    // never reached the PTY, so the batch rides again — merged with the bytes
+    // typed while it was failing.
     await expect(first).resolves.toBeUndefined()
     expect(sendInputMock).toHaveBeenCalledTimes(2)
-    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('b')
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('ab')
   })
 
   it('stops draining when the terminal exits mid-burst', async () => {
     const { ops, metadata } = setup(TerminalStatus.READY)
-    let release: (() => void) | undefined
-    sendInputMock.mockImplementationOnce(async () => {
-      await new Promise<void>((resolve) => {
-        release = resolve
-      })
-      return {}
-    })
+    const parked = parkSendInputOnce()
 
     const first = ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
     await Promise.resolve()
     void ops.handleTerminalInput('tid-1', new TextEncoder().encode('b'))
     // The shell exits while the first write is still out.
     metadata.patch('tid-1', { terminalStatus: TerminalStatus.EXITED })
-    release!()
+    parked.release()
     await first
 
     expect(sendInputMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps draining through a transient disconnect', async () => {
+    const { ops, metadata } = setup(TerminalStatus.READY)
+    const parked = parkSendInputOnce()
+
+    const first = ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
+    await Promise.resolve()
+    void ops.handleTerminalInput('tid-1', new TextEncoder().encode('b'))
+    // DISCONNECTED is a client-derived status that a false-positive sweep
+    // can set while the data path still delivers. The queued keystroke must
+    // not be discarded on it — the send attempt itself decides.
+    metadata.patch('tid-1', { terminalStatus: TerminalStatus.DISCONNECTED })
+    parked.release()
+    await first
+
+    expect(sendInputMock).toHaveBeenCalledTimes(2)
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('b')
+  })
+
+  it('sends each batch without a per-RPC timeout override', async () => {
+    // The queue races the WHOLE send against apiLoadingTimeoutMs (the same
+    // deadline sizing every channel RPC uses). A per-RPC timeoutMs here would
+    // arm only after the channel opens, so a reconnecting worker would park
+    // the queue on the channel-open chain with no deadline at all.
+    const { ops } = setup(TerminalStatus.READY)
+    await ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
+
+    expect(sendInputMock).toHaveBeenCalledTimes(1)
+    expect(sendInputMock.mock.calls[0][2]).toBeUndefined()
+  })
+
+  it('keeps one queue per terminal across hook instances', async () => {
+    // The shell can remount (an error-boundary reset) while a drain is still
+    // parked on its in-flight RPC. The queue map is module-level, so the
+    // fresh hook instance joins the existing drain instead of racing a
+    // second SendInput for the same terminal.
+    const firstInstance = setup(TerminalStatus.READY)
+    const parked = parkSendInputOnce()
+
+    const first = firstInstance.ops.handleTerminalInput('tid-1', new TextEncoder().encode('a'))
+    await Promise.resolve()
+
+    const secondInstance = setup(TerminalStatus.READY)
+    void secondInstance.ops.handleTerminalInput('tid-1', new TextEncoder().encode('b'))
+    await Promise.resolve()
+    // The second instance must not start a SendInput of its own.
+    expect(sendInputMock).toHaveBeenCalledTimes(1)
+
+    parked.release()
+    await first
+    expect(sendInputMock).toHaveBeenCalledTimes(2)
+    expect(new TextDecoder().decode(sendInputMock.mock.calls[1][1].data)).toBe('b')
   })
 
   it('calls restartTerminal when Enter (CR) is pressed on an EXITED terminal', async () => {
@@ -516,10 +567,8 @@ describe('useterminaloperations.handleterminalinput', () => {
     // armed. A held Enter (autorepeat) would otherwise fire one RPC
     // per keystroke and toast-spam the user with FailedPrecondition
     // rejects from the backend.
-    let releaseRestart: (() => void) | undefined
-    restartTerminalMock.mockImplementationOnce(() => new Promise((resolve) => {
-      releaseRestart = () => resolve({})
-    }))
+    const gate = deferred<Record<string, never>>()
+    restartTerminalMock.mockImplementationOnce(() => gate.promise)
     const { ops } = setup(TerminalStatus.EXITED)
     const firstPress = ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
     // Second/third presses must be no-ops while the first call is pending.
@@ -527,7 +576,7 @@ describe('useterminaloperations.handleterminalinput', () => {
     await ops.handleTerminalInput('tid-1', new Uint8Array([0x0D]))
     expect(restartTerminalMock).toHaveBeenCalledTimes(1)
     expect(showWarnToastMock).not.toHaveBeenCalled()
-    releaseRestart?.()
+    gate.resolve({})
     await firstPress
   })
 

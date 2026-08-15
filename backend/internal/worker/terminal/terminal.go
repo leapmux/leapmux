@@ -199,10 +199,11 @@ func (sb *ScreenBuffer) tailBytesLocked(n int) []byte {
 //   - afterOffset == total: caller is caught up. Returns (nil, total, false).
 //   - afterOffset within the retained window: returns the incremental
 //     delta since afterOffset. isSnapshot is false.
-//   - afterOffset has fallen out of the retained window, is negative, or
-//     is larger than total (PTY recreated beneath a stale client):
-//     returns the full retained buffer with isSnapshot=true so the caller
-//     drops any stale state.
+//   - afterOffset <= 0 (a forced-resync subscribe: the caller knows it
+//     lost bytes and an incremental delta cannot fill the hole), afterOffset
+//     has fallen out of the retained window, or is larger than total (PTY
+//     recreated beneath a stale client): returns the full retained buffer
+//     with isSnapshot=true so the caller drops any stale state.
 func (sb *ScreenBuffer) SnapshotSince(afterOffset int64) (data []byte, endOffset int64, isSnapshot bool) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -215,14 +216,17 @@ func (sb *ScreenBuffer) SnapshotSince(afterOffset int64) (data []byte, endOffset
 	windowStart := total - int64(sb.retainedLocked())
 
 	// Incremental catch-up: afterOffset is inside the retained window,
-	// so copy only the missing suffix directly from the ring.
-	if afterOffset >= windowStart && afterOffset < total {
+	// so copy only the missing suffix directly from the ring. afterOffset 0
+	// is excluded on purpose: it is the forced-resync subscribe, and when the
+	// whole history is still retained an incremental-from-zero delta would
+	// come back instead of the snapshot the caller asked for.
+	if afterOffset > 0 && afterOffset >= windowStart && afterOffset < total {
 		return sb.tailBytesLocked(int(total - afterOffset)), total, false
 	}
 
-	// Cold subscribe, negative offset, stale offset > total, or caller
-	// has fallen behind the retained window: send everything we have
-	// with the snapshot flag, prefixed with the tracker's mode-restore
+	// Cold subscribe, forced resync (afterOffset <= 0), stale offset > total,
+	// or caller has fallen behind the retained window: send everything we
+	// have with the snapshot flag, prefixed with the tracker's mode-restore
 	// bytes so a TUI in alt screen still renders correctly after the
 	// xterm reset+replay.
 	body := sb.tailBytesLocked(sb.retainedLocked())

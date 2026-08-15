@@ -3,11 +3,13 @@ import type { TabContext } from './tabContext'
 import type { CloseTabResult } from '~/generated/leapmux/v1/common_pb'
 import type { Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { ToggleDialogState } from '~/hooks/createDialogState'
+import type { InputQueueDrain } from '~/lib/inputQueue'
 import type { createLayoutStore } from '~/stores/layout.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 
 import type { TabView } from '~/stores/tabView'
+import { apiLoadingTimeoutMs } from '~/api/transport'
 import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { awaitCloseResult, warnWorktreeUnreachable } from '~/components/shell/closeResultToast'
@@ -16,17 +18,33 @@ import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useAvailableShells } from '~/hooks/useAvailableShells'
-import { concatBytes } from '~/lib/bytes'
 import { createInflightCache } from '~/lib/inflightCache'
-import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '~/lib/terminal'
+import { createSharedInputQueues } from '~/lib/inputQueue'
+import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ENTER_KEY_CR } from '~/lib/terminal'
 import { openedTerminalMetadata, resolveOptimisticGitInfo } from '~/stores/tab.helpers'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
 
-// xterm emits Enter as a single CR byte (0x0D) on a non-modifier press.
+// xterm emits Enter as a single CR byte on a non-modifier press.
 // We gate the EXITED-tab restart flow on exactly that one byte so a stray
 // keystroke (or the autorepeat from a held key) doesn't fire a restart.
-const ENTER_KEY_CR = 0x0D
+// The byte itself lives in ~/lib/terminal with the other PTY wire constants.
+
+// The pending input queue for each terminal, drained one SendInput at a time
+// by the hook below. Created at MODULE scope, like the terminal instances it
+// feeds (TerminalView keeps the same module-level map for the same reason):
+// the one-in-flight invariant must hold across every hook instance, not per
+// instance. An error-boundary remount of the shell creates a fresh hook while
+// an old drain still parks on its in-flight RPC; a per-instance queue would
+// let the next keystroke start a SECOND concurrent SendInput for the same
+// terminal, which is the transposed-write race this queue exists to prevent.
+// The mechanism and its unit tests live in ~/lib/inputQueue.
+const terminalInputQueues = createSharedInputQueues<string, TerminalInputContext>()
+
+/** What the input drain needs to route one SendInput. */
+interface TerminalInputContext {
+  workerId?: string
+}
 
 export interface UseTerminalOperationsProps {
   view: TabView
@@ -58,6 +76,40 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // returns on overlapping presses so they never reach the shared
   // promise's eventual rejection (which would multi-toast).
   const restartInflight = createInflightCache<string, void>()
+
+  // One input drain per hook instance, built once. It captures ONLY `view`
+  // (not the whole props graph), so the module-level queue below retains a
+  // single store reference for as long as one of its bursts is open. The
+  // queue takes the drain from the newest enqueue, so a remounted hook takes
+  // its own terminals back on the next keystroke.
+  const view = props.view
+  const terminalInputDrain: InputQueueDrain<string, TerminalInputContext> = {
+    // Re-resolve the tab before each batch. Only a tab that is gone, or a
+    // terminal that EXITED, stops the drain: a transient status such as
+    // DISCONNECTED (a client-derived status that a false-positive sweep
+    // can set while the data path still delivers) must not silently
+    // discard what the user already typed — the send attempt itself
+    // decides, and a failed attempt keeps draining for a reconnect.
+    resolve: (id) => {
+      const t = view.getTerminalTab(id)
+      if (!t || t.status === TerminalStatus.EXITED)
+        return undefined
+      return { workerId: t.workerId }
+    },
+    send: async (id, t, batch) => {
+      await workerRpc.sendInput(t.workerId ?? '', { terminalId: id, data: batch })
+    },
+    // The deadline the queue races each send against is the canonical RPC
+    // deadline (1.5 × the worker's context deadline, ~/api/transport), for
+    // two reasons. It satisfies the sizing rule every channel RPC follows —
+    // the client must out-wait the worker's own deadline, or the drain's
+    // next batch would run while the previous send can still deliver, which
+    // re-opens the transposed-write race the queue exists to close. And it
+    // covers legs a per-RPC timeout cannot reach: the RPC timer arms only
+    // after the channel is open, so a reconnecting worker would otherwise
+    // park the queue on the channel-open chain for far longer.
+    sendDeadlineMs: apiLoadingTimeoutMs,
+  }
 
   // Shared open path for both the default-shell quick-action and the
   // shell-picker dropdown. The only call-site differences captured by
@@ -135,70 +187,13 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   const handleOpenTerminalWithShell = (shell: string) =>
     openTerminalCore({ shell, setLoading: props.setNewShellLoading })
 
-  /**
-   * Drain the queued bytes for one terminal, one SendInput at a time.
-   *
-   * The worker dispatches every inner RPC on its own goroutine, so two
-   * SendInput calls in flight together reach the PTY in whichever order their
-   * goroutines win — the per-terminal mutex gives mutual exclusion, not FIFO.
-   * Keeping a single call in flight per terminal removes the race at the only
-   * point that can see the true order, which is here.
-   *
-   * It costs nothing in the common case: with nothing in flight the first
-   * keystroke goes out immediately. Only a burst that outruns the round trip
-   * queues, and that burst then leaves as ONE larger write rather than several
-   * racing ones, which is also what the PTY prefers. Serializing on the
-   * response instead — awaiting each keystroke before reading the next — would
-   * have gated typing on the round-trip time.
-   */
-  const inputQueues = new Map<string, Uint8Array[]>()
-
-  const drainTerminalInput = async (terminalId: string) => {
-    const pending = inputQueues.get(terminalId)
-    if (!pending)
-      return
-    try {
-      while (pending.length > 0) {
-        const batch = concatBytes(...pending)
-        pending.length = 0
-        // Re-read the tab each time round: a terminal that exited mid-drain
-        // must not keep receiving the rest of the burst.
-        const tab = props.view.getTerminalTab(terminalId)
-        if (!tab || tab.status !== TerminalStatus.READY)
-          return
-        try {
-          await workerRpc.sendInput(tab.workerId ?? '', { terminalId, data: batch })
-        }
-        catch {
-          // Ignore input errors, and keep draining: dropping the rest of what
-          // the user typed because one write failed is the worse outcome.
-        }
-      }
-    }
-    finally {
-      // Safe to drop: the loop only exits with the queue empty or the terminal
-      // gone, and nothing can push in between (no await separates the check
-      // from here). A later keystroke simply creates a fresh queue.
-      inputQueues.delete(terminalId)
-    }
-  }
-
   const handleTerminalInput = async (terminalId: string, data: Uint8Array) => {
     const tab = props.view.getTerminalTab(terminalId)
     if (!tab)
       return
 
     if (tab.status === TerminalStatus.READY) {
-      const pending = inputQueues.get(terminalId)
-      if (pending) {
-        // A drain is already running and owns this queue; it will pick these
-        // bytes up on its next turn, after the in-flight call resolves.
-        pending.push(data)
-        return
-      }
-      inputQueues.set(terminalId, [data])
-      await drainTerminalInput(terminalId)
-      return
+      return terminalInputQueues.enqueue(terminalId, data, terminalInputDrain)
     }
 
     // On an exited terminal, the only key that does something is Enter,

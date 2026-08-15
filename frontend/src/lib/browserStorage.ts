@@ -337,6 +337,19 @@ export function localStorageRemove(key: string): void {
   catch { /* ignore errors */ }
 }
 
+/**
+ * Clear localStorage. For tests only: production code removes keys by name
+ * (`localStorageRemove`); a wholesale clear is a test-fixture reset, which
+ * still routes through this module so no call site touches localStorage
+ * directly.
+ */
+export function localStorageClearForTests(): void {
+  try {
+    localStorage.clear()
+  }
+  catch { /* ignore errors */ }
+}
+
 /** Load the consolidated browser preferences from localStorage. */
 export function loadBrowserPrefs(): BrowserPreferences {
   return localStorageGet<BrowserPreferences>(KEY_BROWSER_PREFS) ?? {}

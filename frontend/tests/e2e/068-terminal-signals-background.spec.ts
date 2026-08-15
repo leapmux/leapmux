@@ -1,25 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { waitForTerminalText } from './helpers/terminal'
+import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, waitForWorkspaceReady } from './helpers/ui'
-
-/** Type a command into the active terminal and press Enter. */
-async function typeInTerminal(page: Page, command: string) {
-  await page.evaluate(() => {
-    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-    for (const container of containers) {
-      if (container.dataset.active === 'true') {
-        const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-        if (textarea) {
-          textarea.focus()
-          return
-        }
-      }
-    }
-  })
-  await page.keyboard.type(command, { delay: 20 })
-  await page.keyboard.press('Enter')
-}
 
 /** Terminal tab label text with chrome nodes stripped. */
 async function terminalTabLabel(page: Page, index: number): Promise<string> {
@@ -54,8 +36,14 @@ test.describe('Terminal signals while backgrounded', () => {
     await termTab.click()
     await expect(termTab).toHaveAttribute('aria-selected', 'true')
 
-    // Queue signals that fire after a short delay, then hide the tab before they land.
-    await typeInTerminal(page, 'sleep 0.4; printf \'\\a\'; sleep 0.2; printf \'\\033]0;newtitle\\a\'; sleep 0.2; printf \'\\033]9;hi\\a\'; echo SIGNALS_DONE')
+    // Queue signals that fire after a short delay, then hide the tab before they
+    // land. The trailing sleep is load-bearing for the title assertion below:
+    // the default shell re-emits its OWN OSC title (user@host: cwd) on every
+    // new prompt, so once this command finishes, the prompt would overwrite
+    // 'newtitle' before the hover happens. Sleeping keeps the shell from
+    // printing a new prompt — and re-setting the title — until the assertions
+    // are done.
+    await typeInTerminal(page, 'sleep 0.4; printf \'\\a\'; sleep 0.2; printf \'\\033]0;newtitle\\a\'; sleep 0.2; printf \'\\033]9;hi\\a\'; echo SIGNALS_DONE; sleep 15')
     await agentTab.click()
     await expect(agentTab).toHaveAttribute('aria-selected', 'true')
 

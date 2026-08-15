@@ -7,6 +7,7 @@ import { StartupErrorBody, StartupSpinner } from '~/components/common/StartupPan
 import { usePreferences } from '~/context/PreferencesContext'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { createKeyedRows } from '~/lib/keyedRows'
+import { createLogger } from '~/lib/logger'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { isMac } from '~/lib/shortcuts/platform'
 import { applyTerminalData, bufferHasVisibleContent, createTerminalInstance, DEFAULT_FONT_SIZE, refreshTerminalFont, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer } from '~/lib/terminal'
@@ -39,6 +40,20 @@ interface TerminalViewProps {
 }
 
 const instances = new Map<string, TerminalInstance>()
+const log = createLogger('terminalView')
+// TextEncoder construction is not free, and every keystroke passes through
+// one (the shared input gate below and the programmatic write path). The
+// encoder is stateless, so one instance serves every call site in this
+// module. (Same pattern as ~/lib/crdt/hlc.)
+const utf8Encoder = new TextEncoder()
+const utf8Decoder = new TextDecoder()
+// What each terminal's input gate forwarded, most recent input last — the
+// send-side truth the e2e IME specs assert against, because the terminal
+// buffer cannot tell a doubled send from the shell's own echo of the same
+// text. Bounded so a terminal that types all day keeps only its recent
+// input; cleared with the instance.
+const INPUT_LOG_LIMIT = 4096
+const inputLogs = new Map<string, string>()
 // Tracks which terminals have already had their initial screen snapshot
 // applied. This must outlive TerminalContainer mount/unmount because the
 // container re-mounts whenever its surrounding tile is restructured —
@@ -57,9 +72,9 @@ let lastActiveTerminalId: string | null = null
  * on the store graph. Left unset in tests that render a `TerminalView` without
  * a metadata store, where dropping the buffer is the correct behaviour.
  */
-let screenSink: ((tabId: string, screen: Uint8Array) => void) | null = null
+let screenSink: ((tabId: string, screen: Uint8Array, parsedOffset?: number) => void) | null = null
 
-export function setTerminalScreenSink(sink: ((tabId: string, screen: Uint8Array) => void) | null): void {
+export function setTerminalScreenSink(sink: ((tabId: string, screen: Uint8Array, parsedOffset?: number) => void) | null): void {
   screenSink = sink
 }
 
@@ -91,9 +106,16 @@ export function disposeTerminalInstance(id: string, opts?: { captureScreen?: boo
   // `bufferHasVisibleContent` guards a real hazard: a freshly-mounted xterm
   // still parsing its snapshot through the write queue serializes BLANK, and
   // writing that back would erase the bytes `ListTerminals` returned.
-  if (captureScreen && screenSink && bufferHasVisibleContent(instance.terminal)) {
+  if (captureScreen && screenSink && instance.lastParsedOffset !== undefined && bufferHasVisibleContent(instance.terminal)) {
     try {
-      screenSink(id, serializeXtermBuffer(instance))
+      // Pair the serialized (parsed) screen with the offset it actually
+      // covers. A capture taken mid-parse would otherwise store a screen
+      // that covers fewer bytes than the tab's lastOffset claims; on remount
+      // the overlap trim then discards the never-painted span as "already
+      // rendered" and a chunk of output goes missing until a snapshot
+      // rebuilds. Rewinding lastOffset to the parsed offset (in the sink)
+      // makes the next catch-up re-deliver exactly that span.
+      screenSink(id, serializeXtermBuffer(instance), instance.lastParsedOffset)
     }
     catch {
       // A serialization failure must never block teardown — the WebGL context
@@ -104,9 +126,17 @@ export function disposeTerminalInstance(id: string, opts?: { captureScreen?: boo
   // another terminal. This is the single teardown chokepoint reached by every
   // path — explicit close, HMR dispose, and the unmount microtask below.
   webglPool.release(id)
+  // Before instance.dispose(): the IME layer's listeners and its preview
+  // node hang off `terminal.element`, which xterm removes from the document
+  // as it tears down. The view owns both ends of the ime field's lifecycle —
+  // it attaches the layer after open(), and this is the only teardown
+  // chokepoint.
+  instance.ime?.dispose()
+  instance.ime = undefined
   instance.dispose()
   instances.delete(id)
   screenApplied.delete(id)
+  inputLogs.delete(id)
 }
 
 export function getTerminalInstance(id: string): TerminalInstance | undefined {
@@ -164,6 +194,11 @@ if (typeof window !== 'undefined') {
   }
   ;(window as any).__getActiveTerminalRows = () => getActiveInstance()?.terminal.rows ?? 0
   ;(window as any).__getActiveTerminalBufferType = () => getActiveInstance()?.terminal.buffer.active.type ?? 'normal'
+  // E2E hook: the input the active terminal's gate FORWARDED, in order —
+  // the send-side counterpart of __getActiveTerminalText. Doubled or lost
+  // sends are exact here, whatever the shell redraws onto the screen.
+  ;(window as any).__getActiveTerminalInputLog = () =>
+    (lastActiveTerminalId ? inputLogs.get(lastActiveTerminalId) : undefined) ?? ''
   // E2E hook: drive input through the same sendInput callback xterm's
   // onData handler uses, so the test exercises the full handleTerminalInput
   // routing (READY → SendInput RPC, EXITED → RestartTerminal RPC) without
@@ -172,7 +207,7 @@ if (typeof window !== 'undefined') {
     const instance = getActiveInstance()
     if (!instance?.sendInput)
       return false
-    instance.sendInput(new TextEncoder().encode(text))
+    instance.sendInput(utf8Encoder.encode(text))
     return true
   }
   // E2E hooks for the WebGL context pool: assert that the number of live
@@ -223,17 +258,10 @@ const TerminalContainer: Component<{
       return
 
     const id = props.terminalId
-    const onInput = props.onInput
-
-    // The one gate every keystroke passes through, so xterm's onData and the
-    // IME layer cannot drift apart on whether snapshot replay is in flight.
-    const emit = (data: string) => {
-      if (!instances.get(id)?.suppressInput)
-        onInput(id, new TextEncoder().encode(data))
-    }
-
+    let fresh = false
     let instance = instances.get(id)
     if (!instance) {
+      fresh = true
       instance = createTerminalInstance({
         fontFamily: props.fontFamily,
         fontSize: props.fontSize,
@@ -243,24 +271,6 @@ const TerminalContainer: Component<{
       })
       instances.set(id, instance)
       notifyTerminalInstanceReady(id)
-
-      instance.sendInput = data => onInput(id, data)
-
-      // Attached on every platform: the IME rules below are not macOS-specific,
-      // and this handler is the only hook that runs before xterm's composition
-      // machinery (CoreBrowserTerminal._keyDown consults it first).
-      instance.terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-        // Composed keystrokes belong to the IME layer; see ~/lib/terminalIme.
-        if (instances.get(id)?.ime?.shouldBypassKeyEvent(e))
-          return false
-        // On macOS, suppress CMD+Arrow and ALT+Arrow so xterm.js doesn't
-        // process them — the shortcut system sends the correct escape sequences.
-        if (isMac() && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && (e.metaKey || e.altKey))
-          return false
-        return true
-      })
-
-      instance.terminal.onData(emit)
     }
 
     // xterm's `Terminal.open()` is idempotent in a way that breaks
@@ -276,13 +286,63 @@ const TerminalContainer: Component<{
     else
       instance.terminal.open(ref)
 
-    // Take over composed input, which xterm mishandles badly enough that CJK is
-    // unusable on WebKit (see ~/lib/terminalIme). Attached after open() because
-    // it hooks `terminal.element`, and only once per instance: those listeners
-    // live on that element, so they travel with it when a layout edit re-parents
-    // the terminal into a new container above.
-    if (!instance.ime)
-      instance.ime = attachTerminalIme(instance.terminal, emit)
+    if (fresh) {
+      // Every input path is wired ONCE, on the mount that created the
+      // instance, and each closure captures the instance directly — the
+      // instance owns its gate state (suppressInput, ime), so the module
+      // map is never a routing hop for events that belong to one instance,
+      // and a re-mount cannot mint a dead parallel gate.
+      const inst = instance
+      const onInput = props.onInput
+      // The one gate every input path passes through — xterm's onData, the IME
+      // layer, and the programmatic `sendInput` field below — so none of them
+      // can drift apart on whether snapshot replay is in flight. A shortcut or
+      // e2e hook that writes mid-replay must be suppressed exactly like a
+      // keystroke, or its bytes interleave with the replayed snapshot.
+      const send = (data: Uint8Array) => {
+        if (inst.suppressInput)
+          return
+        const prev = inputLogs.get(id) ?? ''
+        inputLogs.set(id, (prev + utf8Decoder.decode(data)).slice(-INPUT_LOG_LIMIT))
+        onInput(id, data)
+      }
+      const emit = (data: string) => send(utf8Encoder.encode(data))
+
+      // Programmatic writes (keyboard shortcuts via writeToFocusedTerminal,
+      // the e2e input hook) route through the same gate as keystrokes.
+      inst.sendInput = send
+
+      // Attached on every platform: the IME rules below are not macOS-specific,
+      // and this handler is the only hook that runs before xterm's composition
+      // machinery (CoreBrowserTerminal._keyDown consults it first).
+      inst.terminal.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        // Composed keystrokes belong to the IME layer; see ~/lib/terminalIme.
+        if (inst.ime?.shouldBypassKeyEvent(e))
+          return false
+        // On macOS, suppress CMD+Arrow and ALT+Arrow so xterm.js doesn't
+        // process them — the shortcut system sends the correct escape sequences.
+        if (isMac() && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && (e.metaKey || e.altKey))
+          return false
+        return true
+      })
+
+      inst.terminal.onData(emit)
+
+      // Take over composed input, which xterm mishandles badly enough that CJK
+      // is unusable on WebKit (see ~/lib/terminalIme). Attached after open()
+      // because it hooks `terminal.element`, and only on the mount that created
+      // the instance: those listeners live on that element, so they travel with
+      // it when a layout edit re-parents the terminal into a new container
+      // above. attachTerminalIme fails loudly on an unexpected DOM shape; a
+      // throw here would escape onMount to the route-level error boundary and
+      // blank every tile, so keep the failure to the composition path and log.
+      try {
+        inst.ime = attachTerminalIme(inst.terminal, emit)
+      }
+      catch (err) {
+        log.error('IME layer failed to attach; composed input is disabled', { id, err })
+      }
+    }
 
     // Write screen snapshot if available (restore on refresh). Seed the
     // resume cursor from lastOffset (from the backend, carried through
@@ -305,17 +365,15 @@ const TerminalContainer: Component<{
       screenApplied.add(props.terminalId)
       const termId = props.terminalId
       const reportReady = props.onContentReady
-      applyTerminalData(
-        instance,
-        screen,
-        true,
-        props.lastOffset ?? screen.length,
-        0,
-        () => {
+      applyTerminalData(instance, {
+        kind: 'snapshot',
+        data: screen,
+        endOffset: props.lastOffset ?? screen.length,
+        onParsed: () => {
           if (bufferHasVisibleContent(instance.terminal))
             reportReady(termId)
         },
-      )
+      })
     })
 
     // ResizeObserver on this terminal's container element.
@@ -420,7 +478,7 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
       return
     const instance = instances.get(props.activeTerminalId)
     if (instance?.sendInput)
-      instance.sendInput(new TextEncoder().encode(data))
+      instance.sendInput(utf8Encoder.encode(data))
   }
 
   // React to font preference changes and update existing terminal instances.

@@ -13,6 +13,9 @@ import { sleep } from './sleep'
 
 const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
 const log = createLogger('terminal')
+// TextEncoder construction is not free, so one stateless instance serves
+// every call site in this module. (Same pattern as ~/lib/crdt/hlc.)
+const utf8Encoder = new TextEncoder()
 
 // Default PTY dimensions used by OpenTerminal / RestartTerminal callers
 // when no measured size is available yet (new-terminal dialog before
@@ -21,6 +24,15 @@ const log = createLogger('terminal')
 // and the restart fallback share a single source of truth.
 export const DEFAULT_TERMINAL_COLS = 80
 export const DEFAULT_TERMINAL_ROWS = 25
+
+// The bytes a terminal puts on the wire for Enter and for erase-one-
+// character, matching what xterm itself sends for those keys. Kept beside
+// the dimension constants for the same reason: every module that speaks
+// the PTY's input dialect — the restart-on-Enter gate in
+// useTerminalOperations, the IME replacement path in terminalIme —
+// shares one source of truth instead of redefining the byte it needs.
+export const ENTER_KEY_CR = 0x0D
+export const ERASE_CHARACTER = '\x7F'
 
 export type TerminalThemePreference = 'light' | 'dark' | 'match-ui'
 type ResolvedTerminalRenderer = 'webgl' | 'canvas'
@@ -70,11 +82,23 @@ export interface TerminalInstance {
   /** Send raw input data to the PTY backing this terminal. */
   sendInput?: (data: Uint8Array) => void
   /**
-   * The IME layer, attached once the terminal has been opened (it needs
+   * The IME layer, attached once the terminal is open (it needs
    * `terminal.element`). Owns every composed keystroke; see `./terminalIme`
-   * for why xterm's own composition handling cannot be left in charge.
+   * for why xterm's own composition handling cannot be left in charge. The
+   * VIEW owns both ends of this field's lifecycle: `TerminalView` attaches it
+   * after open() and releases it in `disposeTerminalInstance` — this module
+   * never touches it, so `dispose()` below does not release it.
    */
   ime?: TerminalImeHandle
+  /**
+   * The highest byte offset whose write xterm has PARSED (its write callback
+   * fired). Undefined while nothing has parsed, and from a snapshot's reset
+   * until the snapshot's write completes. The dispose path pairs this with
+   * the serialized screen so the stored screen and the tab's `lastOffset`
+   * describe the same bytes; the live cursor in tab metadata may run ahead of
+   * this, because a write is queued before it parses.
+   */
+  lastParsedOffset?: number
   dispose: () => void
 }
 
@@ -87,7 +111,7 @@ export interface TerminalInstance {
  * stored straight into the tab's `screen` metadata and replayed from there.
  */
 export function serializeXtermBuffer(instance: TerminalInstance): Uint8Array {
-  const encoded = new TextEncoder().encode(instance.serializeAddon.serialize())
+  const encoded = utf8Encoder.encode(instance.serializeAddon.serialize())
   // Node's TextEncoder (used by jsdom/vitest) returns a Buffer — a
   // Uint8Array subclass — whose prototype chain doesn't pass
   // `instanceof Uint8Array` across realms. Wrap as a plain view over the
@@ -217,40 +241,67 @@ export function resolveTerminalTheme(
 }
 
 /**
+ * One terminal-data frame to apply, in the shape the caller knows it by:
+ * a snapshot replaces the visible state, a delta extends it. The union
+ * states the delta-range contract in the type — a delta's range is
+ * [endOffset - data.length, endOffset) — where a boolean flag and two
+ * adjacent same-typed offsets left it to a doc comment.
+ */
+export type TerminalDataPayload
+  = | { kind: 'snapshot', data: Uint8Array, endOffset: number, onParsed?: () => void }
+    | { kind: 'delta', data: Uint8Array, endOffset: number, currentOffset: number, onParsed?: () => void }
+
+/**
  * Apply a TerminalData event (or an initial snapshot from ListTerminals)
  * to an xterm instance. Returns the new resume cursor — callers store
  * this as the tab's `lastOffset` and echo it on the next resubscribe.
  *
- * - isSnapshot=true: backend is replacing the terminal's visible state
+ * - kind=snapshot: backend is replacing the terminal's visible state
  *   (client's after_offset was stale or outside the retained ring). The
  *   xterm buffer is reset before the payload is written so the new bytes
  *   don't append to stale content. The returned cursor is `endOffset`
- *   unconditionally — even if smaller than `currentOffset`, since the
- *   buffer now exactly reflects those `endOffset` bytes.
- * - isSnapshot=false: payload is a strict incremental delta since
- *   `currentOffset`; written without resetting. The returned cursor is
- *   `max(currentOffset, endOffset)` so out-of-order duplicates can't
- *   rewind it.
+ *   unconditionally — even if smaller than the caller's current offset,
+ *   since the buffer now exactly reflects those `endOffset` bytes.
+ * - kind=delta: payload is a delta whose range is
+ *   [endOffset - data.length, endOffset). A delta may OVERLAP what this
+ *   terminal already rendered: the worker registers a new watcher for live
+ *   events first and takes its catch-up snapshot after, so any byte the
+ *   live path already delivered also rides in the catch-up range. The
+ *   offsets are authoritative on both ends, so the already-rendered prefix
+ *   is trimmed here — rendering stays exactly-once no matter how the two
+ *   deliveries interleave. A gap (delta starts BEYOND the current offset)
+ *   means bytes were missed; nothing here can recover them, so the delta
+ *   writes as-is and the next snapshot rebuilds the screen. The returned
+ *   cursor is `max(currentOffset, endOffset)` so out-of-order duplicates
+ *   can't rewind it.
  */
-export function applyTerminalData(
-  instance: TerminalInstance,
-  data: Uint8Array,
-  isSnapshot: boolean,
-  endOffset: number,
-  currentOffset: number,
-  onParsed?: () => void,
-): number {
-  if (isSnapshot) {
+export function applyTerminalData(instance: TerminalInstance, payload: TerminalDataPayload): number {
+  if (payload.kind === 'snapshot') {
     instance.terminal.reset()
     instance.suppressInput = true
-    instance.terminal.write(data, () => {
+    // reset() emptied the buffer, so nothing is parsed until the write below
+    // completes — see `lastParsedOffset`.
+    instance.lastParsedOffset = undefined
+    instance.terminal.write(payload.data, () => {
+      instance.lastParsedOffset = payload.endOffset
       instance.suppressInput = false
-      onParsed?.()
+      payload.onParsed?.()
     })
-    return endOffset
+    return payload.endOffset
   }
-  instance.terminal.write(data, onParsed)
-  return endOffset > currentOffset ? endOffset : currentOffset
+  const { data, endOffset, currentOffset, onParsed } = payload
+  const deltaStart = endOffset - data.byteLength
+  const unrendered = currentOffset > deltaStart ? data.subarray(currentOffset - deltaStart) : data
+  if (unrendered.byteLength === 0) {
+    onParsed?.()
+    return Math.max(currentOffset, endOffset)
+  }
+  const cursor = Math.max(currentOffset, endOffset)
+  instance.terminal.write(unrendered, () => {
+    instance.lastParsedOffset = cursor
+    onParsed?.()
+  })
+  return cursor
 }
 
 /**
@@ -343,11 +394,6 @@ export function createTerminalInstance(opts?: TerminalFontOptions & { theme?: IT
     fontsReady,
     webglAddon: undefined,
     dispose() {
-      // Before terminal.dispose(): the IME layer's listeners and its preview
-      // node hang off `terminal.element`, which xterm removes from the document
-      // as it tears down.
-      instance.ime?.dispose()
-      instance.ime = undefined
       terminal.dispose()
     },
   }

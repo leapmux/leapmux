@@ -378,7 +378,14 @@ export const AppShell: Component = () => {
   // the row again would strand a full serialized scrollback that nothing can
   // ever retire, because the sweep retires an id once and it can never be live
   // again.
-  setTerminalScreenSink((tabId, screen) => tabMetadata.patchExisting(tabId, { screen }))
+  // The sink also rewinds lastOffset to the parsed offset the serialized
+  // screen actually covers: the live cursor can sit ahead of the parser (a
+  // write is queued before it parses), and a remount would otherwise trim the
+  // never-painted span of the next catch-up delta as "already rendered".
+  setTerminalScreenSink((tabId, screen, parsedOffset) => tabMetadata.patchExisting(tabId, {
+    screen,
+    ...(parsedOffset !== undefined ? { lastOffset: parsedOffset } : {}),
+  }))
   onCleanup(() => setTerminalScreenSink(null))
 
   // Workspace & section loading

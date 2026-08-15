@@ -2,10 +2,10 @@
  * Byte-array helpers.
  *
  * These carry no protocol knowledge. They live here rather than in
- * `./noise` — where `concatBytes` grew up — because the consumers now span the
- * Noise handshake, the key-pin store, and the terminal's input queue, and a
- * module named after a crypto protocol is the wrong place for any of them to
- * reach.
+ * `./noise` — where `concatBytes` was first defined — because the consumers
+ * now span the Noise handshake, the key-pin store, and the terminal's input
+ * queue, and a module named after a crypto protocol is the wrong place for
+ * any of them to reach.
  */
 
 /**

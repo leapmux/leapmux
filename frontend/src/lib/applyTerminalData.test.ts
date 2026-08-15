@@ -29,9 +29,9 @@ function makeStubInstance(): TerminalInstance & { _log: string[] } {
 }
 
 describe('applyTerminalData', () => {
-  it('is_snapshot=true: resets xterm before writing the payload', () => {
+  it('kind=snapshot: resets xterm before writing the payload', () => {
     const inst = makeStubInstance()
-    applyTerminalData(inst, new TextEncoder().encode('snap'), true, 4, 0)
+    applyTerminalData(inst, { kind: 'snapshot', data: new TextEncoder().encode('snap'), endOffset: 4 })
 
     // The reset MUST come before the write. An implementation that
     // writes first and then resets would still pass "both were called"
@@ -39,9 +39,9 @@ describe('applyTerminalData', () => {
     expect(inst._log).toEqual(['reset', 'write:snap'])
   })
 
-  it('is_snapshot=false: writes without resetting (incremental catch-up)', () => {
+  it('kind=delta: writes without resetting (incremental catch-up)', () => {
     const inst = makeStubInstance()
-    applyTerminalData(inst, new TextEncoder().encode('delta'), false, 5, 0)
+    applyTerminalData(inst, { kind: 'delta', data: new TextEncoder().encode('delta'), endOffset: 5, currentOffset: 0 })
 
     expect(inst._log).toEqual(['write:delta'])
     expect(inst.terminal.reset).not.toHaveBeenCalled()
@@ -53,21 +53,21 @@ describe('applyTerminalData', () => {
     // must fire before the write — otherwise the xterm ends up holding
     // "abc" + "xyz" instead of just "xyz".
     const inst = makeStubInstance()
-    applyTerminalData(inst, new TextEncoder().encode('abc'), false, 3, 0)
-    applyTerminalData(inst, new TextEncoder().encode('xyz'), true, 3, 3)
+    applyTerminalData(inst, { kind: 'delta', data: new TextEncoder().encode('abc'), endOffset: 3, currentOffset: 0 })
+    applyTerminalData(inst, { kind: 'snapshot', data: new TextEncoder().encode('xyz'), endOffset: 3 })
 
     expect(inst._log).toEqual(['write:abc', 'reset', 'write:xyz'])
   })
 
   it('returns endOffset on incremental writes when greater than current', () => {
     const inst = makeStubInstance()
-    expect(applyTerminalData(inst, new TextEncoder().encode('a'), false, 1, 0)).toBe(1)
-    expect(applyTerminalData(inst, new TextEncoder().encode('bc'), false, 3, 1)).toBe(3)
+    expect(applyTerminalData(inst, { kind: 'delta', data: new TextEncoder().encode('a'), endOffset: 1, currentOffset: 0 })).toBe(1)
+    expect(applyTerminalData(inst, { kind: 'delta', data: new TextEncoder().encode('bc'), endOffset: 3, currentOffset: 1 })).toBe(3)
   })
 
   it('returns endOffset on snapshot writes', () => {
     const inst = makeStubInstance()
-    expect(applyTerminalData(inst, new TextEncoder().encode('reset'), true, 100, 42)).toBe(100)
+    expect(applyTerminalData(inst, { kind: 'snapshot', data: new TextEncoder().encode('reset'), endOffset: 100 })).toBe(100)
   })
 
   it('does not decrease the cursor on an incremental event with a smaller end_offset', () => {
@@ -76,7 +76,7 @@ describe('applyTerminalData', () => {
     // the resume cursor and trigger spurious snapshot replays on the
     // next resubscribe.
     const inst = makeStubInstance()
-    expect(applyTerminalData(inst, new TextEncoder().encode('late'), false, 50, 100)).toBe(100)
+    expect(applyTerminalData(inst, { kind: 'delta', data: new TextEncoder().encode('late'), endOffset: 50, currentOffset: 100 })).toBe(100)
   })
 
   it('snapshot returns endOffset even when smaller than current', () => {
@@ -84,7 +84,7 @@ describe('applyTerminalData', () => {
     // larger stale cursor would tell the backend on resubscribe that we
     // have bytes we don't, silently skipping bytes on the next catch-up.
     const inst = makeStubInstance()
-    expect(applyTerminalData(inst, new TextEncoder().encode('snap'), true, 50, 100)).toBe(50)
+    expect(applyTerminalData(inst, { kind: 'snapshot', data: new TextEncoder().encode('snap'), endOffset: 50 })).toBe(50)
   })
 
   it('sets and clears suppressInput around snapshot writes', () => {
@@ -99,7 +99,7 @@ describe('applyTerminalData', () => {
       cb?.()
     })
 
-    applyTerminalData(inst, new TextEncoder().encode('snap'), true, 4, 0)
+    applyTerminalData(inst, { kind: 'snapshot', data: new TextEncoder().encode('snap'), endOffset: 4 })
 
     expect(suppressedDuringWrite).toBe(true)
     expect(inst.suppressInput).toBe(false)
@@ -110,7 +110,7 @@ describe('applyTerminalData', () => {
     // sequences in it ARE legitimate user-visible behavior and must
     // reach the PTY (e.g. cursor position reports).
     const inst = makeStubInstance()
-    applyTerminalData(inst, new TextEncoder().encode('delta'), false, 5, 0)
+    applyTerminalData(inst, { kind: 'delta', data: new TextEncoder().encode('delta'), endOffset: 5, currentOffset: 0 })
 
     expect(inst.suppressInput).toBe(false)
   })
@@ -119,7 +119,7 @@ describe('applyTerminalData', () => {
     const inst = makeStubInstance()
     const onParsed = vi.fn()
 
-    applyTerminalData(inst, new TextEncoder().encode('snap'), true, 4, 0, onParsed)
+    applyTerminalData(inst, { kind: 'snapshot', data: new TextEncoder().encode('snap'), endOffset: 4, onParsed })
     expect(onParsed).toHaveBeenCalledTimes(1)
   })
 
@@ -127,7 +127,7 @@ describe('applyTerminalData', () => {
     const inst = makeStubInstance()
     const onParsed = vi.fn()
 
-    applyTerminalData(inst, new TextEncoder().encode('delta'), false, 5, 0, onParsed)
+    applyTerminalData(inst, { kind: 'delta', data: new TextEncoder().encode('delta'), endOffset: 5, currentOffset: 0, onParsed })
     expect(onParsed).toHaveBeenCalledTimes(1)
   })
 })

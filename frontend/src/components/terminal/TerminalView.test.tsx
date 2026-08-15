@@ -9,6 +9,8 @@ import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { darkTerminalTheme, lightTerminalTheme } from '~/lib/terminal'
 import { webglPool } from '~/lib/webglTerminalPool'
+import { compositionPreview } from '~/test-support/compositionPreview'
+import { stubMatchMedia } from '~/test-support/matchMediaStub'
 
 const mockCreateTerminalInstance = vi.fn()
 // Overridable only where a test needs to drive the disposal-capture guard; the
@@ -36,11 +38,7 @@ beforeAll(() => {
     unobserve() {}
     disconnect() {}
   } as unknown as typeof ResizeObserver
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  }) as any
+  stubMatchMedia()
 })
 
 /**
@@ -74,7 +72,8 @@ function makeMockTerminalInstance(): TerminalInstance {
     element: undefined as HTMLElement | undefined,
     textarea,
     attachCustomKeyEventHandler: vi.fn(),
-    onData: vi.fn(),
+    // Real xterm's onData returns an IDisposable; the IME layer disposes it.
+    onData: vi.fn(() => ({ dispose: () => {} })),
     onTitleChange: vi.fn(),
     onBell: vi.fn((cb: () => void) => {
       bellHandler = cb
@@ -425,15 +424,8 @@ describe('terminalView', () => {
     // registers. With the default match-ui terminal theme + system UI theme the
     // resolved theme follows the OS, so this exercises the (guarded) theme
     // effect end to end. matchMedia starts in light.
-    const originalMatchMedia = window.matchMedia
-    let colorSchemeHandler: ((e: { matches: boolean }) => void) | undefined
-    window.matchMedia = vi.fn().mockReturnValue({
-      matches: false,
-      addEventListener: (_type: string, cb: (e: { matches: boolean }) => void) => {
-        colorSchemeHandler = cb
-      },
-      removeEventListener: vi.fn(),
-    }) as any
+    const matchMedia = stubMatchMedia()
+    const colorScheme = () => matchMedia.handlersFor('(prefers-color-scheme: dark)')[0]
 
     try {
       const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
@@ -451,11 +443,11 @@ describe('terminalView', () => {
         </PreferencesProvider>
       ))
 
-      await waitFor(() => expect(colorSchemeHandler).toBeDefined())
+      await waitFor(() => expect(colorScheme()).toBeDefined())
 
       // Flip the OS to dark: the effect's change guard must let a genuine
       // change through and re-apply the dark theme to the live instance.
-      colorSchemeHandler!({ matches: true })
+      colorScheme()!({ matches: true })
       await waitFor(() => {
         expect(instance.terminal.options.theme).toBe(darkTerminalTheme)
       })
@@ -463,13 +455,13 @@ describe('terminalView', () => {
       // Flip back to light: a second genuine change must also propagate,
       // proving the guard updates its last-applied theme rather than latching
       // on the first one it saw.
-      colorSchemeHandler!({ matches: false })
+      colorScheme()!({ matches: false })
       await waitFor(() => {
         expect(instance.terminal.options.theme).toBe(lightTerminalTheme)
       })
     }
     finally {
-      window.matchMedia = originalMatchMedia
+      matchMedia.restore()
     }
   })
 
@@ -509,15 +501,8 @@ describe('terminalView', () => {
       .mockReturnValueOnce(instanceB)
 
     // Collect every view's prefers-color-scheme handler so we can flip both.
-    const originalMatchMedia = window.matchMedia
-    const colorSchemeHandlers: Array<(e: { matches: boolean }) => void> = []
-    window.matchMedia = vi.fn().mockReturnValue({
-      matches: false,
-      addEventListener: (_type: string, cb: (e: { matches: boolean }) => void) => {
-        colorSchemeHandlers.push(cb)
-      },
-      removeEventListener: vi.fn(),
-    }) as any
+    const matchMedia = stubMatchMedia()
+    const colorSchemeHandlers = () => matchMedia.handlersFor('(prefers-color-scheme: dark)')
 
     try {
       const baseTab = { type: TabType.TERMINAL as const, workspaceId: 'ws-1', screen: new Uint8Array() }
@@ -546,7 +531,7 @@ describe('terminalView', () => {
 
       // Both views mount, both register a handler, both instances exist.
       await waitFor(() => {
-        expect(colorSchemeHandlers.length).toBe(2)
+        expect(colorSchemeHandlers().length).toBe(2)
         expect(getTerminalInstance('themed-A')).toBe(instanceA)
         expect(getTerminalInstance('themed-B')).toBe(instanceB)
       })
@@ -557,7 +542,7 @@ describe('terminalView', () => {
       const baselineB = writesB()
 
       // Flip the OS to dark and drive every view's handler.
-      for (const handler of colorSchemeHandlers)
+      for (const handler of colorSchemeHandlers())
         handler({ matches: true })
 
       await waitFor(() => {
@@ -572,7 +557,7 @@ describe('terminalView', () => {
       expect(writesB() - baselineB).toBe(1)
     }
     finally {
-      window.matchMedia = originalMatchMedia
+      matchMedia.restore()
     }
   })
 
@@ -716,21 +701,22 @@ describe('terminalView', () => {
  * through `disposeTerminalInstance`, and nothing re-fetches the bytes
  * afterwards (`hydrated` is already true), so a miss here is permanent.
  */
+/**
+ * Reset every module mock and pool this file's suites share, so the reset
+ * list stays in sync when a new mock or pool joins the file.
+ */
+function resetTerminalViewMocks(): void {
+  mockCreateTerminalInstance.mockReset()
+  mockBufferHasVisibleContent.mockReset().mockReturnValue(undefined)
+  mockSerializeXtermBuffer.mockReset().mockReturnValue(undefined)
+  webglPool.disposeAll()
+  // Re-install the full stub in case an earlier suite left a partial one
+  // behind; beforeAll has already run, so it does not re-arm on its own.
+  stubMatchMedia()
+}
+
 describe('disposeTerminalInstance scrollback capture', () => {
-  beforeEach(() => {
-    mockCreateTerminalInstance.mockReset()
-    mockBufferHasVisibleContent.mockReset().mockReturnValue(undefined)
-    mockSerializeXtermBuffer.mockReset().mockReturnValue(undefined)
-    webglPool.disposeAll()
-    // An earlier suite may leave matchMedia as a bare `{ matches }` stub with
-    // no addEventListener, and beforeAll has already run — restore the full
-    // shape the rendered component needs.
-    window.matchMedia = vi.fn().mockReturnValue({
-      matches: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    }) as any
-  })
+  beforeEach(resetTerminalViewMocks)
 
   afterEach(() => {
     setTerminalScreenSink(null)
@@ -757,14 +743,15 @@ describe('disposeTerminalInstance scrollback capture', () => {
     return instance
   }
 
-  it('hands the live buffer to the sink before tearing the instance down', async () => {
-    await mount('term-dispose')
+  it('hands the live buffer and its parsed offset to the sink before tearing the instance down', async () => {
+    const instance = await mount('term-dispose')
+    instance.lastParsedOffset = 4321
     mockBufferHasVisibleContent.mockReturnValue(true)
     mockSerializeXtermBuffer.mockReturnValue(new TextEncoder().encode('scrollback-worth-keeping'))
 
-    const captured: Array<{ id: string, text: string }> = []
-    setTerminalScreenSink((id, screen) => {
-      captured.push({ id, text: new TextDecoder().decode(screen) })
+    const captured: Array<{ id: string, text: string, parsedOffset?: number }> = []
+    setTerminalScreenSink((id, screen, parsedOffset) => {
+      captured.push({ id, text: new TextDecoder().decode(screen), parsedOffset })
     })
 
     disposeTerminalInstance('term-dispose')
@@ -772,8 +759,31 @@ describe('disposeTerminalInstance scrollback capture', () => {
     expect(captured).toHaveLength(1)
     expect(captured[0].id).toBe('term-dispose')
     expect(captured[0].text).toBe('scrollback-worth-keeping')
+    // The offset the serialized screen actually covers rides along, so the
+    // store can rewind lastOffset onto it.
+    expect(captured[0].parsedOffset).toBe(4321)
     // And the instance really is gone — capturing must not keep it alive.
     expect(getTerminalInstance('term-dispose')).toBeUndefined()
+  })
+
+  it('skips the capture while a write is still unparsed', async () => {
+    // A dispose mid-parse serializes fewer bytes than the live cursor
+    // claims. Storing that screen next to the inflated cursor would make the
+    // remount trim the never-painted span of the next catch-up delta as
+    // "already rendered" — so the capture waits for a parsed write instead
+    // and the previous stored screen stays.
+    const instance = await mount('term-midparse')
+    instance.lastParsedOffset = undefined
+    mockBufferHasVisibleContent.mockReturnValue(true)
+    mockSerializeXtermBuffer.mockReturnValue(new TextEncoder().encode('half-parsed'))
+
+    const captured: string[] = []
+    setTerminalScreenSink(id => captured.push(id))
+
+    disposeTerminalInstance('term-midparse')
+
+    expect(captured).toEqual([])
+    expect(getTerminalInstance('term-midparse')).toBeUndefined()
   })
 
   it('writes nothing for a buffer that has not painted yet', async () => {
@@ -793,6 +803,7 @@ describe('disposeTerminalInstance scrollback capture', () => {
 
   it('still tears down when the sink throws', async () => {
     const instance = await mount('term-throws')
+    instance.lastParsedOffset = 10
     mockBufferHasVisibleContent.mockReturnValue(true)
     mockSerializeXtermBuffer.mockReturnValue(new Uint8Array([1]))
 
@@ -807,20 +818,9 @@ describe('disposeTerminalInstance scrollback capture', () => {
 })
 
 describe('terminalView IME wiring', () => {
-  beforeEach(() => {
-    mockCreateTerminalInstance.mockReset()
-    mockBufferHasVisibleContent.mockReset().mockReturnValue(undefined)
-    mockSerializeXtermBuffer.mockReset().mockReturnValue(undefined)
-    webglPool.disposeAll()
-    window.matchMedia = vi.fn().mockReturnValue({
-      matches: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    }) as any
-  })
+  beforeEach(resetTerminalViewMocks)
 
-  async function mount(id: string, onInput = vi.fn()) {
-    const instance = makeMockTerminalInstance()
+  async function mount(id: string, onInput = vi.fn(), instance = makeMockTerminalInstance()) {
     mockCreateTerminalInstance.mockReturnValue(instance)
     render(() => (
       <PreferencesProvider>
@@ -854,6 +854,69 @@ describe('terminalView IME wiring', () => {
     expect(instance.ime).toBeDefined()
 
     disposeTerminalInstance('term-ime-attach')
+  })
+
+  it('logs the input the gate forwarded, and only that', async () => {
+    // The e2e IME specs assert against this log; it must record every path
+    // the gate lets through (keystrokes, IME commits, programmatic writes)
+    // and nothing the gate suppressed, or the doubling/loss assertions would
+    // measure the wrong thing.
+    const onInput = vi.fn()
+    const { instance } = await mount('term-ime-log', onInput)
+
+    const commit = (text: string) => instance.terminal.textarea!.dispatchEvent(
+      new CompositionEvent('compositionend', { data: text, bubbles: true, composed: true }),
+    )
+
+    commit('\uC548')
+    instance.sendInput!(new TextEncoder().encode('!!'))
+    expect((window as any).__getActiveTerminalInputLog()).toBe('\uC548!!')
+
+    // A write mid-replay is swallowed by the gate and must stay out of the
+    // log — the log is the send-side truth, not the attempt-side.
+    instance.suppressInput = true
+    commit('\uB155')
+    expect((window as any).__getActiveTerminalInputLog()).toBe('\uC548!!')
+
+    disposeTerminalInstance('term-ime-log')
+  })
+
+  it('releases the IME layer before the terminal on dispose', async () => {
+    const { instance } = await mount('term-ime-order')
+    const order: string[] = []
+    const imeDispose = instance.ime!.dispose.bind(instance.ime)
+    instance.ime!.dispose = () => {
+      order.push('ime')
+      imeDispose()
+    }
+    const instanceDispose = instance.dispose.bind(instance)
+    instance.dispose = () => {
+      order.push('terminal')
+      instanceDispose()
+    }
+
+    disposeTerminalInstance('term-ime-order')
+
+    // The layer's listeners and its preview node hang off terminal.element,
+    // which xterm removes as it tears down, so the layer must go first.
+    expect(order).toEqual(['ime', 'terminal'])
+    expect(instance.ime).toBeUndefined()
+  })
+
+  it('keeps the shell alive when the IME layer cannot attach', async () => {
+    // An xterm upgrade that changes the helper DOM shape makes
+    // attachTerminalIme throw by design. The throw must cost the composition
+    // path only — escaping onMount would reach the route-level boundary and
+    // blank every tile.
+    const broken = makeMockTerminalInstance()
+    broken.terminal.textarea!.remove()
+    const { instance } = await mount('term-ime-broken', vi.fn(), broken)
+
+    expect(instance.ime).toBeUndefined()
+    // The plain key path is still wired.
+    expect(instance.terminal.attachCustomKeyEventHandler).toHaveBeenCalledTimes(1)
+
+    disposeTerminalInstance('term-ime-broken')
   })
 
   it('takes composed keystrokes away from xterm', async () => {
@@ -902,9 +965,27 @@ describe('terminalView IME wiring', () => {
     disposeTerminalInstance('term-ime-gate')
   })
 
+  it('suppresses programmatic sendInput on snapshot replay like a keystroke', async () => {
+    const onInput = vi.fn()
+    const { instance } = await mount('term-ime-sendgate', onInput)
+
+    // Programmatic writes (keyboard shortcuts, the e2e input hook) go through
+    // the same gate as keystrokes: a write that leaks through mid-replay
+    // interleaves with the snapshot being replayed.
+    instance.sendInput!(new TextEncoder().encode('\x01'))
+    expect(onInput).toHaveBeenCalledTimes(1)
+    expect(onInput.mock.calls[0][0]).toBe('term-ime-sendgate')
+
+    instance.suppressInput = true
+    instance.sendInput!(new TextEncoder().encode('\x05'))
+    expect(onInput).toHaveBeenCalledTimes(1)
+
+    disposeTerminalInstance('term-ime-sendgate')
+  })
+
   it('releases the IME layer when the instance is disposed', async () => {
     const { instance } = await mount('term-ime-dispose')
-    const preview = () => instance.terminal.element!.querySelector('[data-testid="terminal-composition-preview"]')
+    const preview = () => compositionPreview(instance.terminal.element)
     expect(preview()).not.toBeNull()
 
     // The real dispose() tears the IME layer down; the mock instance's dispose

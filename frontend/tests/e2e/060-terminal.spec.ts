@@ -1,26 +1,6 @@
-import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { getTerminalText, waitForTerminalText } from './helpers/terminal'
+import { focusActiveTerminal, getTerminalText, typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, waitForLayoutSave } from './helpers/ui'
-
-/** Type a command into the active terminal and press Enter. */
-async function typeInTerminal(page: Page, command: string) {
-  // Focus the textarea inside the visible (active) terminal container
-  await page.evaluate(() => {
-    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-    for (const container of containers) {
-      if (container.dataset.active === 'true') {
-        const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-        if (textarea) {
-          textarea.focus()
-          return
-        }
-      }
-    }
-  })
-  await page.keyboard.type(command, { delay: 30 })
-  await page.keyboard.press('Enter')
-}
 
 test.describe('Terminal', () => {
   test('should open a terminal and render xterm', async ({ page, authenticatedWorkspace }) => {
@@ -173,18 +153,7 @@ test.describe('Terminal', () => {
 
     // Verify the terminal no longer accepts input: type something and
     // confirm it does NOT appear in the terminal output
-    await page.evaluate(() => {
-      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-      for (const container of containers) {
-        if (container.dataset.active === 'true') {
-          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-          if (textarea) {
-            textarea.focus()
-            return
-          }
-        }
-      }
-    })
+    await focusActiveTerminal(page)
     await page.keyboard.type('echo SHOULD_NOT_APPEAR', { delay: 100 })
     await page.keyboard.press('Enter')
     await page.waitForTimeout(1000)

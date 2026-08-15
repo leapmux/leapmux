@@ -1,4 +1,5 @@
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { focusActiveTerminal } from './helpers/terminal'
 import { ARITHMETIC_PROMPT, assistantBubbles, expectAnyVisible, expectAssistantAnswer, expectUserMessage, loginViaToken, openTerminalViaUI, openWorkspace, renameTabViaUI, reopenWorkspace, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_PROMPT, waitForLayoutSave } from './helpers/ui'
 import { listTerminalsViaAPI } from './helpers/worktree'
 import { ensureWorkerOnline, expect, restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
@@ -153,18 +154,7 @@ test.describe('Full Hub+Worker Restart', () => {
       return terminals.map(t => t.title)
     }, 'the renamed title must reach the worker before the restart').toContain('Recovered Title')
 
-    await page.evaluate(() => {
-      const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-      for (const container of containers) {
-        if (container.dataset.active === 'true') {
-          const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
-          if (textarea) {
-            textarea.focus()
-            return
-          }
-        }
-      }
-    })
+    await focusActiveTerminal(page)
     await page.keyboard.type('echo EXITEDRESTORE\n', { delay: 30 })
     await page.waitForFunction(() => {
       return typeof (window as any).__getActiveTerminalText === 'function'

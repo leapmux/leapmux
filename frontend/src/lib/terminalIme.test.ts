@@ -1,6 +1,8 @@
 import type { TerminalImeHandle } from './terminalIme'
 import { Terminal } from '@xterm/xterm'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { compositionPreview } from '~/test-support/compositionPreview'
+import { stubMatchMedia } from '~/test-support/matchMediaStub'
 import { attachTerminalIme } from './terminalIme'
 
 /**
@@ -79,46 +81,48 @@ function wkKeystroke(h: Harness, inputType: string, data: string, replacedRange:
     const end = h.textarea.value.length
     h.textarea.setSelectionRange(end, end)
   }
-  h.textarea.dispatchEvent(new InputEvent('beforeinput', {
-    data,
-    inputType,
-    isComposing: false,
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-  }))
+  dispatchInputEvent(h.textarea, 'beforeinput', { data, inputType })
   h.textarea.value = nextValue
   h.textarea.setSelectionRange(nextValue.length, nextValue.length)
-  h.textarea.dispatchEvent(new InputEvent('input', {
-    data,
-    inputType,
-    isComposing: false,
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-  }))
+  dispatchInputEvent(h.textarea, 'input', { data, inputType })
   keydown(h.textarea, { key: data.slice(-1), keyCode: 229 })
   h.textarea.dispatchEvent(new KeyboardEvent('keyup', { key: data.slice(-1), keyCode: 68, bubbles: true }))
 }
 
+/**
+ * Dispatch one input-type event with the init bag a trusted event carries.
+ * Trusted input events are composed, and xterm's `_inputEvent` reads that
+ * flag to decide whether the key path already sent the character. Leaving
+ * it off makes xterm double-send and the test measures the wrong thing.
+ */
+function dispatchInputEvent(
+  target: HTMLElement,
+  type: 'beforeinput' | 'input',
+  init: { data?: string | null, inputType?: string, isComposing?: boolean },
+): void {
+  target.dispatchEvent(new InputEvent(type, {
+    data: init.data,
+    inputType: init.inputType,
+    isComposing: init.isComposing ?? false,
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  }))
+}
+
+/** One beforeinput + input pair for the same edit, as an engine fires them. */
 function input(target: HTMLElement, inputType: string, data: string | null, isComposing = false): void {
-  for (const type of ['beforeinput', 'input']) {
-    target.dispatchEvent(new InputEvent(type, {
-      data,
-      inputType,
-      isComposing,
-      bubbles: true,
-      cancelable: true,
-      // Trusted input events are composed, and xterm's `_inputEvent` reads that
-      // flag to decide whether the key path already sent the character. Leaving
-      // it off makes xterm double-send and the test measures the wrong thing.
-      composed: true,
-    }))
-  }
+  for (const type of ['beforeinput', 'input'] as const)
+    dispatchInputEvent(target, type, { data, inputType, isComposing })
 }
 
 function keydown(target: HTMLElement, init: KeyboardEventInit & { keyCode?: number }): void {
   target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }))
+}
+
+/** One trusted-shape keypress carrying a charCode — the echo of a deferred A–Z. */
+function keypress(target: HTMLElement, charCode: number): void {
+  target.dispatchEvent(new KeyboardEvent('keypress', { charCode, bubbles: true, cancelable: true } as KeyboardEventInit))
 }
 
 /**
@@ -138,20 +142,12 @@ function chromiumCompose(h: Harness, steps: string[], opts: { start: boolean }):
 }
 
 describe('attachTerminalIme', () => {
-  let originalMatchMedia: typeof window.matchMedia
+  let matchMedia: ReturnType<typeof stubMatchMedia>
 
   beforeEach(() => {
-    originalMatchMedia = window.matchMedia
-    // jsdom has no matchMedia, and xterm's CoreBrowserService watches the
-    // device-pixel-ratio query through the LEGACY addListener/removeListener
-    // pair, so a stub with only addEventListener throws inside open().
-    window.matchMedia = vi.fn().mockReturnValue({
-      matches: false,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    }) as any
+    // jsdom has no matchMedia; the shared stub carries the legacy listener
+    // pair xterm's open() needs.
+    matchMedia = stubMatchMedia()
   })
 
   afterEach(() => {
@@ -161,10 +157,8 @@ describe('attachTerminalIme', () => {
       h.container.remove()
     }
     harnesses = []
-    // Restore rather than leave the stub behind: a bare stub leaking out of
-    // this suite is what the note in TerminalView.test.tsx exists to work
-    // around, and there is no reason to add another source of it.
-    window.matchMedia = originalMatchMedia
+    // Restore rather than leave the stub behind.
+    matchMedia.restore()
   })
 
   it('sends each committed syllable once for the recorded Chromium trace', () => {
@@ -264,27 +258,131 @@ describe('attachTerminalIme', () => {
     // characters the user never asked to lose.
     h.textarea.value = 'abc'
     h.textarea.setSelectionRange(0, 3)
-    h.textarea.dispatchEvent(new InputEvent('beforeinput', {
+    dispatchInputEvent(h.textarea, 'beforeinput', { data: 'x', inputType: 'insertText' })
+    // The measurement is only good for the paired input event.
+    await Promise.resolve()
+
+    h.textarea.value = 'abc'
+    h.textarea.setSelectionRange(3, 3)
+    dispatchInputEvent(h.textarea, 'input', { data: '안', inputType: 'insertText' })
+
+    expect(h.sent).toEqual(['안'])
+  })
+
+  it('applies the erase across the microtask checkpoint a real browser runs', async () => {
+    const h = createHarness()
+
+    // The production shape: a real browser dispatches beforeinput and input
+    // as two separate event dispatches, and the JS stack is empty between
+    // them, so a microtask checkpoint runs exactly here. A timing-based
+    // reset of the measurement dies at that checkpoint, and the erase half
+    // of every WKWebView replacement silently never fires. jsdom hides this
+    // because a synchronous dispatchEvent keeps the stack non-empty.
+    h.textarea.value = 'ㅇ'
+    h.textarea.setSelectionRange(0, 1)
+    dispatchInputEvent(h.textarea, 'beforeinput', { data: '아', inputType: 'insertReplacementText' })
+    await Promise.resolve()
+    h.textarea.value = '아'
+    h.textarea.setSelectionRange(1, 1)
+    dispatchInputEvent(h.textarea, 'input', { data: '아', inputType: 'insertReplacementText' })
+
+    expect(h.sent).toEqual(['\x7F아'])
+  })
+
+  it('prefers the engine target ranges over the live selection', () => {
+    const h = createHarness()
+
+    // The selection has already collapsed by the time an engine that
+    // populates getTargetRanges dispatches beforeinput; the ranges are the
+    // engine's own statement of what the edit replaces.
+    h.textarea.value = 'abcd'
+    h.textarea.setSelectionRange(4, 4)
+    const beforeinput = new InputEvent('beforeinput', {
       data: 'x',
       inputType: 'insertText',
       bubbles: true,
       cancelable: true,
       composed: true,
-    }))
-    // The measurement is only good for the input event of the same task.
-    await Promise.resolve()
+    })
+    Object.defineProperty(beforeinput, 'getTargetRanges', {
+      value: () => [{
+        startContainer: h.textarea,
+        endContainer: h.textarea,
+        startOffset: 1,
+        endOffset: 3,
+      }],
+    })
+    h.textarea.dispatchEvent(beforeinput)
+    h.textarea.value = 'axd'
+    h.textarea.setSelectionRange(2, 2)
+    dispatchInputEvent(h.textarea, 'input', { data: 'x', inputType: 'insertText' })
 
-    h.textarea.value = 'abc'
-    h.textarea.setSelectionRange(3, 3)
-    h.textarea.dispatchEvent(new InputEvent('input', {
-      data: '안',
+    expect(h.sent).toEqual(['\x7F\x7Fx'])
+  })
+
+  it('falls back to the selection when the target ranges point at another node', () => {
+    const h = createHarness()
+
+    // A range shape this module cannot interpret (containers that are not
+    // the textarea) must not silence the measurement: the live selection
+    // still covers the replaced range in every recorded trace.
+    h.textarea.value = 'ab'
+    h.textarea.setSelectionRange(0, 1)
+    const beforeinput = new InputEvent('beforeinput', {
+      data: 'x',
       inputType: 'insertText',
       bubbles: true,
       cancelable: true,
       composed: true,
-    }))
+    })
+    Object.defineProperty(beforeinput, 'getTargetRanges', {
+      value: () => [{
+        startContainer: document.body,
+        endContainer: document.body,
+        startOffset: 0,
+        endOffset: 9,
+      }],
+    })
+    h.textarea.dispatchEvent(beforeinput)
+    h.textarea.value = 'xb'
+    h.textarea.setSelectionRange(1, 1)
+    dispatchInputEvent(h.textarea, 'input', { data: 'x', inputType: 'insertText' })
 
-    expect(h.sent).toEqual(['안'])
+    expect(h.sent).toEqual(['\x7Fx'])
+  })
+
+  it('claims an IME insert that lands while a plain capital is still in flight', () => {
+    const h = createHarness()
+
+    // Rollover: the capital's keyup has not arrived when the IME's first
+    // jamo does. xterm already sent the capital from keypress, and its
+    // `_keyDownSeen` guard drops the jamo — reading the stale keydown as
+    // "xterm owns the insertText" loses the jamo, and the follow-up
+    // replacement then erases the capital the user actually typed.
+    keydown(h.textarea, { key: 'C', keyCode: 67 })
+    keypress(h.textarea, 67)
+    h.textarea.value = 'C'
+    input(h.textarea, 'insertText', 'ㅇ')
+    h.textarea.value = 'Cㅇ'
+    wkKeystroke(h, 'insertReplacementText', '아', [1, 2], 'C아')
+
+    expect(applyToLine([...h.fromXterm, ...h.sent])).toBe('C아')
+  })
+
+  it('claims a dead key precomposed character that xterm never sends', () => {
+    const h = createHarness()
+
+    // Dead key: xterm records the dead key, and the follow-up keydown takes
+    // xterm's `_unprocessedDeadKey` branch — no bytes, no preventDefault —
+    // so the composed character arrives only as an insertText whose text
+    // differs from the key in flight.
+    keydown(h.textarea, { key: 'Dead' })
+    keydown(h.textarea, { key: 'e', keyCode: 69 })
+    h.textarea.value = 'é'
+    input(h.textarea, 'insertText', 'é')
+
+    expect(h.sent).toEqual(['é'])
+    expect(h.fromXterm).toEqual([])
   })
 
   it('counts a replaced surrogate pair as one character', () => {
@@ -373,6 +471,71 @@ describe('attachTerminalIme', () => {
     expect(h.ime.shouldBypassKeyEvent(second)).toBe(false)
   })
 
+  it('suppresses every echo of a multi-character commit', () => {
+    const h = createHarness()
+
+    // Japanese and Chinese commit a whole reading in one compositionend. If
+    // the engine echoes it as one synthetic keypress per character, every
+    // echo must be suppressed — a one-shot suppression lets xterm's
+    // `_keyPress` send the remaining characters a second time.
+    composition(h.textarea, 'compositionstart', '')
+    composition(h.textarea, 'compositionupdate', 'ab')
+    composition(h.textarea, 'compositionend', 'ab')
+
+    for (const ch of ['a', 'b']) {
+      expect(h.ime.shouldBypassKeyEvent(
+        new KeyboardEvent('keypress', { charCode: ch.charCodeAt(0) } as KeyboardEventInit),
+      )).toBe(true)
+    }
+    // The window is spent: a further keypress of a committed character is
+    // genuine and must survive.
+    expect(h.ime.shouldBypassKeyEvent(
+      new KeyboardEvent('keypress', { charCode: 97 } as KeyboardEventInit),
+    )).toBe(false)
+    expect(h.sent).toEqual(['ab'])
+    expect(h.fromXterm).toEqual([])
+  })
+
+  it('never lets a lone-surrogate echo keypress reach xterm', () => {
+    const h = createHarness()
+
+    // An astral commit (an emoji) is two UTF-16 units, and an engine that
+    // echoes per unit emits one synthetic keypress per surrogate half. When
+    // its echo count diverges from the per-unit bookkeeping (a repeated
+    // half), the surplus keypress carries a lone surrogate. xterm's
+    // `_keyPress` would send String.fromCharCode(charCode) verbatim, and a
+    // lone surrogate reaches the PTY as U+FFFD — so it must be bypassed
+    // unconditionally.
+    composition(h.textarea, 'compositionstart', '')
+    composition(h.textarea, 'compositionend', '😀')
+
+    const high = 0xD83D
+    expect(h.ime.shouldBypassKeyEvent(new KeyboardEvent('keypress', { charCode: high } as KeyboardEventInit))).toBe(true)
+    // The divergent surplus echo of the same half is garbage, not input.
+    expect(h.ime.shouldBypassKeyEvent(new KeyboardEvent('keypress', { charCode: high } as KeyboardEventInit))).toBe(true)
+    // The low half still goes through the ordinary consumption.
+    expect(h.ime.shouldBypassKeyEvent(new KeyboardEvent('keypress', { charCode: 0xDE00 } as KeyboardEventInit))).toBe(true)
+
+    expect(h.sent).toEqual(['😀'])
+    expect(h.fromXterm).toEqual([])
+  })
+
+  it('still suppresses the echo when the IME keydown lands after the commit', () => {
+    const h = createHarness()
+
+    // WKWebView delivers the IME-consumed keydown AFTER the input event it
+    // produced; the same order around a commit must not close the echo
+    // window before the synthetic keypress arrives.
+    composition(h.textarea, 'compositionstart', '')
+    composition(h.textarea, 'compositionend', '안')
+    keydown(h.textarea, { key: 'ㅇ', keyCode: 229 })
+
+    expect(h.ime.shouldBypassKeyEvent(
+      new KeyboardEvent('keypress', { charCode: '안'.charCodeAt(0) } as KeyboardEventInit),
+    )).toBe(true)
+    expect(h.sent).toEqual(['안'])
+  })
+
   it('keeps the keystroke that follows a commit, which xterm drops', () => {
     const h = createHarness()
 
@@ -387,7 +550,7 @@ describe('attachTerminalIme', () => {
     expect(h.sent).toEqual(['~', '/'])
   })
 
-  it('leaves ordinary typing on xterm own key path', () => {
+  it('leaves ordinary typing on xterm\'s own key path', () => {
     const h = createHarness()
 
     // xterm handles a plain printable key in keydown and calls preventDefault,
@@ -410,18 +573,93 @@ describe('attachTerminalIme', () => {
     // event for a capital, and claiming it doubles every one the user types --
     // `CANCELLED` arriving as `CCAANNCCEELLLLEEDD`.
     keydown(h.textarea, { key: 'C', keyCode: 67 })
-    h.textarea.dispatchEvent(new KeyboardEvent('keypress', {
-      charCode: 67,
-      bubbles: true,
-      cancelable: true,
-    } as KeyboardEventInit))
+    keypress(h.textarea, 67)
     input(h.textarea, 'insertText', 'C')
 
     expect(h.fromXterm).toEqual(['C'])
     expect(h.sent).toEqual([])
   })
 
-  it('leaves paste to xterm own paste handler', () => {
+  it('leaves caps-lock-folded text to xterm, which sends the folded case', () => {
+    const h = createHarness()
+
+    // Caps lock on: the keydown reports 'C', the keypress (and xterm's send)
+    // carries 'c'. Ownership reads the OBSERVED emission, so the input event
+    // for 'c' is xterm's echo — claiming it would double the letter.
+    keydown(h.textarea, { key: 'C', keyCode: 67 })
+    keypress(h.textarea, 99)
+    h.textarea.value = 'c'
+    input(h.textarea, 'insertText', 'c')
+
+    expect(h.fromXterm).toEqual(['c'])
+    expect(h.sent).toEqual([])
+  })
+
+  it('claims text whose keystroke produced no xterm emission', () => {
+    const h = createHarness()
+
+    // A deferred key whose keypress never ran — an engine that skips it, or
+    // delivers the input event first. xterm emits nothing, so the text is
+    // ours; reading the key's shape instead would hand it to an xterm path
+    // that never fires, and the character would be lost.
+    keydown(h.textarea, { key: 'C', keyCode: 67 })
+    h.textarea.value = 'C'
+    input(h.textarea, 'insertText', 'C')
+
+    expect(h.sent).toEqual(['C'])
+    expect(h.fromXterm).toEqual([])
+  })
+
+  it('claims an IME insert whose text merely occurs inside an in-flight emission', () => {
+    const h = createHarness()
+
+    // An arrow key emits '\x1b[C' through xterm's key path. If its keyup has
+    // not landed (WKWebView delivers events out of band; fast typists), a
+    // substring match reads an IME-committed 'C' as that emission's echo and
+    // silently drops it. An emission must answer only its exact echo.
+    keydown(h.textarea, { key: 'ArrowRight', keyCode: 39 })
+    input(h.textarea, 'insertText', 'C')
+
+    // The arrow's emission really is in flight — that is what makes 'C'
+    // look like a substring of it.
+    expect(h.fromXterm).toEqual(['\x1B[C'])
+    expect(h.sent).toEqual(['C'])
+  })
+
+  it('answers each deferred capital\'s echo with its own emission', () => {
+    const h = createHarness()
+
+    // Rollover: both capitals' keypresses ran before either input event
+    // arrived. Each input event must consume its own emission — an arrow's
+    // '\x1b[C' above shows why the entries cannot be merged into one string —
+    // or the second echo would ride the first's match and be double-sent.
+    keydown(h.textarea, { key: 'C', keyCode: 67 })
+    keypress(h.textarea, 67)
+    keydown(h.textarea, { key: 'A', keyCode: 65 })
+    keypress(h.textarea, 65)
+    input(h.textarea, 'insertText', 'C')
+    input(h.textarea, 'insertText', 'A')
+
+    expect(h.fromXterm).toEqual(['C', 'A'])
+    expect(h.sent).toEqual([])
+  })
+
+  it('expires the emission when the keystroke ends', () => {
+    const h = createHarness()
+
+    // A fully-typed capital leaves no emission behind, so a later
+    // mouse-committed candidate of the same character is ours, not an echo.
+    keydown(h.textarea, { key: 'C', keyCode: 67 })
+    keypress(h.textarea, 67)
+    h.textarea.dispatchEvent(new KeyboardEvent('keyup', { key: 'C', keyCode: 67, bubbles: true }))
+    h.textarea.value = ''
+    input(h.textarea, 'insertText', 'C')
+
+    expect(h.sent).toEqual(['C'])
+    expect(h.fromXterm).toEqual(['C'])
+  })
+
+  it('leaves paste to xterm\'s own paste handler', () => {
     const h = createHarness()
 
     // xterm binds `paste` on the textarea and writes the clipboard itself.
@@ -435,9 +673,9 @@ describe('attachTerminalIme', () => {
   it('leaves editing input types alone', () => {
     const h = createHarness()
 
-    // Backspace and friends reach the PTY through xterm's key path as control
-    // bytes. Forwarding the matching input event would send them a second time
-    // as text.
+    // Backspace and similar editing keys reach the PTY through xterm's key
+    // path as control bytes. Forwarding the matching input event would send
+    // them a second time as text.
     input(h.textarea, 'deleteContentBackward', null)
     input(h.textarea, 'insertLineBreak', null)
 
@@ -501,7 +739,7 @@ describe('attachTerminalIme', () => {
 
   it('shows the composing text and hides it on commit', () => {
     const h = createHarness()
-    const preview = () => h.container.querySelector<HTMLElement>('[data-testid="terminal-composition-preview"]')!
+    const preview = () => compositionPreview(h.container)!
 
     expect(preview().textContent).toBe('')
 
@@ -517,14 +755,14 @@ describe('attachTerminalIme', () => {
 
   it('places the preview on the cursor and in the terminal colors', () => {
     const h = createHarness()
-    const preview = () => h.container.querySelector<HTMLElement>('[data-testid="terminal-composition-preview"]')!
+    const preview = () => compositionPreview(h.container)!
 
     // xterm parks its helper textarea on the cursor, and the preview borrows
     // that box rather than measuring cells itself.
     h.textarea.style.left = '48px'
     h.textarea.style.top = '17px'
     h.textarea.style.height = '19px'
-    // One token, so the assertion below is not really testing how the CSSOM
+    // One token, so the assertion below does not really test how the CSSOM
     // quotes a family name that contains a space.
     h.terminal.options.fontFamily = 'TestMono'
     h.terminal.options.fontSize = 15
@@ -543,16 +781,6 @@ describe('attachTerminalIme', () => {
     expect(preview().style.color).toBe('rgb(16, 16, 16)')
   })
 
-  it('tracks composing across the composition', () => {
-    const h = createHarness()
-
-    expect(h.ime.composing).toBe(false)
-    composition(h.textarea, 'compositionstart', '')
-    expect(h.ime.composing).toBe(true)
-    composition(h.textarea, 'compositionend', '안')
-    expect(h.ime.composing).toBe(false)
-  })
-
   it('drops a keypress that arrives mid-composition', () => {
     const h = createHarness()
 
@@ -564,11 +792,10 @@ describe('attachTerminalIme', () => {
 
   it('releases its listeners and its preview on dispose', () => {
     const h = createHarness()
-    const selector = '[data-testid="terminal-composition-preview"]'
-    expect(h.container.querySelector(selector)).not.toBeNull()
+    expect(compositionPreview(h.container)).not.toBeNull()
 
     h.ime.dispose()
-    expect(h.container.querySelector(selector)).toBeNull()
+    expect(compositionPreview(h.container)).toBeNull()
 
     // With the layer gone the events belong to xterm again, so nothing more
     // reaches our sink.
@@ -586,5 +813,18 @@ describe('attachTerminalIme', () => {
     const terminal = new Terminal()
     expect(() => attachTerminalIme(terminal, () => {})).toThrow(/terminal\.open/)
     terminal.dispose()
+  })
+
+  it('refuses to attach when the textarea was detached from the DOM', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const terminal = new Terminal({ cols: 80, rows: 24 })
+    terminal.open(container)
+    // A DOM shape change that detaches the helper must fail loudly: a preview
+    // silently re-parented to another containing block would position wrong.
+    terminal.textarea!.remove()
+    expect(() => attachTerminalIme(terminal, () => {})).toThrow(/attached/)
+    terminal.dispose()
+    container.remove()
   })
 })

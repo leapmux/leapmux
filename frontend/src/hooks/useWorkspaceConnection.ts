@@ -59,21 +59,32 @@ export interface PendingTerminalDataFrame {
  */
 export const MAX_PENDING_TERMINAL_FRAMES = 256
 
-/** Queue TerminalData until an xterm instance mounts. Snapshots clear prior deltas. */
+/**
+ * Queue TerminalData until an xterm instance mounts. Snapshots clear prior
+ * deltas.
+ *
+ * Returns true when the cap evicted oldest frames — those bytes are lost to
+ * this client, so the caller must flag the terminal for a full-snapshot
+ * resubscribe (see `TerminalMeta.needsResync`).
+ */
 export function enqueuePendingTerminalData(
   pending: Map<string, PendingTerminalDataFrame[]>,
   terminalId: string,
   frame: PendingTerminalDataFrame,
-): void {
+): boolean {
   const queue = pending.get(terminalId) ?? []
   if (frame.isSnapshot)
     queue.length = 0
   queue.push(frame)
   // Bound memory for a terminal that never mounts: drop the oldest frames. A
   // snapshot clears the queue, so this only trims a long run of pure deltas.
-  if (queue.length > MAX_PENDING_TERMINAL_FRAMES)
+  let evicted = false
+  if (queue.length > MAX_PENDING_TERMINAL_FRAMES) {
     queue.splice(0, queue.length - MAX_PENDING_TERMINAL_FRAMES)
+    evicted = true
+  }
   pending.set(terminalId, queue)
+  return evicted
 }
 
 /** Drop queued frames for a terminal that is gone (tab closed / re-placed). */
@@ -170,14 +181,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         if (checkContent && bufferHasVisibleContent(instance.terminal))
           metadata.patch(terminalId, { contentReady: true })
       }
-      lastOffset = applyTerminalData(
-        instance,
-        frame.data,
-        frame.isSnapshot,
-        Number(frame.endOffset),
-        lastOffset,
-        onParsed,
-      )
+      lastOffset = applyTerminalData(instance, frame.isSnapshot
+        ? { kind: 'snapshot', data: frame.data, endOffset: Number(frame.endOffset), onParsed }
+        : { kind: 'delta', data: frame.data, endOffset: Number(frame.endOffset), currentOffset: lastOffset, onParsed })
+      if (frame.isSnapshot)
+        metadata.patch(terminalId, { needsResync: false })
     }
     metadata.patch(terminalId, { lastOffset })
   }
@@ -215,6 +223,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       tileId => selection.activeKeyForTile(tileId),
       agentId => untrack(() => chatStore.getResumeAfterSeq(agentId)),
       terminalId => untrack(() => metadata.get(terminalId)?.lastOffset ?? 0),
+      // Tracked on purpose: the plan must go out the moment a terminal is
+      // flagged, and back out when the snapshot lands. Only this field is
+      // tracked — lastOffset above moves at PTY-read frequency, and keying
+      // the plan on it would re-send a watch update per output chunk.
+      terminalId => metadata.get(terminalId)?.needsResync === true,
       (agentId: string) => view.getAgentTab(agentId),
     ),
   )
@@ -357,7 +370,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         if (!instance) {
           // Do not advance lastOffset until bytes land on a live instance —
           // otherwise a late mount would skip catch-up and leave a blank PTY.
-          enqueuePendingTerminalData(pendingTerminalData, terminalId, { data, isSnapshot, endOffset })
+          // An eviction marks the terminal for a full-snapshot resubscribe:
+          // the dropped frames leave a hole no incremental delta can fill.
+          const evicted = enqueuePendingTerminalData(pendingTerminalData, terminalId, { data, isSnapshot, endOffset })
+          if (evicted)
+            metadata.patch(terminalId, { needsResync: true })
           break
         }
         const tab = view.getTerminalTab(terminalId)
@@ -366,15 +383,12 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           if (checkContent && bufferHasVisibleContent(instance.terminal))
             metadata.patch(terminalId, { contentReady: true })
         }
-        const newOffset = applyTerminalData(
-          instance,
-          data,
-          isSnapshot,
-          Number(endOffset),
-          metadata.get(terminalId)?.lastOffset ?? 0,
-          onParsed,
-        )
-        metadata.patch(terminalId, { lastOffset: newOffset })
+        const newOffset = applyTerminalData(instance, isSnapshot
+          ? { kind: 'snapshot', data, endOffset: Number(endOffset), onParsed }
+          : { kind: 'delta', data, endOffset: Number(endOffset), currentOffset: metadata.get(terminalId)?.lastOffset ?? 0, onParsed })
+        // An applied snapshot is itself the resync: the buffer was rebuilt
+        // from the worker's ring, so no forced resubscribe is pending.
+        metadata.patch(terminalId, { lastOffset: newOffset, ...(isSnapshot ? { needsResync: false } : {}) })
         break
       }
       case 'closed':

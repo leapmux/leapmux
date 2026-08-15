@@ -1,6 +1,6 @@
 import type { CDPSession, Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { waitForTerminalText } from './helpers/terminal'
+import { focusActiveTerminal, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI } from './helpers/ui'
 
 /**
@@ -13,21 +13,28 @@ import { openTerminalViaUI } from './helpers/ui'
  * engine that drops and duplicates composed text is WebKit, which no headless
  * runner here can drive with a real input method. The reproduction lives in
  * src/lib/terminalIme.test.ts, which replays the WebKit trace from
- * xtermjs/xterm.js#5894. What these specs prove is the other half: that taking
- * the composition path away from xterm did not break the engine that worked.
+ * xtermjs/xterm.js#5894 and asserts EXACT send sequences (`h.sent` equality).
+ * What these specs prove is the other half: that taking the composition path
+ * away from xterm did not break the engine that worked, end to end.
  */
 
-/** Focus the helper textarea of the visible terminal, as 060 does. */
-async function focusTerminal(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const containers = document.querySelectorAll<HTMLElement>('[data-terminal-id]')
-    for (const container of containers) {
-      if (container.dataset.active === 'true') {
-        container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()
-        return
-      }
-    }
-  })
+/**
+ * The exact bytes the active terminal's input gate forwarded, in order.
+ *
+ * The terminal buffer cannot carry a doubling assertion: the buffer-text hook
+ * joins rows with no separator, so the shell's own echo of `echo 안녕` next to
+ * the command's output puts `안녕안녕` in the string with exactly one send.
+ * The gate's log is the send-side truth — every input path (xterm keys, IME
+ * commits, programmatic writes) passes through it, so a doubled, lost, or
+ * stray send is exact here whatever the shell redraws onto the screen.
+ */
+async function getInputLog(page: Page): Promise<string> {
+  return page.evaluate(() => (window as any).__getActiveTerminalInputLog?.() ?? '')
+}
+
+async function expectInputLog(page: Page, expected: string): Promise<void> {
+  const log = await getInputLog(page)
+  expect(log, 'terminal input log').toBe(expected)
 }
 
 /**
@@ -71,12 +78,21 @@ async function composeInTerminal(cdp: CDPSession, compositions: Composition[]): 
   }
 }
 
+/**
+ * The preamble every test in this file starts with: open a terminal, wait for
+ * it to render, and focus it so keystrokes — and the CDP-driven input method
+ * — land in xterm.
+ */
+async function openFocusedTerminal(page: Page): Promise<void> {
+  await openTerminalViaUI(page)
+  await expect(page.locator('.xterm')).toBeVisible()
+  await focusActiveTerminal(page)
+}
+
 test.describe('Terminal IME input', () => {
   test('composes Korean, where every syllable commits the previous one', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
-    await focusTerminal(page)
+    await openFocusedTerminal(page)
 
     const cdp = await page.context().newCDPSession(page)
     // `echo` first so the assertion reads a command line the shell echoed back
@@ -91,13 +107,13 @@ test.describe('Terminal IME input', () => {
     await page.keyboard.press('Enter')
 
     await waitForTerminalText(page, '안녕')
+    // One send of each syllable, once: the committed text and nothing else.
+    await expectInputLog(page, 'echo 안녕\r')
   })
 
   test('composes Japanese with a single explicit commit', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
-    await focusTerminal(page)
+    await openFocusedTerminal(page)
 
     const cdp = await page.context().newCDPSession(page)
     await page.keyboard.type('echo ', { delay: 30 })
@@ -109,13 +125,12 @@ test.describe('Terminal IME input', () => {
     await page.keyboard.press('Enter')
 
     await waitForTerminalText(page, 'こんにちは')
+    await expectInputLog(page, 'echo こんにちは\r')
   })
 
   test('sends nothing when the composition is cancelled', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
-    await focusTerminal(page)
+    await openFocusedTerminal(page)
 
     const cdp = await page.context().newCDPSession(page)
     await page.keyboard.type('echo CANCELLED', { delay: 30 })
@@ -124,17 +139,14 @@ test.describe('Terminal IME input', () => {
     await page.keyboard.press('Enter')
 
     await waitForTerminalText(page, 'CANCELLED')
-    // The abandoned syllable must not have reached the PTY in any form.
-    const text = await page.evaluate(() => (window as any).__getActiveTerminalText?.() ?? '')
-    expect(text).not.toContain('안')
-    expect(text).not.toContain('ㅇ')
+    // The abandoned syllable never left the client in any form: not the
+    // intermediate jamo, not the composed syllable, not an erase for either.
+    await expectInputLog(page, 'echo CANCELLED\r')
   })
 
-  test('still types plain ASCII through xterm own key path', async ({ page, authenticatedWorkspace }) => {
+  test('still types plain ASCII through xterm\'s own key path', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await openTerminalViaUI(page)
-    await expect(page.locator('.xterm')).toBeVisible()
-    await focusTerminal(page)
+    await openFocusedTerminal(page)
 
     // The IME layer sits in front of every keystroke, so the ordinary path is
     // the regression that matters most.
@@ -142,5 +154,6 @@ test.describe('Terminal IME input', () => {
     await page.keyboard.press('Enter')
 
     await waitForTerminalText(page, 'ASCII_STILL_WORKS')
+    await expectInputLog(page, 'echo ASCII_STILL_WORKS\r')
   })
 })

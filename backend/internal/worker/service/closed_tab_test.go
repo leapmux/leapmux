@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"runtime"
 	"strings"
 	"sync"
@@ -41,6 +42,15 @@ type testResponseWriter struct {
 	errors     []testError
 	streams    []*leapmuxv1.InnerStreamMessage
 	streamCtrl channel.StreamController
+	failStream bool
+}
+
+// killStreamSends makes every later SendStream fail, simulating a dead
+// transport for the replay paths that classify send errors.
+func (w *testResponseWriter) killStreamSends() {
+	w.mu.Lock()
+	w.failStream = true
+	w.mu.Unlock()
 }
 
 type testError struct {
@@ -65,6 +75,9 @@ func (w *testResponseWriter) SendError(code int32, msg string) error {
 func (w *testResponseWriter) SendStream(m *leapmuxv1.InnerStreamMessage) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.failStream {
+		return errors.New("test: transport gone")
+	}
 	w.streams = append(w.streams, m)
 	return nil
 }
