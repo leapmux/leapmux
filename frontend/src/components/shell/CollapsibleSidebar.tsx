@@ -340,6 +340,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                     <Show when={isDraggable()}>
                       <div
                         class={styles.sectionDragHandle}
+                        data-drag-handle=""
                         data-testid={`section-drag-handle-${id}`}
                         onMouseDown={(e) => {
                           // Prevent the summary click from toggling open/close

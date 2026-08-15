@@ -1024,6 +1024,11 @@ export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
   await expect.poll(async () => {
     if (await page.locator('[data-testid="tab"]').first().isVisible().catch(() => false))
       return true
+    // Mobile layout: there is no tab strip, and a workspace that HAS tabs
+    // never shows the empty-tile placeholder either — the current-tab chip
+    // is the one signal that the workspace shell rendered with its tabs.
+    if (await page.locator('[data-testid="tab-chip"]').first().isVisible().catch(() => false))
+      return true
     if (await page.locator('[data-testid="empty-tile-actions"]').first().isVisible().catch(() => false))
       return true
     if (await page.locator('[data-testid="empty-tile-hint"]').first().isVisible().catch(() => false))
@@ -1122,8 +1127,16 @@ export async function openWorkspace(page: Page, workspaceId: string) {
   await page.goto('/')
   const row = workspaceRow(page, workspaceId)
   await row.waitFor()
-  if (await row.getAttribute('data-active') !== 'true')
+  if (await row.getAttribute('data-active') !== 'true') {
+    // On the mobile layout the rows live in a drawer that starts closed;
+    // open it so the click can land (selecting a workspace closes the
+    // drawers again). `isVisible` on the off-screen drawer content would
+    // also pass, which is why the row wait alone cannot tell.
+    const toggle = page.getByRole('button', { name: 'Toggle workspaces' })
+    if (await toggle.isVisible().catch(() => false))
+      await toggle.click()
     await row.click()
+  }
   await expect(row).toHaveAttribute('data-active', 'true')
   await waitForWorkspaceReady(page)
 }

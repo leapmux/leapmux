@@ -1,12 +1,13 @@
 import type { Accessor, Component } from 'solid-js'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { Tab, TabItemOps } from '~/stores/tab.types'
-import { createDraggable } from '@thisbeyond/solid-dnd'
+import { createDraggable, transformStyle } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import X from 'lucide-solid/icons/x'
 import { createMemo, createSignal, on, Show, useContext } from 'solid-js'
+import { DragHandle } from '~/components/common/DragHandle'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { TabContextMenu } from '~/components/common/TabContextMenu'
@@ -16,6 +17,7 @@ import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { PREFIX_TAB_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
+import { attachDragActivators } from '~/lib/dragActivators'
 import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/lib/keyedRows'
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
@@ -231,15 +233,24 @@ const TabLeaf: Component<{
     },
   )
   /* eslint-enable solid/reactivity */
+  // Mouse-only activation on the row body; the grip carries the raw handlers,
+  // so touch drags start there and nowhere else.
+  attachDragActivators(() => rowEl(), () => draggable.dragActivators, { touch: 'block' })
 
   return (
     <div
       ref={(el) => {
         setRowEl(el)
-        draggable(el)
+        // Node registration only — activation lives on the guarded body and
+        // the grip. The call form used to attach the drag transform
+        // internally; the style prop below applies it manually now.
+        draggable.ref(el)
       }}
       class={`${shared.node} ${css.leafNode} ${props.isActive ? css.leafActive : ''} ${draggable.isActiveDraggable ? css.leafDragging : ''}`}
-      style={{ 'padding-left': `${4 + props.depth * 16}px` }}
+      style={{
+        'padding-left': `${4 + props.depth * 16}px`,
+        ...transformStyle(draggable.transform),
+      }}
       onClick={() => {
         if (!draggable.isActiveDraggable)
           props.onClick()
@@ -310,6 +321,7 @@ const TabLeaf: Component<{
           {...terminalProgressBarProps(props.tab)}
         />
       </Show>
+      <DragHandle activators={() => draggable.dragActivators} testId="sidebar-tab-drag-handle" />
       <Show when={props.canClose}>
         <div class={`${sidebarActions} ${css.leafActions}`}>
           <IconButton

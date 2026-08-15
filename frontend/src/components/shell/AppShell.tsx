@@ -939,6 +939,7 @@ export const AppShell: Component = () => {
       isMobileLayout,
       toggleLeftSidebar,
       toggleRightSidebar,
+      closeAllSidebars,
     },
     refs: { focusEditorRef, getScrollStateRef, forceScrollToBottomRef },
     floatingWindow: {
@@ -1098,7 +1099,6 @@ export const AppShell: Component = () => {
       onMoveSectionServer={handleMoveSectionServer}
       leftSidebarOpen={leftSidebarOpen()}
       rightSidebarOpen={rightSidebarOpen()}
-      closeAllSidebars={closeAllSidebars}
       leftSidebarElement={createLeftSidebarElement(sidebarOpts())}
       rightSidebarElement={createRightSidebarElement(sidebarOpts())}
       tabBarElement={tileRenderer.tabBarElement()}
@@ -1107,6 +1107,11 @@ export const AppShell: Component = () => {
         tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
         && <tileRenderer.FocusedAgentEditorPanel containerHeight={0} />
       }
+      onIntraTileReorder={tileDrag.handleIntraTileReorder}
+      onCrossTileMove={tileDrag.handleCrossTileMove}
+      onCrossWorkspaceMove={handleCrossWorkspaceMove}
+      lookupTileIdForTab={tileDrag.lookupTileIdForTab}
+      renderDragOverlay={tileDrag.renderDragOverlay}
     />
   )
 

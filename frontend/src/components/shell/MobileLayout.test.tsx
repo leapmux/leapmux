@@ -1,8 +1,50 @@
-import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createRoot, createSignal } from 'solid-js'
+import { render, screen } from '@solidjs/testing-library'
+import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as styles from './AppShell.css'
 import { createMobileSidebarToggles, MobileLayout } from './MobileLayout'
+import * as SectionDragModule from './SectionDragContext'
+import { useTabDrag } from './TabDragContext'
+
+/**
+ * Capture the handlers TabDragProvider registers with the section drag
+ * context, so a test can drive one drag through the pipeline MobileLayout
+ * mounts and land it in the prop MobileLayout was given. Everything else in
+ * the module stays real.
+ */
+vi.mock('~/components/shell/SectionDragContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/components/shell/SectionDragContext')>()
+  type Handler = (payload: any) => void
+  const externalTabDragHandlers = {
+    dragStart: [] as Handler[],
+    dragOver: [] as Handler[],
+    dragEnd: [] as Handler[],
+    overlay: [] as Handler[],
+  }
+  const fakeSectionDrag = {
+    addExternalDragStartHandler: (h: Handler) => {
+      externalTabDragHandlers.dragStart.push(h)
+      return () => {}
+    },
+    addExternalDragOverHandler: (h: Handler) => {
+      externalTabDragHandlers.dragOver.push(h)
+      return () => {}
+    },
+    addExternalDragHandler: (h: Handler) => {
+      externalTabDragHandlers.dragEnd.push(h)
+      return () => {}
+    },
+    addExternalOverlayRenderer: (h: Handler) => {
+      externalTabDragHandlers.overlay.push(h)
+      return () => {}
+    },
+  }
+  return {
+    ...actual,
+    useOptionalSectionDrag: () => fakeSectionDrag,
+    externalTabDragHandlers,
+  }
+})
 
 /**
  * Build a minimal sectionStore-shaped object — MobileLayout only needs
@@ -15,10 +57,30 @@ function makeStubSectionStore() {
   } as unknown as Parameters<typeof MobileLayout>[0]['sectionStore']
 }
 
+const stubDragProps = {
+  onIntraTileReorder: () => {},
+  onCrossTileMove: () => {},
+  onCrossWorkspaceMove: () => {},
+  lookupTileIdForTab: (_tabKey: string): string | undefined => undefined,
+  renderDragOverlay: () => <div />,
+}
+
+/** Reports whether a TabDragProvider is an ancestor, via the hook that throws without one. */
+function TabDragProbe() {
+  let reachable = false
+  try {
+    useTabDrag()
+    reachable = true
+  }
+  catch { reachable = false }
+  return <div data-testid="tab-drag-probe" data-reachable={reachable ? 'true' : 'false'} />
+}
+
 interface RenderOpts {
   leftSidebarOpen?: boolean
   rightSidebarOpen?: boolean
-  closeAllSidebars?: () => void
+  /** Overrides for the drag props MobileLayout forwards to TabDragProvider. */
+  drag?: Partial<typeof stubDragProps>
 }
 
 function renderMobile(opts: RenderOpts = {}) {
@@ -29,12 +91,13 @@ function renderMobile(opts: RenderOpts = {}) {
       onMoveSectionServer={() => {}}
       leftSidebarOpen={opts.leftSidebarOpen ?? false}
       rightSidebarOpen={opts.rightSidebarOpen ?? false}
-      closeAllSidebars={opts.closeAllSidebars ?? (() => {})}
       leftSidebarElement={<div data-testid="sidebar-left">left</div>}
       rightSidebarElement={<div data-testid="sidebar-right">right</div>}
       tabBarElement={<div data-testid="tab-bar">tab-bar</div>}
-      tileContent={<div data-testid="tile-content">tiles</div>}
+      tileContent={<TabDragProbe />}
       editorPanel={<div data-testid="editor-panel">editor</div>}
+      {...stubDragProps}
+      {...opts.drag}
     />
   ))
 }
@@ -51,6 +114,14 @@ function findSidebarPanel(testId: string): HTMLElement {
   return el
 }
 
+/** The shell root — the element carrying the mobileShell class. */
+function findShellRoot(container: HTMLElement): HTMLElement {
+  const el = container.querySelector(`.${styles.mobileShell}`)
+  if (!el)
+    throw new Error('No mobileShell root found')
+  return el as HTMLElement
+}
+
 describe('mobileLayout', () => {
   it('renders both sidebars closed by default', () => {
     renderMobile({})
@@ -59,13 +130,6 @@ describe('mobileLayout', () => {
     const rightPanel = findSidebarPanel('sidebar-right')
     expect(leftPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
-  })
-
-  it('overlay is rendered but not active when both sidebars are closed', () => {
-    const { container } = renderMobile({})
-    const overlay = container.querySelector(`.${styles.mobileOverlay}`)
-    expect(overlay).not.toBeNull()
-    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(false)
   })
 
   it('applies the open class to the left sidebar when leftSidebarOpen is true', () => {
@@ -86,47 +150,36 @@ describe('mobileLayout', () => {
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(true)
   })
 
-  it('toggles the overlay-open class when either sidebar opens or both close', () => {
-    const [leftOpen, setLeftOpen] = createSignal(true)
-    const [rightOpen, setRightOpen] = createSignal(false)
-    const { container } = render(() => (
-      <MobileLayout
-        sectionStore={makeStubSectionStore()}
-        onMoveSection={() => {}}
-        onMoveSectionServer={() => {}}
-        leftSidebarOpen={leftOpen()}
-        rightSidebarOpen={rightOpen()}
-        closeAllSidebars={() => {}}
-        leftSidebarElement={<div data-testid="sidebar-left">left</div>}
-        rightSidebarElement={<div data-testid="sidebar-right">right</div>}
-        tabBarElement={<div data-testid="tab-bar">tab-bar</div>}
-        tileContent={<div data-testid="tile-content">tiles</div>}
-        editorPanel={<div data-testid="editor-panel">editor</div>}
-      />
-    ))
-
-    const overlay = container.querySelector(`.${styles.mobileOverlay}`)
-    expect(overlay).not.toBeNull()
-    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(true)
-
-    setLeftOpen(false)
-    setRightOpen(true)
-    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(true)
-
-    setLeftOpen(false)
-    setRightOpen(false)
-    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(false)
+  it('publishes the tab bar height as --mobile-tabbar-h on the shell root', () => {
+    // jsdom reports zero geometry, so the value is "0px" — what matters is
+    // that the variable is written at all (and driven by the bar's rect).
+    const { container } = renderMobile({})
+    expect(findShellRoot(container).style.getPropertyValue('--mobile-tabbar-h')).toBe('0px')
   })
 
-  it('invokes closeAllSidebars when the overlay is clicked', () => {
-    const closeAllSidebars = vi.fn()
-    const { container } = renderMobile({ leftSidebarOpen: true, closeAllSidebars })
+  it('mounts a TabDragProvider so tab drags route on mobile too', () => {
+    renderMobile({})
+    expect(screen.getByTestId('tab-drag-probe')).toHaveAttribute('data-reachable', 'true')
+  })
 
-    const overlay = container.querySelector(`.${styles.mobileOverlay}`)
-    expect(overlay).not.toBeNull()
-    fireEvent.click(overlay!)
+  it('hands its drag handler props to the tab drag pipeline it mounts', () => {
+    const onIntraTileReorder = vi.fn()
+    const lookupTileIdForTab = vi.fn((): string | undefined => 'tile-1')
+    renderMobile({ drag: { onIntraTileReorder, lookupTileIdForTab } })
 
-    expect(closeAllSidebars).toHaveBeenCalledTimes(1)
+    // Drive one drag through the handlers the mounted provider registered:
+    // same tile for source and target tab keys makes it an intra-tile reorder.
+    const registered = (SectionDragModule as unknown as {
+      externalTabDragHandlers: {
+        dragStart: Array<(payload: any) => void>
+        dragEnd: Array<(payload: any) => void>
+      }
+    }).externalTabDragHandlers
+    registered.dragStart.at(-1)!({ draggable: { id: 'agent:a1' } })
+    registered.dragEnd.at(-1)!({ draggable: { id: 'agent:a1' }, droppable: { id: 'agent:b1' } })
+
+    expect(lookupTileIdForTab).toHaveBeenCalledWith('agent:a1')
+    expect(onIntraTileReorder).toHaveBeenCalledWith('tile-1', 'agent:a1', 'agent:b1')
   })
 })
 

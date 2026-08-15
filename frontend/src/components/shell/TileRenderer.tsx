@@ -125,6 +125,8 @@ interface TileRendererOpts {
     isMobileLayout: () => boolean
     toggleLeftSidebar: () => void
     toggleRightSidebar: () => void
+    /** Mobile only — closes both drawers, for mutual exclusion with the tab sheet. */
+    closeAllSidebars: () => void
   }
   /** Cross-component refs the renderer threads to its tab content. */
   refs: {
@@ -192,7 +194,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     newAgentDialog,
     newTerminalDialog,
   } = opts.newTab
-  const { isMobileLayout, toggleLeftSidebar, toggleRightSidebar } = opts.chrome
+  const { isMobileLayout, toggleLeftSidebar, toggleRightSidebar, closeAllSidebars } = opts.chrome
   const { focusEditorRef, getScrollStateRef, forceScrollToBottomRef } = opts.refs
   const branchCallbacks = opts.branch
   const { settingsLoading } = opts
@@ -633,6 +635,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           ? {
               onToggleLeftSidebar: toggleLeftSidebar,
               onToggleRightSidebar: toggleRightSidebar,
+              onCloseSidebars: closeAllSidebars,
             }
           : undefined}
         tileActions={liveActions()}

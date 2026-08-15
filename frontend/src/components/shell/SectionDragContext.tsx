@@ -1,11 +1,10 @@
 import type { JSX } from 'solid-js'
 import type { Section } from '~/generated/leapmux/v1/section_pb'
-import { closestCenter, DragDropProvider, DragOverlay } from '@thisbeyond/solid-dnd'
+import { closestCenter, DragDropProvider, DragDropSensors, DragOverlay } from '@thisbeyond/solid-dnd'
 import { createSignal, useContext } from 'solid-js'
 import { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import { createStableContext } from '~/lib/createStableContext'
 import { mid } from '~/lib/lexorank'
-import { DragPointerSensor } from './dragPointerSensor'
 import { dragOverlayAboveFloating } from './FloatingWindowContainer.css'
 import {
   computeInsertPosition,
@@ -416,7 +415,19 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
         onDragEnd={handleDragEnd}
         collisionDetector={collisionDetector as any}
       >
-        <DragPointerSensor />
+        {/* The stock upstream sensor. Touch used to need a forked sensor with a
+            hold-to-claim policy; now touch drags start only from dedicated drag
+            handles (`data-drag-handle`, `touch-action: none`, raw
+            `dragActivators`) — row bodies carry mouse-only activators via
+            `finePointerOnlyActivators` — so the upstream flaws that fork
+            worked around are unreachable: a stationary touch hold can't
+            ghost-start a drag (the 500ms context menu owns row holds), and a
+            pan can't leak the sensor's pending activation (the press never
+            reaches the sensor). Known accepted edge: an exotic mid-drag
+            `pointercancel` on a handle (palm rejection) can leave the drag
+            overlay up until the next pointerup — upstream detaches only on
+            pointerup. */}
+        <DragDropSensors />
         {props.children}
         <DragOverlay class={dragOverlayAboveFloating}>
           {(draggable: any) => {

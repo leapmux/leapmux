@@ -8,11 +8,13 @@ import type { Tab, TabItemOps } from '~/stores/tab.types'
 import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
+import { DragHandle } from '~/components/common/DragHandle'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
 import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
+import { attachDragActivators } from '~/lib/dragActivators'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
@@ -191,13 +193,18 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
 
               // The row element, for the right-click / long-press menu below.
               const [rowEl, setRowEl] = createContextMenuAnchor()
+              // Mouse-only activation on the row body; the grip carries the
+              // raw handlers, so touch drags start there and nowhere else.
+              attachDragActivators(() => rowEl(), () => sortable.dragActivators, { touch: 'block' })
 
               return (
                 <>
                   <div
                     ref={(el: HTMLElement) => {
                       setRowEl(el)
-                      applyDirective(sortable, el)
+                      // Node registration only — activation lives on the
+                      // guarded body and the grip, not the whole row.
+                      sortable.ref(el)
                       applyDirective(wsDroppable, el)
                     }}
                     class={styles.item}
@@ -226,6 +233,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     // cannot tell expanded from collapsed. Expose the bit.
                     data-expanded={isExpanded(id) ? 'true' : 'false'}
                   >
+                    <DragHandle activators={() => sortable.dragActivators} testId="workspace-drag-handle" />
                     <ChevronRight
                       size={14}
                       class={`${shared.chevron} ${isExpanded(id) ? shared.chevronExpanded : ''}`}

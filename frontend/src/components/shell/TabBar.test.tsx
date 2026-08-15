@@ -1,5 +1,6 @@
 import type { Tab } from '~/stores/tab.types'
-import { fireEvent, render, screen } from '@solidjs/testing-library'
+import { fireEvent, render, screen, within } from '@solidjs/testing-library'
+import * as solidDnd from '@thisbeyond/solid-dnd'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
@@ -10,13 +11,35 @@ import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { tabKey } from '~/stores/tab.helpers'
 
-// Mock solid-dnd to avoid DragDropProvider context requirement
-vi.mock('@thisbeyond/solid-dnd', () => ({
-  createSortable: () => ({}),
-  createDroppable: () => () => {},
-  SortableProvider: (props: any) => <>{props.children}</>,
-  transformStyle: () => undefined,
-}))
+// Mock solid-dnd to avoid DragDropProvider context requirement. The sortable
+// mock exposes the contract the strip now relies on — `.ref` for node-only
+// registration and a `dragActivators` getter — plus one press spy per row, so
+// tests can assert WHERE activation reaches: the guarded row body or the raw
+// grip. `createdSortables` collects the spies for exactly that.
+vi.mock('@thisbeyond/solid-dnd', async () => {
+  const { vi } = await import('vitest')
+  const createdSortables: Array<{ ref: ReturnType<typeof vi.fn>, onPointerdown: ReturnType<typeof vi.fn> }> = []
+  return {
+    createdSortables,
+    createSortable: () => {
+      const onPointerdown = vi.fn()
+      const sortable = {
+        ref: vi.fn(),
+        isActiveDraggable: false,
+        transform: undefined,
+        onPointerdown,
+        get dragActivators() {
+          return { onPointerdown }
+        },
+      }
+      createdSortables.push(sortable)
+      return sortable
+    },
+    createDroppable: () => () => {},
+    SortableProvider: (props: any) => <>{props.children}</>,
+    transformStyle: () => undefined,
+  }
+})
 
 // Mock TabDragContext
 vi.mock('~/components/shell/TabDragContext', () => ({
@@ -91,6 +114,22 @@ vi.mock('~/components/shell/TabBar.css', () => ({
   collapsedNewTab: 'collapsedNewTab',
   collapsedOverflow: 'collapsedOverflow',
   shellDefault: 'shellDefault',
+  tabChip: 'tabChip',
+  tabChipLabel: 'tabChipLabel',
+  tabChipCount: 'tabChipCount',
+  tabChipChevron: 'tabChipChevron',
+  mobileNewTab: 'mobileNewTab',
+  sheetOverlay: 'sheetOverlay',
+  sheetOverlayOpen: 'sheetOverlayOpen',
+  sheetPanel: 'sheetPanel',
+  sheetPanelOpen: 'sheetPanelOpen',
+  sheetPanelClip: 'sheetPanelClip',
+  sheetHeader: 'sheetHeader',
+  sheetTitle: 'sheetTitle',
+  sheetList: 'sheetList',
+  sheetRow: 'sheetRow',
+  sheetRowLabel: 'sheetRowLabel',
+  sheetEmpty: 'sheetEmpty',
 }))
 
 function noop() {}
@@ -115,6 +154,33 @@ function makeTab(type: Tab['type'], id: string, title?: string): Tab {
 
 function getBrowserPrefs() {
   return loadBrowserPrefs() as Record<string, unknown>
+}
+
+/**
+ * jsdom's PointerEvent constructor ignores the `pointerType` init property in
+ * this environment, so the property is defined on the event directly — the
+ * same trick as ~/lib/dragActivators.test.ts.
+ */
+function pointerPress(pointerType: string): PointerEvent {
+  const event = new PointerEvent('pointerdown', { bubbles: true })
+  Object.defineProperty(event, 'pointerType', { value: pointerType })
+  return event
+}
+
+/** Solid flushes effects on a microtask; two awaits are enough for that. */
+async function flushEffects(): Promise<void> {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+interface MockSortable {
+  ref: ReturnType<typeof vi.fn>
+  onPointerdown: ReturnType<typeof vi.fn>
+}
+
+/** The sortable mocks the solid-dnd mock collected from the current render. */
+function createdSortables(): MockSortable[] {
+  return (solidDnd as unknown as { createdSortables: MockSortable[] }).createdSortables
 }
 
 beforeEach(() => {
@@ -554,5 +620,227 @@ describe('tabBar tooltip mode', () => {
     hoverLabel('Terminal Liam')
 
     expect(screen.queryByRole('tooltip', { hidden: true })).toBeNull()
+  })
+})
+
+/**
+ * The mobile variant replaces the horizontal strip with a chip that names the
+ * active tab and opens the tab list dropping from the tab bar. The strip
+ * itself must not render — a phone viewport cannot fit it, which is the point.
+ */
+describe('tabBar mobile variant', () => {
+  function renderMobileTabBar(tabs: Tab[], activeTabKey: string | null, opts: { onSelect?: (tab: Tab) => void, onClose?: (tab: Tab) => void, onRename?: (tab: Tab, title: string) => void, onNewAgentAdvanced?: () => void, onCloseSidebars?: () => void } = {}) {
+    return render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={tabs}
+          activeTabKey={activeTabKey}
+          onSelect={opts.onSelect ?? noop}
+          onClose={opts.onClose ?? noop}
+          onRename={opts.onRename ?? noop}
+          newTab={{ ...defaultProps.newTab, onNewAgentAdvanced: opts.onNewAgentAdvanced }}
+          mobile={{
+            onToggleLeftSidebar: noop,
+            onToggleRightSidebar: noop,
+            onCloseSidebars: opts.onCloseSidebars,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+  }
+
+  const twoTabs = () => [
+    makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+    makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+  ]
+
+  it('the sheet header counts tabs, with a singular form for one', () => {
+    const two = renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    expect(screen.getByTestId('tab-sheet-title')).toHaveTextContent('2 Tabs')
+    two.unmount()
+
+    renderMobileTabBar([makeTab(TabType.AGENT, 'a1', 'Agent Olivia')], `${TabType.AGENT}:a1`)
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    expect(screen.getByTestId('tab-sheet-title')).toHaveTextContent('1 Tab')
+  })
+
+  it('renders the chip instead of the strip, with the active tab and the count', () => {
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+
+    expect(screen.queryByTestId('tab-list')).toBeNull()
+    const chip = screen.getByTestId('tab-chip')
+    expect(chip).toHaveTextContent('Agent Olivia')
+    expect(screen.getByTestId('tab-chip-count')).toHaveTextContent('2')
+  })
+
+  it('opens the sheet on chip tap, lists every tab, and marks the active one', () => {
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+
+    const rows = screen.getAllByTestId('tab-sheet-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveAttribute('aria-selected', 'true')
+    expect(rows[1]).toHaveAttribute('aria-selected', 'false')
+    expect(rows[1]).toHaveTextContent('Terminal Liam')
+  })
+
+  it('tapping a sheet row selects the tab and closes the sheet', () => {
+    const onSelect = vi.fn()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onSelect })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    fireEvent.click(screen.getAllByTestId('tab-sheet-row')[1])
+
+    expect(onSelect).toHaveBeenCalledOnce()
+    expect(onSelect.mock.calls[0][0].id).toBe('t1')
+    expect(screen.getByTestId('tab-sheet-overlay')).not.toHaveClass('sheetOverlayOpen')
+  })
+
+  it('the sheet close button closes the tab without dismissing the sheet first', () => {
+    const onClose = vi.fn()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onClose })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    fireEvent.click(screen.getAllByTestId('tab-close')[0])
+
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(onClose.mock.calls[0][0].id).toBe('a1')
+    // The sheet stays up: closing one tab is not a reason to hide the rest.
+    expect(screen.getByTestId('tab-sheet-overlay')).toHaveClass('sheetOverlayOpen')
+  })
+
+  it('opening the sheet closes the drawers', () => {
+    const onCloseSidebars = vi.fn()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onCloseSidebars })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+
+    expect(onCloseSidebars).toHaveBeenCalledOnce()
+  })
+
+  it('tapping the overlay or pressing Escape closes the sheet', () => {
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    const panel = screen.getByTestId('tab-sheet')
+    expect(panel).toHaveClass('sheetPanelOpen')
+
+    fireEvent.keyDown(panel, { key: 'Escape' })
+    expect(panel).not.toHaveClass('sheetPanelOpen')
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    fireEvent.click(screen.getByTestId('tab-sheet-overlay'))
+    expect(panel).not.toHaveClass('sheetPanelOpen')
+  })
+
+  it('a chip with no tabs opens the new-agent dialog instead of the sheet', () => {
+    const onNewAgentAdvanced = vi.fn()
+    renderMobileTabBar([], null, { onNewAgentAdvanced })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+
+    expect(onNewAgentAdvanced).toHaveBeenCalledOnce()
+    expect(screen.getByTestId('tab-sheet-overlay')).not.toHaveClass('sheetOverlayOpen')
+  })
+
+  it('sheet rows carry an always-on drag grip', () => {
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    expect(screen.getAllByTestId('tab-sheet-drag-handle')).toHaveLength(2)
+  })
+
+  it('the sheet row menu\'s Rename item renames the tab through onRename', () => {
+    const onRename = vi.fn()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onRename })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    const row = screen.getAllByTestId('tab-sheet-row')[1]
+    fireEvent.click(within(row).getByTestId('tab-menu-rename'))
+
+    const input = within(row).getByTestId('tab-rename-input') as HTMLInputElement
+    expect(input.value).toBe('Terminal Liam')
+    fireEvent.input(input, { target: { value: 'Terminal Liam II' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onRename).toHaveBeenCalledOnce()
+    expect(onRename.mock.calls[0][0].id).toBe('t1')
+    expect(onRename.mock.calls[0][1]).toBe('Terminal Liam II')
+    // The edit ended: the row shows a label again, not an input.
+    expect(within(row).queryByTestId('tab-rename-input')).toBeNull()
+  })
+})
+
+/**
+ * The desktop strip keeps whole-row mouse dragging, but touch activation now
+ * lives on the grip alone — see `finePointerOnlyActivators`. The mocked
+ * sortable carries a press spy per row, so these tests assert the split
+ * itself, not just the affordance's presence.
+ */
+describe('tabBar strip drag handles', () => {
+  beforeEach(() => {
+    createdSortables().length = 0
+  })
+
+  it('renders a grip on every desktop tab row', () => {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={[
+            makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+            makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+          ]}
+          activeTabKey={`${TabType.AGENT}:a1`}
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.getAllByTestId('tab-drag-handle')).toHaveLength(2)
+  })
+
+  it('registers rows via .ref and splits activation: body mouse-only, grip raw', async () => {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          tabs={[
+            makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+            makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+          ]}
+          activeTabKey={`${TabType.AGENT}:a1`}
+        />
+      </PreferencesProvider>
+    ))
+    await flushEffects()
+
+    const rows = screen.getAllByTestId('tab')
+    const grips = screen.getAllByTestId('tab-drag-handle')
+    const sortables = createdSortables()
+    expect(sortables).toHaveLength(2)
+    // Node registration goes through .ref — the call form would attach the
+    // sensor activators wholesale, which is exactly what the split avoids.
+    expect(sortables[0].ref).toHaveBeenCalledWith(rows[0])
+
+    const presses = () => sortables.reduce((sum, s) => sum + s.onPointerdown.mock.calls.length, 0)
+    // A touch press on the row body never reaches the sensor: it belongs to
+    // the scroller and the long-press menu.
+    rows[0].dispatchEvent(pointerPress('touch'))
+    expect(presses()).toBe(0)
+    // The grip carries the raw activators. A touch press forwards from the
+    // grip and is blocked again where it BUBBLES into the row body — exactly
+    // one activation for a finger.
+    grips[0].dispatchEvent(pointerPress('touch'))
+    expect(presses()).toBe(1)
+    // A mouse press on the grip forwards from the grip and from the guarded
+    // body it bubbles into — a fine press may start the drag from either.
+    grips[0].dispatchEvent(pointerPress('mouse'))
+    expect(presses()).toBe(3)
+    // The guarded body forwards the mouse directly: the desktop drag path.
+    rows[0].dispatchEvent(pointerPress('mouse'))
+    expect(presses()).toBe(4)
   })
 })

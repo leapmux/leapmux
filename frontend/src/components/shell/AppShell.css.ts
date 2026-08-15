@@ -1,6 +1,6 @@
 import { style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
-import { motion } from '~/styles/tokens'
+import { headerHeightPx, motion } from '~/styles/tokens'
 
 export const shell = style({
   height: '100%',
@@ -140,90 +140,40 @@ export const mobileCenter = style({
 
 export const mobileSidebar = style({
   position: 'fixed',
-  // Match body's `padding-top: env(safe-area-inset-top)` so the drawer
-  // starts below the system status bar / Dynamic Island. Body's
-  // `transform` makes body the containing block for fixed descendants
-  // (resolved against body's *padding-box*, which extends up under the
-  // status bar), so a literal `top: 0` would land the drawer's content
-  // over the system area on a notched iPhone in standalone PWA mode.
-  top: 'env(safe-area-inset-top)',
+  // Start BELOW the tab bar, not under it. The bar paints above the drawers
+  // (later in DOM at equal z-index) and is opaque, so a drawer that starts
+  // at the viewport top has its first section header — the exact 34px band
+  // the bar occupies — permanently covered; its header actions (sort,
+  // refresh) were unreachable on mobile. `--mobile-tabbar-h` is the MEASURED
+  // rendered height of the bar (set on the shell root by MobileLayout via a
+  // ResizeObserver), because the bar is content-driven and has no fixed
+  // height of its own; the fallback is the shared header height.
+  top: `calc(env(safe-area-inset-top) + var(--mobile-tabbar-h, ${headerHeightPx}px))`,
   bottom: 0,
-  width: '80%',
-  maxWidth: '320px',
+  // Full bleed: the drawer covers the workspace entirely, and closes through
+  // the same tab-bar toggle that opened it — there is deliberately no dimmed
+  // strip left over for a tap-outside-to-close gesture.
+  width: '100%',
   zIndex: 100,
   backgroundColor: 'var(--card)',
+  // The drawer's own top edge is exposed now that it no longer tucks under
+  // the tab bar — give it a boundary.
+  borderTop: '1px solid var(--border)',
   transform: 'translateX(-100%)',
-  transition: `transform ${motion.medium}ms ease, box-shadow ${motion.medium}ms ease`,
-  // Box-shadow only applied while open — when the drawer is translated
-  // off-screen the residual 2px+8px shadow projects into the viewport
-  // edge and reads as a gray "gradient" along the left/right side of
-  // the screen. Gating it on the open state eliminates that artifact.
+  transition: `transform ${motion.medium}ms ease`,
   overflow: 'hidden',
   display: 'flex',
   flexDirection: 'column',
-  // Clip the drawer's outgoing box-shadow so it only escapes on the
-  // *side* facing the page, not above/below. Without this the shadow's
-  // 8px blur radius bleeds upward into the safe-area-top region (now
-  // visible as white html background above the drawer since the
-  // drawer's own `top: env(safe-area-inset-top)` leaves room there)
-  // and reads as an awkward gradient on the white. `inset(0 -16px 0 0)`
-  // = clip to the drawer's box vertically, plus 16px past the right
-  // edge for the side shadow. The right-side drawer overrides this
-  // below to mirror the inset on the opposite axis.
-  clipPath: 'inset(0 -16px 0 0)',
 })
 
 export const mobileSidebarRight = style({
   left: 'auto',
   right: 0,
   transform: 'translateX(100%)',
-  clipPath: 'inset(0 0 0 -16px)',
 })
 
 export const mobileSidebarOpen = style({
   transform: 'translateX(0)',
-  // Box-shadow on the drawer's exposed edge while open. The side is
-  // discriminated by the sibling `mobileSidebarRight` class so the two
-  // shadow rules live together instead of being split across a base
-  // style + a globalStyle override.
-  selectors: {
-    [`&:not(.${mobileSidebarRight})`]: {
-      boxShadow: '2px 0 8px rgba(0, 0, 0, 0.3)',
-    },
-    [`&.${mobileSidebarRight}`]: {
-      boxShadow: '-2px 0 8px rgba(0, 0, 0, 0.3)',
-    },
-  },
-})
-
-// Rendered unconditionally; opacity + pointer-events flip via
-// `mobileOverlayOpen` so the dim fades in *and* out alongside the
-// drawer's own 200ms transform slide. Mounting on demand via `<Show>`
-// would skip the fade entirely.
-export const mobileOverlay = style({
-  'position': 'fixed',
-  // Keep the dim out of the system status bar / Dynamic Island area —
-  // dimming over the status bar reads as a glass tint on the iOS chrome
-  // and feels wrong. Matches the drawer's own safe-area-inset-top.
-  'top': 'env(safe-area-inset-top)',
-  'left': 0,
-  'right': 0,
-  'bottom': 0,
-  'backgroundColor': 'rgba(0, 0, 0, 0.4)',
-  'zIndex': 99,
-  'opacity': 0,
-  'pointerEvents': 'none',
-  'transition': 'opacity var(--transition)',
-  '@media': {
-    '(prefers-reduced-motion: reduce)': {
-      transition: 'none',
-    },
-  },
-})
-
-export const mobileOverlayOpen = style({
-  opacity: 1,
-  pointerEvents: 'auto',
 })
 
 export const mobileTabBar = style({

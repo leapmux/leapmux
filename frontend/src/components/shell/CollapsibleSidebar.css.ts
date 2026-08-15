@@ -237,8 +237,19 @@ export const sectionDragHandle = style({
   'transition': 'opacity var(--transition)',
   'color': 'var(--muted-foreground)',
   'zIndex': 1,
+  // The grip is the one place a touch drag of a section may start: the
+  // browser may never turn a press here into a pan, or the pointer stream
+  // never reaches the drag sensor intact.
+  'touchAction': 'none',
   ':active': {
     cursor: 'grabbing',
+  },
+  '@media': {
+    // Touch-only device: no hover exists to reveal the grip, and it is the
+    // only way to drag the section — show it standing.
+    'not all and (any-pointer: fine)': {
+      opacity: 0.6,
+    },
   },
 })
 

@@ -123,6 +123,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
         isMobileLayout: () => false,
         toggleLeftSidebar: () => {},
         toggleRightSidebar: () => {},
+        closeAllSidebars: () => {},
       },
       refs: {
         focusEditorRef: createImperativeRef(),
