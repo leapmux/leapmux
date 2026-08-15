@@ -42,6 +42,13 @@ const screenBufferSize = 100 * 1024 // 100KB ring buffer for screen restore
 // design — only a parsed cell grid (tmux-style emulation) can
 // reconstruct it, which is deliberately out of scope.
 type ScreenBuffer struct {
+	// deliverMu serializes WriteAndDeliver, so that the ring write and
+	// the delivery to the OutputHandler are one step for every writer of
+	// this buffer. It is never held by a reader. Lock order is deliverMu
+	// then mu; nothing takes them the other way round, and the delivery
+	// runs with mu released so a handler can read the buffer.
+	deliverMu sync.Mutex
+
 	mu      sync.Mutex
 	buf     []byte
 	pos     int
@@ -68,8 +75,10 @@ func NewScreenBufferWithOffset(initialOffset int64) *ScreenBuffer {
 
 // Write appends data to the ring buffer and returns the cumulative byte
 // offset at the end of the write plus any notification-class signals the
-// tracker observed in this chunk. Callers forward the offset to watchers
-// so they can persist it as their resume cursor.
+// tracker observed in this chunk. Watchers persist that offset as their
+// resume cursor, so a caller that forwards it to one must use
+// WriteAndDeliver instead: this method assigns the offset under the lock
+// but leaves the delivery that follows it to the scheduler.
 func (sb *ScreenBuffer) Write(data []byte) (int64, []Signal) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -101,6 +110,37 @@ func (sb *ScreenBuffer) Write(data []byte) (int64, []Signal) {
 		}
 	}
 	return sb.total, signals
+}
+
+// WriteAndDeliver writes data and hands the resulting cumulative offset
+// and signals to deliver, with the two steps serialized against every
+// other writer of this buffer. Use it for any write whose offset reaches
+// a subscriber; plain Write assigns the offset correctly but leaves the
+// delivery order to the scheduler.
+//
+// The order matters because a subscriber treats the offsets as
+// authoritative. A PTY read and an AppendOutput run on separate
+// goroutines: without this serialization the later chunk's offset can
+// reach the subscriber first, and the earlier chunk then arrives with a
+// range wholly below the subscriber's cursor, which reads as already
+// rendered. Those bytes are dropped and never appear.
+//
+// deliver runs with mu released, so it may read this buffer (Snapshot,
+// SnapshotSince). It must not write to it again — WriteAndDeliver is not
+// reentrant.
+//
+// deliver does run under deliverMu, so a handler that parks (the worker's
+// handler broadcasts, and SendStream can block on a stalled transport)
+// holds up the other writers for that time. This costs one extra wait,
+// not a new way to block: the PTY reader already calls its handler
+// synchronously between reads, and AppendOutput already ran the same
+// handler on its own goroutine.
+func (sb *ScreenBuffer) WriteAndDeliver(data []byte, deliver OutputHandler) {
+	sb.deliverMu.Lock()
+	defer sb.deliverMu.Unlock()
+
+	endOffset, signals := sb.Write(data)
+	deliver(data, endOffset, signals)
 }
 
 // TotalBytes returns the cumulative byte count ever written to this buffer.
@@ -248,7 +288,9 @@ type Terminal struct {
 	jobObject *procutil.JobObject
 	// outputFn is the internal dispatch for both live PTY reads and
 	// AppendOutput. It writes into screenBuf and forwards the resulting
-	// cumulative offset to the user-provided OutputHandler.
+	// cumulative offset to the user-provided OutputHandler, through
+	// ScreenBuffer.WriteAndDeliver so those two writers cannot deliver
+	// their chunks out of offset order.
 	outputFn  func(data []byte)
 	screenBuf *ScreenBuffer
 	mu        sync.Mutex
@@ -374,9 +416,14 @@ func startWithScreenBuffer(ctx context.Context, opts Options, screenBuf *ScreenB
 		)
 	}
 
+	// The buffer owns the serialization, not this closure: Respawn hands
+	// the same ScreenBuffer to the next incarnation, whose reader can
+	// start while the previous one still drains (an exited terminal is
+	// not a drained one — see readDoneCh). A mutex captured here would be
+	// a fresh one for each incarnation and would leave that overlap
+	// unserialized.
 	wrappedOutput := func(data []byte) {
-		endOffset, signals := screenBuf.Write(data)
-		outputFn(data, endOffset, signals)
+		screenBuf.WriteAndDeliver(data, outputFn)
 	}
 
 	t := &Terminal{
@@ -525,7 +572,10 @@ func (t *Terminal) ScreenHasSuffix(needle []byte) bool {
 // AppendOutput injects synthetic output into the terminal stream and screen
 // buffer without writing to the PTY. This is used for system notices that
 // should be restorable like normal terminal output. Runs through the same
-// wrappedOutput path as live PTY data so the cumulative offset advances.
+// wrappedOutput path as live PTY data so the cumulative offset advances,
+// and takes its place in the one delivery order that path keeps. Safe to
+// call while the shell still runs: the shutdown sweep appends the
+// disconnect notice to terminals it does not stop.
 func (t *Terminal) AppendOutput(data []byte) {
 	if len(data) == 0 {
 		return

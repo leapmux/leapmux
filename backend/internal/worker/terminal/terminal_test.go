@@ -608,6 +608,91 @@ func pushAltScreenPastRing(t *testing.T, m *Manager, id string) {
 	require.True(t, m.AppendOutput(id, ringOverflowFiller()))
 }
 
+// TestTerminal_AppendOutputCannotOvertakeLiveOutput reproduces the pair
+// of writers the shutdown sweep creates: broadcastTerminalsDisconnected
+// appends the disconnect notice to terminals whose PTY it does NOT stop,
+// so that AppendOutput runs while the reader goroutine still delivers
+// shell output. Both reach the handler through wrappedOutput, and a
+// watcher drops any chunk whose range sits below the offset it already
+// holds — so an out-of-order delivery loses those bytes from the screen
+// until the next full resync.
+func TestTerminal_AppendOutputCannotOvertakeLiveOutput(t *testing.T) {
+	notice := []byte("\r\n\r\n[Worker disconnected]\r\n")
+	var (
+		mu          sync.Mutex
+		last        int64
+		wrong       []int64
+		shellChunks int
+	)
+	term, err := Start(context.Background(), Options{
+		ID:         "t-order",
+		Shell:      testutil.TestShell(),
+		WorkingDir: t.TempDir(),
+		Cols:       80,
+		Rows:       24,
+	}, func(data []byte, endOffset int64, _ []Signal) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !bytes.Equal(data, notice) {
+			shellChunks++
+		}
+		if endOffset < last {
+			wrong = append(wrong, endOffset)
+			return
+		}
+		last = endOffset
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		term.Stop()
+		term.Wait()
+		<-term.readDoneCh
+	})
+
+	// Flood the PTY the way a build or a `tail -f` would, then inject the
+	// notices while the reader delivers it. Both the start and the end of
+	// the injection are tied to the reader's own progress, so the overlap
+	// that this test is about does not depend on the scheduler: the
+	// injectors keep going until several more PTY chunks have landed
+	// among them. 200000 lines outlast that by far.
+	require.NoError(t, term.SendInput([]byte("seq 1 200000"+testutil.TestShellEnter())))
+	chunksSeen := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return shellChunks
+	}
+	testutil.AssertEventually(t, func() bool { return chunksSeen() > 0 },
+		"expected the shell to start producing output")
+
+	const injectors, maxPerInjector, overlapChunks = 8, 500, 5
+	target := chunksSeen() + overlapChunks
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < injectors; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for n := 0; n < maxPerInjector; n++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				term.AppendOutput(notice)
+			}
+		}()
+	}
+	testutil.AssertEventually(t, func() bool { return chunksSeen() >= target },
+		"expected PTY chunks to land while the notices were going in")
+	close(stop)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Empty(t, wrong,
+		"a watcher would receive these offsets after a higher one and drop the bytes")
+}
+
 // conPTYStyleModeBytes is what cmd.exe under ConPTY writes soon after it
 // starts: a window-title OSC and a cursor hide. A test that injects them
 // leaves the modeTracker non-default, so its snapshots carry a restore

@@ -483,6 +483,62 @@ func ringOverflowFiller() []byte {
 	return out
 }
 
+// TestScreenBuffer_WriteAndDeliver_KeepsOneDeliveryOrder: concurrent
+// writers must hand their chunks to the OutputHandler in the order the
+// ring took them, because a subscriber treats the offsets as
+// authoritative and discards a chunk whose range sits below its cursor.
+// Plain Write cannot promise this: it assigns the offset under the lock,
+// releases it, and the delivery that follows races every other writer.
+func TestScreenBuffer_WriteAndDeliver_KeepsOneDeliveryOrder(t *testing.T) {
+	t.Parallel()
+
+	const writers, perWriter = 8, 50
+
+	sb := NewScreenBuffer()
+	var (
+		mu        sync.Mutex
+		offsets   []int64
+		delivered []byte
+	)
+	deliver := func(data []byte, endOffset int64, _ []Signal) {
+		mu.Lock()
+		defer mu.Unlock()
+		offsets = append(offsets, endOffset)
+		delivered = append(delivered, data...)
+	}
+
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			// Distinct per-writer bytes, so a reordering shows up in the
+			// concatenation and not only in the offsets. Plain ASCII keeps
+			// the tracker at its default, so the snapshot has no prefix.
+			chunk := bytes.Repeat([]byte{byte('a' + w)}, 64)
+			for i := 0; i < perWriter; i++ {
+				sb.WriteAndDeliver(chunk, deliver)
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, offsets, writers*perWriter)
+	for i := 1; i < len(offsets); i++ {
+		require.Greater(t, offsets[i], offsets[i-1],
+			"delivery %d carried an offset below its predecessor: a subscriber would drop it", i)
+	}
+
+	// The bytes the handler saw, in the order it saw them, are the bytes
+	// the ring holds. This is the invariant the offsets stand for.
+	body, total := sb.Snapshot()
+	require.Equal(t, int64(writers*perWriter*64), total, "test must stay inside the ring")
+	assert.True(t, bytes.Equal(body, delivered),
+		"delivered %d bytes must match the ring's %d bytes, in order", len(delivered), len(body))
+}
+
 // TestScreenBuffer_ConcurrentWriteAndSnapshot: Write and SnapshotSince
 // must not data-race under -race. No assertion on content — the goal is
 // just to exercise the locks. The race detector surfaces violations as
