@@ -13,7 +13,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/metrics"
 )
 
@@ -40,10 +39,36 @@ func newLoginClient(t *testing.T, ic connect.UnaryInterceptorFunc) (leapmuxv1con
 
 func freshVerifiedPayload(t *testing.T, m *Manager) string {
 	t.Helper()
-	applyTestConfig(t, m, nil)
-	challengeJSON, err := m.ChallengeJSON(context.Background())
+	applyTestAltchaSettings(t, m, cheapAltchaSettings)
+	challengeJSON, err := m.AltchaChallengeJSON(context.Background())
 	require.NoError(t, err)
 	return solveChallenge(t, challengeJSON)
+}
+
+// disableSelected flips the selected row's enabled flag and busts the
+// caches, the way `captcha disable` does.
+func disableSelected(t *testing.T, m *Manager) {
+	t.Helper()
+	require.NoError(t, m.EnsureProvisioned(context.Background()))
+	require.NoError(t, m.st.CaptchaConfig().SetEnabled(context.Background(), false))
+	bustCaches(m)
+}
+
+// TestInterceptorPassesProcedureAction pins the procedure-to-action
+// mapping: the stub answers success only for the login action, so a Login
+// that passes verification proves the interceptor asked for "login".
+func TestInterceptorPassesProcedureAction(t *testing.T) {
+	stub := newSiteverifyStub(t)
+	stub.body = `{"success":true,"action":"login"}`
+	m := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
+	activateExternal(t, m, ProviderTurnstile, `{"site_key":"1x00000000000000000000AA"}`, "secret-key")
+	client, called := newLoginClient(t, NewInterceptor(m))
+
+	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+		CaptchaPayload: "token",
+	}))
+	require.NoError(t, err)
+	assert.True(t, *called)
 }
 
 func TestInterceptorAllowsVerifiedSubmission(t *testing.T) {
@@ -65,8 +90,8 @@ func TestInterceptorDeniesMissingOrInvalidPayload(t *testing.T) {
 	freshVerifiedPayload(t, m) // configure + provision
 	client, called := newLoginClient(t, NewInterceptor(m))
 
-	failedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("failed"))
-	replayedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("replayed"))
+	failedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "failed"))
+	replayedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "replayed"))
 	for _, payload := range []string{"", "garbage"} {
 		_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 			CaptchaPayload: payload,
@@ -77,8 +102,8 @@ func TestInterceptorDeniesMissingOrInvalidPayload(t *testing.T) {
 	assert.False(t, *called)
 	// Unsolvable payloads count as plain failures, never as replays: the
 	// labels split exactly on salt reuse.
-	assert.Equal(t, failedBefore+2, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("failed")))
-	assert.Equal(t, replayedBefore, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("replayed")))
+	assert.Equal(t, failedBefore+2, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "failed")))
+	assert.Equal(t, replayedBefore, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "replayed")))
 }
 
 func TestInterceptorDeniesHoneypotUniformly(t *testing.T) {
@@ -109,23 +134,23 @@ func TestInterceptorDeniesReplay(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	replayedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("replayed"))
+	replayedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "replayed"))
 	_, err = client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		CaptchaPayload: payload,
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	// The denial itself stays uniform; only the counter splits replay out.
-	// The internal sentinel's text ("salt already used") must never reach
+	// The internal sentinel's text ("token or salt already used") must never reach
 	// the client — the uniform message is what keeps the no-oracle promise.
 	assert.Contains(t, err.Error(), ErrVerificationFailed.Error())
-	assert.NotContains(t, err.Error(), "salt already used")
-	assert.Equal(t, replayedBefore+1, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("replayed")))
+	assert.NotContains(t, err.Error(), "token or salt already used")
+	assert.Equal(t, replayedBefore+1, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "replayed")))
 }
 
 func TestInterceptorPassesThroughWhenDisabled(t *testing.T) {
 	m := newTestManager(t, false)
-	applyTestConfig(t, m, func(p *store.UpdateCaptchaConfigParams) { p.Enabled = false })
+	disableSelected(t, m)
 	client, called := newLoginClient(t, NewInterceptor(m))
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{}))
 	require.NoError(t, err)
@@ -143,10 +168,10 @@ func TestInterceptorPassesThroughWhenDisabled(t *testing.T) {
 // with the same uniform denial as a captcha failure.
 func TestInterceptorHoneypotRunsWhileCaptchaDisabled(t *testing.T) {
 	m := newTestManager(t, false)
-	applyTestConfig(t, m, func(p *store.UpdateCaptchaConfigParams) { p.Enabled = false })
+	disableSelected(t, m)
 	client, called := newLoginClient(t, NewInterceptor(m))
 
-	failedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("failed"))
+	failedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "failed"))
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Honeypot: "http://spam.example",
 	}))
@@ -154,7 +179,7 @@ func TestInterceptorHoneypotRunsWhileCaptchaDisabled(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), ErrVerificationFailed.Error())
 	assert.False(t, *called)
-	assert.Equal(t, failedBefore+1, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("failed")))
+	assert.Equal(t, failedBefore+1, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "failed")))
 }
 
 func TestInterceptorIgnoresUnprotectedProcedures(t *testing.T) {

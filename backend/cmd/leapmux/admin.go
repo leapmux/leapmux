@@ -109,13 +109,13 @@ var adminTree = adminGroup{
 		},
 		{
 			Name:    "captcha",
-			Summary: "Manage ALTCHA captcha bot protection (a solo-mode hub never enforces captcha)",
+			Summary: "Manage captcha bot protection: ALTCHA, reCAPTCHA v3, or Turnstile (a solo-mode hub never enforces captcha)",
 			Commands: []adminCommand{
 				{Name: "show", Summary: "Show the effective captcha configuration", Run: runCaptchaShow},
-				{Name: "set", Summary: "Update captcha settings", Run: runCaptchaSet},
+				{Name: "set", Summary: "Update captcha settings and/or switch the active provider", Run: runCaptchaSet},
 				{Name: "enable", Summary: "Enable captcha verification", Run: func(cmd adminCmdCtx, args []string) error { return runCaptchaSetEnabled(cmd, args, true) }},
 				{Name: "disable", Summary: "Disable captcha verification (the honeypot check stays active)", Run: func(cmd adminCmdCtx, args []string) error { return runCaptchaSetEnabled(cmd, args, false) }},
-				{Name: "reset", Summary: "Reset captcha configuration to defaults", Run: runCaptchaReset},
+				{Name: "reset", Summary: "Reset captcha configuration to defaults (all providers, or --provider X)", Run: runCaptchaReset},
 			},
 		},
 		{

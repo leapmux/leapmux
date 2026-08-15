@@ -1,7 +1,8 @@
 /// <reference types="vitest/globals" />
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getCaptchaAlgorithm, isCaptchaEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo } from './systemInfo'
+import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
+import { getAltchaAlgorithm, getCaptchaProvider, getCaptchaSiteKey, isCaptchaEnabled, isSoloMode, isSystemInfoLoaded, loadSystemInfo } from './systemInfo'
 
 const mockGetSystemInfo = vi.fn()
 vi.mock('~/api/clients', () => ({
@@ -25,7 +26,9 @@ function systemInfoResponse(overrides: Record<string, unknown> = {}) {
     workerHubUrl: '',
     emailEnabled: false,
     captchaEnabled: false,
-    captchaAlgorithm: '',
+    captchaProvider: CaptchaProvider.ALTCHA,
+    captchaSiteKey: '',
+    altchaAlgorithm: '',
     version: '',
     commitHash: '',
     commitTime: '',
@@ -79,11 +82,13 @@ describe('loadSystemInfo', () => {
   it('caches the hub\'s captcha flags for the pre-login gating', async () => {
     mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
       captchaEnabled: true,
-      captchaAlgorithm: 'PBKDF2/SHA-256',
+      altchaAlgorithm: 'PBKDF2/SHA-256',
     }))
     await loadSystemInfo(true)
     expect(isCaptchaEnabled()).toBe(true)
-    expect(getCaptchaAlgorithm()).toBe('PBKDF2/SHA-256')
+    expect(getAltchaAlgorithm()).toBe('PBKDF2/SHA-256')
+    expect(getCaptchaProvider()).toBe(CaptchaProvider.ALTCHA)
+    expect(getCaptchaSiteKey()).toBe('')
     expect(isSystemInfoLoaded()).toBe(true)
   })
 
@@ -99,8 +104,16 @@ describe('loadSystemInfo', () => {
     await loadSystemInfo(true)
     expect(isCaptchaEnabled()).toBe(false)
 
-    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({ captchaEnabled: true }))
+    mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
+      captchaEnabled: true,
+      captchaProvider: CaptchaProvider.TURNSTILE,
+      captchaSiteKey: '1x00AA',
+    }))
     await loadSystemInfo(true)
     expect(isCaptchaEnabled()).toBe(true)
+    // The provider and site key flip with the flag: the widget layer
+    // mounts the external field instead of the ALTCHA one.
+    expect(getCaptchaProvider()).toBe(CaptchaProvider.TURNSTILE)
+    expect(getCaptchaSiteKey()).toBe('1x00AA')
   })
 })

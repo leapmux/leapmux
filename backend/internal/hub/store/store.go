@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -570,18 +571,37 @@ type PendingOAuthSignupStore interface {
 	Delete(ctx context.Context, token string) error
 }
 
-// CaptchaConfigStore manages the singleton ALTCHA captcha configuration
-// row and the consumed-salt ledger. Get returns ErrNotFound when no row
-// exists (the caller applies code-side defaults); Update is a full-row
-// overwrite — read-modify-write is the CLI caller's job.
+// CaptchaConfigStore manages the per-provider captcha configuration rows
+// and the ALTCHA consumed-salt ledger. Exactly one row is selected — the
+// active provider — and Enabled on that row is the verification on/off
+// switch. GetSelected returns ErrNotFound before the first provisioning
+// (the caller applies code-side defaults and provisions).
 type CaptchaConfigStore interface {
-	Get(ctx context.Context) (*CaptchaConfig, error)
-	Insert(ctx context.Context, p InsertCaptchaConfigParams) error
-	Update(ctx context.Context, p UpdateCaptchaConfigParams) error
+	GetSelected(ctx context.Context) (*CaptchaConfig, error)
+	Get(ctx context.Context, provider leapmuxv1.CaptchaProvider) (*CaptchaConfig, error)
+	List(ctx context.Context) ([]CaptchaConfig, error)
+	InsertIfAbsent(ctx context.Context, p InsertCaptchaConfigIfAbsentParams) error
+	// UpdateSettings rewrites one existing row's settings and never
+	// touches its secret, so a settings change can never lose the key.
+	UpdateSettings(ctx context.Context, provider leapmuxv1.CaptchaProvider, settings string) error
+	// Upsert writes settings together with a secret (first configuration
+	// of an external provider, or key rotation); the secret is required
+	// because a secret-less row fails verification on every submission.
+	Upsert(ctx context.Context, p UpsertCaptchaConfigParams) error
+	// Activate deselects every provider row, then selects and enables the
+	// named one. A reader racing between the two statements sees "no
+	// selected provider", which the caller's provisioning self-heals.
+	Activate(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
+	// SetEnabled flips the verification switch on the selected row only;
+	// the selection itself survives, so a later enable restores the same
+	// provider.
+	SetEnabled(ctx context.Context, enabled bool) error
 	Delete(ctx context.Context) error
-	// ConsumeCaptchaSalt marks a salt as used; it returns 1 when the salt
-	// was unused (first use) and 0 when a row already exists (replay).
-	ConsumeCaptchaSalt(ctx context.Context, p ConsumeCaptchaSaltParams) (int64, error)
+	DeleteProvider(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
+	// ConsumeAltchaSalt marks a solved ALTCHA challenge's salt as used; it
+	// returns 1 when the salt was unused (first use accepted) and 0 when
+	// a row already exists (replay denied).
+	ConsumeAltchaSalt(ctx context.Context, p ConsumeAltchaSaltParams) (int64, error)
 }
 
 // RateLimitConfigStore manages per-operation rate-limit overrides.
@@ -629,10 +649,12 @@ type CleanupStore interface {
 	DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
-	// DeleteExpiredCaptchaSalts purges consumed salts whose challenge
-	// window has passed; the salt can no longer verify after expiry, so
-	// the row only bounds table growth until this sweep drops it.
-	DeleteExpiredCaptchaSalts(ctx context.Context) (int64, error)
+	// DeleteExpiredAltchaSalts purges consumed ALTCHA salts whose
+	// challenge window has passed; the salt can no longer verify after
+	// expiry, so the row only bounds table growth until this sweep drops
+	// it. External captcha providers enforce single use at their
+	// siteverify endpoint and contribute no rows.
+	DeleteExpiredAltchaSalts(ctx context.Context) (int64, error)
 	// CompactPublishedRevocationEvents removes an expired Hub runtime lease,
 	// then deletes retained events only through the live Hub cursor.
 	CompactPublishedRevocationEvents(ctx context.Context, p CompactRevocationEventsParams) (int64, error)

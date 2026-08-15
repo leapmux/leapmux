@@ -66,8 +66,8 @@ func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, 
 	return rowsAffected(s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, sqltime.NewMySQLTime(cutoff)))
 }
 
-func (s *cleanupStore) DeleteExpiredCaptchaSalts(ctx context.Context) (int64, error) {
-	rows, err := s.conn.q.DeleteExpiredCaptchaSalts(ctx, sqltime.NewMySQLTime(time.Now().UTC()))
+func (s *cleanupStore) DeleteExpiredAltchaSalts(ctx context.Context) (int64, error) {
+	rows, err := s.conn.q.DeleteExpiredAltchaSalts(ctx, sqltime.NewMySQLTime(time.Now().UTC()))
 	if err != nil {
 		return 0, mapErr(err)
 	}

@@ -3,12 +3,10 @@ package captcha
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -20,14 +18,16 @@ import (
 )
 
 // ErrVerificationFailed is the single error surfaced to clients for every
-// rejected submission — missing payload, bad solution, expiry, replay, or a
-// tripped honeypot. One message so bots cannot learn which check failed.
+// rejected submission — missing payload, bad solution, expiry, replay, a
+// low reCAPTCHA score, or a tripped honeypot. One message so bots cannot
+// learn which check failed.
 var ErrVerificationFailed = errors.New("captcha verification failed")
 
-// errReplayed distinguishes a consumed-salt reuse from other failures for
-// the metrics label only. It wraps ErrVerificationFailed so callers keep
+// errReplayed distinguishes a reused token (an ALTCHA salt, or an
+// external provider's timeout-or-duplicate) from other failures for the
+// metrics label only. It wraps ErrVerificationFailed so callers keep
 // matching the uniform error; clients can never tell a replay apart.
-var errReplayed = fmt.Errorf("%w: salt already used", ErrVerificationFailed)
+var errReplayed = fmt.Errorf("%w: token or salt already used", ErrVerificationFailed)
 
 // Result classifies a verification outcome for the metrics counter. The
 // typed constants keep the Prometheus label set closed: a typo'd string
@@ -45,15 +45,22 @@ const (
 // how long an admin CLI change takes to propagate to a running hub.
 const cacheTTL = 30 * time.Second
 
-// Manager issues and verifies ALTCHA v2 challenges.
+// Manager issues and verifies captcha challenges for the selected
+// provider (ALTCHA by default; reCAPTCHA v3 or Turnstile when the admin
+// CLI activates them).
 //
-// Replay protection is store-backed: a consumed salt's row lives until its
-// challenge expiry, so single-use holds across restarts and across hub
-// instances sharing the database; the cleanup loop purges expired rows.
+// ALTCHA replay protection is store-backed: a consumed salt's row lives
+// until its challenge expiry, so single-use holds across restarts and
+// across hub instances sharing the database; the cleanup loop purges
+// expired rows. The external providers enforce single use at their
+// siteverify endpoints and need no local ledger.
 type Manager struct {
 	st   store.Store
 	ks   *keystore.Keystore
 	solo bool
+
+	recaptcha *siteverifyClient
+	turnstile *siteverifyClient
 
 	mu       sync.Mutex // guards cached/descCached and their timestamps
 	cached   *resolvedConfig
@@ -66,25 +73,47 @@ type Manager struct {
 
 type resolvedConfig struct {
 	cfg    Config
-	secret string // hex-encoded HMAC signing secret, decrypted
+	secret []byte // decrypted provider secret: ALTCHA HMAC key or siteverify API secret
+}
+
+// Option configures a Manager beyond its production defaults.
+type Option func(*Manager)
+
+// WithRecaptchaEndpoint overrides the reCAPTCHA siteverify endpoint.
+// Production uses Google's fixed URL; tests point it at a local stub.
+func WithRecaptchaEndpoint(endpoint string) Option {
+	return func(m *Manager) { m.recaptcha = newSiteverifyClient(ProviderRecaptchaV3, endpoint) }
+}
+
+// WithTurnstileEndpoint overrides the Turnstile siteverify endpoint.
+// Production uses Cloudflare's fixed URL; tests point it at a local stub.
+func WithTurnstileEndpoint(endpoint string) Option {
+	return func(m *Manager) { m.turnstile = newSiteverifyClient(ProviderTurnstile, endpoint) }
 }
 
 // NewManager creates a captcha manager. In solo mode every check is a
 // no-op: solo is a local, single-user deployment with no attack surface.
-func NewManager(st store.Store, ks *keystore.Keystore, soloMode bool) *Manager {
-	return &Manager{
-		st:   st,
-		ks:   ks,
-		solo: soloMode,
+func NewManager(st store.Store, ks *keystore.Keystore, soloMode bool, opts ...Option) *Manager {
+	m := &Manager{
+		st:        st,
+		ks:        ks,
+		solo:      soloMode,
+		recaptcha: newSiteverifyClient(ProviderRecaptchaV3, recaptchaVerifyURL),
+		turnstile: newSiteverifyClient(ProviderTurnstile, turnstileVerifyURL),
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
-// Describe returns the effective configuration without provisioning the
-// signing secret — used by GetSystemInfo, which must not write the store
-// on a fresh install just to report defaults. The second return reports
-// whether a stored row exists (the admin CLI's "customized" flag). Reads
-// are served from the same 30-second cache the enforcement path uses, so
-// system-info traffic adds no store load of its own.
+// Describe returns the selected provider's effective configuration
+// without provisioning anything — used by GetSystemInfo, which must not
+// write the store on a fresh install just to report defaults. The second
+// return reports whether a selected row exists (the admin CLI's
+// "customized" flag). Reads are served from the same 30-second cache the
+// enforcement path uses, so system-info traffic adds no store load of
+// its own.
 func (m *Manager) Describe(ctx context.Context) (Config, bool, error) {
 	if m.solo {
 		cfg := DefaultConfig()
@@ -99,7 +128,7 @@ func (m *Manager) Describe(ctx context.Context) (Config, bool, error) {
 	}
 	m.mu.Unlock()
 
-	row, err := m.loadRow(ctx)
+	row, err := m.loadSelectedRow(ctx)
 	if err != nil {
 		return DefaultConfig(), false, err
 	}
@@ -112,11 +141,14 @@ func (m *Manager) Describe(ctx context.Context) (Config, bool, error) {
 	return cfg, customized, nil
 }
 
-// ChallengeJSON issues a fresh challenge and returns its JSON — the exact
-// interchange format the frontend widget's configure({challenge}) expects.
-// The per-challenge KDF is never run here (the solver does the work), so
-// issuance costs one HMAC and is safe to expose unauthenticated.
-func (m *Manager) ChallengeJSON(ctx context.Context) (string, error) {
+// AltchaChallengeJSON issues a fresh ALTCHA challenge and returns its
+// JSON — the exact interchange format the frontend widget's
+// configure({challenge}) expects. The per-challenge KDF is never run
+// here (the solver does the work), so issuance costs one HMAC and is
+// safe to expose unauthenticated. Empty when captcha is disabled or
+// another provider is selected: external providers mint their tokens
+// client-side and have nothing to issue.
+func (m *Manager) AltchaChallengeJSON(ctx context.Context) (string, error) {
 	if m.solo {
 		return "", nil
 	}
@@ -124,17 +156,18 @@ func (m *Manager) ChallengeJSON(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !res.cfg.Enabled {
+	if !res.cfg.Enabled || res.cfg.Provider != ProviderAltcha {
 		return "", nil
 	}
-	expires := time.Now().Add(time.Duration(res.cfg.ChallengeExpirySeconds) * time.Second)
+	settings := res.cfg.Altcha
+	expires := time.Now().Add(time.Duration(settings.ChallengeExpirySeconds) * time.Second)
 	challenge, err := altcha.CreateChallenge(altcha.CreateChallengeOptions{
-		Algorithm:           res.cfg.Algorithm,
-		Cost:                int(res.cfg.Cost),
-		MemoryCost:          int(res.cfg.MemoryCost),
-		Parallelism:         int(res.cfg.Parallelism),
+		Algorithm:           settings.Algorithm,
+		Cost:                int(settings.Cost),
+		MemoryCost:          int(settings.MemoryCost),
+		Parallelism:         int(settings.Parallelism),
 		ExpiresAt:           &expires,
-		HMACSignatureSecret: res.secret,
+		HMACSignatureSecret: hex.EncodeToString(res.secret),
 	})
 	if err != nil {
 		return "", fmt.Errorf("create captcha challenge: %w", err)
@@ -146,9 +179,12 @@ func (m *Manager) ChallengeJSON(ctx context.Context) (string, error) {
 	return string(b), nil
 }
 
-// Verify decodes a base64 ALTCHA payload and checks signature, expiry, and
-// solution, enforcing single use per salt.
-func (m *Manager) Verify(ctx context.Context, payload string) error {
+// Verify checks a provider token minted under the given action and
+// enforces single use, dispatching on the selected provider. The action
+// names the procedure being protected ("login", "signup",
+// "complete_signup"): reCAPTCHA v3 requires verifying it server-side,
+// Turnstile echoes it back, and ALTCHA ignores it.
+func (m *Manager) Verify(ctx context.Context, action, payload string) error {
 	if m.solo {
 		return nil
 	}
@@ -159,10 +195,32 @@ func (m *Manager) Verify(ctx context.Context, payload string) error {
 	if !res.cfg.Enabled {
 		return nil
 	}
+	switch res.cfg.Provider {
+	case ProviderAltcha:
+		return m.verifyAltcha(ctx, res, payload)
+	case ProviderRecaptchaV3:
+		if payload == "" {
+			return m.counted(ProviderRecaptchaV3, ResultFailed, ErrVerificationFailed)
+		}
+		return m.verifyRecaptcha(ctx, string(res.secret), payload, action, res.cfg.RecaptchaV3.MinScore)
+	case ProviderTurnstile:
+		if payload == "" {
+			return m.counted(ProviderTurnstile, ResultFailed, ErrVerificationFailed)
+		}
+		return m.verifyTurnstile(ctx, string(res.secret), payload, action)
+	default:
+		// Effective never returns an unknown provider; this arm exists so
+		// a future registry entry without a dispatch case fails closed.
+		return m.counted(res.cfg.Provider, ResultFailed, ErrVerificationFailed)
+	}
+}
 
+// verifyAltcha decodes a base64 ALTCHA payload and checks signature,
+// expiry, and solution, enforcing single use per salt.
+func (m *Manager) verifyAltcha(ctx context.Context, res *resolvedConfig, payload string) error {
 	var p altcha.Payload
-	if err := decodePayload(payload, &p); err != nil {
-		return ErrVerificationFailed
+	if err := decodeAltchaPayload(payload, &p); err != nil {
+		return m.counted(ProviderAltcha, ResultFailed, ErrVerificationFailed)
 	}
 
 	// The payload's own (signature-covered) parameters select the KDF, not
@@ -170,17 +228,17 @@ func (m *Manager) Verify(ctx context.Context, payload string) error {
 	// switches algorithms must still verify.
 	deriveKey, ok := deriveKeyFuncs[p.Challenge.Parameters.Algorithm]
 	if !ok {
-		return ErrVerificationFailed
+		return m.counted(ProviderAltcha, ResultFailed, ErrVerificationFailed)
 	}
 
 	result, err := altcha.VerifySolution(altcha.VerifySolutionOptions{
 		Challenge:           p.Challenge,
 		Solution:            p.Solution,
 		DeriveKey:           deriveKey,
-		HMACSignatureSecret: res.secret,
+		HMACSignatureSecret: hex.EncodeToString(res.secret),
 	})
 	if err != nil || !result.Verified {
-		return ErrVerificationFailed
+		return m.counted(ProviderAltcha, ResultFailed, ErrVerificationFailed)
 	}
 
 	salt := p.Challenge.Parameters.Salt
@@ -188,17 +246,17 @@ func (m *Manager) Verify(ctx context.Context, payload string) error {
 	// Single-use enforcement lives in the store, so it holds across hub
 	// restarts and across instances sharing the database. A store failure
 	// fails closed with the uniform error, like every other captcha fault.
-	consumed, err := m.st.CaptchaConfig().ConsumeCaptchaSalt(ctx, store.ConsumeCaptchaSaltParams{
+	consumed, err := m.st.CaptchaConfig().ConsumeAltchaSalt(ctx, store.ConsumeAltchaSaltParams{
 		Salt:      salt,
 		ExpiresAt: expiresAt,
 	})
 	if err != nil {
-		return ErrVerificationFailed
+		return m.counted(ProviderAltcha, ResultFailed, ErrVerificationFailed)
 	}
 	if consumed == 0 {
-		return errReplayed
+		return m.counted(ProviderAltcha, ResultReplayed, errReplayed)
 	}
-	return nil
+	return m.counted(ProviderAltcha, ResultPassed, nil)
 }
 
 // Enabled reports whether submissions must carry captcha payloads. Store
@@ -215,14 +273,33 @@ func (m *Manager) Enabled(ctx context.Context) bool {
 	return res.cfg.Enabled
 }
 
-// CountResult records a verification outcome for the captcha metrics
-// counter; the interceptor calls it alongside its enforcement decision.
-func CountResult(result Result) {
-	metrics.CaptchaVerificationsTotal.WithLabelValues(string(result)).Inc()
+// NoteHoneypotDenial records a honeypot trip under the selected
+// provider's metric label. The honeypot check itself is provider-agnostic
+// and runs even when captcha is disabled; the label keeps the denial
+// beside the verification outcomes it belongs with. A config read that
+// fails drops only the metric — the denial itself already happened.
+func (m *Manager) NoteHoneypotDenial(ctx context.Context) {
+	cfg, _, err := m.Describe(ctx)
+	if err != nil {
+		return
+	}
+	m.countResult(cfg.Provider, ResultFailed)
 }
 
-// resolve returns the effective config plus decrypted signing secret,
-// provisioning the singleton row (and its random secret) on first use.
+// counted records a verification outcome and returns err, pairing the
+// metric label with the decision it describes at every return site.
+func (m *Manager) counted(provider Provider, result Result, err error) error {
+	m.countResult(provider, result)
+	return err
+}
+
+func (m *Manager) countResult(provider Provider, result Result) {
+	metrics.CaptchaVerificationsTotal.WithLabelValues(ProviderAlias(provider), string(result)).Inc()
+}
+
+// resolve returns the selected provider's effective config plus its
+// decrypted secret, provisioning the default altcha row when no row is
+// selected (a fresh install, or a reset whose self-heal has not run yet).
 func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	m.mu.Lock()
 	if m.cached != nil && time.Since(m.cachedAt) < cacheTTL {
@@ -232,18 +309,18 @@ func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	}
 	m.mu.Unlock()
 
-	row, err := m.ensureRow(ctx)
+	row, err := m.ensureSelectedRow(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	secret, err := m.ks.Decrypt(row.Secret, keystore.CaptchaSecretAAD())
+	secret, err := m.ks.Decrypt(row.Secret, keystore.CaptchaSecretAAD(ProviderAlias(row.Provider)))
 	if err != nil {
 		return nil, fmt.Errorf("decrypt captcha secret: %w", err)
 	}
 	res := &resolvedConfig{
 		cfg:    Effective(row),
-		secret: hex.EncodeToString(secret),
+		secret: secret,
 	}
 
 	m.mu.Lock()
@@ -253,16 +330,16 @@ func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	return res, nil
 }
 
-// EnsureProvisioned creates the singleton config row (with a freshly
-// generated secret) when absent. The hub does this lazily on first
-// challenge issuance; the admin CLI calls it before configuration writes
-// so a fresh install's `captcha set` does not have to synthesize
-// a secret itself.
+// EnsureProvisioned guarantees that some provider row is selected,
+// provisioning and activating the default altcha row when none is. The
+// hub does this lazily on first enforcement; the admin CLI calls it
+// before enable/disable and settings writes so those always act on a
+// row that exists.
 func (m *Manager) EnsureProvisioned(ctx context.Context) error {
 	if m.solo {
 		return nil
 	}
-	if _, err := m.ensureRow(ctx); err != nil {
+	if _, err := m.ensureSelectedRow(ctx); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -272,38 +349,93 @@ func (m *Manager) EnsureProvisioned(ctx context.Context) error {
 	return nil
 }
 
-// provision creates the singleton row with defaults and a fresh random
-// secret. The dialects' INSERT ... ON CONFLICT DO NOTHING makes concurrent
-// first-use provisioning a race with one winner, so the loser's secret is
-// simply discarded.
-func (m *Manager) provision(ctx context.Context) error {
+// EnsureAltchaRow guarantees the altcha row exists with a generated
+// signing secret, without touching the selection. The admin CLI calls it
+// before activating altcha, so a switch back from an external provider
+// reuses the altcha row's original secret rather than landing on a
+// missing row (which the hub would self-heal only by regenerating it).
+func (m *Manager) EnsureAltchaRow(ctx context.Context) error {
+	if m.solo {
+		return nil
+	}
+	row, err := m.loadRow(ctx, ProviderAltcha)
+	if err != nil {
+		return err
+	}
+	if row != nil {
+		return nil
+	}
+	return m.insertAltchaRow(ctx)
+}
+
+// EncryptSecret encrypts a provider secret for storage, with the same
+// provider-scoped AAD the resolver decrypts with. The admin CLI is the
+// only caller: it is the only writer of external providers' secrets.
+func (m *Manager) EncryptSecret(provider Provider, secret string) ([]byte, error) {
+	encrypted, err := m.ks.Encrypt([]byte(secret), keystore.CaptchaSecretAAD(ProviderAlias(provider)))
+	if err != nil {
+		return nil, fmt.Errorf("encrypt captcha secret: %w", err)
+	}
+	return encrypted, nil
+}
+
+// insertAltchaRow creates the altcha row (unselected, fresh random HMAC
+// secret, default settings). The dialects' INSERT ... ON CONFLICT DO
+// NOTHING makes concurrent first-use provisioning a race with one winner,
+// so the loser's secret is simply discarded.
+func (m *Manager) insertAltchaRow(ctx context.Context) error {
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return fmt.Errorf("generate captcha secret: %w", err)
 	}
-	encrypted, err := m.ks.Encrypt(secret, keystore.CaptchaSecretAAD())
+	encrypted, err := m.ks.Encrypt(secret, keystore.CaptchaSecretAAD(ProviderAlias(ProviderAltcha)))
 	if err != nil {
 		return fmt.Errorf("encrypt captcha secret: %w", err)
 	}
-	def := DefaultConfig()
-	err = m.st.CaptchaConfig().Insert(ctx, store.InsertCaptchaConfigParams{
-		Enabled:                def.Enabled,
-		Algorithm:              def.Algorithm,
-		Cost:                   def.Cost,
-		MemoryCost:             def.MemoryCost,
-		Parallelism:            def.Parallelism,
-		ChallengeExpirySeconds: def.ChallengeExpirySeconds,
-		Secret:                 encrypted,
-	})
+	settings, err := json.Marshal(DefaultAltchaSettings())
 	if err != nil {
+		return fmt.Errorf("marshal altcha settings: %w", err)
+	}
+	if err := m.st.CaptchaConfig().InsertIfAbsent(ctx, store.InsertCaptchaConfigIfAbsentParams{
+		Provider: ProviderAltcha,
+		Secret:   encrypted,
+		Settings: string(settings),
+	}); err != nil {
 		return fmt.Errorf("provision captcha config: %w", err)
 	}
 	return nil
 }
 
-// loadRow returns the stored row or nil when absent (defaults apply).
-func (m *Manager) loadRow(ctx context.Context) (*store.CaptchaConfig, error) {
-	row, err := m.st.CaptchaConfig().Get(ctx)
+// ensureSelectedRow returns the selected config row, provisioning and
+// activating the default altcha row when none is selected.
+func (m *Manager) ensureSelectedRow(ctx context.Context) (*store.CaptchaConfig, error) {
+	row, err := m.loadSelectedRow(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if row != nil {
+		return row, nil
+	}
+	if err := m.insertAltchaRow(ctx); err != nil {
+		return nil, err
+	}
+	if err := m.st.CaptchaConfig().Activate(ctx, ProviderAltcha); err != nil {
+		return nil, fmt.Errorf("activate captcha config: %w", err)
+	}
+	row, err = m.loadSelectedRow(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, fmt.Errorf("selected captcha row missing after provisioning")
+	}
+	return row, nil
+}
+
+// loadSelectedRow returns the selected row or nil when none exists
+// (defaults apply, provisioning self-heals on the next resolve).
+func (m *Manager) loadSelectedRow(ctx context.Context) (*store.CaptchaConfig, error) {
+	row, err := m.st.CaptchaConfig().GetSelected(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, nil
@@ -313,76 +445,14 @@ func (m *Manager) loadRow(ctx context.Context) (*store.CaptchaConfig, error) {
 	return row, nil
 }
 
-// ensureRow returns the singleton config row, provisioning it (with a
-// fresh random secret) when absent. resolve and EnsureProvisioned share
-// it so the provision-if-absent dance — and the "row missing after
-// provisioning" guard — cannot drift between them; Describe keeps using
-// loadRow directly because it must not write on a fresh install.
-func (m *Manager) ensureRow(ctx context.Context) (*store.CaptchaConfig, error) {
-	row, err := m.loadRow(ctx)
+// loadRow returns one provider's row or nil when it has no row yet.
+func (m *Manager) loadRow(ctx context.Context, provider Provider) (*store.CaptchaConfig, error) {
+	row, err := m.st.CaptchaConfig().Get(ctx, provider)
 	if err != nil {
-		return nil, err
-	}
-	if row != nil {
-		return row, nil
-	}
-	if err := m.provision(ctx); err != nil {
-		return nil, err
-	}
-	row, err = m.loadRow(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return nil, fmt.Errorf("captcha config row missing after provisioning")
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load captcha config: %w", err)
 	}
 	return row, nil
-}
-
-// decodePayload accepts both padded and unpadded standard-alphabet base64,
-// the two encodings the widget historically produced across versions.
-func decodePayload(payload string, out *altcha.Payload) error {
-	b, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		b, err = base64.RawStdEncoding.DecodeString(payload)
-		if err != nil {
-			return err
-		}
-	}
-	return json.Unmarshal(b, out)
-}
-
-// Effective overlays a stored row onto DefaultConfig so a row written by an
-// older version (or a partial admin write) can never zero out a
-// safety-relevant field with a nonsensical value. The result is validated:
-// the CLI validates before writing, so a row that fails here was written
-// outside the CLI (direct SQL, a future migration), and the built-in
-// defaults keep login working instead of issuing unsolvable challenges.
-// The hub and the admin CLI share this one definition of "effective".
-func Effective(row *store.CaptchaConfig) Config {
-	cfg := DefaultConfig()
-	if row == nil {
-		return cfg
-	}
-	cfg.Enabled = row.Enabled
-	if row.Algorithm != "" {
-		cfg.Algorithm = row.Algorithm
-	}
-	if row.Cost > 0 {
-		cfg.Cost = row.Cost
-	}
-	if row.MemoryCost > 0 {
-		cfg.MemoryCost = row.MemoryCost
-	}
-	if row.Parallelism > 0 {
-		cfg.Parallelism = row.Parallelism
-	}
-	if row.ChallengeExpirySeconds > 0 {
-		cfg.ChallengeExpirySeconds = row.ChallengeExpirySeconds
-	}
-	if err := cfg.Validate(); err != nil {
-		slog.Warn("captcha config row invalid; using built-in defaults", "error", err)
-		return DefaultConfig()
-	}
-	return cfg
 }

@@ -66,8 +66,8 @@ func (s *cleanupStore) DeleteExpiredDelegationTokensBefore(ctx context.Context, 
 	return s.conn.q.DeleteExpiredDelegationTokensBefore(ctx, pgtime.New(cutoff))
 }
 
-func (s *cleanupStore) DeleteExpiredCaptchaSalts(ctx context.Context) (int64, error) {
-	return s.conn.q.DeleteExpiredCaptchaSalts(ctx, pgtime.New(time.Now().UTC()))
+func (s *cleanupStore) DeleteExpiredAltchaSalts(ctx context.Context) (int64, error) {
+	return s.conn.q.DeleteExpiredAltchaSalts(ctx, pgtime.New(time.Now().UTC()))
 }
 
 func (s *cleanupStore) CompactPublishedRevocationEvents(

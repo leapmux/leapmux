@@ -24,6 +24,9 @@ vi.mock('~/lib/systemInfo', () => ({
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,
   getCaptchaAlgorithm: () => '',
+  getAltchaAlgorithm: () => '',
+  getCaptchaProvider: () => 1, // CaptchaProvider.ALTCHA
+  getCaptchaSiteKey: () => '',
 }))
 
 vi.mock('~/context/AuthContext', () => ({

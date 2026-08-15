@@ -3,7 +3,8 @@ import type { Component, JSX } from 'solid-js'
 import type { SignUpResponse } from '~/generated/leapmux/v1/auth_pb'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
-import { CaptchaField, CaptchaHoneypot } from '~/components/common/CaptchaField'
+import { CaptchaField } from '~/components/common/CaptchaField'
+import { CaptchaHoneypot } from '~/components/common/CaptchaHoneypot'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { sanitizeDisplayName, sanitizeSlug, validateEmail, validateReservedUsername } from '~/lib/validate'
@@ -102,6 +103,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
         <CaptchaHoneypot value={captcha.honeypot()} onInput={captcha.setHoneypot} />
         <Show when={captcha.required()}>
           <CaptchaField
+            action="signup"
             ref={captcha.bindField}
             onPayload={captcha.setPayload}
             onUnavailable={captcha.noteUnavailable}

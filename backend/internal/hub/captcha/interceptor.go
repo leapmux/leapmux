@@ -2,7 +2,6 @@ package captcha
 
 import (
 	"context"
-	"errors"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -12,11 +11,25 @@ import (
 
 // protectedProcedures lists the unauthenticated procedures whose handlers
 // are expensive enough (Argon2 verification, user creation, SMTP) that
-// automation against them must pre-pay proof-of-work.
+// automation against them must pre-pay a captcha token.
 var protectedProcedures = map[string]struct{}{
 	leapmuxv1connect.AuthServiceLoginProcedure:               {},
 	leapmuxv1connect.AuthServiceSignUpProcedure:              {},
 	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure: {},
+}
+
+// procedureActions maps each protected procedure to the action name its
+// clients mint the captcha token under (reCAPTCHA's
+// grecaptcha.execute({action}) and the Turnstile widget's action
+// parameter). reCAPTCHA requires verifying the action server-side;
+// Turnstile echoes it back; ALTCHA ignores it. The names use only
+// alphanumerics and underscores — valid for both providers — and stay
+// under Turnstile's 32-character action cap. The classification test
+// keeps this map in lockstep with protectedProcedures.
+var procedureActions = map[string]string{
+	leapmuxv1connect.AuthServiceLoginProcedure:               "login",
+	leapmuxv1connect.AuthServiceSignUpProcedure:              "signup",
+	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure: "complete_signup",
 }
 
 // NewInterceptor returns a unary interceptor enforcing captcha + honeypot
@@ -34,7 +47,6 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			if !ok {
 				// Every ConnectRPC request is a proto message; this arm is
 				// unreachable but must not panic if that ever changes.
-				CountResult(ResultFailed)
 				return nil, connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed)
 			}
 			protoMsg := msg.ProtoReflect()
@@ -44,29 +56,23 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			//
 			// The honeypot check runs regardless of captcha enablement: it
 			// costs the server one string comparison, catches naive bots
-			// even on hubs with proof-of-work disabled, and must not
-			// disappear the moment an admin runs `captcha disable`. The
-			// frontend renders the honeypot input independently of the
-			// captcha widget for the same reason.
+			// even on hubs with captcha disabled, and must not disappear
+			// the moment an admin runs `captcha disable`. The frontend
+			// renders the honeypot input independently of the captcha
+			// widget for the same reason.
 			if stringField(protoMsg, "honeypot") != "" {
-				CountResult(ResultFailed)
+				m.NoteHoneypotDenial(ctx)
 				return nil, connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed)
 			}
 			if !m.Enabled(ctx) {
 				return next(ctx, req)
 			}
-			if err := m.Verify(ctx, stringField(protoMsg, "captcha_payload")); err != nil {
-				// The uniform denial is unchanged; only the metrics label
-				// splits replay out, so operators can see payload reuse
-				// separately from unsolved challenges.
-				result := ResultFailed
-				if errors.Is(err, errReplayed) {
-					result = ResultReplayed
-				}
-				CountResult(result)
+			if err := m.Verify(ctx, procedureActions[req.Spec().Procedure], stringField(protoMsg, "captcha_payload")); err != nil {
+				// Uniform denial: the manager has already recorded the
+				// outcome (passed/failed/replayed) under the selected
+				// provider's metric label; clients see only this error.
 				return nil, connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed)
 			}
-			CountResult(ResultPassed)
 			return next(ctx, req)
 		}
 	}

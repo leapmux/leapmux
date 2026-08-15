@@ -4,6 +4,8 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
+
 import { LoginPage } from './LoginPage'
 
 vi.mock('~/api/clients', () => ({
@@ -20,6 +22,8 @@ const mockIsSetupRequired = vi.fn<() => boolean>(() => false)
 const mockIsCaptchaEnabled = vi.fn<() => boolean>(() => false)
 const mockIsSystemInfoLoaded = vi.fn<() => boolean>(() => true)
 const mockLoadOAuthProviders = vi.fn(() => Promise.resolve([] as Record<string, unknown>[]))
+const mockGetCaptchaProvider = vi.fn<() => CaptchaProvider>(() => CaptchaProvider.ALTCHA)
+const mockGetCaptchaSiteKey = vi.fn<() => string>(() => '')
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => mockIsSoloMode(),
   isSetupRequired: () => mockIsSetupRequired(),
@@ -29,6 +33,9 @@ vi.mock('~/lib/systemInfo', () => ({
   isCaptchaEnabled: () => mockIsCaptchaEnabled(),
   isSystemInfoLoaded: () => mockIsSystemInfoLoaded(),
   getCaptchaAlgorithm: () => '',
+  getAltchaAlgorithm: () => '',
+  getCaptchaProvider: () => mockGetCaptchaProvider(),
+  getCaptchaSiteKey: () => mockGetCaptchaSiteKey(),
 }))
 
 // The fake widget holds its payload in a signal the test controls, so a
@@ -40,26 +47,28 @@ let mockCaptchaUnavailable: (() => void) | undefined
 vi.mock('~/components/common/CaptchaField', async () => {
   const { createEffect } = await import('solid-js')
   return {
-    CaptchaField: (props: { onPayload: (p: string | null) => void, onUnavailable: () => void }) => {
+    CaptchaField: (props: { action: string, onPayload: (p: string | null) => void, onUnavailable: () => void }) => {
       // Captured for the stand-down test; the primitive's callback is a
       // stable closure, so an untracked read is fine.
       /* eslint-disable solid/reactivity -- stable callback captured for tests */
       mockCaptchaUnavailable = props.onUnavailable
       /* eslint-enable solid/reactivity */
       createEffect(() => props.onPayload(mockCaptchaPayload()))
-      return <div data-testid="captcha-field" />
+      return <div data-testid="captcha-field" data-action={props.action} />
     },
-    CaptchaHoneypot: (props: { value: string, onInput: (v: string) => void }) => (
-      <input
-        data-testid="captcha-honeypot"
-        type="text"
-        name="website"
-        value={props.value}
-        onInput={e => props.onInput(e.currentTarget.value)}
-      />
-    ),
   }
 })
+vi.mock('~/components/common/CaptchaHoneypot', () => ({
+  CaptchaHoneypot: (props: { value: string, onInput: (v: string) => void }) => (
+    <input
+      data-testid="captcha-honeypot"
+      type="text"
+      name="website"
+      value={props.value}
+      onInput={e => props.onInput(e.currentTarget.value)}
+    />
+  ),
+}))
 
 const mockLogin = vi.fn()
 const mockUser = vi.fn<() => { id: string, username: string } | null>(() => null)
@@ -100,6 +109,8 @@ describe('loginPage', () => {
     mockLoadOAuthProviders.mockResolvedValue([])
     mockIsCaptchaEnabled.mockReturnValue(false)
     mockIsSystemInfoLoaded.mockReturnValue(true)
+    mockGetCaptchaProvider.mockReturnValue(CaptchaProvider.ALTCHA)
+    mockGetCaptchaSiteKey.mockReturnValue('')
     setMockCaptchaPayload(null)
     mockCaptchaUnavailable = undefined
     setAuthLoading(false)
@@ -324,6 +335,22 @@ describe('loginPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled()
     })
+  })
+
+  it('passes the login action to the captcha field under an external provider', async () => {
+    // The dispatcher test covers provider switching; this pins the page's
+    // half of the contract — with Turnstile selected (site key present),
+    // the field it renders is told which procedure the token is for. A
+    // wrong action would make the hub's siteverify action check deny every
+    // login token even though the widget solved fine.
+    mockIsCaptchaEnabled.mockReturnValue(true)
+    mockGetCaptchaProvider.mockReturnValue(CaptchaProvider.TURNSTILE)
+    mockGetCaptchaSiteKey.mockReturnValue('1x00000000000000000000AA')
+    renderLoginPage()
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('captcha-field')).toBeInTheDocument()
+    })
+    expect(screen.getByTestId('captcha-field')).toHaveAttribute('data-action', 'login')
   })
 
   it('stands down and unlocks when the hub reports no challenge', async () => {

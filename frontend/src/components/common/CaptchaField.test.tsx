@@ -1,193 +1,74 @@
-import type { CaptchaFieldHandle } from './CaptchaField'
 /// <reference types="vitest/globals" />
 import { render } from '@solidjs/testing-library'
 
+import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { CaptchaField, CaptchaHoneypot } from './CaptchaField'
+import { CaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
+import { CaptchaField } from './CaptchaField'
 
-// Neutralize the real altcha module (custom-element registration + CSS
-// injection) and register a stub element instead, so tests drive the
-// widget seam directly: configure/reset spies and manual statechange
-// dispatches.
-vi.mock('altcha', () => ({}))
-
-// The data half (fetch + parse + solver pre-warm) has its own seam in
-// captchaChallenge.test.tsx; here it is a controllable stand-in so the
-// component tests drive the widget lifecycle only.
-const mockFetchCaptchaChallenge = vi.fn()
-vi.mock('~/lib/captchaChallenge', () => ({
-  fetchCaptchaChallenge: (...args: []) => mockFetchCaptchaChallenge(...args),
+// The provider getter is backed by a real signal so the dispatcher's
+// reactivity (a runtime provider switch reaching the form without a
+// reload) is exercised, not assumed.
+const [provider, setProvider] = createSignal<CaptchaProvider>(CaptchaProvider.ALTCHA)
+vi.mock('~/lib/systemInfo', () => ({
+  getCaptchaProvider: () => provider(),
 }))
 
-class FakeAltchaWidget extends HTMLElement {
-  configure = vi.fn((_config: unknown) => Promise.resolve())
-  reset = vi.fn()
-}
-if (!customElements.get('altcha-widget')) {
-  customElements.define('altcha-widget', FakeAltchaWidget)
-}
+const altchaMounted = vi.fn((props: Record<string, unknown>) => <div data-testid="altcha" data-props={JSON.stringify(props)} />)
+const turnstileMounted = vi.fn((props: Record<string, unknown>) => <div data-testid="turnstile" data-props={JSON.stringify(props)} />)
+const recaptchaMounted = vi.fn((props: Record<string, unknown>) => <div data-testid="recaptcha" data-props={JSON.stringify(props)} />)
+// vi.mock factories are hoisted above the const declarations; the
+// wrapper closures defer the access until the mocked module is loaded.
+vi.mock('./AltchaField', () => ({ AltchaField: (props: Record<string, unknown>) => altchaMounted(props) }))
+vi.mock('./TurnstileField', () => ({ TurnstileField: (props: Record<string, unknown>) => turnstileMounted(props) }))
+vi.mock('./RecaptchaV3Field', () => ({ RecaptchaV3Field: (props: Record<string, unknown>) => recaptchaMounted(props) }))
 
-const challenge = { parameters: { algorithm: 'PBKDF2/SHA-256', salt: 'abc', cost: 10000 }, signature: 'sig' }
-
-function widgetEls(container: HTMLElement): FakeAltchaWidget[] {
-  return Array.from(container.querySelectorAll('altcha-widget')) as unknown as FakeAltchaWidget[]
-}
-
-function renderField(props: Partial<Parameters<typeof CaptchaField>[0]> = {}) {
-  const onPayload = props.onPayload ?? vi.fn()
-  const onUnavailable = props.onUnavailable ?? vi.fn()
+function renderDispatcher() {
   return render(() => (
-    <div><CaptchaField onPayload={onPayload} onUnavailable={onUnavailable} {...props} /></div>
+    <CaptchaField action="login" onPayload={vi.fn()} onUnavailable={vi.fn()} ref={vi.fn()} />
   ))
 }
 
-describe('captchaField', () => {
+describe('captchaField dispatcher', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockFetchCaptchaChallenge.mockResolvedValue(challenge)
+    setProvider(CaptchaProvider.ALTCHA)
   })
 
-  it('fetches a challenge on mount and configures the widget with the parsed object', async () => {
-    const { container } = renderField()
-    await vi.waitFor(() => {
-      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
-    })
-    const arg = widgetEls(container)[0].configure.mock.calls[0]?.[0] as
-      | { challenge?: { parameters?: { algorithm?: string } }, auto?: string }
-      | undefined
-    // The challenge must be handed over as an object — a raw string would
-    // be treated as a fetch URL by the widget.
-    expect(arg).toBeDefined()
-    expect(typeof arg?.challenge).toBe('object')
-    expect(arg?.challenge?.parameters?.algorithm).toBe('PBKDF2/SHA-256')
-    expect(arg?.auto).toBe('off')
+  it('mounts the altcha field by default and forwards the action', () => {
+    renderDispatcher()
+    expect(altchaMounted).toHaveBeenCalledTimes(1)
+    expect(altchaMounted.mock.calls[0]?.[0]?.action).toBeUndefined()
+    expect(turnstileMounted).not.toHaveBeenCalled()
+    expect(recaptchaMounted).not.toHaveBeenCalled()
   })
 
-  it('stands down (no configure, no error) when the hub reports no challenge', async () => {
-    mockFetchCaptchaChallenge.mockResolvedValue(null)
-    const onUnavailable = vi.fn()
-    const { container } = renderField({ onUnavailable })
-    await vi.waitFor(() => {
-      expect(onUnavailable).toHaveBeenCalled()
-    })
-    expect(widgetEls(container)[0].configure).not.toHaveBeenCalled()
+  it('mounts the turnstile field with the site action', () => {
+    setProvider(CaptchaProvider.TURNSTILE)
+    renderDispatcher()
+    expect(turnstileMounted).toHaveBeenCalledTimes(1)
+    expect(turnstileMounted.mock.calls[0]?.[0]?.action).toBe('login')
   })
 
-  it('emits the payload on verified statechange and null otherwise', async () => {
-    const onPayload = vi.fn()
-    const { container } = renderField({ onPayload })
-    await vi.waitFor(() => {
-      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
-    })
-    const widget = widgetEls(container)[0]
-
-    widget.dispatchEvent(new CustomEvent('statechange', {
-      detail: { state: 'verified', payload: 'cGF5bG9hZA==' },
-    }))
-    expect(onPayload).toHaveBeenCalledWith('cGF5bG9hZA==')
-
-    widget.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'unverified' } }))
-    expect(onPayload).toHaveBeenLastCalledWith(null)
+  it('mounts the recaptcha field for recaptcha_v3', () => {
+    setProvider(CaptchaProvider.RECAPTCHA_V3)
+    renderDispatcher()
+    expect(recaptchaMounted).toHaveBeenCalledTimes(1)
+    expect(recaptchaMounted.mock.calls[0]?.[0]?.action).toBe('login')
   })
 
-  it('re-arms on expired statechange', async () => {
-    const { container } = renderField()
-    await vi.waitFor(() => {
-      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
-    })
-    const widget = widgetEls(container)[0]
+  it('re-mounts when the provider signal flips (runtime switch without reload)', () => {
+    const { container } = renderDispatcher()
+    expect(altchaMounted).toHaveBeenCalledTimes(1)
 
-    widget.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'expired' } }))
-    await vi.waitFor(() => {
-      expect(mockFetchCaptchaChallenge).toHaveBeenCalledTimes(2)
-    })
+    setProvider(CaptchaProvider.RECAPTCHA_V3)
+    expect(container.querySelector('[data-testid="recaptcha"]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="altcha"]')).toBeFalsy()
   })
 
-  it('shows a load error when the challenge fetch fails', async () => {
-    mockFetchCaptchaChallenge.mockRejectedValue(new Error('network'))
-    const { container, findByText } = renderField()
-    expect(await findByText(/could not load the human-verification challenge/i)).toBeTruthy()
-    expect(widgetEls(container)[0].configure).not.toHaveBeenCalled()
-  })
-
-  it('ignores a stale overlapping arm: the newer challenge wins', async () => {
-    // arm #1 hangs; arm #2 (a reset) resolves first. The late #1 response
-    // must not overwrite the widget's newer challenge.
-    let releaseFirst: (value: typeof challenge) => void = () => {}
-    const first = new Promise<typeof challenge>(resolve => (releaseFirst = resolve))
-    let call = 0
-    mockFetchCaptchaChallenge.mockImplementation(() => {
-      call++
-      return call === 1 ? first : Promise.resolve(challenge)
-    })
-    let handle: CaptchaFieldHandle | undefined
-    const { container } = render(() => (
-      <div><CaptchaField onPayload={vi.fn()} onUnavailable={vi.fn()} ref={h => (handle = h)} /></div>
-    ))
-
-    await vi.waitFor(() => {
-      expect(mockFetchCaptchaChallenge).toHaveBeenCalledTimes(1)
-    })
-    handle!.reset()
-    await vi.waitFor(() => {
-      expect(mockFetchCaptchaChallenge).toHaveBeenCalledTimes(2)
-      expect(widgetEls(container)[0].configure).toHaveBeenCalledTimes(1)
-    })
-
-    // The hung first fetch resolves late; only the newer arm may configure.
-    releaseFirst(challenge)
-    await new Promise(r => setTimeout(r, 0))
-    expect(widgetEls(container)[0].configure).toHaveBeenCalledTimes(1)
-  })
-
-  it('reset handle clears the payload and fetches a fresh challenge', async () => {
-    let handle: CaptchaFieldHandle | undefined
-    const { container } = render(() => (
-      <div><CaptchaField onPayload={vi.fn()} onUnavailable={vi.fn()} ref={h => (handle = h)} /></div>
-    ))
-    await vi.waitFor(() => {
-      expect(widgetEls(container)[0].configure).toHaveBeenCalled()
-    })
-
-    handle!.reset()
-    expect(widgetEls(container)[0].reset).toHaveBeenCalled()
-    await vi.waitFor(() => {
-      expect(mockFetchCaptchaChallenge).toHaveBeenCalledTimes(2)
-    })
-  })
-})
-
-describe('captchaHoneypot', () => {
-  it('renders the input hidden from users but visible to bots, and reports input', () => {
-    const onInput = vi.fn()
-    const { container } = render(() => (
-      <div><CaptchaHoneypot value="" onInput={onInput} /></div>
-    ))
-    const honeypot = container.querySelector<HTMLInputElement>('input[name="website"]')!
-    expect(honeypot.tabIndex).toBe(-1)
-    expect(honeypot.getAttribute('aria-hidden')).toBe('true')
-    expect(honeypot.autocomplete).toBe('off')
-
-    honeypot.value = 'http://spam.example'
-    honeypot.dispatchEvent(new Event('input', { bubbles: true }))
-    expect(onInput).toHaveBeenCalledWith('http://spam.example')
-  })
-
-  it('clears the DOM value when the controlled value resets', async () => {
-    const { createSignal } = await import('solid-js')
-    const onInput = vi.fn()
-    const [value, setValue] = createSignal('stale')
-    const { container } = render(() => (
-      <div><CaptchaHoneypot value={value()} onInput={onInput} /></div>
-    ))
-    const honeypot = container.querySelector<HTMLInputElement>('input[name="website"]')!
-    expect(honeypot.value).toBe('stale')
-
-    // A reset that clears the signal clears the field an autofill
-    // heuristic populated.
-    setValue('')
-    await vi.waitFor(() => {
-      expect(container.querySelector<HTMLInputElement>('input[name="website"]')!.value).toBe('')
-    })
+  it('falls back to altcha for an unrecognized enum value', () => {
+    setProvider(99 as CaptchaProvider)
+    renderDispatcher()
+    expect(altchaMounted).toHaveBeenCalledTimes(1)
   })
 })

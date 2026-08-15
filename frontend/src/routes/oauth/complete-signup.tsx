@@ -3,7 +3,8 @@ import type { Component } from 'solid-js'
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
-import { CaptchaField, CaptchaHoneypot } from '~/components/common/CaptchaField'
+import { CaptchaField } from '~/components/common/CaptchaField'
+import { CaptchaHoneypot } from '~/components/common/CaptchaHoneypot'
 import * as styles from '~/components/common/LoginPage.css'
 import { Spinner } from '~/components/common/Spinner'
 import { UsernameField } from '~/components/common/UsernameField'
@@ -146,6 +147,7 @@ const OAuthCompleteSignupPage: Component = () => {
             <CaptchaHoneypot value={captcha.honeypot()} onInput={captcha.setHoneypot} />
             <Show when={captcha.required()}>
               <CaptchaField
+                action="complete_signup"
                 ref={captcha.bindField}
                 onPayload={captcha.setPayload}
                 onUnavailable={captcha.noteUnavailable}

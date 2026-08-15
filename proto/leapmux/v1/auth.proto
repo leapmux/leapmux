@@ -24,15 +24,18 @@ service AuthService {
   rpc CompleteOAuthSignup(CompleteOAuthSignupRequest) returns (CompleteOAuthSignupResponse);
   // Issue a fresh ALTCHA proof-of-work challenge (no auth required).
   // Called by the frontend captcha widget before Login/SignUp-family
-  // submissions when GetSystemInfo reports captcha_enabled.
-  rpc GetCaptchaChallenge(GetCaptchaChallengeRequest) returns (GetCaptchaChallengeResponse);
+  // submissions when GetSystemInfo reports captcha_enabled with the
+  // altcha provider. Empty when the selected provider is external
+  // (recaptcha_v3 / turnstile) or captcha is disabled.
+  rpc GetAltchaChallenge(GetAltchaChallengeRequest) returns (GetAltchaChallengeResponse);
 }
 
 message LoginRequest {
   string username = 1;
   string password = 2;
-  // Base64 ALTCHA payload proving the client solved a challenge issued by
-  // GetCaptchaChallenge. Required when the hub reports captcha_enabled.
+  // Provider token proving the client passed the hub's captcha: a base64
+  // ALTCHA payload (altcha provider), a reCAPTCHA v3 token, or a Turnstile
+  // token. Required when the hub reports captcha_enabled.
   string captcha_payload = 3;
   // Value of the hidden anti-bot honeypot field rendered alongside the
   // captcha. Must be empty; a non-empty value fails verification.
@@ -59,7 +62,7 @@ message SignUpRequest {
   string password = 2;
   string display_name = 3;
   string email = 4;
-  // Base64 ALTCHA payload; see LoginRequest.captcha_payload.
+  // Provider token; see LoginRequest.captcha_payload.
   string captcha_payload = 5;
   // Hidden anti-bot field value; see LoginRequest.honeypot.
   string honeypot = 6;
@@ -95,6 +98,20 @@ message LinkedOAuthProvider {
 
 message GetSystemInfoRequest {}
 
+// CaptchaProvider identifies the bot-protection provider securing the
+// unauthenticated credential endpoints. The numbers are persisted as
+// captcha_config rows' database key and must stay stable.
+enum CaptchaProvider {
+  CAPTCHA_PROVIDER_UNSPECIFIED = 0;
+  // Built-in self-hosted proof-of-work: no third party, no verification
+  // egress, challenges issued by the hub itself.
+  CAPTCHA_PROVIDER_ALTCHA = 1;
+  // Google reCAPTCHA v3: invisible, score-based.
+  CAPTCHA_PROVIDER_RECAPTCHA_V3 = 2;
+  // Cloudflare Turnstile: a checkbox challenge.
+  CAPTCHA_PROVIDER_TURNSTILE = 3;
+}
+
 message GetSystemInfoResponse {
   bool signup_enabled = 1;
   bool solo_mode = 2;
@@ -119,13 +136,20 @@ message GetSystemInfoResponse {
   // EmailRegistrationInstructions on a hub without SMTP returns
   // FailedPrecondition, so showing the button would mislead users.
   bool email_enabled = 11;
-  // True when the hub requires ALTCHA proof-of-work verification on
-  // Login, SignUp, and CompleteOAuthSignup. Always false in solo mode.
+  // True when the hub requires captcha verification on Login, SignUp, and
+  // CompleteOAuthSignup. Always false in solo mode.
   bool captcha_enabled = 12;
-  // Active ALTCHA algorithm name (e.g. "PBKDF2/SHA-256"). Informational;
-  // the authoritative parameters arrive with each GetCaptchaChallenge
-  // response.
-  string captcha_algorithm = 13;
+  // Active ALTCHA algorithm name (e.g. "PBKDF2/SHA-256"), populated only
+  // when captcha_provider is "altcha". Informational; the authoritative
+  // parameters arrive with each GetAltchaChallenge response.
+  string altcha_algorithm = 13;
+  // Active captcha provider. The hub reports ALTCHA by default; switching
+  // providers is an admin CLI operation.
+  CaptchaProvider captcha_provider = 14;
+  // Public site key for external providers (recaptcha_v3 / turnstile);
+  // empty for altcha. The frontend pairs it with captcha_provider to load
+  // the right widget.
+  string captcha_site_key = 15;
 }
 
 message GetOAuthProvidersRequest {}
@@ -156,20 +180,21 @@ message CompleteOAuthSignupRequest {
   string username = 2;
   string display_name = 3;
   string email = 4;
-  // Base64 ALTCHA payload; see LoginRequest.captcha_payload.
+  // Provider token; see LoginRequest.captcha_payload.
   string captcha_payload = 5;
   // Hidden anti-bot field value; see LoginRequest.honeypot.
   string honeypot = 6;
 }
 
-message GetCaptchaChallengeRequest {}
+message GetAltchaChallengeRequest {}
 
-message GetCaptchaChallengeResponse {
+message GetAltchaChallengeResponse {
   // The ALTCHA v2 Challenge serialized as JSON by the server library,
   // passed through to the widget's configure({challenge}) API verbatim.
   // Kept as an opaque string (rather than mirrored as typed proto fields)
   // so the interchange stays byte-exact with the widget regardless of how
-  // ALTCHA evolves the challenge schema. Empty when captcha is disabled.
+  // ALTCHA evolves the challenge schema. Empty when captcha is disabled or
+  // the selected provider is not altcha.
   string challenge_json = 1;
 }
 

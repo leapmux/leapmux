@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
@@ -15,56 +16,89 @@ type captchaConfigStore struct {
 
 var _ store.CaptchaConfigStore = (*captchaConfigStore)(nil)
 
-func fromDBCaptchaConfig(c gendb.CaptchaConfig) *store.CaptchaConfig {
-	return &store.CaptchaConfig{
-		Enabled:                ptrconv.Int64ToBool(c.Enabled),
-		Algorithm:              c.Algorithm,
-		Cost:                   c.Cost,
-		MemoryCost:             c.MemoryCost,
-		Parallelism:            c.Parallelism,
-		ChallengeExpirySeconds: c.ChallengeExpirySeconds,
-		Secret:                 c.Secret,
-		UpdatedAt:              c.UpdatedAt.Time,
+func fromDBCaptchaConfig(c gendb.CaptchaConfig) store.CaptchaConfig {
+	return store.CaptchaConfig{
+		Provider:  c.Provider,
+		Selected:  ptrconv.Int64ToBool(c.Selected),
+		Enabled:   ptrconv.Int64ToBool(c.Enabled),
+		Secret:    c.Secret,
+		Settings:  c.Settings,
+		UpdatedAt: c.UpdatedAt.Time,
 	}
 }
 
-func (s *captchaConfigStore) Get(ctx context.Context) (*store.CaptchaConfig, error) {
-	c, err := s.conn.q.GetCaptchaConfig(ctx)
+func (s *captchaConfigStore) GetSelected(ctx context.Context) (*store.CaptchaConfig, error) {
+	c, err := s.conn.q.GetSelectedCaptchaConfig(ctx)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return fromDBCaptchaConfig(c), nil
+	cfg := fromDBCaptchaConfig(c)
+	return &cfg, nil
 }
 
-func (s *captchaConfigStore) Insert(ctx context.Context, p store.InsertCaptchaConfigParams) error {
-	return mapErr(s.conn.q.InsertCaptchaConfig(ctx, gendb.InsertCaptchaConfigParams{
-		Enabled:                ptrconv.BoolToInt64(p.Enabled),
-		Algorithm:              p.Algorithm,
-		Cost:                   p.Cost,
-		MemoryCost:             p.MemoryCost,
-		Parallelism:            p.Parallelism,
-		ChallengeExpirySeconds: p.ChallengeExpirySeconds,
-		Secret:                 p.Secret,
+func (s *captchaConfigStore) Get(ctx context.Context, provider leapmuxv1.CaptchaProvider) (*store.CaptchaConfig, error) {
+	c, err := s.conn.q.GetCaptchaConfig(ctx, provider)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	cfg := fromDBCaptchaConfig(c)
+	return &cfg, nil
+}
+
+func (s *captchaConfigStore) List(ctx context.Context) ([]store.CaptchaConfig, error) {
+	rows, err := s.conn.q.ListCaptchaProviders(ctx)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return store.MapSlice(rows, fromDBCaptchaConfig), nil
+}
+
+func (s *captchaConfigStore) InsertIfAbsent(ctx context.Context, p store.InsertCaptchaConfigIfAbsentParams) error {
+	return mapErr(s.conn.q.InsertCaptchaConfigIfAbsent(ctx, gendb.InsertCaptchaConfigIfAbsentParams{
+		Provider: p.Provider,
+		Secret:   p.Secret,
+		Settings: p.Settings,
 	}))
 }
 
-func (s *captchaConfigStore) Update(ctx context.Context, p store.UpdateCaptchaConfigParams) error {
-	return mapErr(s.conn.q.UpdateCaptchaConfig(ctx, gendb.UpdateCaptchaConfigParams{
-		Enabled:                ptrconv.BoolToInt64(p.Enabled),
-		Algorithm:              p.Algorithm,
-		Cost:                   p.Cost,
-		MemoryCost:             p.MemoryCost,
-		Parallelism:            p.Parallelism,
-		ChallengeExpirySeconds: p.ChallengeExpirySeconds,
+// UpdateSettings rewrites one existing row's settings; the secret is
+// never touched.
+func (s *captchaConfigStore) UpdateSettings(ctx context.Context, provider leapmuxv1.CaptchaProvider, settings string) error {
+	return mapErr(s.conn.q.UpdateCaptchaSettings(ctx, gendb.UpdateCaptchaSettingsParams{Settings: settings, Provider: provider}))
+}
+
+func (s *captchaConfigStore) Upsert(ctx context.Context, p store.UpsertCaptchaConfigParams) error {
+	return mapErr(s.conn.q.UpsertCaptchaConfig(ctx, gendb.UpsertCaptchaConfigParams{
+		Provider: p.Provider,
+		Secret:   p.Secret,
+		Settings: p.Settings,
 	}))
+}
+
+// Activate deselects every provider row, then selects and enables the
+// named one. Two statements, not one: a reader racing between them sees
+// "no selected provider", which the caller's provisioning self-heals.
+func (s *captchaConfigStore) Activate(ctx context.Context, provider leapmuxv1.CaptchaProvider) error {
+	if err := s.conn.q.DeselectCaptchaConfigs(ctx); err != nil {
+		return mapErr(err)
+	}
+	return mapErr(s.conn.q.SelectCaptchaConfig(ctx, provider))
+}
+
+func (s *captchaConfigStore) SetEnabled(ctx context.Context, enabled bool) error {
+	return mapErr(s.conn.q.SetCaptchaEnabled(ctx, ptrconv.BoolToInt64(enabled)))
 }
 
 func (s *captchaConfigStore) Delete(ctx context.Context) error {
 	return mapErr(s.conn.q.DeleteCaptchaConfig(ctx))
 }
 
-func (s *captchaConfigStore) ConsumeCaptchaSalt(ctx context.Context, p store.ConsumeCaptchaSaltParams) (int64, error) {
-	rows, err := s.conn.q.ConsumeCaptchaSalt(ctx, gendb.ConsumeCaptchaSaltParams{
+func (s *captchaConfigStore) DeleteProvider(ctx context.Context, provider leapmuxv1.CaptchaProvider) error {
+	return mapErr(s.conn.q.DeleteCaptchaConfigProvider(ctx, provider))
+}
+
+func (s *captchaConfigStore) ConsumeAltchaSalt(ctx context.Context, p store.ConsumeAltchaSaltParams) (int64, error) {
+	rows, err := s.conn.q.ConsumeAltchaSalt(ctx, gendb.ConsumeAltchaSaltParams{
 		Salt:      p.Salt,
 		ExpiresAt: sqltime.NewSQLiteTime(p.ExpiresAt),
 	})

@@ -29,7 +29,10 @@ import (
 // so challenge issuance and enforcement cannot disagree; tests pass a stub.
 type CaptchaService interface {
 	Describe(ctx context.Context) (captcha.Config, bool, error)
-	ChallengeJSON(ctx context.Context) (string, error)
+	// AltchaChallengeJSON is ALTCHA-specific by name because it is by
+	// behavior: it returns "" when the selected provider is external
+	// (those mint tokens client-side and have nothing to issue).
+	AltchaChallengeJSON(ctx context.Context) (string, error)
 }
 
 // disabledCaptcha serves the nil Captcha case: test and embedding wiring
@@ -43,7 +46,7 @@ func (disabledCaptcha) Describe(context.Context) (captcha.Config, bool, error) {
 	return cfg, false, nil
 }
 
-func (disabledCaptcha) ChallengeJSON(context.Context) (string, error) {
+func (disabledCaptcha) AltchaChallengeJSON(context.Context) (string, error) {
 	return "", nil
 }
 
@@ -388,13 +391,22 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	// failing the whole endpoint, mirroring the providers flag above: the
 	// rest of the system info stays usable, and the captcha interceptor
 	// still fails closed on its own for the procedures it protects.
+	//
+	// The provider is zero (UNSPECIFIED) on that degraded path — never a
+	// wrong concrete provider — and clients treat anything but a known
+	// enum as altcha.
 	var captchaEnabled bool
-	var captchaAlgorithm string
+	var captchaProvider leapmuxv1.CaptchaProvider
+	var captchaSiteKey string
+	var altchaAlgorithm string
 	captchaCfg, _, err := s.captcha.Describe(ctx)
 	if err != nil {
 		slog.Warn("describe captcha config failed; reporting captcha disabled", "error", err)
 	} else {
-		captchaEnabled, captchaAlgorithm = captchaCfg.Enabled, captchaCfg.Algorithm
+		captchaEnabled = captchaCfg.Enabled
+		captchaProvider = captchaCfg.Provider
+		captchaSiteKey = captchaCfg.SiteKey()
+		altchaAlgorithm = captchaCfg.AltchaAlgorithm()
 	}
 
 	// Decide what URL workers should target. Precedence:
@@ -417,31 +429,34 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
-		SignupEnabled:    s.cfg.SignupEnabled,
-		SoloMode:         s.cfg.SoloMode,
-		SetupRequired:    setupRequired,
-		Version:          version.Value,
-		CommitHash:       version.CommitHash,
-		CommitTime:       version.CommitTime,
-		BuildTime:        version.BuildTime,
-		Branch:           version.Branch,
-		OauthEnabled:     len(providers) > 0,
-		WorkerHubUrl:     workerHubURL,
-		EmailEnabled:     s.cfg.SmtpHost != "",
-		CaptchaEnabled:   captchaEnabled,
-		CaptchaAlgorithm: captchaAlgorithm,
+		SignupEnabled:   s.cfg.SignupEnabled,
+		SoloMode:        s.cfg.SoloMode,
+		SetupRequired:   setupRequired,
+		Version:         version.Value,
+		CommitHash:      version.CommitHash,
+		CommitTime:      version.CommitTime,
+		BuildTime:       version.BuildTime,
+		Branch:          version.Branch,
+		OauthEnabled:    len(providers) > 0,
+		WorkerHubUrl:    workerHubURL,
+		EmailEnabled:    s.cfg.SmtpHost != "",
+		CaptchaEnabled:  captchaEnabled,
+		AltchaAlgorithm: altchaAlgorithm,
+		CaptchaProvider: captchaProvider,
+		CaptchaSiteKey:  captchaSiteKey,
 	}), nil
 }
 
-// GetCaptchaChallenge issues a fresh ALTCHA challenge for the caller to
+// GetAltchaChallenge issues a fresh ALTCHA challenge for the caller to
 // solve before submitting Login/SignUp-family requests. It is public: the
-// challenge carries no secret, and issuance costs one HMAC.
-func (s *AuthService) GetCaptchaChallenge(ctx context.Context, req *connect.Request[leapmuxv1.GetCaptchaChallengeRequest]) (*connect.Response[leapmuxv1.GetCaptchaChallengeResponse], error) {
-	challengeJSON, err := s.captcha.ChallengeJSON(ctx)
+// challenge carries no secret, and issuance costs one HMAC. Empty when
+// the selected provider is external — those mint tokens client-side.
+func (s *AuthService) GetAltchaChallenge(ctx context.Context, req *connect.Request[leapmuxv1.GetAltchaChallengeRequest]) (*connect.Response[leapmuxv1.GetAltchaChallengeResponse], error) {
+	challengeJSON, err := s.captcha.AltchaChallengeJSON(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewResponse(&leapmuxv1.GetCaptchaChallengeResponse{
+	return connect.NewResponse(&leapmuxv1.GetAltchaChallengeResponse{
 		ChallengeJson: challengeJSON,
 	}), nil
 }

@@ -55,10 +55,11 @@ var publicProcedures = map[string]bool{
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                  true,
 	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:              true,
 	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:                true,
-	// Public by design: challenges carry no secret and must be fetchable
-	// before login. The captcha interceptor guards the procedures that
-	// consume solutions, not the one that issues challenges.
-	leapmuxv1connect.AuthServiceGetCaptchaChallengeProcedure: true,
+	// Public by design: ALTCHA challenges carry no secret and must be
+	// fetchable before login. The captcha interceptor guards the
+	// procedures that consume solutions, not the one that issues
+	// challenges.
+	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure: true,
 }
 
 // PublicProcedures lists every procedure the auth interceptor waives, so

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -22,13 +23,27 @@ func openAdminStore(t *testing.T, dir string) store.Store {
 	return st
 }
 
+func getSelectedRow(t *testing.T, st store.Store) *store.CaptchaConfig {
+	t.Helper()
+	row, err := st.CaptchaConfig().GetSelected(context.Background())
+	require.NoError(t, err)
+	return row
+}
+
+func altchaSettingsOf(t *testing.T, row *store.CaptchaConfig) captcha.AltchaSettings {
+	t.Helper()
+	var s captcha.AltchaSettings
+	require.NoError(t, json.Unmarshal([]byte(row.Settings), &s))
+	return s
+}
+
 func TestCLI_CaptchaSetShowEnableDisableReset(t *testing.T) {
 	dir := setupTestDataDir(t)
 
 	// show on a fresh install reports built-in defaults, writing nothing.
 	require.NoError(t, runCaptchaShow(testAdminCtx, []string{"--data-dir", dir}))
 	st := openAdminStore(t, dir)
-	_, err := st.CaptchaConfig().Get(context.Background())
+	_, err := st.CaptchaConfig().GetSelected(context.Background())
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
 	// set provisions the row and persists the change.
@@ -36,25 +51,24 @@ func TestCLI_CaptchaSetShowEnableDisableReset(t *testing.T) {
 		"--algorithm", "SHA-256", "--cost", "2000", "--expires", "10m",
 		"--data-dir", dir,
 	}))
-	row, err := st.CaptchaConfig().Get(context.Background())
-	require.NoError(t, err)
+	row := getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderAltcha, row.Provider)
 	assert.True(t, row.Enabled)
-	assert.Equal(t, "SHA-256", row.Algorithm)
-	assert.EqualValues(t, 2000, row.Cost)
-	assert.EqualValues(t, 600, row.ChallengeExpirySeconds)
+	s := altchaSettingsOf(t, row)
+	assert.Equal(t, "SHA-256", s.Algorithm)
+	assert.EqualValues(t, 2000, s.Cost)
+	assert.EqualValues(t, 600, s.ChallengeExpirySeconds)
 	assert.NotEmpty(t, row.Secret, "set must provision a signing secret")
 
-	// disable keeps settings but flips the switch.
+	// disable keeps settings and the selection but flips the switch.
 	require.NoError(t, runCaptchaSetEnabled(testAdminCtx, []string{"--data-dir", dir}, false))
-	row, err = st.CaptchaConfig().Get(context.Background())
-	require.NoError(t, err)
+	row = getSelectedRow(t, st)
 	assert.False(t, row.Enabled)
-	assert.Equal(t, "SHA-256", row.Algorithm)
+	assert.True(t, row.Selected)
+	assert.Equal(t, "SHA-256", altchaSettingsOf(t, row).Algorithm)
 
 	require.NoError(t, runCaptchaSetEnabled(testAdminCtx, []string{"--data-dir", dir}, true))
-	row, err = st.CaptchaConfig().Get(context.Background())
-	require.NoError(t, err)
-	assert.True(t, row.Enabled)
+	assert.True(t, getSelectedRow(t, st).Enabled)
 
 	// invalid configurations are refused before any write.
 	err = runCaptchaSet(testAdminCtx, []string{"--algorithm", "MD5", "--data-dir", dir})
@@ -71,7 +85,7 @@ func TestCLI_CaptchaSetShowEnableDisableReset(t *testing.T) {
 
 	// reset removes the row entirely.
 	require.NoError(t, runCaptchaReset(testAdminCtx, []string{"--data-dir", dir}))
-	_, err = st.CaptchaConfig().Get(context.Background())
+	_, err = st.CaptchaConfig().GetSelected(context.Background())
 	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
@@ -80,28 +94,25 @@ func TestCLI_CaptchaSetSecretSurvivesAndVerifies(t *testing.T) {
 
 	require.NoError(t, runCaptchaSetEnabled(testAdminCtx, []string{"--data-dir", dir}, true))
 	st := openAdminStore(t, dir)
-	row, err := st.CaptchaConfig().Get(context.Background())
-	require.NoError(t, err)
-	firstSecret := row.Secret
+	firstSecret := getSelectedRow(t, st).Secret
 
-	// A subsequent set keeps the same secret: the UPDATE never touches the
-	// column, so no caller can lose or corrupt the key.
+	// A subsequent set keeps the same secret: the settings-only update
+	// never touches the column, so no caller can lose or corrupt the key.
 	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--cost", "20000", "--data-dir", dir}))
-	row, err = st.CaptchaConfig().Get(context.Background())
-	require.NoError(t, err)
+	row := getSelectedRow(t, st)
 	assert.Equal(t, firstSecret, row.Secret, "set must not rotate the signing secret")
-	assert.EqualValues(t, 20000, row.Cost)
+	assert.EqualValues(t, 20000, altchaSettingsOf(t, row).Cost)
 
 	// The stored secret decrypts with the data-dir keystore and produces
 	// verifiable challenges.
 	ks, err := keystore.LoadOrGenerate(adminConfig(dir).EncryptionKeyFilePath())
 	require.NoError(t, err)
-	plain, err := ks.Decrypt(row.Secret, keystore.CaptchaSecretAAD())
+	plain, err := ks.Decrypt(row.Secret, keystore.CaptchaSecretAAD("altcha"))
 	require.NoError(t, err)
 	assert.Len(t, plain, 32)
 
 	m := captcha.NewManager(st, ks, false)
-	challengeJSON, err := m.ChallengeJSON(context.Background())
+	challengeJSON, err := m.AltchaChallengeJSON(context.Background())
 	require.NoError(t, err)
 	assert.NotEmpty(t, challengeJSON)
 }
@@ -118,10 +129,9 @@ func TestCLI_CaptchaSetFamilySwitchResetsParams(t *testing.T) {
 		"--algorithm", "ARGON2ID", "--memory-cost", "32768", "--parallelism", "2",
 		"--data-dir", dir,
 	}))
-	row, err := st.CaptchaConfig().Get(context.Background())
-	require.NoError(t, err)
-	assert.EqualValues(t, 32768, row.MemoryCost)
-	assert.EqualValues(t, 2, row.Parallelism)
+	s := altchaSettingsOf(t, getSelectedRow(t, st))
+	assert.EqualValues(t, 32768, s.MemoryCost)
+	assert.EqualValues(t, 2, s.Parallelism)
 
 	// Switching to SCRYPT without touching the memory parameters resets
 	// them to SCRYPT's defaults — 32768 would otherwise become SCRYPT's
@@ -129,13 +139,12 @@ func TestCLI_CaptchaSetFamilySwitchResetsParams(t *testing.T) {
 	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
 		"--algorithm", "SCRYPT", "--data-dir", dir,
 	}))
-	row, err = st.CaptchaConfig().Get(context.Background())
+	s = altchaSettingsOf(t, getSelectedRow(t, st))
+	scryptDefaults, err := captcha.DefaultAltchaSettingsFor("SCRYPT")
 	require.NoError(t, err)
-	scryptDefaults, err := captcha.FamilyDefaults("SCRYPT")
-	require.NoError(t, err)
-	assert.EqualValues(t, scryptDefaults.Cost, row.Cost)
-	assert.EqualValues(t, scryptDefaults.MemoryCost, row.MemoryCost)
-	assert.EqualValues(t, scryptDefaults.Parallelism, row.Parallelism)
+	assert.EqualValues(t, scryptDefaults.Cost, s.Cost)
+	assert.EqualValues(t, scryptDefaults.MemoryCost, s.MemoryCost)
+	assert.EqualValues(t, scryptDefaults.Parallelism, s.Parallelism)
 }
 
 // TestCLI_CaptchaSetExplicitZeroRestoresDefault pins the explicit-flag
@@ -151,10 +160,117 @@ func TestCLI_CaptchaSetExplicitZeroRestoresDefault(t *testing.T) {
 	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
 		"--memory-cost", "0", "--expires", "30m", "--data-dir", dir,
 	}))
-	row, err := st.CaptchaConfig().Get(context.Background())
+	s := altchaSettingsOf(t, getSelectedRow(t, st))
+	argonDefaults, err := captcha.DefaultAltchaSettingsFor("ARGON2ID")
 	require.NoError(t, err)
-	argonDefaults, err := captcha.FamilyDefaults("ARGON2ID")
+	assert.EqualValues(t, argonDefaults.MemoryCost, s.MemoryCost, "explicit 0 must restore the family default")
+	assert.EqualValues(t, 1800, s.ChallengeExpirySeconds)
+}
+
+// TestCLI_CaptchaProviderSwitching pins the provider lifecycle: switching
+// to an external provider requires its keys, per-provider rows keep their
+// own secrets across switches, and provider-foreign flags are refused.
+func TestCLI_CaptchaProviderSwitching(t *testing.T) {
+	dir := setupTestDataDir(t)
+	st := openAdminStore(t, dir)
+
+	// Provision altcha and capture its secret.
+	require.NoError(t, runCaptchaSetEnabled(testAdminCtx, []string{"--data-dir", dir}, true))
+	altchaSecret := getSelectedRow(t, st).Secret
+
+	// Switching to an external provider without its keys is refused.
+	err := runCaptchaSet(testAdminCtx, []string{"--provider", "turnstile", "--data-dir", dir})
+	require.ErrorContains(t, err, "requires --site-key and --secret")
+	err = runCaptchaSet(testAdminCtx, []string{"--provider", "turnstile", "--site-key", "1x00AA", "--data-dir", dir})
+	require.ErrorContains(t, err, "requires --site-key and --secret")
+
+	// Unknown providers are refused.
+	err = runCaptchaSet(testAdminCtx, []string{"--provider", "hcaptcha", "--site-key", "k", "--secret", "s", "--data-dir", dir})
+	require.ErrorContains(t, err, "unsupported captcha provider")
+
+	// Switching to Turnstile with keys selects it, enabled, with the
+	// operator's secret stored encrypted.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--provider", "turnstile", "--site-key", "1x00000000000000000000AA", "--secret", "0x00AA",
+		"--data-dir", dir,
+	}))
+	row := getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderTurnstile, row.Provider)
+	assert.True(t, row.Enabled)
+	var ts captcha.TurnstileSettings
+	require.NoError(t, json.Unmarshal([]byte(row.Settings), &ts))
+	assert.Equal(t, "1x00000000000000000000AA", ts.SiteKey)
+
+	ks, err := keystore.LoadOrGenerate(adminConfig(dir).EncryptionKeyFilePath())
 	require.NoError(t, err)
-	assert.EqualValues(t, argonDefaults.MemoryCost, row.MemoryCost, "explicit 0 must restore the family default")
-	assert.EqualValues(t, 1800, row.ChallengeExpirySeconds)
+	plain, err := ks.Decrypt(row.Secret, keystore.CaptchaSecretAAD("turnstile"))
+	require.NoError(t, err)
+	assert.Equal(t, "0x00AA", string(plain))
+
+	// The altcha row survives the switch with its original secret.
+	altchaRow, err := st.CaptchaConfig().Get(context.Background(), captcha.ProviderAltcha)
+	require.NoError(t, err)
+	assert.False(t, altchaRow.Selected)
+	assert.Equal(t, altchaSecret, altchaRow.Secret, "switching away must not regenerate the altcha secret")
+
+	// Provider-foreign flags are refused rather than ignored.
+	err = runCaptchaSet(testAdminCtx, []string{"--cost", "20000", "--data-dir", dir})
+	require.ErrorContains(t, err, "altcha-only flag")
+	err = runCaptchaSet(testAdminCtx, []string{"--min-score", "0.7", "--data-dir", dir})
+	require.ErrorContains(t, err, "recaptcha_v3-only flag")
+
+	// A settings-only edit of the selected external provider updates the
+	// site key, keeps the secret, and leaves the selection enabled.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--site-key", "2x00BB", "--data-dir", dir}))
+	row = getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderTurnstile, row.Provider)
+	assert.True(t, row.Enabled)
+	secretBefore := row.Secret
+	require.NoError(t, json.Unmarshal([]byte(row.Settings), &ts))
+	assert.Equal(t, "2x00BB", ts.SiteKey)
+	plain, err = ks.Decrypt(row.Secret, keystore.CaptchaSecretAAD("turnstile"))
+	require.NoError(t, err)
+	assert.Equal(t, "0x00AA", string(plain), "a site-key edit must not lose the secret")
+	require.Equal(t, secretBefore, row.Secret)
+
+	// Switching back to altcha reuses the original row and its secret.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--provider", "altcha", "--data-dir", dir}))
+	row = getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderAltcha, row.Provider)
+	assert.True(t, row.Enabled)
+	assert.Equal(t, altchaSecret, row.Secret)
+
+	// The recaptcha_v3 flow persists its score setting.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--provider", "recaptcha_v3", "--site-key", "site", "--secret", "sec", "--min-score", "0.7",
+		"--data-dir", dir,
+	}))
+	row = getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderRecaptchaV3, row.Provider)
+	var rs captcha.RecaptchaV3Settings
+	require.NoError(t, json.Unmarshal([]byte(row.Settings), &rs))
+	assert.Equal(t, "site", rs.SiteKey)
+	assert.Equal(t, 0.7, rs.MinScore)
+
+	// An explicit --min-score 0 restores the 0.5 default rather than
+	// being indistinguishable from an unset flag.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--min-score", "0", "--data-dir", dir}))
+	row = getSelectedRow(t, st)
+	require.NoError(t, json.Unmarshal([]byte(row.Settings), &rs))
+	assert.Equal(t, 0.5, rs.MinScore)
+
+	// Per-provider reset drops only the named row. Deleting the SELECTED
+	// provider leaves nothing selected until the hub's lazy provisioning
+	// re-arms the altcha row.
+	require.NoError(t, runCaptchaReset(testAdminCtx, []string{"--provider", "recaptcha_v3", "--data-dir", dir}))
+	_, err = st.CaptchaConfig().Get(context.Background(), captcha.ProviderRecaptchaV3)
+	assert.ErrorIs(t, err, store.ErrNotFound)
+	_, err = st.CaptchaConfig().GetSelected(context.Background())
+	assert.ErrorIs(t, err, store.ErrNotFound, "the hub lazily re-provisions altcha on next use")
+	rows, err := st.CaptchaConfig().List(context.Background())
+	require.NoError(t, err)
+	assert.NotEmpty(t, rows, "the other providers' rows survive")
+
+	err = runCaptchaReset(testAdminCtx, []string{"--provider", "nope", "--data-dir", dir})
+	require.ErrorContains(t, err, "unsupported captcha provider")
 }

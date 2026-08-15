@@ -3,6 +3,7 @@ import type { BuildInfo } from '~/lib/buildEnv'
 import { createSignal } from 'solid-js'
 import { authClient } from '~/api/clients'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
+import { CaptchaProvider as GenCaptchaProvider } from '~/generated/leapmux/v1/auth_pb'
 import { frontendBuildInfo } from '~/lib/buildEnv'
 import { formatLocalDateTime } from './dateFormat'
 
@@ -16,8 +17,21 @@ let backendBuildInfo: BuildInfo = { version: '', commitHash: '', commitTime: '',
 // The captcha state is a signal, not a plain variable, so `<Show>` gates in
 // the auth forms re-evaluate when a (re)load of the system info flips the
 // flag — a plain module read evaluates once at mount and never again.
+export type CaptchaProvider = GenCaptchaProvider
+
+// The hub's degraded reporting path sends UNSPECIFIED, and an enum value
+// this build does not know can arrive after a downgrade — both narrow to
+// ALTCHA, the hub's own fallback.
+function parseCaptchaProvider(raw: GenCaptchaProvider): GenCaptchaProvider {
+  return raw === GenCaptchaProvider.RECAPTCHA_V3 || raw === GenCaptchaProvider.TURNSTILE
+    ? raw
+    : GenCaptchaProvider.ALTCHA
+}
+
 const [captchaEnabledSignal, setCaptchaEnabled] = createSignal(false)
-const [captchaAlgorithmSignal, setCaptchaAlgorithm] = createSignal('')
+const [captchaProviderSignal, setCaptchaProvider] = createSignal<GenCaptchaProvider>(GenCaptchaProvider.ALTCHA)
+const [captchaSiteKeySignal, setCaptchaSiteKey] = createSignal('')
+const [altchaAlgorithmSignal, setAltchaAlgorithm] = createSignal('')
 const [systemInfoLoadedSignal, setSystemInfoLoaded] = createSignal(false)
 
 // loadSystemInfo fetches the hub's system info and caches it (unless `force`).
@@ -44,7 +58,9 @@ export async function loadSystemInfo(force = false): Promise<void> {
   workerHubUrl = resp.workerHubUrl
   emailEnabled = resp.emailEnabled
   setCaptchaEnabled(resp.captchaEnabled)
-  setCaptchaAlgorithm(resp.captchaAlgorithm)
+  setCaptchaProvider(parseCaptchaProvider(resp.captchaProvider ?? GenCaptchaProvider.UNSPECIFIED))
+  setCaptchaSiteKey(resp.captchaSiteKey)
+  setAltchaAlgorithm(resp.altchaAlgorithm)
   backendBuildInfo = {
     version: resp.version,
     commitHash: resp.commitHash,
@@ -84,7 +100,7 @@ export function isSystemInfoLoaded(): boolean {
   return systemInfoLoadedSignal()
 }
 
-// isCaptchaEnabled returns whether the hub requires ALTCHA proof-of-work on
+// isCaptchaEnabled returns whether the hub requires a captcha token on
 // Login/SignUp/CompleteOAuthSignup. Backed by a signal, so a `<Show>` that
 // reads it re-evaluates when the system info (re)loads — including the
 // denial-driven refresh after an admin toggles captcha at runtime.
@@ -92,10 +108,27 @@ export function isCaptchaEnabled(): boolean {
   return captchaEnabledSignal()
 }
 
-// getCaptchaAlgorithm returns the hub's active ALTCHA algorithm name
+// getCaptchaProvider returns the active captcha provider (the generated
+// CaptchaProvider enum: ALTCHA, RECAPTCHA_V3, TURNSTILE — never
+// UNSPECIFIED). The widget layer switches on this to mount the right
+// field; backed by a signal so a provider switch reaches the forms on the
+// next system-info reload without a page refresh.
+export function getCaptchaProvider(): CaptchaProvider {
+  return captchaProviderSignal()
+}
+
+// getCaptchaSiteKey returns the public site key for external providers
+// (recaptcha_v3 / turnstile); empty for altcha, whose challenge arrives
+// per submission via GetAltchaChallenge instead.
+export function getCaptchaSiteKey(): string {
+  return captchaSiteKeySignal()
+}
+
+// getAltchaAlgorithm returns the hub's active ALTCHA algorithm name
 // (informational; the authoritative parameters arrive with each challenge).
-export function getCaptchaAlgorithm(): string {
-  return captchaAlgorithmSignal()
+// Empty when another provider is selected.
+export function getAltchaAlgorithm(): string {
+  return altchaAlgorithmSignal()
 }
 
 // getWorkerHubUrl returns the URL workers should target when registering.

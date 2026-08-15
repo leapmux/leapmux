@@ -31,7 +31,7 @@ var captchaExemptRationale = map[string]string{
 	leapmuxv1connect.AuthServiceGetSystemInfoProcedure:                      "cheap pre-login read",
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                  "cheap pre-login read",
 	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure:              "read keyed by a single-use pending id; no expensive action",
-	leapmuxv1connect.AuthServiceGetCaptchaChallengeProcedure:                "issues the challenges themselves; protecting it would be circular",
+	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:                 "issues the ALTCHA challenges themselves; protecting it would be circular",
 	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:                "caller is a worker process with a registration key, not a human form",
 	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                 "caller is a worker process with an auth_token, not a human form",
 	leapmuxv1connect.WorkerReconcilerServiceListOwnedTabsForWorkerProcedure: "caller is a worker process with an auth_token, not a human form",
@@ -64,4 +64,15 @@ func TestProtectedProceduresAreClassified(t *testing.T) {
 		assert.Truef(t, protected != exempted,
 			"public procedure %q is unclassified or double-classified: either add it to protectedProcedures with a rationale, or record why it is exempt in captchaExemptRationale", procedure)
 	}
+
+	// Every protected procedure also carries an action name (the string
+	// its clients mint provider tokens under; reCAPTCHA verifies it
+	// server-side), so a new protected procedure cannot silently reach
+	// Verify with an empty action.
+	for procedure := range protectedProcedures {
+		action, ok := procedureActions[procedure]
+		assert.Truef(t, ok, "protected procedure %q has no action in procedureActions; add the action its clients execute", procedure)
+		assert.NotEmptyf(t, action, "protected procedure %q maps to an empty action", procedure)
+	}
+	assert.Len(t, procedureActions, len(protectedProcedures), "procedureActions and protectedProcedures must stay in lockstep")
 }

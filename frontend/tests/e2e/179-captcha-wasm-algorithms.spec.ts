@@ -2,7 +2,7 @@ import type { DevServerHandle } from './helpers/devServer'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
-import { fetchCaptchaChallenge } from './helpers/altcha'
+import { fetchAltchaChallenge } from './helpers/altcha'
 import { startDevServer, stopDevServer } from './helpers/devServer'
 import { getGlobalState } from './helpers/server'
 import { loginViaUI } from './helpers/ui'
@@ -27,7 +27,7 @@ async function waitForChallengeAlgorithm(hubUrl: string, algorithm: string, time
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      const challenge = await fetchCaptchaChallenge(hubUrl)
+      const challenge = await fetchAltchaChallenge(hubUrl)
       if (challenge?.parameters.algorithm === algorithm) {
         return
       }

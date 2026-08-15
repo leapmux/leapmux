@@ -3,7 +3,8 @@ import type { Component } from 'solid-js'
 import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createEffect, createSignal, Show } from 'solid-js'
-import { CaptchaField, CaptchaHoneypot } from '~/components/common/CaptchaField'
+import { CaptchaField } from '~/components/common/CaptchaField'
+import { CaptchaHoneypot } from '~/components/common/CaptchaHoneypot'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
@@ -147,6 +148,7 @@ export const LoginPage: Component = () => {
           <CaptchaHoneypot value={captcha.honeypot()} onInput={captcha.setHoneypot} />
           <Show when={captcha.required()}>
             <CaptchaField
+              action="login"
               ref={captcha.bindField}
               onPayload={captcha.setPayload}
               onUnavailable={captcha.noteUnavailable}

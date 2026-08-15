@@ -1,13 +1,13 @@
 /// <reference types="vitest/globals" />
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchCaptchaChallenge } from './captchaChallenge'
+import { fetchAltchaChallenge } from './altchaChallenge'
 
-const mockGetCaptchaChallenge = vi.fn()
+const mockGetAltchaChallenge = vi.fn()
 vi.mock('~/api/clients', () => ({
   authClient: {
     // The wrapper defers the const access past vi.mock's hoisting.
-    getCaptchaChallenge: (...args: []) => mockGetCaptchaChallenge(...args),
+    getAltchaChallenge: (...args: []) => mockGetAltchaChallenge(...args),
   },
 }))
 
@@ -17,22 +17,22 @@ vi.mock('~/lib/altchaSolvers', () => ({
 }))
 
 vi.mock('~/lib/systemInfo', () => ({
-  getCaptchaAlgorithm: () => 'PBKDF2/SHA-256',
+  getAltchaAlgorithm: () => 'PBKDF2/SHA-256',
 }))
 
-describe('fetchCaptchaChallenge', () => {
+describe('fetchAltchaChallenge', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('parses the interchange blob and pre-warms the issued algorithm', async () => {
-    mockGetCaptchaChallenge.mockResolvedValue({
+    mockGetAltchaChallenge.mockResolvedValue({
       challengeJson: JSON.stringify({
         parameters: { algorithm: 'SCRYPT', salt: 'abc' },
         signature: 'sig',
       }),
     })
-    const challenge = await fetchCaptchaChallenge()
+    const challenge = await fetchAltchaChallenge()
     expect(challenge?.parameters?.algorithm).toBe('SCRYPT')
     // The advertised algorithm pre-warms first (worker download overlaps
     // the fetch); the challenge's own algorithm pre-warms after.
@@ -43,12 +43,12 @@ describe('fetchCaptchaChallenge', () => {
   it('returns null for the empty blob (hub reports no challenge)', async () => {
     // JSON.parse("") throws; the stand-down must not turn into a load
     // error that dead-locks the form.
-    mockGetCaptchaChallenge.mockResolvedValue({ challengeJson: '' })
-    await expect(fetchCaptchaChallenge()).resolves.toBeNull()
+    mockGetAltchaChallenge.mockResolvedValue({ challengeJson: '' })
+    await expect(fetchAltchaChallenge()).resolves.toBeNull()
   })
 
   it('propagates transport failures for the caller to surface', async () => {
-    mockGetCaptchaChallenge.mockRejectedValue(new Error('network'))
-    await expect(fetchCaptchaChallenge()).rejects.toThrow('network')
+    mockGetAltchaChallenge.mockRejectedValue(new Error('network'))
+    await expect(fetchAltchaChallenge()).rejects.toThrow('network')
   })
 })

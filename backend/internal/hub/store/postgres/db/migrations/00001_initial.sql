@@ -498,30 +498,36 @@ CREATE TABLE pending_oauth_signups (
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ALTCHA proof-of-work captcha configuration (singleton row, id = 1).
--- An absent row means the built-in defaults apply: enabled, PBKDF2/SHA-256,
--- cost 10000. The secret is generated on first use by the hub.
+-- Captcha provider configuration: one row per provider, keyed by the
+-- CaptchaProvider proto enum's raw number (see proto/leapmux/v1/auth.proto;
+-- 1=altcha, 2=recaptcha_v3, 3=turnstile). Exactly one row is
+-- selected (the active provider, remembered across disable so a later
+-- enable restores it); `enabled` on that row is the verification on/off
+-- switch. Provider-specific settings live in the settings JSON, so no
+-- column is shared across providers. Each row owns its secret —
+-- keystore-encrypted with a provider-scoped AAD — and switching
+-- providers never regenerates it. An absent altcha row means the
+-- built-in defaults apply; the hub provisions one (with a fresh secret)
+-- on first use.
 CREATE TABLE captcha_config (
-    id                       BIGINT PRIMARY KEY CHECK (id = 1),
-    enabled                  BOOLEAN NOT NULL DEFAULT TRUE,
-    algorithm                TEXT NOT NULL DEFAULT 'PBKDF2/SHA-256',
-    cost                     BIGINT NOT NULL DEFAULT 10000,
-    memory_cost              BIGINT NOT NULL DEFAULT 0,
-    parallelism              BIGINT NOT NULL DEFAULT 0,
-    challenge_expiry_seconds BIGINT NOT NULL DEFAULT 1200,
-    secret                   BYTEA NOT NULL,
-    updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    provider   INTEGER PRIMARY KEY, -- CaptchaProvider proto enum value
+    selected   BOOLEAN NOT NULL DEFAULT FALSE,
+    enabled    BOOLEAN NOT NULL DEFAULT TRUE,
+    secret     BYTEA NOT NULL,
+    settings   TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Consumed captcha salts: single-use enforcement for solved challenges,
+-- Consumed ALTCHA salts: single-use enforcement for solved challenges,
 -- shared across hub instances and restarts. A row's presence means the
 -- salt's solution was accepted once; the cleanup loop purges rows past
--- their challenge expiry.
-CREATE TABLE captcha_used_salts (
+-- their challenge expiry. External providers (reCAPTCHA, Turnstile)
+-- enforce single use at their siteverify endpoint and need no table.
+CREATE TABLE altcha_used_salts (
     salt       TEXT COLLATE "C" PRIMARY KEY,
     expires_at TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX idx_captcha_used_salts_expires_at ON captcha_used_salts(expires_at);
+CREATE INDEX idx_altcha_used_salts_expires_at ON altcha_used_salts(expires_at);
 
 -- Per-operation rate-limit overrides. Absent rows fall back to the code-side
 -- defaults; operations are catalogued in Go (internal/hub/ratelimit).
@@ -543,7 +549,7 @@ DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;
 DROP TABLE IF EXISTS pending_oauth_signups;
 DROP TABLE IF EXISTS rate_limit_config;
-DROP TABLE IF EXISTS captcha_used_salts;
+DROP TABLE IF EXISTS altcha_used_salts;
 DROP TABLE IF EXISTS captcha_config;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;

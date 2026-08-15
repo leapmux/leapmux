@@ -50,8 +50,8 @@ var (
 
 	CaptchaVerificationsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "leapmux_captcha_verifications_total",
-		Help: "ALTCHA captcha verification outcomes on protected procedures.",
-	}, []string{"result"})
+		Help: "Captcha verification outcomes on protected procedures, by provider (altcha, recaptcha_v3, turnstile).",
+	}, []string{"provider", "result"})
 
 	ActiveTerminals = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "leapmux_active_terminals",

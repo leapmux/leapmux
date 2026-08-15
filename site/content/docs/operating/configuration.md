@@ -205,16 +205,17 @@ Captcha and rate-limit settings are **not config-file keys** — they live in th
 ```bash
 leapmux admin captcha show
 leapmux admin captcha set --algorithm PBKDF2/SHA-256 --cost 10000
+leapmux admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
 leapmux admin rate-limit list
 ```
 
-Out of the box, with no configuration at all: captcha is **enabled** with `PBKDF2/SHA-256` at cost `10000` (challenges expire after 20 minutes), and `change-password` is limited to 5 failed attempts per 15 minutes per user. Solo mode enforces neither. Two knobs deserve a warning before you turn them:
+Out of the box, with no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `change-password` is limited to 5 failed attempts per 15 minutes per user. Google reCAPTCHA v3 and Cloudflare Turnstile are one `--provider` switch away (see the admin CLI chapter). Solo mode enforces neither. Two knobs deserve a warning before you turn them:
 
 - **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans.
 - The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side), so issuing challenges stays cheap even at high costs.
-- **Browsers only solve challenges in a secure context** (HTTPS, or localhost): the solvers need WebCrypto. A hub reached over plain HTTP from another machine cannot present a solvable captcha — put TLS in front (reverse proxy) or disable captcha for such deployments. The honeypot check works everywhere.
+- **Browsers only solve challenges in a secure context** (HTTPS, or localhost): the ALTCHA solvers need WebCrypto, and the external providers' scripts refuse unusual origins. A hub reached over plain HTTP from another machine cannot present a solvable captcha — put TLS in front (reverse proxy), switch to an external provider behind TLS, or disable captcha for such deployments. The honeypot check works everywhere.
 
-See the [`captcha`](/docs/operating/admin-cli/#captcha--altcha-bot-protection) and [`rate-limit`](/docs/operating/admin-cli/#rate-limit--per-user-operation-limits) admin CLI chapters for the full flag reference.
+See the [`captcha`](/docs/operating/admin-cli/#captcha--bot-protection-altcha-recaptcha-v3-turnstile) and [`rate-limit`](/docs/operating/admin-cli/#rate-limit--per-user-operation-limits) admin CLI chapters for the full flag reference.
 
 ### SMTP options
 

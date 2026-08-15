@@ -25,14 +25,14 @@ const deriveKeys: Record<string, DeriveKeyFunction> = {
  * Fetch the next challenge over the raw Connect-API (Node, no browser).
  * Returns null when the hub reports no challenge (captcha disabled).
  */
-export async function fetchCaptchaChallenge(hubUrl: string): Promise<Challenge | null> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/GetCaptchaChallenge`, {
+export async function fetchAltchaChallenge(hubUrl: string): Promise<Challenge | null> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/GetAltchaChallenge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
   })
   if (!res.ok) {
-    throw new Error(`getCaptchaChallenge failed: ${res.status}`)
+    throw new Error(`getAltchaChallenge failed: ${res.status}`)
   }
   const data = await res.json() as { challengeJson: string }
   if (!data.challengeJson) {
@@ -48,7 +48,7 @@ export async function fetchCaptchaChallenge(hubUrl: string): Promise<Challenge |
  * payload when the hub has captcha disabled.
  */
 export async function solveCaptchaViaAPI(hubUrl: string): Promise<{ captchaPayload: string, honeypot: string }> {
-  const challenge = await fetchCaptchaChallenge(hubUrl)
+  const challenge = await fetchAltchaChallenge(hubUrl)
   if (!challenge) {
     return { captchaPayload: '', honeypot: '' }
   }
