@@ -167,6 +167,38 @@ func TestCLI_CaptchaSetExplicitZeroRestoresDefault(t *testing.T) {
 	assert.EqualValues(t, 1800, s.ChallengeExpirySeconds)
 }
 
+// TestCLI_CaptchaSetAlgorithmSwitchKeepsExpiry pins the fix for the
+// algorithm switch: only the family-specific parameters reset; the
+// algorithm-independent challenge expiry keeps its stored value.
+func TestCLI_CaptchaSetAlgorithmSwitchKeepsExpiry(t *testing.T) {
+	dir := setupTestDataDir(t)
+	st := openAdminStore(t, dir)
+
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--algorithm", "ARGON2ID", "--expires", "5m", "--data-dir", dir,
+	}))
+	assert.EqualValues(t, 300, altchaSettingsOf(t, getSelectedRow(t, st)).ChallengeExpirySeconds)
+
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--algorithm", "SCRYPT", "--data-dir", dir}))
+	s := altchaSettingsOf(t, getSelectedRow(t, st))
+	assert.Equal(t, "SCRYPT", s.Algorithm)
+	assert.EqualValues(t, 300, s.ChallengeExpirySeconds, "an algorithm switch must not touch the stored expiry")
+}
+
+// TestCLI_CaptchaSetExpiresZeroRestoresDefault pins the explicit-zero
+// idiom for --expires, matching the other tunable flags.
+func TestCLI_CaptchaSetExpiresZeroRestoresDefault(t *testing.T) {
+	dir := setupTestDataDir(t)
+	st := openAdminStore(t, dir)
+
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--expires", "2h", "--data-dir", dir}))
+	assert.EqualValues(t, 7200, altchaSettingsOf(t, getSelectedRow(t, st)).ChallengeExpirySeconds)
+
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--expires", "0", "--data-dir", dir}))
+	defaults := captcha.DefaultAltchaSettings()
+	assert.EqualValues(t, defaults.ChallengeExpirySeconds, altchaSettingsOf(t, getSelectedRow(t, st)).ChallengeExpirySeconds)
+}
+
 // TestCLI_CaptchaProviderSwitching pins the provider lifecycle: switching
 // to an external provider requires its keys, per-provider rows keep their
 // own secrets across switches, and provider-foreign flags are refused.
@@ -183,6 +215,10 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 	require.ErrorContains(t, err, "requires --site-key and --secret")
 	err = runCaptchaSet(testAdminCtx, []string{"--provider", "turnstile", "--site-key", "1x00AA", "--data-dir", dir})
 	require.ErrorContains(t, err, "requires --site-key and --secret")
+	// An empty secret would fail every verification at the provider; it is
+	// refused rather than stored.
+	err = runCaptchaSet(testAdminCtx, []string{"--provider", "turnstile", "--site-key", "1x00AA", "--secret", "", "--data-dir", dir})
+	require.ErrorContains(t, err, "--secret must not be empty")
 
 	// Unknown providers are refused.
 	err = runCaptchaSet(testAdminCtx, []string{"--provider", "hcaptcha", "--site-key", "k", "--secret", "s", "--data-dir", dir})
@@ -259,7 +295,7 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(row.Settings), &rs))
 	assert.Equal(t, 0.5, rs.MinScore)
 
-	// Per-provider reset drops only the named row. Deleting the SELECTED
+	// Per-provider reset drops only that provider's row. Deleting the SELECTED
 	// provider leaves nothing selected until the hub's lazy provisioning
 	// re-arms the altcha row.
 	require.NoError(t, runCaptchaReset(testAdminCtx, []string{"--provider", "recaptcha_v3", "--data-dir", dir}))
@@ -273,4 +309,73 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 
 	err = runCaptchaReset(testAdminCtx, []string{"--provider", "nope", "--data-dir", dir})
 	require.ErrorContains(t, err, "unsupported captcha provider")
+}
+
+// TestCLI_CaptchaSwitchBackKeepsStoredSettings pins the one-row-per-
+// provider contract: a switch back to a provider keeps that row's stored
+// settings — only the selection changes — and a fully configured row
+// switches with no flags at all.
+func TestCLI_CaptchaSwitchBackKeepsStoredSettings(t *testing.T) {
+	dir := setupTestDataDir(t)
+	st := openAdminStore(t, dir)
+
+	// Tune altcha, then leave it for turnstile.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--algorithm", "ARGON2ID", "--cost", "3", "--expires", "7m", "--data-dir", dir,
+	}))
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--provider", "turnstile", "--site-key", "1x00000000000000000000AA", "--secret", "0x00AA",
+		"--data-dir", dir,
+	}))
+
+	// Switch back with no flags: the stored tuning survives. The secret
+	// survives too (pinned by TestCLI_CaptchaProviderSwitching); before
+	// the fix the settings silently reverted to PBKDF2/10000/20m.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--provider", "altcha", "--data-dir", dir}))
+	row := getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderAltcha, row.Provider)
+	s := altchaSettingsOf(t, row)
+	assert.Equal(t, "ARGON2ID", s.Algorithm)
+	assert.EqualValues(t, 3, s.Cost)
+	assert.EqualValues(t, 420, s.ChallengeExpirySeconds)
+
+	// A configured external row switches back the same way: no re-supplied
+	// keys, and the stored min_score survives the round trip.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--provider", "recaptcha_v3", "--site-key", "site", "--secret", "sec", "--min-score", "0.8",
+		"--data-dir", dir,
+	}))
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--provider", "turnstile", "--data-dir", dir}))
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--provider", "recaptcha_v3", "--data-dir", dir}))
+	row = getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderRecaptchaV3, row.Provider)
+	var rs captcha.RecaptchaV3Settings
+	require.NoError(t, json.Unmarshal([]byte(row.Settings), &rs))
+	assert.Equal(t, "site", rs.SiteKey)
+	assert.Equal(t, 0.8, rs.MinScore, "a switch back must keep the stored settings")
+}
+
+// TestCLI_CaptchaSameProviderFlagTunesInPlace pins that naming the
+// already-selected provider with --provider is a tuning edit, not a
+// switch: no keys are demanded and the selection stays.
+func TestCLI_CaptchaSameProviderFlagTunesInPlace(t *testing.T) {
+	dir := setupTestDataDir(t)
+	st := openAdminStore(t, dir)
+
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--provider", "recaptcha_v3", "--site-key", "site", "--secret", "sec",
+		"--data-dir", dir,
+	}))
+
+	// No --site-key/--secret re-supply, no error: the provider is already
+	// selected, so this is an in-place edit.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--provider", "recaptcha_v3", "--min-score", "0.8", "--data-dir", dir,
+	}))
+	row := getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderRecaptchaV3, row.Provider)
+	var rs captcha.RecaptchaV3Settings
+	require.NoError(t, json.Unmarshal([]byte(row.Settings), &rs))
+	assert.Equal(t, "site", rs.SiteKey)
+	assert.Equal(t, 0.8, rs.MinScore)
 }

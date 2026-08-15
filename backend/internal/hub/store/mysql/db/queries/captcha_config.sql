@@ -37,21 +37,28 @@ ON DUPLICATE KEY UPDATE
     secret = VALUES(secret),
     updated_at = CURRENT_TIMESTAMP(3);
 
--- Activation is a deselect-all followed by select-target. Two statements,
--- not one: a reader racing between them sees "no selected provider",
--- which the hub's provisioning self-heals, so the switch can never strand
--- the hub. Selecting also re-enables: choosing a provider means running
--- it.
--- name: DeselectCaptchaConfigs :exec
+-- Activation is one statement: every row becomes selected and enabled
+-- exactly when it is the named provider, so no interleaving of concurrent
+-- activations can ever leave two rows selected or none. Selecting also
+-- re-enables: choosing a provider means running it.
+-- name: ActivateCaptchaConfig :exec
 UPDATE captcha_config
-SET selected = FALSE, enabled = FALSE,
+SET selected = (captcha_config.provider = ?),
+    enabled = (captcha_config.provider = ?),
     updated_at = CURRENT_TIMESTAMP(3);
 
--- name: SelectCaptchaConfig :exec
+-- The hub's first-use self-heal: activate the default provider only when
+-- no row is selected, so a login resolving while an admin CLI switch
+-- commits can never override the admin's selection. The extra derived
+-- table works around MySQL 1093 (no target table in a FROM subquery) -
+-- the wrapper materializes, so the read and the update stay one atomic
+-- statement.
+-- name: ActivateCaptchaConfigIfNoneSelected :exec
 UPDATE captcha_config
-SET selected = TRUE, enabled = TRUE,
+SET selected = (captcha_config.provider = ?),
+    enabled = (captcha_config.provider = ?),
     updated_at = CURRENT_TIMESTAMP(3)
-WHERE provider = ?;
+WHERE NOT EXISTS (SELECT 1 FROM (SELECT 1 FROM captcha_config WHERE selected = TRUE) AS any_selected);
 
 -- name: SetCaptchaEnabled :exec
 UPDATE captcha_config
@@ -83,11 +90,13 @@ ON DUPLICATE KEY UPDATE
 DELETE FROM rate_limit_config WHERE operation = ?;
 
 
--- ConsumeAltchaSalt records a solved challenge's salt as used. The
--- conflict no-op makes the call the single-use decision: 1 row = first
--- use accepted, 0 rows = replay denied.
+-- ConsumeAltchaSalt records a solved challenge's salt as used: 1 row =
+-- first use accepted; the duplicate-key error the wrapper maps to 0
+-- rows = replay denied. An ON DUPLICATE KEY UPDATE no-op cannot carry
+-- that decision here: this connection runs with clientFoundRows (rows
+-- matched, not changed), under which the duplicate reports as 1.
 -- name: ConsumeAltchaSalt :execrows
-INSERT INTO altcha_used_salts (salt, expires_at) VALUES (?, ?) ON DUPLICATE KEY UPDATE salt = salt;
+INSERT INTO altcha_used_salts (salt, expires_at) VALUES (?, ?);
 
 -- name: DeleteExpiredAltchaSalts :execrows
 DELETE FROM altcha_used_salts WHERE expires_at < ?;

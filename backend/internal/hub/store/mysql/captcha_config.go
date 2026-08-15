@@ -74,14 +74,25 @@ func (s *captchaConfigStore) Upsert(ctx context.Context, p store.UpsertCaptchaCo
 	}))
 }
 
-// Activate deselects every provider row, then selects and enables the
-// named one. Two statements, not one: a reader racing between them sees
-// "no selected provider", which the caller's provisioning self-heals.
+// Activate selects and enables the given provider and deselects every
+// other row in one statement, so the exactly-one-selected invariant holds
+// under concurrent activations: last writer wins, never two selected.
 func (s *captchaConfigStore) Activate(ctx context.Context, provider leapmuxv1.CaptchaProvider) error {
-	if err := s.conn.q.DeselectCaptchaConfigs(ctx); err != nil {
-		return mapErr(err)
-	}
-	return mapErr(s.conn.q.SelectCaptchaConfig(ctx, provider))
+	return mapErr(s.conn.q.ActivateCaptchaConfig(ctx, gendb.ActivateCaptchaConfigParams{
+		Provider:   provider,
+		Provider_2: provider,
+	}))
+}
+
+// ActivateIfNoneSelected activates the given provider only when no row is
+// selected. The hub's first-use self-heal uses it, so read-path
+// provisioning can never override an admin CLI selection that commits
+// while a login resolves.
+func (s *captchaConfigStore) ActivateIfNoneSelected(ctx context.Context, provider leapmuxv1.CaptchaProvider) error {
+	return mapErr(s.conn.q.ActivateCaptchaConfigIfNoneSelected(ctx, gendb.ActivateCaptchaConfigIfNoneSelectedParams{
+		Provider:   provider,
+		Provider_2: provider,
+	}))
 }
 
 func (s *captchaConfigStore) SetEnabled(ctx context.Context, enabled bool) error {
@@ -96,12 +107,20 @@ func (s *captchaConfigStore) DeleteProvider(ctx context.Context, provider leapmu
 	return mapErr(s.conn.q.DeleteCaptchaConfigProvider(ctx, provider))
 }
 
+// ConsumeAltchaSalt treats a duplicate salt as a replay (0 rows), not a
+// fault: 1 row = first use accepted. The duplicate arrives as MySQL
+// error 1062 rather than an affected-rows count, because the connection
+// runs with clientFoundRows, under which ON DUPLICATE KEY UPDATE would
+// report the duplicate as 1.
 func (s *captchaConfigStore) ConsumeAltchaSalt(ctx context.Context, p store.ConsumeAltchaSaltParams) (int64, error) {
 	rows, err := s.conn.q.ConsumeAltchaSalt(ctx, gendb.ConsumeAltchaSaltParams{
 		Salt:      p.Salt,
 		ExpiresAt: sqltime.NewMySQLTime(p.ExpiresAt),
 	})
 	if err != nil {
+		if isDupEntry(err) {
+			return 0, nil
+		}
 		return 0, mapErr(err)
 	}
 	return rows, nil

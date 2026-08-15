@@ -1,4 +1,4 @@
-import type { AltchaFieldHandle } from './AltchaField'
+import type { CaptchaFieldHandle } from './CaptchaField'
 /// <reference types="vitest/globals" />
 import { render } from '@solidjs/testing-library'
 
@@ -121,7 +121,7 @@ describe('altchaField', () => {
       call++
       return call === 1 ? first : Promise.resolve(challenge)
     })
-    let handle: AltchaFieldHandle | undefined
+    let handle: CaptchaFieldHandle | undefined
     const { container } = render(() => (
       <div><AltchaField onPayload={vi.fn()} onUnavailable={vi.fn()} ref={h => (handle = h)} /></div>
     ))
@@ -142,7 +142,7 @@ describe('altchaField', () => {
   })
 
   it('reset handle clears the payload and fetches a fresh challenge', async () => {
-    let handle: AltchaFieldHandle | undefined
+    let handle: CaptchaFieldHandle | undefined
     const { container } = render(() => (
       <div><AltchaField onPayload={vi.fn()} onUnavailable={vi.fn()} ref={h => (handle = h)} /></div>
     ))

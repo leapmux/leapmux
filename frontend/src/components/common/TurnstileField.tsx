@@ -1,22 +1,17 @@
 import type { Component } from 'solid-js'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import type { CaptchaFieldHandle } from './CaptchaField'
 
+import { createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import { loadExternalScript } from '~/lib/scriptLoader'
 import { getCaptchaSiteKey } from '~/lib/systemInfo'
 import * as styles from './CaptchaField.css'
-import { Spinner } from './Spinner'
+import { CaptchaFieldStatus } from './CaptchaFieldStatus'
 
 // The widget script must come from Cloudflare's exact URL — proxying or
 // caching it breaks future updates (per Turnstile's docs). Explicit
 // rendering keeps the mount under our control instead of the script's
 // implicit .cf-turnstile scan.
 const TURNSTILE_SCRIPT_URL = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
-
-/** Imperative handle for the parent form, handed back through `ref`. */
-export interface TurnstileFieldHandle {
-  /** Discard any solved token and re-run the challenge. */
-  reset: () => void
-}
 
 interface TurnstileFieldProps {
   /**
@@ -26,7 +21,7 @@ interface TurnstileFieldProps {
   action: string
   /** Receives the single-use Turnstile token once solved, null otherwise. */
   onPayload: (payload: string | null) => void
-  ref?: (handle: TurnstileFieldHandle) => void
+  ref?: (handle: CaptchaFieldHandle) => void
 }
 
 // Cloudflare Turnstile, rendered explicitly into a container div with the
@@ -84,6 +79,22 @@ export const TurnstileField: Component<TurnstileFieldProps> = (props) => {
     }
   }
 
+  // A site-key rotation reaches the form as a signal change after the
+  // denial-driven system-info reload. Tokens minted under the retired key
+  // always fail siteverify, so re-render the widget under the new key.
+  // The first run only records the initial key; arm() below handles the
+  // initial render.
+  createEffect((prevKey?: string) => {
+    const key = getCaptchaSiteKey()
+    if (prevKey !== undefined && prevKey !== key) {
+      props.onPayload(null)
+      setReady(false)
+      clearWidget()
+      void arm()
+    }
+    return key
+  })
+
   onMount(() => {
     void arm()
     props.ref?.({
@@ -105,17 +116,7 @@ export const TurnstileField: Component<TurnstileFieldProps> = (props) => {
   return (
     <div class={styles.field}>
       <div ref={container} />
-      <Show when={!ready() && !loadError()}>
-        <div class={styles.loading}>
-          <Spinner size="sm" />
-          Preparing verification…
-        </div>
-      </Show>
-      <Show when={loadError()}>
-        <div class={styles.loadError}>
-          Could not load the human-verification challenge. Check your connection and reload the page.
-        </div>
-      </Show>
+      <CaptchaFieldStatus ready={ready()} loadError={loadError()} />
     </div>
   )
 }

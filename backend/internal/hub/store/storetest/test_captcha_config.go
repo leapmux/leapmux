@@ -90,6 +90,35 @@ func (s *Suite) testCaptchaConfig(t *testing.T) {
 		assert.Len(t, rows, 2)
 	})
 
+	t.Run("conditional activation never overrides an existing selection", func(t *testing.T) {
+		st := s.NewStore(t)
+		cs := st.CaptchaConfig()
+		require.NoError(t, cs.Upsert(ctx, store.UpsertCaptchaConfigParams{
+			Provider: captcha.ProviderAltcha,
+			Secret:   []byte("altcha-secret"),
+			Settings: `{"algorithm":"PBKDF2/SHA-256","cost":10000}`,
+		}))
+		require.NoError(t, cs.Upsert(ctx, store.UpsertCaptchaConfigParams{
+			Provider: captcha.ProviderTurnstile,
+			Secret:   []byte("turnstile-secret"),
+			Settings: `{"site_key":"1x00AA"}`,
+		}))
+
+		// Nothing selected yet: the self-heal activates altcha.
+		require.NoError(t, cs.ActivateIfNoneSelected(ctx, captcha.ProviderAltcha))
+		got, err := cs.GetSelected(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, captcha.ProviderAltcha, got.Provider)
+
+		// An admin CLI switch wins; a late self-heal read that started
+		// before the switch must not flip the selection back.
+		require.NoError(t, cs.Activate(ctx, captcha.ProviderTurnstile))
+		require.NoError(t, cs.ActivateIfNoneSelected(ctx, captcha.ProviderAltcha))
+		got, err = cs.GetSelected(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, captcha.ProviderTurnstile, got.Provider, "the self-heal must never override an admin selection")
+	})
+
 	t.Run("settings update keeps the stored secret; upsert replaces it", func(t *testing.T) {
 		st := s.NewStore(t)
 		cs := st.CaptchaConfig()

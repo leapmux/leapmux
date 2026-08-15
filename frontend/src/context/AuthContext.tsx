@@ -188,12 +188,9 @@ export const AuthProvider: ParentComponent = (props) => {
     catch (e) {
       const msg = formatErrorMessage(e, 'Login failed')
       setError(msg)
-      // The captcha snapshot in systemInfo can be stale — the admin may
-      // have enabled or disabled captcha since the page loaded, and the
-      // hub answers per request. A denied attempt is the signal to
-      // converge: the refreshed flags make the widget mount (or stand
-      // down) for the retry instead of failing identically forever.
-      void loadSystemInfo(true).catch(() => {})
+      // The login form's captcha.reset() (see createCaptchaForm) triggers
+      // the system-info reload that converges a stale captcha snapshot
+      // after a runtime enable/disable or provider switch.
       throw e
     }
     finally {

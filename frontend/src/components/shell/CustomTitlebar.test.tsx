@@ -24,7 +24,6 @@ vi.mock('~/lib/systemInfo', () => ({
   isDesktopApp: () => true,
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,
-  getCaptchaAlgorithm: () => '',
 }))
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {

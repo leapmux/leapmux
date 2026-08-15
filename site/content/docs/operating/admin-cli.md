@@ -384,7 +384,7 @@ Provider notes:
 - **ALTCHA** issues challenges from the hub itself (public `GetAltchaChallenge` RPC); verification is local, with store-backed single-use salts. No network egress, no account needed.
 - **reCAPTCHA v3** is invisible and score-based: the frontend loads Google's script with your site key, executes it per form under a fixed action (`login`, `signup`, `complete_signup`), and the hub verifies the token at Google's siteverify endpoint, requiring the action to match and the score to clear `--min-score` (default `0.5`). Tokens are single-use and live two minutes. The Google-injected badge stays visible (their terms connect it with using the service).
 - **Turnstile** renders Cloudflare's checkbox from your site key; the hub verifies tokens at Cloudflare's siteverify endpoint, requiring the echoed action to match. Tokens are single-use and live five minutes.
-- External providers need a hub served over HTTPS from a real browser origin (their scripts refuse exotic origins) and make one verification call per submission from the hub to the provider. The hub deliberately does not forward `remoteip` — behind a reverse proxy the proxy's address would reach the provider and turn correct tokens into denials.
+- External providers need a hub served over HTTPS from a real browser origin (their scripts refuse exotic origins) and make one verification call per submission from the hub to the provider. During a provider outage the hub fails closed like any other captcha fault, and after a run of failed calls it stops dialing the provider for a short cooldown (a breaker) before probing again — a brownout cannot pile up blocked logins. The hub deliberately does not forward `remoteip` — behind a reverse proxy the proxy's address would reach the provider and turn correct tokens into denials.
 
 For local testing Cloudflare publishes dummy keys: site key `1x00000000000000000000AA` (always passes) paired with secret `1x0000000000000000000000000000000AA`; Google has no v3 test keys (its v2 test keys return a near-zero score).
 
@@ -398,19 +398,19 @@ No command-specific flags. Prints the selected provider's effective configuratio
 
 | Flag | Description |
 | --- | --- |
-| `--provider` | `altcha`, `recaptcha_v3`, or `turnstile`. Configures that provider and **activates** it: activating selects the provider and enables verification in one step. |
+| `--provider` | `altcha`, `recaptcha_v3`, or `turnstile`. Configures that provider and, when it is not already selected, **activates** it: activating selects the provider and enables verification in one step. Naming the already-selected provider tunes it in place. |
 | `--algorithm` | ALTCHA only: `SHA-256`, `SHA-384`, `SHA-512`, `PBKDF2/SHA-256`, `PBKDF2/SHA-384`, `PBKDF2/SHA-512`, `SCRYPT`, or `ARGON2ID`. |
 | `--cost` | ALTCHA only: per-derivation cost. Iterations for SHA (1000–1000000) and PBKDF2 (10000–1000000), N for SCRYPT (a power of two, 1024–1048576), or the time parameter for ARGON2ID (1–64). `0` restores the algorithm default. |
 | `--memory-cost` | ALTCHA only: SCRYPT `r` (a block-count multiplier, NOT bytes — derivation memory is 128·N·r, limited to 64 MiB) or ARGON2ID `m` (KiB, 8–128 MiB). `0` restores the algorithm default. |
 | `--parallelism` | ALTCHA only: SCRYPT `p` (1–8) / ARGON2ID threads (1–4). `0` restores the algorithm default. |
-| `--expires` | ALTCHA only: challenge expiry, e.g. `20m` (whole seconds). Valid range 1m–24h. |
+| `--expires` | ALTCHA only: challenge expiry, e.g. `20m` (whole seconds). Valid range 1m–24h; `0` restores the 20m default. |
 | `--site-key` | External providers: the public site key from the provider's dashboard. |
-| `--secret` | External providers: the secret key, stored keystore-encrypted. Required when switching to an external provider; optional later (rotation). |
+| `--secret` | External providers: the secret key, stored keystore-encrypted. Required when configuring an external provider that has no stored keys; optional later (rotation). Must not be empty — an empty secret fails every verification. |
 | `--min-score` | reCAPTCHA v3 only: acceptance threshold, 0–1 (`0` restores the `0.5` default). |
 
-At least one flag is required. Flags that do not apply to the target provider are refused rather than ignored. Switching `--algorithm` resets `--cost`, `--memory-cost`, and `--parallelism` to the new family's defaults (unless passed on the same command line), because the parameters change meaning across families; an explicitly passed `0` always restores that parameter's default. The result is validated before it is written.
+At least one flag is required. Flags that do not apply to the target provider are refused rather than ignored. Switching `--algorithm` resets `--cost`, `--memory-cost`, and `--parallelism` to the new family's defaults (unless passed on the same command line), because the parameters change meaning across families; the algorithm-independent `--expires` keeps its stored value. An explicitly passed `0` always restores that parameter's default. The result is validated before it is written.
 
-Switching providers is cheap and reversible: each provider keeps its own row and its own secret, so switching back does not regenerate anything (an ALTCHA switch-back reuses the original signing secret, and outstanding ALTCHA challenges simply expire within the configured window).
+Switching providers is cheap and reversible: each provider keeps its own row with its own settings and its own secret, so switching back does not regenerate or reset anything (an ALTCHA switch-back reuses the original signing secret and the stored tuning, and outstanding ALTCHA challenges simply expire within the configured window).
 
 ```bash
 # Slow bots down further at the cost of ~2x user wait (ALTCHA)

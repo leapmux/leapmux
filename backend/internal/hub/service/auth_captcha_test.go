@@ -26,9 +26,10 @@ import (
 
 // setupCaptchaAuthService wires an AuthService behind a REAL captcha
 // manager (store + keystore), unlike setupAuthTestServerBase which passes
-// nil. Returns the client and the store so tests can inspect the config
-// row's provisioning side effects.
-func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServiceClient, *captcha.Manager, store.Store) {
+// nil. Returns the client, the keystore (so tests can encrypt provider
+// secrets the resolver can decrypt), and the store so tests can inspect
+// the config row's provisioning side effects.
+func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServiceClient, *keystore.Keystore, store.Store) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
@@ -46,7 +47,7 @@ func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServ
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), captchaMgr, st
+	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), ks, st
 }
 
 func TestGetAltchaChallenge_IssuesSignedChallenge(t *testing.T) {
@@ -176,9 +177,9 @@ func TestGetSystemInfo_SoloReportsCaptchaDisabled(t *testing.T) {
 // surface external-provider frontends switch on: the selected provider's
 // name, its public site key, and the altcha algorithm going empty.
 func TestGetSystemInfo_ReportsExternalProvider(t *testing.T) {
-	client, mgr, st := setupCaptchaAuthService(t, false)
+	client, ks, st := setupCaptchaAuthService(t, false)
 
-	encrypted, err := mgr.EncryptSecret(captcha.ProviderTurnstile, "secret-key")
+	encrypted, err := captcha.EncryptSecret(ks, captcha.ProviderTurnstile, "secret-key")
 	require.NoError(t, err)
 	require.NoError(t, st.CaptchaConfig().Upsert(context.Background(), store.UpsertCaptchaConfigParams{
 		Provider: captcha.ProviderTurnstile,

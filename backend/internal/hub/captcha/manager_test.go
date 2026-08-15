@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func applyTestAltchaSettings(t *testing.T, m *Manager, settings string) {
 	row, err := m.st.CaptchaConfig().Get(ctx, ProviderAltcha)
 	if err != nil {
 		require.ErrorIs(t, err, store.ErrNotFound)
-		require.NoError(t, m.insertAltchaRow(ctx))
+		require.NoError(t, insertAltchaRow(ctx, m.st, m.ks))
 		row, err = m.st.CaptchaConfig().Get(ctx, ProviderAltcha)
 		require.NoError(t, err)
 	}
@@ -88,7 +89,7 @@ func bustCaches(m *Manager) {
 func activateExternal(t *testing.T, m *Manager, provider Provider, settings, secret string) {
 	t.Helper()
 	ctx := context.Background()
-	encrypted, err := m.EncryptSecret(provider, secret)
+	encrypted, err := EncryptSecret(m.ks, provider, secret)
 	require.NoError(t, err)
 	require.NoError(t, m.st.CaptchaConfig().Upsert(ctx, store.UpsertCaptchaConfigParams{
 		Provider: provider,
@@ -106,6 +107,7 @@ type siteverifyStub struct {
 	status   int
 	body     string
 	lastForm url.Values
+	requests atomic.Int32
 }
 
 func newSiteverifyStub(t *testing.T) *siteverifyStub {
@@ -114,6 +116,7 @@ func newSiteverifyStub(t *testing.T) *siteverifyStub {
 	stub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		stub.lastForm = r.PostForm
+		stub.requests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(stub.status)
 		_, _ = w.Write([]byte(stub.body))
@@ -294,8 +297,9 @@ func TestReplayRejectedAcrossManagerInstances(t *testing.T) {
 // TestExternalProviderSwitchAndChallengeStanddown pins the switching
 // semantics the CLI builds on: activating an external provider redirects
 // verification, leaves the altcha row (and its secret) untouched, and
-// stops ALTCHA challenge issuance; switching back reuses the original
-// altcha secret.
+// stops ALTCHA challenge issuance with a typed error — an empty string
+// means "captcha disabled" and would make a stale altcha widget stand
+// down; switching back reuses the original altcha secret.
 func TestExternalProviderSwitchAndChallengeStanddown(t *testing.T) {
 	stub := newSiteverifyStub(t)
 	stub.body = `{"success":true,"action":"login","hostname":"example.com"}`
@@ -310,11 +314,11 @@ func TestExternalProviderSwitchAndChallengeStanddown(t *testing.T) {
 	activateExternal(t, m, ProviderTurnstile, `{"site_key":"1x00000000000000000000AA"}`, "secret-key")
 	require.NoError(t, m.Verify(context.Background(), "login", "tok"))
 
-	// No altcha challenge while turnstile is selected, and the altcha row
-	// keeps its original secret.
-	challengeJSON, err := m.AltchaChallengeJSON(context.Background())
-	require.NoError(t, err)
-	assert.Empty(t, challengeJSON, "external providers have nothing to issue")
+	// No altcha challenge while turnstile is selected — an error, not an
+	// empty string, so a stale altcha widget shows its error state instead
+	// of standing down — and the altcha row keeps its original secret.
+	_, err = m.AltchaChallengeJSON(context.Background())
+	require.ErrorIs(t, err, ErrProviderNotAltcha)
 	row, err := m.st.CaptchaConfig().Get(context.Background(), ProviderAltcha)
 	require.NoError(t, err)
 	assert.Equal(t, altchaRow.Secret, row.Secret, "switching providers must not regenerate the altcha secret")
@@ -322,9 +326,9 @@ func TestExternalProviderSwitchAndChallengeStanddown(t *testing.T) {
 	// Switch back: the same secret still signs challenges.
 	require.NoError(t, m.st.CaptchaConfig().Activate(context.Background(), ProviderAltcha))
 	bustCaches(m)
-	require.NoError(t, m.insertAltchaRow(context.Background())) // no-op: row exists
+	require.NoError(t, insertAltchaRow(context.Background(), m.st, m.ks)) // no-op: row exists
 	applyTestAltchaSettings(t, m, cheapAltchaSettings)
-	challengeJSON, err = m.AltchaChallengeJSON(context.Background())
+	challengeJSON, err := m.AltchaChallengeJSON(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, m.Verify(context.Background(), "login", solveChallenge(t, challengeJSON)))
 }
@@ -657,4 +661,115 @@ func TestConfigValidate(t *testing.T) {
 	assert.Error(t, err)
 	_, err = ParseProvider("hcaptcha")
 	assert.Error(t, err)
+}
+
+// TestVerifyCountsUnattributedDenials pins the outage signal: a resolve
+// failure (the stored secret no longer decrypts, the way a keystore or
+// store outage behaves) fails every submission closed, and the denial
+// still counts under the "unknown" label so the counter shows failed
+// traffic during the outage instead of silence.
+func TestVerifyCountsUnattributedDenials(t *testing.T) {
+	m := newTestManager(t, false)
+	_, err := m.AltchaChallengeJSON(context.Background())
+	require.NoError(t, err)
+
+	row, err := m.st.CaptchaConfig().GetSelected(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, m.st.CaptchaConfig().Upsert(context.Background(), store.UpsertCaptchaConfigParams{
+		Provider: row.Provider,
+		Secret:   []byte("not-a-valid-ciphertext"),
+		Settings: row.Settings,
+	}))
+	bustCaches(m)
+
+	before := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues(unknownProviderLabel, string(ResultFailed)))
+	require.Error(t, m.Verify(context.Background(), "login", "tok"))
+	assert.Equal(t, before+1, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues(unknownProviderLabel, string(ResultFailed))))
+}
+
+// TestSiteverifyBreakerShedsLoad pins the breaker: consecutive transport
+// faults open the circuit, an open circuit fails closed WITHOUT reaching
+// the provider, and the half-open probe after the cooldown closes it
+// again on success.
+func TestSiteverifyBreakerShedsLoad(t *testing.T) {
+	stub := newSiteverifyStub(t)
+	m := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
+	activateExternal(t, m, ProviderTurnstile, `{"site_key":"1x00AA"}`, "secret-key")
+	m.turnstile.cooldown = 250 * time.Millisecond
+
+	// Consecutive transport faults trip the breaker.
+	stub.status = http.StatusInternalServerError
+	for i := 0; i < siteverifyBreakerThreshold; i++ {
+		assert.ErrorIs(t, m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed)
+	}
+	requestsAtTrip := int(stub.requests.Load())
+	require.Equal(t, siteverifyBreakerThreshold, requestsAtTrip)
+
+	// While the circuit is open, attempts fail closed without a call.
+	stub.status = http.StatusOK
+	stub.body = `{"success":true,"action":"login","hostname":"example.com"}`
+	assert.ErrorIs(t, m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed)
+	assert.Equal(t, requestsAtTrip, int(stub.requests.Load()), "an open breaker must not dial the provider")
+
+	// After the cooldown the circuit half-opens: the next call probes,
+	// and a success closes it.
+	time.Sleep(300 * time.Millisecond)
+	require.NoError(t, m.Verify(context.Background(), "login", "tok"))
+	assert.Equal(t, requestsAtTrip+1, int(stub.requests.Load()), "the half-open probe is exactly one call")
+
+	// A faulting half-open probe re-opens the circuit without another
+	// threshold run: the probe dials once, and the next attempt — with
+	// the provider healthy again — still fails closed without dialing.
+	stub.status = http.StatusInternalServerError
+	for i := 0; i < siteverifyBreakerThreshold; i++ {
+		assert.ErrorIs(t, m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed)
+	}
+	time.Sleep(300 * time.Millisecond)
+	assert.ErrorIs(t, m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed) // the faulting probe
+	requestsAfterProbe := int(stub.requests.Load())
+	stub.status = http.StatusOK
+	assert.ErrorIs(t, m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed)
+	assert.Equal(t, requestsAfterProbe, int(stub.requests.Load()), "a re-tripped breaker must not dial the provider")
+}
+
+// TestProviderSpecRegistryRoundTrips pins the registration invariant the
+// dispatch collapse rests on: every alias the CLI accepts resolves to a
+// registered spec whose defaults carry that provider, and an enum value
+// outside the registry fails the lookup (the fail-closed path).
+func TestProviderSpecRegistryRoundTrips(t *testing.T) {
+	aliases := SupportedProviders()
+	require.Contains(t, aliases, "altcha")
+	require.Contains(t, aliases, "recaptcha_v3")
+	require.Contains(t, aliases, "turnstile")
+	for _, alias := range aliases {
+		p, err := ParseProvider(alias)
+		require.NoError(t, err, "alias %q must parse", alias)
+		spec, ok := specFor(p)
+		require.True(t, ok, "alias %q has no registered spec", alias)
+		assert.Equal(t, alias, spec.alias())
+		assert.Equal(t, p, spec.defaults().Provider, "defaults must carry the provider itself")
+	}
+
+	// The kebab-case spelling stays accepted for shell ergonomics.
+	p, err := ParseProvider("recaptcha-v3")
+	require.NoError(t, err)
+	assert.Equal(t, ProviderRecaptchaV3, p)
+
+	// An enum value outside the registry (direct SQL on an open proto3
+	// enum) fails the lookup, and every caller fails closed on that path.
+	_, ok := specFor(Provider(99))
+	assert.False(t, ok)
+}
+
+// TestNoteHoneypotDenialCountsUnreadableConfig pins the honeypot half of
+// the outage signal: a config read that fails still counts the denial
+// under the "unknown" label, so a store outage does not silence a
+// honeypot trip.
+func TestNoteHoneypotDenialCountsUnreadableConfig(t *testing.T) {
+	m := newTestManager(t, false)
+	require.NoError(t, m.st.Close())
+
+	before := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues(unknownProviderLabel, string(ResultFailed)))
+	m.NoteHoneypotDenial(context.Background())
+	assert.Equal(t, before+1, testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues(unknownProviderLabel, string(ResultFailed))))
 }

@@ -5,9 +5,11 @@ import { createCaptchaForm } from './captchaForm'
 
 const mockIsCaptchaEnabled = vi.fn<() => boolean>(() => false)
 const mockIsSystemInfoLoaded = vi.fn<() => boolean>(() => true)
+const mockLoadSystemInfo = vi.fn(() => Promise.resolve())
 vi.mock('~/lib/systemInfo', () => ({
   isCaptchaEnabled: () => mockIsCaptchaEnabled(),
   isSystemInfoLoaded: () => mockIsSystemInfoLoaded(),
+  loadSystemInfo: (...args: []) => mockLoadSystemInfo(...args),
 }))
 
 describe('createCaptchaForm', () => {
@@ -73,5 +75,17 @@ describe('createCaptchaForm', () => {
     expect(captcha.honeypot()).toBe('')
     expect(captcha.fields()).toEqual({ captchaPayload: '', honeypot: '' })
     expect(fieldReset).toHaveBeenCalledOnce()
+  })
+
+  it('reset refetches the system info so a runtime provider switch converges after one denial', async () => {
+    mockIsCaptchaEnabled.mockReturnValue(true)
+    const captcha = createCaptchaForm()
+
+    captcha.reset()
+
+    // The denial is the signal that the captcha snapshot is stale: the
+    // forced reload is what re-mounts the right provider's field.
+    expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
+    await Promise.resolve()
   })
 })

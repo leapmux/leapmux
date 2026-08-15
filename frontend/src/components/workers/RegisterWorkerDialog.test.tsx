@@ -43,7 +43,6 @@ vi.mock('~/lib/systemInfo', () => ({
   isEmailEnabled: () => mockEmailEnabled(),
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,
-  getCaptchaAlgorithm: () => '',
 }))
 
 // Helpers --------------------------------------------------------------

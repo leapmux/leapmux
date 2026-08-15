@@ -37,21 +37,25 @@ SET settings = excluded.settings,
     secret = excluded.secret,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now');
 
--- Activation is a deselect-all followed by select-target. Two statements,
--- not one (a conditional per-row SET is not expressible here): a reader
--- racing between them sees "no selected provider", which the hub's
--- provisioning self-heals, so the switch can never strand the hub.
--- Selecting also re-enables: choosing a provider means running it.
--- name: DeselectCaptchaConfigs :exec
+-- Activation is one statement: every row becomes selected and enabled
+-- exactly when it is the named provider, so no interleaving of concurrent
+-- activations can ever leave two rows selected or none. Selecting also
+-- re-enables: choosing a provider means running it.
+-- name: ActivateCaptchaConfig :exec
 UPDATE captcha_config
-SET selected = 0, enabled = 0,
+SET selected = CASE WHEN captcha_config.provider = ? THEN 1 ELSE 0 END,
+    enabled = CASE WHEN captcha_config.provider = ? THEN 1 ELSE 0 END,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now');
 
--- name: SelectCaptchaConfig :exec
+-- The hub's first-use self-heal: activate the default provider only when
+-- no row is selected, so a login resolving while an admin CLI switch
+-- commits can never override the admin's selection.
+-- name: ActivateCaptchaConfigIfNoneSelected :exec
 UPDATE captcha_config
-SET selected = 1, enabled = 1,
+SET selected = CASE WHEN captcha_config.provider = ? THEN 1 ELSE 0 END,
+    enabled = CASE WHEN captcha_config.provider = ? THEN 1 ELSE 0 END,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-WHERE provider = ?;
+WHERE NOT EXISTS (SELECT 1 FROM captcha_config WHERE selected = 1);
 
 -- name: SetCaptchaEnabled :exec
 UPDATE captcha_config

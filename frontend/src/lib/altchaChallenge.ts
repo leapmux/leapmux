@@ -26,10 +26,12 @@ export interface AltchaChallenge {
  * Fetch the next ALTCHA challenge and pre-warm its solver worker.
  *
  * Returns null when the hub reports no challenge (captcha disabled at
- * runtime, solo mode, or an external provider selected — those mint
- * tokens client-side): the hub answers with an empty interchange blob,
+ * runtime, or solo mode): the hub answers with an empty interchange blob,
  * and the caller must stand down instead of treating it as a load failure
  * — the form would otherwise dead-lock on a challenge that never comes.
+ * Another provider selected is NOT a stand-down: the hub rejects the call
+ * (FailedPrecondition), which surfaces as the field's load error until
+ * the denial-driven system-info reload mounts the right provider's field.
  */
 export async function fetchAltchaChallenge(): Promise<AltchaChallenge | null> {
   // Pre-warm the solver for the algorithm the hub advertises, so the

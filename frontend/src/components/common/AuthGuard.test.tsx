@@ -32,7 +32,6 @@ vi.mock('~/lib/systemInfo', () => ({
   isSetupRequired: () => mockIsSetupRequired(),
   isSystemInfoLoaded: () => true,
   isCaptchaEnabled: () => false,
-  getCaptchaAlgorithm: () => '',
 }))
 
 /**

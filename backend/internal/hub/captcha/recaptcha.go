@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 )
 
 // recaptchaVerifyURL is Google's fixed siteverify endpoint.
@@ -76,13 +75,5 @@ func (m *Manager) verifyRecaptcha(ctx context.Context, secret, token, expectedAc
 	result, err := verifyWithClient(ctx, m.recaptcha, ProviderRecaptchaV3, secret, token, func(resp siteverifyResponse) bool {
 		return resp.Action == expectedAction && resp.Score >= minScore
 	})
-	m.countResult(ProviderRecaptchaV3, result)
-	return err
-}
-
-// logSiteverifyFault records a transport-level verification fault. It is
-// the operator's only window into provider outages: clients receive the
-// uniform denial either way.
-func logSiteverifyFault(ctx context.Context, provider Provider, err error) {
-	slog.WarnContext(ctx, "captcha siteverify request failed", "provider", ProviderAlias(provider), "error", err)
+	return m.counted(ProviderRecaptchaV3, result, err)
 }

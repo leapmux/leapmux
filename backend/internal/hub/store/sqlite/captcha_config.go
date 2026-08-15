@@ -75,14 +75,25 @@ func (s *captchaConfigStore) Upsert(ctx context.Context, p store.UpsertCaptchaCo
 	}))
 }
 
-// Activate deselects every provider row, then selects and enables the
-// named one. Two statements, not one: a reader racing between them sees
-// "no selected provider", which the caller's provisioning self-heals.
+// Activate selects and enables the given provider and deselects every
+// other row in one statement, so the exactly-one-selected invariant holds
+// under concurrent activations: last writer wins, never two selected.
 func (s *captchaConfigStore) Activate(ctx context.Context, provider leapmuxv1.CaptchaProvider) error {
-	if err := s.conn.q.DeselectCaptchaConfigs(ctx); err != nil {
-		return mapErr(err)
-	}
-	return mapErr(s.conn.q.SelectCaptchaConfig(ctx, provider))
+	return mapErr(s.conn.q.ActivateCaptchaConfig(ctx, gendb.ActivateCaptchaConfigParams{
+		Provider:   provider,
+		Provider_2: provider,
+	}))
+}
+
+// ActivateIfNoneSelected activates the given provider only when no row is
+// selected. The hub's first-use self-heal uses it, so read-path
+// provisioning can never override an admin CLI selection that commits
+// while a login resolves.
+func (s *captchaConfigStore) ActivateIfNoneSelected(ctx context.Context, provider leapmuxv1.CaptchaProvider) error {
+	return mapErr(s.conn.q.ActivateCaptchaConfigIfNoneSelected(ctx, gendb.ActivateCaptchaConfigIfNoneSelectedParams{
+		Provider:   provider,
+		Provider_2: provider,
+	}))
 }
 
 func (s *captchaConfigStore) SetEnabled(ctx context.Context, enabled bool) error {

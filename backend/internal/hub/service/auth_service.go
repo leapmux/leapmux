@@ -450,10 +450,15 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 // GetAltchaChallenge issues a fresh ALTCHA challenge for the caller to
 // solve before submitting Login/SignUp-family requests. It is public: the
 // challenge carries no secret, and issuance costs one HMAC. Empty when
-// the selected provider is external — those mint tokens client-side.
+// captcha is disabled; FailedPrecondition when another provider is
+// selected (those mint tokens client-side, so the caller is on a stale
+// snapshot and must re-fetch the system info).
 func (s *AuthService) GetAltchaChallenge(ctx context.Context, req *connect.Request[leapmuxv1.GetAltchaChallengeRequest]) (*connect.Response[leapmuxv1.GetAltchaChallengeResponse], error) {
 	challengeJSON, err := s.captcha.AltchaChallengeJSON(ctx)
 	if err != nil {
+		if errors.Is(err, captcha.ErrProviderNotAltcha) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&leapmuxv1.GetAltchaChallengeResponse{

@@ -141,13 +141,20 @@ func (m *Manager) Describe(ctx context.Context) (Config, bool, error) {
 	return cfg, customized, nil
 }
 
+// ErrProviderNotAltcha is returned by AltchaChallengeJSON when another
+// provider is selected: external providers mint their tokens client-side
+// and have no challenge to issue. It is an error, not an empty string —
+// the empty string means "captcha disabled" and makes the caller's form
+// stand down, while a stale altcha widget under an external selection
+// must surface as an error state until the denial-driven system-info
+// reload mounts the right field.
+var ErrProviderNotAltcha = errors.New("captcha challenge unavailable: the selected provider is not altcha")
+
 // AltchaChallengeJSON issues a fresh ALTCHA challenge and returns its
 // JSON — the exact interchange format the frontend widget's
 // configure({challenge}) expects. The per-challenge KDF is never run
 // here (the solver does the work), so issuance costs one HMAC and is
-// safe to expose unauthenticated. Empty when captcha is disabled or
-// another provider is selected: external providers mint their tokens
-// client-side and have nothing to issue.
+// safe to expose unauthenticated. Empty only when captcha is disabled.
 func (m *Manager) AltchaChallengeJSON(ctx context.Context) (string, error) {
 	if m.solo {
 		return "", nil
@@ -156,8 +163,11 @@ func (m *Manager) AltchaChallengeJSON(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !res.cfg.Enabled || res.cfg.Provider != ProviderAltcha {
+	if !res.cfg.Enabled {
 		return "", nil
+	}
+	if res.cfg.Provider != ProviderAltcha {
+		return "", fmt.Errorf("%w (%s)", ErrProviderNotAltcha, ProviderAlias(res.cfg.Provider))
 	}
 	settings := res.cfg.Altcha
 	expires := time.Now().Add(time.Duration(settings.ChallengeExpirySeconds) * time.Second)
@@ -181,7 +191,7 @@ func (m *Manager) AltchaChallengeJSON(ctx context.Context) (string, error) {
 
 // Verify checks a provider token minted under the given action and
 // enforces single use, dispatching on the selected provider. The action
-// names the procedure being protected ("login", "signup",
+// specifies the procedure being protected ("login", "signup",
 // "complete_signup"): reCAPTCHA v3 requires verifying it server-side,
 // Turnstile echoes it back, and ALTCHA ignores it.
 func (m *Manager) Verify(ctx context.Context, action, payload string) error {
@@ -190,29 +200,29 @@ func (m *Manager) Verify(ctx context.Context, action, payload string) error {
 	}
 	res, err := m.resolve(ctx)
 	if err != nil {
+		// A store or keystore outage fails every submission closed; the
+		// denial still counts, under the "unknown" provider label, so the
+		// outage shows up as failed traffic on the counter instead of as
+		// silence.
+		m.countUnattributedDenial()
 		return fmt.Errorf("captcha verify: %w", err)
 	}
 	if !res.cfg.Enabled {
 		return nil
 	}
-	switch res.cfg.Provider {
-	case ProviderAltcha:
-		return m.verifyAltcha(ctx, res, payload)
-	case ProviderRecaptchaV3:
-		if payload == "" {
-			return m.counted(ProviderRecaptchaV3, ResultFailed, ErrVerificationFailed)
-		}
-		return m.verifyRecaptcha(ctx, string(res.secret), payload, action, res.cfg.RecaptchaV3.MinScore)
-	case ProviderTurnstile:
-		if payload == "" {
-			return m.counted(ProviderTurnstile, ResultFailed, ErrVerificationFailed)
-		}
-		return m.verifyTurnstile(ctx, string(res.secret), payload, action)
-	default:
-		// Effective never returns an unknown provider; this arm exists so
-		// a future registry entry without a dispatch case fails closed.
+	// A missing token is a provider-independent failure; one guard here
+	// keeps the uniform denial in exactly one place (ALTCHA's decode path
+	// produces the same outcome).
+	if payload == "" {
 		return m.counted(res.cfg.Provider, ResultFailed, ErrVerificationFailed)
 	}
+	spec, ok := specFor(res.cfg.Provider)
+	if !ok {
+		// Effective never returns an unknown provider; this arm exists so
+		// an enum value without a registered spec fails closed.
+		return m.counted(res.cfg.Provider, ResultFailed, ErrVerificationFailed)
+	}
+	return spec.verify(m, ctx, res, action, payload)
 }
 
 // verifyAltcha decodes a base64 ALTCHA payload and checks signature,
@@ -276,11 +286,14 @@ func (m *Manager) Enabled(ctx context.Context) bool {
 // NoteHoneypotDenial records a honeypot trip under the selected
 // provider's metric label. The honeypot check itself is provider-agnostic
 // and runs even when captcha is disabled; the label keeps the denial
-// beside the verification outcomes it belongs with. A config read that
-// fails drops only the metric — the denial itself already happened.
+// beside the verification outcomes it belongs with.
 func (m *Manager) NoteHoneypotDenial(ctx context.Context) {
 	cfg, _, err := m.Describe(ctx)
 	if err != nil {
+		// The denial itself already happened; a config read that fails
+		// still counts it, under the "unknown" label, so a store outage
+		// does not silence the honeypot signal.
+		m.countUnattributedDenial()
 		return
 	}
 	m.countResult(cfg.Provider, ResultFailed)
@@ -295,6 +308,19 @@ func (m *Manager) counted(provider Provider, result Result, err error) error {
 
 func (m *Manager) countResult(provider Provider, result Result) {
 	metrics.CaptchaVerificationsTotal.WithLabelValues(ProviderAlias(provider), string(result)).Inc()
+}
+
+// unknownProviderLabel marks a denial whose provider cannot be known
+// because the config read itself failed. It keeps the Prometheus label
+// set closed: unattributed denials stay distinguishable from every real
+// provider's series.
+const unknownProviderLabel = "unknown"
+
+// countUnattributedDenial records a fail-closed denial the resolve path
+// produced. A store or keystore outage denies every submission; counting
+// it keeps the outage visible on the counter instead of as silence.
+func (m *Manager) countUnattributedDenial() {
+	metrics.CaptchaVerificationsTotal.WithLabelValues(unknownProviderLabel, string(ResultFailed)).Inc()
 }
 
 // resolve returns the selected provider's effective config plus its
@@ -354,25 +380,22 @@ func (m *Manager) EnsureProvisioned(ctx context.Context) error {
 // before activating altcha, so a switch back from an external provider
 // reuses the altcha row's original secret rather than landing on a
 // missing row (which the hub would self-heal only by regenerating it).
-func (m *Manager) EnsureAltchaRow(ctx context.Context) error {
-	if m.solo {
+func EnsureAltchaRow(ctx context.Context, st store.Store, ks *keystore.Keystore) error {
+	_, err := st.CaptchaConfig().Get(ctx, ProviderAltcha)
+	if err == nil {
 		return nil
 	}
-	row, err := m.loadRow(ctx, ProviderAltcha)
-	if err != nil {
-		return err
+	if !errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("load captcha config: %w", err)
 	}
-	if row != nil {
-		return nil
-	}
-	return m.insertAltchaRow(ctx)
+	return insertAltchaRow(ctx, st, ks)
 }
 
 // EncryptSecret encrypts a provider secret for storage, with the same
 // provider-scoped AAD the resolver decrypts with. The admin CLI is the
 // only caller: it is the only writer of external providers' secrets.
-func (m *Manager) EncryptSecret(provider Provider, secret string) ([]byte, error) {
-	encrypted, err := m.ks.Encrypt([]byte(secret), keystore.CaptchaSecretAAD(ProviderAlias(provider)))
+func EncryptSecret(ks *keystore.Keystore, provider Provider, secret string) ([]byte, error) {
+	encrypted, err := ks.Encrypt([]byte(secret), keystore.CaptchaSecretAAD(ProviderAlias(provider)))
 	if err != nil {
 		return nil, fmt.Errorf("encrypt captcha secret: %w", err)
 	}
@@ -383,12 +406,12 @@ func (m *Manager) EncryptSecret(provider Provider, secret string) ([]byte, error
 // secret, default settings). The dialects' INSERT ... ON CONFLICT DO
 // NOTHING makes concurrent first-use provisioning a race with one winner,
 // so the loser's secret is simply discarded.
-func (m *Manager) insertAltchaRow(ctx context.Context) error {
+func insertAltchaRow(ctx context.Context, st store.Store, ks *keystore.Keystore) error {
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return fmt.Errorf("generate captcha secret: %w", err)
 	}
-	encrypted, err := m.ks.Encrypt(secret, keystore.CaptchaSecretAAD(ProviderAlias(ProviderAltcha)))
+	encrypted, err := ks.Encrypt(secret, keystore.CaptchaSecretAAD(ProviderAlias(ProviderAltcha)))
 	if err != nil {
 		return fmt.Errorf("encrypt captcha secret: %w", err)
 	}
@@ -396,7 +419,7 @@ func (m *Manager) insertAltchaRow(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("marshal altcha settings: %w", err)
 	}
-	if err := m.st.CaptchaConfig().InsertIfAbsent(ctx, store.InsertCaptchaConfigIfAbsentParams{
+	if err := st.CaptchaConfig().InsertIfAbsent(ctx, store.InsertCaptchaConfigIfAbsentParams{
 		Provider: ProviderAltcha,
 		Secret:   encrypted,
 		Settings: string(settings),
@@ -407,7 +430,11 @@ func (m *Manager) insertAltchaRow(ctx context.Context) error {
 }
 
 // ensureSelectedRow returns the selected config row, provisioning and
-// activating the default altcha row when none is selected.
+// activating the default altcha row when none is selected. The
+// activation is conditional, so this read-path self-heal can never
+// override an admin CLI selection that commits while a login resolves:
+// an admin switch always wins, and the login enforces the admin's
+// provider.
 func (m *Manager) ensureSelectedRow(ctx context.Context) (*store.CaptchaConfig, error) {
 	row, err := m.loadSelectedRow(ctx)
 	if err != nil {
@@ -416,10 +443,10 @@ func (m *Manager) ensureSelectedRow(ctx context.Context) (*store.CaptchaConfig, 
 	if row != nil {
 		return row, nil
 	}
-	if err := m.insertAltchaRow(ctx); err != nil {
+	if err := insertAltchaRow(ctx, m.st, m.ks); err != nil {
 		return nil, err
 	}
-	if err := m.st.CaptchaConfig().Activate(ctx, ProviderAltcha); err != nil {
+	if err := m.st.CaptchaConfig().ActivateIfNoneSelected(ctx, ProviderAltcha); err != nil {
 		return nil, fmt.Errorf("activate captcha config: %w", err)
 	}
 	row, err = m.loadSelectedRow(ctx)
@@ -445,14 +472,19 @@ func (m *Manager) loadSelectedRow(ctx context.Context) (*store.CaptchaConfig, er
 	return row, nil
 }
 
-// loadRow returns one provider's row or nil when it has no row yet.
-func (m *Manager) loadRow(ctx context.Context, provider Provider) (*store.CaptchaConfig, error) {
-	row, err := m.st.CaptchaConfig().Get(ctx, provider)
+// DescribeProvider returns one provider's effective settings from its own
+// row — not the selection. The admin CLI overlays flag edits onto this
+// base, so a switch back to a provider keeps that row's stored tuning
+// (only the selection changes), and a row the CLI has never written
+// reports that provider's defaults rather than altcha's. The second
+// return reports whether the provider has a row at all.
+func DescribeProvider(ctx context.Context, st store.Store, provider Provider) (Config, bool, error) {
+	row, err := st.CaptchaConfig().Get(ctx, provider)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, nil
+			return defaultConfigFor(provider), false, nil
 		}
-		return nil, fmt.Errorf("load captcha config: %w", err)
+		return defaultConfigFor(provider), false, fmt.Errorf("load captcha config: %w", err)
 	}
-	return row, nil
+	return Effective(row), true, nil
 }

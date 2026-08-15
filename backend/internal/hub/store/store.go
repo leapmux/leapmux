@@ -588,10 +588,15 @@ type CaptchaConfigStore interface {
 	// of an external provider, or key rotation); the secret is required
 	// because a secret-less row fails verification on every submission.
 	Upsert(ctx context.Context, p UpsertCaptchaConfigParams) error
-	// Activate deselects every provider row, then selects and enables the
-	// named one. A reader racing between the two statements sees "no
-	// selected provider", which the caller's provisioning self-heals.
+	// Activate selects and enables the given provider and deselects every
+	// other row in one statement, so the exactly-one-selected invariant
+	// holds under concurrent activations: last writer wins, never two
+	// selected.
 	Activate(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
+	// ActivateIfNoneSelected activates the given provider only when no row
+	// is selected. The hub's first-use self-heal uses it, so read-path
+	// provisioning can never override an admin CLI selection.
+	ActivateIfNoneSelected(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
 	// SetEnabled flips the verification switch on the selected row only;
 	// the selection itself survives, so a later enable restores the same
 	// provider.
@@ -650,8 +655,8 @@ type CleanupStore interface {
 	DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	// DeleteExpiredAltchaSalts purges consumed ALTCHA salts whose
-	// challenge window has passed; the salt can no longer verify after
-	// expiry, so the row only bounds table growth until this sweep drops
+	// challenge window passed; the salt can no longer verify after
+	// expiry, so the row only caps table growth until this sweep drops
 	// it. External captcha providers enforce single use at their
 	// siteverify endpoint and contribute no rows.
 	DeleteExpiredAltchaSalts(ctx context.Context) (int64, error)

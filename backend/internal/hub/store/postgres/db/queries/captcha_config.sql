@@ -37,21 +37,25 @@ SET settings = EXCLUDED.settings,
     secret = EXCLUDED.secret,
     updated_at = NOW();
 
--- Activation is a deselect-all followed by select-target. Two statements,
--- not one: a reader racing between them sees "no selected provider",
--- which the hub's provisioning self-heals, so the switch can never strand
--- the hub. Selecting also re-enables: choosing a provider means running
--- it.
--- name: DeselectCaptchaConfigs :exec
+-- Activation is one statement: every row becomes selected and enabled
+-- exactly when it is the named provider, so no interleaving of concurrent
+-- activations can ever leave two rows selected or none. Selecting also
+-- re-enables: choosing a provider means running it.
+-- name: ActivateCaptchaConfig :exec
 UPDATE captcha_config
-SET selected = FALSE, enabled = FALSE,
+SET selected = (captcha_config.provider = $1),
+    enabled = (captcha_config.provider = $1),
     updated_at = NOW();
 
--- name: SelectCaptchaConfig :exec
+-- The hub's first-use self-heal: activate the default provider only when
+-- no row is selected, so a login resolving while an admin CLI switch
+-- commits can never override the admin's selection.
+-- name: ActivateCaptchaConfigIfNoneSelected :exec
 UPDATE captcha_config
-SET selected = TRUE, enabled = TRUE,
+SET selected = (captcha_config.provider = $1),
+    enabled = (captcha_config.provider = $1),
     updated_at = NOW()
-WHERE provider = $1;
+WHERE NOT EXISTS (SELECT 1 FROM captcha_config WHERE selected = TRUE);
 -- name: SetCaptchaEnabled :exec
 UPDATE captcha_config
 SET enabled = $1, updated_at = NOW()

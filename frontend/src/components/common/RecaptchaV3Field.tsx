@@ -1,10 +1,11 @@
 import type { Component } from 'solid-js'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import type { CaptchaFieldHandle } from './CaptchaField'
 
+import { createSignal, onCleanup, onMount } from 'solid-js'
 import { loadExternalScript } from '~/lib/scriptLoader'
 import { getCaptchaSiteKey } from '~/lib/systemInfo'
 import * as styles from './CaptchaField.css'
-import { Spinner } from './Spinner'
+import { CaptchaFieldStatus } from './CaptchaFieldStatus'
 
 // The v3 script is loaded with the site key as its render parameter; it
 // injects the reCAPTCHA badge itself, which stays visible (Google's terms
@@ -16,12 +17,6 @@ const RECAPTCHA_SCRIPT_URL = 'https://www.google.com/recaptcha/api.js?render='
 // before the user submits.
 const RECAPTCHA_REFRESH_MS = 110_000
 
-/** Imperative handle for the parent form, handed back through `ref`. */
-export interface RecaptchaV3FieldHandle {
-  /** Discard the current token and execute for a fresh one. */
-  reset: () => void
-}
-
 interface RecaptchaV3FieldProps {
   /**
    * The action this form's tokens are minted under; the hub refuses
@@ -30,14 +25,16 @@ interface RecaptchaV3FieldProps {
   action: string
   /** Receives the single-use reCAPTCHA v3 token, null while none is held. */
   onPayload: (payload: string | null) => void
-  ref?: (handle: RecaptchaV3FieldHandle) => void
+  ref?: (handle: CaptchaFieldHandle) => void
 }
 
 // Google reCAPTCHA v3 is invisible and score-based: there is no widget to
 // click, only a token the script mints on demand. This component keeps a
 // fresh token armed (re-executing inside the two-minute validity window)
 // so the form's submit stays unblocked; the score decision happens
-// server-side at siteverify.
+// server-side at siteverify. A hidden tab cannot submit, so the refresh
+// skips it — idle and background tabs must not mint tokens nobody uses —
+// and re-arms the moment the tab becomes visible again.
 export const RecaptchaV3Field: Component<RecaptchaV3FieldProps> = (props) => {
   let disposed = false
   // Re-executions can overlap (a reset while one is in flight); the epoch
@@ -56,7 +53,7 @@ export const RecaptchaV3Field: Component<RecaptchaV3FieldProps> = (props) => {
       await loadExternalScript(`${RECAPTCHA_SCRIPT_URL}${encodeURIComponent(siteKey)}`)
       if (disposed || current !== epoch || !window.grecaptcha)
         return
-      // grecaptcha.ready fires immediately once the script has loaded.
+      // grecaptcha.ready fires immediately once the script loads.
       const token = await new Promise<string>((resolve, reject) => {
         window.grecaptcha!.ready(() => {
           window.grecaptcha!.execute(siteKey, { action }).then(resolve, reject)
@@ -76,9 +73,18 @@ export const RecaptchaV3Field: Component<RecaptchaV3FieldProps> = (props) => {
     }
   }
 
+  const onVisibilityChange = () => {
+    if (!document.hidden)
+      void execute()
+  }
+
   onMount(() => {
     void execute()
-    refreshTimer = setInterval(() => void execute(), RECAPTCHA_REFRESH_MS)
+    refreshTimer = setInterval(() => {
+      if (!document.hidden)
+        void execute()
+    }, RECAPTCHA_REFRESH_MS)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     props.ref?.({
       reset: () => void execute(),
     })
@@ -89,22 +95,13 @@ export const RecaptchaV3Field: Component<RecaptchaV3FieldProps> = (props) => {
     epoch++
     if (refreshTimer !== undefined)
       clearInterval(refreshTimer)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     props.onPayload(null)
   })
 
   return (
     <div class={styles.field}>
-      <Show when={!ready() && !loadError()}>
-        <div class={styles.loading}>
-          <Spinner size="sm" />
-          Preparing verification…
-        </div>
-      </Show>
-      <Show when={loadError()}>
-        <div class={styles.loadError}>
-          Could not load the human-verification challenge. Check your connection and reload the page.
-        </div>
-      </Show>
+      <CaptchaFieldStatus ready={ready()} loadError={loadError()} />
     </div>
   )
 }

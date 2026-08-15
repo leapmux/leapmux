@@ -75,4 +75,29 @@ describe('loadExternalScript', () => {
     expect(headAppend).toHaveBeenCalledTimes(2)
     headAppend.mockRestore()
   })
+
+  it('times out a load that settles neither onload nor onerror, and evicts it', async () => {
+    vi.useFakeTimers()
+    try {
+      const stub = stubScriptElement()
+      const headAppend = vi.spyOn(document.head, 'appendChild').mockImplementation(() => stub.script as unknown as Node)
+
+      // A black-holed request: neither callback ever fires.
+      const hung = loadExternalScript('https://provider.example/api.js?case=blackhole')
+      const assertion = expect(hung).rejects.toThrow('timed out loading script')
+      vi.advanceTimersByTime(15_000)
+      await assertion
+
+      // The eviction matters as much as the rejection: the next caller
+      // must retry instead of receiving the cached eternal pending state.
+      const retried = loadExternalScript('https://provider.example/api.js?case=blackhole')
+      stub.fireLoad()
+      await expect(retried).resolves.toBeUndefined()
+      expect(headAppend).toHaveBeenCalledTimes(2)
+      headAppend.mockRestore()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
 })

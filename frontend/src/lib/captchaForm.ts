@@ -1,6 +1,6 @@
 import type { CaptchaFieldHandle } from '~/components/common/CaptchaField'
 import { createSignal } from 'solid-js'
-import { isCaptchaEnabled, isSystemInfoLoaded } from './systemInfo'
+import { isCaptchaEnabled, isSystemInfoLoaded, loadSystemInfo } from './systemInfo'
 
 export interface CaptchaRequestFields {
   captchaPayload: string
@@ -75,6 +75,13 @@ export function createCaptchaForm(): CaptchaFormState {
       setPayload(null)
       setHoneypot('')
       field?.reset()
+      // A rejected attempt is also the signal that the captcha snapshot
+      // in systemInfo is stale: the admin may have enabled or disabled
+      // captcha, or switched providers, since the page loaded. The
+      // refreshed signals re-mount the right provider's field (or stand
+      // down) for the retry, so every protected form converges after one
+      // denial instead of failing identically forever.
+      void loadSystemInfo(true).catch(() => {})
     },
     blocksSubmit: () => pending() || (required() && payload() === null),
     fields: () => ({ captchaPayload: payload() ?? '', honeypot: honeypot() }),

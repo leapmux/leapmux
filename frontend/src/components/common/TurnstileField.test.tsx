@@ -1,9 +1,13 @@
-import type { TurnstileFieldHandle } from './TurnstileField'
+import type { CaptchaFieldHandle } from './CaptchaField'
 /// <reference types="vitest/globals" />
 import { render } from '@solidjs/testing-library'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as systemInfo from '~/lib/systemInfo'
 import { TurnstileField } from './TurnstileField'
+
+// The mock factory's signal setter, which the real module does not export.
+const setMockSiteKey = (systemInfo as unknown as { __setMockSiteKey: (key: string) => void }).__setMockSiteKey
 
 // The script loader is stubbed so the component tests drive only the
 // turnstile SDK seam.
@@ -12,9 +16,17 @@ vi.mock('~/lib/scriptLoader', () => ({
   loadExternalScript: (...args: []) => mockLoadScript(...args),
 }))
 
-vi.mock('~/lib/systemInfo', () => ({
-  getCaptchaSiteKey: () => '1x00000000000000000000AA',
-}))
+// The site key reads through a real Solid signal so the component's
+// reactive tracking sees a rotation the way the production module's
+// signal delivers it.
+vi.mock('~/lib/systemInfo', async () => {
+  const { createSignal } = await import('solid-js')
+  const [siteKey, setSiteKey] = createSignal('1x00000000000000000000AA')
+  return {
+    getCaptchaSiteKey: () => siteKey(),
+    __setMockSiteKey: setSiteKey,
+  }
+})
 
 interface RenderCall {
   container: HTMLElement
@@ -58,6 +70,7 @@ describe('turnstileField', () => {
   beforeEach(() => {
     mockLoadScript.mockReset()
     mockLoadScript.mockResolvedValue(undefined)
+    setMockSiteKey('1x00000000000000000000AA')
     delete window.turnstile
   })
 
@@ -110,7 +123,7 @@ describe('turnstileField', () => {
 
   it('reset handle nulls the payload and re-runs the challenge', async () => {
     const turnstile = installFakeTurnstile()
-    let handle: TurnstileFieldHandle | undefined
+    let handle: CaptchaFieldHandle | undefined
     const onPayload = vi.fn()
     render(() => (
       <div><TurnstileField action="login" onPayload={onPayload} ref={h => (handle = h)} /></div>
@@ -142,6 +155,27 @@ describe('turnstileField', () => {
 
     unmount()
     expect(turnstile.removes).toEqual(['widget-1'])
+    expect(onPayload).toHaveBeenLastCalledWith(null)
+  })
+
+  it('re-renders the widget under the new key after a site-key rotation', async () => {
+    const turnstile = installFakeTurnstile()
+    const onPayload = vi.fn()
+    renderField({ onPayload })
+    await vi.waitFor(() => {
+      expect(turnstile.calls).toHaveLength(1)
+    })
+    turnstile.calls[0]?.options.callback?.('tok-under-old-key')
+
+    // The admin rotated the keys; the denial-driven reload updated the
+    // signal. Tokens under the retired key always fail siteverify, so the
+    // widget must re-render under the new key, not reset under the old.
+    setMockSiteKey('2x00000000000000000000BB')
+    await vi.waitFor(() => {
+      expect(turnstile.calls).toHaveLength(2)
+    })
+    expect(turnstile.removes).toEqual(['widget-1'])
+    expect(turnstile.calls[1]?.options.sitekey).toBe('2x00000000000000000000BB')
     expect(onPayload).toHaveBeenLastCalledWith(null)
   })
 })

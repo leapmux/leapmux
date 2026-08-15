@@ -171,7 +171,7 @@ turnstileTest.describe('captcha provider: turnstile', () => {
     // The fake token fails the hub's real siteverify (or fails closed
     // without network); either way the denial is the uniform message.
     await submit.click()
-    await expect(page.getByText(/captcha verification failed/i)).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText(/captcha verification failed/i)).toBeVisible()
   })
 })
 
@@ -189,7 +189,7 @@ recaptchaTest.describe('captcha provider: recaptcha_v3', () => {
     const submit = page.getByRole('button', { name: 'Sign in' })
     await expect(page.locator('altcha-widget')).toHaveCount(0)
     await expect(page.locator('[data-turnstile-checkbox]')).toHaveCount(0)
-    await expect(submit).toBeEnabled({ timeout: 15_000 })
+    await expect(submit).toBeEnabled()
 
     // The token was minted for the login procedure's action, which the
     // hub verifies server-side against the same string.
@@ -198,6 +198,6 @@ recaptchaTest.describe('captcha provider: recaptcha_v3', () => {
 
     // A fake token draws the uniform denial like any other provider.
     await submit.click()
-    await expect(page.getByText(/captcha verification failed/i)).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText(/captcha verification failed/i)).toBeVisible()
   })
 })

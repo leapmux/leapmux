@@ -24,6 +24,9 @@ const deriveKeys: Record<string, DeriveKeyFunction> = {
 /**
  * Fetch the next challenge over the raw Connect-API (Node, no browser).
  * Returns null when the hub reports no challenge (captcha disabled).
+ * Throws when the hub selected an external captcha provider: those mint
+ * tokens client-side in a browser, so no Node-side solver exists and the
+ * API helpers must not quietly submit an empty payload the hub denies.
  */
 export async function fetchAltchaChallenge(hubUrl: string): Promise<Challenge | null> {
   const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/GetAltchaChallenge`, {
@@ -32,6 +35,12 @@ export async function fetchAltchaChallenge(hubUrl: string): Promise<Challenge | 
     body: JSON.stringify({}),
   })
   if (!res.ok) {
+    if (res.status === 412) {
+      // FailedPrecondition: another provider is selected. Seed or
+      // authenticate through the browser flow instead (spec 180 stubs the
+      // provider scripts with page.route).
+      throw new Error('the hub selected an external captcha provider; the API helpers cannot mint its tokens — seed before switching providers, or authenticate through the browser flow')
+    }
     throw new Error(`getAltchaChallenge failed: ${res.status}`)
   }
   const data = await res.json() as { challengeJson: string }

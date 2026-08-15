@@ -1,4 +1,4 @@
-import type { RecaptchaV3FieldHandle } from './RecaptchaV3Field'
+import type { CaptchaFieldHandle } from './CaptchaField'
 /// <reference types="vitest/globals" />
 import { render } from '@solidjs/testing-library'
 
@@ -65,9 +65,38 @@ describe('recaptchaV3Field', () => {
     })
   })
 
+  it('skips the refresh while the tab is hidden and re-arms on visibility', async () => {
+    const execute = installFakeGrecaptcha()
+    const onPayload = vi.fn()
+    renderField({ onPayload })
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledTimes(1)
+    })
+
+    // A hidden tab cannot submit; the interval must not mint tokens
+    // nobody uses.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+    try {
+      vi.advanceTimersByTime(110_000)
+      vi.advanceTimersByTime(110_000)
+      expect(execute).toHaveBeenCalledTimes(1)
+
+      // Returning to the tab re-arms immediately: the next submit needs a
+      // token inside the two-minute window.
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.waitFor(() => {
+        expect(execute).toHaveBeenCalledTimes(2)
+      })
+    }
+    finally {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+    }
+  })
+
   it('reset handle re-executes for a fresh token', async () => {
     const execute = installFakeGrecaptcha()
-    let handle: RecaptchaV3FieldHandle | undefined
+    let handle: CaptchaFieldHandle | undefined
     render(() => (
       <div><RecaptchaV3Field action="login" onPayload={vi.fn()} ref={h => (handle = h)} /></div>
     ))
@@ -96,7 +125,7 @@ describe('recaptchaV3Field', () => {
       return call === 1 ? new Promise<string>(() => {}) : Promise.resolve('fresh')
     })
     installFakeGrecaptcha(execute)
-    let handle: RecaptchaV3FieldHandle | undefined
+    let handle: CaptchaFieldHandle | undefined
     const onPayload = vi.fn()
     render(() => (
       <div><RecaptchaV3Field action="login" onPayload={onPayload} ref={h => (handle = h)} /></div>

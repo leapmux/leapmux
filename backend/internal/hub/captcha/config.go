@@ -3,8 +3,8 @@
 // CompleteOAuthSignup): challenge issuance and token verification for a
 // selectable set of providers (the built-in ALTCHA proof-of-work, Google
 // reCAPTCHA v3, and Cloudflare Turnstile), plus the ConnectRPC
-// interceptor that gates the procedures. The honeypot check runs
-// regardless of provider and enablement.
+// interceptor that controls access to the procedures. The honeypot check
+// runs regardless of provider and enablement.
 package captcha
 
 import (
@@ -40,40 +40,33 @@ func DefaultConfig() Config {
 	}
 }
 
+// defaultConfigFor returns a provider's defaults with no stored row
+// behind them — the base an admin CLI edit overlays when the provider has
+// never been configured. Enabled matches a freshly provisioned row.
+func defaultConfigFor(provider Provider) Config {
+	if spec, ok := specFor(provider); ok {
+		return spec.defaults()
+	}
+	return DefaultConfig()
+}
+
 // Validate checks that the settings pointer matching Provider is present
 // and valid. Unknown providers are refused here, so a hand-edited row
 // can never select a provider the manager cannot dispatch on.
 func (c Config) Validate() error {
-	switch c.Provider {
-	case ProviderAltcha:
-		if c.Altcha == nil {
-			return fmt.Errorf("altcha settings missing")
-		}
-		return c.Altcha.Validate()
-	case ProviderRecaptchaV3:
-		if c.RecaptchaV3 == nil {
-			return fmt.Errorf("recaptcha_v3 settings missing")
-		}
-		return c.RecaptchaV3.Validate()
-	case ProviderTurnstile:
-		if c.Turnstile == nil {
-			return fmt.Errorf("turnstile settings missing")
-		}
-		return c.Turnstile.Validate()
-	default:
+	spec, ok := specFor(c.Provider)
+	if !ok {
 		return fmt.Errorf("unsupported captcha provider %q (supported: %v)", c.Provider, SupportedProviders())
 	}
+	return spec.validate(c)
 }
 
 // SiteKey returns the public site key for external providers (what the
 // frontend loads its widget with), and "" for altcha — whose equivalent
 // input, the challenge, arrives per-submission via GetAltchaChallenge.
 func (c Config) SiteKey() string {
-	switch c.Provider {
-	case ProviderRecaptchaV3:
-		return c.RecaptchaV3.SiteKey
-	case ProviderTurnstile:
-		return c.Turnstile.SiteKey
+	if spec, ok := specFor(c.Provider); ok {
+		return spec.siteKey(c)
 	}
 	return ""
 }
@@ -81,8 +74,8 @@ func (c Config) SiteKey() string {
 // AltchaAlgorithm returns the active ALTCHA algorithm name, and "" when
 // another provider is selected. GetSystemInfo reports it informationally.
 func (c Config) AltchaAlgorithm() string {
-	if c.Provider == ProviderAltcha && c.Altcha != nil {
-		return c.Altcha.Algorithm
+	if spec, ok := specFor(c.Provider); ok {
+		return spec.altchaAlgorithm(c)
 	}
 	return ""
 }
@@ -98,21 +91,13 @@ func Effective(row *store.CaptchaConfig) Config {
 	if row == nil {
 		return DefaultConfig()
 	}
-	cfg := Config{Provider: row.Provider, Enabled: row.Enabled}
-	switch cfg.Provider {
-	case ProviderAltcha:
-		s := parseAltchaSettings(row.Settings)
-		cfg.Altcha = &s
-	case ProviderRecaptchaV3:
-		s := parseRecaptchaV3Settings(row.Settings)
-		cfg.RecaptchaV3 = &s
-	case ProviderTurnstile:
-		s := parseTurnstileSettings(row.Settings)
-		cfg.Turnstile = &s
-	default:
-		slog.Warn("captcha config row names an unsupported provider; using built-in defaults", "provider", row.Provider)
+	spec, ok := specFor(row.Provider)
+	if !ok {
+		slog.Warn("captcha config row specifies an unsupported provider; using built-in defaults", "provider", row.Provider)
 		return DefaultConfig()
 	}
+	cfg := Config{Provider: row.Provider, Enabled: row.Enabled}
+	spec.applySettings(&cfg, row.Settings)
 	if err := cfg.Validate(); err != nil {
 		slog.Warn("captcha config row invalid; using built-in defaults", "provider", row.Provider, "error", err)
 		return DefaultConfig()

@@ -60,6 +60,5 @@ func (m *Manager) verifyTurnstile(ctx context.Context, secret, token, expectedAc
 	result, err := verifyWithClient(ctx, m.turnstile, ProviderTurnstile, secret, token, func(resp siteverifyResponse) bool {
 		return resp.Action == expectedAction
 	})
-	m.countResult(ProviderTurnstile, result)
-	return err
+	return m.counted(ProviderTurnstile, result, err)
 }

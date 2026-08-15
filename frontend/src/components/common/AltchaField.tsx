@@ -1,17 +1,12 @@
 import type { AltchaWidgetElement } from 'altcha'
 import type { Component } from 'solid-js'
-import { createSignal, onCleanup, onMount, Show } from 'solid-js'
+import type { CaptchaFieldHandle } from './CaptchaField'
 
+import { createSignal, onCleanup, onMount } from 'solid-js'
 import { fetchAltchaChallenge } from '~/lib/altchaChallenge'
 import * as styles from './CaptchaField.css'
-import { Spinner } from './Spinner'
+import { CaptchaFieldStatus } from './CaptchaFieldStatus'
 import 'altcha'
-
-/** Imperative handle for the parent form, handed back through `ref`. */
-export interface AltchaFieldHandle {
-  /** Discard any solved payload and re-arm with a fresh challenge. */
-  reset: () => void
-}
 
 interface AltchaFieldProps {
   /** Receives the base64 ALTCHA payload once solved, null otherwise. */
@@ -19,10 +14,12 @@ interface AltchaFieldProps {
   /**
    * The hub answered with no challenge (captcha disabled since the
    * system-info snapshot loaded). The form lifts its requirement instead
-   * of dead-locking on a challenge that never arrives.
+   * of dead-locking on a challenge that never arrives. Any other answer
+   * — another provider selected, a transport fault — is an error, not a
+   * stand-down: a stale altcha widget must never open a tokenless door.
    */
   onUnavailable: () => void
-  ref?: (handle: AltchaFieldHandle) => void
+  ref?: (handle: CaptchaFieldHandle) => void
 }
 
 // The ALTCHA widget, themed to Oat (see CaptchaField.css.ts). The
@@ -100,17 +97,7 @@ export const AltchaField: Component<AltchaFieldProps> = (props) => {
   return (
     <div class={styles.field}>
       <altcha-widget ref={widget} />
-      <Show when={!ready() && !loadError()}>
-        <div class={styles.loading}>
-          <Spinner size="sm" />
-          Preparing verification…
-        </div>
-      </Show>
-      <Show when={loadError()}>
-        <div class={styles.loadError}>
-          Could not load the human-verification challenge. Check your connection and reload the page.
-        </div>
-      </Show>
+      <CaptchaFieldStatus ready={ready()} loadError={loadError()} />
     </div>
   )
 }
