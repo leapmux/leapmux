@@ -199,6 +199,8 @@ tasks:
       - frontend/bun.lock
       - frontend/scripts/**/*
       - scripts/build-ico.mjs
+      - scripts/render-icon.mjs
+      - scripts/icon-corners.mjs
       - frontend/src/generated/**/*
     generates:
       - frontend/node_modules/**/*
@@ -213,7 +215,6 @@ tasks:
       - task: generate-proto
       - task: generate-spinners
       - cd frontend && bun install
-      - mkdir -p frontend/public/icons
       - NODE_PATH=frontend/node_modules bun frontend/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon-square.svg frontend/public
       - "[ -a NOTICE.html ] && cp NOTICE.html frontend/public/NOTICE.html || true"
 
@@ -253,19 +254,24 @@ tasks:
       - icons/leapmux-icon.svg
       - desktop/rust/scripts/**/*
       - scripts/build-ico.mjs
+      - scripts/render-icon.mjs
+      - scripts/icon-corners.mjs
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
     generates:
-      - desktop/rust/icons/icon@2x.png
+      # The set that desktop/rust/scripts/icon-set.mjs defines.
+      - desktop/rust/icons/*.png
       - desktop/rust/icons/icon.ico
     cmds:
       - task: generate-proto
       - task: build-frontend
       - task: prepare-backend
-      - mkdir -p desktop/rust/icons
-      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon-square.svg icons/leapmux-icon.svg desktop/rust/icons/icon@2x.png desktop/rust/icons/icon.ico opaque
+      # macOS renders the square source, because the system applies its own mask
+      # and a rounded icon would show the corner twice. Linux and Windows draw
+      # the icon as authored, so they render the rounded source.
+      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon-square.svg icons/leapmux-icon.svg desktop/rust/icons opaque
         if: '[ "{{OS}}" = "darwin" ]'
-      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon.svg desktop/rust/icons/icon@2x.png desktop/rust/icons/icon.ico transparent
+      - cmd: NODE_PATH=frontend/node_modules bun desktop/rust/scripts/generate-icons.mjs icons/leapmux-icon.svg icons/leapmux-icon.svg desktop/rust/icons transparent
         if: '[ "{{OS}}" = "linux" ] || [ "{{OS}}" = "windows" ]'
 
   # --- Build ---
@@ -359,7 +365,7 @@ tasks:
       - desktop/rust/capabilities/**/*
       - desktop/rust/tauri.conf.json
       - desktop/rust/entitlements.plist
-      - desktop/rust/icons/icon@2x.png
+      - desktop/rust/icons/*
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
@@ -502,7 +508,7 @@ tasks:
       - desktop/rust/tauri.conf.json
       - desktop/rust/tauri.linux.conf.json
       - desktop/rust/desktop-template.desktop
-      - desktop/rust/icons/icon@2x.png
+      - desktop/rust/icons/*
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
@@ -601,6 +607,11 @@ tasks:
           dpkg-deb -b "$work" "$deb"
           rm -rf "$work"
         done
+      # Read the icons back out of the repacked .deb. tauri-bundler derives each
+      # destination from the PNG header and the `@2x` suffix, so a size that no
+      # icon theme declares installs without an error and leaves the app with no
+      # icon anywhere -- the failure that shipped as issue #387.
+      - bun desktop/rust/scripts/verify-deb-icons.mjs leapmux-desktop_*.deb
 
   build-desktop-windows:
     desc: Build desktop for Windows
@@ -619,7 +630,7 @@ tasks:
       - desktop/rust/tauri.conf.json
       - desktop/rust/tauri.windows.conf.json
       - desktop/rust/windows/**/*
-      - desktop/rust/icons/icon.ico
+      - desktop/rust/icons/*
       - desktop/rust/scripts/**/*
       - frontend/.output/**/*
       - backend/internal/hub/generated/frontend/public/**/*
@@ -714,16 +725,18 @@ tasks:
 
   test-scripts:
     desc: Test repository scripts
-    # `bun test` rather than vitest: these are repo-root Bun scripts, outside
-    # frontend/ and its vitest project (whose root is frontend/ and whose
-    # co-location rule covers frontend/src only).
+    # `bun test` rather than vitest: these are build scripts outside frontend/
+    # and its vitest project (whose root is frontend/ and whose co-location rule
+    # covers frontend/src only). desktop/rust/scripts/ holds the desktop build's
+    # own Bun scripts and joins them here for the same reason.
     #
-    # Deliberately NOT fingerprinted. The suites read beyond scripts/*.mjs --
-    # versions.env, and scripts/license-overrides/spdx/ through the real
-    # vendored path -- so a `sources:` list narrow enough to be worth having
-    # would go stale and skip the run that mattered. It takes ~40 ms.
+    # Deliberately NOT fingerprinted. The suites read beyond their own *.mjs --
+    # versions.env, scripts/license-overrides/spdx/ through the real vendored
+    # path, and the Tauri configs next to desktop/rust/scripts/ -- so a
+    # `sources:` list narrow enough to be worth having would go stale and skip
+    # the run that mattered. It takes ~40 ms.
     cmds:
-      - bun test scripts/
+      - bun test scripts/ desktop/rust/scripts/
 
   test-frontend:
     desc: Run frontend tests
@@ -812,10 +825,11 @@ tasks:
     deps: [prepare-frontend]
     sources:
       - scripts/*.mjs
+      - desktop/rust/scripts/*.mjs
       - eslint.config.mjs
       - frontend/eslint.config.ts
     cmds:
-      - ./frontend/node_modules/.bin/eslint scripts/
+      - ./frontend/node_modules/.bin/eslint scripts/ desktop/rust/scripts/
 
   lint-versions:
     desc: Check documented tool versions against versions.env
