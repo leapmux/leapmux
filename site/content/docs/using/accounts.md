@@ -51,7 +51,7 @@ A few things are special about this first account:
 
 ## Signing up
 
-After the first admin exists, new self-service accounts are only possible if the operator has enabled them with the `--signup-enabled` flag (it is **off by default**). See [Configuration](/docs/operating/configuration/).
+After the first admin exists, new self-service accounts are only possible if the operator has enabled the `signup_enabled` setting (`leapmux admin settings set signup_enabled true`; it is **off by default**). See [Configuration](/docs/operating/configuration/).
 
 - **If signup is disabled**, visiting `/signup` shows a "not found" page titled **"Sign-up disabled"** with the message **"New account registration is not currently available."** and a **"Go to login"** link.
 - **If signup is enabled**, you get the **"Sign Up"** page.
@@ -91,7 +91,7 @@ Click **Sign in** (**Signing in...** while it works). The button is disabled unt
 
 ## Email verification
 
-Email verification is optional and controlled by the operator's `--email-verification-required` flag (off by default; it requires an SMTP server to be configured). When it is on, you must verify your email before you can use most of LeapMux.
+Email verification is optional and controlled by the operator's `email_verification_required` setting (off by default; enabling it requires an SMTP server to be configured). When it is on, you must verify your email before you can use most of LeapMux.
 
 ### Verifying your email
 
@@ -193,7 +193,7 @@ When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` 
 
 | Property | Value |
 | --- | --- |
-| Session lifetime | **7 days after your last activity** (operators can change this — see [`session_duration`](/docs/operating/configuration/)) |
+| Session lifetime | **7 days after your last activity** (operators can change this — see [`session_duration_seconds`](/docs/operating/configuration/)) |
 | Cookie name | `leapmux-session` (or `__Host-leapmux-session` when the operator enables secure cookies behind TLS) |
 | Cookie flags | `HttpOnly`, `Path=/`, `SameSite=Lax` |
 
@@ -238,5 +238,5 @@ Open the **"Profile"** dialog from the app to manage your account. It has up to 
 
 - [Settings & Preferences](/docs/using/settings/) — the full Profile dialog and other preferences.
 - [Authentication Providers](/docs/operating/authentication-providers/) — configuring OAuth/OIDC as an operator.
-- [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) — choosing a run mode and the `--signup-enabled` / `--email-verification-required` flags.
+- [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) — choosing a run mode and the `signup_enabled` / `email_verification_required` settings.
 - [Security & Threat Model](/docs/operating/security/) — what authentication does and does not protect.

@@ -130,6 +130,17 @@ var adminTree = adminGroup{
 			},
 		},
 		{
+			Name:    "settings",
+			Summary: "Manage the hub's DB-backed instance settings (auth policy, SMTP, timeouts, limits, captcha, rate limits)",
+			Commands: []adminCommand{
+				{Name: "list", Summary: "List every setting key with its effective value, propagation, and default marker", Run: runSettingsList},
+				{Name: "get", Summary: "Show one key's effective value and shape", Run: runSettingsGet},
+				{Name: "set", Summary: "Write one key's public half from a JSON document (or bare scalar)", Run: runSettingsSet},
+				{Name: "set-secret", Summary: "Write one key's secret half (encrypted at rest)", Run: runSettingsSetSecret},
+				{Name: "reset", Summary: "Remove one key's row, returning it to its default", Run: runSettingsReset},
+			},
+		},
+		{
 			Name:    "encryption-key",
 			Summary: "Manage encryption keys",
 			Commands: []adminCommand{
@@ -347,6 +358,52 @@ func withAdminStore(cmd adminCmdCtx, args []string, setup func(fs *flag.FlagSet)
 	defer func() { _ = st.Close() }()
 
 	return fn(context.Background(), cfg, st)
+}
+
+// withAdminStoreArgs is withAdminStore for verbs that take positional
+// arguments AFTER their flags (`settings set --data-dir X KEY VALUE`):
+// the flag parser stops at the first positional token, the remaining
+// args flow to fn verbatim, and the reject-positional rule does not
+// apply. Flags after the first positional are arguments too (Go flag
+// semantics), so the usage error states the expected shape.
+func withAdminStoreArgs(cmd adminCmdCtx, args []string, setup func(fs *flag.FlagSet), fn func(ctx context.Context, cfg *config.Config, st store.Store, rest []string) error) error {
+	fs := flag.NewFlagSet("leapmux admin "+cmd.Path, flag.ContinueOnError)
+	dataDir := fs.String("data-dir", "", "data directory")
+	configFile := fs.String("config", "", "path to hub config file (loads storage settings)")
+	if setup != nil {
+		setup(fs)
+	}
+	if internalconfig.HasHelpArg(args) {
+		fs.SetOutput(os.Stdout)
+	}
+	fs.Usage = func() {
+		internalconfig.PrintFlagUsage(fs, cmd.Description, nil, nil)
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var cfg *config.Config
+	if *configFile != "" {
+		var err error
+		cfg, _, err = config.LoadWithOptions([]string{"--config", *configFile}, config.LoadOptions{})
+		if err != nil {
+			return fmt.Errorf("load config from %s: %w", *configFile, err)
+		}
+		if *dataDir != "" {
+			cfg.DataDir = *dataDir
+		}
+	} else {
+		cfg = adminConfig(*dataDir)
+	}
+
+	st, err := storeopen.Open(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	return fn(context.Background(), cfg, st, fs.Args())
 }
 
 // adminConfig returns a minimal Config with DataDir set. When dataDir is

@@ -19,6 +19,7 @@ import (
 
 	"github.com/leapmux/leapmux/hub"
 	hubconfig "github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/logging"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
@@ -413,7 +414,7 @@ func soloLoadOptions(cfg Config) (hubconfig.LoadOptions, string) {
 
 	cliFlags := cfg.CLIFlags
 	if cliFlags == nil {
-		cliFlags = defaultCLIFlags(cfg.DevMode)
+		cliFlags = defaultCLIFlags()
 	}
 
 	extraFlags := cfg.ExtraFlags
@@ -466,7 +467,6 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 
 	if !cfg.SkipBanner {
 		logging.PrintBanner(modeName)
-		logging.PrintBannerURL(hubCfg.PublicURL, hubCfg.Listen)
 	}
 
 	// Split data dir into hub and worker subdirectories.
@@ -481,6 +481,13 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	server, err := hub.NewServer(hubCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create hub server: %w", err)
+	}
+	if !cfg.SkipBanner {
+		// Printed after the server exists so the URL reflects the
+		// public_url setting, exactly like the hub binary's banner.
+		logging.PrintBannerURL(
+			settings.KeyPublicURL.Of(server.SettingsManager().Snapshot(context.Background())),
+			hubCfg.Listen)
 	}
 
 	// Resolved BEFORE the contexts exist, so no failure path has to cancel them:
@@ -766,6 +773,12 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 		return err
 	}
 
+	// The worker pins carry the hub instance's settings (payload ceiling,
+	// startup and API timeouts), which are DB-backed now: resolved from the
+	// running hub's settings snapshot rather than the launcher's config.
+	snap := p.server.SettingsManager().Snapshot(ctx)
+	workerTimeouts := settings.KeyTimeouts
+
 	// Ensure composite keypair for E2EE.
 	if state.PublicKey == "" || state.PrivateKey == "" ||
 		state.MlkemPublicKey == "" || state.MlkemPrivateKey == "" ||
@@ -839,9 +852,9 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 			DBMmapSize:   p.hubCfg.Storage.SQLite.MmapSize,
 			// 0 (the default) lets the worker apply channelwire.DefaultMaxIncompleteChunked.
 			MaxIncompleteChunked: parseInt(p.hubCfg.Extras["max_incomplete_chunked"], 0),
-			MaxMessageSize:       p.hubCfg.MaxMessageSize,
-			AgentStartupTimeout:  p.hubCfg.AgentStartupTimeout,
-			APITimeout:           p.hubCfg.APITimeout,
+			MaxMessageSize:       int(settings.KeyMaxMessageSizeBytes.Of(snap)),
+			AgentStartupTimeout:  workerTimeouts.Of(snap).AgentStartupTimeout(),
+			APITimeout:           workerTimeouts.Of(snap).APITimeout(),
 			EncryptionMode:       workerconfig.ParseEncryptionMode(p.hubCfg.Extras["encryption_mode"]),
 			UseLoginShell:        parseBool(p.hubCfg.Extras["use_login_shell"], true),
 			RegisteredBy:         state.RegisteredBy,
@@ -875,8 +888,9 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 		unmarshalErr := json.Unmarshal(data, &s)
 		if unmarshalErr == nil && s.WorkerID != "" && s.AuthToken != "" {
 			// Take the owner from the DB, which is the authority: workers.registered_by
-			// is NOT NULL and set at registration, and it is the fact requireWorkerOwner
-			// gates the whole machine on. The state file's copy is a cache that can lag
+			// is NOT NULL and set at registration, and it is the fact that
+			// requireWorkerOwner uses to control the whole machine. The state
+			// file's copy is a cache that can lag
 			// it, and an empty one is not something to paper over -- a worker launched
 			// with no owner has every machine-scoped family (file, git, sysinfo, tunnel)
 			// permanently dead for its own legitimate user, failing closed in a way that
@@ -1115,12 +1129,15 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 // before it consults this list, so the config file and LEAPMUX_HUB_* env vars
 // see the whole surface. This list only decides what earns a line in --help.
 //
-// max-connections-per-user and max-workers-per-user are here because solo is the
-// mode where they actually bind. Every socket belongs to the one local user: an
-// active tab holds two leases, and the desktop app, any CLI `remote` session and
-// every worker's controlipc watcher draw on the same allowance, so the default of
-// 32 is well under 16 tabs. A user who hits it is told to close a tab, which is
-// the one piece of advice a --help with no such flag cannot act on.
+// The list shrank to the process's bootstrap flags because everything else an
+// operator tunes -- timeouts, per-user caps, SMTP, signup, session policy --
+// moved into the hub_settings table: `leapmux admin settings set limits
+// '{"max_connections_per_user":...}'` changes them on a RUNNING solo or dev
+// instance, where the old flags needed a relaunch. Solo is still the mode
+// where the connection cap actually binds (every socket belongs to the one
+// local user: an active tab holds two leases, and the desktop app, any CLI
+// `remote` session and every worker's controlipc watcher draw on the same
+// allowance) -- it is just tuned through the settings table now.
 //
 // use-login-shell is deliberately absent even though `leapmux solo
 // --use-login-shell=false` works: this list names HUB flags, and that one is an
@@ -1130,25 +1147,13 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 //
 // The three queue budgets are deliberately NOT here. They auto-size off this
 // machine's memory limit, which is almost always the right answer on a laptop,
-// and a config file still reaches them for the rare case it is not.
-//
-// session-duration is dev-only, alongside public-url, because solo mode has no
-// session to expire: its interceptor authenticates every request as the
-// synthetic local user and mints no session row. Dev mode runs the full
-// sign-up-and-cookie path, so the flag is the one place a short session is
-// worth asking for -- testing the signed-out path needs minutes, not days.
-func defaultCLIFlags(devMode bool) []string {
-	flags := []string{
+// and are DB-backed restart-class settings for the rare case it is not.
+func defaultCLIFlags() []string {
+	return []string{
 		"listen", "data-dir", "dev-frontend",
 		"storage-sqlite-max-conns", "storage-sqlite-cache-size", "storage-sqlite-mmap-size",
-		"api-timeout", "agent-startup-timeout", "worktree-create-timeout",
 		"log-level",
-		"max-connections-per-user", "max-workers-per-user",
 	}
-	if devMode {
-		flags = append(flags, "public-url", "session-duration")
-	}
-	return flags
 }
 
 // parseInt parses a string as an int, returning defaultVal if the string is

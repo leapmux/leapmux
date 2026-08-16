@@ -2,7 +2,6 @@ package captcha
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -42,27 +41,6 @@ func (s RecaptchaV3Settings) Validate() error {
 		return fmt.Errorf("recaptcha_v3 min_score must be between 0 (exclusive) and 1 (got %g)", s.MinScore)
 	}
 	return nil
-}
-
-// parseRecaptchaV3Settings decodes the stored settings JSON over the
-// defaults; an undecodable blob yields the defaults. Validation happens
-// in Effective, which falls back to DefaultConfig on refusal.
-func parseRecaptchaV3Settings(raw string) RecaptchaV3Settings {
-	s := DefaultRecaptchaV3Settings()
-	if raw == "" {
-		return s
-	}
-	var stored RecaptchaV3Settings
-	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return s
-	}
-	if stored.SiteKey != "" {
-		s.SiteKey = stored.SiteKey
-	}
-	if stored.MinScore != 0 {
-		s.MinScore = stored.MinScore
-	}
-	return s
 }
 
 // verifyRecaptcha checks one reCAPTCHA v3 token against Google's

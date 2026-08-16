@@ -79,7 +79,7 @@ func TestNewAPIAuthHandlerRequiresCredentialLifecycleEffects(t *testing.T) {
 	t.Parallel()
 
 	require.Panics(t, func() {
-		service.NewAPIAuthHandler(nil, nil, nil, "")
+		service.NewAPIAuthHandler(nil, nil, nil, func() string { return "" })
 	})
 }
 
@@ -149,7 +149,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 
 	closer := &recordingBearerCloser{}
 	clock := &testClock{}
-	h := service.NewAPIAuthHandler(st, tv, auth.NewCredentialLifecycleEffects(sc, closer, closer), srv.URL)
+	h := service.NewAPIAuthHandler(st, tv, auth.NewCredentialLifecycleEffects(sc, closer, closer), func() string { return srv.URL })
 	h.Now = clock.now
 	h.RegisterRoutes(mux)
 
@@ -768,7 +768,7 @@ func TestAPIAuth_Refresh_DoesNotPoisonFlightWithCanceledLeaderContext(t *testing
 	}))
 
 	mux := http.NewServeMux()
-	service.NewAPIAuthHandler(env.store, env.validator, auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer), env.server.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(env.store, env.validator, auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer), func() string { return env.server.URL }).RegisterRoutes(mux)
 	form := url.Values{
 		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
 	}
@@ -898,7 +898,7 @@ func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
 	t.Cleanup(otherServer.Close)
 	otherValidator, err := auth.NewTokenValidator(env.store, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	service.NewAPIAuthHandler(env.store, otherValidator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), otherServer.URL).RegisterRoutes(otherMux)
+	service.NewAPIAuthHandler(env.store, otherValidator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return otherServer.URL }).RegisterRoutes(otherMux)
 
 	retry, err := http.PostForm(otherServer.URL+"/auth/cli/refresh", url.Values{
 		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, previousRefresh)},
@@ -940,7 +940,7 @@ func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testi
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return srv.URL }).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/auth/cli/refresh", url.Values{
 		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
@@ -978,7 +978,7 @@ func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T)
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewAPIAuthHandler(wrapper, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapper, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return srv.URL }).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/auth/cli/refresh", url.Values{
 		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
@@ -1024,7 +1024,7 @@ func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return srv.URL }).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/auth/cli/refresh", url.Values{
 		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, currentRefresh)},
@@ -1244,7 +1244,7 @@ func TestAPIAuth_Refresh_DetachedWorkHasDeadline(t *testing.T) {
 	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	mux := http.NewServeMux()
-	service.NewAPIAuthHandler(wrapped, validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return env.server.URL }).RegisterRoutes(mux)
 
 	form := url.Values{"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret())}}
 	req := httptest.NewRequest(http.MethodPost, "/auth/cli/refresh", strings.NewReader(form.Encode()))
@@ -1276,7 +1276,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 		users: getByIDFailUsers{UserStore: env.store.Users()},
 	}
 	mux := http.NewServeMux()
-	service.NewAPIAuthHandler(failing, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(failing, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return env.server.URL }).RegisterRoutes(mux)
 
 	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: userid.MustNew(env.userID)})
 	require.NoError(t, err)
@@ -1317,7 +1317,7 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 
 	failing := userLookupFailStore{Store: env.store, users: getByIDFailUsers{UserStore: env.store.Users()}}
 	mux := http.NewServeMux()
-	service.NewAPIAuthHandler(failing, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(failing, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return env.server.URL }).RegisterRoutes(mux)
 	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {deviceCode}}
 	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1354,7 +1354,7 @@ func TestAPIAuth_DeviceCode_TouchPollFailureIsInternal(t *testing.T) {
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return env.server.URL }).RegisterRoutes(mux)
 	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {deviceCode}}
 	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1376,7 +1376,7 @@ func TestAPIAuth_DeviceCode_LookupFailureIsInternal(t *testing.T) {
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return env.server.URL }).RegisterRoutes(mux)
 	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {"test-device-code"}}
 	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1406,7 +1406,7 @@ func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return env.server.URL }).RegisterRoutes(mux)
 	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {deviceCode}}
 	req := httptest.NewRequest(http.MethodPost, "/auth/cli/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1448,7 +1448,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return env.server.URL }).RegisterRoutes(mux)
 	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {deviceCode}}
 
 	// First poll: issuance fails transiently (500), but the throttle anchor
@@ -1541,7 +1541,7 @@ func TestAPIAuth_Refresh_InternalFailureDoesNotLeakDetails(t *testing.T) {
 	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	mux := http.NewServeMux()
-	service.NewAPIAuthHandler(wrapped, validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), env.server.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return env.server.URL }).RegisterRoutes(mux)
 
 	form := url.Values{"refresh_token": {
 		auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret()),
@@ -1579,7 +1579,7 @@ func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
 		Store: env.store,
 		api:   apiRevokeFailTokens{APITokenStore: env.store.APITokens()},
 	}
-	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, env.validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return srv.URL }).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/auth/cli/revoke", url.Values{"token": {bearer}})
 	require.NoError(t, err)
@@ -1624,7 +1624,7 @@ func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	service.NewAPIAuthHandler(wrapped, validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), srv.URL).RegisterRoutes(mux)
+	service.NewAPIAuthHandler(wrapped, validator, auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), func() string { return srv.URL }).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/auth/cli/revoke", url.Values{"token": {bearer}})
 	require.NoError(t, err)
@@ -1942,7 +1942,7 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	closer := &recordingBearerCloser{}
-	service.NewAPIAuthHandler(wrapped, tv, auth.NewCredentialLifecycleEffects(sc, closer, closer), srv.URL).
+	service.NewAPIAuthHandler(wrapped, tv, auth.NewCredentialLifecycleEffects(sc, closer, closer), func() string { return srv.URL }).
 		RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/auth/cli/token", url.Values{

@@ -560,24 +560,20 @@ CREATE TABLE pending_oauth_signups (
     FOREIGN KEY (provider_id) REFERENCES oauth_providers(id)
 ) COLLATE=utf8mb4_bin;
 
--- Captcha provider configuration: one row per provider, keyed by the
--- CaptchaProvider proto enum's raw number (see proto/leapmux/v1/auth.proto;
--- 1=altcha, 2=recaptcha_v3, 3=turnstile). Exactly one row is
--- selected (the active provider, remembered across disable so a later
--- enable restores it); `enabled` on that row is the verification on/off
--- switch. Provider-specific settings live in the settings JSON, so no
--- column is shared across providers. Each row owns its secret —
--- keystore-encrypted with a provider-scoped AAD — and switching
--- providers never regenerates it. An absent altcha row means the
--- built-in defaults apply; the hub provisions one (with a fresh secret)
--- on first use.
-CREATE TABLE captcha_config (
-    provider   INTEGER PRIMARY KEY, -- CaptchaProvider proto enum value
-    selected   BOOLEAN NOT NULL DEFAULT FALSE,
-    enabled    BOOLEAN NOT NULL DEFAULT TRUE,
-    secret     BLOB NOT NULL,
-    settings   TEXT NOT NULL,
-    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+-- Instance-level hub settings: one row per setting key. `value` is a JSON
+-- document whose shape is defined by the owning package's typed key handle
+-- (internal/hub/settings); secret-bearing keys keep the secret half in the
+-- keystore-encrypted column (AAD bound to the key name). An absent row means
+-- the code default, so adding, removing, or reshaping a setting is a Go
+-- change only — never a migration. This table is the single home for all
+-- runtime-changeable configuration (auth policy, SMTP, timeouts, limits,
+-- captcha providers, rate-limit overrides).
+CREATE TABLE hub_settings (
+    `key`      VARCHAR(255) PRIMARY KEY,
+    value      TEXT,    -- JSON document, public half
+    secret     BLOB,    -- keystore-encrypted JSON, secret half
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    CHECK (value IS NOT NULL OR secret IS NOT NULL)
 ) COLLATE=utf8mb4_bin;
 
 -- Consumed ALTCHA salts: single-use enforcement for solved challenges,
@@ -591,16 +587,6 @@ CREATE TABLE altcha_used_salts (
 ) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_altcha_used_salts_expires_at ON altcha_used_salts(expires_at);
 
--- Per-operation rate-limit overrides. Absent rows fall back to the code-side
--- defaults; operations are catalogued in Go (internal/hub/ratelimit).
-CREATE TABLE rate_limit_config (
-    operation      VARCHAR(255) PRIMARY KEY,
-    enabled        BOOLEAN NOT NULL DEFAULT TRUE,
-    max_attempts   BIGINT NOT NULL,
-    window_seconds BIGINT NOT NULL,
-    updated_at     DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
-) COLLATE=utf8mb4_bin;
-
 -- +goose Down
 DROP TABLE IF EXISTS cli_authorization_codes;
 DROP TABLE IF EXISTS device_authorizations;
@@ -610,9 +596,8 @@ DROP TABLE IF EXISTS hub_runtime_lease;
 DROP TABLE IF EXISTS revocation_events;
 DROP TABLE IF EXISTS revocation_event_sequence;
 DROP TABLE IF EXISTS pending_oauth_signups;
-DROP TABLE IF EXISTS rate_limit_config;
 DROP TABLE IF EXISTS altcha_used_salts;
-DROP TABLE IF EXISTS captcha_config;
+DROP TABLE IF EXISTS hub_settings;
 DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_user_links;

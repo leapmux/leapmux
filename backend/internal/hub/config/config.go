@@ -3,8 +3,6 @@ package config
 import (
 	"flag"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,14 +11,12 @@ import (
 	"github.com/knadh/koanf/v2"
 	"github.com/leapmux/leapmux/channelwire"
 	internalconfig "github.com/leapmux/leapmux/internal/config"
-	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/locallisten"
-	"github.com/leapmux/leapmux/util/validate"
 )
 
 const (
@@ -91,155 +87,31 @@ const (
 	// unbounded-connections shape these pools exist to remove. A 1 MiB relay
 	// budget did exactly that and passed validation.
 	MinQueueMembersAtFloor = 4
-	// DefaultMaxConnectionsPerUser bounds how many long-lived connections one
-	// user may hold at once -- every /ws/channel and /ws/userevents socket
-	// authenticated as them, wherever it came from.
-	//
-	// The queue pools bound the BYTES each class of connection may hold, but a
-	// pool member is a connection, not a user: a member's guaranteed working set
-	// multiplies by a connection count nothing limits, so "open more tabs" is how
-	// a client reaches memory the pools cannot refuse.
-	//
-	// It bounds ONE USER's contribution, not the pool's member count -- 32 users
-	// holding one socket each reach 32 members without this ever being
-	// consulted. What keeps that solvent is the per-class minimum: the
-	// user-events budget is clamped up to 2 x (UserEventsReadLimit + headroom),
-	// which is 32 MiB + 8 KiB on every basis, against 32 x DefaultMinFloor =
-	// 32 MiB of guaranteed floors. The aggregate signal, for the cases arithmetic
-	// cannot promise, is sendq.Pool's overcommits counter.
-	//
-	// A guard, not a quota: 32 is meant never to be reached by a person. Note it
-	// counts SOCKETS -- an active tab holds two, /ws/userevents plus /ws/channel
-	// once it opens one -- and that a CLI remote session, a worker relaying
-	// user events, and the desktop sidecar all authenticate as the same user. In
-	// solo mode every one of those is the single solo user.
-	DefaultMaxConnectionsPerUser = 32
-	// MinConnectionsPerUser is the smallest cap an operator may configure.
-	//
-	// Below it the setting stops being a cap and becomes an outage. An active
-	// tab holds two sockets, so at two the first tab connects and every other
-	// client the same user runs -- a second tab, the desktop sidecar, a CLI
-	// remote session -- is refused; at one the first tab cannot finish
-	// connecting at all. Four leaves room for a tab plus one other client,
-	// which is the least that can be called working.
-	MinConnectionsPerUser = 4
-	// DefaultMaxWorkersPerUser bounds how many Workers one user may have
-	// registered at once.
-	//
-	// The same missing term as MaxConnectionsPerUser, for the third pool. A
-	// Worker's Connect stream is a member of the worker pool and is guaranteed
-	// the same unrefusable working set, but it takes no lease, so the
-	// connection cap does not see it -- and nothing else bounded the count:
-	// registration keys have a five-minute TTL and no quota, so N keys mint N
-	// Workers, each one a member with a floor the pool may not reclaim.
-	//
-	// Bounded at BOTH ends, because neither alone is the count that matters.
-	// Registration refuses past the cap where an operator can act on the error;
-	// workermgr.Manager refuses past it again where the pool member is actually
-	// created. Registrations alone are not membership: the cap counts rows with
-	// status ACTIVE, while a Connect stream is served for any row that is not
-	// DELETED -- and a DEREGISTERING row keeps its stream, since that stream is
-	// how the Worker is told to stop. So register/deregister cycles grew pool
-	// membership without ever exceeding the cap.
-	//
-	// A guard, not a quota, like its sibling: 64 machines is far past what an
-	// account plausibly runs, and the failure it prevents is the worker pool --
-	// whose eviction is the most expensive of the three, taking every user's
-	// channels on that machine -- being promised more floors than it has bytes.
-	DefaultMaxWorkersPerUser = 64
 	// MaxQueueMemoryBudget caps each auto-sized pool on very large hosts, where
 	// a bigger ceiling is more queue than any client population can fill and
 	// only delays a reclaim that should already have happened. Operators who
 	// genuinely want more set the key.
 	MaxQueueMemoryBudget = 8 << 30 // 8 GiB
-
-	// The timeout defaults. Each is the value that its flag registers and the
-	// value that applyDurationDefaults restores when a source leaves the key at
-	// zero, so each default is one number and not one per reader.
-	//
-	// The session duration is not here: auth.DefaultSessionDuration is the one
-	// default, because the auth package also has to answer for a session that a
-	// caller mints with no configured lifetime.
-	DefaultAPITimeout            = 10 * time.Second
-	DefaultAgentStartupTimeout   = 5 * time.Minute
-	DefaultWorktreeCreateTimeout = time.Minute
 )
 
-// Config holds the hub's runtime configuration.
+// Config holds the hub's bootstrap configuration: what the process needs
+// before the database exists, plus per-process facts. Everything that
+// describes the hub instance's behavior at runtime lives in the
+// hub_settings table instead (internal/hub/settings) and changes through
+// `leapmux admin settings` without a restart (or on restart, for the
+// keys marked restart-class).
 type Config struct {
-	Listen                    string `koanf:"listen"`
-	LocalListen               string `koanf:"local_listen"`
-	PublicURL                 string `koanf:"public_url"`
-	DataDir                   string `koanf:"data_dir"`
-	DevFrontend               string `koanf:"dev_frontend"`
-	LogLevel                  string `koanf:"log_level"`
-	SignupEnabled             bool   `koanf:"signup_enabled"`
-	EmailVerificationRequired bool   `koanf:"email_verification_required"`
-	SmtpHost                  string `koanf:"smtp_host"`
-	SmtpPort                  int    `koanf:"smtp_port"`
-	SmtpUsername              string `koanf:"smtp_username"`
-	SmtpPassword              string `koanf:"smtp_password"`
-	SmtpFromAddress           string `koanf:"smtp_from_address"`
-	SmtpTLSMode               string `koanf:"smtp_tls_mode"` // See SmtpTLSMode* constants for valid values.
-	// The durations below, and every other duration key, accept a unit suffix
-	// and read a bare number as seconds -- see internalconfig.ParseDuration.
-	// LoadWithOptions resolves a zero to the matching Default* constant, so a
-	// loaded Config always carries a usable value and no reader repeats the
-	// fallback.
-	//
-	// SessionDuration is how long a session stays valid after the user's last
-	// request. Each authenticated request slides the expiry forward, so it is an
-	// idle timeout and not a cap on how long a signed-in user may stay signed in.
-	SessionDuration       time.Duration `koanf:"session_duration"`
-	APITimeout            time.Duration `koanf:"api_timeout"`
-	AgentStartupTimeout   time.Duration `koanf:"agent_startup_timeout"`
-	WorktreeCreateTimeout time.Duration `koanf:"worktree_create_timeout"`
-	MaxMessageSize        int           `koanf:"max_message_size"`
-	// The queue budgets are int64, not int, for the reason sendq.PoolConfig
-	// states about its own Capacity: MaxQueueMemoryBudget is 8 GiB, which does
-	// not fit an int on a 32-bit build. Typed narrower here, an operator's
-	// explicit multi-gigabyte budget would wrap BEFORE the widening conversion
-	// ever saw it -- landing negative (so `configured > 0` is false and the key
-	// is silently ignored) or positive-but-wrong. Widening one end of a value's
-	// journey and not the other is how that goes unnoticed.
-	RelayQueueMemoryBudget      int64 `koanf:"relay_queue_memory_budget"`
-	WorkerQueueMemoryBudget     int64 `koanf:"worker_queue_memory_budget"`
-	UserEventsQueueMemoryBudget int64 `koanf:"userevents_queue_memory_budget"`
-	// MaxConnectionsPerUser is used as read -- there is no resolver, because
-	// unlike the queue budgets its default is a constant rather than something
-	// derived from the machine. That lets the flag default BE the default, which
-	// leaves 0 free to mean exactly one thing: unlimited.
-	MaxConnectionsPerUser int64 `koanf:"max_connections_per_user"`
-	// MaxWorkersPerUser is the same bound for the third pool -- see
-	// DefaultMaxWorkersPerUser -- and is read the same way, with no resolver.
-	MaxWorkersPerUser int64         `koanf:"max_workers_per_user"`
-	SecureCookies     bool          `koanf:"secure_cookies"`
+	Listen            string        `koanf:"listen"`
+	LocalListen       string        `koanf:"local_listen"`
+	DataDir           string        `koanf:"data_dir"`
+	DevFrontend       string        `koanf:"dev_frontend"`
+	LogLevel          string        `koanf:"log_level"`
 	EncryptionKeyPath string        `koanf:"encryption_key_path"`
 	Storage           StorageConfig `koanf:"storage"`
 	SoloMode          bool
 	DevMode           bool              // Dev mode: non-solo but with auto-bootstrapped admin
 	Extras            map[string]string // Extra flag values not in the hub Config struct
-
 }
-
-// SMTP TLS mode constants for SmtpTLSMode.
-//
-// SmtpTLSModeSTARTTLS is the default and most common production setting:
-// connect in plaintext, then upgrade to TLS via the STARTTLS extension
-// (typically port 587). SmtpTLSModeImplicit dials TLS directly (port 465,
-// the legacy "SMTPS" pattern). SmtpTLSModeNone is plaintext-only and
-// should normally only be used for trusted localhost relays — the
-// validation layer rejects it for non-localhost relays that require auth
-// because Go's smtp.PlainAuth refuses to send credentials over an
-// unencrypted, non-localhost connection.
-const (
-	SmtpTLSModeSTARTTLS = "starttls"
-	SmtpTLSModeImplicit = "implicit"
-	SmtpTLSModeNone     = "none"
-)
-
-// validSmtpTLSModes is the display string for valid smtp_tls_mode values.
-const validSmtpTLSModes = "starttls, implicit, none"
 
 // StorageType identifies a storage backend.
 type StorageType string
@@ -300,32 +172,10 @@ type MySQLConfig struct {
 	ConnMaxIdleTime time.Duration `koanf:"conn_max_idle_time"` // Maximum idle time per connection. Default: 5m.
 }
 
-// applyDurationDefaults restores the default for each timeout that a source
-// left at zero, so every reader of a loaded Config finds a usable value and
-// none of them repeats the fallback.
-//
-// A source reaches zero two ways: it omits the key, and the defaults map has
-// already answered; or it writes an explicit 0, which the operator docs define
-// as "the default". A negative value never arrives here, because Validate
-// rejects it first.
-//
-// The storage pool durations are deliberately absent. Zero has its own meaning
-// there -- leave the driver default alone -- and the pool code tests for it.
-func (c *Config) applyDurationDefaults() {
-	for _, d := range []struct {
-		target   *time.Duration
-		fallback time.Duration
-	}{
-		{&c.SessionDuration, auth.DefaultSessionDuration},
-		{&c.APITimeout, DefaultAPITimeout},
-		{&c.AgentStartupTimeout, DefaultAgentStartupTimeout},
-		{&c.WorktreeCreateTimeout, DefaultWorktreeCreateTimeout},
-	} {
-		if *d.target == 0 {
-			*d.target = d.fallback
-		}
-	}
-}
+// applyDurationDefaults is gone with the timeout keys it served: those
+// settings now live in hub_settings (settings.KeyTimeouts), where the
+// key's declared default answers the "source left it unset" case and the
+// storage pool durations keep their own zero-means-driver-default rule.
 
 // The Resolve*QueueMemoryBudget accessors return the bytes each outbound queue
 // pool may hold, plus a human-readable account of where the figure came from
@@ -346,16 +196,35 @@ func (c *Config) applyDurationDefaults() {
 // probes once (memlimit.Detect) and names the same figure in the startup log
 // beside the budgets that divide it -- which is why QueueMemoryBudget.Source
 // says "basis" rather than rendering it.
-func (c *Config) ResolveRelayQueueMemoryBudget(basis memlimit.Basis) QueueMemoryBudget {
-	return c.relayQueueClass().resolve(basis)
+func ResolveRelayQueueMemoryBudget(configured int64, basis memlimit.Basis) QueueMemoryBudget {
+	return relayQueueClass(configured).resolve(basis)
 }
 
-func (c *Config) ResolveWorkerQueueMemoryBudget(basis memlimit.Basis) QueueMemoryBudget {
-	return c.workerQueueClass().resolve(basis)
+func ResolveWorkerQueueMemoryBudget(configured int64, basis memlimit.Basis) QueueMemoryBudget {
+	return workerQueueClass(configured).resolve(basis)
 }
 
-func (c *Config) ResolveUserEventsQueueMemoryBudget(basis memlimit.Basis) QueueMemoryBudget {
-	return c.userEventsQueueClass().resolve(basis)
+func ResolveUserEventsQueueMemoryBudget(configured int64, basis memlimit.Basis) QueueMemoryBudget {
+	return userEventsQueueClass(configured).resolve(basis)
+}
+
+// QueueBudgetFloor returns the smallest workable explicit budget for one
+// queue class, keyed by the settings key's field name ("relay_bytes",
+// "worker_bytes", "userevents_bytes"). This package owns the queue-class
+// geometry, so the settings write path's validator calls here rather than
+// restating the numbers: an explicit budget the resolver would degenerate
+// on (or that sendq.NewPool would refuse outright) is rejected before it
+// is stored, by the same expression that clamps the auto-sized arm.
+func QueueBudgetFloor(field string) (int64, error) {
+	switch field {
+	case "relay_bytes":
+		return relayQueueClass(0).minimum(), nil
+	case "worker_bytes":
+		return workerQueueClass(0).minimum(), nil
+	case "userevents_bytes":
+		return userEventsQueueClass(0).minimum(), nil
+	}
+	return 0, fmt.Errorf("unknown queue budget field %q", field)
 }
 
 // QueueMemoryBudget is one outbound queue pool's resolved sizing, plus a
@@ -437,7 +306,6 @@ type queueClass struct {
 	// above is true -- a renamed class cannot rename the config key and leave
 	// the metric label behind. metrics owns the vocabulary; this carries it.
 	name       string
-	key        string
 	share      int
 	configured int64
 	// reclaim is what this class's pool does under pressure. A field on the
@@ -457,24 +325,22 @@ type queueClass struct {
 // this constant exists to close.
 const queueFrameEnvelopeHeadroom = 4 << 10 // 4 KiB
 
-func (c *Config) relayQueueClass() queueClass {
+func relayQueueClass(configured int64) queueClass {
 	return queueClass{
 		name:       metrics.PoolRelay,
-		key:        "relay_queue_memory_budget",
 		share:      RelayQueueMemoryShare,
-		configured: c.RelayQueueMemoryBudget,
+		configured: configured,
 		// A channel relay frame is the ciphertext the browser sent, bounded by
 		// the socket's own read limit.
 		maxFrame: channelwire.WSReadLimit + queueFrameEnvelopeHeadroom + sendq.DefaultFrameOverhead,
 	}
 }
 
-func (c *Config) workerQueueClass() queueClass {
+func workerQueueClass(configured int64) queueClass {
 	return queueClass{
 		name:       metrics.PoolWorker,
-		key:        "worker_queue_memory_budget",
 		share:      WorkerQueueMemoryShare,
-		configured: c.WorkerQueueMemoryBudget,
+		configured: configured,
 		// NOT max_message_size. The Hub never holds a whole application payload
 		// for a worker: it is a relay, and the only large ConnectResponse it
 		// sends is a ChannelMessage carrying ciphertext read off /ws/channel,
@@ -496,7 +362,7 @@ func (c *Config) workerQueueClass() queueClass {
 	}
 }
 
-func (c *Config) userEventsQueueClass() queueClass {
+func userEventsQueueClass(configured int64) queueClass {
 	return queueClass{
 		name: metrics.PoolUserEvents,
 		// This class refuses the asker rather than nominating a peer. A
@@ -506,9 +372,8 @@ func (c *Config) userEventsQueueClass() queueClass {
 		// connection that was keeping up. Stated here so it holds for any member
 		// type this pool ever gains, not just for the one that remembers.
 		reclaim:    sendq.ReclaimRefuseAsker,
-		key:        "userevents_queue_memory_budget",
 		share:      UserEventsQueueMemoryShare,
-		configured: c.UserEventsQueueMemoryBudget,
+		configured: configured,
 		// A bootstrap frame -- a whole filtered account snapshot, or a resume
 		// delta -- is bounded only by what the socket will carry, and a
 		// user-event frame costs crdt.ResidentFactor times its wire size because
@@ -517,10 +382,6 @@ func (c *Config) userEventsQueueClass() queueClass {
 		// drift from what the queue actually charges.
 		maxFrame: (channelwire.UserEventsReadLimit + queueFrameEnvelopeHeadroom) * crdt.ResidentFactor,
 	}
-}
-
-func (c *Config) queueClasses() []queueClass {
-	return []queueClass{c.relayQueueClass(), c.workerQueueClass(), c.userEventsQueueClass()}
 }
 
 // minimum is the smallest budget this class can work at, and it is the SAME
@@ -549,9 +410,11 @@ func (c *Config) queueClasses() []queueClass {
 //
 // The floor term reads sendq.DefaultMinFloor, and QueueMemoryBudget.PoolConfig
 // hands NewPool that same constant. Keeping the two equal is what makes
-// NewPool's MinFloor > Capacity panic unreachable from a config file: this is
+// NewPool's MinFloor > Capacity panic unreachable from configuration: this is
 // the check that refuses a budget too small to honour the floor before a pool is
-// ever built with one.
+// ever built with one — on the auto arm here, and on the explicit arm from the
+// settings write path, whose validator asks QueueBudgetFloor for this same
+// number.
 func (q queueClass) minimum() int64 {
 	return max(q.maxFrame, MinQueueMembersAtFloor*sendq.DefaultMinFloor)
 }
@@ -787,28 +650,9 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	allFlags := []flagDef{
 		strFlag("listen", "listen", "Server options", "TCP listen address (e.g. ':4327' or '127.0.0.1:4327')", listen),
 		strFlag("local-listen", "local_listen", "Server options", "local IPC listen URL (unix:<path> or npipe:<name>); platform default used if empty", ""),
-		strFlag("public-url", "public_url", "Server options", "public base URL when running behind a reverse proxy (e.g. 'https://hub.example.com')", ""),
 		strFlag("data-dir", "data_dir", "Server options", "data directory", "."),
 		strFlag("dev-frontend", "dev_frontend", "Server options", "frontend dev server URL for local development reverse proxy", ""),
 		strFlag("log-level", "log_level", "Server options", "log level (debug, info, warn, error)", defaultLogLevel),
-		boolFlag("signup-enabled", "signup_enabled", "Auth options", "enable user sign-up", false),
-		boolFlag("email-verification-required", "email_verification_required", "Auth options", "require email verification on sign-up", false),
-		durationFlag("session-duration", "session_duration", "Auth options", "how long a session stays valid after the user's last request; each request slides the expiry forward", auth.DefaultSessionDuration),
-		strFlag("smtp-host", "smtp_host", "SMTP options", "SMTP server host", ""),
-		intFlag("smtp-port", "smtp_port", "SMTP options", "SMTP server port", 587),
-		strFlag("smtp-username", "smtp_username", "SMTP options", "SMTP username", ""),
-		strFlag("smtp-password", "smtp_password", "SMTP options", "SMTP password", ""),
-		strFlag("smtp-from-address", "smtp_from_address", "SMTP options", "SMTP from address", ""),
-		strFlag("smtp-tls-mode", "smtp_tls_mode", "SMTP options", "SMTP TLS mode ("+validSmtpTLSModes+")", SmtpTLSModeSTARTTLS),
-		durationFlag("api-timeout", "api_timeout", "Timeout and limit options", "general API timeout", DefaultAPITimeout),
-		durationFlag("agent-startup-timeout", "agent_startup_timeout", "Timeout and limit options", "agent startup timeout", DefaultAgentStartupTimeout),
-		durationFlag("worktree-create-timeout", "worktree_create_timeout", "Timeout and limit options", "worktree creation timeout", DefaultWorktreeCreateTimeout),
-		intFlag("max-message-size", "max_message_size", "Timeout and limit options", "maximum application payload size in bytes (0 = 16 MiB default); reassembled ceiling is this plus 64 KiB headroom", 0),
-		int64Flag("relay-queue-memory-budget", "relay_queue_memory_budget", "Timeout and limit options", "bytes the Hub's browser channel relays may queue between them (0 = auto-size from the process memory limit)", int64(0)),
-		int64Flag("worker-queue-memory-budget", "worker_queue_memory_budget", "Timeout and limit options", "bytes the Hub's Worker connections may queue between them (0 = auto-size from the process memory limit)", int64(0)),
-		int64Flag("userevents-queue-memory-budget", "userevents_queue_memory_budget", "Timeout and limit options", "bytes the Hub's user-event subscribers may hold between them (0 = auto-size from the process memory limit)", int64(0)),
-		int64Flag("max-connections-per-user", "max_connections_per_user", "Timeout and limit options", "concurrent long-lived connections one user may hold (0 = unlimited); an active browser tab holds two", int64(DefaultMaxConnectionsPerUser)),
-		int64Flag("max-workers-per-user", "max_workers_per_user", "Timeout and limit options", "Workers one user may have registered at once (0 = unlimited)", int64(DefaultMaxWorkersPerUser)),
 		// Storage configuration
 		strFlag("storage-type", "storage.type", "Storage common options", "storage backend type ("+validStorageTypes+")", ""),
 		// SQLite (default)
@@ -898,10 +742,6 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		return nil, false, fmt.Errorf("unmarshal config: %w", err)
 	}
 
-	// Resolve the timeouts before anything reads one. A negative survives this
-	// step untouched, so Validate still sees what the operator wrote.
-	cfg.applyDurationDefaults()
-
 	// Validate --local-listen early: malformed values should surface at
 	// startup with a clear error rather than failing later inside Serve.
 	if cfg.LocalListen != "" {
@@ -910,25 +750,9 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 		}
 	}
 
-	// Canonicalize and validate --public-url. Sub-path proxying isn't supported
-	// elsewhere in the codebase yet, so reject anything beyond scheme + host.
-	if cfg.PublicURL != "" {
-		canon, err := normalizePublicURL(cfg.PublicURL)
-		if err != nil {
-			return nil, false, err
-		}
-		cfg.PublicURL = canon
-	}
-
 	// Resolve relative data_dir against config file directory.
 	cfg.DataDir = internalconfig.ResolveDataDir(cfg.DataDir, configPath, configDir)
 	cfg.SoloMode = opts.SoloMode
-
-	// Solo mode does not support a public URL: there's no proxy in front of it,
-	// and exposing the option would just create surprising failure modes.
-	if cfg.SoloMode && cfg.PublicURL != "" {
-		return nil, false, fmt.Errorf("public_url is not supported in solo mode")
-	}
 
 	// Populate extra flag values.
 	if len(opts.ExtraFlags) > 0 {
@@ -944,9 +768,6 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 var hubFlagCategoryOrder = []string{
 	"Common options",
 	"Server options",
-	"Auth options",
-	"SMTP options",
-	"Timeout and limit options",
 	"Storage common options",
 	"SQLite storage options",
 	"PostgreSQL storage options",
@@ -958,20 +779,6 @@ var hubFlagCategoryOrder = []string{
 
 // Validate checks the configuration values and ensures required directories exist.
 func (c *Config) Validate() error {
-	// Re-canonicalize PublicURL so programmatic config construction (e.g. tests
-	// instantiating &Config{PublicURL: ...} directly) hits the same gate as
-	// LoadWithOptions. No-op when Load already canonicalized it.
-	if c.PublicURL != "" {
-		canon, err := normalizePublicURL(c.PublicURL)
-		if err != nil {
-			return err
-		}
-		c.PublicURL = canon
-	}
-	if c.SoloMode && c.PublicURL != "" {
-		return fmt.Errorf("public_url is not supported in solo mode")
-	}
-
 	// Ensure data dir exists.
 	if err := os.MkdirAll(c.DataDir, 0o750); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
@@ -1011,161 +818,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("unsupported storage.type: %q (valid: %s)", c.Storage.Type, validStorageTypes)
 	}
 
-	// SMTP / email configuration. Validation is layered:
-	//   1. Normalize: empty SmtpTLSMode → starttls (handles programmatically
-	//      built configs that bypass flag-parsing defaults).
-	//   2. Always: SmtpTLSMode must be a valid constant — even when SMTP is
-	//      disabled, so a typo in smtp_tls_mode never silently sticks.
-	//   3. SmtpHost set: requires from-address and a valid port. There is no
-	//      "half-configured SMTP" state.
-	//   4. Email verification required: requires SmtpHost (chains through #3).
-	//   5. tls_mode=none + auth + non-localhost is rejected — Go's
-	//      smtp.PlainAuth refuses to send credentials over an unencrypted
-	//      non-localhost connection, so this combo never works in practice.
-	if c.SmtpTLSMode == "" {
-		c.SmtpTLSMode = SmtpTLSModeSTARTTLS
-	}
-	switch c.SmtpTLSMode {
-	case SmtpTLSModeSTARTTLS, SmtpTLSModeImplicit, SmtpTLSModeNone:
-	default:
-		return fmt.Errorf("unsupported smtp_tls_mode: %q (valid: %s)", c.SmtpTLSMode, validSmtpTLSModes)
-	}
-	if c.SmtpHost != "" {
-		if c.SmtpFromAddress == "" {
-			return fmt.Errorf("smtp_from_address is required when smtp_host is set")
-		}
-		if err := validate.ValidateEmail(c.SmtpFromAddress); err != nil {
-			return fmt.Errorf("invalid smtp_from_address: %w", err)
-		}
-		if c.SmtpPort < 1 || c.SmtpPort > 65535 {
-			return fmt.Errorf("smtp_port must be in [1, 65535], got %d", c.SmtpPort)
-		}
-		if c.SmtpTLSMode == SmtpTLSModeNone && c.SmtpUsername != "" && !isLocalhost(c.SmtpHost) {
-			return fmt.Errorf("smtp_tls_mode=none with smtp_username set is rejected for non-localhost smtp_host=%q: "+
-				"Go's smtp.PlainAuth refuses to send credentials over an unencrypted non-localhost connection", c.SmtpHost)
-		}
-	}
-	if c.EmailVerificationRequired && c.SmtpHost == "" {
-		return fmt.Errorf("smtp_host is required when email_verification_required is true")
-	}
-	if err := channelwire.ValidateConfiguredMaxMessageSize(c.MaxMessageSize); err != nil {
-		return err
-	}
-	if err := c.validateQueueMemoryBudgets(); err != nil {
-		return err
-	}
-	if err := c.validateMaxWorkersPerUser(); err != nil {
-		return err
-	}
-	if err := c.validateMaxConnectionsPerUser(); err != nil {
-		return err
-	}
-	if err := c.validateSessionDuration(); err != nil {
-		return err
-	}
-
 	return nil
-}
-
-// validateSessionDuration rejects a session lifetime nobody meant.
-//
-// The rule itself lives in auth.ValidateSessionDuration, next to the two
-// constants that set the floor. This adds only the key name, which auth cannot
-// know.
-//
-// Zero reaches this only from a Config built in code, because
-// applyDurationDefaults already replaced a loaded zero with the default.
-func (c *Config) validateSessionDuration() error {
-	if c.SessionDuration == 0 {
-		return nil
-	}
-	if err := auth.ValidateSessionDuration(c.SessionDuration); err != nil {
-		return fmt.Errorf("session_duration: %w", err)
-	}
-	return nil
-}
-
-// validateMaxConnectionsPerUser rejects a cap that would refuse connections a
-// working client has to make.
-//
-// Zero is unlimited and always allowed. A negative is not a smaller cap, it is a
-// value nobody meant, so it fails loudly rather than being silently read as
-// unlimited. Between zero and MinConnectionsPerUser the setting stops bounding
-// abuse and starts breaking the first tab -- see MinConnectionsPerUser for the
-// arithmetic.
-func (c *Config) validateMaxConnectionsPerUser() error {
-	switch {
-	case c.MaxConnectionsPerUser < 0:
-		return fmt.Errorf("max_connections_per_user must not be negative, got %d (0 = unlimited)",
-			c.MaxConnectionsPerUser)
-	case c.MaxConnectionsPerUser == 0:
-		return nil
-	case c.MaxConnectionsPerUser < MinConnectionsPerUser:
-		return fmt.Errorf(
-			"max_connections_per_user must be 0 (unlimited) or at least %d, got %d: "+
-				"an active browser tab holds two connections, so a smaller cap leaves "+
-				"no room for a second tab or for the desktop and CLI clients",
-			MinConnectionsPerUser, c.MaxConnectionsPerUser)
-	}
-	return nil
-}
-
-// validateMaxWorkersPerUser rejects a cap nobody meant. Zero is unlimited; a
-// negative is not a smaller cap, so it fails loudly rather than being read as
-// unlimited. There is no lower bound above one: unlike a browser tab, which
-// needs two connections before it works at all, one Worker is a working
-// deployment.
-func (c *Config) validateMaxWorkersPerUser() error {
-	if c.MaxWorkersPerUser < 0 {
-		return fmt.Errorf("max_workers_per_user must not be negative, got %d (0 = unlimited)",
-			c.MaxWorkersPerUser)
-	}
-	return nil
-}
-
-// validateQueueMemoryBudgets rejects an explicitly configured pool that is too
-// small to do its job.
-//
-// No class derives its frame bound from an operator knob today -- all three
-// size themselves from fixed wire limits, which is the point workerQueueClass
-// argues at length -- so this runs after the other validators for no reason
-// stronger than reading order. A class that ever does read one would need that
-// knob checked first.
-//
-// Catching it here turns "every Worker fences" or "every tab's connect is
-// refused" into a startup error naming the key. Only an explicitly configured
-// value is checked: an auto-sized one clears the bar by construction, because
-// resolve clamps to the very same queueClass.minimum.
-func (c *Config) validateQueueMemoryBudgets() error {
-	for _, q := range c.queueClasses() {
-		if q.configured == 0 {
-			continue
-		}
-		minimum := q.minimum()
-		if q.configured < minimum {
-			return fmt.Errorf("%s must be 0 (auto) or at least %s, got %s", q.key,
-				memlimit.HumanBytes(minimum), memlimit.HumanBytes(q.configured))
-		}
-	}
-	return nil
-}
-
-// isLocalhost reports whether host (a hostname or numeric IP, no port) is a
-// loopback address. Used to relax validation for SMTP relays running on the
-// same machine, where unencrypted credentialed AUTH is acceptable.
-//
-// We accept the literal name "localhost" (a hostname, not an IP — Go's
-// resolver and smtp.PlainAuth both treat it specially) plus anything that
-// parses as a loopback IP, which covers 127.0.0.0/8 and ::1 — matching
-// the criteria smtp.PlainAuth uses.
-func isLocalhost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
 }
 
 // DefaultHubDataDir returns the default hub data directory with ~ expanded.
@@ -1197,59 +850,6 @@ func (c *Config) EncryptionKeyFilePath() string {
 		return c.EncryptionKeyPath
 	}
 	return filepath.Join(c.DataDir, "encryption.key")
-}
-
-// BaseURL returns the public base URL of the hub. When PublicURL is set
-// (typically because the hub is fronted by a reverse proxy) it wins; otherwise
-// the URL is derived from Listen + SecureCookies, with a bare ":port" address
-// resolved to "localhost:port".
-func (c *Config) BaseURL() string {
-	if c.PublicURL != "" {
-		return c.PublicURL
-	}
-	scheme := "http"
-	if c.SecureCookies {
-		scheme = "https"
-	}
-	host := c.Listen
-	if strings.HasPrefix(host, ":") {
-		host = "localhost" + host
-	}
-	return scheme + "://" + host
-}
-
-// normalizePublicURL trims one trailing slash from raw, then validates the
-// result is an absolute http(s) URL with a non-empty host and no userinfo,
-// path, query, or fragment. Returns the canonical (slash-trimmed) string.
-//
-// Sub-path deployments (e.g. "https://example.com/leapmux") are deliberately
-// rejected — the rest of the codebase concatenates this URL with a leading
-// slash and does not yet support a base path.
-func normalizePublicURL(raw string) (string, error) {
-	trimmed := strings.TrimSuffix(raw, "/")
-	u, err := url.Parse(trimmed)
-	if err != nil {
-		return "", fmt.Errorf("invalid public_url: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("invalid public_url: scheme must be http or https, got %q", u.Scheme)
-	}
-	if u.Hostname() == "" {
-		return "", fmt.Errorf("invalid public_url: host is required")
-	}
-	if u.User != nil {
-		return "", fmt.Errorf("invalid public_url: userinfo is not allowed")
-	}
-	if u.Path != "" {
-		return "", fmt.Errorf("invalid public_url: path is not allowed (sub-path deployments are not supported)")
-	}
-	if u.RawQuery != "" || u.ForceQuery {
-		return "", fmt.Errorf("invalid public_url: query is not allowed")
-	}
-	if u.Fragment != "" {
-		return "", fmt.Errorf("invalid public_url: fragment is not allowed")
-	}
-	return trimmed, nil
 }
 
 // LocalListenURL returns the local IPC listen URL the hub should bind.

@@ -20,26 +20,34 @@ const footerSeparator = "-- \n"
 // shape.
 const verifyEmailPath = "/verify-email?code="
 
-// Renderer builds the email Messages this package sends. It carries
-// the hub's public base URL once so render call sites only pass
-// per-message data (recipient, code, command). The zero value
-// Renderer{} is valid; tests that don't inspect URLs in the rendered
-// output use it directly.
+// Renderer builds the email Messages this package sends. It carries a
+// base-URL closure so render call sites only pass per-message data
+// (recipient, code, command) while an admin's public_url change applies
+// to the next rendered email without a restart. The zero value
+// Renderer{} is valid (empty base URL); tests that don't inspect URLs in
+// the rendered output use it directly.
 type Renderer struct {
-	// HubURL is the absolute base URL the hub exposes (cfg.BaseURL()).
-	// Used in two places: the absolute /verify-email link in the
-	// verification email body, and the auto-message footer in every
-	// email's body.
-	HubURL string
+	// BaseURL returns the absolute base URL the hub exposes. Used in two
+	// places: the absolute /verify-email link in the verification email
+	// body, and the auto-message footer in every email's body.
+	BaseURL func() string
 }
 
-// footer renders the standard auto-message footer naming LeapMux and
-// the hub's public URL. Every email this package sends uses this
+// hubURL resolves the renderer's base URL once per render.
+func (r Renderer) hubURL() string {
+	if r.BaseURL == nil {
+		return ""
+	}
+	return r.BaseURL()
+}
+
+// footer renders the standard auto-message footer that identifies
+// LeapMux and the hub's public URL. Every email this package sends uses this
 // footer so recipients can identify the sender and know the mailbox is
 // unattended.
 func (r Renderer) footer() string {
 	return footerSeparator +
-		"This is an automated message from your LeapMux hub at " + r.HubURL + ".\n" +
+		"This is an automated message from your LeapMux hub at " + r.hubURL() + ".\n" +
 		"Please do not reply.\n"
 }
 
@@ -77,7 +85,7 @@ func (r Renderer) footer() string {
 // signature delimiter; see RFC 3676 §4.3.)
 func (r Renderer) VerificationEmail(to, storedCode string) Message {
 	display := verifycode.Format(storedCode)
-	link := r.HubURL + verifyEmailPath + display
+	link := r.hubURL() + verifyEmailPath + display
 	var body strings.Builder
 	body.WriteString("Use this code to verify your email address:\n\n    ")
 	body.WriteString(display)

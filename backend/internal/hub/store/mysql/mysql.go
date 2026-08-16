@@ -165,11 +165,11 @@ func (s *mysqlStore) OAuthUserLinks() store.OAuthUserLinkStore {
 func (s *mysqlStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
 	return &pendingOAuthSignupStore{conn: s.conn}
 }
-func (s *mysqlStore) CaptchaConfig() store.CaptchaConfigStore {
-	return &captchaConfigStore{conn: s.conn}
+func (s *mysqlStore) Settings() store.SettingsStore {
+	return &settingsStore{conn: s.conn}
 }
-func (s *mysqlStore) RateLimitConfig() store.RateLimitConfigStore {
-	return &rateLimitConfigStore{conn: s.conn}
+func (s *mysqlStore) AltchaSalts() store.AltchaSaltsStore {
+	return &altchaSaltsStore{conn: s.conn}
 }
 func (s *mysqlStore) APITokens() store.APITokenStore { return &apiTokenStore{conn: s.conn} }
 func (s *mysqlStore) DelegationTokens() store.DelegationTokenStore {

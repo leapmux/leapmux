@@ -9,17 +9,15 @@ package captcha
 
 import (
 	"fmt"
-	"log/slog"
 
-	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
 // Config is the effective configuration of the selected captcha
-// provider, built by overlaying that provider's stored settings JSON
-// onto its defaults. Exactly one settings pointer is non-nil — the one
-// matching Provider — which keeps provider-specific knobs in
-// provider-specific types and the stored schema free of cross-provider
-// columns.
+// provider, built from the settings snapshot. Exactly one settings
+// pointer is non-nil — the one matching Provider — which keeps
+// provider-specific knobs in provider-specific types and the stored
+// schema free of cross-provider columns.
 type Config struct {
 	Provider Provider `json:"provider"`
 	Enabled  bool     `json:"enabled"`
@@ -50,19 +48,9 @@ func DisabledConfig() Config {
 	return cfg
 }
 
-// defaultConfigFor returns a provider's defaults with no stored row
-// behind them — the base an admin CLI edit overlays when the provider has
-// never been configured. Enabled matches a freshly provisioned row.
-func defaultConfigFor(provider Provider) Config {
-	if spec, ok := specFor(provider); ok {
-		return spec.defaults()
-	}
-	return DefaultConfig()
-}
-
 // Validate checks that the settings pointer matching Provider is present
-// and valid. Unknown providers are refused here, so a hand-edited row
-// can never select a provider the manager cannot dispatch on.
+// and valid. Unknown providers are refused here, so a hand-edited
+// selection can never select a provider the manager cannot dispatch on.
 func (c Config) Validate() error {
 	spec, ok := specFor(c.Provider)
 	if !ok {
@@ -90,38 +78,52 @@ func (c Config) AltchaAlgorithm() string {
 	return ""
 }
 
-// Effective overlays a stored row onto that provider's defaults. A row
-// is validated at consumption: the CLI validates before writing, so a
-// row that fails here was written outside the CLI (direct SQL, a future
-// migration), and the built-in ALTCHA defaults keep login working
-// instead of issuing unsolvable challenges or calling a provider with
-// missing keys. The fallback preserves the row's Enabled bit — a
-// deliberately disabled hub stays disabled through corruption; swapping
-// the provider to defaults is about solvability, not about overriding the
-// admin's on/off decision. The hub and the admin CLI share this one
-// definition of "effective".
-func Effective(row *store.CaptchaConfig) Config {
-	if row == nil {
-		return DefaultConfig()
+// Effective assembles the selected provider's effective configuration
+// from a settings snapshot. The stored documents are validated at
+// consumption: the write paths validate before storing (per-key rules
+// plus the SelectedConfigured cross rule), so a value that fails here was
+// written outside them (direct SQL), and the built-in ALTCHA defaults
+// keep login working instead of issuing unsolvable challenges or calling
+// a provider with missing keys. The fallback preserves the verification
+// on/off switch — a deliberately disabled hub stays disabled through
+// corruption; swapping the provider to defaults is about solvability,
+// not about overriding the admin's on/off decision. The hub and the
+// admin CLI share this one definition of "effective".
+//
+// Effective is pure assembly and does not log: the second return carries
+// the fallback reason ("" when the stored state held), and the caller
+// that resolves per request (Manager.resolve) reports it through its
+// warn-on-transition, the one degrade-logging mechanism — a bare warn
+// here fired on every login attempt.
+func Effective(s *settings.Snapshot) (Config, string) {
+	enabled := CaptchaEnabledKey.Of(s)
+	alias := CaptchaSelectedKey.Of(s)
+	provider, err := ParseProvider(alias)
+	if err != nil {
+		return fallbackConfig(enabled), fmt.Sprintf("captcha selection %q specifies an unsupported provider", alias)
 	}
-	spec, ok := specFor(row.Provider)
-	if !ok {
-		slog.Warn("captcha config row specifies an unsupported provider; using built-in defaults", "provider", row.Provider)
-		return fallbackConfig(row)
+	cfg := Config{Provider: provider, Enabled: enabled}
+	switch provider {
+	case ProviderAltcha:
+		row := AltchaKey.Of(s)
+		cfg.Altcha = &row.AltchaSettings
+	case ProviderRecaptchaV3:
+		row := RecaptchaV3Key.Of(s)
+		cfg.RecaptchaV3 = &RecaptchaV3Settings{SiteKey: row.SiteKey, MinScore: row.MinScore}
+	case ProviderTurnstile:
+		row := TurnstileKey.Of(s)
+		cfg.Turnstile = &TurnstileSettings{SiteKey: row.SiteKey}
 	}
-	cfg := Config{Provider: row.Provider, Enabled: row.Enabled}
-	spec.applySettings(&cfg, row.Settings)
 	if err := cfg.Validate(); err != nil {
-		slog.Warn("captcha config row invalid; using built-in defaults", "provider", row.Provider, "error", err)
-		return fallbackConfig(row)
+		return fallbackConfig(enabled), fmt.Sprintf("captcha settings for %s are invalid: %v", ProviderAlias(provider), err)
 	}
-	return cfg
+	return cfg, ""
 }
 
-// fallbackConfig is the invalid-row fallback: built-in altcha defaults
-// with the row's own Enabled bit.
-func fallbackConfig(row *store.CaptchaConfig) Config {
+// fallbackConfig is the invalid-settings fallback: built-in altcha
+// defaults with the hub's own verification on/off switch.
+func fallbackConfig(enabled bool) Config {
 	cfg := DefaultConfig()
-	cfg.Enabled = row.Enabled
+	cfg.Enabled = enabled
 	return cfg
 }

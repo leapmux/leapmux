@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -42,6 +43,7 @@ type WorkerManagementService struct {
 	mail        mail.Sender
 	renderer    mail.Renderer
 	cfg         *config.Config
+	set         *settings.Manager
 	// scopeCache is the delegation-scope memo SubmitOps resolves through;
 	// DeregisterWorker evicts the deregistered worker synchronously so the
 	// containment action is immediate rather than lagged by the cache TTL.
@@ -57,11 +59,11 @@ type WorkerManagementService struct {
 // cache is constructed then, so the field is never nil -- production passes
 // the instance shared with CRDTService so the eviction reaches the cache
 // SubmitOps resolves through.
-func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, cfg *config.Config, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
+func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, cfg *config.Config, set *settings.Manager, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
 	if scopeCache == nil {
 		scopeCache = auth.NewDelegationScopeCache(st)
 	}
-	return &WorkerManagementService{store: st, workerMgr: mgr, broadcaster: b, notifier: n, mail: sender, renderer: renderer, cfg: cfg, scopeCache: scopeCache}
+	return &WorkerManagementService{store: st, workerMgr: mgr, broadcaster: b, notifier: n, mail: sender, renderer: renderer, cfg: cfg, set: set, scopeCache: scopeCache}
 }
 
 func (s *WorkerManagementService) CreateRegistrationKey(
@@ -208,7 +210,7 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 	// but a direct RPC client could still hit us. Returning an explicit
 	// FailedPrecondition is friendlier than the disabledSender's
 	// ErrEmailDisabled bubbling up as a generic Unavailable.
-	if s.cfg == nil || s.cfg.SmtpHost == "" {
+	if !settings.KeySMTP.Of(s.set.Snapshot(ctx)).Enabled() {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("hub is not configured to send email"))
 	}
 

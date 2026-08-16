@@ -47,9 +47,7 @@ Solo mode accepts a subset of the Hub's flags plus an `--encryption-mode` flag f
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
-Solo also accepts the SQLite, chunked-reassembly, message-size, and timeout tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`, `-max-message-size`, `-api-timeout`, `-agent-startup-timeout`, `-worktree-create-timeout`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those.
-
-> **Note:** `--public-url` is **not** available in solo mode. If you set `public_url` by any means, solo mode rejects it with `public_url is not supported in solo mode`. Reverse-proxy fronting is a job for `hub` or `dev`.
+Solo also accepts the SQLite and chunked-reassembly tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those. The message-size and timeout settings are instance settings now: change them with `leapmux admin settings` instead of launch flags.
 
 The desktop app runs solo mode under the hood, but with no TCP port at all — it serves the Hub only over a local IPC socket (a Unix domain socket or Windows named pipe). See [Installation](/docs/getting-started/installation/) for the desktop app.
 
@@ -67,16 +65,19 @@ A fresh Hub has no users and (by default) sign-up disabled. To allow accounts to
 |------|---------|---------|
 | `-listen` | `:4327` | TCP listen address (e.g. `:4327` or `127.0.0.1:4327`) |
 | `-local-listen` | platform default | Local IPC URL (`unix:<path>` or `npipe:<name>`); defaults to `unix:<data-dir>/hub.sock` on Unix |
-| `-public-url` | empty | Public base URL when behind a reverse proxy (e.g. `https://hub.example.com`) |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
-| `-signup-enabled` | `false` | Allow user sign-up |
-| `-email-verification-required` | `false` | Require email verification on sign-up (needs SMTP configured) |
-| `-session-duration` | `7d` | How long a session stays valid after the user's last request; each request slides the expiry forward |
 | `-storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
 | `-log-level` | `info` | Log level |
 | `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
 
-By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The Hub also has SMTP settings (for email verification and notifications) and timeout/limit knobs. The full reference — every flag, every storage backend, every config key, and the YAML layout — is in [Configuration](/docs/operating/configuration/).
+The flags are the process's bootstrap surface only. Everything behavioral — sign-up, email verification, sessions, SMTP, timeouts, per-user limits — is an instance setting in the Hub's database, changed at runtime and without a restart:
+
+```bash
+leapmux admin settings set signup_enabled true
+leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com"}'
+```
+
+By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference — every flag, every storage backend, the YAML layout, and the settings table — is in [Configuration](/docs/operating/configuration/) and the [admin CLI's `settings` chapter](/docs/operating/admin-cli/#settings--instance-settings).
 
 > **Note:** The Hub does not terminate TLS itself. For HTTPS you put a reverse proxy in front of it; see [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
 
@@ -123,19 +124,23 @@ leapmux dev -listen :4327
 
 Because dev mode uses real authentication, it bootstraps its first admin through the `/setup` flow rather than auto-authenticating. The in-process Worker's auto-registration is deferred until that first admin signs up; until then the log shows *"dev mode: deferring worker auto-registration until first admin signs up via /setup"*. Open the URL, complete `/setup` to create the admin, and the bundled Worker comes online.
 
-Dev mode accepts the same flags as solo, plus `--public-url` and `--session-duration`, which solo does not have. The most important dev flags:
+Dev mode accepts the same flags as solo, plus `-encryption-mode`. The most important dev flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `-listen` | `:4327` | TCP listen address |
-| `-public-url` | empty | Public base URL when behind a reverse proxy |
-| `-session-duration` | `7d` | Session lifetime after the user's last request; shorten it to exercise the signed-out path, as in `-session-duration 5m`, which is the minimum ([duration syntax](/docs/operating/configuration/#duration-values)) |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/dev`) | Data directory |
 | `-log-level` | `info` | Log level |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/dev/dev.yaml` | Config file path |
 
-Like solo, dev also accepts the SQLite, message-size, and timeout tuning flags plus `-dev-frontend` (see [Configuration](/docs/operating/configuration/)).
+Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [Configuration](/docs/operating/configuration/)).
+
+Dev mode seeds `signup_enabled=true` (it runs the full multi-user path), and the runtime knobs the old flags carried are settings now — a short session for exercising the signed-out path is:
+
+```bash
+leapmux admin settings set session_duration_seconds 300   # the 5-minute minimum
+```
 
 ## Running under Docker
 
@@ -226,11 +231,13 @@ The image entrypoint is s6-overlay's `/init`, which runs the `leapmux` process a
 
 The Hub never terminates TLS on its own. To serve LeapMux over HTTPS, put a reverse proxy (nginx, Caddy, Traefik, etc.) in front of it and tell the Hub its external address:
 
-1. Set `public_url` to the external HTTPS URL, e.g. `https://hub.example.com` (the `-public-url` flag, the `public_url` YAML key, or `LEAPMUX_HUB_PUBLIC_URL`).
-2. Set `secure_cookies: true` in the config (or `LEAPMUX_HUB_SECURE_COOKIES=true`) so cookies are marked secure and the derived base URL uses `https`. There is no CLI flag for this key.
+1. Set `public_url` to the external HTTPS URL: `leapmux admin settings set public_url "https://hub.example.com"`.
+2. Enable secure cookies so they are `__Host-` prefixed and the derived base URL uses `https`: `leapmux admin settings set secure_cookies true`. (This changes the cookie name, which signs every current session out — do it once, at setup.)
 3. Point each Worker's `-hub` URL at the same external `https://` address. Workers always initiate outbound connections, so they need no inbound ports of their own.
 
-> **Warning:** `public_url` must be a bare scheme + host — for example `https://hub.example.com`. Sub-path mounting (such as `https://example.com/leapmux`) is **not** supported and is rejected at startup. Give LeapMux its own hostname or subdomain.
+Both settings are hot: a running Hub applies them within ~30 seconds — no restart.
+
+> **Warning:** `public_url` must be a bare scheme + host — for example `https://hub.example.com`. Sub-path mounting (such as `https://example.com/leapmux`) is **not** supported and is rejected at write time. Give LeapMux its own hostname or subdomain.
 
 The proxy must also forward WebSocket upgrades, since Frontend traffic and the relayed Worker streams ride over long-lived connections. For the security implications of the relay, the end-to-end-encryption boundary, and Worker TOFU pinning, see [Security & Threat Model](/docs/operating/security/).
 

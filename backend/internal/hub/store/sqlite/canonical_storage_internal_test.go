@@ -8,7 +8,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -266,22 +265,17 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ProviderSubject: "canon-subject",
 	}))
 
-	// captcha_config.updated_at via its column DEFAULT on provisioning;
-	// rate_limit_config.updated_at via the CLI upsert.
-	require.NoError(t, st.CaptchaConfig().InsertIfAbsent(ctx, store.InsertCaptchaConfigIfAbsentParams{
-		Provider: captcha.ProviderAltcha,
-		Secret:   []byte("canon-secret"),
-		Settings: `{"algorithm":"PBKDF2/SHA-256","cost":10000}`,
-	}))
-	require.NoError(t, st.RateLimitConfig().Upsert(ctx, store.UpsertRateLimitConfigParams{
-		Operation:     "change-password",
-		Enabled:       true,
-		MaxAttempts:   5,
-		WindowSeconds: 900,
+	// hub_settings.updated_at via its column DEFAULT on the settings upsert
+	// (the table that absorbed the old captcha_config and rate_limit_config
+	// rows); one plain row suffices, the layout contract is the column's.
+	settingValue := `{}`
+	require.NoError(t, st.Settings().Upsert(ctx, store.UpsertSettingParams{
+		Key:   "captcha.altcha",
+		Value: &settingValue,
 	}))
 
 	// altcha_used_salts.expires_at is Go-bound by ConsumeAltchaSalt.
-	consumedSalt, err := st.CaptchaConfig().ConsumeAltchaSalt(ctx, store.ConsumeAltchaSaltParams{
+	consumedSalt, err := st.AltchaSalts().ConsumeAltchaSalt(ctx, store.ConsumeAltchaSaltParams{
 		Salt:      "canon-salt",
 		ExpiresAt: future,
 	})

@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/util/validate"
@@ -86,6 +87,7 @@ func validateCustomKeybindingsJSON(raw string) error {
 type UserService struct {
 	store     store.Store
 	cfg       *config.Config
+	set       *settings.Manager
 	lifecycle *auth.CredentialLifecycleEffects
 	mail      mail.Sender
 	renderer  mail.Renderer
@@ -94,11 +96,11 @@ type UserService struct {
 // NewUserService creates a new UserService. renderer carries the hub's
 // public URL used to build absolute deep-links in the verification
 // emails sent on email-change and resend.
-func NewUserService(st store.Store, cfg *config.Config, lifecycle *auth.CredentialLifecycleEffects, sender mail.Sender, renderer mail.Renderer) *UserService {
+func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, sender mail.Sender, renderer mail.Renderer) *UserService {
 	if lifecycle == nil {
 		panic("user service requires credential lifecycle effects")
 	}
-	return &UserService{store: st, cfg: cfg, lifecycle: lifecycle, mail: sender, renderer: renderer}
+	return &UserService{store: st, cfg: cfg, set: set, lifecycle: lifecycle, mail: sender, renderer: renderer}
 }
 
 func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
@@ -213,7 +215,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	// deployment still gets a trusted immediate change. Both flush cached
 	// UserInfo (UserInfo.Email is cached) so the new value is observable on the
 	// very next request rather than after sessionCacheTTL.
-	if userInfo.IsAdmin || !s.cfg.EmailVerificationRequired {
+	if userInfo.IsAdmin || !settings.EmailVerificationEffective(s.set.Snapshot(ctx)) {
 		if err := SetEmailAndClearCompeting(ctx, s.store, user.ID, newEmail, userInfo.IsAdmin); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
@@ -244,7 +246,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 const resendVerificationCooldown = 60 * time.Second
 
 // ResendVerificationEmail re-issues the verification mail for the
-// session user's pending email. It's authenticated and gated to users
+// session user's pending email. It's authenticated and restricted to users
 // who actually have a pending row — there's nothing to re-send
 // otherwise. Cooldown is enforced server-side; frontend rate-limit UI
 // is purely cosmetic.
@@ -532,10 +534,11 @@ func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leap
 		return nil, err
 	}
 
+	t := settings.KeyTimeouts.Of(s.set.Snapshot(ctx))
 	return connect.NewResponse(&leapmuxv1.GetTimeoutsResponse{
-		ApiTimeoutSeconds:            int32(s.cfg.APITimeout.Seconds()),
-		AgentStartupTimeoutSeconds:   int32(s.cfg.AgentStartupTimeout.Seconds()),
-		WorktreeCreateTimeoutSeconds: int32(s.cfg.WorktreeCreateTimeout.Seconds()),
+		ApiTimeoutSeconds:            int32(t.APITimeoutSeconds),
+		AgentStartupTimeoutSeconds:   int32(t.AgentStartupTimeoutSeconds),
+		WorktreeCreateTimeoutSeconds: int32(t.WorktreeCreateSecs),
 	}), nil
 }
 

@@ -37,21 +37,20 @@ func newLoginClient(t *testing.T, ic connect.UnaryInterceptorFunc) (leapmuxv1con
 	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), &handlerCalled
 }
 
-func freshVerifiedPayload(t *testing.T, m *Manager) string {
+func freshVerifiedPayload(t *testing.T, e *testEnv) string {
 	t.Helper()
-	applyTestAltchaSettings(t, m, cheapAltchaSettings)
-	challengeJSON, err := m.AltchaChallengeJSON(context.Background())
+	applyTestAltchaSettings(t, e, cheapAltchaSettings)
+	challengeJSON, err := e.m.AltchaChallengeJSON(context.Background())
 	require.NoError(t, err)
 	return solveChallenge(t, challengeJSON)
 }
 
-// disableSelected flips the selected row's enabled flag and busts the
-// caches, the way `captcha disable` does.
-func disableSelected(t *testing.T, m *Manager) {
+// disableSelected flips the verification switch off, the way `captcha
+// disable` does.
+func disableSelected(t *testing.T, e *testEnv) {
 	t.Helper()
-	require.NoError(t, m.EnsureProvisioned(context.Background()))
-	require.NoError(t, m.st.CaptchaConfig().SetEnabled(context.Background(), false))
-	bustCaches(m)
+	require.NoError(t, e.m.EnsureProvisioned(context.Background()))
+	require.NoError(t, CaptchaEnabledKey.Set(context.Background(), e.set, false))
 }
 
 // TestInterceptorPassesProcedureAction pins the procedure-to-action
@@ -60,9 +59,9 @@ func disableSelected(t *testing.T, m *Manager) {
 func TestInterceptorPassesProcedureAction(t *testing.T) {
 	stub := newSiteverifyStub(t)
 	stub.body = `{"success":true,"action":"login"}`
-	m := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
-	activateExternal(t, m, ProviderTurnstile, `{"site_key":"1x00000000000000000000AA"}`, "secret-key")
-	client, called := newLoginClient(t, NewInterceptor(m))
+	e := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
+	activateExternal(t, e, ProviderTurnstile, `{"site_key":"1x00000000000000000000AA"}`, "secret-key")
+	client, called := newLoginClient(t, NewInterceptor(e.m))
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		CaptchaPayload: "token",
@@ -72,9 +71,9 @@ func TestInterceptorPassesProcedureAction(t *testing.T) {
 }
 
 func TestInterceptorAllowsVerifiedSubmission(t *testing.T) {
-	m := newTestManager(t, false)
-	payload := freshVerifiedPayload(t, m)
-	client, called := newLoginClient(t, NewInterceptor(m))
+	e := newTestManager(t, false)
+	payload := freshVerifiedPayload(t, e)
+	client, called := newLoginClient(t, NewInterceptor(e.m))
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username:       "user",
@@ -86,9 +85,9 @@ func TestInterceptorAllowsVerifiedSubmission(t *testing.T) {
 }
 
 func TestInterceptorDeniesMissingOrInvalidPayload(t *testing.T) {
-	m := newTestManager(t, false)
-	freshVerifiedPayload(t, m) // configure + provision
-	client, called := newLoginClient(t, NewInterceptor(m))
+	e := newTestManager(t, false)
+	freshVerifiedPayload(t, e) // configure + provision
+	client, called := newLoginClient(t, NewInterceptor(e.m))
 
 	failedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "failed"))
 	replayedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "replayed"))
@@ -107,9 +106,9 @@ func TestInterceptorDeniesMissingOrInvalidPayload(t *testing.T) {
 }
 
 func TestInterceptorDeniesHoneypotUniformly(t *testing.T) {
-	m := newTestManager(t, false)
-	payload := freshVerifiedPayload(t, m)
-	client, called := newLoginClient(t, NewInterceptor(m))
+	e := newTestManager(t, false)
+	payload := freshVerifiedPayload(t, e)
+	client, called := newLoginClient(t, NewInterceptor(e.m))
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		CaptchaPayload: payload,
@@ -125,9 +124,9 @@ func TestInterceptorDeniesHoneypotUniformly(t *testing.T) {
 }
 
 func TestInterceptorDeniesReplay(t *testing.T) {
-	m := newTestManager(t, false)
-	payload := freshVerifiedPayload(t, m)
-	client, _ := newLoginClient(t, NewInterceptor(m))
+	e := newTestManager(t, false)
+	payload := freshVerifiedPayload(t, e)
+	client, _ := newLoginClient(t, NewInterceptor(e.m))
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		CaptchaPayload: payload,
@@ -149,15 +148,15 @@ func TestInterceptorDeniesReplay(t *testing.T) {
 }
 
 func TestInterceptorPassesThroughWhenDisabled(t *testing.T) {
-	m := newTestManager(t, false)
-	disableSelected(t, m)
-	client, called := newLoginClient(t, NewInterceptor(m))
+	e := newTestManager(t, false)
+	disableSelected(t, e)
+	client, called := newLoginClient(t, NewInterceptor(e.m))
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{}))
 	require.NoError(t, err)
 	assert.True(t, *called)
 
 	solo := newTestManager(t, true)
-	soloClient, soloCalled := newLoginClient(t, NewInterceptor(solo))
+	soloClient, soloCalled := newLoginClient(t, NewInterceptor(solo.m))
 	_, err = soloClient.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{}))
 	require.NoError(t, err)
 	assert.True(t, *soloCalled)
@@ -167,9 +166,9 @@ func TestInterceptorPassesThroughWhenDisabled(t *testing.T) {
 // honeypot: it must keep catching naive bots after `captcha disable`,
 // with the same uniform denial as a captcha failure.
 func TestInterceptorHoneypotRunsWhileCaptchaDisabled(t *testing.T) {
-	m := newTestManager(t, false)
-	disableSelected(t, m)
-	client, called := newLoginClient(t, NewInterceptor(m))
+	e := newTestManager(t, false)
+	disableSelected(t, e)
+	client, called := newLoginClient(t, NewInterceptor(e.m))
 
 	failedBefore := testutil.ToFloat64(metrics.CaptchaVerificationsTotal.WithLabelValues("altcha", "failed"))
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -183,8 +182,8 @@ func TestInterceptorHoneypotRunsWhileCaptchaDisabled(t *testing.T) {
 }
 
 func TestInterceptorIgnoresUnprotectedProcedures(t *testing.T) {
-	m := newTestManager(t, false)
-	freshVerifiedPayload(t, m)
+	e := newTestManager(t, false)
+	freshVerifiedPayload(t, e)
 
 	// Logout carries neither captcha field; routed through the same
 	// interceptor it must reach its handler unconditionally.
@@ -195,7 +194,7 @@ func TestInterceptorIgnoresUnprotectedProcedures(t *testing.T) {
 			logoutCalled = true
 			return connect.NewResponse(&leapmuxv1.LogoutResponse{}), nil
 		},
-		connect.WithInterceptors(NewInterceptor(m)),
+		connect.WithInterceptors(NewInterceptor(e.m)),
 	)
 	server := httptest.NewServer(http.NewServeMux())
 	server.Config.Handler.(*http.ServeMux).Handle(leapmuxv1connect.AuthServiceLogoutProcedure, handler)

@@ -40,7 +40,7 @@ func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1conne
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 
-	capture := &timeoutCapture{inner: service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil)))}
+	capture := &timeoutCapture{inner: service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))}
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(auth.NewTimeoutInterceptor(func() time.Duration { return timeout }))

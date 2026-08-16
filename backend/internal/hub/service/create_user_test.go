@@ -227,7 +227,7 @@ func TestSetPendingEmailWithToken_RejectsAlreadyVerifiedEmail(t *testing.T) {
 	userB := createSimpleUser(t, st, "user-b", "")
 
 	// User B tries to set pending_email to the already-verified address.
-	err := issuePendingEmailVerificationOrRollback(ctx, st, sender, mail.Renderer{HubURL: "https://hub.example.test"}, userB.ID, "taken@example.com")
+	err := issuePendingEmailVerificationOrRollback(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, userB.ID, "taken@example.com")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already in use")
 
@@ -246,7 +246,7 @@ func TestSetPendingEmailWithToken_StoresPendingForUnclaimedEmail(t *testing.T) {
 
 	user := createSimpleUser(t, st, "user-a", "")
 
-	err := issuePendingEmailVerificationOrRollback(ctx, st, sender, mail.Renderer{HubURL: "https://hub.example.test"}, user.ID, "free@example.com")
+	err := issuePendingEmailVerificationOrRollback(ctx, st, sender, mail.Renderer{BaseURL: func() string { return "https://hub.example.test" }}, user.ID, "free@example.com")
 	require.NoError(t, err)
 
 	// The row stays pending until the user submits a code via UserService.VerifyEmail.

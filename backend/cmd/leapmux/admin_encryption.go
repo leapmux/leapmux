@@ -8,7 +8,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 
-	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -106,18 +105,21 @@ func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]
 		refs = append(refs, fmt.Sprintf("%d OAuth provider secret(s)", providerCount))
 	}
 
-	captchaRows, err := st.CaptchaConfig().List(ctx)
+	settingRows, err := st.Settings().GetAll(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list captcha config: %w", err)
+		return nil, fmt.Errorf("list settings: %w", err)
 	}
-	var captchaCount int
-	for _, row := range captchaRows {
+	var settingsCount int
+	for _, row := range settingRows {
+		if len(row.Secret) == 0 {
+			continue
+		}
 		if ver, e := keystore.CiphertextVersion(row.Secret); e == nil && ver == version {
-			captchaCount++
+			settingsCount++
 		}
 	}
-	if captchaCount > 0 {
-		refs = append(refs, fmt.Sprintf("%d captcha provider secret(s)", captchaCount))
+	if settingsCount > 0 {
+		refs = append(refs, fmt.Sprintf("%d settings secret(s)", settingsCount))
 	}
 
 	return refs, nil
@@ -125,7 +127,7 @@ func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]
 
 // runRotatePepper regenerates the dedicated api_token/delegation_token pepper.
 // This INVALIDATES every existing API token and delegation token (their HMAC
-// hashes can no longer be reproduced), so it is gated behind --yes. The
+// hashes can no longer be reproduced), so it requires --yes. The
 // encryption key ring is untouched; encryption-key rotation never affects the
 // pepper, and vice versa.
 func runRotatePepper(cmd adminCmdCtx, args []string) error {
@@ -232,31 +234,35 @@ func runReencryptSecrets(cmd adminCmdCtx, args []string) error {
 			}
 		}
 
-		// Re-encrypt captcha_config.secret. The AAD is provider-scoped and
-		// MUST stay byte-identical across versions, or the row becomes
-		// undecryptable — the resolver fails every Login closed on a
-		// decrypt error, so skipping this leg would break credential
-		// endpoints after a key removal.
-		captchaRows, err := st.CaptchaConfig().List(ctx)
+		// Re-encrypt hub_settings secret halves (SMTP passwords, captcha
+		// signing keys and API secrets). The AAD is key-name-scoped and MUST
+		// stay byte-identical across versions, or the row becomes
+		// undecryptable — the settings snapshot degrades a bad secret to its
+		// default, so skipping this leg would silently disable email or
+		// captcha after a key removal.
+		settingRows, err := st.Settings().GetAll(ctx)
 		if err != nil {
-			return fmt.Errorf("list captcha config: %w", err)
+			return fmt.Errorf("list settings: %w", err)
 		}
-		for _, row := range captchaRows {
-			alias := captcha.ProviderAlias(row.Provider)
+		for _, row := range settingRows {
+			if len(row.Secret) == 0 {
+				continue
+			}
 			if ver, e := keystore.CiphertextVersion(row.Secret); e == nil && ver == activeVer {
 				continue // already at active version
 			}
-			newCt, err := reencryptBlob(ks, row.Secret, keystore.CaptchaSecretAAD(alias),
-				fmt.Sprintf("captcha secret for %s", alias))
+			aad := keystore.SettingsSecretAAD(row.Key)
+			newCt, err := reencryptBlob(ks, row.Secret, aad,
+				fmt.Sprintf("settings secret for %s", row.Key))
 			if err != nil {
 				return err
 			}
-			if err := st.CaptchaConfig().Upsert(ctx, store.UpsertCaptchaConfigParams{
-				Provider: row.Provider,
-				Secret:   newCt,
-				Settings: row.Settings,
+			if err := st.Settings().Upsert(ctx, store.UpsertSettingParams{
+				Key:    row.Key,
+				Value:  row.Value,
+				Secret: newCt,
 			}); err != nil {
-				return fmt.Errorf("update captcha config for %s: %w", alias, err)
+				return fmt.Errorf("update settings secret for %s: %w", row.Key, err)
 			}
 			count++
 		}

@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -54,14 +55,14 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New(0)
-	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return testConfig().APITimeout })
+	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
 
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil))), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))), opts)
 	mux.Handle(authPath, authHandler)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, allowAllAuthFreshness{})

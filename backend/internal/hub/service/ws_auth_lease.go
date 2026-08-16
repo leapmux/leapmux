@@ -21,7 +21,7 @@ import (
 type wsAuthenticator struct {
 	store          store.Store
 	soloUser       *auth.UserInfo
-	secureCookie   bool
+	secureCookie   func() bool
 	tokenValidator *auth.TokenValidator
 	authLease      webSocketAuthLease
 	// keepalive is how often this endpoint's connections are probed. Carried
@@ -53,7 +53,7 @@ func newWSAuthenticator(
 	st store.Store,
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
-	secureCookie bool,
+	secureCookie func() bool,
 ) wsAuthenticator {
 	return wsAuthenticator{
 		store:        st,
@@ -69,11 +69,15 @@ func newWSAuthenticator(
 // is optional (nil accepts cookie auth only) and is wired post-construction, so
 // this reads it at call time.
 func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
+	secureCookie := false
+	if a.secureCookie != nil {
+		secureCookie = a.secureCookie()
+	}
 	return auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
 		Store:     a.store,
 		Validator: a.tokenValidator,
 		SoloUser:  a.soloUser,
-		Cookies:   []bool{a.secureCookie},
+		Cookies:   []bool{secureCookie},
 		Contexts:  a.authLease.registry,
 	})
 }

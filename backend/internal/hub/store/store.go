@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"time"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -34,8 +33,8 @@ type Store interface {
 	OAuthTokens() OAuthTokenStore
 	OAuthUserLinks() OAuthUserLinkStore
 	PendingOAuthSignups() PendingOAuthSignupStore
-	CaptchaConfig() CaptchaConfigStore
-	RateLimitConfig() RateLimitConfigStore
+	Settings() SettingsStore
+	AltchaSalts() AltchaSaltsStore
 	APITokens() APITokenStore
 	DelegationTokens() DelegationTokenStore
 	RevocationEvents() RevocationEventStore
@@ -571,38 +570,40 @@ type PendingOAuthSignupStore interface {
 	Delete(ctx context.Context, token string) error
 }
 
-// CaptchaConfigStore manages the per-provider captcha configuration rows
-// and the ALTCHA consumed-salt ledger. Exactly one row is selected — the
-// active provider — and Enabled on that row is the verification on/off
-// switch. GetSelected returns ErrNotFound before the first provisioning
-// (the caller applies code-side defaults and provisions).
-type CaptchaConfigStore interface {
-	GetSelected(ctx context.Context) (*CaptchaConfig, error)
-	Get(ctx context.Context, provider leapmuxv1.CaptchaProvider) (*CaptchaConfig, error)
-	List(ctx context.Context) ([]CaptchaConfig, error)
-	InsertIfAbsent(ctx context.Context, p InsertCaptchaConfigIfAbsentParams) error
-	// UpdateSettings rewrites one existing row's settings and never
-	// touches its secret, so a settings change can never lose the key.
-	UpdateSettings(ctx context.Context, provider leapmuxv1.CaptchaProvider, settings string) error
-	// Upsert writes settings together with a secret (first configuration
-	// of an external provider, or key rotation); the secret is required
-	// because a secret-less row fails verification on every submission.
-	Upsert(ctx context.Context, p UpsertCaptchaConfigParams) error
-	// Activate selects and enables the given provider and deselects every
-	// other row in one statement, so the exactly-one-selected invariant
-	// holds under concurrent activations: last writer wins, never two
-	// selected.
-	Activate(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
-	// ActivateIfNoneSelected activates the given provider only when no row
-	// is selected. The hub's first-use self-heal uses it, so read-path
-	// provisioning can never override an admin CLI selection.
-	ActivateIfNoneSelected(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
-	// SetEnabled flips the verification switch on the selected row only;
-	// the selection itself survives, so a later enable restores the same
-	// provider.
-	SetEnabled(ctx context.Context, enabled bool) error
-	Delete(ctx context.Context) error
-	DeleteProvider(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
+// SettingsStore manages the hub_settings table: one row per setting key,
+// carrying a public JSON half and, for secret-bearing keys, a
+// keystore-encrypted secret half. Absent keys mean code defaults. The
+// typed interpretation, validation, caching, and secret handling live in
+// internal/hub/settings, the sole caller of this store.
+type SettingsStore interface {
+	// GetAll returns every stored row, ordered by key. Keys without rows
+	// are simply absent; the caller applies code defaults for them.
+	GetAll(ctx context.Context) ([]SettingRow, error)
+	// Get returns one key's row, or ErrNotFound when the key has no row
+	// (meaning it sits at its code default).
+	Get(ctx context.Context, key string) (*SettingRow, error)
+	// Upsert rewrites both halves of one key's row. The caller merges with
+	// the existing row inside a transaction, so a nil half is an explicit
+	// clear rather than an accident; at least one half must be non-nil to
+	// satisfy the table's CHECK.
+	Upsert(ctx context.Context, p UpsertSettingParams) error
+	// InsertIfAbsent writes the row only when the key has no row, making
+	// first-use provisioning a one-winner race that holds across processes
+	// under every dialect's isolation. It reports whether this call
+	// inserted the row.
+	InsertIfAbsent(ctx context.Context, p UpsertSettingParams) (bool, error)
+	// GetForUpdate reads one key's row locked against concurrent writers,
+	// for the read-modify-write merge the write path performs inside a
+	// transaction. Like Get, ErrNotFound means the key has no row.
+	GetForUpdate(ctx context.Context, key string) (*SettingRow, error)
+	// Delete removes one key's row, returning the key to its code default.
+	Delete(ctx context.Context, key string) error
+}
+
+// AltchaSaltsStore is the consumed-salt ledger backing ALTCHA's
+// single-use challenge enforcement; rows are operational data (purged by
+// the cleanup loop), not configuration.
+type AltchaSaltsStore interface {
 	// ConsumeAltchaSalt marks a solved ALTCHA challenge's salt as used; it
 	// returns 1 when the salt was unused (first use accepted) and 0 when
 	// a row already exists (replay denied).
@@ -612,16 +613,6 @@ type CaptchaConfigStore interface {
 	// replay costs one indexed read; ConsumeAltchaSalt stays the
 	// single-use authority.
 	HasAltchaSalt(ctx context.Context, salt string) (bool, error)
-}
-
-// RateLimitConfigStore manages per-operation rate-limit overrides.
-// Get returns ErrNotFound when the operation has no row; List returns
-// only the customized operations.
-type RateLimitConfigStore interface {
-	Get(ctx context.Context, operation string) (*RateLimitConfig, error)
-	List(ctx context.Context) ([]RateLimitConfig, error)
-	Upsert(ctx context.Context, p UpsertRateLimitConfigParams) error
-	Delete(ctx context.Context, operation string) error
 }
 
 // CleanupStore provides methods for hard-deleting soft-deleted records

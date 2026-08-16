@@ -37,11 +37,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/internal/util/sqltime/pgtime"
               type: "NullTime"
-          # Captcha provider enum
-          - column: "captcha_config.provider"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "CaptchaProvider"
           # Worker enums
           - column: "workers.status"
             go_type:

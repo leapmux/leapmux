@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
@@ -456,11 +460,12 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
 }
 
 // TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced pins the
-// third encrypted-secret family: a captcha provider's secret keeps its
-// key version alive in the removal guard, reencrypt migrates it with the
-// same provider-scoped AAD, and only then does the old version become
-// removable. Without the guard leg, removing the version would make
-// every Login fail with the uniform captcha denial.
+// third encrypted-secret family: a captcha provider's secret (now the
+// encrypted half of its captcha.* settings row) keeps its key version alive
+// in the removal guard, reencrypt migrates it with the same key-name-scoped
+// AAD, and only then does the old version become removable. Without the
+// guard leg, removing the version would make every Login fail with the
+// uniform captcha denial.
 func TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced(t *testing.T) {
 	dir := setupTestDataDir(t)
 	ctx := context.Background()
@@ -478,24 +483,26 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced(t *testing.T
 	err := runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still encrypts")
-	assert.Contains(t, err.Error(), "captcha")
+	assert.Contains(t, err.Error(), "settings secret")
 
 	// Reencrypt migrates the secret; it must decrypt under v2 with the
-	// same provider-scoped AAD and the original plaintext.
+	// same key-name-scoped AAD and the original plaintext.
 	require.NoError(t, runReencryptSecrets(testAdminCtx, []string{"--data-dir", dir}))
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
 	st, err := storeopen.Open(ctx, adminConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-	row, err := st.CaptchaConfig().GetSelected(ctx)
+	row, err := st.Settings().Get(ctx, "captcha.turnstile")
 	require.NoError(t, err)
 	ver, err := keystore.CiphertextVersion(row.Secret)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), ver, "reencrypt must migrate the captcha secret to the active version")
-	plain, err := ks.Decrypt(row.Secret, keystore.CaptchaSecretAAD("turnstile"))
-	require.NoError(t, err, "the migrated secret must decrypt under its unchanged provider-scoped AAD")
-	assert.Equal(t, "captcha-secret", string(plain))
+	plain, err := ks.Decrypt(row.Secret, keystore.SettingsSecretAAD("captcha.turnstile"))
+	require.NoError(t, err, "the migrated secret must decrypt under its unchanged key-name-scoped AAD")
+	var ts captcha.TurnstileRow
+	require.NoError(t, json.Unmarshal(plain, &ts))
+	assert.Equal(t, "captcha-secret", ts.SecretKey)
 
 	// With the secret migrated, v1 is unreferenced and removal succeeds.
 	require.NoError(t, runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir}))
@@ -1878,4 +1885,69 @@ func TestFriendlyConstraintError(t *testing.T) {
 		err := friendlyConstraintError(other, "alice", "alice@example.com")
 		assert.Same(t, other, err)
 	})
+}
+
+// TestCLI_SettingsListOmitsAbsentUpdatedAt pins the display contract: a
+// key without a stored row has no last-write time, and rendering the
+// zero time would print a year-1 timestamp that reads as corrupt data.
+func TestCLI_SettingsListOmitsAbsentUpdatedAt(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	out := captureStdout(t, func() error {
+		return runSettingsList(testAdminCtx, []string{"--data-dir", dir})
+	})
+	require.NoError(t, out.err)
+
+	var entries []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out.text), &entries))
+	require.NotEmpty(t, entries)
+	for _, e := range entries {
+		key, _ := e["key"].(string)
+		if key == "smtp" {
+			// The list runs on a fresh data dir: no key has a row, so no
+			// entry may carry the zero-time rendering.
+			_, has := e["updated_at"]
+			assert.False(t, has, "a key without a row must omit updated_at, not print the zero time (got %v)", e["updated_at"])
+		}
+	}
+
+	// After a write the key carries a real timestamp.
+	require.NoError(t, runSettingsSet(testAdminCtx, []string{"--data-dir", dir, "smtp", `{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`}))
+	out = captureStdout(t, func() error {
+		return runSettingsList(testAdminCtx, []string{"--data-dir", dir})
+	})
+	require.NoError(t, out.err)
+	require.NoError(t, json.Unmarshal([]byte(out.text), &entries))
+	for _, e := range entries {
+		if e["key"] == "smtp" {
+			stamp, _ := e["updated_at"].(string)
+			assert.NotContains(t, stamp, "0001-", "a written row carries its real timestamp")
+			assert.NotEmpty(t, stamp)
+		}
+	}
+}
+
+// stdoutCapture is the captured text of one stdout-printing closure.
+type stdoutCapture struct {
+	text string
+	err  error
+}
+
+// captureStdout runs fn with os.Stdout replaced by a pipe, returning
+// everything it printed (the admin verbs write their reports there).
+func captureStdout(t *testing.T, fn func() error) stdoutCapture {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	ferr := fn()
+	require.NoError(t, w.Close())
+	os.Stdout = orig
+	return stdoutCapture{text: <-done, err: ferr}
 }

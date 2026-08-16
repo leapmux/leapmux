@@ -291,7 +291,7 @@ func TestAuthenticateUsesTouchedSessionExpiry(t *testing.T) {
 
 	ctx, refresh, err := a.authenticate(
 		context.Background(), "/private",
-		CookieName+"=session", "",
+		CookieName+"=session", "", a.currentPolicy(),
 	)
 	require.NoError(t, err)
 	user := GetUser(ctx)
@@ -325,7 +325,7 @@ func TestZeroRowTouchDoesNotExtendSessionExpiry(t *testing.T) {
 
 	ctx, refresh, err := a.authenticate(
 		context.Background(), "/private",
-		CookieName+"=session", "",
+		CookieName+"=session", "", a.currentPolicy(),
 	)
 	require.NoError(t, err)
 	user := GetUser(ctx)
@@ -569,7 +569,7 @@ func TestSoloAuthenticationAdvancesPastUserRevocation(t *testing.T) {
 	cache := &AuthContextRegistry{state: state}
 
 	cache.RevokeUserAuthContextAtGeneration("solo", 2)
-	ctx, refresh, err := a.authenticate(context.Background(), "/private", "", "")
+	ctx, refresh, err := a.authenticate(context.Background(), "/private", "", "", a.currentPolicy())
 	require.NoError(t, err)
 	assert.Equal(t, sessionRefresh{}, refresh, "solo mode holds no session cookie to refresh")
 	current := GetUser(ctx)

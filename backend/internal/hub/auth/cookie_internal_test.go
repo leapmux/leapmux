@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -199,10 +200,10 @@ func TestTouchThresholdAlwaysLeavesRoomToSlide(t *testing.T) {
 // end the session before the configured duration passed since the last request.
 func TestSlideDurationCoversTouchThrottle(t *testing.T) {
 	for _, configured := range []time.Duration{0, -time.Hour, MinSessionDuration, time.Hour, 30 * 24 * time.Hour} {
-		a := &authInterceptor{sessionDuration: configured}
-		assert.Equal(t, sessionLifetime(configured)+touchThreshold(configured), a.slideDuration(),
+		a := &authInterceptor{policy: func() Policy { return Policy{SessionDuration: configured} }}
+		assert.Equal(t, sessionLifetime(configured)+touchThreshold(configured), a.slideDuration(a.currentPolicy()),
 			"configured=%s", configured)
-		assert.Greater(t, a.slideDuration(), sessionLifetime(configured), "configured=%s", configured)
+		assert.Greater(t, a.slideDuration(a.currentPolicy()), sessionLifetime(configured), "configured=%s", configured)
 	}
 }
 
@@ -212,8 +213,8 @@ func TestSlideDurationCoversTouchThrottle(t *testing.T) {
 func TestSessionExpiryMatchesTheSlide(t *testing.T) {
 	for _, configured := range []time.Duration{0, MinSessionDuration, DefaultSessionDuration} {
 		now := time.Now()
-		a := &authInterceptor{sessionDuration: configured}
-		assert.Equal(t, now.Add(a.slideDuration()).UTC(), sessionExpiry(now, configured),
+		a := &authInterceptor{policy: func() Policy { return Policy{SessionDuration: configured} }}
+		assert.Equal(t, now.Add(a.slideDuration(a.currentPolicy())).UTC(), sessionExpiry(now, configured),
 			"configured=%s", configured)
 	}
 }
@@ -237,8 +238,11 @@ func TestMinSessionDurationBoundsTheOvershoot(t *testing.T) {
 // authenticated -- seven days of them by default, and however long an operator
 // configured otherwise.
 func TestSweepDropsLastTouchOnceTheThrottleWindowPassed(t *testing.T) {
-	a := &authInterceptor{sessionDuration: DefaultSessionDuration, state: &authState{}}
-	threshold := a.touchThreshold()
+	a := &authInterceptor{
+		policy: func() Policy { return Policy{SessionDuration: DefaultSessionDuration} },
+		state:  &authState{},
+	}
+	threshold := a.touchThreshold(a.currentPolicy())
 
 	a.state.lastTouch.Store("fresh", time.Now())
 	a.state.lastTouch.Store("stale", time.Now().Add(-threshold-time.Minute))
@@ -266,14 +270,40 @@ func TestValidateSessionDuration(t *testing.T) {
 // alone) would sign every user out through the day.
 func TestSlideDurationFallsBackToDefault(t *testing.T) {
 	a := &authInterceptor{}
-	assert.Equal(t, DefaultSessionDuration+sessionTouchThreshold, a.slideDuration())
+	assert.Equal(t, DefaultSessionDuration+sessionTouchThreshold, a.slideDuration(a.currentPolicy()))
 }
 
 // The configured duration, not the default, is what a slide writes.
 func TestSlideDurationHonoursConfiguredValue(t *testing.T) {
 	configured := 36 * time.Hour
-	interceptor, registry := NewInterceptor(InterceptorOptions{SessionDuration: configured})
+	interceptor, registry := NewInterceptor(InterceptorOptions{
+		Policy: func() Policy { return Policy{SessionDuration: configured} },
+	})
 	t.Cleanup(registry.Stop)
 
-	assert.Equal(t, configured+sessionTouchThreshold, interceptor.(*authInterceptor).slideDuration())
+	assert.Equal(t, configured+sessionTouchThreshold, interceptor.(*authInterceptor).slideDuration(interceptor.(*authInterceptor).currentPolicy()))
+}
+
+// TestPolicyResolvedOncePerRequest pins the request-path cost contract:
+// the wrappers resolve the (snapshot-backed, mutex-guarded) Policy once
+// and pass it through the chain, instead of re-entering the settings
+// snapshot at every consumer — the hot path must not multiply global
+// lock acquisitions per request.
+func TestPolicyResolvedOncePerRequest(t *testing.T) {
+	var calls int
+	inc := &authInterceptor{
+		policy: func() Policy {
+			calls++
+			return Policy{}
+		},
+		state: &authState{},
+	}
+	wrapped := inc.WrapUnary(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		return nil, nil
+	})
+	// A bare request's empty procedure is not public, so the wrapper's
+	// authentication chain runs far enough to consume the policy (cookie
+	// header parsing) before it rejects the request.
+	_, _ = wrapped(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
+	assert.EqualValues(t, 1, calls, "one request resolves the policy exactly once")
 }

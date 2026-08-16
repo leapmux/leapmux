@@ -170,42 +170,6 @@ func (s AltchaSettings) Validate() error {
 	return nil
 }
 
-// parseAltchaSettings decodes a stored settings JSON over the family
-// defaults: missing or zero fields take the algorithm family's values
-// (matching what the derive funcs substitute for zeros), and an
-// undecodable blob yields the built-in defaults. Validation happens in
-// Effective, which falls back to DefaultConfig on refusal.
-func parseAltchaSettings(raw string) AltchaSettings {
-	if raw == "" {
-		return DefaultAltchaSettings()
-	}
-	var stored AltchaSettings
-	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return DefaultAltchaSettings()
-	}
-	family := DefaultAltchaSettings()
-	if stored.Algorithm != "" {
-		f, err := DefaultAltchaSettingsFor(stored.Algorithm)
-		if err != nil {
-			return DefaultAltchaSettings()
-		}
-		family = f
-	}
-	if stored.Cost != 0 {
-		family.Cost = stored.Cost
-	}
-	if stored.MemoryCost != 0 {
-		family.MemoryCost = stored.MemoryCost
-	}
-	if stored.Parallelism != 0 {
-		family.Parallelism = stored.Parallelism
-	}
-	if stored.ChallengeExpirySeconds != 0 {
-		family.ChallengeExpirySeconds = stored.ChallengeExpirySeconds
-	}
-	return family
-}
-
 // decodeAltchaPayload accepts both padded and unpadded standard-alphabet
 // base64, the two encodings the widget historically produced across
 // versions.

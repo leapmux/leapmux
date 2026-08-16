@@ -39,8 +39,8 @@ const (
 // decision lives in the provider's spec, registered once in
 // providerSpecs, and shared code looks the spec up instead of switching
 // on the enum. Adding a provider means implementing this interface and
-// adding one registry entry — the alias, defaults, settings parsing,
-// validation, site-key accessor, and verification all follow.
+// adding one registry entry — the alias, defaults, validation, site-key
+// accessor, and verification all follow.
 type providerSpec interface {
 	// alias is the provider's human-facing name — the admin CLI's
 	// --provider flag, the `captcha show` output, the metrics label, and
@@ -50,9 +50,6 @@ type providerSpec interface {
 	// defaults returns the provider's configuration with no stored row
 	// behind it (Enabled matches a freshly provisioned row).
 	defaults() Config
-	// applySettings parses a stored row's settings JSON onto cfg's
-	// provider-specific settings pointer.
-	applySettings(cfg *Config, raw string)
 	// validate checks that cfg's settings pointer for this provider is
 	// present and passes the provider's own validation.
 	validate(cfg Config) error
@@ -82,11 +79,6 @@ func (altchaSpec) alias() string { return "altcha" }
 
 func (altchaSpec) defaults() Config { return DefaultConfig() }
 
-func (altchaSpec) applySettings(cfg *Config, raw string) {
-	s := parseAltchaSettings(raw)
-	cfg.Altcha = &s
-}
-
 func (altchaSpec) validate(cfg Config) error {
 	if cfg.Altcha == nil {
 		return fmt.Errorf("altcha settings missing")
@@ -114,11 +106,6 @@ func (recaptchaSpec) defaults() Config {
 	return Config{Provider: ProviderRecaptchaV3, Enabled: true, RecaptchaV3: &s}
 }
 
-func (recaptchaSpec) applySettings(cfg *Config, raw string) {
-	s := parseRecaptchaV3Settings(raw)
-	cfg.RecaptchaV3 = &s
-}
-
 func (recaptchaSpec) validate(cfg Config) error {
 	if cfg.RecaptchaV3 == nil {
 		return fmt.Errorf("recaptcha_v3 settings missing")
@@ -144,11 +131,6 @@ func (turnstileSpec) alias() string { return "turnstile" }
 func (turnstileSpec) defaults() Config {
 	s := DefaultTurnstileSettings()
 	return Config{Provider: ProviderTurnstile, Enabled: true, Turnstile: &s}
-}
-
-func (turnstileSpec) applySettings(cfg *Config, raw string) {
-	s := parseTurnstileSettings(raw)
-	cfg.Turnstile = &s
 }
 
 func (turnstileSpec) validate(cfg Config) error {

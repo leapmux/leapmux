@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
@@ -47,11 +48,12 @@ func setupOAuthTestServer(t *testing.T) (*httptest.Server, store.Store, *keystor
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Listen:        ":4327",
-		SignupEnabled: true,
+		Listen: ":4327",
 	}
+	set := servicetest.NewSettingsManager(t, st, ks)
+	enableSignup(t, set)
 
-	oauthHandler := service.NewOAuthHandler(st, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, set, ks)
 
 	mux := http.NewServeMux()
 	oauthHandler.RegisterRoutes(mux)
@@ -305,7 +307,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	leapmuxv1connect.AuthServiceClient,
 	store.Store,
 	*keystore.Keystore,
-	*config.Config,
+	*settings.Manager,
 ) {
 	t.Helper()
 
@@ -324,20 +326,21 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Listen:        ":4327",
-		SignupEnabled: true,
+		Listen: ":4327",
 	}
+	set := servicetest.NewSettingsManager(t, st, ks)
+	enableSignup(t, set)
 
 	mux := http.NewServeMux()
 
 	// Register OAuth HTTP routes.
-	oauthHandler := service.NewOAuthHandler(st, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, set, ks)
 	oauthHandler.RegisterRoutes(mux)
 
 	// Register AuthService ConnectRPC routes.
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
-	authDeps := servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil))
+	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
 	authSvc := service.NewAuthService(authDeps)
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
@@ -347,7 +350,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return server, client, st, ks, cfg
+	return server, client, st, ks, set
 }
 
 // insertPendingSignup creates a pending_oauth_signups row with encrypted tokens.
@@ -468,8 +471,8 @@ func TestCompleteOAuthSignup_UsesConfiguredSessionDuration(t *testing.T) {
 	t.Parallel()
 
 	const configured = 90 * time.Minute
-	_, client, st, ks, cfg := setupOAuthTestServerWithAuthService(t)
-	cfg.SessionDuration = configured
+	_, client, st, ks, set := setupOAuthTestServerWithAuthService(t)
+	setSessionDuration(t, set, configured)
 	providerID := createTestProvider(t, st, ks)
 	signupToken := id.Generate()
 
@@ -721,7 +724,7 @@ func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) 
 func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	t.Parallel()
 
-	// Use a custom setup with SignupEnabled=false.
+	// Use a custom setup with signup left disabled (its default).
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
@@ -737,11 +740,10 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &config.Config{
-		Listen:        ":4327",
-		SignupEnabled: false, // signup disabled
+		Listen: ":4327",
 	}
 
-	oauthHandler := service.NewOAuthHandler(st, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, servicetest.NewSettingsManager(t, st, ks), ks)
 	mux := http.NewServeMux()
 	oauthHandler.RegisterRoutes(mux)
 	server := httptest.NewServer(mux)
