@@ -24,8 +24,13 @@ export function loadExternalScript(url: string): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined
     const fail = (err: Error) => {
       clearTimeout(timer)
-      // Evict so the next mount retries instead of replaying the failure.
-      loaded.delete(url)
+      // Evict only this load's own entry. Removing a script element does
+      // not abort its fetch, so a timed-out script can still fire onerror
+      // seconds later -- after a retry has installed a new entry -- and
+      // an unconditional delete would evict the retry instead, making a
+      // third caller mount a second script and execute the SDK twice.
+      if (loaded.get(url) === promise)
+        loaded.delete(url)
       script.remove()
       reject(err)
     }

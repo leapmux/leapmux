@@ -31,13 +31,14 @@ type GuardState
  * which is the group's only route — decides "who may see this page" here and
  * nowhere else, so no guarded route needs a redirect effect of its own.
  *
- * `isSoloMode()` / `isSetupRequired()` are plain module getters rather than
- * signals, which is safe because `AuthProvider` awaits `loadSystemInfo()`
- * before it clears `loading()` — by the time `state` is computed past its first
- * line, both have their real values. And if that load FAILED they never got
- * real values at all, which is why the `bootstrapError()` arm sits above every
- * read of them: the panel is shown instead of a decision made on fabricated
- * defaults.
+ * `isSoloMode()` / `isSetupRequired()` derive from the systemInfo
+ * snapshot signal: they are safe reads because `AuthProvider` awaits
+ * `loadSystemInfo()` before it clears `loading()` — by the time `state`
+ * is computed past its first line, both have their real values, and a
+ * later forced refresh re-evaluates this memo reactively. And if that
+ * load FAILED they never got real values at all, which is why the
+ * `bootstrapError()` arm sits above every read of them: the panel is
+ * shown instead of a decision made on fabricated defaults.
  */
 export const AuthGuard: ParentComponent = (props) => {
   const auth = useAuth()

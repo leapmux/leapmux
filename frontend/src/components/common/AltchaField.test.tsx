@@ -3,6 +3,7 @@ import type { CaptchaFieldHandle } from './CaptchaField'
 import { render } from '@solidjs/testing-library'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mockLoadSystemInfo, resetSystemInfoMock } from '~/test-support/systemInfoMock'
 import { AltchaField } from './AltchaField'
 import { CaptchaHoneypot } from './CaptchaHoneypot'
 
@@ -19,6 +20,15 @@ const mockFetchAltchaChallenge = vi.fn()
 vi.mock('~/lib/altchaChallenge', () => ({
   fetchAltchaChallenge: (...args: []) => mockFetchAltchaChallenge(...args),
 }))
+
+// The catch path's convergence seam: a failed fetch must force one
+// system-info refresh so a runtime provider switch re-mounts the right
+// field instead of dead-ending behind the disabled submit button. The
+// shared systemInfo mock keeps loadSystemInfo as the assertion seam.
+vi.mock('~/lib/systemInfo', async () => {
+  const m = await import('~/test-support/systemInfoMock')
+  return m.systemInfoMock
+})
 
 class FakeAltchaWidget extends HTMLElement {
   configure = vi.fn((_config: unknown) => Promise.resolve())
@@ -45,6 +55,7 @@ function renderField(props: Partial<Parameters<typeof AltchaField>[0]> = {}) {
 describe('altchaField', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    resetSystemInfoMock()
     mockFetchAltchaChallenge.mockResolvedValue(challenge)
   })
 
@@ -109,6 +120,19 @@ describe('altchaField', () => {
     const { container, findByText } = renderField()
     expect(await findByText(/could not load the human-verification challenge/i)).toBeTruthy()
     expect(widgetEls(container)[0].configure).not.toHaveBeenCalled()
+  })
+
+  it('refreshes the system info once when the challenge fetch fails, so a provider switch converges without a denial', async () => {
+    // The hub answers FailedPrecondition after a runtime provider switch:
+    // the fetch rejects, and the disabled submit button can never trigger
+    // the denial-driven reload — the field's error path must do it.
+    mockFetchAltchaChallenge.mockRejectedValue(new Error('FailedPrecondition'))
+    const { findByText } = renderField()
+    expect(await findByText(/could not load the human-verification challenge/i)).toBeTruthy()
+    await vi.waitFor(() => {
+      expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
+    })
+    expect(mockLoadSystemInfo).toHaveBeenCalledTimes(1)
   })
 
   it('ignores a stale overlapping arm: the newer challenge wins', async () => {

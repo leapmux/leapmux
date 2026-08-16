@@ -41,9 +41,7 @@ type CaptchaService interface {
 type disabledCaptcha struct{}
 
 func (disabledCaptcha) Describe(context.Context) (captcha.Config, bool, error) {
-	cfg := captcha.DefaultConfig()
-	cfg.Enabled = false
-	return cfg, false, nil
+	return captcha.DisabledConfig(), false, nil
 }
 
 func (disabledCaptcha) AltchaChallengeJSON(context.Context) (string, error) {
@@ -387,21 +385,22 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		setupRequired = !hasUser
 	}
 
-	// A captcha-config read failure degrades to "disabled" instead of
-	// failing the whole endpoint, mirroring the providers flag above: the
-	// rest of the system info stays usable, and the captcha interceptor
-	// still fails closed on its own for the procedures it protects.
-	//
-	// The provider is zero (UNSPECIFIED) on that degraded path — never a
+	// A captcha-config read failure reports captcha as ENABLED, matching
+	// the interceptor's fail-closed enforcement on the same store: the
+	// opposite polarity would unblock a payload-less submit that the hub
+	// then denies, dead-looping the form on a mislabeled error. The
+	// provider is zero (UNSPECIFIED) on that degraded path — never a
 	// wrong concrete provider — and clients treat anything but a known
-	// enum as altcha.
+	// enum as altcha. The rest of the system info stays usable, mirroring
+	// the providers flag above.
 	var captchaEnabled bool
 	var captchaProvider leapmuxv1.CaptchaProvider
 	var captchaSiteKey string
 	var altchaAlgorithm string
 	captchaCfg, _, err := s.captcha.Describe(ctx)
 	if err != nil {
-		slog.Warn("describe captcha config failed; reporting captcha disabled", "error", err)
+		slog.Warn("describe captcha config failed; reporting captcha enabled (enforcement fails closed)", "error", err)
+		captchaEnabled = true
 	} else {
 		captchaEnabled = captchaCfg.Enabled
 		captchaProvider = captchaCfg.Provider

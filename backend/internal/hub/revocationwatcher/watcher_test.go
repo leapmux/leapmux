@@ -17,9 +17,9 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/revocationwatcher"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -35,7 +35,7 @@ func newBearerAuthHub(
 	mux := http.NewServeMux()
 	interceptor, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: validator})
 	t.Cleanup(cache.Stop)
-	authService := service.NewAuthService(service.AuthServiceDeps{Store: st, Config: &config.Config{}, Lifecycle: auth.NewCredentialLifecycleEffects(cache, nil, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil})
+	authService := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, auth.NewCredentialLifecycleEffects(cache, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authService, connect.WithInterceptors(interceptor))
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)

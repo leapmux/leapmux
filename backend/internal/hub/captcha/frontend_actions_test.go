@@ -13,8 +13,8 @@ import (
 )
 
 // TestFrontendCaptchaActionsMatchProcedureActions pins the cross-end
-// action contract: the backend verifies tokens under the strings in
-// procedureActions, and the frontend's CaptchaField action union must
+// action contract: the backend verifies tokens under the actions in
+// protectedProcedures, and the frontend's CaptchaField action union must
 // offer exactly those strings (the three pages bind them as literals). A
 // drift on either end denies every token for the affected procedure, and
 // no other test compiles both ends together — the per-end tests each
@@ -37,9 +37,9 @@ func TestFrontendCaptchaActionsMatchProcedureActions(t *testing.T) {
 	}
 	sort.Strings(frontend)
 
-	backend := make([]string, 0, len(procedureActions))
-	for _, action := range procedureActions {
-		backend = append(backend, action)
+	backend := make([]string, 0, len(protectedProcedures))
+	for _, proc := range protectedProcedures {
+		backend = append(backend, proc.action)
 	}
 	sort.Strings(backend)
 

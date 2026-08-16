@@ -83,10 +83,15 @@ func TestCLI_CaptchaSetShowEnableDisableReset(t *testing.T) {
 	err = runCaptchaSet(testAdminCtx, []string{"--expires", "500ms", "--data-dir", dir})
 	require.ErrorContains(t, err, "not a whole number of seconds")
 
-	// reset removes the row entirely.
+	// reset removes every row and re-provisions the default altcha row
+	// immediately: the request path must never write, so reset cannot
+	// leave the first Login to insert and activate mid-request. The
+	// re-provisioned row carries a fresh signing secret.
+	secretBeforeReset := getSelectedRow(t, st).Secret
 	require.NoError(t, runCaptchaReset(testAdminCtx, []string{"--data-dir", dir}))
-	_, err = st.CaptchaConfig().GetSelected(context.Background())
-	assert.ErrorIs(t, err, store.ErrNotFound)
+	row = getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderAltcha, row.Provider, "reset must leave a selected default row")
+	assert.NotEqual(t, secretBeforeReset, row.Secret, "the deleted altcha row's secret must not come back")
 }
 
 func TestCLI_CaptchaSetSecretSurvivesAndVerifies(t *testing.T) {
@@ -251,9 +256,9 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 
 	// Provider-foreign flags are refused rather than ignored.
 	err = runCaptchaSet(testAdminCtx, []string{"--cost", "20000", "--data-dir", dir})
-	require.ErrorContains(t, err, "altcha-only flag")
+	require.ErrorContains(t, err, "--cost applies only to altcha")
 	err = runCaptchaSet(testAdminCtx, []string{"--min-score", "0.7", "--data-dir", dir})
-	require.ErrorContains(t, err, "recaptcha_v3-only flag")
+	require.ErrorContains(t, err, "--min-score applies only to recaptcha_v3")
 
 	// A settings-only edit of the selected external provider updates the
 	// site key, keeps the secret, and leaves the selection enabled.
@@ -295,14 +300,15 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(row.Settings), &rs))
 	assert.Equal(t, 0.5, rs.MinScore)
 
-	// Per-provider reset drops only that provider's row. Deleting the SELECTED
-	// provider leaves nothing selected until the hub's lazy provisioning
-	// re-arms the altcha row.
+	// Per-provider reset drops only that provider's row. Deleting the
+	// SELECTED provider re-provisions the default altcha row immediately
+	// — never mid-request on the hub's next use — while the other
+	// providers' rows survive untouched.
 	require.NoError(t, runCaptchaReset(testAdminCtx, []string{"--provider", "recaptcha_v3", "--data-dir", dir}))
 	_, err = st.CaptchaConfig().Get(context.Background(), captcha.ProviderRecaptchaV3)
 	assert.ErrorIs(t, err, store.ErrNotFound)
-	_, err = st.CaptchaConfig().GetSelected(context.Background())
-	assert.ErrorIs(t, err, store.ErrNotFound, "the hub lazily re-provisions altcha on next use")
+	resetRow := getSelectedRow(t, st)
+	assert.Equal(t, captcha.ProviderAltcha, resetRow.Provider, "reset must re-select the default provider at once")
 	rows, err := st.CaptchaConfig().List(context.Background())
 	require.NoError(t, err)
 	assert.NotEmpty(t, rows, "the other providers' rows survive")
@@ -355,7 +361,7 @@ func TestCLI_CaptchaSwitchBackKeepsStoredSettings(t *testing.T) {
 	assert.Equal(t, 0.8, rs.MinScore, "a switch back must keep the stored settings")
 }
 
-// TestCLI_CaptchaSameProviderFlagTunesInPlace pins that naming the
+// TestCLI_CaptchaSameProviderFlagTunesInPlace pins that specifying the
 // already-selected provider with --provider is a tuning edit, not a
 // switch: no keys are demanded and the selection stays.
 func TestCLI_CaptchaSameProviderFlagTunesInPlace(t *testing.T) {

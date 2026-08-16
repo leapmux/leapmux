@@ -11,6 +11,7 @@ import (
 	"time"
 
 	altcha "github.com/altcha-org/altcha-lib-go/v2"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -62,13 +63,28 @@ type Manager struct {
 	recaptcha *siteverifyClient
 	turnstile *siteverifyClient
 
-	mu       sync.Mutex // guards cached/descCached and their timestamps
-	cached   *resolvedConfig
-	cachedAt time.Time
+	mu sync.Mutex // guards cache and cacheAt
+	// cache is the single cached snapshot of the selected row. A nil
+	// secret marks a describe-only fill (config without the decrypted
+	// secret); resolve additionally requires a non-nil secret before it
+	// serves from the cache, so a Describe refresh never satisfies an
+	// enforcement path with a secret it does not have.
+	cache   *cacheEntry
+	cacheAt time.Time
+	// flight coalesces concurrent cold-cache loads (resolve and Describe
+	// alike): the burst a TTL expiry gathers shares one store read — and
+	// one failure, instead of each caller retrying the load serially.
+	flight singleflight.Group
+}
 
-	descCached     *Config
-	descCustomized bool
-	descCachedAt   time.Time
+// cacheEntry is one cached snapshot of the selected captcha row.
+type cacheEntry struct {
+	cfg    Config
+	secret []byte // decrypted provider secret; nil for describe-only fills
+	// customized reports whether a selected row existed (the admin
+	// CLI's "customized" flag). resolve's fills always follow a
+	// provisioned row, so they set it true.
+	customized bool
 }
 
 type resolvedConfig struct {
@@ -112,33 +128,56 @@ func NewManager(st store.Store, ks *keystore.Keystore, soloMode bool, opts ...Op
 // write the store on a fresh install just to report defaults. The second
 // return reports whether a selected row exists (the admin CLI's
 // "customized" flag). Reads are served from the same 30-second cache the
-// enforcement path uses, so system-info traffic adds no store load of
-// its own.
+// enforcement path uses, and cold loads ride the same singleflight, so a
+// burst of system-info requests adds one store read per refresh wave,
+// not one per caller.
 func (m *Manager) Describe(ctx context.Context) (Config, bool, error) {
 	if m.solo {
-		cfg := DefaultConfig()
-		cfg.Enabled = false
-		return cfg, false, nil
+		return DisabledConfig(), false, nil
 	}
 	m.mu.Lock()
-	if m.descCached != nil && time.Since(m.descCachedAt) < cacheTTL {
-		cfg, customized := *m.descCached, m.descCustomized
+	if m.cache != nil && time.Since(m.cacheAt) < cacheTTL {
+		cfg, customized := m.cache.cfg, m.cache.customized
 		m.mu.Unlock()
 		return cfg, customized, nil
 	}
 	m.mu.Unlock()
 
-	row, err := m.loadSelectedRow(ctx)
+	v, err := m.describeLoad(ctx)
 	if err != nil {
 		return DefaultConfig(), false, err
 	}
-	customized := row != nil
-	cfg := Effective(row)
+	return v.cfg, v.customized, nil
+}
 
-	m.mu.Lock()
-	m.descCached, m.descCustomized, m.descCachedAt = &cfg, customized, time.Now()
-	m.mu.Unlock()
-	return cfg, customized, nil
+// describeLoad is Describe's singleflight leg: it keeps a leg separate
+// from resolve's so a describe-only fill never runs the provisioning or
+// the keystore decrypt, while both legs still coalesce their own bursts.
+func (m *Manager) describeLoad(ctx context.Context) (cacheEntry, error) {
+	const key = "describe"
+	v, err, _ := m.flight.Do(key, func() (any, error) {
+		m.mu.Lock()
+		if m.cache != nil && time.Since(m.cacheAt) < cacheTTL {
+			cached := *m.cache
+			m.mu.Unlock()
+			return cached, nil
+		}
+		m.mu.Unlock()
+
+		row, err := m.loadSelectedRow(ctx)
+		if err != nil {
+			return cacheEntry{}, err
+		}
+		entry := cacheEntry{cfg: Effective(row), customized: row != nil}
+		m.mu.Lock()
+		m.cache, m.cacheAt = &entry, time.Now()
+		m.mu.Unlock()
+		return entry, nil
+	})
+	if err != nil {
+		return cacheEntry{}, err
+	}
+	return v.(cacheEntry), nil
 }
 
 // ErrProviderNotAltcha is returned by AltchaChallengeJSON when another
@@ -226,7 +265,10 @@ func (m *Manager) Verify(ctx context.Context, action, payload string) error {
 }
 
 // verifyAltcha decodes a base64 ALTCHA payload and checks signature,
-// expiry, and solution, enforcing single use per salt.
+// expiry, and solution, enforcing single use per salt. The checks run
+// cheapest-first so an unauthenticated flood of garbage payloads dies on
+// CPU (the signature-only pre-check) before it can buy store reads, and
+// a replay dies on one indexed read before the memory-hard derivation.
 func (m *Manager) verifyAltcha(ctx context.Context, res *resolvedConfig, payload string) error {
 	var p altcha.Payload
 	if err := decodeAltchaPayload(payload, &p); err != nil {
@@ -239,6 +281,31 @@ func (m *Manager) verifyAltcha(ctx context.Context, res *resolvedConfig, payload
 	deriveKey, ok := deriveKeyFuncs[p.Challenge.Parameters.Algorithm]
 	if !ok {
 		return m.counted(ProviderAltcha, ResultFailed, ErrVerificationFailed)
+	}
+
+	// Signature-only pre-check: VerifySolution with no DeriveKey and no
+	// key-signature secret runs exactly the expiry integer-compare and the
+	// challenge HMAC (microseconds, zero I/O) and never the KDF. Garbage
+	// payloads die here; only a payload this hub actually signed proceeds
+	// to the store and the derivation below.
+	sigOK, err := altcha.VerifySolution(altcha.VerifySolutionOptions{
+		Challenge:           p.Challenge,
+		Solution:            p.Solution,
+		HMACSignatureSecret: hex.EncodeToString(res.secret),
+	})
+	if err != nil || !sigOK.Verified {
+		return m.counted(ProviderAltcha, ResultFailed, ErrVerificationFailed)
+	}
+
+	// The salt ledger answers before the memory-hard derivation runs: a
+	// replayed solved payload then costs one indexed read instead of a
+	// full KDF re-derivation, and this unauthenticated path cannot turn
+	// one solved challenge into unbounded server work at line rate. The
+	// lookup is advisory — ConsumeAltchaSalt below stays the single-use
+	// authority — so a lookup error falls through to the full checks
+	// instead of failing open or closed on its own.
+	if used, err := m.st.CaptchaConfig().HasAltchaSalt(ctx, p.Challenge.Parameters.Salt); err == nil && used {
+		return m.counted(ProviderAltcha, ResultReplayed, errReplayed)
 	}
 
 	result, err := altcha.VerifySolution(altcha.VerifySolutionOptions{
@@ -325,16 +392,49 @@ func (m *Manager) countUnattributedDenial() {
 
 // resolve returns the selected provider's effective config plus its
 // decrypted secret, provisioning the default altcha row when no row is
-// selected (a fresh install, or a reset whose self-heal has not run yet).
+// selected (a fresh install, or a row deleted outside the admin CLI).
+// Concurrent callers at a TTL expiry coalesce onto one load — including
+// on failure: the burst a store outage gathers shares one doomed read
+// instead of queueing one per caller. The cache is served only when it
+// carries a decrypted secret — a describe-only fill from Describe does
+// not satisfy an enforcement path.
 func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	m.mu.Lock()
-	if m.cached != nil && time.Since(m.cachedAt) < cacheTTL {
-		cached := m.cached
+	if m.cache != nil && m.cache.secret != nil && time.Since(m.cacheAt) < cacheTTL {
+		cached := &resolvedConfig{cfg: m.cache.cfg, secret: m.cache.secret}
 		m.mu.Unlock()
 		return cached, nil
 	}
 	m.mu.Unlock()
 
+	const key = "resolve"
+	// DoChan, not Do: a waiter whose own request died must not block on
+	// the shared load. The load itself runs under a detached context so
+	// no single caller's cancellation aborts the store read the others
+	// are waiting on.
+	ch := m.flight.DoChan(key, func() (any, error) {
+		res, err := m.loadResolved(context.WithoutCancel(ctx))
+		if err != nil {
+			return nil, err
+		}
+		m.mu.Lock()
+		m.cache, m.cacheAt = &cacheEntry{cfg: res.cfg, secret: res.secret, customized: true}, time.Now()
+		m.mu.Unlock()
+		return res, nil
+	})
+	select {
+	case r := <-ch:
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Val.(*resolvedConfig), nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("captcha resolve: %w", ctx.Err())
+	}
+}
+
+// loadResolved performs the uncached read: row, secret, effective config.
+func (m *Manager) loadResolved(ctx context.Context) (*resolvedConfig, error) {
 	row, err := m.ensureSelectedRow(ctx)
 	if err != nil {
 		return nil, err
@@ -344,23 +444,18 @@ func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decrypt captcha secret: %w", err)
 	}
-	res := &resolvedConfig{
+	return &resolvedConfig{
 		cfg:    Effective(row),
 		secret: secret,
-	}
-
-	m.mu.Lock()
-	m.cached, m.cachedAt = res, time.Now()
-	m.descCached, m.descCustomized, m.descCachedAt = &res.cfg, true, m.cachedAt
-	m.mu.Unlock()
-	return res, nil
+	}, nil
 }
 
 // EnsureProvisioned guarantees that some provider row is selected,
 // provisioning and activating the default altcha row when none is. The
-// hub does this lazily on first enforcement; the admin CLI calls it
-// before enable/disable and settings writes so those always act on a
-// row that exists.
+// hub does this at startup (and lazily as an idempotent self-heal); the
+// admin CLI calls it before enable/disable and settings writes, and
+// after `captcha reset`, so every command leaves a selected row behind
+// and the request path never writes.
 func (m *Manager) EnsureProvisioned(ctx context.Context) error {
 	if m.solo {
 		return nil
@@ -369,8 +464,7 @@ func (m *Manager) EnsureProvisioned(ctx context.Context) error {
 		return err
 	}
 	m.mu.Lock()
-	m.cached = nil
-	m.descCached = nil
+	m.cache = nil
 	m.mu.Unlock()
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/userid"
 
+	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -75,10 +76,11 @@ func runRemoveEncryptionKey(cmd adminCmdCtx, args []string) error {
 
 // countEncryptedRefs returns human-readable descriptions of data still
 // encrypted under the given key version. An empty result means the version is
-// safe to remove. It scans the persistent OAuth secrets — provider client
-// secrets and user OAuth tokens. Transient pending_oauth_signups are not
-// scanned: they auto-expire, are never migrated by reencrypt, and a bricked
-// one only fails an in-flight signup the user can simply retry.
+// safe to remove. It scans the persistent encrypted secrets — OAuth provider
+// client secrets, user OAuth tokens, and captcha provider secrets. Transient
+// pending_oauth_signups are not scanned: they auto-expire, are never migrated
+// by reencrypt, and a bricked one only fails an in-flight signup the user can
+// simply retry.
 func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]string, error) {
 	var refs []string
 
@@ -102,6 +104,20 @@ func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]
 	}
 	if providerCount > 0 {
 		refs = append(refs, fmt.Sprintf("%d OAuth provider secret(s)", providerCount))
+	}
+
+	captchaRows, err := st.CaptchaConfig().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list captcha config: %w", err)
+	}
+	var captchaCount int
+	for _, row := range captchaRows {
+		if ver, e := keystore.CiphertextVersion(row.Secret); e == nil && ver == version {
+			captchaCount++
+		}
+	}
+	if captchaCount > 0 {
+		refs = append(refs, fmt.Sprintf("%d captcha provider secret(s)", captchaCount))
 	}
 
 	return refs, nil
@@ -154,14 +170,10 @@ func runReencryptSecrets(cmd adminCmdCtx, args []string) error {
 			if ver, err := keystore.CiphertextVersion(p.ClientSecret); err == nil && ver == activeVer {
 				continue // already at active version
 			}
-			aad := keystore.ProviderAAD(p.ID)
-			plain, decErr := ks.Decrypt(p.ClientSecret, aad)
-			if decErr != nil {
-				return fmt.Errorf("decrypt provider %s client_secret: %w", p.ID, decErr)
-			}
-			newCt, encErr := ks.Encrypt(plain, aad)
-			if encErr != nil {
-				return fmt.Errorf("re-encrypt provider %s: %w", p.ID, encErr)
+			newCt, err := reencryptBlob(ks, p.ClientSecret, keystore.ProviderAAD(p.ID),
+				fmt.Sprintf("provider %s client_secret", p.ID))
+			if err != nil {
+				return err
 			}
 			if err := st.OAuthProviders().UpdateClientSecret(ctx, p.ID, newCt); err != nil {
 				return fmt.Errorf("update provider %s: %w", p.ID, err)
@@ -182,22 +194,15 @@ func runReencryptSecrets(cmd adminCmdCtx, args []string) error {
 				accessAAD := keystore.AccessTokenAAD(tok.UserID, tok.ProviderID)
 				refreshAAD := keystore.RefreshTokenAAD(tok.UserID, tok.ProviderID)
 
-				plainAccess, err := ks.Decrypt(tok.AccessToken, accessAAD)
+				newAccess, err := reencryptBlob(ks, tok.AccessToken, accessAAD,
+					fmt.Sprintf("access_token for user %s", tok.UserID))
 				if err != nil {
-					return fmt.Errorf("decrypt access_token for user %s: %w", tok.UserID, err)
+					return err
 				}
-				plainRefresh, err := ks.Decrypt(tok.RefreshToken, refreshAAD)
+				newRefresh, err := reencryptBlob(ks, tok.RefreshToken, refreshAAD,
+					fmt.Sprintf("refresh_token for user %s", tok.UserID))
 				if err != nil {
-					return fmt.Errorf("decrypt refresh_token for user %s: %w", tok.UserID, err)
-				}
-
-				newAccess, err := ks.Encrypt(plainAccess, accessAAD)
-				if err != nil {
-					return fmt.Errorf("re-encrypt access_token: %w", err)
-				}
-				newRefresh, err := ks.Encrypt(plainRefresh, refreshAAD)
-				if err != nil {
-					return fmt.Errorf("re-encrypt refresh_token: %w", err)
+					return err
 				}
 
 				// A blank owner on an oauth_tokens row is corrupt data. Report
@@ -227,7 +232,52 @@ func runReencryptSecrets(cmd adminCmdCtx, args []string) error {
 			}
 		}
 
+		// Re-encrypt captcha_config.secret. The AAD is provider-scoped and
+		// MUST stay byte-identical across versions, or the row becomes
+		// undecryptable — the resolver fails every Login closed on a
+		// decrypt error, so skipping this leg would break credential
+		// endpoints after a key removal.
+		captchaRows, err := st.CaptchaConfig().List(ctx)
+		if err != nil {
+			return fmt.Errorf("list captcha config: %w", err)
+		}
+		for _, row := range captchaRows {
+			alias := captcha.ProviderAlias(row.Provider)
+			if ver, e := keystore.CiphertextVersion(row.Secret); e == nil && ver == activeVer {
+				continue // already at active version
+			}
+			newCt, err := reencryptBlob(ks, row.Secret, keystore.CaptchaSecretAAD(alias),
+				fmt.Sprintf("captcha secret for %s", alias))
+			if err != nil {
+				return err
+			}
+			if err := st.CaptchaConfig().Upsert(ctx, store.UpsertCaptchaConfigParams{
+				Provider: row.Provider,
+				Secret:   newCt,
+				Settings: row.Settings,
+			}); err != nil {
+				return fmt.Errorf("update captcha config for %s: %w", alias, err)
+			}
+			count++
+		}
+
 		fmt.Printf("Re-encrypted %d secrets to key version %d.\n", count, activeVer)
 		return nil
 	})
+}
+
+// reencryptBlob decrypts one ciphertext under its AAD and re-encrypts the
+// plaintext under the active key with the SAME AAD: the AAD must stay
+// byte-identical across versions, or the row becomes undecryptable. The
+// what string identifies the row in error messages.
+func reencryptBlob(ks *keystore.Keystore, ciphertext, aad []byte, what string) ([]byte, error) {
+	plain, err := ks.Decrypt(ciphertext, aad)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt %s: %w", what, err)
+	}
+	reencrypted, err := ks.Encrypt(plain, aad)
+	if err != nil {
+		return nil, fmt.Errorf("re-encrypt %s: %w", what, err)
+	}
+	return reencrypted, nil
 }

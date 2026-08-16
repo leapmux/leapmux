@@ -1,11 +1,10 @@
 import type { Component } from 'solid-js'
 import type { CaptchaFieldHandle } from './CaptchaField'
 
-import { createEffect, createSignal, onCleanup, onMount } from 'solid-js'
+import { onMount } from 'solid-js'
 import { loadExternalScript } from '~/lib/scriptLoader'
 import { getCaptchaSiteKey } from '~/lib/systemInfo'
-import * as styles from './CaptchaField.css'
-import { CaptchaFieldStatus } from './CaptchaFieldStatus'
+import { createCaptchaFieldBase, noteFieldArmFailure } from './captchaFieldBase'
 
 // The widget script must come from Cloudflare's exact URL — proxying or
 // caching it breaks future updates (per Turnstile's docs). Explicit
@@ -32,11 +31,12 @@ interface TurnstileFieldProps {
 export const TurnstileField: Component<TurnstileFieldProps> = (props) => {
   let container: HTMLDivElement | undefined
   let widgetId: string | undefined
-  let disposed = false
-  const [ready, setReady] = createSignal(false)
-  const [loadError, setLoadError] = createSignal(false)
+  // props.onPayload is a stable callback the base only invokes from
+  // user-driven callbacks and cleanup; it is not a tracked read.
+  // eslint-disable-next-line solid/reactivity
+  const base = createCaptchaFieldBase(props.onPayload, clearWidget)
 
-  const clearWidget = () => {
+  function clearWidget() {
     if (widgetId !== undefined && window.turnstile) {
       window.turnstile.remove(widgetId)
       widgetId = undefined
@@ -44,17 +44,17 @@ export const TurnstileField: Component<TurnstileFieldProps> = (props) => {
   }
 
   const arm = async () => {
-    setLoadError(false)
+    base.setLoadError(false)
     try {
       await loadExternalScript(TURNSTILE_SCRIPT_URL)
-      if (disposed || !container || !window.turnstile)
+      if (base.disposed() || !container || !window.turnstile)
         return
       widgetId = window.turnstile.render(container, {
         'sitekey': getCaptchaSiteKey(),
         'action': props.action,
         'callback': (token) => {
-          setReady(true)
-          setLoadError(false)
+          base.setReady(true)
+          base.setLoadError(false)
           props.onPayload(token)
         },
         'expired-callback': () => {
@@ -66,16 +66,25 @@ export const TurnstileField: Component<TurnstileFieldProps> = (props) => {
         'error-callback': () => {
           // The widget retries recoverable errors itself; surface the
           // state so the user is not left wondering why submit is locked.
-          setLoadError(true)
+          base.setLoadError(true)
           props.onPayload(null)
+          // An unrecoverable widget error is typically a site key the
+          // snapshot no longer knows; request one deduped snapshot
+          // refresh so a rotated key converges instead of dead-ending
+          // behind the submit gate.
+          noteFieldArmFailure()
         },
       })
-      if (disposed)
+      if (base.disposed())
         clearWidget()
     }
     catch {
-      if (!disposed)
-        setLoadError(true)
+      if (!base.disposed()) {
+        base.setLoadError(true)
+        // The widget script could not load — the same arm-failure
+        // convergence as the error callback above.
+        noteFieldArmFailure()
+      }
     }
   }
 
@@ -83,16 +92,12 @@ export const TurnstileField: Component<TurnstileFieldProps> = (props) => {
   // denial-driven system-info reload. Tokens minted under the retired key
   // always fail siteverify, so re-render the widget under the new key.
   // The first run only records the initial key; arm() below handles the
-  // initial render.
-  createEffect((prevKey?: string) => {
-    const key = getCaptchaSiteKey()
-    if (prevKey !== undefined && prevKey !== key) {
-      props.onPayload(null)
-      setReady(false)
-      clearWidget()
-      void arm()
-    }
-    return key
+  // initial render. onSiteKeyChange runs the callback inside its own
+  // createEffect, so the reactive reads in arm() are tracked.
+  // eslint-disable-next-line solid/reactivity
+  base.onSiteKeyChange(() => {
+    clearWidget()
+    void arm()
   })
 
   onMount(() => {
@@ -100,23 +105,16 @@ export const TurnstileField: Component<TurnstileFieldProps> = (props) => {
     props.ref?.({
       reset: () => {
         props.onPayload(null)
-        setReady(false)
+        base.setReady(false)
         if (widgetId !== undefined && window.turnstile)
           window.turnstile.reset(widgetId)
       },
     })
   })
 
-  onCleanup(() => {
-    disposed = true
-    clearWidget()
-    props.onPayload(null)
-  })
-
   return (
-    <div class={styles.field}>
+    <base.Field>
       <div ref={container} />
-      <CaptchaFieldStatus ready={ready()} loadError={loadError()} />
-    </div>
+    </base.Field>
   )
 }

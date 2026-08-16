@@ -2,10 +2,9 @@ import type { AltchaWidgetElement } from 'altcha'
 import type { Component } from 'solid-js'
 import type { CaptchaFieldHandle } from './CaptchaField'
 
-import { createSignal, onCleanup, onMount } from 'solid-js'
+import { onMount } from 'solid-js'
 import { fetchAltchaChallenge } from '~/lib/altchaChallenge'
-import * as styles from './CaptchaField.css'
-import { CaptchaFieldStatus } from './CaptchaFieldStatus'
+import { createCaptchaFieldBase, noteFieldArmFailure } from './captchaFieldBase'
 import 'altcha'
 
 interface AltchaFieldProps {
@@ -28,36 +27,50 @@ interface AltchaFieldProps {
 // handed to the widget programmatically.
 export const AltchaField: Component<AltchaFieldProps> = (props) => {
   let widget: AltchaWidgetElement | undefined
-  let disposed = false
   // Re-arms can overlap (a reset while a fetch is in flight); the epoch
   // keeps a slower, older fetch from overwriting the newer challenge.
   let armEpoch = 0
-  const [ready, setReady] = createSignal(false)
-  const [loadError, setLoadError] = createSignal(false)
+  // props.onPayload is a stable callback the base only invokes from
+  // user-driven callbacks and cleanup; it is not a tracked read.
+  // eslint-disable-next-line solid/reactivity
+  const base = createCaptchaFieldBase(props.onPayload, () => {
+    armEpoch++
+    widget?.removeEventListener('statechange', handleStateChange)
+  })
 
   const arm = async () => {
     const epoch = ++armEpoch
-    setLoadError(false)
+    base.setLoadError(false)
     try {
       const challenge = await fetchAltchaChallenge()
-      if (disposed || epoch !== armEpoch || !widget)
+      if (base.disposed() || epoch !== armEpoch || !widget)
         return
       if (!challenge) {
         props.onUnavailable()
         return
       }
       await widget.configure({ challenge, auto: 'off' })
-      if (disposed || epoch !== armEpoch || !widget)
+      if (base.disposed() || epoch !== armEpoch || !widget)
         return
-      setReady(true)
+      base.setReady(true)
     }
     catch {
-      if (!disposed && epoch === armEpoch)
-        setLoadError(true)
+      if (!base.disposed() && epoch === armEpoch) {
+        base.setLoadError(true)
+        // The fetch can fail because the provider switched since the
+        // system-info snapshot loaded (the hub answers
+        // FailedPrecondition). One deduped refresh re-mounts the right
+        // provider's field through the CaptchaField Switch; without it the
+        // disabled submit button can never trigger the denial-driven
+        // reload, and the form dead-ends until a manual page reload. A
+        // transient network fault costs one extra system-info fetch that
+        // changes nothing.
+        noteFieldArmFailure()
+      }
     }
   }
 
-  const handleStateChange = (ev: Event) => {
+  function handleStateChange(ev: Event) {
     const detail = (ev as CustomEvent<{ state: string, payload?: string }>).detail
     if (detail.state === 'verified' && detail.payload) {
       props.onPayload(detail.payload)
@@ -80,24 +93,16 @@ export const AltchaField: Component<AltchaFieldProps> = (props) => {
       reset: () => {
         armEpoch++
         props.onPayload(null)
-        setReady(false)
+        base.setReady(false)
         widget?.reset()
         void arm()
       },
     })
   })
 
-  onCleanup(() => {
-    disposed = true
-    armEpoch++
-    widget?.removeEventListener('statechange', handleStateChange)
-    props.onPayload(null)
-  })
-
   return (
-    <div class={styles.field}>
+    <base.Field>
       <altcha-widget ref={widget} />
-      <CaptchaFieldStatus ready={ready()} loadError={loadError()} />
-    </div>
+    </base.Field>
   )
 }

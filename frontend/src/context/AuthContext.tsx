@@ -1,5 +1,6 @@
 import type { ParentComponent } from 'solid-js'
 import type { User } from '~/generated/leapmux/v1/auth_pb'
+import type { CaptchaRequestFields } from '~/lib/captchaForm'
 import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { createEffect, createSignal, on, onMount, useContext } from 'solid-js'
@@ -37,7 +38,7 @@ export interface AuthState {
   bootstrapError: () => string | null
   /** Retry the bootstrap session-restore after a `bootstrapError`. */
   retryBootstrap: () => Promise<void>
-  login: (username: string, password: string, captcha?: { captchaPayload: string, honeypot: string }) => Promise<void>
+  login: (username: string, password: string, captcha?: CaptchaRequestFields) => Promise<void>
   logout: () => Promise<void>
   setAuth: (user: User) => void
   refreshUser: () => Promise<void>
@@ -163,7 +164,7 @@ export const AuthProvider: ParentComponent = (props) => {
     setLoading(false)
   }
 
-  const login = async (username: string, password: string, captcha?: { captchaPayload: string, honeypot: string }) => {
+  const login = async (username: string, password: string, captcha?: CaptchaRequestFields) => {
     setError(null)
     setLoading(true)
     try {

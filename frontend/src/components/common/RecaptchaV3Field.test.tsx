@@ -3,6 +3,7 @@ import type { CaptchaFieldHandle } from './CaptchaField'
 import { render } from '@solidjs/testing-library'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 import { RecaptchaV3Field } from './RecaptchaV3Field'
 
 const mockLoadScript = vi.fn(() => Promise.resolve())
@@ -10,9 +11,13 @@ vi.mock('~/lib/scriptLoader', () => ({
   loadExternalScript: (...args: []) => mockLoadScript(...args),
 }))
 
-vi.mock('~/lib/systemInfo', () => ({
-  getCaptchaSiteKey: () => 'site-key',
-}))
+// The site key reads through the shared mock's real Solid signal so the
+// component's reactive tracking sees a rotation the way the production
+// module's snapshot signal delivers it.
+vi.mock('~/lib/systemInfo', async () => {
+  const m = await import('~/test-support/systemInfoMock')
+  return m.systemInfoMock
+})
 
 function installFakeGrecaptcha(execute = vi.fn(() => Promise.resolve('token'))) {
   window.grecaptcha = {
@@ -33,6 +38,8 @@ describe('recaptchaV3Field', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
+    resetSystemInfoMock()
+    setSystemInfoMock({ captchaSiteKey: 'site-key' })
     delete window.grecaptcha
   })
 
@@ -51,6 +58,26 @@ describe('recaptchaV3Field', () => {
     expect(mockLoadScript).toHaveBeenCalledWith(`https://www.google.com/recaptcha/api.js?render=${encodeURIComponent('site-key')}`)
   })
 
+  it('re-executes under the new key immediately after a site-key rotation', async () => {
+    const execute = installFakeGrecaptcha()
+    const onPayload = vi.fn()
+    renderField({ onPayload })
+    await vi.waitFor(() => {
+      expect(execute).toHaveBeenCalledWith('site-key', { action: 'login' })
+    })
+
+    // The denial-driven system-info reload delivers the rotated key. The
+    // armed token was minted under the retired key; the field must null
+    // it and re-execute at once instead of waiting out the refresh
+    // interval with a dead token.
+    setSystemInfoMock({ captchaSiteKey: 'rotated-key' })
+    await vi.waitFor(() => {
+      expect(onPayload).toHaveBeenCalledWith(null)
+      expect(execute).toHaveBeenCalledWith('rotated-key', { action: 'login' })
+    })
+    expect(mockLoadScript).toHaveBeenCalledWith(`https://www.google.com/recaptcha/api.js?render=${encodeURIComponent('rotated-key')}`)
+  })
+
   it('re-executes inside the two-minute token window', async () => {
     const execute = installFakeGrecaptcha()
     const onPayload = vi.fn()
@@ -63,6 +90,22 @@ describe('recaptchaV3Field', () => {
     await vi.waitFor(() => {
       expect(execute).toHaveBeenCalledTimes(2)
     })
+  })
+
+  it('refreshes the system info when execute fails, so a stale site key converges', async () => {
+    // grecaptcha.execute rejects on an invalid or retired site key; with
+    // the payload dropped the disabled submit button can never trigger
+    // the denial-driven refresh, so the field's own failure path must —
+    // the external providers' counterpart of the altcha fetch-failure
+    // convergence.
+    installFakeGrecaptcha(vi.fn(() => Promise.reject(new Error('invalid-input-secret'))))
+    const onPayload = vi.fn()
+    renderField({ onPayload })
+
+    await vi.waitFor(() => {
+      expect(onPayload).toHaveBeenCalledWith(null)
+    })
+    expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
   })
 
   it('skips the refresh while the tab is hidden and re-arms on visibility', async () => {

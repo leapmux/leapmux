@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures'
-import { loginViaUI, logoutViaUI } from './helpers/ui'
+import { loginViaUI, logoutViaUI, solveCaptchaViaUI } from './helpers/ui'
 
 // Where a successful login lands, and stays: `/` is the whole app, and
 // activating a workspace no longer changes the URL.
@@ -33,5 +33,19 @@ test.describe('Auth Edge Cases', () => {
     await logoutViaUI(page)
     await page.goto('/')
     await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
+  })
+
+  // solveCaptchaViaUI is a no-op when the hub reports captcha disabled;
+  // that return lives INSIDE its poll loop (the submit button enabling).
+  // When neither the widget nor an enabled submit appears — here a
+  // GetSystemInfo that never answers keeps the submit gate closed — the
+  // helper must throw at the wait instead of silently proceeding, so a
+  // widget-mount regression fails at its cause rather than as a starved
+  // downstream assertion.
+  test('solveCaptchaViaUI fails loudly when neither widget nor enabled submit appears', async ({ page }) => {
+    await page.route('**/leapmux.v1.AuthService/GetSystemInfo*', () => new Promise(() => {}))
+    await page.goto('/login')
+
+    await expect(solveCaptchaViaUI(page)).rejects.toThrow(/solveCaptchaViaUI/)
   })
 })

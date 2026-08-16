@@ -42,7 +42,7 @@ func TestResolveRefreshesAfterTTL(t *testing.T) {
 
 	// Age the cache past the TTL and re-resolve.
 	m.mu.Lock()
-	m.cachedAt = time.Now().Add(-2 * cacheTTL)
+	m.cacheAt = time.Now().Add(-2 * cacheTTL)
 	m.mu.Unlock()
 	res, err = m.resolve(ctx)
 	require.NoError(t, err)

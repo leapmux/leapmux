@@ -13,7 +13,9 @@ export interface CaptchaFieldHandle {
   reset: () => void
 }
 
-interface CaptchaFieldProps {
+// CaptchaFieldProps is exported for CaptchaSection, which types its action
+// prop with the same union the hub's protectedProcedures map carries.
+export interface CaptchaFieldProps {
   /**
    * The action the token is minted under: 'login', 'signup', or
    * 'complete_signup'. External providers bind it into the token and the

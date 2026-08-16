@@ -40,6 +40,16 @@ func DefaultConfig() Config {
 	}
 }
 
+// DisabledConfig returns what a hub that does not run the captcha
+// subsystem reports: the built-in defaults with verification off. Solo
+// mode and the nil-Captcha service wiring both answer with it, so "no
+// captcha" has one definition.
+func DisabledConfig() Config {
+	cfg := DefaultConfig()
+	cfg.Enabled = false
+	return cfg
+}
+
 // defaultConfigFor returns a provider's defaults with no stored row
 // behind them — the base an admin CLI edit overlays when the provider has
 // never been configured. Enabled matches a freshly provisioned row.
@@ -85,8 +95,11 @@ func (c Config) AltchaAlgorithm() string {
 // row that fails here was written outside the CLI (direct SQL, a future
 // migration), and the built-in ALTCHA defaults keep login working
 // instead of issuing unsolvable challenges or calling a provider with
-// missing keys. The hub and the admin CLI share this one definition of
-// "effective".
+// missing keys. The fallback preserves the row's Enabled bit — a
+// deliberately disabled hub stays disabled through corruption; swapping
+// the provider to defaults is about solvability, not about overriding the
+// admin's on/off decision. The hub and the admin CLI share this one
+// definition of "effective".
 func Effective(row *store.CaptchaConfig) Config {
 	if row == nil {
 		return DefaultConfig()
@@ -94,13 +107,21 @@ func Effective(row *store.CaptchaConfig) Config {
 	spec, ok := specFor(row.Provider)
 	if !ok {
 		slog.Warn("captcha config row specifies an unsupported provider; using built-in defaults", "provider", row.Provider)
-		return DefaultConfig()
+		return fallbackConfig(row)
 	}
 	cfg := Config{Provider: row.Provider, Enabled: row.Enabled}
 	spec.applySettings(&cfg, row.Settings)
 	if err := cfg.Validate(); err != nil {
 		slog.Warn("captcha config row invalid; using built-in defaults", "provider", row.Provider, "error", err)
-		return DefaultConfig()
+		return fallbackConfig(row)
 	}
+	return cfg
+}
+
+// fallbackConfig is the invalid-row fallback: built-in altcha defaults
+// with the row's own Enabled bit.
+func fallbackConfig(row *store.CaptchaConfig) Config {
+	cfg := DefaultConfig()
+	cfg.Enabled = row.Enabled
 	return cfg
 }

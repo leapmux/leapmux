@@ -24,6 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/mail"
 
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
@@ -67,7 +68,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(service.AuthServiceDeps{Store: st, Config: cfg, Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil}), opts)
+	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil))), opts)
 	mux.Handle(authPath, authHandler)
 
 	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(

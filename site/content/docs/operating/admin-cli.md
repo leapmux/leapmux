@@ -450,6 +450,8 @@ Rate limits cap how often an authenticated user may retry operations whose handl
 
 Limits are stored per operation in `rate_limit_config`; absent rows fall back to the defaults below. A running Hub picks up changes within ~30 seconds. Solo mode never limits.
 
+**Scope.** Unauthenticated procedures (login, signup, complete-signup) are limited by **captcha**, not by rate limits — this is deliberate. Out of the box that means the client-side ALTCHA proof-of-work; with an external provider (reCAPTCHA v3, Turnstile) every non-empty token triggers one uncapped siteverify call to the provider, so scripted garbage tokens can burn the operator's siteverify quota; with captcha disabled, those procedures are limited only by the per-attempt Argon2 cost and the honeypot check. There is no per-IP limiter because the Hub deliberately requires no trusted-proxy configuration.
+
 | Operation | Default | Meaning |
 | --- | --- | --- |
 | `change-password` | 5 failures / 15 minutes | `UserService.ChangePassword`, per user. |

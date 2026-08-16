@@ -126,6 +126,14 @@ func (s *captchaConfigStore) ConsumeAltchaSalt(ctx context.Context, p store.Cons
 	return rows, nil
 }
 
+func (s *captchaConfigStore) HasAltchaSalt(ctx context.Context, salt string) (bool, error) {
+	used, err := s.conn.q.HasAltchaSalt(ctx, salt)
+	if err != nil {
+		return false, mapErr(err)
+	}
+	return used, nil
+}
+
 type rateLimitConfigStore struct {
 	conn *mysqlConn
 }

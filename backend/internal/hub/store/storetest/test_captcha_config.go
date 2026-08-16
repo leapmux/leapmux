@@ -195,9 +195,17 @@ func (s *Suite) testCaptchaConfig(t *testing.T) {
 		st := s.NewStore(t)
 		future := time.Now().Add(time.Hour)
 
+		used, err := st.CaptchaConfig().HasAltchaSalt(ctx, "salt-1")
+		require.NoError(t, err)
+		assert.False(t, used, "an unknown salt reports unused")
+
 		rows, err := st.CaptchaConfig().ConsumeAltchaSalt(ctx, store.ConsumeAltchaSaltParams{Salt: "salt-1", ExpiresAt: future})
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, rows, "first use consumes the salt")
+
+		used, err = st.CaptchaConfig().HasAltchaSalt(ctx, "salt-1")
+		require.NoError(t, err)
+		assert.True(t, used, "a consumed salt reports used -- the read-only replay pre-check's answer")
 
 		rows, err = st.CaptchaConfig().ConsumeAltchaSalt(ctx, store.ConsumeAltchaSaltParams{Salt: "salt-1", ExpiresAt: future})
 		require.NoError(t, err)
@@ -217,7 +225,7 @@ func (s *Suite) testCaptchaConfig(t *testing.T) {
 		assert.EqualValues(t, 1, purged, "only the expired salt row is dropped")
 
 		// The expired salt is usable again after the purge: single-use is
-		// bounded by expiry, which Verify enforces before this point.
+		// limited by expiry, which Verify enforces before this point.
 		rows, err = st.CaptchaConfig().ConsumeAltchaSalt(ctx, store.ConsumeAltchaSaltParams{Salt: "salt-old", ExpiresAt: future})
 		require.NoError(t, err)
 		assert.EqualValues(t, 1, rows)

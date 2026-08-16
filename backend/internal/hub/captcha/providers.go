@@ -210,16 +210,16 @@ func SupportedProviders() []string {
 }
 
 // ParseProvider validates a provider alias from user input (the admin
-// CLI's --provider flag) and returns its enum value. Accepts the alias
-// and, for reCAPTCHA, the kebab-case spelling; never the CAPS proto name.
+// CLI's --provider flag) and returns its enum value. Hyphens normalize to
+// the registered aliases' underscores, so kebab-case spellings
+// ("recaptcha-v3") are accepted for every multi-word alias without a
+// per-provider branch; the CAPS proto name is never accepted.
 func ParseProvider(name string) (Provider, error) {
+	normalized := strings.ReplaceAll(name, "-", "_")
 	for p, spec := range providerSpecs {
-		if name == spec.alias() {
+		if normalized == spec.alias() {
 			return p, nil
 		}
-	}
-	if name == "recaptcha-v3" {
-		return ProviderRecaptchaV3, nil
 	}
 	return leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED,
 		fmt.Errorf("unsupported captcha provider %q (supported: %s)", name, strings.Join(SupportedProviders(), ", "))

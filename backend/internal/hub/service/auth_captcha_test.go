@@ -18,8 +18,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
-	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
@@ -40,7 +40,9 @@ func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServ
 
 	cfg := testConfig()
 	cfg.SoloMode = solo
-	authSvc := service.NewAuthService(service.AuthServiceDeps{Store: st, Config: cfg, Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: captchaMgr})
+	authDeps := servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil))
+	authDeps.Captcha = captchaMgr
+	authSvc := service.NewAuthService(authDeps)
 
 	mux := http.NewServeMux()
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc)
@@ -90,7 +92,7 @@ func TestGetAltchaChallenge_SoloReturnsEmpty(t *testing.T) {
 
 func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{Store: st, Config: testConfig(), Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil})
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 
 	// A nil captcha dependency means "subsystem absent": challenges stand
 	// down with an empty payload (the widget's stand-down signal), and
@@ -143,22 +145,19 @@ func (s failingCaptchaStub) AltchaChallengeJSON(context.Context) (string, error)
 
 // TestGetSystemInfo_DegradesWhenCaptchaConfigUnreachable pins the
 // degradation: a captcha-config read error must not fail the whole public
-// endpoint (the flags pattern), while challenge issuance still surfaces
-// its error.
+// endpoint (the flags pattern), while the report stays consistent with
+// the interceptor's fail-closed enforcement (reporting "disabled" would
+// unblock a payload-less submit that the hub then denies), and challenge
+// issuance still surfaces its error.
 func TestGetSystemInfo_DegradesWhenCaptchaConfigUnreachable(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{
-		Store:     st,
-		Config:    testConfig(),
-		Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil),
-		Mail:      mail.NewStubSender(),
-		Renderer:  mail.Renderer{},
-		Captcha:   failingCaptchaStub{err: errors.New("no such table captcha_config")},
-	})
+	authDeps := servicetest.AuthServiceDeps(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil))
+	authDeps.Captcha = failingCaptchaStub{err: errors.New("no such table captcha_config")}
+	authSvc := service.NewAuthService(authDeps)
 
 	resp, err := authSvc.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 	require.NoError(t, err, "system info must survive a captcha-config outage")
-	assert.False(t, resp.Msg.GetCaptchaEnabled(), "degraded reporting says captcha is off")
+	assert.True(t, resp.Msg.GetCaptchaEnabled(), "degraded reporting must match the fail-closed interceptor, not unlock a payload-less submit")
 	assert.Equal(t, leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED, resp.Msg.GetCaptchaProvider(), "degraded reporting must not name a provider")
 
 	_, err = authSvc.GetAltchaChallenge(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))

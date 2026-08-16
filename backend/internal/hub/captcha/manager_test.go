@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,8 +80,7 @@ func applyTestAltchaSettings(t *testing.T, m *Manager, settings string) {
 
 func bustCaches(m *Manager) {
 	m.mu.Lock()
-	m.cached = nil
-	m.descCached = nil
+	m.cache = nil
 	m.mu.Unlock()
 }
 
@@ -108,6 +108,9 @@ type siteverifyStub struct {
 	body     string
 	lastForm url.Values
 	requests atomic.Int32
+	// hold, when non-nil, blocks every handler call until closed; tests
+	// use it to keep one siteverify call in flight deterministically.
+	hold chan struct{}
 }
 
 func newSiteverifyStub(t *testing.T) *siteverifyStub {
@@ -117,6 +120,9 @@ func newSiteverifyStub(t *testing.T) *siteverifyStub {
 		_ = r.ParseForm()
 		stub.lastForm = r.PostForm
 		stub.requests.Add(1)
+		if stub.hold != nil {
+			<-stub.hold
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(stub.status)
 		_, _ = w.Write([]byte(stub.body))
@@ -187,6 +193,63 @@ func TestManagerVerifyRejectsGarbage(t *testing.T) {
 		err := m.Verify(context.Background(), "login", payload)
 		assert.ErrorIs(t, err, ErrVerificationFailed, "payload %q", payload)
 	}
+}
+
+// countingSaltStore counts HasAltchaSalt reads so tests can pin the
+// verify path's cheapest-first ordering.
+type countingSaltStore struct {
+	store.Store
+	saltReads atomic.Int32
+}
+
+type countingSaltCaptchaStore struct {
+	store.CaptchaConfigStore
+	reads *atomic.Int32
+}
+
+func (s countingSaltCaptchaStore) HasAltchaSalt(ctx context.Context, salt string) (bool, error) {
+	s.reads.Add(1)
+	return s.CaptchaConfigStore.HasAltchaSalt(ctx, salt)
+}
+
+func (s *countingSaltStore) CaptchaConfig() store.CaptchaConfigStore {
+	return countingSaltCaptchaStore{CaptchaConfigStore: s.Store.CaptchaConfig(), reads: &s.saltReads}
+}
+
+// TestGarbagePayloadsBuyNoSaltReads pins the cheapest-first ordering: a
+// decodable payload with a signature this hub never produced dies on the
+// CPU-only signature pre-check, so an unauthenticated garbage flood
+// cannot convert itself into salt-ledger reads. Only a hub-signed
+// payload reaches the ledger — and its replay pays one indexed read,
+// never the memory-hard derivation.
+func TestGarbagePayloadsBuyNoSaltReads(t *testing.T) {
+	inner := newTestManager(t, false)
+	wrapped := &countingSaltStore{Store: inner.st}
+	key := [32]byte{}
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+	m := NewManager(wrapped, ks, false)
+	applyTestAltchaSettings(t, m, cheapAltchaSettings)
+
+	// A decodable, correctly-shaped payload whose signature no secret of
+	// this hub produced: the ledger must never hear about it.
+	garbage := base64.StdEncoding.EncodeToString([]byte(
+		`{"challenge":{"parameters":{"algorithm":"SHA-1","nonce":"00","salt":"aabb","cost":100,"keyLength":8,"keyPrefix":"00"},"signature":"deadbeef"},"solution":{"counter":1,"derivedKey":"00"}}`))
+	err = m.Verify(context.Background(), "login", garbage)
+	assert.ErrorIs(t, err, ErrVerificationFailed)
+	assert.EqualValues(t, 0, wrapped.saltReads.Load(), "a signature-invalid payload must not buy a store read")
+
+	// A solved, hub-signed payload reaches the ledger exactly once.
+	challengeJSON, err := m.AltchaChallengeJSON(context.Background())
+	require.NoError(t, err)
+	payload := solveChallenge(t, challengeJSON)
+	require.NoError(t, m.Verify(context.Background(), "login", payload))
+	assert.EqualValues(t, 1, wrapped.saltReads.Load())
+
+	// Its replay is answered by the ledger — one more read, no derivation.
+	err = m.Verify(context.Background(), "login", payload)
+	assert.ErrorIs(t, err, ErrVerificationFailed)
+	assert.EqualValues(t, 2, wrapped.saltReads.Load())
 }
 
 func TestManagerVerifyRejectsForeignSecret(t *testing.T) {
@@ -476,6 +539,22 @@ func TestEffectiveFallsBackOnInvalidRow(t *testing.T) {
 		Settings: "not-json",
 	}))
 
+	// The fallback preserves the row's Enabled bit: a deliberately
+	// disabled hub stays disabled through corruption, instead of the
+	// fallback silently re-arming captcha the admin turned off.
+	disabled := DefaultConfig()
+	disabled.Enabled = false
+	assert.Equal(t, disabled, Effective(&store.CaptchaConfig{
+		Provider: ProviderAltcha,
+		Enabled:  false,
+		Settings: "not-json",
+	}))
+	assert.Equal(t, disabled, Effective(&store.CaptchaConfig{
+		Provider: Provider(99),
+		Enabled:  false,
+		Settings: `{}`,
+	}))
+
 	// A valid altcha row overlays as before.
 	family, err := DefaultAltchaSettingsFor("SCRYPT")
 	require.NoError(t, err)
@@ -730,6 +809,289 @@ func TestSiteverifyBreakerShedsLoad(t *testing.T) {
 	stub.status = http.StatusOK
 	assert.ErrorIs(t, m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed)
 	assert.Equal(t, requestsAfterProbe, int(stub.requests.Load()), "a re-tripped breaker must not dial the provider")
+}
+
+// countingGetSelectedStore wraps a store so tests can observe (and
+// widen) the config-read window the resolve path hits.
+type countingGetSelectedStore struct {
+	store.Store
+	getSelectedCalls atomic.Int32
+}
+
+type countingCaptchaConfigStore struct {
+	store.CaptchaConfigStore
+	calls *atomic.Int32
+}
+
+func (s countingCaptchaConfigStore) GetSelected(ctx context.Context) (*store.CaptchaConfig, error) {
+	s.calls.Add(1)
+	time.Sleep(25 * time.Millisecond) // hold the load open so concurrency is real
+	return s.CaptchaConfigStore.GetSelected(ctx)
+}
+
+func (s *countingGetSelectedStore) CaptchaConfig() store.CaptchaConfigStore {
+	return countingCaptchaConfigStore{CaptchaConfigStore: s.Store.CaptchaConfig(), calls: &s.getSelectedCalls}
+}
+
+// TestResolveCoalescesConcurrentColdLoads pins the singleflight: a burst
+// of resolves arriving at a cold (or freshly expired) cache shares ONE
+// store read instead of each goroutine running its own full load (row +
+// keystore decrypt + settings validation).
+func TestResolveCoalescesConcurrentColdLoads(t *testing.T) {
+	inner := newTestManager(t, false) // opens the store; only its st is reused
+	wrapped := &countingGetSelectedStore{Store: inner.st}
+
+	key := [32]byte{}
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+	m := NewManager(wrapped, ks, false)
+
+	const burst = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, burst)
+	for i := 0; i < burst; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, err := m.resolve(context.Background())
+			errs[i] = err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "resolve %d", i)
+	}
+	// One load on an empty store reads GetSelected exactly twice (before
+	// provisioning and again after activation); a burst that failed to
+	// coalesce would show roughly 2x that per extra loader.
+	assert.EqualValues(t, 2, wrapped.getSelectedCalls.Load(),
+		"a concurrent cold-cache burst must share one load (its two reads), not one load per goroutine")
+}
+
+// TestDescribeCoalescesConcurrentColdLoads pins Describe's own
+// singleflight leg: a burst of Describe calls at a cold cache shares ONE
+// store read instead of each caller running its own loadSelectedRow.
+// Describe keeps a leg separate from resolve's so a describe-only fill
+// never provisions or decrypts — the burst-count is what pins that both
+// halves of the one cache coalesce their own loads.
+func TestDescribeCoalescesConcurrentColdLoads(t *testing.T) {
+	inner := newTestManager(t, false) // opens the store; only its st is reused
+	wrapped := &countingGetSelectedStore{Store: inner.st}
+
+	key := [32]byte{}
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+	m := NewManager(wrapped, ks, false)
+
+	const burst = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, burst)
+	for i := 0; i < burst; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, _, err := m.Describe(context.Background())
+			errs[i] = err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoErrorf(t, err, "describe %d", i)
+	}
+	assert.EqualValues(t, 1, wrapped.getSelectedCalls.Load(),
+		"a concurrent cold-cache Describe burst must share one store read (describe never provisions, so one load is exactly one read)")
+}
+
+// TestSiteverifyBreakerIgnoresCallerCancellation pins the fault
+// accounting: a call that ends because the CALLER went away (client
+// disconnect, cancelled request) is neither a provider fault nor a
+// success, so any number of aborted requests must not open the circuit
+// against a healthy provider.
+func TestSiteverifyBreakerIgnoresCallerCancellation(t *testing.T) {
+	stub := newSiteverifyStub(t)
+	stub.body = `{"success":true,"action":"login","hostname":"example.com"}`
+	m := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
+
+	// Drive the siteverify client directly: through Manager.Verify a
+	// cancelled context dies earlier, in the config resolve.
+	client := m.turnstile
+	for i := 0; i < siteverifyBreakerThreshold*3; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := client.verify(ctx, "secret-key", "tok")
+		require.Error(t, err)
+	}
+	assert.False(t, client.breakerTripped(), "aborted calls must not open the circuit")
+
+	// A healthy caller still dials and succeeds.
+	resp, err := client.verify(context.Background(), "secret-key", "tok")
+	require.NoError(t, err)
+	assert.True(t, resp.Success)
+	assert.Equal(t, 1, int(stub.requests.Load()), "aborted calls must not dial; only the healthy call dials")
+}
+
+// TestSiteverifyBreakerHalfOpenAdmitsOneProbe pins the single-probe gate:
+// after the cooldown, exactly one caller dials the provider while every
+// concurrent caller still fails fast — an unbounded probe burst on a
+// recovering provider would re-trip the circuit and stretch the outage.
+func TestSiteverifyBreakerHalfOpenAdmitsOneProbe(t *testing.T) {
+	stub := newSiteverifyStub(t)
+	m := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
+	activateExternal(t, m, ProviderTurnstile, `{"site_key":"1x000AA"}`, "secret-key")
+	m.turnstile.cooldown = 250 * time.Millisecond
+
+	stub.status = http.StatusInternalServerError
+	for i := 0; i < siteverifyBreakerThreshold; i++ {
+		assert.ErrorIs(t, m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed)
+	}
+	requestsAtTrip := int(stub.requests.Load())
+	time.Sleep(300 * time.Millisecond)
+
+	// Hold the probe's HTTP call in flight, then prove the next concurrent
+	// caller fails fast without a second dial.
+	stub.status = http.StatusOK
+	stub.body = `{"success":true,"action":"login","hostname":"example.com"}`
+	stub.hold = make(chan struct{})
+	probeDone := make(chan error, 1)
+	go func() {
+		probeDone <- m.Verify(context.Background(), "login", "tok")
+	}()
+	require.Eventually(t, func() bool {
+		return int(stub.requests.Load()) == requestsAtTrip+1
+	}, 2*time.Second, 5*time.Millisecond, "the probe must be the one call that dials")
+
+	assert.ErrorIs(t, m.Verify(context.Background(), "login", "tok"), ErrVerificationFailed,
+		"a concurrent caller must fail fast while the probe is in flight")
+	assert.Equal(t, requestsAtTrip+1, int(stub.requests.Load()), "the concurrent caller must not dial")
+
+	close(stub.hold)
+	require.NoError(t, <-probeDone, "the probe's success closes the circuit")
+	require.NoError(t, m.Verify(context.Background(), "login", "tok"), "post-probe calls dial normally")
+	assert.Equal(t, requestsAtTrip+2, int(stub.requests.Load()))
+}
+
+// TestSiteverifyBreakerCountsDeadlineAsFault pins the outage mode the
+// caller-cancellation fix must not hide: the request deadline (which in
+// production wiring fires before the client's own timeout) ending every
+// call against a provider that accepts connections and never answers.
+// Those deadline expiries are faults — the breaker must open and shed the
+// load instead of classifying the outage away as caller-side cancels.
+func TestSiteverifyBreakerCountsDeadlineAsFault(t *testing.T) {
+	stub := newSiteverifyStub(t)
+	m := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
+	client := m.turnstile
+
+	// The provider accepts the request and never answers: every call ends
+	// at the caller's deadline.
+	stub.hold = make(chan struct{})
+	for i := 0; i < siteverifyBreakerThreshold; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		_, err := client.verify(ctx, "secret-key", "tok")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		cancel()
+	}
+	assert.True(t, client.breakerTripped(), "a hanging provider must open the circuit through its deadline expiries")
+
+	// The open circuit fails fast without another dial.
+	requestsAtTrip := int(stub.requests.Load())
+	_, err := client.verify(context.Background(), "secret-key", "tok")
+	assert.ErrorIs(t, err, errBreakerOpen)
+	assert.Equal(t, requestsAtTrip, int(stub.requests.Load()), "an open breaker must not dial the provider")
+	close(stub.hold)
+}
+
+// TestSiteverifyBreakerAbandonedProbeStaysOpen pins the probe-slot return
+// path: a probe whose caller disconnects mid-flight must hand the circuit
+// back OPEN (fresh cooldown), never closed — otherwise every concurrent
+// caller dials the struggling provider at once, the exact burst the
+// single-probe gate exists to prevent.
+func TestSiteverifyBreakerAbandonedProbeStaysOpen(t *testing.T) {
+	stub := newSiteverifyStub(t)
+	m := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
+	client := m.turnstile
+	client.cooldown = 250 * time.Millisecond
+
+	stub.status = http.StatusInternalServerError
+	for i := 0; i < siteverifyBreakerThreshold; i++ {
+		_, err := client.verify(context.Background(), "secret-key", "tok")
+		require.Error(t, err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// Hold the probe in flight, then disconnect its caller.
+	stub.hold = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	probeDone := make(chan error, 1)
+	go func() {
+		_, err := client.verify(ctx, "secret-key", "tok")
+		probeDone <- err
+	}()
+	require.Eventually(t, func() bool {
+		return int(stub.requests.Load()) == siteverifyBreakerThreshold+1
+	}, 2*time.Second, 5*time.Millisecond, "the probe must be the one call that dials")
+	cancel()
+	require.ErrorIs(t, <-probeDone, context.Canceled)
+
+	assert.True(t, client.breakerTripped(), "an abandoned probe must leave the circuit open")
+	requestsAfterAbandon := int(stub.requests.Load())
+	_, err := client.verify(context.Background(), "secret-key", "tok")
+	assert.ErrorIs(t, err, errBreakerOpen, "post-abandon callers must fail fast, not dial concurrently")
+	assert.Equal(t, requestsAfterAbandon, int(stub.requests.Load()))
+	close(stub.hold)
+}
+
+// TestSiteverifyBreakerFailFastCancellationKeepsProbeSlot pins the probe
+// slot's ownership: a caller that fails fast on the open circuit and then
+// finds its own context cancelled records nothing — it never held the
+// slot, so it must not release the in-flight probe's slot either. The
+// probe then succeeds and closes the circuit normally.
+func TestSiteverifyBreakerFailFastCancellationKeepsProbeSlot(t *testing.T) {
+	stub := newSiteverifyStub(t)
+	m := newTestManager(t, false, WithTurnstileEndpoint(stub.server.URL))
+	client := m.turnstile
+	client.cooldown = 250 * time.Millisecond
+
+	stub.status = http.StatusInternalServerError
+	for i := 0; i < siteverifyBreakerThreshold; i++ {
+		_, err := client.verify(context.Background(), "secret-key", "tok")
+		require.Error(t, err)
+	}
+	requestsAtTrip := int(stub.requests.Load())
+	time.Sleep(300 * time.Millisecond)
+
+	// The probe dials and hangs; a sibling caller with an already-cancelled
+	// context fails fast at the gate.
+	stub.status = http.StatusOK
+	stub.body = `{"success":true,"action":"login","hostname":"example.com"}`
+	stub.hold = make(chan struct{})
+	probeDone := make(chan error, 1)
+	go func() {
+		_, err := client.verify(context.Background(), "secret-key", "tok")
+		probeDone <- err
+	}()
+	require.Eventually(t, func() bool {
+		return int(stub.requests.Load()) == requestsAtTrip+1
+	}, 2*time.Second, 5*time.Millisecond, "the probe must be the one call that dials")
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.verify(cancelled, "secret-key", "tok")
+	assert.ErrorIs(t, err, errBreakerOpen, "a cancelled non-holder must fail fast at the gate")
+	assert.True(t, client.breakerTripped(), "the fail-fast cancel must not release the probe slot")
+
+	close(stub.hold)
+	require.NoError(t, <-probeDone, "the probe's success still closes the circuit")
+	_, err = client.verify(context.Background(), "secret-key", "tok")
+	require.NoError(t, err, "post-probe calls dial normally")
+	assert.Equal(t, requestsAtTrip+2, int(stub.requests.Load()))
 }
 
 // TestProviderSpecRegistryRoundTrips pins the registration invariant the

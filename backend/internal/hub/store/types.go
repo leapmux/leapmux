@@ -327,7 +327,8 @@ type OAuthProvider struct {
 }
 
 // CaptchaConfig is one captcha provider's configuration row, keyed by
-// provider name ('altcha', 'recaptcha_v3', 'turnstile'). Settings is the
+// the CaptchaProvider proto enum's raw number (1=altcha, 2=recaptcha_v3,
+// 3=turnstile) - never the alias string. Settings is the
 // provider's JSON settings blob; Secret is the keystore-encrypted
 // provider secret (the ALTCHA HMAC signing key, or an external provider's
 // API secret). Exactly one row is Selected — the active provider — and

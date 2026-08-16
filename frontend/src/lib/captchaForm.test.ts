@@ -1,27 +1,24 @@
 /// <reference types="vitest/globals" />
+import { Code, ConnectError } from '@connectrpc/connect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 
 import { createCaptchaForm } from './captchaForm'
 
-const mockIsCaptchaEnabled = vi.fn<() => boolean>(() => false)
-const mockIsSystemInfoLoaded = vi.fn<() => boolean>(() => true)
-const mockLoadSystemInfo = vi.fn(() => Promise.resolve())
-vi.mock('~/lib/systemInfo', () => ({
-  isCaptchaEnabled: () => mockIsCaptchaEnabled(),
-  isSystemInfoLoaded: () => mockIsSystemInfoLoaded(),
-  loadSystemInfo: (...args: []) => mockLoadSystemInfo(...args),
-}))
+vi.mock('~/lib/systemInfo', async () => {
+  const m = await import('~/test-support/systemInfoMock')
+  return m.systemInfoMock
+})
 
 describe('createCaptchaForm', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockIsCaptchaEnabled.mockReturnValue(false)
-    mockIsSystemInfoLoaded.mockReturnValue(true)
+    resetSystemInfoMock()
   })
 
   it('requires the payload only once the hub answers and enables captcha', () => {
-    mockIsSystemInfoLoaded.mockReturnValue(false)
-    mockIsCaptchaEnabled.mockReturnValue(true)
+    setSystemInfoMock({ loaded: false, captchaEnabled: true })
     const captcha = createCaptchaForm()
     // Fail closed during bootstrap: an unknown policy must block submit
     // rather than send an empty payload the hub denies.
@@ -29,7 +26,7 @@ describe('createCaptchaForm', () => {
     expect(captcha.blocksSubmit()).toBe(true)
     expect(captcha.required()).toBe(false)
 
-    mockIsSystemInfoLoaded.mockReturnValue(true)
+    setSystemInfoMock({ loaded: true })
     expect(captcha.pending()).toBe(false)
     expect(captcha.required()).toBe(true)
     expect(captcha.blocksSubmit()).toBe(true)
@@ -47,7 +44,7 @@ describe('createCaptchaForm', () => {
   })
 
   it('lifts the requirement when the hub answers no challenge, and a reset re-arms', () => {
-    mockIsCaptchaEnabled.mockReturnValue(true)
+    setSystemInfoMock({ captchaEnabled: true })
     const captcha = createCaptchaForm()
     expect(captcha.blocksSubmit()).toBe(true)
 
@@ -61,7 +58,7 @@ describe('createCaptchaForm', () => {
   })
 
   it('reset clears the payload and the honeypot and drives the field handle', () => {
-    mockIsCaptchaEnabled.mockReturnValue(true)
+    setSystemInfoMock({ captchaEnabled: true })
     const captcha = createCaptchaForm()
     const fieldReset = vi.fn()
     captcha.bindField({ reset: fieldReset })
@@ -77,15 +74,29 @@ describe('createCaptchaForm', () => {
     expect(fieldReset).toHaveBeenCalledOnce()
   })
 
-  it('reset refetches the system info so a runtime provider switch converges after one denial', async () => {
-    mockIsCaptchaEnabled.mockReturnValue(true)
+  it('reset refetches the system info after a captcha denial so a runtime provider switch converges after one denial', async () => {
+    setSystemInfoMock({ captchaEnabled: true })
     const captcha = createCaptchaForm()
 
-    captcha.reset()
+    captcha.reset(new ConnectError('captcha verification failed', Code.PermissionDenied))
 
     // The denial is the signal that the captcha snapshot is stale: the
-    // forced reload is what re-mounts the right provider's field.
+    // deduped forced reload is what re-mounts the right provider's field.
     expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
+    await Promise.resolve()
+  })
+
+  it('reset skips the system-info refetch for failures that cannot change the captcha policy', async () => {
+    setSystemInfoMock({ captchaEnabled: true })
+    const captcha = createCaptchaForm()
+
+    // A wrong password and a transport fault say nothing about the
+    // captcha policy, so neither may double the form's request load.
+    captcha.reset(new ConnectError('invalid credentials', Code.Unauthenticated))
+    captcha.reset(new ConnectError('connection refused', Code.Unavailable))
+    captcha.reset(new Error('not even a connect error'))
+
+    expect(mockLoadSystemInfo).not.toHaveBeenCalled()
     await Promise.resolve()
   })
 })

@@ -36,8 +36,11 @@ export interface AltchaChallenge {
 export async function fetchAltchaChallenge(): Promise<AltchaChallenge | null> {
   // Pre-warm the solver for the algorithm the hub advertises, so the
   // worker chunk download overlaps the challenge fetch instead of
-  // delaying the first click.
-  void ensureAltchaSolver(getAltchaAlgorithm())
+  // delaying the first click. Best-effort: a failed worker-chunk fetch
+  // rejects here, and the re-await below re-awaits the same call inside
+  // the field's error path -- without this catch the pre-warm's
+  // rejection would surface as an unhandledrejection on every fetch.
+  void ensureAltchaSolver(getAltchaAlgorithm()).catch(() => {})
   const resp = await authClient.getAltchaChallenge({})
   // The empty blob is the hub's "no challenge" answer; JSON.parse("")
   // throws, which would land in the connection-error path.

@@ -1,6 +1,7 @@
 import type { CaptchaFieldHandle } from '~/components/common/CaptchaField'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { createSignal } from 'solid-js'
-import { isCaptchaEnabled, isSystemInfoLoaded, loadSystemInfo } from './systemInfo'
+import { isCaptchaEnabled, isSystemInfoLoaded, refreshSnapshot } from './systemInfo'
 
 export interface CaptchaRequestFields {
   captchaPayload: string
@@ -29,8 +30,14 @@ export interface CaptchaFormState {
    * loaded): the requirement lifts until a reset re-arms.
    */
   noteUnavailable: () => void
-  /** Discard the solve, clear the honeypot, and re-arm the field. */
-  reset: () => void
+  /**
+   * Discard the solve, clear the honeypot, and re-arm the field. Pass the
+   * rejected submit's error: a captcha denial (the hub's uniform
+   * PermissionDenied) also refreshes the system-info snapshot, because the
+   * denial is the one signal that the captcha policy may have changed
+   * since the page loaded.
+   */
+  reset: (err?: unknown) => void
   /** Submit-button gate: blocks while a payload is required and missing. */
   blocksSubmit: () => boolean
   /** Request fields for Login/SignUp/CompleteOAuthSignup. */
@@ -67,7 +74,7 @@ export function createCaptchaForm(): CaptchaFormState {
     noteUnavailable: () => {
       setStoodDown(true)
     },
-    reset: () => {
+    reset: (err?: unknown) => {
       // A rejected attempt must not linger: the consumed payload and a
       // honeypot value an autofill heuristic dropped into the hidden
       // input both poison the retry identically.
@@ -75,13 +82,19 @@ export function createCaptchaForm(): CaptchaFormState {
       setPayload(null)
       setHoneypot('')
       field?.reset()
-      // A rejected attempt is also the signal that the captcha snapshot
-      // in systemInfo is stale: the admin may have enabled or disabled
+      // A captcha denial is also the signal that the captcha snapshot in
+      // systemInfo is stale: the admin may have enabled or disabled
       // captcha, or switched providers, since the page loaded. The
       // refreshed signals re-mount the right provider's field (or stand
       // down) for the retry, so every protected form converges after one
-      // denial instead of failing identically forever.
-      void loadSystemInfo(true).catch(() => {})
+      // denial instead of failing identically forever. Other failures --
+      // a wrong password, a network fault -- cannot change the captcha
+      // policy, so they skip the extra fetch. The deduped refresh shares
+      // one round trip with the field-level arm-failure refreshes the
+      // same denial triggers.
+      if (err instanceof ConnectError && err.code === Code.PermissionDenied) {
+        refreshSnapshot()
+      }
     },
     blocksSubmit: () => pending() || (required() && payload() === null),
     fields: () => ({ captchaPayload: payload() ?? '', honeypot: honeypot() }),

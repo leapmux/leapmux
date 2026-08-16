@@ -3,8 +3,7 @@ import type { Component } from 'solid-js'
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
-import { CaptchaField } from '~/components/common/CaptchaField'
-import { CaptchaHoneypot } from '~/components/common/CaptchaHoneypot'
+import { CaptchaSection } from '~/components/common/CaptchaSection'
 import * as styles from '~/components/common/LoginPage.css'
 import { Spinner } from '~/components/common/Spinner'
 import { UsernameField } from '~/components/common/UsernameField'
@@ -95,7 +94,7 @@ const OAuthCompleteSignupPage: Component = () => {
     }
     catch (e) {
       setError(formatErrorMessage(e, 'Sign up failed'))
-      captcha.reset()
+      captcha.reset(e)
       setSubmitting(false)
     }
   }
@@ -144,15 +143,7 @@ const OAuthCompleteSignupPage: Component = () => {
                 />
               </label>
             </Show>
-            <CaptchaHoneypot value={captcha.honeypot()} onInput={captcha.setHoneypot} />
-            <Show when={captcha.required()}>
-              <CaptchaField
-                action="complete_signup"
-                ref={captcha.bindField}
-                onPayload={captcha.setPayload}
-                onUnavailable={captcha.noteUnavailable}
-              />
-            </Show>
+            <CaptchaSection action="complete_signup" captcha={captcha} />
             <Show when={error()}>
               <div class={errorText}>{error()}</div>
             </Show>

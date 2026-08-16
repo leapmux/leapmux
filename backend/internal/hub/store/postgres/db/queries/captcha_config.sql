@@ -38,7 +38,7 @@ SET settings = EXCLUDED.settings,
     updated_at = NOW();
 
 -- Activation is one statement: every row becomes selected and enabled
--- exactly when it is the named provider, so no interleaving of concurrent
+-- exactly when it is the specified provider, so no interleaving of concurrent
 -- activations can ever leave two rows selected or none. Selecting also
 -- re-enables: choosing a provider means running it.
 -- name: ActivateCaptchaConfig :exec
@@ -91,6 +91,13 @@ DELETE FROM rate_limit_config WHERE operation = $1;
 -- use accepted, 0 rows = replay denied.
 -- name: ConsumeAltchaSalt :execrows
 INSERT INTO altcha_used_salts (salt, expires_at) VALUES ($1, $2) ON CONFLICT (salt) DO NOTHING;
+
+-- HasAltchaSalt reports, read-only, whether a salt row exists. The
+-- verifier consults it BEFORE the memory-hard solution check so a
+-- replayed payload costs one indexed read instead of a full key
+-- derivation; ConsumeAltchaSalt stays the single-use authority.
+-- name: HasAltchaSalt :one
+SELECT EXISTS (SELECT 1 FROM altcha_used_salts WHERE salt = $1);
 
 -- name: DeleteExpiredAltchaSalts :execrows
 DELETE FROM altcha_used_salts WHERE expires_at < $1;

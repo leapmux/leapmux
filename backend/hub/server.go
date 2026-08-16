@@ -250,6 +250,17 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	captchaMgr := captcha.NewManager(st, ks, cfg.SoloMode)
 	rateLimitMgr := ratelimit.NewManager(st, cfg.SoloMode)
 
+	// Provision the default captcha row at startup so the request path
+	// never writes: a first Login on a fresh install must not depend on a
+	// store write completing mid-request (a read-only or locked store
+	// would deny logins with the uniform captcha error, and the first
+	// admin setup flow would fail the same opaque way). Failing startup
+	// here states the real problem. The resolve path's lazy provisioning
+	// stays as an idempotent self-heal behind it.
+	if err := captchaMgr.EnsureProvisioned(context.Background()); err != nil {
+		return nil, acquired.close(fmt.Errorf("provision captcha config: %w", err))
+	}
+
 	// handlerCtx is the parent of every in-flight HTTP handler's request context
 	// (via http.Server.BaseContext below). It is cancelled handlerGrace into
 	// shutdown so a handler the per-registry teardown paths cannot reach (every

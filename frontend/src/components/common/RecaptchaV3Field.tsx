@@ -1,11 +1,10 @@
 import type { Component } from 'solid-js'
 import type { CaptchaFieldHandle } from './CaptchaField'
 
-import { createSignal, onCleanup, onMount } from 'solid-js'
+import { onMount } from 'solid-js'
 import { loadExternalScript } from '~/lib/scriptLoader'
 import { getCaptchaSiteKey } from '~/lib/systemInfo'
-import * as styles from './CaptchaField.css'
-import { CaptchaFieldStatus } from './CaptchaFieldStatus'
+import { createCaptchaFieldBase, noteFieldArmFailure } from './captchaFieldBase'
 
 // The v3 script is loaded with the site key as its render parameter; it
 // injects the reCAPTCHA badge itself, which stays visible (Google's terms
@@ -36,22 +35,28 @@ interface RecaptchaV3FieldProps {
 // skips it — idle and background tabs must not mint tokens nobody uses —
 // and re-arms the moment the tab becomes visible again.
 export const RecaptchaV3Field: Component<RecaptchaV3FieldProps> = (props) => {
-  let disposed = false
   // Re-executions can overlap (a reset while one is in flight); the epoch
   // keeps a slower, older execute from overwriting the newer token.
   let epoch = 0
   let refreshTimer: ReturnType<typeof setInterval> | undefined
-  const [ready, setReady] = createSignal(false)
-  const [loadError, setLoadError] = createSignal(false)
+  // props.onPayload is a stable callback the base only invokes from
+  // user-driven callbacks and cleanup; it is not a tracked read.
+  // eslint-disable-next-line solid/reactivity
+  const base = createCaptchaFieldBase(props.onPayload, () => {
+    epoch++
+    if (refreshTimer !== undefined)
+      clearInterval(refreshTimer)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+  })
 
   const execute = async () => {
     const current = ++epoch
     const action = props.action
-    setLoadError(false)
+    base.setLoadError(false)
     try {
       const siteKey = getCaptchaSiteKey()
       await loadExternalScript(`${RECAPTCHA_SCRIPT_URL}${encodeURIComponent(siteKey)}`)
-      if (disposed || current !== epoch || !window.grecaptcha)
+      if (base.disposed() || current !== epoch || !window.grecaptcha)
         return
       // grecaptcha.ready fires immediately once the script loads.
       const token = await new Promise<string>((resolve, reject) => {
@@ -59,24 +64,40 @@ export const RecaptchaV3Field: Component<RecaptchaV3FieldProps> = (props) => {
           window.grecaptcha!.execute(siteKey, { action }).then(resolve, reject)
         })
       })
-      if (disposed || current !== epoch)
+      if (base.disposed() || current !== epoch)
         return
-      setReady(true)
+      base.setReady(true)
       props.onPayload(token)
     }
     catch {
-      if (!disposed && current === epoch) {
-        setReady(false)
-        setLoadError(true)
+      if (!base.disposed() && current === epoch) {
+        base.setReady(false)
+        base.setLoadError(true)
         props.onPayload(null)
+        // An execute that cannot complete (script fetch failed, execute
+        // rejected — typically a site key the snapshot no longer knows)
+        // is this field's arm failure: request one deduped snapshot
+        // refresh so a rotated key converges instead of dead-ending
+        // behind the submit gate.
+        noteFieldArmFailure()
       }
     }
   }
 
-  const onVisibilityChange = () => {
+  function onVisibilityChange() {
     if (!document.hidden)
       void execute()
   }
+
+  // A rotated site key must re-execute immediately: the armed token was
+  // minted under the retired key and the hub's siteverify rejects it.
+  // Without this the field keeps the dead token armed until the refresh
+  // interval's next tick, costing a guaranteed-failed submit. The epoch
+  // guard makes the overlapping execute safe. onSiteKeyChange runs the
+  // callback inside its own createEffect, so the reactive reads in
+  // execute() are tracked.
+  // eslint-disable-next-line solid/reactivity
+  base.onSiteKeyChange(() => void execute())
 
   onMount(() => {
     void execute()
@@ -90,18 +111,5 @@ export const RecaptchaV3Field: Component<RecaptchaV3FieldProps> = (props) => {
     })
   })
 
-  onCleanup(() => {
-    disposed = true
-    epoch++
-    if (refreshTimer !== undefined)
-      clearInterval(refreshTimer)
-    document.removeEventListener('visibilitychange', onVisibilityChange)
-    props.onPayload(null)
-  })
-
-  return (
-    <div class={styles.field}>
-      <CaptchaFieldStatus ready={ready()} loadError={loadError()} />
-    </div>
-  )
+  return <base.Field />
 }

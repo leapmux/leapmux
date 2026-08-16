@@ -3,11 +3,8 @@ import type { CaptchaFieldHandle } from './CaptchaField'
 import { render } from '@solidjs/testing-library'
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import * as systemInfo from '~/lib/systemInfo'
+import { mockLoadSystemInfo, resetSystemInfoMock, setSystemInfoMock } from '~/test-support/systemInfoMock'
 import { TurnstileField } from './TurnstileField'
-
-// The mock factory's signal setter, which the real module does not export.
-const setMockSiteKey = (systemInfo as unknown as { __setMockSiteKey: (key: string) => void }).__setMockSiteKey
 
 // The script loader is stubbed so the component tests drive only the
 // turnstile SDK seam.
@@ -16,16 +13,12 @@ vi.mock('~/lib/scriptLoader', () => ({
   loadExternalScript: (...args: []) => mockLoadScript(...args),
 }))
 
-// The site key reads through a real Solid signal so the component's
-// reactive tracking sees a rotation the way the production module's
-// signal delivers it.
+// The site key reads through the shared mock's real Solid signal so the
+// component's reactive tracking sees a rotation the way the production
+// module's snapshot signal delivers it.
 vi.mock('~/lib/systemInfo', async () => {
-  const { createSignal } = await import('solid-js')
-  const [siteKey, setSiteKey] = createSignal('1x00000000000000000000AA')
-  return {
-    getCaptchaSiteKey: () => siteKey(),
-    __setMockSiteKey: setSiteKey,
-  }
+  const m = await import('~/test-support/systemInfoMock')
+  return m.systemInfoMock
 })
 
 interface RenderCall {
@@ -70,7 +63,8 @@ describe('turnstileField', () => {
   beforeEach(() => {
     mockLoadScript.mockReset()
     mockLoadScript.mockResolvedValue(undefined)
-    setMockSiteKey('1x00000000000000000000AA')
+    resetSystemInfoMock()
+    setSystemInfoMock({ captchaSiteKey: '1x00000000000000000000AA' })
     delete window.turnstile
   })
 
@@ -119,6 +113,22 @@ describe('turnstileField', () => {
     // The widget retries by itself; the next token clears the error.
     turnstile.calls[0]?.options.callback?.('tok1')
     expect(onPayload).toHaveBeenLastCalledWith('tok1')
+  })
+
+  it('refreshes the system info when the widget errors, so a stale site key converges', async () => {
+    // The widget's unrecoverable errors are typically a site key the
+    // snapshot no longer knows; with the payload dropped the disabled
+    // submit button can never trigger the denial-driven refresh, so the
+    // field's own error path must — the external providers' counterpart
+    // of the altcha fetch-failure convergence.
+    const turnstile = installFakeTurnstile()
+    renderField()
+    await vi.waitFor(() => {
+      expect(turnstile.calls).toHaveLength(1)
+    })
+
+    turnstile.calls[0]?.options['error-callback']?.(300100)
+    expect(mockLoadSystemInfo).toHaveBeenCalledWith(true)
   })
 
   it('reset handle nulls the payload and re-runs the challenge', async () => {
@@ -170,7 +180,7 @@ describe('turnstileField', () => {
     // The admin rotated the keys; the denial-driven reload updated the
     // signal. Tokens under the retired key always fail siteverify, so the
     // widget must re-render under the new key, not reset under the old.
-    setMockSiteKey('2x00000000000000000000BB')
+    setSystemInfoMock({ captchaSiteKey: '2x00000000000000000000BB' })
     await vi.waitFor(() => {
       expect(turnstile.calls).toHaveLength(2)
     })

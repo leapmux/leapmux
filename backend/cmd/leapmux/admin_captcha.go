@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,14 +77,37 @@ func runCaptchaShow(cmd adminCmdCtx, args []string) error {
 	})
 }
 
-// altchaFlagNames and externalFlagNames partition runCaptchaSet's flags
-// by the provider that owns them. The foreign-flag refusals, the
-// required-keys check, and the usage error all derive from these two
-// lists, so a new flag is registered in exactly one place.
-var (
-	altchaFlagNames   = []string{"algorithm", "cost", "memory-cost", "parallelism", "expires"}
-	externalFlagNames = []string{"site-key", "secret", "min-score"}
-)
+// flagProviders maps each runCaptchaSet setting flag to the providers
+// that accept it. The provider-foreign refusals, the required-any check,
+// and the usage error all derive from this one table, so a new flag
+// registers in exactly one place together with the provider set that
+// owns it — no per-provider list or ad-hoc refusal to keep in lockstep.
+var flagProviders = map[string][]captcha.Provider{
+	"algorithm":   {captcha.ProviderAltcha},
+	"cost":        {captcha.ProviderAltcha},
+	"memory-cost": {captcha.ProviderAltcha},
+	"parallelism": {captcha.ProviderAltcha},
+	"expires":     {captcha.ProviderAltcha},
+	"site-key":    {captcha.ProviderRecaptchaV3, captcha.ProviderTurnstile},
+	"secret":      {captcha.ProviderRecaptchaV3, captcha.ProviderTurnstile},
+	"min-score":   {captcha.ProviderRecaptchaV3},
+}
+
+// captchaFlagNames lists runCaptchaSet's setting flags, sorted once at
+// init, so derived output (usage errors, required-any checks) is
+// deterministic without re-deriving the list per call.
+var captchaFlagNames = slices.Sorted(maps.Keys(flagProviders))
+
+// flagOwnerAliases renders the providers that accept one flag, for
+// refusal messages.
+func flagOwnerAliases(name string) string {
+	owners := flagProviders[name]
+	aliases := make([]string, len(owners))
+	for i, p := range owners {
+		aliases[i] = captcha.ProviderAlias(p)
+	}
+	return strings.Join(aliases, " and ")
+}
 
 // captchaSetFlags declares runCaptchaSet's flag set once; the altcha
 // flags apply to the altcha provider and the key/score flags to the
@@ -117,20 +142,11 @@ func (f *captchaSetFlags) set(name string) bool {
 	return explicitlySet(f.flags)[name]
 }
 
-func (f *captchaSetFlags) anySet() bool {
-	for _, name := range append(append(altchaFlagNames, externalFlagNames...), "provider") {
-		if f.set(name) {
-			return true
-		}
-	}
-	return false
-}
-
 func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 	var cf captchaSetFlags
 	return withAdminStore(cmd, args, cf.declare, func(ctx context.Context, cfg *config.Config, st store.Store) error {
-		if !cf.anySet() {
-			return fmt.Errorf("at least one of --provider, --%s is required", strings.Join(append(altchaFlagNames, externalFlagNames...), ", --"))
+		if err := requireAnySet(explicitlySet(cf.flags), append([]string{"provider"}, captchaFlagNames...)...); err != nil {
+			return err
 		}
 		if cf.set("secret") && *cf.secret == "" {
 			return fmt.Errorf("--secret must not be empty; an empty secret fails every verification")
@@ -146,8 +162,8 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 		}
 
 		// The target provider is the --provider flag, else the currently
-		// selected one. Naming the already-selected provider tunes it in
-		// place; only a different provider switches.
+		// selected one. Specifying the already-selected provider tunes it
+		// in place; only a different provider switches.
 		target := current.Provider
 		if cf.set("provider") {
 			target, err = captcha.ParseProvider(*cf.provider)
@@ -160,22 +176,12 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 		// Provider-foreign flags are refused rather than ignored: a cost
 		// meant for ALTCHA must not be silently dropped under Turnstile,
 		// and a site key meant for Turnstile must not vanish under ALTCHA.
-		if target != captcha.ProviderAltcha {
-			for _, name := range altchaFlagNames {
-				if cf.set(name) {
-					return fmt.Errorf("--%s is an altcha-only flag; the target provider is %s", name, captcha.ProviderAlias(target))
-				}
+		// The scope comes from the flagProviders table.
+		for _, name := range captchaFlagNames {
+			if !cf.set(name) || slices.Contains(flagProviders[name], target) {
+				continue
 			}
-		}
-		if target == captcha.ProviderAltcha {
-			for _, name := range externalFlagNames {
-				if cf.set(name) {
-					return fmt.Errorf("--%s is an external-provider flag; the target provider is altcha", name)
-				}
-			}
-		}
-		if target == captcha.ProviderTurnstile && cf.set("min-score") {
-			return fmt.Errorf("--min-score is a recaptcha_v3-only flag; the target provider is turnstile")
+			return fmt.Errorf("--%s applies only to %s; the target provider is %s", name, flagOwnerAliases(name), captcha.ProviderAlias(target))
 		}
 
 		// Flag edits overlay the TARGET provider's own stored settings, so
@@ -196,40 +202,9 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 			}
 		}
 
-		var settingsJSON string
-		var summary string
-		switch target {
-		case captcha.ProviderAltcha:
-			settings, serr := buildAltchaSettings(&cf, base.Altcha)
-			if serr != nil {
-				return fmt.Errorf("invalid captcha configuration: %w", serr)
-			}
-			settingsJSON, err = marshalSettings(settings)
-			if err != nil {
-				return err
-			}
-			summary = fmt.Sprintf("Saved altcha settings (algorithm %s, cost %d, expiry %s)",
-				settings.Algorithm, settings.Cost, time.Duration(settings.ChallengeExpirySeconds)*time.Second)
-		case captcha.ProviderRecaptchaV3:
-			settings, serr := buildRecaptchaSettings(&cf, base.RecaptchaV3)
-			if serr != nil {
-				return fmt.Errorf("invalid captcha configuration: %w", serr)
-			}
-			settingsJSON, err = marshalSettings(settings)
-			if err != nil {
-				return err
-			}
-			summary = fmt.Sprintf("Saved recaptcha_v3 settings (site key %s, min score %g)", settings.SiteKey, settings.MinScore)
-		case captcha.ProviderTurnstile:
-			settings, serr := buildTurnstileSettings(&cf, base.Turnstile)
-			if serr != nil {
-				return fmt.Errorf("invalid captcha configuration: %w", serr)
-			}
-			settingsJSON, err = marshalSettings(settings)
-			if err != nil {
-				return err
-			}
-			summary = fmt.Sprintf("Saved turnstile settings (site key %s)", settings.SiteKey)
+		settingsJSON, summary, err := resolveCaptchaSettings(target, &cf, base)
+		if err != nil {
+			return err
 		}
 
 		var secretBytes []byte
@@ -284,6 +259,52 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 		}
 		return nil
 	})
+}
+
+// resolveCaptchaSettings builds the target provider's settings JSON and
+// the human summary for one `captcha set` invocation: apply the flags
+// onto the target row's stored settings, marshal, and describe. The
+// switch is exhaustive over the providerSpec registry's closed set —
+// target comes from ParseProvider or Manager.Describe, both of which
+// refuse unsupported providers — so the trailing return is unreachable
+// defense.
+func resolveCaptchaSettings(target captcha.Provider, cf *captchaSetFlags, base captcha.Config) (string, string, error) {
+	switch target {
+	case captcha.ProviderAltcha:
+		settings, err := buildAltchaSettings(cf, base.Altcha)
+		return finalizeCaptchaSettings(settings, err,
+			func(s captcha.AltchaSettings) string {
+				return fmt.Sprintf("Saved altcha settings (algorithm %s, cost %d, expiry %s)",
+					s.Algorithm, s.Cost, time.Duration(s.ChallengeExpirySeconds)*time.Second)
+			})
+	case captcha.ProviderRecaptchaV3:
+		settings, err := buildRecaptchaSettings(cf, base.RecaptchaV3)
+		return finalizeCaptchaSettings(settings, err,
+			func(s captcha.RecaptchaV3Settings) string {
+				return fmt.Sprintf("Saved recaptcha_v3 settings (site key %s, min score %g)", s.SiteKey, s.MinScore)
+			})
+	case captcha.ProviderTurnstile:
+		settings, err := buildTurnstileSettings(cf, base.Turnstile)
+		return finalizeCaptchaSettings(settings, err,
+			func(s captcha.TurnstileSettings) string {
+				return fmt.Sprintf("Saved turnstile settings (site key %s)", s.SiteKey)
+			})
+	}
+	return "", "", fmt.Errorf("unsupported captcha provider %s", captcha.ProviderAlias(target))
+}
+
+// finalizeCaptchaSettings is the shared tail of every provider leg: wrap
+// a settings-builder error, marshal the settings, and render the human
+// summary — so each leg states only its builder and its summary line.
+func finalizeCaptchaSettings[T any](settings T, err error, summarize func(T) string) (string, string, error) {
+	if err != nil {
+		return "", "", fmt.Errorf("invalid captcha configuration: %w", err)
+	}
+	settingsJSON, err := marshalSettings(settings)
+	if err != nil {
+		return "", "", err
+	}
+	return settingsJSON, summarize(settings), nil
 }
 
 // buildAltchaSettings applies the altcha flags onto the target row's
@@ -426,14 +447,14 @@ func runCaptchaReset(cmd adminCmdCtx, args []string) error {
 		flags = fs
 		provider = fs.String("provider", "", fmt.Sprintf("reset only this provider's row (%s); omit to reset everything", strings.Join(captcha.SupportedProviders(), ", ")))
 	}, func(ctx context.Context, cfg *config.Config, st store.Store) error {
+		mgr, _, err := captchaManagerFor(cfg, st)
+		if err != nil {
+			return err
+		}
 		if explicitlySet(flags)["provider"] {
 			p, err := captcha.ParseProvider(*provider)
 			if err != nil {
 				return fmt.Errorf("invalid captcha configuration: %w", err)
-			}
-			mgr, _, err := captchaManagerFor(cfg, st)
-			if err != nil {
-				return err
 			}
 			current, _, err := mgr.Describe(ctx)
 			if err != nil {
@@ -443,11 +464,16 @@ func runCaptchaReset(cmd adminCmdCtx, args []string) error {
 				return fmt.Errorf("reset captcha config: %w", err)
 			}
 			if current.Provider == p {
-				// Deleting the selected row leaves nothing selected; the
-				// hub's next use self-heals to altcha, the default
-				// provider — the deleted provider does not come back by
-				// itself.
-				fmt.Printf("Reset the %s provider's configuration (it was selected; the hub activates altcha, the default provider, on next use)\n", captcha.ProviderAlias(p))
+				// Deleting the selected row leaves nothing selected, so
+				// re-provision the default altcha row here — not on the
+				// hub's next use. The request path must never write: a
+				// read-only or locked store would deny the first Login
+				// with the uniform captcha error. Same contract as
+				// startup provisioning and every other admin command.
+				if err := mgr.EnsureProvisioned(ctx); err != nil {
+					return fmt.Errorf("provision captcha config: %w", err)
+				}
+				fmt.Printf("Reset the %s provider's configuration (it was selected; altcha, the default provider, is active again)\n", captcha.ProviderAlias(p))
 			} else {
 				fmt.Printf("Reset the %s provider's configuration (re-create it with `captcha set --provider %s`)\n", captcha.ProviderAlias(p), captcha.ProviderAlias(p))
 			}
@@ -456,7 +482,12 @@ func runCaptchaReset(cmd adminCmdCtx, args []string) error {
 		if err := st.CaptchaConfig().Delete(ctx); err != nil {
 			return fmt.Errorf("reset captcha config: %w", err)
 		}
-		fmt.Println("Reset captcha configuration to defaults (the altcha signing secret is regenerated on next hub use)")
+		// Re-provision rather than leaving the self-heal to the hub's
+		// next use, for the same read-only-request-path contract.
+		if err := mgr.EnsureProvisioned(ctx); err != nil {
+			return fmt.Errorf("provision captcha config: %w", err)
+		}
+		fmt.Println("Reset captcha configuration to defaults (the altcha signing secret was regenerated)")
 		return nil
 	})
 }

@@ -143,8 +143,17 @@ type Manager struct {
 	cached   map[Operation]effectiveLimit
 	cachedAt time.Time
 
-	windowMu sync.Mutex // guards windows
+	windowMu sync.Mutex // guards windows, inFlight, and minResetAt
 	windows  map[windowKey]*windowState
+	// inFlight counts attempts allow() reserved but complete() has not
+	// closed yet, so a concurrent burst cannot slip past a failures-only
+	// check (every burst member reads failures below max before any of
+	// them lands).
+	inFlight map[windowKey]int64
+	// minResetAt is the earliest resetAt among live windows (zero when
+	// unknown). It keeps the prune sweep off the hot path: the pass runs
+	// only when some window has actually expired, never on a timer.
+	minResetAt time.Time
 }
 
 type windowKey struct {
@@ -157,77 +166,157 @@ type windowState struct {
 	resetAt  time.Time
 }
 
+// errHandlerPanicked marks an attempt whose handler panicked below the
+// interceptor. It is not a credential failure, so complete() releases the
+// reservation without counting it.
+var errHandlerPanicked = errors.New("handler panicked")
+
 // NewManager creates a rate-limit manager. Solo mode never limits: it is a
 // local single-user deployment whose only "attacker" is the local user.
 func NewManager(st store.Store, soloMode bool) *Manager {
 	return &Manager{
-		st:      st,
-		solo:    soloMode,
-		now:     time.Now,
-		windows: make(map[windowKey]*windowState),
+		st:       st,
+		solo:     soloMode,
+		now:      time.Now,
+		windows:  make(map[windowKey]*windowState),
+		inFlight: make(map[windowKey]int64),
 	}
 }
 
-// allow reports whether userID may attempt op right now, consuming
-// nothing. It also returns the policy that produced the decision so the
-// caller records a later failure under the same window that judged the
-// attempt (a re-resolve could straddle a cache refresh and mix limits).
-func (m *Manager) allow(ctx context.Context, op Operation, userID string) (bool, time.Duration, effectiveLimit, error) {
+// attempt is one admitted try. allow() reserves it; complete() closes it.
+// The caller passes the handler's outcome to complete, which releases the
+// reservation and records the result under the policy that admitted the
+// attempt — never a policy a cache refresh swapped in mid-flight.
+type attempt struct {
+	op        Operation
+	userID    string
+	window    int64 // effective window seconds at admission
+	countable bool  // the effective policy had the limit enabled
+	// reserved is true only when allow() counted this attempt against the
+	// in-flight budget. A denial, or an admission under a disabled policy,
+	// makes no reservation, so complete() on such an attempt releases
+	// nothing — it cannot consume a slot a different attempt holds.
+	reserved bool
+}
+
+// allow reports whether userID may attempt op right now and, when it
+// admits the try, reserves one in-flight slot against the budget. The
+// caller MUST pass the attempt and the handler's outcome to complete;
+// the reservation is what stops a concurrent burst from all passing a
+// failures-only check. retryAfter is nonzero only on a denial that a
+// failure window drove; a denial driven by in-flight reservations clears
+// within one handler latency and reports zero.
+func (m *Manager) allow(ctx context.Context, op Operation, userID string) (*attempt, bool, time.Duration, error) {
 	limit, err := m.resolve(ctx, op)
 	if err != nil {
-		return false, 0, effectiveLimit{}, err
+		return nil, false, 0, err
 	}
+	a := &attempt{op: op, userID: userID, window: limit.limits.WindowSeconds, countable: limit.enabled}
 	if !limit.enabled {
-		return true, 0, limit, nil
+		return a, true, 0, nil
 	}
 
 	now := m.now()
 	m.windowMu.Lock()
 	defer m.windowMu.Unlock()
+	m.pruneExpiredLocked(now)
 	key := windowKey{op, userID}
 	w := m.windows[key]
-	if w == nil {
-		return true, 0, limit, nil
-	}
-	if now.After(w.resetAt) {
+	if w != nil && now.After(w.resetAt) {
 		// The window expired: drop the entry instead of leaving it inert
-		// in the map, so users who fail once do not occupy memory for the
-		// life of the process.
+		// in the map.
 		delete(m.windows, key)
-		return true, 0, limit, nil
+		w = nil
 	}
-	if w.failures >= limit.limits.MaxAttempts {
-		// resetAt came from m.now(), so the retry duration must be measured
-		// against the same clock — time.Until would use the wall clock and
-		// diverge wherever now is injected (and in these tests, frozen).
-		return false, w.resetAt.Sub(now), limit, nil
+	if w != nil && w.failures+m.inFlight[key] >= limit.limits.MaxAttempts {
+		if w.failures >= limit.limits.MaxAttempts {
+			// resetAt came from m.now(), so the retry duration must be
+			// measured against the same clock — time.Until would use the
+			// wall clock and diverge wherever now is injected (and in
+			// these tests, frozen).
+			return a, false, w.resetAt.Sub(now), nil
+		}
+		// The denial is driven by in-flight reservations, not recorded
+		// failures: the reservations land within one handler latency, so
+		// the zero retry duration renders as the one-second floor rather
+		// than a full window the user does not actually owe.
+		return a, false, 0, nil
 	}
-	return true, 0, limit, nil
+	if w == nil && m.inFlight[key] >= limit.limits.MaxAttempts {
+		// No failure window is open, but a concurrent burst holds the whole
+		// budget in flight. Deny so the burst cannot slip past a
+		// failures-only check.
+		return a, false, 0, nil
+	}
+	m.inFlight[key]++
+	a.reserved = true
+	return a, true, 0, nil
 }
 
-// recordFailure counts a failed attempt for (op, userID), opening a fresh
-// window when none is active.
-func (m *Manager) recordFailure(op Operation, userID string, windowSeconds int64) {
+// complete closes the reservation allow() made and records the handler's
+// outcome: a success resets the window (the user just proved knowledge of
+// the credential, so accumulated failures were noise), a countable
+// credential failure extends it, and any other error keeps it untouched.
+// An attempt without a reservation (denied, or admitted under a disabled
+// policy) releases nothing.
+func (m *Manager) complete(a *attempt, handlerErr error) {
+	if a == nil || !a.reserved {
+		return
+	}
 	now := m.now()
 	m.windowMu.Lock()
 	defer m.windowMu.Unlock()
-	key := windowKey{op, userID}
+	key := windowKey{a.op, a.userID}
+	if n := m.inFlight[key]; n <= 1 {
+		delete(m.inFlight, key)
+	} else {
+		m.inFlight[key] = n - 1
+	}
+	if handlerErr == nil {
+		delete(m.windows, key)
+		return
+	}
+	if !a.countable {
+		return
+	}
+	spec, known := defaults[a.op]
+	if !known || !spec.isCredentialFailure(handlerErr) {
+		return
+	}
 	w := m.windows[key]
 	if w == nil || now.After(w.resetAt) {
 		// Fixed window anchored at the first failure: a burst of N failures
 		// trips the limit, and the counter self-expires one window later.
-		w = &windowState{resetAt: now.Add(time.Duration(windowSeconds) * time.Second)}
+		w = &windowState{resetAt: now.Add(time.Duration(a.window) * time.Second)}
 		m.windows[key] = w
+	}
+	if m.minResetAt.IsZero() || w.resetAt.Before(m.minResetAt) {
+		m.minResetAt = w.resetAt
 	}
 	w.failures++
 }
 
-// reset clears the failure window after a success: the user just proved
-// knowledge of the credential, so accumulated failures were noise.
-func (m *Manager) reset(op Operation, userID string) {
-	m.windowMu.Lock()
-	defer m.windowMu.Unlock()
-	delete(m.windows, windowKey{op, userID})
+// pruneExpiredLocked drops windows whose reset has passed. The same-key
+// lazy delete in allow only fires when that user returns, so without this
+// sweep a user who fails once and never retries would occupy memory for
+// the life of the process. minResetAt keeps the pass off the hot path:
+// it runs only when some window has actually expired, and recomputes the
+// next expiry so the map holds nothing inert.
+func (m *Manager) pruneExpiredLocked(now time.Time) {
+	if !m.minResetAt.IsZero() && now.Before(m.minResetAt) {
+		return
+	}
+	next := time.Time{}
+	for k, w := range m.windows {
+		if now.After(w.resetAt) {
+			delete(m.windows, k)
+			continue
+		}
+		if next.IsZero() || w.resetAt.Before(next) {
+			next = w.resetAt
+		}
+	}
+	m.minResetAt = next
 }
 
 // resolve returns the operation's effective policy, overlaying a stored
@@ -291,7 +380,7 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 			}
 			userID := user.ID.String()
 
-			allowed, retryAfter, limit, err := m.allow(ctx, op, userID)
+			att, allowed, retryAfter, err := m.allow(ctx, op, userID)
 			if err != nil {
 				// Config unreachable: fail closed for safety, same as the
 				// captcha interceptor — but with an honest code, so
@@ -306,16 +395,23 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 					fmt.Errorf("too many attempts; try again in %s", formatWindow(retryAfter)))
 			}
 
-			resp, err := next(ctx, req)
-			if err != nil {
-				spec, known := defaults[op]
-				if known && spec.isCredentialFailure(err) && limit.enabled {
-					m.recordFailure(op, userID, limit.limits.WindowSeconds)
-				}
-				return resp, err
-			}
-			m.reset(op, userID)
-			return resp, nil
+			// A panicking handler must not leak the reservation: complete
+			// runs on the unwind with a non-countable error (the panic is
+			// not a credential failure), and the panic continues up to
+			// net/http's per-connection recover exactly as before.
+			var resp connect.AnyResponse
+			var handlerErr error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						m.complete(att, errHandlerPanicked)
+						panic(r)
+					}
+				}()
+				resp, handlerErr = next(ctx, req)
+			}()
+			m.complete(att, handlerErr)
+			return resp, handlerErr
 		}
 	}
 }

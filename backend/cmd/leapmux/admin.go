@@ -587,6 +587,22 @@ func explicitlySet(fs *flag.FlagSet) map[string]bool {
 	return set
 }
 
+// requireAnySet fails when none of the listed flags was passed
+// explicitly. The admin command families share it so the "at least one
+// of" phrasing stays identical everywhere.
+func requireAnySet(set map[string]bool, names ...string) error {
+	for _, name := range names {
+		if set[name] {
+			return nil
+		}
+	}
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = "--" + name
+	}
+	return fmt.Errorf("at least one of %s is required", strings.Join(quoted, ", "))
+}
+
 // wholeSeconds converts a duration flag to whole seconds, rejecting
 // sub-second input instead of silently truncating it to a value the user
 // never typed.

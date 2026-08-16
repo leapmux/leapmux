@@ -417,7 +417,9 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
  * widget appearing (solve it), or the form's submit button enabling
  * (bootstrap answered "no captcha"; the caller's fields are already
  * filled). A no-op when captcha is disabled, so specs run identically
- * either way.
+ * either way; when NEITHER outcome arrives, the poll fails rather than
+ * proceeding — a widget-mount regression must fail at the wait, not as a
+ * downstream assertion the silent no-op starves.
  *
  * Playwright pierces the widget's open shadow DOM; clicking the checkbox
  * kicks off the PoW (PBKDF2 at the default cost lands well under the
@@ -427,16 +429,19 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
 export async function solveCaptchaViaUI(page: Page) {
   const widget = page.locator('altcha-widget')
   const submit = page.locator('form button[type="submit"]')
-  const deadline = Date.now() + 30_000
-  while (Date.now() < deadline) {
-    if (await widget.count() > 0) {
-      break
-    }
-    if (await submit.count() > 0 && await submit.first().isEnabled()) {
-      return
-    }
-    await page.waitForTimeout(200)
-  }
+  // One compound predicate decides the disjunction at the deadline — the
+  // widget appeared (solve it) or the submit button enabled (bootstrap
+  // answered "no captcha"; the caller's fields are already filled) —
+  // instead of a hand-rolled loop plus a post-loop re-check that covers
+  // only the gap between the last poll and itself. expect.poll rides the
+  // global expect timeout; the message names the helper so a timeout
+  // failure points here, not at a downstream assertion the silent no-op
+  // would starve.
+  await expect.poll(async () => {
+    if (await widget.count() > 0)
+      return true
+    return await submit.count() > 0 && await submit.first().isEnabled()
+  }, { message: 'solveCaptchaViaUI: neither the captcha widget nor an enabled submit button appeared' }).toBe(true)
   if (await widget.count() === 0) {
     return
   }

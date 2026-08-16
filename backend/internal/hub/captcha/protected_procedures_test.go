@@ -12,7 +12,7 @@ import (
 // protectedProcedureRationale records, for every captcha-protected
 // procedure, why anonymous automation must pre-pay proof-of-work before
 // its handler runs. This is the captcha sibling of the auth package's
-// publicProcedureRationale tripwire: protectedProcedures names the doors
+// publicProcedureRationale tripwire: protectedProcedures lists the doors
 // that make an unauthenticated caller run Argon2 or create users, so an
 // entry without a written reason is unaudited.
 var protectedProcedureRationale = map[string]string{
@@ -65,14 +65,11 @@ func TestProtectedProceduresAreClassified(t *testing.T) {
 			"public procedure %q is unclassified or double-classified: either add it to protectedProcedures with a rationale, or record why it is exempt in captchaExemptRationale", procedure)
 	}
 
-	// Every protected procedure also carries an action name (the string
-	// its clients mint provider tokens under; reCAPTCHA verifies it
-	// server-side), so a new protected procedure cannot silently reach
-	// Verify with an empty action.
-	for procedure := range protectedProcedures {
-		action, ok := procedureActions[procedure]
-		assert.Truef(t, ok, "protected procedure %q has no action in procedureActions; add the action its clients execute", procedure)
-		assert.NotEmptyf(t, action, "protected procedure %q maps to an empty action", procedure)
+	// Every protected procedure carries a non-empty action in its own
+	// entry (the string its clients mint provider tokens under; reCAPTCHA
+	// verifies it server-side), so a new protected procedure cannot
+	// silently reach Verify with an empty action.
+	for procedure, proc := range protectedProcedures {
+		assert.NotEmptyf(t, proc.action, "protected procedure %q maps to an empty action", procedure)
 	}
-	assert.Len(t, procedureActions, len(protectedProcedures), "procedureActions and protectedProcedures must stay in lockstep")
 }

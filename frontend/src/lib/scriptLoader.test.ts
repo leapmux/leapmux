@@ -100,4 +100,37 @@ describe('loadExternalScript', () => {
       vi.useRealTimers()
     }
   })
+
+  it('a timed-out script firing onerror late must not evict a newer retry in flight', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = stubScriptElement()
+      const headAppend = vi.spyOn(document.head, 'appendChild').mockImplementation(() => first.script as unknown as Node)
+
+      // Load A times out (the element is removed, but its fetch lives on).
+      const timedOut = loadExternalScript('https://provider.example/api.js?case=lateonerror')
+      const assertion = expect(timedOut).rejects.toThrow('timed out loading script')
+      vi.advanceTimersByTime(15_000)
+      await assertion
+
+      // Retry B mounts a fresh script for the same URL and stays pending.
+      const second = stubScriptElement()
+      const retry = loadExternalScript('https://provider.example/api.js?case=lateonerror')
+      expect(headAppend).toHaveBeenCalledTimes(2)
+
+      // The detached first script now settles with an error. The eviction
+      // is identity-guarded, so B's in-flight entry survives and a third
+      // caller shares B's load instead of executing the SDK a third time.
+      first.fireError()
+      const shared = loadExternalScript('https://provider.example/api.js?case=lateonerror')
+      second.fireLoad()
+      await expect(retry).resolves.toBeUndefined()
+      await expect(shared).resolves.toBeUndefined()
+      expect(headAppend).toHaveBeenCalledTimes(2)
+      headAppend.mockRestore()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
 })

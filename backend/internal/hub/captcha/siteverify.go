@@ -24,13 +24,21 @@ const siteverifyTimeout = 10 * time.Second
 
 // Breaker policy: once siteverifyBreakerThreshold consecutive calls fail
 // at the transport level (unreachable endpoint, non-200, undecodable
-// body), the circuit opens for siteverifyBreakerCooldown and every
-// verification fails closed without dialing — a provider outage must not
-// hold one goroutine per in-flight login for the full timeout. After the
-// cooldown the circuit half-opens: the next call probes the provider, a
-// success closes it, and a fault re-opens it without another threshold
-// run. Decoded replies (even denials) count as successes — the provider
-// is healthy when it answers.
+// body, OR a deadline expiry — the request deadline fires before this
+// client's own timeout, so a provider that accepts connections and never
+// answers surfaces as a deadline and must still count as a fault), the
+// circuit opens for siteverifyBreakerCooldown and every verification
+// fails closed without dialing — a provider outage must not hold one
+// goroutine per in-flight login for the full timeout. After the cooldown
+// the circuit half-opens for exactly one probe: the first caller dials
+// alone while every other caller still fails fast, a success closes it,
+// and a fault re-opens it without another threshold run — an unbounded
+// probe burst on a recovering-but-shaky provider would re-trip it and
+// stretch the outage. Decoded replies (even denials) count as successes —
+// the provider is healthy when it answers. A call that ends because the
+// CALLER cancelled it (client disconnect: context.Canceled) counts as
+// neither: the provider was never given a chance to fail, and aborted
+// requests must not open the circuit against a healthy provider.
 const (
 	siteverifyBreakerThreshold = 5
 	siteverifyBreakerCooldown  = 30 * time.Second
@@ -75,6 +83,8 @@ type siteverifyClient struct {
 	mu        sync.Mutex
 	faults    int       // consecutive transport-level faults
 	trippedAt time.Time // zero while the circuit is closed
+	// halfOpen is true while the single post-cooldown probe is in flight.
+	halfOpen bool
 	// cooldown overrides siteverifyBreakerCooldown; tests shrink it.
 	cooldown time.Duration
 }
@@ -91,42 +101,91 @@ func newSiteverifyClient(provider Provider, endpoint string) *siteverifyClient {
 // verify submits secret + token and decodes the reply, shedding load
 // through the breaker while the circuit is open. A returned error is a
 // transport-level fault (unreachable endpoint, non-200, undecodable
-// body) or errBreakerOpen; policy decisions on a decoded reply are the
-// caller's.
+// body, deadline expiry) or errBreakerOpen; policy decisions on a
+// decoded reply are the caller's.
 func (c *siteverifyClient) verify(ctx context.Context, secret, token string) (siteverifyResponse, error) {
-	if c.breakerTripped() {
-		return siteverifyResponse{}, errBreakerOpen
+	probe, err := c.enterCall()
+	if err != nil {
+		return siteverifyResponse{}, err
 	}
 	resp, err := c.call(ctx, secret, token)
-	if err != nil {
-		c.recordFault()
-	} else {
+	switch {
+	case err == nil:
 		c.recordSuccess()
+	case errors.Is(err, context.Canceled):
+		// The caller cancelled mid-flight (client disconnect): the
+		// provider was never given a chance to answer, so this counts as
+		// neither a fault nor a success. Only this call's own probe slot,
+		// if it held one, returns to open for the next caller to probe.
+		// A deadline expiry is NOT this arm: the provider had its chance
+		// and did not answer, so it stays a fault above.
+		c.abandon(probe)
+	default:
+		c.recordFault()
 	}
 	return resp, err
 }
 
-// breakerTripped reports whether the circuit is open. Once the cooldown
-// elapses it half-opens — returning false so the next call probes the
-// provider — and a later fault re-trips without another threshold run.
+// enterCall is the single admission gate. It returns errBreakerOpen while
+// the circuit is open or another caller holds the half-open probe. When
+// the cooldown has elapsed it admits exactly one caller as the probe;
+// the probe identity travels back to verify so only its holder can
+// abandon the slot.
+func (c *siteverifyClient) enterCall() (probe bool, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.halfOpen {
+		return false, errBreakerOpen
+	}
+	if !c.trippedAt.IsZero() {
+		if time.Since(c.trippedAt) < c.cooldown {
+			return false, errBreakerOpen
+		}
+		c.halfOpen = true
+		return true, nil
+	}
+	return false, nil
+}
+
+// breakerTripped reports whether the circuit currently denies calls
+// (open, or half-open with the one probe in flight). It records no
+// state; enterCall owns the transitions.
 func (c *siteverifyClient) breakerTripped() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.trippedAt.IsZero() {
-		return false
-	}
-	if time.Since(c.trippedAt) < c.cooldown {
+	if c.halfOpen {
 		return true
 	}
-	c.trippedAt = time.Time{}
-	return false
+	return !c.trippedAt.IsZero() && time.Since(c.trippedAt) < c.cooldown
+}
+
+// abandon returns the probe slot for a call that ended because the
+// CALLER cancelled it. Only the probe holder may abandon; the circuit
+// re-arms with a fresh cooldown — it stays open, because the provider
+// was never re-tested.
+func (c *siteverifyClient) abandon(probe bool) {
+	if !probe {
+		return
+	}
+	c.mu.Lock()
+	c.halfOpen = false
+	c.trippedAt = time.Now()
+	c.mu.Unlock()
 }
 
 func (c *siteverifyClient) recordFault() {
 	c.mu.Lock()
+	wasProbe := c.halfOpen
 	c.faults++
+	c.halfOpen = false
 	var tripped bool
-	if c.faults >= siteverifyBreakerThreshold && c.trippedAt.IsZero() {
+	switch {
+	case wasProbe:
+		// The probe faulted: re-open with a fresh cooldown, without
+		// another threshold run.
+		c.trippedAt = time.Now()
+		tripped = true
+	case c.faults >= siteverifyBreakerThreshold && c.trippedAt.IsZero():
 		c.trippedAt = time.Now()
 		tripped = true
 	}
@@ -141,6 +200,7 @@ func (c *siteverifyClient) recordSuccess() {
 	c.mu.Lock()
 	c.faults = 0
 	c.trippedAt = time.Time{}
+	c.halfOpen = false
 	c.mu.Unlock()
 }
 

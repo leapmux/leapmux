@@ -27,6 +27,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -96,7 +97,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 	opts := connect.WithInterceptors(interceptor)
 
 	mailer := &recordingSender{}
-	authSvc := service.NewAuthService(service.AuthServiceDeps{Store: st, Config: cfg, Lifecycle: auth.NewCredentialLifecycleEffects(sc, nil, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil})
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 

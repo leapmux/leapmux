@@ -15,8 +15,8 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
@@ -40,7 +40,7 @@ func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1conne
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 
-	capture := &timeoutCapture{inner: service.NewAuthService(service.AuthServiceDeps{Store: st, Config: &config.Config{}, Lifecycle: auth.NewCredentialLifecycleEffects(nil, nil, nil), Keystore: nil, Mail: mail.NewStubSender(), Renderer: mail.Renderer{}, Captcha: nil})}
+	capture := &timeoutCapture{inner: service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil)))}
 
 	mux := http.NewServeMux()
 	interceptors := connect.WithInterceptors(auth.NewTimeoutInterceptor(func() time.Duration { return timeout }))

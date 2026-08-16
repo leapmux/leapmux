@@ -95,8 +95,8 @@ func runRateLimitSet(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 		set := explicitlySet(flags)
-		if !set["max-attempts"] && !set["window"] {
-			return fmt.Errorf("at least one of --max-attempts, --window is required")
+		if err := requireAnySet(set, "max-attempts", "window"); err != nil {
+			return err
 		}
 
 		// Overlay the request onto the current effective limits; an

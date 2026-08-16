@@ -607,6 +607,11 @@ type CaptchaConfigStore interface {
 	// returns 1 when the salt was unused (first use accepted) and 0 when
 	// a row already exists (replay denied).
 	ConsumeAltchaSalt(ctx context.Context, p ConsumeAltchaSaltParams) (int64, error)
+	// HasAltchaSalt reports, read-only, whether a salt row exists. The
+	// verifier consults it before the memory-hard solution check so a
+	// replay costs one indexed read; ConsumeAltchaSalt stays the
+	// single-use authority.
+	HasAltchaSalt(ctx context.Context, salt string) (bool, error)
 }
 
 // RateLimitConfigStore manages per-operation rate-limit overrides.
