@@ -56,7 +56,7 @@ func newUnixSocketAuthClient(t *testing.T, st store.Store, interceptor connect.I
 	t.Helper()
 
 	mux := http.NewServeMux()
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connect.WithInterceptors(interceptor))
 	mux.Handle(path, handler)
 

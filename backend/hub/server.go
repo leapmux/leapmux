@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
@@ -27,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/revocationwatcher"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
@@ -150,6 +152,7 @@ type Server struct {
 	cfg               *config.Config
 	store             store.Store
 	keystore          *keystore.Keystore
+	settings          *settings.Manager
 	oauthHandler      *service.OAuthHandler
 	server            *http.Server
 	tcpLn             net.Listener
@@ -223,6 +226,32 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	}
 	slog.Info("encryption keystore loaded", "active_version", ks.ActiveVersion(), "versions", len(ks.Versions()))
 
+	// The settings manager is the hub's runtime configuration authority:
+	// every DB-backed setting (auth policy, SMTP, timeouts, limits,
+	// captcha, rate limits) resolves through its snapshot, so admin CLI
+	// writes propagate within the TTL and restart-class values (queue
+	// budgets, max message size) are fixed for the process's life. Loaded
+	// synchronously so a broken store fails startup, before any pool is
+	// constructed from a value it must never see change.
+	allDescriptors := append(settings.CoreDescriptors(), captcha.SettingsDescriptors()...)
+	allDescriptors = append(allDescriptors, ratelimit.SettingsDescriptors()...)
+	setMgr := settings.NewManager(st, ks, allDescriptors,
+		settings.WithCrossValidation(settings.SMTPConfigured))
+	if err := setMgr.Load(context.Background()); err != nil {
+		return nil, acquired.close(fmt.Errorf("load settings: %w", err))
+	}
+	startupSnap := setMgr.Snapshot(context.Background())
+	startupLimits := settings.KeyLimits.Of(startupSnap)
+	if cfg.DevMode && !startupSnap.Customized(settings.KeySignupEnabled) {
+		// Dev mode runs the full multi-user path; an open signup is the
+		// dev-friendly default the old dev config carried. Seeded only
+		// when the key sits at its default, so an explicit `settings set`
+		// wins over it.
+		if err := settings.KeySignupEnabled.Set(context.Background(), setMgr, true); err != nil {
+			return nil, acquired.close(fmt.Errorf("seed dev signup setting: %w", err))
+		}
+	}
+
 	if err := bootstrap.Run(context.Background(), st, cfg.SoloMode); err != nil {
 		return nil, acquired.close(
 			fmt.Errorf("bootstrap: %w", err))
@@ -247,8 +276,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	// Bot-protection managers, shared between the interceptor chain and the
 	// auth service so issuance and enforcement cannot disagree.
-	captchaMgr := captcha.NewManager(st, ks, cfg.SoloMode)
-	rateLimitMgr := ratelimit.NewManager(st, cfg.SoloMode)
+	captchaMgr := captcha.NewManager(st, setMgr, cfg.SoloMode)
+	rateLimitMgr := ratelimit.NewManager(setMgr, cfg.SoloMode)
 
 	// Provision the default captcha row at startup so the request path
 	// never writes: a first Login on a fresh install must not depend on a
@@ -275,7 +304,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// user-supplied worker id without the ownership + delegation-scope check,
 	// and a composition that forgot to supply one would not compile.
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
-	cMgr := channelmgr.New(cfg.MaxMessageSize)
+	// Restart-class: the reassembly ceiling is fixed for the process's
+	// life, read once here from the startup snapshot.
+	cMgr := channelmgr.New(channelwire.ResolveMaxMessageSize(
+		int(settings.KeyMaxMessageSizeBytes.Of(startupSnap))))
 
 	// Outbound queue memory, bounded per CLASS of connection rather than per
 	// connection: a per-connection budget does not compose into a process bound
@@ -309,18 +341,30 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// Probed ONCE, here, and handed to all three: the three shares divide one
 	// number because there is one number, not because three accessors agreed.
 	queueBasis := memlimit.Detect()
-	relayBudget := cfg.ResolveRelayQueueMemoryBudget(queueBasis)
+	// Restart-class like max_message_size: pool minimum floors are derived
+	// from these at startup, so an admin's change applies on the next
+	// restart. An unset (zero) field still auto-sizes from the process's
+	// own memory limit, keeping per-process budgets on multi-instance
+	// deployments.
+	startupBudgets := settings.KeyQueueBudget.Of(startupSnap)
+	relayBudget := config.ResolveRelayQueueMemoryBudget(startupBudgets.RelayBytes, queueBasis)
 	relayQueuePool := newQueuePool(relayBudget)
 
-	workerBudget := cfg.ResolveWorkerQueueMemoryBudget(queueBasis)
+	workerBudget := config.ResolveWorkerQueueMemoryBudget(startupBudgets.WorkerBytes, queueBasis)
 	workerQueuePool := newQueuePool(workerBudget)
 
-	userEventsBudget := cfg.ResolveUserEventsQueueMemoryBudget(queueBasis)
+	userEventsBudget := config.ResolveUserEventsQueueMemoryBudget(startupBudgets.UserEventsBytes, queueBasis)
 	userEventsQueuePool := newQueuePool(userEventsBudget)
 
 	logQueueMemoryBudgets(slog.Default(), queueBasis,
 		relayBudget, workerBudget, userEventsBudget)
-	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return cfg.APITimeout })
+	// The API timeout is hot: the closure re-resolves the snapshot on every
+	// call, exactly like the per-request config reads it replaces.
+	apiTimeout := func() time.Duration {
+		return time.Duration(settings.KeyTimeouts.Of(
+			setMgr.Snapshot(context.Background())).APITimeoutSeconds) * time.Second
+	}
+	pendingReqs := workermgr.NewPendingRequests(apiTimeout)
 
 	apiTokenPepper := ks.Pepper()
 	tokenValidator, tvErr := auth.NewTokenValidator(st, apiTokenPepper[:])
@@ -329,12 +373,20 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 			fmt.Errorf("create token validator: %w", tvErr))
 	}
 	authInterceptor, authContexts := auth.NewInterceptor(auth.InterceptorOptions{
-		Store:                     st,
-		SoloUser:                  soloUser,
-		TokenValidator:            tokenValidator,
-		SecureCookies:             cfg.SecureCookies,
-		EmailVerificationRequired: cfg.EmailVerificationRequired,
-		SessionDuration:           cfg.SessionDuration,
+		Store:          st,
+		SoloUser:       soloUser,
+		TokenValidator: tokenValidator,
+		// The auth policy (cookie name, verification gate, session
+		// duration) is DB-backed and hot: re-resolved per use so an admin
+		// change applies to the next request.
+		Policy: func() auth.Policy {
+			snap := setMgr.Snapshot(context.Background())
+			return auth.Policy{
+				SecureCookies:             settings.KeySecureCookies.Of(snap),
+				EmailVerificationRequired: settings.EmailVerificationEffective(snap),
+				SessionDuration:           settings.SessionDuration(snap),
+			}
+		},
 	})
 	acquired.authContexts = authContexts
 	// Let a sliding cookie session (and a rotated bearer, via the credential
@@ -345,16 +397,16 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// bytes one CLASS of connection may hold, and this bounds how many one user
 	// may open, so a member's guaranteed working set stops multiplying by a
 	// number nothing limits.
-	authContexts.SetMaxConnectionsPerUser(cfg.MaxConnectionsPerUser)
+	authContexts.SetMaxConnectionsPerUser(startupLimits.MaxConnectionsPerUser)
 	// Logged like the queue budgets beside it, and for the same reason: the
 	// setter is one unenforced line, so a wiring omission is otherwise invisible
 	// until the day the cap was supposed to hold and did not.
 	slog.Info("per-user connection limit",
-		"max_connections_per_user", cfg.MaxConnectionsPerUser, "unlimited", cfg.MaxConnectionsPerUser == 0)
+		"max_connections_per_user", startupLimits.MaxConnectionsPerUser, "unlimited", startupLimits.MaxConnectionsPerUser == 0)
 	connectOpts := connectOptions(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
-		auth.NewTimeoutInterceptor(func() time.Duration { return cfg.APITimeout }),
+		auth.NewTimeoutInterceptor(apiTimeout),
 		authInterceptor,
 		captcha.NewInterceptor(captchaMgr),
 		ratelimit.NewInterceptor(rateLimitMgr),
@@ -362,33 +414,22 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	mux := http.NewServeMux()
 
-	// Mail sender: real SMTP when smtp_host is configured, otherwise the
-	// no-op disabledSender that returns ErrEmailDisabled. Validation in
-	// cfg.Validate() prevents email_verification_required=true paired
-	// with an empty smtp_host, so the disabled sender should not be
-	// reached during normal operation; it exists as a loud, matchable
-	// fallback rather than a silent no-op (which is what the previous
-	// StubSender used to do).
-	var mailSender mail.Sender
-	if cfg.SmtpHost != "" {
-		mailSender = mail.NewSMTPSender(mail.SMTPConfig{
-			Host:     cfg.SmtpHost,
-			Port:     cfg.SmtpPort,
-			Username: cfg.SmtpUsername,
-			Password: cfg.SmtpPassword,
-			From:     cfg.SmtpFromAddress,
-			TLSMode:  cfg.SmtpTLSMode,
-		})
-	} else {
-		mailSender = mail.NewDisabledSender()
-	}
-	// Renderer carries the hub's public URL once at construction so the
-	// signup / email-change / resend / worker-registration paths don't
-	// each have to thread cfg.BaseURL() through.
-	mailRenderer := mail.Renderer{HubURL: cfg.BaseURL()}
+	// Mail sender: resolves the SMTP configuration from the settings
+	// snapshot on every Send, so `admin settings set smtp ...` applies to
+	// the next email without a restart. With SMTP unconfigured it returns
+	// the loud, matchable ErrEmailDisabled rather than silently dropping
+	// mail. The write path's cross-validation keeps
+	// email_verification_required=true from pairing with an absent SMTP
+	// host; the read path degrades that combination to verification-off.
+	mailSender := mail.NewSettingsSender(setMgr)
+	// The renderer derives its base URL per render so a public_url change
+	// reaches the next email's links and footers without a restart.
+	mailRenderer := mail.Renderer{BaseURL: func() string {
+		return settings.BaseURL(setMgr.Snapshot(context.Background()), cfg.Listen)
+	}}
 
 	broadcaster := service.NewHubEventBroadcaster(cMgr)
-	notifierSvc := notifier.New(st, wMgr, pendingReqs, cfg)
+	notifierSvc := notifier.New(st, wMgr, pendingReqs, apiTimeout)
 
 	// Per-user CRDT manager registry. The factory constructs a fully
 	// bootstrapped manager (state loaded from disk, ops replayed) on
@@ -423,19 +464,33 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// deregistering worker keeps its stream (that is how it learns to stop) but
 	// stops counting as a row, so the row cap alone lets register/deregister
 	// cycles add members forever.
-	connectorSvc.SetMaxWorkersPerUser(cfg.MaxWorkersPerUser)
-	wMgr.SetMaxWorkersPerUser(cfg.MaxWorkersPerUser)
+	connectorSvc.SetMaxWorkersPerUser(startupLimits.MaxWorkersPerUser)
+	wMgr.SetMaxWorkersPerUser(startupLimits.MaxWorkersPerUser)
 	// Logged like the connection limit above, and for the same reason: two
 	// unenforced setter lines, so a wiring omission is otherwise invisible until
 	// the day the cap was supposed to hold and did not.
 	slog.Info("per-user worker limit",
-		"max_workers_per_user", cfg.MaxWorkersPerUser, "unlimited", cfg.MaxWorkersPerUser <= 0)
+		"max_workers_per_user", startupLimits.MaxWorkersPerUser, "unlimited", startupLimits.MaxWorkersPerUser <= 0)
+	// Hot propagation for both per-user caps: the settings manager fires
+	// subscribers on every effective snapshot change, and the push lands in
+	// the same atomic setters the startup values used, so an admin's
+	// `settings set limits ...` holds from the next registration onward
+	// without a restart.
+	setMgr.Subscribe(func(s *settings.Snapshot) {
+		l := settings.KeyLimits.Of(s)
+		authContexts.SetMaxConnectionsPerUser(l.MaxConnectionsPerUser)
+		connectorSvc.SetMaxWorkersPerUser(l.MaxWorkersPerUser)
+		wMgr.SetMaxWorkersPerUser(l.MaxWorkersPerUser)
+		slog.Info("per-user limits changed",
+			"max_connections_per_user", l.MaxConnectionsPerUser,
+			"max_workers_per_user", l.MaxWorkersPerUser)
+	})
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)
 	// One delegation-scope cache shared by SubmitOps (resolve) and worker
 	// deregistration (evict); see auth.DelegationScopeCache.
 	scopeCache := auth.NewDelegationScopeCache(st)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, cfg, scopeCache)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, cfg, setMgr, scopeCache)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
@@ -445,24 +500,32 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle(channelPath, channelHandler)
 
 	authSvc := service.NewAuthService(service.AuthServiceDeps{
-		Store: st, Config: cfg, Lifecycle: lifecycle, Keystore: ks,
+		Store: st, Config: cfg, Settings: setMgr, Lifecycle: lifecycle, Keystore: ks,
 		Mail: mailSender, Renderer: mailRenderer, Captcha: captchaMgr,
 	})
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 
 	// WebSocket endpoint for encrypted channel relay (Frontend <-> Worker).
-	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, authContexts, soloUser, cfg.SecureCookies, relayQueuePool).
+	// The cookie-name policy resolves per connection, so a secure_cookies
+	// change applies to the next socket (existing sockets keep the name
+	// they authenticated under).
+	secureCookies := func() bool {
+		return settings.KeySecureCookies.Of(setMgr.Snapshot(context.Background()))
+	}
+	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, authContexts, soloUser, secureCookies, relayQueuePool).
 		WithTokenValidator(tokenValidator).
 		WithChannelCloseEnqueuer(channelSvc)
 	mux.Handle("/ws/channel", channelRelay)
 
 	// OAuth HTTP endpoints.
-	oauthHandler := service.NewOAuthHandler(st, cfg, ks)
+	oauthHandler := service.NewOAuthHandler(st, cfg, setMgr, ks)
 	oauthHandler.RegisterRoutes(mux)
 
 	// CLI auth HTTP endpoints (PKCE local-redirect + RFC 8628 device code).
-	apiAuthHandler := service.NewAPIAuthHandler(st, tokenValidator, lifecycle, cfg.BaseURL())
+	apiAuthHandler := service.NewAPIAuthHandler(st, tokenValidator, lifecycle, func() string {
+		return settings.BaseURL(setMgr.Snapshot(context.Background()), cfg.Listen)
+	})
 	apiAuthHandler.RegisterRoutes(mux)
 
 	// Worker-issued delegation token mint/revoke endpoints. The credential
@@ -475,7 +538,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// UserService drives credential-rotation paths (ChangePassword) through the
 	// shared lifecycle, whose RevokeUserPreservingSession hard-closes every
 	// channel a user owns alongside the delegation-token revocation.
-	userSvc := service.NewUserService(st, cfg, lifecycle, mailSender, mailRenderer)
+	userSvc := service.NewUserService(st, cfg, setMgr, lifecycle, mailSender, mailRenderer)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
 
@@ -499,7 +562,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// UpdatePresence). The WS path bypasses HTTP/1.1 chunked-stream
 	// buffering hazards (some proxies / Tauri's buffered fetch) that
 	// motivated retiring the streaming RPC.
-	userEventsHandler := service.NewUserEventsHandler(st, crdtRegistry, authContexts, soloUser, cfg.SecureCookies, userEventsQueuePool).
+	userEventsHandler := service.NewUserEventsHandler(st, crdtRegistry, authContexts, soloUser, secureCookies, userEventsQueuePool).
 		WithTokenValidator(tokenValidator)
 	mux.Handle("/ws/userevents", userEventsHandler)
 
@@ -582,6 +645,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		cfg:               cfg,
 		store:             st,
 		keystore:          ks,
+		settings:          setMgr,
 		oauthHandler:      oauthHandler,
 		server:            server,
 		tcpLn:             tcpLn,
@@ -600,6 +664,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 // (e.g. for solo/dev auto-registration).
 func (s *Server) Store() store.Store {
 	return s.store
+}
+
+// SettingsManager returns the Hub's settings manager; the solo/dev
+// launchers read instance settings through it when bringing up the local
+// worker.
+func (s *Server) SettingsManager() *settings.Manager {
+	return s.settings
 }
 
 // WorkerCredentials holds the credentials for a registered worker.

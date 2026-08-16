@@ -108,11 +108,11 @@ func (s *sqliteStore) OAuthUserLinks() store.OAuthUserLinkStore {
 func (s *sqliteStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
 	return &pendingOAuthSignupStore{conn: s.conn}
 }
-func (s *sqliteStore) CaptchaConfig() store.CaptchaConfigStore {
-	return &captchaConfigStore{conn: s.conn}
+func (s *sqliteStore) Settings() store.SettingsStore {
+	return &settingsStore{conn: s.conn}
 }
-func (s *sqliteStore) RateLimitConfig() store.RateLimitConfigStore {
-	return &rateLimitConfigStore{conn: s.conn}
+func (s *sqliteStore) AltchaSalts() store.AltchaSaltsStore {
+	return &altchaSaltsStore{conn: s.conn}
 }
 func (s *sqliteStore) APITokens() store.APITokenStore { return &apiTokenStore{conn: s.conn} }
 func (s *sqliteStore) DelegationTokens() store.DelegationTokenStore {

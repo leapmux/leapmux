@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
 // SMTPConfig configures an SMTPSender. Production callers fill the first
@@ -42,7 +42,7 @@ type SMTPConfig struct {
 	// header.
 	From string
 	// TLSMode selects between starttls / implicit / none. Use the
-	// SmtpTLSMode* constants from internal/hub/config.
+	// SmtpTLSMode* constants from internal/hub/settings.
 	TLSMode string
 
 	// TLSConfig, when non-nil, overrides the default TLS configuration.
@@ -160,7 +160,7 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 	}
 
 	switch cfg.TLSMode {
-	case config.SmtpTLSModeImplicit:
+	case settings.SMTPTLSModeImplicit:
 		// Wrap-after-dial keeps the Dialer hook usable across all three
 		// TLS modes; tls.Dialer{NetDialer: …} only accepts *net.Dialer,
 		// not an arbitrary dial function.
@@ -170,7 +170,7 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 			return fmt.Errorf("tls handshake: %w", err)
 		}
 		conn = tlsConn
-	case config.SmtpTLSModeSTARTTLS, config.SmtpTLSModeNone, "":
+	case settings.SMTPTLSModeSTARTTLS, settings.SMTPTLSModeNone, "":
 		// Stay plaintext for now; STARTTLS upgrade happens after EHLO.
 	default:
 		_ = conn.Close()
@@ -184,7 +184,7 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 	}
 	defer func() { _ = c.Close() }()
 
-	if cfg.TLSMode == config.SmtpTLSModeSTARTTLS {
+	if cfg.TLSMode == settings.SMTPTLSModeSTARTTLS {
 		if ok, _ := c.Extension("STARTTLS"); !ok {
 			return errors.New("smtp: server did not advertise STARTTLS")
 		}

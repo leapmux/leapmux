@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -71,7 +72,11 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
 
-	h := NewOAuthHandler(st, &config.Config{SessionDuration: configured}, ks)
+	set := settings.NewManager(st, nil, settings.CoreDescriptors())
+	require.NoError(t, set.Load(context.Background()))
+	require.NoError(t, settings.KeySessionDurationSeconds.Set(context.Background(), set, int64(configured/time.Second)))
+
+	h := NewOAuthHandler(st, &config.Config{}, set, ks)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/auth/oauth/test/callback", nil)

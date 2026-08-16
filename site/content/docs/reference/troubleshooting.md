@@ -213,15 +213,14 @@ You're fronting the Hub with TLS via a reverse proxy, but login won't persist or
 The Hub does not terminate TLS itself, and it needs to know its external URL and that it should issue secure cookies. Without that, the derived base URL and cookie scheme can be wrong.
 
 **Fix**
-Set both:
+Set both — they are database settings, and both are hot (a running Hub applies them within ~30 seconds):
 
-```yaml
-# hub.yaml
-public_url: https://hub.example.com   # scheme + host only; no path/query
-secure_cookies: true
+```bash
+leapmux admin settings set public_url "https://hub.example.com"   # scheme + host only; no path/query
+leapmux admin settings set secure_cookies true
 ```
 
-`public_url` must be scheme + host only — **sub-path mounting** (e.g. `https://example.com/leapmux`) is explicitly rejected. `secure_cookies` has no CLI flag; set it in the config file (or via `LEAPMUX_HUB_SECURE_COOKIES`). See [Configuration](/docs/operating/configuration/) and [Running LeapMux](/docs/operating/running-leapmux/).
+`public_url` must be scheme + host only — **sub-path mounting** (e.g. `https://example.com/leapmux`) is explicitly rejected. Enabling `secure_cookies` changes the cookie name and signs every current session out — do it once, at setup. See [Configuration](/docs/operating/configuration/) and [Running LeapMux](/docs/operating/running-leapmux/).
 
 ## Can't log in or sign up
 
@@ -244,10 +243,10 @@ Complete the **/setup** form (Username, Display Name, Email, Password). The firs
 Visiting **/signup** shows a page titled **"Sign-up disabled"** with the message **"New account registration is not currently available."**
 
 **Cause**
-Public sign-up is gated by `--signup-enabled`, which defaults to **false**. The first-admin **/setup** flow still works even when sign-up is disabled; only public self-registration is blocked.
+Public sign-up is gated by the `signup_enabled` setting, which defaults to **false**. The first-admin **/setup** flow still works even when sign-up is disabled; only public self-registration is blocked.
 
 **Fix**
-- To allow self-service sign-up, start the Hub with `--signup-enabled` (or set `signup_enabled: true` in `hub.yaml`).
+- To allow self-service sign-up: `leapmux admin settings set signup_enabled true`.
 - Otherwise have an admin create the account with `leapmux admin user create` (see [Admin CLI](/docs/operating/admin-cli/)).
 
 ### "invalid credentials" on login
@@ -267,10 +266,10 @@ Double-check the exact username (lowercase, hyphens, no spaces). If you've lost 
 After signing up you're stuck — almost every action returns **"email verification required"**, and you land on the **"Verify your email"** page.
 
 **Cause**
-The Hub runs with `--email-verification-required`, so non-admin users with an unverified email may only verify, log out, or change their email until they verify. Verification uses a 6-character code (display form `XXX-XXX`) that expires in 30 minutes with a 5-attempt budget.
+The Hub runs with `email_verification_required` enabled, so non-admin users with an unverified email may only verify, log out, or change their email until they verify. Verification uses a 6-character code (display form `XXX-XXX`) that expires in 30 minutes with a 5-attempt budget.
 
 **Fix**
-Enter the code from the verification email, or click the link in it. If you didn't receive it, use **"Resend code"** (60-second cooldown between resends). Email features require SMTP to be configured on the Hub — if the operator hasn't set `--smtp-host`, verification emails can't be sent at all (and the Hub would have refused to start with `email_verification_required` set without SMTP). See [Configuration](/docs/operating/configuration/).
+Enter the code from the verification email, or click the link in it. If you didn't receive it, use **"Resend code"** (60-second cooldown between resends). Email features require SMTP to be configured on the Hub — if the operator hasn't configured SMTP (`leapmux admin settings set smtp …`), verification emails can't be sent at all (and enabling `email_verification_required` without SMTP is refused at write time). See [Configuration](/docs/operating/configuration/).
 
 ### OAuth sign-in fails or the provider isn't shown
 
@@ -283,13 +282,13 @@ OAuth buttons don't appear on the login page, or clicking one ends in an error s
 |---|---|---|
 | No OAuth buttons at all | No enabled OAuth provider configured | Add one with `leapmux admin oauth-provider add` (see [Authentication Providers](/docs/operating/authentication-providers/)). |
 | "did not return an email address" | The provider config is missing the email scope | Ensure the `email`/`user:email` scope is granted; reconfigure the provider's `--scopes`. |
-| Stuck on "Complete Sign Up" then rejected | New OAuth user but sign-up is disabled | Enable `--signup-enabled`, or link the OAuth identity to an existing account by signing in and verifying the matching email. |
+| Stuck on "Complete Sign Up" then rejected | New OAuth user but sign-up is disabled | `leapmux admin settings set signup_enabled true`, or link the OAuth identity to an existing account by signing in and verifying the matching email. |
 | "This signup link is invalid or has expired." on the **Complete Sign Up** page | The pending OAuth signup expired or the `?token=` link was reused | Start the OAuth sign-in over from the login page (see note below). |
 | OAuth user logs in but can't unlink | It's their only login method | Set a password first in the **Profile** dialog, then unlink. |
 
 > **Note:** "This signup link is invalid or has expired." means the pending OAuth signup expired (5-minute window) or the `?token=` link was reused/already completed. Start the OAuth sign-in over from the login page to mint a fresh pending signup, then pick a username promptly. A blank **Complete Sign Up** page that says **"Missing signup token."** means you opened the URL without its `?token=` — restart from the login page.
 
-Operators configuring providers should also confirm the OIDC issuer is reachable and `--public-url` is set so redirect/login URLs are built correctly. See [Authentication Providers](/docs/operating/authentication-providers/).
+Operators configuring providers should also confirm the OIDC issuer is reachable and the `public_url` setting is set so redirect/login URLs are built correctly. See [Authentication Providers](/docs/operating/authentication-providers/).
 
 ## Agents won't start
 

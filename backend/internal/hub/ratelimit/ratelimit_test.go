@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -30,15 +31,18 @@ func newTestManager(t *testing.T, solo bool) *Manager {
 	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-	m := NewManager(st, solo)
+	set := settings.NewManager(st, nil, SettingsDescriptors())
+	require.NoError(t, set.Load(context.Background()))
+	m := NewManager(set, solo)
 	m.now = func() time.Time { return fakeNow }
 	return m
 }
 
-func upsertLimit(t *testing.T, st store.Store, op string, enabled bool, maxAttempts, windowSeconds int64) {
+func upsertLimit(t *testing.T, m *Manager, op Operation, enabled bool, maxAttempts, windowSeconds int64) {
 	t.Helper()
-	require.NoError(t, st.RateLimitConfig().Upsert(context.Background(), store.UpsertRateLimitConfigParams{
-		Operation:     op,
+	key, ok := LimitKey(op)
+	require.True(t, ok)
+	require.NoError(t, key.Set(context.Background(), m.set, LimitValue{
 		Enabled:       enabled,
 		MaxAttempts:   maxAttempts,
 		WindowSeconds: windowSeconds,
@@ -90,8 +94,7 @@ func tryChangePassword(t *testing.T, client leapmuxv1connect.UserServiceClient) 
 
 func TestLimiterAllowsBudgetThenDeniesWithoutCallingHandler(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 3, 900)
-	m.cached = nil // bust the config cache
+	upsertLimit(t, m, OpChangePassword, true, 3, 900)
 
 	client, calls := changePasswordClient(t, m, wrongPasswordError(), true)
 	for i := 1; i <= 3; i++ {
@@ -113,8 +116,7 @@ func TestLimiterAllowsBudgetThenDeniesWithoutCallingHandler(t *testing.T) {
 
 func TestLimiterCountsOnlyCurrentPasswordFailures(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 2, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 2, 900)
 
 	// Weak-new-password validation errors must not count.
 	weakClient, _ := changePasswordClient(t, m, connect.NewError(connect.CodeInvalidArgument, errors.New("password too weak")), true)
@@ -135,8 +137,7 @@ func TestLimiterCountsOnlyCurrentPasswordFailures(t *testing.T) {
 
 func TestLimiterSuccessResetsWindow(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 2, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 2, 900)
 
 	wrongClient, _ := changePasswordClient(t, m, wrongPasswordError(), true)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, wrongClient)))
@@ -153,8 +154,7 @@ func TestLimiterSuccessResetsWindow(t *testing.T) {
 
 func TestLimiterWindowExpires(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 1, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 1, 900)
 
 	client, _ := changePasswordClient(t, m, wrongPasswordError(), true)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, client)))
@@ -180,8 +180,7 @@ func recordCredentialFailure(t *testing.T, m *Manager, userID string) {
 // in the map for the life of the process.
 func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 1, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 1, 900)
 
 	recordCredentialFailure(t, m, "usr_test123")
 	m.windowMu.Lock()
@@ -202,8 +201,7 @@ func TestExpiredWindowEntryIsReclaimed(t *testing.T) {
 // lazy delete would ever reach.
 func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 1, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 1, 900)
 
 	recordCredentialFailure(t, m, "usr_gone")
 	recordCredentialFailure(t, m, "usr_back")
@@ -226,8 +224,7 @@ func TestExpiredWindowsAreSweptForAbsentUsers(t *testing.T) {
 // calls cannot all pass a failures-only check before any of them lands.
 func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 3, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 3, 900)
 
 	// Three concurrent in-flight attempts (allowed, not yet completed).
 	inFlight := make([]*attempt, 0, 3)
@@ -266,8 +263,7 @@ func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 // only a failures-driven denial reports the window remainder.
 func TestInFlightDrivenDenialReportsZeroRetryAfter(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 3, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 3, 900)
 
 	recordCredentialFailure(t, m, "usr_test123")
 	recordCredentialFailure(t, m, "usr_test123")
@@ -298,8 +294,7 @@ func TestInFlightDrivenDenialReportsZeroRetryAfter(t *testing.T) {
 // attempt still holds.
 func TestUnreservedAttemptCompletionReleasesNothing(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 2, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 2, 900)
 
 	reserved, allowed, _, err := m.allow(context.Background(), OpChangePassword, "usr_test123")
 	require.NoError(t, err)
@@ -307,8 +302,7 @@ func TestUnreservedAttemptCompletionReleasesNothing(t *testing.T) {
 
 	// The policy flips to disabled mid-flight; the next attempt is admitted
 	// without a reservation.
-	upsertLimit(t, m.st, "change-password", false, 2, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, false, 2, 900)
 	unreserved, allowed, _, err := m.allow(context.Background(), OpChangePassword, "usr_test123")
 	require.NoError(t, err)
 	require.True(t, allowed)
@@ -331,8 +325,7 @@ func TestUnreservedAttemptCompletionReleasesNothing(t *testing.T) {
 // every later attempt until hub restart, because nothing sweeps inFlight.
 func TestPanickingHandlerReleasesReservation(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 1, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 1, 900)
 
 	handler := connect.NewUnaryHandler(
 		leapmuxv1connect.UserServiceChangePasswordProcedure,
@@ -369,54 +362,38 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 	assert.Equal(t, 1, *calls)
 }
 
-// TestConfigUnreachableFailsClosedWithUnavailableCode pins the honest
-// failure code: a config-store outage must surface as Unavailable, not as
-// the same ResourceExhausted code a genuine lockout uses.
-func TestConfigUnreachableFailsClosedWithUnavailableCode(t *testing.T) {
-	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 1, 900)
-	m.cached = nil
-	require.NoError(t, m.st.Close())
-
-	client, calls := changePasswordClient(t, m, nil, true)
-	err := tryChangePassword(t, client)
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "rate limit unavailable")
-	assert.Equal(t, 0, *calls, "fail-closed denial must not reach the handler")
-}
-
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
 	assert.Equal(t, []Operation{OpChangePassword}, KnownOperations())
 
 	// No row: defaults, enabled.
-	enabled, limits := EffectiveLimits(OpChangePassword, nil)
-	assert.True(t, enabled)
-	assert.EqualValues(t, 5, limits.MaxAttempts)
-	assert.EqualValues(t, 900, limits.WindowSeconds)
+	m := newTestManager(t, false)
+	key, ok := LimitKey(OpChangePassword)
+	require.True(t, ok)
+	v := key.Of(m.set.Snapshot(context.Background()))
+	assert.True(t, v.Enabled)
+	assert.EqualValues(t, 5, v.MaxAttempts)
+	assert.EqualValues(t, 900, v.WindowSeconds)
 
-	// Stored row: values overlay, zero keeps the default (disabled row
-	// with partial values still reports its numbers).
-	enabled, limits = EffectiveLimits(OpChangePassword, &store.RateLimitConfig{
-		Operation:     "change-password",
-		Enabled:       false,
-		MaxAttempts:   0,
-		WindowSeconds: 120,
-	})
-	assert.False(t, enabled)
-	assert.EqualValues(t, 5, limits.MaxAttempts, "zero attempts keeps the default")
-	assert.EqualValues(t, 120, limits.WindowSeconds)
+	// Stored document: fields it omits keep the defaults (a disabled row
+	// with a partial budget still reports its numbers).
+	require.NoError(t, m.set.Update(context.Background(), key, json.RawMessage(
+		`{"enabled":false,"window_seconds":120}`)))
+	v = key.Of(m.set.Snapshot(context.Background()))
+	assert.False(t, v.Enabled)
+	assert.EqualValues(t, 5, v.MaxAttempts, "an omitted attempts count keeps the default")
+	assert.EqualValues(t, 120, v.WindowSeconds)
 
-	// Unknown operation: disabled, zero limits.
-	enabled, limits = EffectiveLimits(Operation("nope"), nil)
-	assert.False(t, enabled)
+	// Unknown operation: no key, no defaults.
+	_, ok = LimitKey(Operation("nope"))
+	assert.False(t, ok)
+	limits, ok := DefaultLimits(Operation("nope"))
+	assert.False(t, ok)
 	assert.Equal(t, Limits{}, limits)
 }
 
 func TestLimiterDisabledAndSoloBypass(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", false, 1, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, false, 1, 900)
 	client, _ := changePasswordClient(t, m, wrongPasswordError(), true)
 	for i := 0; i < 10; i++ {
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryChangePassword(t, client)))
@@ -445,8 +422,7 @@ func TestLimiterDefaultsApplyWithoutRow(t *testing.T) {
 
 func TestLimiterUnauthenticatedCallsPassThrough(t *testing.T) {
 	m := newTestManager(t, false)
-	upsertLimit(t, m.st, "change-password", true, 1, 900)
-	m.cached = nil
+	upsertLimit(t, m, OpChangePassword, true, 1, 900)
 
 	// No user in context: the limiter stands down (in the real chain the
 	// auth interceptor has already rejected the call).

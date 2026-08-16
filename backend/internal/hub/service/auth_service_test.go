@@ -22,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
@@ -30,10 +31,18 @@ import (
 	"github.com/leapmux/leapmux/internal/util/verifycode"
 )
 
-func setupAuthTestServerBase(t *testing.T, cfg *config.Config, closers ...auth.CredentialChannelCloser) (leapmuxv1connect.AuthServiceClient, store.Store) {
+// authTestSeed configures the settings manager before the server fields
+// its first request; nil leaves every setting at its default.
+type authTestSeed func(t *testing.T, set *settings.Manager)
+
+func setupAuthTestServerBase(t *testing.T, cfg *config.Config, seed authTestSeed, closers ...auth.CredentialChannelCloser) (leapmuxv1connect.AuthServiceClient, store.Store, *settings.Manager) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
+	set := servicetest.NewSettingsManager(t, st, nil)
+	if seed != nil {
+		seed(t, set)
+	}
 
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
@@ -43,7 +52,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, closers ...auth.C
 	if len(closers) > 0 {
 		closer = closers[0]
 	}
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(sc, closer, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, closer, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -51,7 +60,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, closers ...auth.C
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
-	return client, st
+	return client, st, set
 }
 
 func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
@@ -61,7 +70,7 @@ func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
 		service.NewAuthService(service.AuthServiceDeps{Renderer: mail.Renderer{}})
 	})
 	assert.Panics(t, func() {
-		service.NewUserService(nil, nil, nil, nil, mail.Renderer{})
+		service.NewUserService(nil, nil, nil, nil, nil, mail.Renderer{})
 	})
 	assert.Panics(t, func() {
 		service.NewWorkerDelegationHandler(nil, nil, nil)
@@ -70,14 +79,14 @@ func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
 
 // setupEmptyAuthTestServer creates a test auth server with an empty database
 // (no users). Used for testing the initial setup flow.
-func setupEmptyAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, store.Store) {
-	return setupAuthTestServerBase(t, cfg)
+func setupEmptyAuthTestServer(t *testing.T, cfg *config.Config, seed authTestSeed) (leapmuxv1connect.AuthServiceClient, store.Store, *settings.Manager) {
+	return setupAuthTestServerBase(t, cfg, seed)
 }
 
-func setupAuthTestServer(t *testing.T, cfg *config.Config) (leapmuxv1connect.AuthServiceClient, store.Store) {
-	client, st := setupAuthTestServerBase(t, cfg)
+func setupAuthTestServer(t *testing.T, cfg *config.Config, seed authTestSeed) (leapmuxv1connect.AuthServiceClient, store.Store, *settings.Manager) {
+	client, st, set := setupAuthTestServerBase(t, cfg, seed)
 	hubtestutil.CreateTestAdmin(t, st)
-	return client, st
+	return client, st, set
 }
 
 type sessionCloseRecorder struct {
@@ -96,7 +105,7 @@ func (*sessionCloseRecorder) RestampSessionGeneration(string, int64)          {}
 func TestAuthService_LoginSuccess(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
@@ -117,7 +126,7 @@ func TestAuthService_LoginSuccess(t *testing.T) {
 func TestAuthService_LoginInvalidPassword(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
@@ -130,7 +139,7 @@ func TestAuthService_LoginInvalidPassword(t *testing.T) {
 func TestAuthService_GetCurrentUser(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	// Login first.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -151,7 +160,7 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	_, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
 	require.Error(t, err)
@@ -161,7 +170,7 @@ func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
 func TestAuthService_Login_EmptyUsername(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "",
@@ -174,7 +183,7 @@ func TestAuthService_Login_EmptyUsername(t *testing.T) {
 func TestAuthService_Login_EmptyPassword(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
 		Username: "admin",
@@ -187,7 +196,7 @@ func TestAuthService_Login_EmptyPassword(t *testing.T) {
 func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfigWithSignup())
+	client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "newuser",
@@ -215,10 +224,14 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 	t.Parallel()
 
 	const configured = 90 * time.Minute
-	signUp := func(t *testing.T, cfg *config.Config, username string) (*connect.Response[leapmuxv1.SignUpResponse], store.Store, string) {
+	signUp := func(t *testing.T, seed authTestSeed, username string) (*connect.Response[leapmuxv1.SignUpResponse], store.Store, string) {
 		t.Helper()
-		cfg.SessionDuration = configured
-		client, st := setupAuthTestServer(t, cfg)
+		client, st, _ := setupAuthTestServer(t, testConfig(), func(t *testing.T, s *settings.Manager) {
+			if seed != nil {
+				seed(t, s)
+			}
+			setSessionDuration(t, s, configured)
+		})
 		resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 			Username:    username,
 			Password:    "newpass123",
@@ -239,18 +252,18 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 	t.Run("sign-up", func(t *testing.T) {
 		t.Parallel()
 		before := time.Now()
-		resp, st, sessionID := signUp(t, testConfigWithSignup(), "newuser")
+		resp, st, sessionID := signUp(t, enableSignup, "newuser")
 		require.False(t, resp.Msg.GetVerificationRequired(), "control: this is the plain branch")
 		assertExpiry(t, st, sessionID, before)
 	})
 
 	t.Run("sign-up with verification required", func(t *testing.T) {
 		t.Parallel()
-		cfg := testConfigWithSMTP()
-		cfg.SignupEnabled = true
-		cfg.EmailVerificationRequired = true
 		before := time.Now()
-		resp, st, sessionID := signUp(t, cfg, "unverified")
+		resp, st, sessionID := signUp(t, func(t *testing.T, set *settings.Manager) {
+			enableSignup(t, set)
+			enableEmailVerification(t, set)
+		}, "unverified")
 		// Without this the subtest would silently repeat the branch above, and
 		// the second CreateSession call site would go unexercised.
 		require.True(t, resp.Msg.GetVerificationRequired(), "this must take the verification branch")
@@ -259,9 +272,8 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 
 	t.Run("login", func(t *testing.T) {
 		t.Parallel()
-		cfg := testConfig()
-		cfg.SessionDuration = configured
-		client, st := setupAuthTestServer(t, cfg)
+		client, st, set := setupAuthTestServer(t, testConfig(), nil)
+		setSessionDuration(t, set, configured)
 
 		before := time.Now()
 		resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -276,7 +288,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	// Signup is disabled by default.
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -290,7 +302,7 @@ func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
 func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfigWithSignup())
+	client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 	// First signup should succeed.
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -311,7 +323,7 @@ func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	t.Parallel()
 
-	client, st := setupAuthTestServer(t, testConfig())
+	client, st, set := setupAuthTestServer(t, testConfig(), nil)
 
 	// Login to get a token.
 	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
@@ -325,7 +337,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	opts := connect.WithInterceptors(interceptor)
-	userSvc := service.NewUserService(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -346,7 +358,7 @@ func TestAuthService_ChangePassword_WrongOldPassword(t *testing.T) {
 func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 	t.Parallel()
 
-	client, st := setupAuthTestServer(t, testConfigWithSignup())
+	client, st, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 	// Create a user with that email directly in the DB.
 	hash, err := password.Hash("testpass")
@@ -376,7 +388,7 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	t.Parallel()
 
-	_, st := setupAuthTestServer(t, testConfigWithSignup())
+	_, st, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 	ctx := context.Background()
 
 	// Create two users, both with pending_email = "shared@example.com".
@@ -437,7 +449,7 @@ func TestPromotePendingEmail_ClearsCompetingPendingEmails(t *testing.T) {
 func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	t.Parallel()
 
-	client, st := setupAuthTestServer(t, testConfigWithSignup())
+	client, st, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 	ctx := context.Background()
 
 	// User A sets pending_email = "race@example.com" (unverified).
@@ -480,7 +492,7 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupAuthTestServer(t, testConfigWithSignup())
+	client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 	// First signup with empty email should succeed.
 	resp1, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -504,7 +516,9 @@ func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
 }
 
 // setupVerificationGatingTestServer creates a test server with both
-// UserService and AuthService, with emailVerificationRequired set as specified.
+// UserService and AuthService, with the verification gate armed as
+// specified (both the services and the interceptor read it from the same
+// settings).
 func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired bool) (
 	leapmuxv1connect.UserServiceClient,
 	leapmuxv1connect.AuthServiceClient,
@@ -521,19 +535,20 @@ func setupVerificationGatingTestServer(t *testing.T, emailVerificationRequired b
 
 	hubtestutil.CreateTestAdmin(t, st)
 
+	set := servicetest.NewSettingsManager(t, st, nil)
+	if emailVerificationRequired {
+		enableEmailVerification(t, set)
+	}
+
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, EmailVerificationRequired: emailVerificationRequired})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, Policy: servicetest.AuthPolicy(set)})
 	opts := connect.WithInterceptors(interceptor)
 
-	cfg := testConfig()
-	cfg.SignupEnabled = true
-	cfg.EmailVerificationRequired = emailVerificationRequired
-
-	userSvc := service.NewUserService(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
+	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{})
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
 	mux.Handle(userPath, userHandler)
 
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -629,10 +644,10 @@ func TestVerificationGating_ConfigOff_NotBlocked(t *testing.T) {
 func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfigWithSignup()
-	cfg.EmailVerificationRequired = true
-
-	client, st := setupAuthTestServer(t, cfg)
+	client, st, _ := setupAuthTestServer(t, testConfig(), func(t *testing.T, set *settings.Manager) {
+		enableSignup(t, set)
+		enableEmailVerification(t, set)
+	})
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "verifyuser",
@@ -742,7 +757,7 @@ func TestAuthService_Logout(t *testing.T) {
 	t.Parallel()
 
 	closer := &sessionCloseRecorder{}
-	client, st := setupAuthTestServerBase(t, testConfig(), closer)
+	client, st, _ := setupAuthTestServerBase(t, testConfig(), nil, closer)
 	hubtestutil.CreateTestAdmin(t, st)
 
 	// Login.
@@ -807,7 +822,7 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: wrapped})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(wrapped, testConfig(), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(wrapped, testConfig(), servicetest.NewSettingsManager(t, wrapped, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -842,7 +857,7 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	t.Parallel()
 
 	// Signup disabled, but no users exist — setup mode should kick in.
-	client, st := setupEmptyAuthTestServer(t, testConfig())
+	client, st, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
@@ -873,7 +888,7 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 func TestSetupSignUp_EmptyEmail(t *testing.T) {
 	t.Parallel()
 
-	client, st := setupEmptyAuthTestServer(t, testConfig())
+	client, st, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
@@ -898,7 +913,7 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupEmptyAuthTestServer(t, testConfig())
+	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 	// Before setup: setup_required should be true.
 	infoResp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
@@ -923,7 +938,7 @@ func TestSetupSignUp_RejectedWhenUsersExist(t *testing.T) {
 	t.Parallel()
 
 	// Signup disabled, admin user already exists.
-	client, _ := setupAuthTestServer(t, testConfig())
+	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "newuser",
@@ -953,7 +968,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
 	opts := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(path, handler)
 
@@ -975,7 +990,7 @@ func TestSetupSignUp_NormalSignupStillCreatesNonAdmin(t *testing.T) {
 	t.Parallel()
 
 	// Signup enabled + users already exist = normal non-admin signup.
-	client, st := setupAuthTestServer(t, testConfigWithSignup())
+	client, st, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "regularuser",
@@ -997,7 +1012,7 @@ func TestSetupSignUp_WithSignupEnabled(t *testing.T) {
 	t.Parallel()
 
 	// Signup enabled + no users = setup mode should still create admin.
-	client, st := setupEmptyAuthTestServer(t, testConfigWithSignup())
+	client, st, _ := setupEmptyAuthTestServer(t, testConfig(), enableSignup)
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
@@ -1020,7 +1035,7 @@ func TestSetupSignUp_RaceCondition(t *testing.T) {
 	t.Parallel()
 
 	// Two setup signups — only the first should succeed.
-	client, _ := setupEmptyAuthTestServer(t, testConfig())
+	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 	// First signup should succeed.
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -1043,7 +1058,7 @@ func TestSetupSignUp_RaceCondition(t *testing.T) {
 func TestSetupSignUp_ValidatesInputs(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupEmptyAuthTestServer(t, testConfig())
+	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 	tests := []struct {
 		name     string
@@ -1075,7 +1090,7 @@ func TestGetSystemInfo_DevModeReportsSetupRequired(t *testing.T) {
 	cfg := testConfig()
 	cfg.DevMode = true
 
-	client, _ := setupEmptyAuthTestServer(t, cfg)
+	client, _, _ := setupEmptyAuthTestServer(t, cfg, nil)
 
 	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 	require.NoError(t, err)
@@ -1088,9 +1103,10 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 	t.Run("PublicURL wins over Listen", func(t *testing.T) {
 		cfg := testConfig()
 		cfg.Listen = ":4327"
-		cfg.PublicURL = "https://hub.example.com"
 
-		client, _ := setupEmptyAuthTestServer(t, cfg)
+		client, _, _ := setupEmptyAuthTestServer(t, cfg, func(t *testing.T, set *settings.Manager) {
+			require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "https://hub.example.com"))
+		})
 
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 		require.NoError(t, err)
@@ -1103,7 +1119,7 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 		cfg.Listen = ""
 		cfg.LocalListen = "unix:" + filepath.Join(t.TempDir(), "hub.sock")
 
-		client, _ := setupEmptyAuthTestServer(t, cfg)
+		client, _, _ := setupEmptyAuthTestServer(t, cfg, nil)
 
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 		require.NoError(t, err)
@@ -1115,7 +1131,7 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 		cfg := testConfig()
 		cfg.Listen = ":4327"
 
-		client, _ := setupEmptyAuthTestServer(t, cfg)
+		client, _, _ := setupEmptyAuthTestServer(t, cfg, nil)
 
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 		require.NoError(t, err)
@@ -1125,24 +1141,21 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 
 // TestGetSystemInfo_EmailEnabled covers the email_enabled flag the
 // frontend reads to decide whether to render the "Send email" button on
-// the worker registration dialog. We mirror it directly off SmtpHost so
-// admins control it through the same SMTP block they configure for
-// verification emails.
+// the worker registration dialog. We mirror it directly off the SMTP
+// host so admins control it through the same SMTP block they configure
+// for verification emails.
 func TestGetSystemInfo_EmailEnabled(t *testing.T) {
 	t.Parallel()
 
-	t.Run("false when SmtpHost is empty", func(t *testing.T) {
-		client, _ := setupEmptyAuthTestServer(t, testConfig())
+	t.Run("false when the SMTP host is empty", func(t *testing.T) {
+		client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 		require.NoError(t, err)
 		assert.False(t, resp.Msg.GetEmailEnabled())
 	})
 
-	t.Run("true when SmtpHost is set", func(t *testing.T) {
-		cfg := testConfig()
-		cfg.SmtpHost = "smtp.example.test"
-		cfg.SmtpFromAddress = "hub@example.test"
-		client, _ := setupEmptyAuthTestServer(t, cfg)
+	t.Run("true when the SMTP host is set", func(t *testing.T) {
+		client, _, _ := setupEmptyAuthTestServer(t, testConfig(), seedSMTP)
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 		require.NoError(t, err)
 		assert.True(t, resp.Msg.GetEmailEnabled())
@@ -1153,7 +1166,7 @@ func TestSignUp_RejectsSoloAlways(t *testing.T) {
 	t.Parallel()
 
 	t.Run("setup mode", func(t *testing.T) {
-		client, _ := setupEmptyAuthTestServer(t, testConfig())
+		client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 		for _, input := range []string{"solo", "SOLO", "  solo  "} {
 			_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -1167,7 +1180,7 @@ func TestSignUp_RejectsSoloAlways(t *testing.T) {
 	})
 
 	t.Run("public signup", func(t *testing.T) {
-		client, _ := setupAuthTestServer(t, testConfigWithSignup())
+		client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 		for _, input := range []string{"solo", "SOLO"} {
 			_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
@@ -1184,7 +1197,7 @@ func TestSignUp_RejectsSoloAlways(t *testing.T) {
 func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
 	t.Parallel()
 
-	client, _ := setupEmptyAuthTestServer(t, testConfig())
+	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "admin",
@@ -1200,7 +1213,7 @@ func TestSignUp_RejectsAdminInPublicSignup(t *testing.T) {
 	t.Parallel()
 
 	// A seeded user exists, so isSetupMode=false and the public reservation applies.
-	client, _ := setupAuthTestServer(t, testConfigWithSignup())
+	client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
 		Username:    "admin",

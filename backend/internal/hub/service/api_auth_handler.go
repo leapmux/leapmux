@@ -36,7 +36,7 @@ type APIAuthHandler struct {
 	store         store.Store
 	validator     *auth.TokenValidator
 	lifecycle     *auth.CredentialLifecycleEffects
-	hubURL        string
+	hubURL        func() string
 	refreshFlight singleflight.Group
 
 	// Now is a seam so tests can advance the handler's clock -- grant
@@ -52,7 +52,7 @@ type APIAuthHandler struct {
 
 // NewAPIAuthHandler wires the handler. hubURL is used to build the
 // device-code verification URLs returned to the CLI.
-func NewAPIAuthHandler(st store.Store, v *auth.TokenValidator, lifecycle *auth.CredentialLifecycleEffects, hubURL string) *APIAuthHandler {
+func NewAPIAuthHandler(st store.Store, v *auth.TokenValidator, lifecycle *auth.CredentialLifecycleEffects, hubURL func() string) *APIAuthHandler {
 	if lifecycle == nil {
 		panic("API auth handler requires credential lifecycle effects")
 	}

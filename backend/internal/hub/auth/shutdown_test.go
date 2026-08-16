@@ -29,7 +29,7 @@ func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1co
 	interceptors := connect.WithInterceptors(
 		auth.NewShutdownInterceptor(shutdownCh),
 	)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 

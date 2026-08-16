@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -27,7 +28,7 @@ func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
 	t.Parallel()
 
 	st := testutil.OpenTestStore(t)
-	svc := service.NewWorkerManagementService(st, nil, nil, nil, nil, mail.Renderer{}, &config.Config{}, nil)
+	svc := service.NewWorkerManagementService(st, nil, nil, nil, nil, mail.Renderer{}, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u1")})
 
 	// Missing "_" delimiter -> store.ErrInvalidCursor -> InvalidArgument.

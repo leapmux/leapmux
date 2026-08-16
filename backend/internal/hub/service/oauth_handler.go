@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -32,6 +33,7 @@ const (
 type OAuthHandler struct {
 	store    store.Store
 	cfg      *config.Config
+	set      *settings.Manager
 	keystore *keystore.Keystore
 
 	// providers caches built Provider instances by provider ID.
@@ -42,8 +44,8 @@ type OAuthHandler struct {
 }
 
 // NewOAuthHandler creates a new OAuth HTTP handler.
-func NewOAuthHandler(st store.Store, cfg *config.Config, ks *keystore.Keystore) *OAuthHandler {
-	return &OAuthHandler{store: st, cfg: cfg, keystore: ks, providers: make(map[string]huboauth.Provider)}
+func NewOAuthHandler(st store.Store, cfg *config.Config, set *settings.Manager, ks *keystore.Keystore) *OAuthHandler {
+	return &OAuthHandler{store: st, cfg: cfg, set: set, keystore: ks, providers: make(map[string]huboauth.Provider)}
 }
 
 // RegisterRoutes registers OAuth HTTP routes on the given mux.
@@ -182,7 +184,7 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	// hung IdP during NORMAL operation would otherwise park it for the process's
 	// life). This per-leg deadline bounds exactly that: a slow or wedged IdP
 	// while the hub is healthy.
-	exchangeCtx, cancelExchange := context.WithTimeout(ctx, h.cfg.APITimeout)
+	exchangeCtx, cancelExchange := context.WithTimeout(ctx, time.Duration(settings.KeyTimeouts.Of(h.set.Snapshot(r.Context())).APITimeoutSeconds)*time.Second)
 	defer cancelExchange()
 	tokenSet, claims, err := provider.Exchange(exchangeCtx, code, oauthState.PkceVerifier)
 	if err != nil {
@@ -264,7 +266,7 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	}
 
 	// New user — store pending signup for username selection.
-	if !h.cfg.SignupEnabled {
+	if !settings.KeySignupEnabled.Of(h.set.Snapshot(r.Context())) {
 		http.Error(w, "sign-up is disabled; no existing account linked to this identity", http.StatusForbidden)
 		return
 	}
@@ -294,7 +296,7 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, h.cfg.SessionDuration, auth.SessionMeta{
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), auth.SessionMeta{
 		UserAgent: r.UserAgent(),
 		IPAddress: r.RemoteAddr,
 	})
@@ -304,7 +306,7 @@ func (h *OAuthHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 
-	http.SetCookie(w, auth.BuildSessionCookie(sessionID, expiresAt, h.cfg.SecureCookies))
+	http.SetCookie(w, auth.BuildSessionCookie(sessionID, expiresAt, settings.KeySecureCookies.Of(h.set.Snapshot(r.Context()))))
 
 	redirectTo := "/"
 	if redirectURI != "" {
@@ -420,7 +422,7 @@ func (h *OAuthHandler) buildProvider(ctx context.Context, dbProvider *store.OAut
 		return nil, fmt.Errorf("decrypt client secret: %w", err)
 	}
 
-	redirectURL := fmt.Sprintf("%s/auth/oauth/%s/callback", h.cfg.BaseURL(), dbProvider.ID)
+	redirectURL := fmt.Sprintf("%s/auth/oauth/%s/callback", settings.BaseURL(h.set.Snapshot(ctx), h.cfg.Listen), dbProvider.ID)
 
 	scopes := strings.Fields(dbProvider.Scopes)
 

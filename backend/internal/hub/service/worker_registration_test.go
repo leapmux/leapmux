@@ -28,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
@@ -73,23 +74,43 @@ type regKeyEnv struct {
 	wMgr            *workermgr.Manager
 }
 
+// regKeySeed configures the settings a registration-key env runs under;
+// nil leaves every setting at its default.
+type regKeySeed func(t *testing.T, set *settings.Manager)
+
+// maxWorkersPerUser seeds the per-user worker cap the way the old config
+// field did.
+func maxWorkersPerUser(n int64) regKeySeed {
+	return func(t *testing.T, set *settings.Manager) {
+		t.Helper()
+		require.NoError(t, settings.KeyLimits.Set(context.Background(), set, settings.LimitsValue{
+			MaxConnectionsPerUser: 32,
+			MaxWorkersPerUser:     n,
+		}))
+	}
+}
+
 func setupRegKeyEnv(t *testing.T) *regKeyEnv {
 	t.Helper()
-	return setupRegKeyEnvWithCfg(t, testConfigWithSMTP())
+	return setupRegKeyEnvWithCfg(t, testConfig(), seedSMTP)
 }
 
 // setupRegKeyEnvWithCfg builds a registration-key test env with a
-// caller-supplied config. Use this when the test cares about
-// email_enabled gating; setupRegKeyEnv (the default) configures SMTP so
-// EmailRegistrationInstructions can run.
-func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
+// caller-supplied config and settings seed. Use this when the test cares
+// about email_enabled gating; setupRegKeyEnv (the default) configures
+// SMTP so EmailRegistrationInstructions can run.
+func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *regKeyEnv {
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
+	set := servicetest.NewSettingsManager(t, st, nil)
+	if seed != nil {
+		seed(t, set)
+	}
 
 	wMgr := workermgr.New(service.NewWorkerReachAuthorizer(st))
 	cMgr := channelmgr.New(0)
-	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return cfg.APITimeout })
+	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
 
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
@@ -97,7 +118,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 	opts := connect.WithInterceptors(interceptor)
 
 	mailer := &recordingSender{}
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
 	mux.Handle(authPath, authHandler)
 
@@ -107,13 +128,14 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config) *regKeyEnv {
 	// LIVE CONNECTIONS, and a fixture that wired only the first would let a test
 	// pass against the row cap alone -- which is the bug these two exist to
 	// close between them.
-	connectorSvc.SetMaxWorkersPerUser(cfg.MaxWorkersPerUser)
-	wMgr.SetMaxWorkersPerUser(cfg.MaxWorkersPerUser)
+	limits := settings.KeyLimits.Of(set.Snapshot(context.Background()))
+	connectorSvc.SetMaxWorkersPerUser(limits.MaxWorkersPerUser)
+	wMgr.SetMaxWorkersPerUser(limits.MaxWorkersPerUser)
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, opts)
 	mux.Handle(connectorPath, connectorHandler)
 
-	notif := notifier.New(st, wMgr, pendingReqs, cfg)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, cfg, nil)
+	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, cfg, set, nil)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
@@ -264,9 +286,7 @@ func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
 func TestRegister_RefusesBeyondThePerUserWorkerCap(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfigWithSMTP()
-	cfg.MaxWorkersPerUser = 2
-	env := setupRegKeyEnvWithCfg(t, cfg)
+	env := setupRegKeyEnvWithCfg(t, testConfig(), maxWorkersPerUser(2))
 	token := env.login(t, "admin", "admin123")
 
 	register := func(t *testing.T) error {
@@ -314,9 +334,7 @@ func workerAdmissionsRefused(stage string) float64 {
 func TestRegister_WorkerCapCountsOnlyLiveWorkers(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfigWithSMTP()
-	cfg.MaxWorkersPerUser = 1
-	env := setupRegKeyEnvWithCfg(t, cfg)
+	env := setupRegKeyEnvWithCfg(t, testConfig(), maxWorkersPerUser(1))
 	token := env.login(t, "admin", "admin123")
 
 	register := func(t *testing.T) (string, error) {
@@ -579,7 +597,7 @@ func TestEmailRegistrationInstructions_RequiresVerifiedEmail(t *testing.T) {
 func TestEmailRegistrationInstructions_RejectsWhenSMTPUnconfigured(t *testing.T) {
 	t.Parallel()
 
-	env := setupRegKeyEnvWithCfg(t, testConfig()) // no SmtpHost set
+	env := setupRegKeyEnvWithCfg(t, testConfig(), nil) // no SMTP host set
 	token := env.login(t, "admin", "admin123")
 
 	// Mark the admin's email verified — otherwise the
@@ -888,9 +906,7 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 		t.Skip("unix sockets are not available on Windows")
 	}
 
-	cfg := testConfigWithSMTP()
-	cfg.MaxWorkersPerUser = 1
-	env := setupRegKeyEnvWithCfg(t, cfg)
+	env := setupRegKeyEnvWithCfg(t, testConfig(), maxWorkersPerUser(1))
 	token := env.login(t, "admin", "admin123")
 
 	register := func(t *testing.T) *leapmuxv1.RegisterResponse {

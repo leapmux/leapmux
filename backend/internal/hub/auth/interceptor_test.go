@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -38,7 +39,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -111,7 +112,7 @@ func TestInterceptor_SoloMode_AutoAuthenticated(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -170,7 +171,7 @@ func setupInterceptorTestServerWithBearerSupport(t *testing.T) (leapmuxv1connect
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 
@@ -304,7 +305,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
@@ -567,10 +568,10 @@ func setupInterceptorTestServerWithCache(t *testing.T) (leapmuxv1connect.AuthSer
 }
 
 // setupSessionDurationTestServer builds that server with a configured session
-// duration; zero leaves the default. One config.Config feeds both the service
-// that stamps the first expiry at login and the interceptor that slides it, so
-// a test that pins a non-default duration exercises the whole wiring rather
-// than one half of it.
+// duration; zero leaves the setting's default. One settings manager feeds both
+// the service that stamps the first expiry at login and the interceptor that
+// slides it, so a test that pins a non-default duration exercises the whole
+// wiring rather than one half of it.
 func setupSessionDurationTestServer(t *testing.T, sessionDuration time.Duration) (leapmuxv1connect.AuthServiceClient, store.Store) {
 	t.Helper()
 
@@ -578,12 +579,19 @@ func setupSessionDurationTestServer(t *testing.T, sessionDuration time.Duration)
 
 	hubtestutil.CreateTestAdmin(t, st)
 
-	cfg := &config.Config{SessionDuration: sessionDuration}
+	set := servicetest.NewSettingsManager(t, st, nil)
+	if sessionDuration > 0 {
+		require.NoError(t, set.SetValue(context.Background(),
+			settings.KeySessionDurationSeconds, int64(sessionDuration/time.Second)))
+	}
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SessionDuration: cfg.SessionDuration})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{
+		Store:  st,
+		Policy: servicetest.AuthPolicy(set),
+	})
 	t.Cleanup(sc.Stop)
 	interceptors := connect.WithInterceptors(interceptor)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, set, auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
 	mux.Handle(path, handler)
 

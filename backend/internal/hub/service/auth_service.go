@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/util/validate"
@@ -54,6 +55,7 @@ func (disabledCaptcha) AltchaChallengeJSON(context.Context) (string, error) {
 type AuthServiceDeps struct {
 	Store     store.Store
 	Config    *config.Config
+	Settings  *settings.Manager
 	Lifecycle *auth.CredentialLifecycleEffects
 	Keystore  *keystore.Keystore
 	Mail      mail.Sender
@@ -65,6 +67,7 @@ type AuthServiceDeps struct {
 type AuthService struct {
 	store      store.Store
 	cfg        *config.Config
+	set        *settings.Manager
 	lifecycle  *auth.CredentialLifecycleEffects
 	keystore   *keystore.Keystore
 	mail       mail.Sender
@@ -83,7 +86,40 @@ func NewAuthService(deps AuthServiceDeps) *AuthService {
 	if captchaSvc == nil {
 		captchaSvc = disabledCaptcha{}
 	}
-	return &AuthService{store: deps.Store, cfg: deps.Config, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc}
+	return &AuthService{store: deps.Store, cfg: deps.Config, set: deps.Settings, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc}
+}
+
+// snap resolves the current settings snapshot for the settings-backed
+// values this service reads per request.
+func (s *AuthService) snap(ctx context.Context) *settings.Snapshot {
+	return s.set.Snapshot(ctx)
+}
+
+// secureCookies reads the cookie-name policy for the current request.
+func (s *AuthService) secureCookies(ctx context.Context) bool {
+	return settings.KeySecureCookies.Of(s.snap(ctx))
+}
+
+// sessionDuration reads the sliding session lifetime.
+func (s *AuthService) sessionDuration(ctx context.Context) time.Duration {
+	return settings.SessionDuration(s.snap(ctx))
+}
+
+// signupEnabled reads the signup gate.
+func (s *AuthService) signupEnabled(ctx context.Context) bool {
+	return settings.KeySignupEnabled.Of(s.snap(ctx))
+}
+
+// emailVerificationRequired reads the verification gate with its
+// degradation rule: requiring verification without SMTP cannot hold, so
+// it reads as off rather than locking every signup.
+func (s *AuthService) emailVerificationRequired(ctx context.Context) bool {
+	return settings.EmailVerificationEffective(s.snap(ctx))
+}
+
+// baseURL derives the hub's public base URL for deep-links.
+func (s *AuthService) baseURL(ctx context.Context) string {
+	return settings.BaseURL(s.snap(ctx), s.cfg.Listen)
 }
 
 // checkHasAnyUser returns true if at least one user exists. The result is
@@ -113,12 +149,12 @@ func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
 // replaces anything already written for that name. The interceptor's slide
 // refresh stands back from a response that already carries a session cookie,
 // which is what keeps these two writers from fighting.
-func (s *AuthService) setSessionCookie(h http.Header, sessionID string, expiresAt time.Time) {
-	h.Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.cfg.SecureCookies).String())
+func (s *AuthService) setSessionCookie(ctx context.Context, h http.Header, sessionID string, expiresAt time.Time) {
+	h.Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.secureCookies(ctx)).String())
 }
 
 func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.LoginRequest]) (*connect.Response[leapmuxv1.LoginResponse], error) {
-	token, user, expiresAt, err := auth.Login(ctx, s.store, req.Msg.GetUsername(), req.Msg.GetPassword(), s.cfg.SessionDuration)
+	token, user, expiresAt, err := auth.Login(ctx, s.store, req.Msg.GetUsername(), req.Msg.GetPassword(), s.sessionDuration(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -126,22 +162,22 @@ func (s *AuthService) Login(ctx context.Context, req *connect.Request[leapmuxv1.
 	resp := connect.NewResponse(&leapmuxv1.LoginResponse{
 		User: userToProto(user),
 	})
-	s.setSessionCookie(resp.Header(), token, expiresAt)
+	s.setSessionCookie(ctx, resp.Header(), token, expiresAt)
 	return resp, nil
 }
 
 func (s *AuthService) Logout(ctx context.Context, req *connect.Request[leapmuxv1.LogoutRequest]) (*connect.Response[leapmuxv1.LogoutResponse], error) {
-	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.cfg.SecureCookies)
+	token := auth.SessionIDFromHeader(req.Header().Get("Cookie"), s.secureCookies(ctx))
 	if token != "" {
 		if _, err := s.store.Sessions().Delete(ctx, token); err != nil {
 			connectErr := connect.NewError(connect.CodeInternal, fmt.Errorf("delete session: %w", err))
-			connectErr.Meta().Set("Set-Cookie", auth.ClearSessionCookie(s.cfg.SecureCookies).String())
+			connectErr.Meta().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
 			return nil, connectErr
 		}
 		s.lifecycle.SessionRevoked(token)
 	}
 	resp := connect.NewResponse(&leapmuxv1.LogoutResponse{})
-	resp.Header().Set("Set-Cookie", auth.ClearSessionCookie(s.cfg.SecureCookies).String())
+	resp.Header().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
 	return resp, nil
 }
 
@@ -196,7 +232,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
 	isSetupMode := !hasUser
-	if !isSetupMode && !s.cfg.SignupEnabled {
+	if !isSetupMode && !s.signupEnabled(ctx) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sign-up is disabled"))
 	}
 
@@ -240,7 +276,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		return s.signUpSetupMode(ctx, username, displayName, email, hash)
 	}
 
-	if s.cfg.EmailVerificationRequired && email != "" {
+	if s.emailVerificationRequired(ctx) && email != "" {
 		// Email goes to pending_email; email column stays empty until verified.
 		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 			return nil, AvailabilityConnectError(err)
@@ -284,7 +320,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 		if mintErr != nil {
 			return nil, mintErr
 		}
-		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, uid, s.cfg.SessionDuration)
+		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, uid, s.sessionDuration(ctx))
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
@@ -293,7 +329,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *connect.Request[leapmuxv1
 			VerificationRequired:  true,
 			VerificationEmailSent: emailSent,
 		})
-		s.setSessionCookie(resp.Header(), sessionID, sessionExpires)
+		s.setSessionCookie(ctx, resp.Header(), sessionID, sessionExpires)
 		return resp, nil
 	}
 
@@ -361,7 +397,7 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*co
 	if err != nil {
 		return nil, err
 	}
-	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID, s.cfg.SessionDuration)
+	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID, s.sessionDuration(ctx))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
@@ -369,7 +405,7 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*co
 	resp := connect.NewResponse(&leapmuxv1.SignUpResponse{
 		User: userToProto(user),
 	})
-	s.setSessionCookie(resp.Header(), sessionID, expiresAt)
+	s.setSessionCookie(ctx, resp.Header(), sessionID, expiresAt)
 	return resp, nil
 }
 
@@ -409,7 +445,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	}
 
 	// Decide what URL workers should target. Precedence:
-	//   1. An explicit --public-url wins (admin's canonical external URL,
+	//   1. An explicit public_url setting wins (admin's canonical external URL,
 	//      typically used when the hub is behind a reverse proxy).
 	//   2. If TCP is disabled (desktop's NoTCP mode), the browser origin is
 	//      `tauri://localhost`, which is unusable; emit the local unix-socket
@@ -418,9 +454,10 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	//      window.location.origin, which already reflects whatever proxy or
 	//      hostname the user is connecting through.
 	var workerHubURL string
+	snap := s.snap(ctx)
 	switch {
-	case s.cfg.PublicURL != "":
-		workerHubURL = s.cfg.PublicURL
+	case settings.KeyPublicURL.Of(snap) != "":
+		workerHubURL = settings.KeyPublicURL.Of(snap)
 	case s.cfg.Listen == "":
 		if u, err := s.cfg.LocalListenURL(); err == nil {
 			workerHubURL = u
@@ -428,7 +465,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	}
 
 	return connect.NewResponse(&leapmuxv1.GetSystemInfoResponse{
-		SignupEnabled:   s.cfg.SignupEnabled,
+		SignupEnabled:   s.signupEnabled(ctx),
 		SoloMode:        s.cfg.SoloMode,
 		SetupRequired:   setupRequired,
 		Version:         version.Value,
@@ -438,7 +475,7 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 		Branch:          version.Branch,
 		OauthEnabled:    len(providers) > 0,
 		WorkerHubUrl:    workerHubURL,
-		EmailEnabled:    s.cfg.SmtpHost != "",
+		EmailEnabled:    settings.KeySMTP.Of(snap).Enabled(),
 		CaptchaEnabled:  captchaEnabled,
 		AltchaAlgorithm: altchaAlgorithm,
 		CaptchaProvider: captchaProvider,
@@ -476,7 +513,7 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *connect.Reques
 	// of absolute URL the OAuth flow needs the frontend to redirect to.
 	// They happen to resolve to the same value today, but they're
 	// conceptually different and should not be conflated.
-	baseURL := s.cfg.BaseURL()
+	baseURL := s.baseURL(ctx)
 
 	var pbProviders []*leapmuxv1.OAuthProviderInfo
 	for _, p := range providers {
@@ -598,7 +635,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 			// Trusted OAuth email — goes directly to email column as verified.
 			userEmail = email
 			emailVerified = true
-		} else if s.cfg.EmailVerificationRequired {
+		} else if s.emailVerificationRequired(ctx) {
 			// Untrusted + verification required — goes to pending_email.
 			pendingEmail = email
 		} else {
@@ -674,7 +711,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUID, s.cfg.SessionDuration)
+	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUID, s.sessionDuration(ctx))
 	if sessionErr != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
@@ -684,7 +721,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *connect.Requ
 		VerificationRequired:  pendingEmail != "",
 		VerificationEmailSent: emailSent,
 	})
-	s.setSessionCookie(resp.Header(), sessionID, expiresAt)
+	s.setSessionCookie(ctx, resp.Header(), sessionID, expiresAt)
 	return resp, nil
 }
 

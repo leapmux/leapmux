@@ -326,32 +326,23 @@ type OAuthProvider struct {
 	ClientSecret []byte
 }
 
-// CaptchaConfig is one captcha provider's configuration row, keyed by
-// the CaptchaProvider proto enum's raw number (1=altcha, 2=recaptcha_v3,
-// 3=turnstile) - never the alias string. Settings is the
-// provider's JSON settings blob; Secret is the keystore-encrypted
-// provider secret (the ALTCHA HMAC signing key, or an external provider's
-// API secret). Exactly one row is Selected — the active provider — and
-// Enabled on that row is the verification on/off switch; the selection
-// survives a disable so a later enable restores the same provider.
-type CaptchaConfig struct {
-	Provider  leapmuxv1.CaptchaProvider
-	Selected  bool
-	Enabled   bool
+// SettingRow is one hub_settings row: a setting key's stored halves.
+// Value is the public JSON document; Secret is the keystore-encrypted
+// JSON secret half. Either half may be nil (stored NULL), never both.
+type SettingRow struct {
+	Key       string
+	Value     *string
 	Secret    []byte
-	Settings  string
 	UpdatedAt time.Time
 }
 
-// RateLimitConfig overrides the code-side default limits for one operation
-// (e.g. "change-password"). Absent rows fall back to the defaults catalogued
-// in internal/hub/ratelimit.
-type RateLimitConfig struct {
-	Operation     string
-	Enabled       bool
-	MaxAttempts   int64
-	WindowSeconds int64
-	UpdatedAt     time.Time
+// UpsertSettingParams rewrites one setting key's row. A nil half clears
+// that half; the settings.Manager merges with the existing row first so
+// only an intentional clear passes nil.
+type UpsertSettingParams struct {
+	Key    string
+	Value  *string
+	Secret []byte
 }
 
 // OAuthState represents a short-lived CSRF + PKCE state during auth flow.
@@ -947,34 +938,6 @@ type CreateOAuthProviderParams struct {
 type UpdateOAuthProviderEnabledParams struct {
 	ID      string
 	Enabled bool
-}
-
-// InsertCaptchaConfigIfAbsentParams provisions a provider's row. The ON
-// CONFLICT clause in every dialect makes the insert a no-op when the row
-// already exists, so a racing first-use provisioning cannot clobber an
-// existing secret; the row starts unselected (the caller activates it).
-type InsertCaptchaConfigIfAbsentParams struct {
-	Provider leapmuxv1.CaptchaProvider
-	Secret   []byte
-	Settings string
-}
-
-// UpsertCaptchaConfigParams writes a provider's settings together with
-// its secret (first configuration of an external provider, or key
-// rotation). The secret is required: a row without one fails verification
-// on every submission. Use UpdateSettings for secret-preserving edits.
-type UpsertCaptchaConfigParams struct {
-	Provider leapmuxv1.CaptchaProvider
-	Secret   []byte
-	Settings string
-}
-
-// UpsertRateLimitConfigParams creates or overrides one operation's limits.
-type UpsertRateLimitConfigParams struct {
-	Operation     string
-	Enabled       bool
-	MaxAttempts   int64
-	WindowSeconds int64
 }
 
 // ConsumeAltchaSaltParams records a solved ALTCHA challenge's salt as

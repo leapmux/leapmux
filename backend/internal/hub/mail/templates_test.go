@@ -54,7 +54,7 @@ func TestRenderer_VerificationEmail_Bytes(t *testing.T) {
 	const hubURL = "https://hub.example.com"
 	link := hubURL + "/verify-email?code=" + formatted
 
-	r := mail.Renderer{HubURL: hubURL}
+	r := mail.Renderer{BaseURL: func() string { return hubURL }}
 	msg := r.VerificationEmail("alice@example.test", storedCode)
 
 	if msg.To != "alice@example.test" {
@@ -79,7 +79,7 @@ func TestRenderer_RegistrationInstructions_Bytes(t *testing.T) {
 	const command = "leapmux worker --hub https://hub.example.com --registration-key abc123"
 	const hubURL = "https://hub.example.com"
 
-	r := mail.Renderer{HubURL: hubURL}
+	r := mail.Renderer{BaseURL: func() string { return hubURL }}
 	msg := r.RegistrationInstructions("bob@example.test", command)
 
 	if msg.To != "bob@example.test" {
@@ -109,7 +109,7 @@ func printForExample(msg mail.Message) string {
 }
 
 func ExampleRenderer_VerificationEmail() {
-	r := mail.Renderer{HubURL: "https://hub.example.com"}
+	r := mail.Renderer{BaseURL: func() string { return "https://hub.example.com" }}
 	msg := r.VerificationEmail("alice@example.test", "ABC234")
 	fmt.Print(printForExample(msg))
 	// Output:
@@ -131,7 +131,7 @@ func ExampleRenderer_VerificationEmail() {
 }
 
 func ExampleRenderer_RegistrationInstructions() {
-	r := mail.Renderer{HubURL: "https://hub.example.com"}
+	r := mail.Renderer{BaseURL: func() string { return "https://hub.example.com" }}
 	msg := r.RegistrationInstructions(
 		"bob@example.test",
 		"leapmux worker --hub https://hub.example.com --registration-key abc123",

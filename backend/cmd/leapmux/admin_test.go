@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
@@ -456,11 +458,12 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
 }
 
 // TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced pins the
-// third encrypted-secret family: a captcha provider's secret keeps its
-// key version alive in the removal guard, reencrypt migrates it with the
-// same provider-scoped AAD, and only then does the old version become
-// removable. Without the guard leg, removing the version would make
-// every Login fail with the uniform captcha denial.
+// third encrypted-secret family: a captcha provider's secret (now the
+// encrypted half of its captcha.* settings row) keeps its key version alive
+// in the removal guard, reencrypt migrates it with the same key-name-scoped
+// AAD, and only then does the old version become removable. Without the
+// guard leg, removing the version would make every Login fail with the
+// uniform captcha denial.
 func TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced(t *testing.T) {
 	dir := setupTestDataDir(t)
 	ctx := context.Background()
@@ -478,24 +481,26 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced(t *testing.T
 	err := runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "still encrypts")
-	assert.Contains(t, err.Error(), "captcha")
+	assert.Contains(t, err.Error(), "settings secret")
 
 	// Reencrypt migrates the secret; it must decrypt under v2 with the
-	// same provider-scoped AAD and the original plaintext.
+	// same key-name-scoped AAD and the original plaintext.
 	require.NoError(t, runReencryptSecrets(testAdminCtx, []string{"--data-dir", dir}))
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
 	require.NoError(t, err)
 	st, err := storeopen.Open(ctx, adminConfig(dir))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
-	row, err := st.CaptchaConfig().GetSelected(ctx)
+	row, err := st.Settings().Get(ctx, "captcha.turnstile")
 	require.NoError(t, err)
 	ver, err := keystore.CiphertextVersion(row.Secret)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), ver, "reencrypt must migrate the captcha secret to the active version")
-	plain, err := ks.Decrypt(row.Secret, keystore.CaptchaSecretAAD("turnstile"))
-	require.NoError(t, err, "the migrated secret must decrypt under its unchanged provider-scoped AAD")
-	assert.Equal(t, "captcha-secret", string(plain))
+	plain, err := ks.Decrypt(row.Secret, keystore.SettingsSecretAAD("captcha.turnstile"))
+	require.NoError(t, err, "the migrated secret must decrypt under its unchanged key-name-scoped AAD")
+	var ts captcha.TurnstileRow
+	require.NoError(t, json.Unmarshal(plain, &ts))
+	assert.Equal(t, "captcha-secret", ts.SecretKey)
 
 	// With the secret migrated, v1 is unreferenced and removal succeeds.
 	require.NoError(t, runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir}))

@@ -51,7 +51,7 @@ Notes on dispatch:
 
 > **Tip:** Flags accept both single- and double-hyphen forms (`-listen` and `--listen` are equivalent). This chapter uses the single-hyphen form, matching the binary's help output.
 
-> **Durations.** Every flag whose default is shown as a duration (`7d`, `10s`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts, as in `-session-duration 1w2d`. A bare number is a count of **seconds**, so `-api-timeout 10` means ten seconds. See [Duration values](/docs/operating/configuration/#duration-values).
+> **Durations.** Every flag whose default is shown as a duration (`1h`, `5m`, …) takes a unit suffix — `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w` — and combines parts. A bare number is a count of **seconds**. See [Duration values](/docs/operating/configuration/#duration-values).
 
 ## solo
 
@@ -68,17 +68,14 @@ leapmux solo [flags]
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory (split into `<data-dir>/hub` and `<data-dir>/worker`) |
 | `-dev-frontend` | empty | Frontend dev-server URL for the local reverse proxy |
 | `-storage-sqlite-max-conns` | `4` | SQLite max open connections |
-| `-max-incomplete-chunked` | `0` (= 4) | Max in-flight chunked sequences per channel (for the bundled Worker) |
-| `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
-| `-api-timeout` | `10s` | General API timeout |
-| `-agent-startup-timeout` | `5m` | Agent startup timeout |
-| `-worktree-create-timeout` | `1m` | Worktree creation timeout |
+| `-max-incomplete-chunked` | `4` | Max in-flight chunked sequences per channel (for the bundled Worker) |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` (for the bundled Worker) |
+| `-use-login-shell` | `true` | Wrap the agent invocation in the user's login shell (for the bundled Worker) |
 | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 | `-version` | — | Print version and exit |
 
-> **Note:** `-public-url` is **not** available in solo mode; `public_url` set by any means is rejected with `public_url is not supported in solo mode`. Binding solo to a non-loopback address logs a warning because every request is auto-authenticated as the admin — use `hub` or `dev` for network-exposed deployments.
+> **Note:** The `public_url` setting is ignored in solo mode. Binding solo to a non-loopback address logs a warning because every request is auto-authenticated as the admin — use `hub` or `dev` for network-exposed deployments.
 
 ## hub
 
@@ -96,38 +93,11 @@ This table lists the most common flags. The full set — including all PostgreSQ
 |------|---------|---------|
 | `-listen` | `:4327` | TCP listen address (e.g. `:4327` or `127.0.0.1:4327`) |
 | `-local-listen` | platform default | Local IPC URL (`unix:<path>` or `npipe:<name>`); default `unix:<data-dir>/hub.sock` on Unix |
-| `-public-url` | empty | Public base URL behind a reverse proxy (e.g. `https://hub.example.com`) |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
 | `-dev-frontend` | empty | Frontend dev-server URL for the reverse proxy |
 | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
 
-**Auth options**
-
-| Flag | Default | Meaning |
-|------|---------|---------|
-| `-signup-enabled` | `false` | Enable user sign-up |
-| `-email-verification-required` | `false` | Require email verification on sign-up (needs `-smtp-host`) |
-| `-session-duration` | `7d` | How long a session stays valid after the user's last request; each request slides the expiry forward |
-
-**SMTP options**
-
-| Flag | Default | Meaning |
-|------|---------|---------|
-| `-smtp-host` | empty | SMTP server host |
-| `-smtp-port` | `587` | SMTP server port |
-| `-smtp-username` | empty | SMTP username |
-| `-smtp-password` | empty | SMTP password |
-| `-smtp-from-address` | empty | From address (required when `-smtp-host` is set) |
-| `-smtp-tls-mode` | `starttls` | `starttls`, `implicit`, or `none` |
-
-**Timeout and limit options**
-
-| Flag | Default | Meaning |
-|------|---------|---------|
-| `-api-timeout` | `10s` | General API timeout |
-| `-agent-startup-timeout` | `5m` | Agent startup timeout |
-| `-worktree-create-timeout` | `1m` | Worktree creation timeout |
-| `-max-message-size` | `0` (= 16 MiB) | Max application payload size in bytes; reassembled ceiling adds 64 KiB headroom |
+**Behavioral settings.** Auth policy (sign-up, verification, sessions), SMTP, timeouts, and per-user limits are not flags: they are instance settings in the Hub's database, managed by `leapmux admin settings` (see the [settings chapter](/docs/operating/admin-cli/#settings--instance-settings)).
 
 **Storage options**
 
@@ -150,7 +120,7 @@ The Postgres family (`-storage-postgres-*`, `-storage-cockroachdb-*`, `-storage-
 | `-config` | `~/.config/leapmux/hub/hub.yaml` | Config file path |
 | `-version` | — | Print version and exit |
 
-> **Note:** Two hub config keys have **no** CLI flag and are set only via YAML or env var: `secure_cookies` (`LEAPMUX_HUB_SECURE_COOKIES`) and `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). See [Configuration](/docs/operating/configuration/) and [Encryption & Data](/docs/operating/encryption-and-data/).
+> **Note:** One hub config key has **no** CLI flag and is set only via YAML or env var: `encryption_key_path` (`LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `<data-dir>/encryption.key`). Runtime settings such as `secure_cookies` are database settings managed with `leapmux admin settings` — see [Admin CLI](/docs/operating/admin-cli/). See also [Configuration](/docs/operating/configuration/) and [Encryption & Data](/docs/operating/encryption-and-data/).
 
 ## worker
 
@@ -228,14 +198,9 @@ Run a Hub and a Worker in one process with **real** password authentication — 
 leapmux dev [flags]
 ```
 
-Dev mode uses the **same flag set as solo**, with two additions:
+Dev mode uses the **same flag set as solo**.
 
-| Flag | Default | Meaning |
-|------|---------|---------|
-| `-public-url` | empty | Public base URL when behind a reverse proxy |
-| `-session-duration` | `7d` | How long a session stays valid after the user's last request. Solo has no session to expire, so the flag is dev-only; shorten it to exercise the signed-out path (the minimum is `5m`). |
-
-The other differences from solo: the default `-listen` is `:4327` (all interfaces), the config/data location is `~/.config/leapmux/dev/`, and the bundled Worker's auto-registration is deferred until the first admin completes `/setup`.
+The other differences from solo: dev seeds `signup_enabled=true`; the runtime knobs (`session_duration_seconds`, `limits`, `timeouts`, …) are `leapmux admin settings` keys; the default `-listen` is `:4327` (all interfaces); the config/data location is `~/.config/leapmux/dev/`; and the bundled Worker's auto-registration is deferred until the first admin completes `/setup`.
 
 ## version
 
@@ -262,6 +227,9 @@ leapmux admin <group> <command> [flags]
 | `session` | `list`, `revoke`, `revoke-user`, `purge-expired` |
 | `worker` | `list`, `get`, `deregister`; subgroup `reg-key`: `list`, `revoke`, `purge-expired` |
 | `oauth-provider` | `add`, `list`, `remove`, `enable`, `disable` |
+| `captcha` | `show`, `set`, `enable`, `disable`, `reset` |
+| `rate-limit` | `list`, `set`, `enable`, `disable`, `reset` |
+| `settings` | `list`, `get`, `set`, `set-secret`, `reset` |
 | `encryption-key` | `rotate`, `remove`, `reencrypt`, `rotate-pepper` |
 | `db` | `path`, `migrate`, `version` |
 | `api-token` | `list`, `issue`, `revoke` |
@@ -307,12 +275,10 @@ Hub-family modes (`hub`, `solo`, `dev`) read variables prefixed `LEAPMUX_HUB_`; 
 |----------|------|---------|
 | `LEAPMUX_HUB_LISTEN` | hub `listen` | `:4327` |
 | `LEAPMUX_HUB_LOCAL_LISTEN` | hub `local_listen` | `unix:/run/leapmux/hub.sock` |
-| `LEAPMUX_HUB_PUBLIC_URL` | hub `public_url` | `https://hub.example.com` |
 | `LEAPMUX_HUB_DATA_DIR` | hub `data_dir` | `/var/lib/leapmux/hub` |
 | `LEAPMUX_HUB_LOG_LEVEL` | hub `log_level` | `info` |
-| `LEAPMUX_HUB_SIGNUP_ENABLED` | hub `signup_enabled` | `true` |
-| `LEAPMUX_HUB_SECURE_COOKIES` | hub `secure_cookies` (no CLI flag) | `true` |
 | `LEAPMUX_HUB_ENCRYPTION_KEY_PATH` | hub `encryption_key_path` (no CLI flag) | `/etc/leapmux/encryption.key` |
+
 | `LEAPMUX_WORKER_HUB` | worker `hub` | `https://hub.example.com` |
 | `LEAPMUX_WORKER_NAME` | worker `name` | `build-box-1` |
 | `LEAPMUX_WORKER_DATA_DIR` | worker `data_dir` | `/var/lib/leapmux/worker` |

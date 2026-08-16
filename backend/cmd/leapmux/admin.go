@@ -130,6 +130,17 @@ var adminTree = adminGroup{
 			},
 		},
 		{
+			Name:    "settings",
+			Summary: "Manage the hub's DB-backed instance settings (auth policy, SMTP, timeouts, limits, captcha, rate limits)",
+			Commands: []adminCommand{
+				{Name: "list", Summary: "List every setting key with its effective value, propagation, and default marker", Run: runSettingsList},
+				{Name: "get", Summary: "Show one key's effective value and shape", Run: runSettingsGet},
+				{Name: "set", Summary: "Write one key's public half from a JSON document (or bare scalar)", Run: runSettingsSet},
+				{Name: "set-secret", Summary: "Write one key's secret half (encrypted at rest)", Run: runSettingsSetSecret},
+				{Name: "reset", Summary: "Remove one key's row, returning it to its default", Run: runSettingsReset},
+			},
+		},
+		{
 			Name:    "encryption-key",
 			Summary: "Manage encryption keys",
 			Commands: []adminCommand{

@@ -20,27 +20,30 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
 // setupCaptchaAuthService wires an AuthService behind a REAL captcha
-// manager (store + keystore), unlike setupAuthTestServerBase which passes
-// nil. Returns the client, the keystore (so tests can encrypt provider
-// secrets the resolver can decrypt), and the store so tests can inspect
-// the config row's provisioning side effects.
-func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServiceClient, *keystore.Keystore, store.Store) {
+// manager (store + keystore + settings), unlike setupAuthTestServerBase
+// which passes nil. Returns the client, the keystore (so tests can
+// encrypt provider secrets the resolver can decrypt), the store so tests
+// can inspect the config row's provisioning side effects, and the shared
+// settings manager (the admin CLI's write handle).
+func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServiceClient, *keystore.Keystore, store.Store, *settings.Manager) {
 	t.Helper()
 
 	st := hubtestutil.OpenTestStore(t)
 	key := [32]byte{}
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
 	require.NoError(t, err)
-	captchaMgr := captcha.NewManager(st, ks, solo)
+	set := servicetest.NewSettingsManager(t, st, ks)
+	captchaMgr := captcha.NewManager(st, set, solo)
 
 	cfg := testConfig()
 	cfg.SoloMode = solo
-	authDeps := servicetest.AuthServiceDeps(st, cfg, auth.NewCredentialLifecycleEffects(nil, nil, nil))
+	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Captcha = captchaMgr
 	authSvc := service.NewAuthService(authDeps)
 
@@ -49,11 +52,11 @@ func setupCaptchaAuthService(t *testing.T, solo bool) (leapmuxv1connect.AuthServ
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), ks, st
+	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), ks, st, set
 }
 
 func TestGetAltchaChallenge_IssuesSignedChallenge(t *testing.T) {
-	client, _, _ := setupCaptchaAuthService(t, false)
+	client, _, _, _ := setupCaptchaAuthService(t, false)
 
 	resp, err := client.GetAltchaChallenge(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
 	require.NoError(t, err)
@@ -83,7 +86,7 @@ func TestGetAltchaChallenge_IssuesSignedChallenge(t *testing.T) {
 }
 
 func TestGetAltchaChallenge_SoloReturnsEmpty(t *testing.T) {
-	client, _, _ := setupCaptchaAuthService(t, true)
+	client, _, _, _ := setupCaptchaAuthService(t, true)
 
 	resp, err := client.GetAltchaChallenge(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
 	require.NoError(t, err)
@@ -92,7 +95,7 @@ func TestGetAltchaChallenge_SoloReturnsEmpty(t *testing.T) {
 
 func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 
 	// A nil captcha dependency means "subsystem absent": challenges stand
 	// down with an empty payload (the widget's stand-down signal), and
@@ -107,7 +110,7 @@ func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 }
 
 func TestGetSystemInfo_ReportsCaptchaState(t *testing.T) {
-	client, _, _ := setupCaptchaAuthService(t, false)
+	client, _, _, _ := setupCaptchaAuthService(t, false)
 
 	// Fresh install: defaults apply, and reporting them must NOT provision
 	// the signing secret (that is challenge issuance's job).
@@ -151,8 +154,8 @@ func (s failingCaptchaStub) AltchaChallengeJSON(context.Context) (string, error)
 // issuance still surfaces its error.
 func TestGetSystemInfo_DegradesWhenCaptchaConfigUnreachable(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
-	authDeps := servicetest.AuthServiceDeps(st, testConfig(), auth.NewCredentialLifecycleEffects(nil, nil, nil))
-	authDeps.Captcha = failingCaptchaStub{err: errors.New("no such table captcha_config")}
+	authDeps := servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
+	authDeps.Captcha = failingCaptchaStub{err: errors.New("settings snapshot unavailable")}
 	authSvc := service.NewAuthService(authDeps)
 
 	resp, err := authSvc.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
@@ -165,7 +168,7 @@ func TestGetSystemInfo_DegradesWhenCaptchaConfigUnreachable(t *testing.T) {
 }
 
 func TestGetSystemInfo_SoloReportsCaptchaDisabled(t *testing.T) {
-	client, _, _ := setupCaptchaAuthService(t, true)
+	client, _, _, _ := setupCaptchaAuthService(t, true)
 
 	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 	require.NoError(t, err)
@@ -176,16 +179,15 @@ func TestGetSystemInfo_SoloReportsCaptchaDisabled(t *testing.T) {
 // surface external-provider frontends switch on: the selected provider's
 // name, its public site key, and the altcha algorithm going empty.
 func TestGetSystemInfo_ReportsExternalProvider(t *testing.T) {
-	client, ks, st := setupCaptchaAuthService(t, false)
+	client, _, _, set := setupCaptchaAuthService(t, false)
 
-	encrypted, err := captcha.EncryptSecret(ks, captcha.ProviderTurnstile, "secret-key")
-	require.NoError(t, err)
-	require.NoError(t, st.CaptchaConfig().Upsert(context.Background(), store.UpsertCaptchaConfigParams{
-		Provider: captcha.ProviderTurnstile,
-		Secret:   encrypted,
-		Settings: `{"site_key":"1x00000000000000000000AA"}`,
+	// The admin CLI's activation: the provider's row (site key plus the
+	// secret in its encrypted half) and the selection.
+	require.NoError(t, captcha.TurnstileKey.Set(context.Background(), set, captcha.TurnstileRow{
+		SiteKey:   "1x00000000000000000000AA",
+		SecretKey: "secret-key",
 	}))
-	require.NoError(t, st.CaptchaConfig().Activate(context.Background(), captcha.ProviderTurnstile))
+	require.NoError(t, captcha.CaptchaSelectedKey.Set(context.Background(), set, "turnstile"))
 
 	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 	require.NoError(t, err)

@@ -26,11 +26,6 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/internal/util/sqltime"
               type: "MySQLNullTime"
-          # Captcha provider enum
-          - column: "captcha_config.provider"
-            go_type:
-              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "CaptchaProvider"
           # Worker enums
           - column: "workers.status"
             go_type:
@@ -79,6 +74,12 @@ sql:
               type: "byte"
               slice: true
           - column: "delegation_tokens.refresh_hash"
+            go_type:
+              type: "byte"
+              slice: true
+          # Keystore ciphertext: a NULL secret is a nil slice, not an empty
+          # string in a NullString.
+          - column: "hub_settings.secret"
             go_type:
               type: "byte"
               slice: true

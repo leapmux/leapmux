@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/util/memlimit"
 )
@@ -35,14 +36,15 @@ func captureLogs() (*slog.Logger, func() string) {
 	return logger, buf.String
 }
 
-// budgetsOf resolves the three queue budgets the way NewServer does, so these
-// tests read the Source strings config actually produces rather than ones
-// spelled here that could drift away from it.
-func budgetsOf(cfg *config.Config, basis memlimit.Basis) []config.QueueMemoryBudget {
+// budgetsOf resolves the three queue budgets the way NewServer does -- from
+// the queue_budget settings key's configured values, where a zero field means
+// auto -- so these tests read the Source strings config actually produces
+// rather than ones spelled here that could drift away from it.
+func budgetsOf(configured settings.QueueBudgetValue, basis memlimit.Basis) []config.QueueMemoryBudget {
 	return []config.QueueMemoryBudget{
-		cfg.ResolveRelayQueueMemoryBudget(basis),
-		cfg.ResolveWorkerQueueMemoryBudget(basis),
-		cfg.ResolveUserEventsQueueMemoryBudget(basis),
+		config.ResolveRelayQueueMemoryBudget(configured.RelayBytes, basis),
+		config.ResolveWorkerQueueMemoryBudget(configured.WorkerBytes, basis),
+		config.ResolveUserEventsQueueMemoryBudget(configured.UserEventsBytes, basis),
 	}
 }
 
@@ -78,7 +80,7 @@ func TestLogQueueMemoryBudgetsReportsAProbeFailureOnce(t *testing.T) {
 		CgroupErr: errors.New("open /custom/inner/memory.max: permission denied"),
 	}
 
-	logQueueMemoryBudgets(logger, basis, budgetsOf(&config.Config{}, basis)...)
+	logQueueMemoryBudgets(logger, basis, budgetsOf(settings.QueueBudgetValue{}, basis)...)
 
 	out := logged()
 	assert.Equal(t, 1, strings.Count(out, "permission denied"),
@@ -111,7 +113,7 @@ func TestLogQueueMemoryBudgetsIsSilentOnAHealthyHost(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			logger, logged := captureLogs()
 
-			logQueueMemoryBudgets(logger, tc.basis, budgetsOf(&config.Config{}, tc.basis)...)
+			logQueueMemoryBudgets(logger, tc.basis, budgetsOf(settings.QueueBudgetValue{}, tc.basis)...)
 
 			out := logged()
 			assert.Empty(t, warnLines(out), "nothing is wrong here")
@@ -129,10 +131,9 @@ func TestLogQueueMemoryBudgetsIsSilentOnAHealthyHost(t *testing.T) {
 func TestLogQueueMemoryBudgetsAccountsForEveryBudget(t *testing.T) {
 	t.Run("an auto-sized budget names its share of the basis", func(t *testing.T) {
 		logger, logged := captureLogs()
-		cfg := &config.Config{}
 		basis := memlimit.Detect()
 
-		logQueueMemoryBudgets(logger, basis, budgetsOf(cfg, basis)...)
+		logQueueMemoryBudgets(logger, basis, budgetsOf(settings.QueueBudgetValue{}, basis)...)
 
 		out := logged()
 		// End to end, through the real resolver: the budgets and the line they
@@ -150,14 +151,14 @@ func TestLogQueueMemoryBudgetsAccountsForEveryBudget(t *testing.T) {
 
 	t.Run("a configured budget says so instead", func(t *testing.T) {
 		logger, logged := captureLogs()
-		cfg := &config.Config{
-			RelayQueueMemoryBudget:      321 << 20,
-			WorkerQueueMemoryBudget:     222 << 20,
-			UserEventsQueueMemoryBudget: 111 << 20,
+		configured := settings.QueueBudgetValue{
+			RelayBytes:      321 << 20,
+			WorkerBytes:     222 << 20,
+			UserEventsBytes: 111 << 20,
 		}
 
 		basis := memlimit.Detect()
-		logQueueMemoryBudgets(logger, basis, budgetsOf(cfg, basis)...)
+		logQueueMemoryBudgets(logger, basis, budgetsOf(configured, basis)...)
 
 		out := logged()
 		assert.Equal(t, 3, strings.Count(out, "source=config"),

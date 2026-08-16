@@ -12,7 +12,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/keystore"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -31,38 +31,40 @@ type captchaShowJSON struct {
 	Configured []string                     `json:"configured"`
 }
 
-// captchaManagerFor builds the same manager the hub enforces with, so the
-// CLI's idea of "effective" and the hub's can never diverge. The keystore
-// is loaded once per invocation and also returned: the CLI's write path
-// (secret encryption, row provisioning) needs it directly. LoadOrGenerate,
-// not LoadFromFile: the very first admin action on a fresh data dir may
-// precede any hub run. Solo is always false here — a solo-mode hub never
-// enforces captcha, and this CLI manages multi-user hub data.
-func captchaManagerFor(cfg *config.Config, st store.Store) (*captcha.Manager, *keystore.Keystore, error) {
-	ks, err := keystore.LoadOrGenerate(cfg.EncryptionKeyFilePath())
+// captchaCommandDeps bundles what a captcha admin command needs: the
+// shared settings manager (reads and writes) and the captcha manager
+// built over it (provisioning, Describe semantics shared with the hub).
+type captchaCommandDeps struct {
+	set *settings.Manager
+	cap *captcha.Manager
+}
+
+// captchaDepsFor loads the settings manager exactly as the hub builds
+// it, then the captcha manager over it.
+func captchaDepsFor(cfg *config.Config, st store.Store) (captchaCommandDeps, error) {
+	set, err := settingsManagerFor(cfg, st)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load encryption key: %w", err)
+		return captchaCommandDeps{}, err
 	}
-	return captcha.NewManager(st, ks, false), ks, nil
+	return captchaCommandDeps{set: set, cap: captcha.NewManager(st, set, false)}, nil
 }
 
 func runCaptchaShow(cmd adminCmdCtx, args []string) error {
 	return withAdminStore(cmd, args, nil, func(ctx context.Context, cfg *config.Config, st store.Store) error {
-		mgr, _, err := captchaManagerFor(cfg, st)
+		d, err := captchaDepsFor(cfg, st)
 		if err != nil {
 			return err
 		}
-		effective, customized, err := mgr.Describe(ctx)
-		if err != nil {
-			return fmt.Errorf("load captcha config: %w", err)
+		snap := d.set.Snapshot(ctx)
+		effective, customized := captcha.Effective(snap), snap.Customized(captcha.AltchaKey)
+		if sel, pErr := captcha.ParseProvider(captcha.CaptchaSelectedKey.Of(snap)); pErr == nil {
+			customized = snap.Customized(captchaProviderDescriptor(sel))
 		}
 		configured := []string{}
-		rows, err := st.CaptchaConfig().List(ctx)
-		if err != nil {
-			return fmt.Errorf("list captcha providers: %w", err)
-		}
-		for _, row := range rows {
-			configured = append(configured, captcha.ProviderAlias(row.Provider))
+		for _, p := range []captcha.Provider{captcha.ProviderAltcha, captcha.ProviderRecaptchaV3, captcha.ProviderTurnstile} {
+			if snap.Customized(captchaProviderDescriptor(p)) {
+				configured = append(configured, captcha.ProviderAlias(p))
+			}
 		}
 		shown := captchaShowJSON{
 			Provider:   captcha.ProviderAlias(effective.Provider),
@@ -152,14 +154,12 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 			return fmt.Errorf("--secret must not be empty; an empty secret fails every verification")
 		}
 
-		mgr, ks, err := captchaManagerFor(cfg, st)
+		d, err := captchaDepsFor(cfg, st)
 		if err != nil {
 			return err
 		}
-		current, _, err := mgr.Describe(ctx)
-		if err != nil {
-			return fmt.Errorf("load captcha config: %w", err)
-		}
+		snap := d.set.Snapshot(ctx)
+		current := captcha.Effective(snap)
 
 		// The target provider is the --provider flag, else the currently
 		// selected one. Specifying the already-selected provider tunes it
@@ -187,10 +187,7 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 		// Flag edits overlay the TARGET provider's own stored settings, so
 		// a switch back keeps that row's tuning — only the selection
 		// changes. A provider with no row starts from its defaults.
-		base, hasRow, err := captcha.DescribeProvider(ctx, st, target)
-		if err != nil {
-			return fmt.Errorf("load captcha config: %w", err)
-		}
+		base, hasRow := captcha.DescribeProvider(snap, target)
 
 		// Switching to an external provider that has never been configured
 		// requires its keys in the same invocation: the row cannot exist
@@ -207,49 +204,41 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 
-		var secretBytes []byte
+		// Writes go through the settings manager: the public half of the
+		// target provider's key (its stored secret half is merged and
+		// re-split, so it is never lost), the secret half only when a
+		// --secret flag rotates it, and the selection as its own scalar
+		// when switching.
+		if err := d.set.Update(ctx, captchaProviderDescriptor(target), json.RawMessage(settingsJSON)); err != nil {
+			return fmt.Errorf("update captcha config: %w", err)
+		}
 		if cf.set("secret") {
-			secretBytes, err = captcha.EncryptSecret(ks, target, *cf.secret)
-			if err != nil {
-				return err
+			secretDoc, mErr := json.Marshal(map[string]string{"secret_key": *cf.secret})
+			if mErr != nil {
+				return mErr
+			}
+			if err := d.set.UpdateSecret(ctx, captchaProviderDescriptor(target), secretDoc); err != nil {
+				return fmt.Errorf("update captcha secret: %w", err)
 			}
 		}
-
-		cs := st.CaptchaConfig()
 		if switching {
-			if target == captcha.ProviderAltcha {
-				// Reuse the altcha row (and its original HMAC secret) when
-				// one exists; otherwise provision it now.
-				if err := captcha.EnsureAltchaRow(ctx, st, ks); err != nil {
+			// Switching TO altcha must leave an altcha row with a signing
+			// secret behind (reusing the original one when it exists) —
+			// the request path never writes.
+			if target == captcha.ProviderAltcha && !snap.Customized(captcha.AltchaKey) {
+				if err := d.cap.EnsureProvisioned(ctx); err != nil {
 					return fmt.Errorf("provision altcha row: %w", err)
 				}
 			}
-		} else if target == captcha.ProviderAltcha && !hasRow {
-			// An in-place altcha edit needs the selected row to exist; on a
-			// fresh install this provisions it with defaults first.
-			if err := mgr.EnsureProvisioned(ctx); err != nil {
-				return fmt.Errorf("provision captcha config: %w", err)
+			selDoc, mErr := json.Marshal(captcha.ProviderAlias(target))
+			if mErr != nil {
+				return mErr
 			}
-		}
-		if secretBytes != nil {
-			// A secret accompanies the settings (first configuration or
-			// rotation); write both.
-			if err := cs.Upsert(ctx, store.UpsertCaptchaConfigParams{
-				Provider: target,
-				Secret:   secretBytes,
-				Settings: settingsJSON,
-			}); err != nil {
-				return fmt.Errorf("update captcha config: %w", err)
-			}
-		} else if err := cs.UpdateSettings(ctx, target, settingsJSON); err != nil {
-			// Settings-only write: the stored secret is never touched.
-			return fmt.Errorf("update captcha config: %w", err)
-		}
-		if switching {
-			if err := cs.Activate(ctx, target); err != nil {
+			if err := d.set.Update(ctx, captcha.CaptchaSelectedKey, selDoc); err != nil {
 				return fmt.Errorf("activate captcha provider: %w", err)
 			}
 		}
+		_ = hasRow
 
 		fmt.Println(summary)
 		if switching {
@@ -259,6 +248,20 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 		}
 		return nil
 	})
+}
+
+// captchaProviderDescriptor returns the settings key holding one
+// provider's document (the exported face of the captcha package's own
+// mapping).
+func captchaProviderDescriptor(p captcha.Provider) settings.Descriptor {
+	switch p {
+	case captcha.ProviderRecaptchaV3:
+		return captcha.RecaptchaV3Key
+	case captcha.ProviderTurnstile:
+		return captcha.TurnstileKey
+	default:
+		return captcha.AltchaKey
+	}
 }
 
 // resolveCaptchaSettings builds the target provider's settings JSON and
@@ -425,17 +428,21 @@ func marshalSettings(settings any) (string, error) {
 
 func runCaptchaSetEnabled(cmd adminCmdCtx, args []string, enabled bool) error {
 	return withAdminStore(cmd, args, nil, func(ctx context.Context, cfg *config.Config, st store.Store) error {
-		mgr, _, err := captchaManagerFor(cfg, st)
+		d, err := captchaDepsFor(cfg, st)
 		if err != nil {
 			return err
 		}
-		if err := mgr.EnsureProvisioned(ctx); err != nil {
+		if err := d.cap.EnsureProvisioned(ctx); err != nil {
 			return fmt.Errorf("provision captcha config: %w", err)
 		}
-		if err := st.CaptchaConfig().SetEnabled(ctx, enabled); err != nil {
+		doc, err := json.Marshal(enabled)
+		if err != nil {
+			return err
+		}
+		if err := d.set.Update(ctx, captcha.CaptchaEnabledKey, doc); err != nil {
 			return fmt.Errorf("update captcha config: %w", err)
 		}
-		fmt.Printf("%s captcha verification (the honeypot check stays active either way)\n", enabledWord(enabled))
+		fmt.Printf("%s captcha verification (the honeypot check stays active either way; the selected provider is remembered)\n", enabledWord(enabled))
 		return nil
 	})
 }
@@ -447,7 +454,7 @@ func runCaptchaReset(cmd adminCmdCtx, args []string) error {
 		flags = fs
 		provider = fs.String("provider", "", fmt.Sprintf("reset only this provider's row (%s); omit to reset everything", strings.Join(captcha.SupportedProviders(), ", ")))
 	}, func(ctx context.Context, cfg *config.Config, st store.Store) error {
-		mgr, _, err := captchaManagerFor(cfg, st)
+		d, err := captchaDepsFor(cfg, st)
 		if err != nil {
 			return err
 		}
@@ -456,35 +463,36 @@ func runCaptchaReset(cmd adminCmdCtx, args []string) error {
 			if err != nil {
 				return fmt.Errorf("invalid captcha configuration: %w", err)
 			}
-			current, _, err := mgr.Describe(ctx)
-			if err != nil {
-				return fmt.Errorf("load captcha config: %w", err)
-			}
-			if err := st.CaptchaConfig().DeleteProvider(ctx, p); err != nil {
+			snap := d.set.Snapshot(ctx)
+			selected := captcha.Effective(snap).Provider
+			if err := d.set.Reset(ctx, captchaProviderDescriptor(p)); err != nil {
 				return fmt.Errorf("reset captcha config: %w", err)
 			}
-			if current.Provider == p {
-				// Deleting the selected row leaves nothing selected, so
-				// re-provision the default altcha row here — not on the
-				// hub's next use. The request path must never write: a
-				// read-only or locked store would deny the first Login
-				// with the uniform captcha error. Same contract as
-				// startup provisioning and every other admin command.
-				if err := mgr.EnsureProvisioned(ctx); err != nil {
+			if selected == p && p != captcha.ProviderAltcha {
+				// Resetting the selected external provider falls back to
+				// the default selection (altcha).
+				if err := d.set.Reset(ctx, captcha.CaptchaSelectedKey); err != nil {
+					return fmt.Errorf("reset captcha selection: %w", err)
+				}
+			}
+			if p == captcha.ProviderAltcha {
+				// The request path must never write: re-provision the
+				// signing secret here rather than on the hub's next use.
+				if err := d.cap.EnsureProvisioned(ctx); err != nil {
 					return fmt.Errorf("provision captcha config: %w", err)
 				}
-				fmt.Printf("Reset the %s provider's configuration (it was selected; altcha, the default provider, is active again)\n", captcha.ProviderAlias(p))
-			} else {
-				fmt.Printf("Reset the %s provider's configuration (re-create it with `captcha set --provider %s`)\n", captcha.ProviderAlias(p), captcha.ProviderAlias(p))
 			}
+			fmt.Printf("Reset the %s provider's configuration\n", captcha.ProviderAlias(p))
 			return nil
 		}
-		if err := st.CaptchaConfig().Delete(ctx); err != nil {
-			return fmt.Errorf("reset captcha config: %w", err)
+		for _, desc := range captcha.SettingsDescriptors() {
+			if err := d.set.Reset(ctx, desc); err != nil {
+				return fmt.Errorf("reset captcha config: %w", err)
+			}
 		}
 		// Re-provision rather than leaving the self-heal to the hub's
 		// next use, for the same read-only-request-path contract.
-		if err := mgr.EnsureProvisioned(ctx); err != nil {
+		if err := d.cap.EnsureProvisioned(ctx); err != nil {
 			return fmt.Errorf("provision captcha config: %w", err)
 		}
 		fmt.Println("Reset captcha configuration to defaults (the altcha signing secret was regenerated)")

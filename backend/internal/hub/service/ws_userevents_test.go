@@ -237,7 +237,7 @@ func TestUserEventsHandler_RefusesAConnectWhenEveryBuildSlotIsTaken(t *testing.T
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	handler := service.NewUserEventsHandler(
-		st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
+		st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -291,7 +291,7 @@ func TestUserEventsHandler_RevokingTheBearerClosesTheSubscription(t *testing.T) 
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -359,7 +359,7 @@ func TestUserEventsHandler_AFailedSubscribeIsStillCounted(t *testing.T) {
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -468,7 +468,7 @@ func newParkWindowEnv(t *testing.T) *parkWindowEnv {
 	// which is what keeps the other tests on this env free of the keepalive
 	// entirely.
 	ticks := make(chan time.Time)
-	handler, served := servedOnce(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, pool).
+	handler, served := servedOnce(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, pool).
 		WithTokenValidator(bearer.tv).
 		WithForcedKeepaliveProbesForTest(ticks, 10*time.Second))
 	srv := httptest.NewUnstartedServer(handler)
@@ -713,7 +713,7 @@ func TestUserEventsHandler_CountsTheSuccessArmsAndTheDuration(t *testing.T) {
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	bearer := newDelegationBearer(t, st, user.ID)
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -777,7 +777,7 @@ func TestUserEventsHandler_CountsAConnectThatNeverReachedSubscribe(t *testing.T)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	bearer := newDelegationBearer(t, st, user.ID)
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -817,7 +817,7 @@ func TestUserEventsHandler_RefusesACursorUnderANarrowedFilter(t *testing.T) {
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	bearer := newDelegationBearer(t, st, user.ID)
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -991,7 +991,7 @@ func TestUserEventsHandler_RefusesTheConnectWhenTheBudgetCannotHoldTheBootstrap(
 			// Whatever the fixture attached to create the condition; the
 			// assertion below is that the REFUSED connect adds nothing to it.
 			baseline := pool.Members()
-			handler, served := servedOnce(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, pool).
+			handler, served := servedOnce(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, pool).
 				WithTokenValidator(bearer.tv))
 			srv := httptest.NewServer(handler)
 			t.Cleanup(srv.Close)
@@ -1061,7 +1061,7 @@ func TestUserEventsHandler_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, false, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 

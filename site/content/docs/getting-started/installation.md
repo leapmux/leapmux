@@ -121,7 +121,7 @@ For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, the 
 
 > **Note:** Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary defaults to binding loopback only (`127.0.0.1:4327`), so the port is not reachable from outside the container unless you override the listen address in `/data/solo/solo.yaml`. `dev` mode binds all interfaces (`:4327`) and is the container-friendly all-in-one variant.
 
-> **Warning:** The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and set `public_url` and `secure_cookies` in the Hub config. See [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) for reverse-proxy guidance.
+> **Warning:** The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and set `public_url` and `secure_cookies` with `leapmux admin settings set`. See [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) for reverse-proxy guidance.
 
 ### Running a Worker container
 

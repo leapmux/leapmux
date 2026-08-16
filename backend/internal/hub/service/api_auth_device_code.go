@@ -33,7 +33,7 @@ func (h *APIAuthHandler) handleDeviceAuthorization(w http.ResponseWriter, r *htt
 		writeInternalError(w, "device authorization creation failed", err)
 		return
 	}
-	verifyURI := locallisten.JoinPath(h.hubURL, "/auth/cli/activate")
+	verifyURI := locallisten.JoinPath(h.hubURL(), "/auth/cli/activate")
 	complete := verifyURI + "?user_code=" + url.QueryEscape(verifycode.Format(userCode))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_code":               deviceCode,

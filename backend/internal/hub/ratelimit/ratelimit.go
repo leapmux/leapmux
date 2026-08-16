@@ -2,7 +2,7 @@
 // limiting for authenticated procedures whose handlers are expensive to
 // retry (ChangePassword runs Argon2 per attempt). Operations and their
 // default limits are catalogued here; admins override them per operation
-// in the rate_limit_config table via the admin CLI.
+// as rate_limit.<operation> settings keys via the admin CLI.
 package ratelimit
 
 import (
@@ -17,11 +17,11 @@ import (
 
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 )
 
 // Operation identifies a rate-limited procedure family. The string is the
-// rate_limit_config.operation key.
+// suffix of the rate_limit.<operation> settings key.
 type Operation string
 
 const (
@@ -47,6 +47,16 @@ func ValidateLimits(l Limits) error {
 	return nil
 }
 
+// LimitValue is the rate_limit.<operation> settings document: the enabled
+// switch plus the budget. A stored document's omitted fields keep the
+// operation's catalogue defaults, so `{"enabled": false}` disables
+// without restating the budget.
+type LimitValue struct {
+	Enabled       bool  `json:"enabled"`
+	MaxAttempts   int64 `json:"max_attempts,omitempty"`
+	WindowSeconds int64 `json:"window_seconds,omitempty"`
+}
+
 // opSpec is one catalogue entry: the default budget plus the predicate
 // that classifies a handler error as a countable credential failure. The
 // predicate lives here, not in the interceptor, so a new operation brings
@@ -57,9 +67,9 @@ type opSpec struct {
 	isCredentialFailure func(error) bool
 }
 
-// defaults is the code-side source of truth applied when no
-// rate_limit_config row exists for an operation. Adding an operation here
-// plus a procedureOperations entry below is all it takes to protect a new
+// defaults is the code-side source of truth applied when no settings row
+// exists for an operation. Adding an operation here plus a
+// procedureOperations entry below is all it takes to protect a new
 // procedure — no schema change.
 var defaults = map[Operation]opSpec{
 	OpChangePassword: {
@@ -68,6 +78,41 @@ var defaults = map[Operation]opSpec{
 			return errors.Is(err, auth.ErrInvalidCurrentPassword)
 		},
 	},
+}
+
+// limitKeys holds one settings key per catalogued operation, derived from
+// the same catalogue so a new operation brings its key with it.
+var limitKeys = func() map[Operation]*settings.Key[LimitValue] {
+	keys := make(map[Operation]*settings.Key[LimitValue], len(defaults))
+	for op, spec := range defaults {
+		keys[op] = settings.NewKey[LimitValue]("rate_limit." + string(op)).
+			WithDefault(LimitValue{
+				Enabled:       true,
+				MaxAttempts:   spec.limits.MaxAttempts,
+				WindowSeconds: spec.limits.WindowSeconds,
+			}).
+			WithValidate(func(v LimitValue) error {
+				return ValidateLimits(Limits{MaxAttempts: v.MaxAttempts, WindowSeconds: v.WindowSeconds})
+			})
+	}
+	return keys
+}()
+
+// LimitKey returns the settings key for one operation (the admin CLI's
+// read/write handle).
+func LimitKey(op Operation) (*settings.Key[LimitValue], bool) {
+	key, ok := limitKeys[op]
+	return key, ok
+}
+
+// SettingsDescriptors lists the rate-limit keys for settings-manager
+// registration, in catalogue order.
+func SettingsDescriptors() []settings.Descriptor {
+	out := make([]settings.Descriptor, 0, len(limitKeys))
+	for _, op := range KnownOperations() {
+		out = append(out, limitKeys[op])
+	}
+	return out
 }
 
 // DefaultLimits returns the built-in budget for an operation.
@@ -87,40 +132,12 @@ func KnownOperations() []Operation {
 	return ops
 }
 
-// EffectiveLimits overlays a stored row (if any) onto the operation's
-// default budget: a zero MaxAttempts or WindowSeconds in the row keeps the
-// default, and a missing row enables the default. The manager and the
-// admin CLI share this one definition of "effective", so what the CLI
-// shows and writes is exactly what the hub enforces.
-func EffectiveLimits(op Operation, row *store.RateLimitConfig) (enabled bool, limits Limits) {
-	spec, ok := defaults[op]
-	if !ok {
-		return false, Limits{}
-	}
-	enabled, limits = true, spec.limits
-	if row == nil {
-		return enabled, limits
-	}
-	enabled = row.Enabled
-	if row.MaxAttempts > 0 {
-		limits.MaxAttempts = row.MaxAttempts
-	}
-	if row.WindowSeconds > 0 {
-		limits.WindowSeconds = row.WindowSeconds
-	}
-	return enabled, limits
-}
-
 // procedureOperations routes ConnectRPC procedures to their operations.
 // The interceptor must be registered AFTER the auth interceptor so the
 // authenticated user is already in the context.
 var procedureOperations = map[string]Operation{
 	leapmuxv1connect.UserServiceChangePasswordProcedure: OpChangePassword,
 }
-
-// cacheTTL limits how long rate_limit_config rows are reused, mirroring
-// the captcha manager's cache; it also limits admin-CLI propagation delay.
-const cacheTTL = 30 * time.Second
 
 // effectiveLimit is the resolved per-operation policy.
 type effectiveLimit struct {
@@ -135,13 +152,9 @@ type effectiveLimit struct {
 // exposure both ways — an attacker cannot inherit a lockout, and a victim
 // is never locked out for longer than one window.
 type Manager struct {
-	st   store.Store
+	set  *settings.Manager
 	solo bool
 	now  func() time.Time
-
-	mu       sync.Mutex // guards cached/cachedAt
-	cached   map[Operation]effectiveLimit
-	cachedAt time.Time
 
 	windowMu sync.Mutex // guards windows, inFlight, and minResetAt
 	windows  map[windowKey]*windowState
@@ -171,11 +184,13 @@ type windowState struct {
 // reservation without counting it.
 var errHandlerPanicked = errors.New("handler panicked")
 
-// NewManager creates a rate-limit manager. Solo mode never limits: it is a
-// local single-user deployment whose only "attacker" is the local user.
-func NewManager(st store.Store, soloMode bool) *Manager {
+// NewManager creates a rate-limit manager over the shared settings
+// snapshot (its TTL is the admin-CLI propagation bound). Solo mode never
+// limits: it is a local single-user deployment whose only "attacker" is
+// the local user.
+func NewManager(set *settings.Manager, soloMode bool) *Manager {
 	return &Manager{
-		st:       st,
+		set:      set,
 		solo:     soloMode,
 		now:      time.Now,
 		windows:  make(map[windowKey]*windowState),
@@ -319,45 +334,20 @@ func (m *Manager) pruneExpiredLocked(now time.Time) {
 	m.minResetAt = next
 }
 
-// resolve returns the operation's effective policy, overlaying a stored
-// row (if any) on the code-side default.
+// resolve returns the operation's effective policy from the shared
+// settings snapshot: the stored document merged onto the catalogue
+// default, so what the admin CLI shows and writes is exactly what the hub
+// enforces.
 func (m *Manager) resolve(ctx context.Context, op Operation) (effectiveLimit, error) {
-	if _, ok := defaults[op]; !ok {
+	key, ok := limitKeys[op]
+	if !ok {
 		return effectiveLimit{}, fmt.Errorf("unknown rate-limit operation %q", op)
 	}
-
-	m.mu.Lock()
-	if m.cached != nil && time.Since(m.cachedAt) < cacheTTL {
-		cached := m.cached[op]
-		m.mu.Unlock()
-		return cached, nil
-	}
-	m.mu.Unlock()
-
-	rows, err := m.st.RateLimitConfig().List(ctx)
-	if err != nil {
-		return effectiveLimit{}, fmt.Errorf("load rate-limit config: %w", err)
-	}
-	stored := make(map[Operation]store.RateLimitConfig, len(rows))
-	for _, row := range rows {
-		stored[Operation(row.Operation)] = row
-	}
-
-	effective := make(map[Operation]effectiveLimit, len(defaults))
-	for knownOp := range defaults {
-		var row *store.RateLimitConfig
-		if r, exists := stored[knownOp]; exists {
-			row = &r
-		}
-		enabled, limits := EffectiveLimits(knownOp, row)
-		effective[knownOp] = effectiveLimit{enabled: enabled, limits: limits}
-	}
-
-	m.mu.Lock()
-	m.cached, m.cachedAt = effective, time.Now()
-	m.mu.Unlock()
-
-	return effective[op], nil
+	v := key.Of(m.set.Snapshot(ctx))
+	return effectiveLimit{
+		enabled: v.Enabled,
+		limits:  Limits{MaxAttempts: v.MaxAttempts, WindowSeconds: v.WindowSeconds},
+	}, nil
 }
 
 // NewInterceptor returns a unary interceptor enforcing per-user limits on

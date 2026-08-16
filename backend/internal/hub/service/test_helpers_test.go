@@ -1,13 +1,17 @@
 package service_test
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
@@ -24,29 +28,44 @@ func sessionFromCookie(t *testing.T, setCookie string) string {
 	return hubtestutil.SessionFromCookie(t, setCookie)
 }
 
+// insecureCookies answers the secure-cookie policy these plain-HTTP test
+// servers run under.
+func insecureCookies() bool { return false }
+
 func testConfig() *config.Config {
-	return &config.Config{
-		APITimeout:            config.DefaultAPITimeout,
-		AgentStartupTimeout:   config.DefaultAgentStartupTimeout,
-		WorktreeCreateTimeout: config.DefaultWorktreeCreateTimeout,
-	}
+	return &config.Config{}
 }
 
-func testConfigWithSignup() *config.Config {
-	cfg := testConfig()
-	cfg.SignupEnabled = true
-	return cfg
+// The seed helpers below configure the runtime settings that used to be
+// config fields. They write through the settings manager the test's
+// services share, so the values apply to the next request.
+
+// enableSignup opens public signup (off by default).
+func enableSignup(t *testing.T, set *settings.Manager) {
+	t.Helper()
+	require.NoError(t, settings.KeySignupEnabled.Set(context.Background(), set, true))
 }
 
-// testConfigWithSMTP returns a Config that looks (to consumers) like the
-// admin configured an SMTP relay. Tests that exercise email-using RPCs
-// like EmailRegistrationInstructions need this so the FailedPrecondition
-// check at the top of the handler doesn't short-circuit them.
-func testConfigWithSMTP() *config.Config {
-	cfg := testConfig()
-	cfg.SmtpHost = "smtp.example.test"
-	cfg.SmtpPort = 587
-	cfg.SmtpFromAddress = "hub@example.test"
-	cfg.SmtpTLSMode = config.SmtpTLSModeSTARTTLS
-	return cfg
+// seedSMTP configures a relay so email-consuming paths (verification
+// mail, the registration-instructions RPC) see email as available.
+func seedSMTP(t *testing.T, set *settings.Manager) {
+	t.Helper()
+	require.NoError(t, set.Update(context.Background(), settings.KeySMTP, json.RawMessage(
+		`{"host":"smtp.example.test","port":587,"from_address":"hub@example.test","tls_mode":"starttls"}`)))
+}
+
+// enableEmailVerification turns the verification gate on. The gate reads
+// the setting as EFFECTIVE (verification requires a working SMTP relay),
+// so the seed configures both.
+func enableEmailVerification(t *testing.T, set *settings.Manager) {
+	t.Helper()
+	seedSMTP(t, set)
+	require.NoError(t, settings.KeyEmailVerificationRequired.Set(context.Background(), set, true))
+}
+
+// setSessionDuration stamps every session a service mints with the given
+// lifetime instead of the default.
+func setSessionDuration(t *testing.T, set *settings.Manager, d time.Duration) {
+	t.Helper()
+	require.NoError(t, settings.KeySessionDurationSeconds.Set(context.Background(), set, int64(d/time.Second)))
 }

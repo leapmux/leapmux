@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -28,10 +28,10 @@ type workerRegistry interface {
 // Notifier manages sending notifications to workers with persistent
 // queue fallback for reliable delivery.
 type Notifier struct {
-	store     store.Store
-	workerMgr workerRegistry
-	pending   *workermgr.PendingRequests
-	cfg       *config.Config
+	store      store.Store
+	workerMgr  workerRegistry
+	pending    *workermgr.PendingRequests
+	apiTimeout func() time.Duration
 }
 
 // New creates a new Notifier. wMgr is taken as the narrow workerRegistry
@@ -48,15 +48,15 @@ type Notifier struct {
 // mistake takes the hub process down long after startup instead of at it.
 // nilcheck sees through the conversion; workermgr.New guards its own dependency
 // the same way, for the same reason.
-func New(st store.Store, wMgr workerRegistry, pr *workermgr.PendingRequests, cfg *config.Config) *Notifier {
+func New(st store.Store, wMgr workerRegistry, pr *workermgr.PendingRequests, apiTimeout func() time.Duration) *Notifier {
 	if nilcheck.IsNilDependency(wMgr) {
 		panic("notifier: New requires a worker registry")
 	}
 	return &Notifier{
-		store:     st,
-		workerMgr: wMgr,
-		pending:   pr,
-		cfg:       cfg,
+		store:      st,
+		workerMgr:  wMgr,
+		pending:    pr,
+		apiTimeout: apiTimeout,
 	}
 }
 
@@ -66,7 +66,7 @@ func New(st store.Store, wMgr workerRegistry, pr *workermgr.PendingRequests, cfg
 func (n *Notifier) SendOrQueue(ctx context.Context, workerID string, notificationType leapmuxv1.NotificationType, payload string, msg *leapmuxv1.ConnectResponse) error {
 	conn := n.workerMgr.ConnForTrustedPath(workerID)
 	if conn != nil {
-		sendCtx, cancel := context.WithTimeout(ctx, n.cfg.APITimeout)
+		sendCtx, cancel := context.WithTimeout(ctx, n.apiTimeout())
 		defer cancel()
 
 		_, err := n.pending.SendAndWait(sendCtx, conn, msg)
@@ -110,7 +110,7 @@ func (n *Notifier) ProcessPendingNotifications(ctx context.Context, workerID str
 			continue
 		}
 
-		sendCtx, cancel := context.WithTimeout(ctx, n.cfg.APITimeout)
+		sendCtx, cancel := context.WithTimeout(ctx, n.apiTimeout())
 		_, sendErr := n.pending.SendAndWait(sendCtx, conn, msg)
 		cancel()
 

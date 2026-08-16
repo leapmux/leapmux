@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
@@ -55,8 +54,8 @@ func TestSendOrQueue_OfflineWorkerPersistsToQueue(t *testing.T) {
 
 	// conn == nil is the offline case.
 	reg := &fakeRegistry{}
-	cfg := &config.Config{}
-	n := New(st, reg, workermgr.NewPendingRequests(func() time.Duration { return cfg.APITimeout }), cfg)
+	apiTimeout := func() time.Duration { return 10 * time.Second }
+	n := New(st, reg, workermgr.NewPendingRequests(apiTimeout), apiTimeout)
 
 	err := n.SendOrQueue(ctx, worker, leapmuxv1.NotificationType_NOTIFICATION_TYPE_UNSPECIFIED,
 		`{"hello":"world"}`, &leapmuxv1.ConnectResponse{})
@@ -91,8 +90,8 @@ func TestSendDeregister_MarksDeregisteringAndDoesNotClear(t *testing.T) {
 	worker := storetest.SeedWorker(t, st, userID).ID
 
 	reg := &fakeRegistry{} // offline, so the notification queues
-	cfg := &config.Config{}
-	n := New(st, reg, workermgr.NewPendingRequests(func() time.Duration { return cfg.APITimeout }), cfg)
+	apiTimeout := func() time.Duration { return 10 * time.Second }
+	n := New(st, reg, workermgr.NewPendingRequests(apiTimeout), apiTimeout)
 
 	require.NoError(t, n.SendDeregister(ctx, worker))
 

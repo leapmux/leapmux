@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -30,16 +28,6 @@ import (
 //
 // It delegates rather than restating the option construction: a hand-rolled copy
 // is what let the CLI's flag list drift out from under these very assertions.
-func testLoadOptions(t *testing.T, devMode bool) hubconfig.LoadOptions {
-	t.Helper()
-	opts, _ := soloLoadOptions(Config{
-		DevMode:    devMode,
-		ConfigDir:  t.TempDir(),
-		ConfigFile: filepath.Join(t.TempDir(), "absent.yaml"),
-	})
-	return opts
-}
-
 // soloLoadOptions is the single source of truth for what `leapmux solo` and
 // `leapmux dev` default to. It became one because the CLI carried a second copy
 // that drifted until --max-connections-per-user stopped parsing; a table test is
@@ -63,8 +51,8 @@ func TestSoloLoadOptionsDerivesEachModesDefaults(t *testing.T) {
 
 	// The lists the CLI used to duplicate. Asserting them HERE is what makes the
 	// binary and the library provably the same, now that runSolo passes neither.
-	assert.Equal(t, defaultCLIFlags(false), solo.CLIFlags)
-	assert.Equal(t, defaultCLIFlags(true), dev.CLIFlags)
+	assert.Equal(t, defaultCLIFlags(), solo.CLIFlags)
+	assert.Equal(t, defaultCLIFlags(), dev.CLIFlags)
 	assert.Equal(t, defaultExtraFlags(), solo.ExtraFlags)
 
 	// An explicit Config still wins over every derived default.
@@ -80,95 +68,6 @@ func TestSoloLoadOptionsDerivesEachModesDefaults(t *testing.T) {
 	assert.Equal(t, "/tmp/cf.yaml", custom.DefaultConfigFile)
 	assert.Equal(t, []string{"listen"}, custom.CLIFlags)
 	assert.Empty(t, custom.ExtraFlags, "an explicit empty list is not 'unset'")
-}
-
-// TestSoloExposesThePerUserCapsOnTheCommandLine pins the two knobs a solo user can
-// actually reach. Solo is the mode where every socket belongs to one identity --
-// an active tab holds two leases, and the desktop app, any CLI `remote` session
-// and every worker's controlipc watcher draw on the same allowance -- so a user who
-// hits the cap is told to close a tab, advice they cannot act on if --help offers
-// no way to raise it.
-func TestSoloExposesThePerUserCapsOnTheCommandLine(t *testing.T) {
-	t.Parallel()
-
-	assert.Subset(t, defaultCLIFlags(false),
-		[]string{"max-connections-per-user", "max-workers-per-user"})
-
-	cfg, _, err := hubconfig.LoadWithOptions(
-		[]string{"--max-connections-per-user=64", "--max-workers-per-user=8"},
-		testLoadOptions(t, false))
-	require.NoError(t, err, "solo must accept the per-user caps as CLI flags")
-	assert.Equal(t, int64(64), cfg.MaxConnectionsPerUser)
-	assert.Equal(t, int64(8), cfg.MaxWorkersPerUser)
-}
-
-// TestSoloKeepsTheQueueBudgetsOutOfHelpButReachableInConfig covers the half of the
-// contract that is easy to break by accident: CLIFlags decides only what earns a
-// line in --help, because LoadWithOptions records every flag's default and koanf
-// key BEFORE it consults that list. A budget absent from the CLI must still be
-// settable, or auto-sizing becomes the only option a solo user has.
-func TestSoloKeepsTheQueueBudgetsOutOfHelpButReachableInConfig(t *testing.T) {
-	t.Parallel()
-
-	assert.NotContains(t, defaultCLIFlags(false), "relay-queue-memory-budget",
-		"the budgets auto-size off this machine; they do not belong in solo's --help")
-
-	_, _, err := hubconfig.LoadWithOptions(
-		[]string{"--relay-queue-memory-budget=268435456"}, testLoadOptions(t, false))
-	require.Error(t, err, "a flag outside the allowlist must not parse")
-
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path,
-		[]byte("relay_queue_memory_budget: 268435456\n"), 0o600))
-
-	opts := testLoadOptions(t, false)
-	opts.DefaultConfigFile = path
-	cfg, _, err := hubconfig.LoadWithOptions(nil, opts)
-	require.NoError(t, err)
-	assert.Equal(t, int64(268435456), cfg.RelayQueueMemoryBudget,
-		"the config file must still reach a key the CLI does not expose")
-}
-
-// TestDevModeAddsPublicURL guards the one flag that is dev-only: dev serves a
-// frontend from a different origin, solo does not.
-func TestDevModeAddsPublicURL(t *testing.T) {
-	t.Parallel()
-
-	assert.Contains(t, defaultCLIFlags(true), "public-url")
-	assert.NotContains(t, defaultCLIFlags(false), "public-url")
-	assert.Subset(t, defaultCLIFlags(true),
-		[]string{"max-connections-per-user", "max-workers-per-user"},
-		"dev must not lose the caps when it gains public-url")
-}
-
-// TestDevModeAddsSessionDuration guards the other dev-only flag. Dev runs the
-// full sign-up-and-cookie path, so a short session is worth asking for on the
-// command line; solo authenticates every request as the synthetic local user
-// and mints no session, which would make the flag inert in its --help.
-func TestDevModeAddsSessionDuration(t *testing.T) {
-	t.Parallel()
-
-	assert.Contains(t, defaultCLIFlags(true), "session-duration")
-	assert.NotContains(t, defaultCLIFlags(false), "session-duration")
-
-	cfg, _, err := hubconfig.LoadWithOptions(
-		[]string{"--session-duration=1h"}, testLoadOptions(t, true))
-	require.NoError(t, err, "dev must accept the session duration as a CLI flag")
-	assert.Equal(t, time.Hour, cfg.SessionDuration)
-
-	_, _, err = hubconfig.LoadWithOptions(
-		[]string{"--session-duration=1h"}, testLoadOptions(t, false))
-	require.Error(t, err, "solo must not offer a flag it has no session to apply it to")
-
-	// The key stays reachable where the flag is not, the same contract the
-	// queue budgets hold: CLIFlags decides only what earns a line in --help.
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("session_duration: 1h\n"), 0o600))
-	opts := testLoadOptions(t, false)
-	opts.DefaultConfigFile = path
-	cfg, _, err = hubconfig.LoadWithOptions(nil, opts)
-	require.NoError(t, err)
-	assert.Equal(t, time.Hour, cfg.SessionDuration)
 }
 
 func TestListenIsNonLoopback(t *testing.T) {
@@ -640,7 +539,7 @@ func soloStartEnv(t *testing.T, devMode bool) Config {
 		DevMode:    devMode,
 		// local-listen is not in solo's own --help allowlist, so the test has to
 		// widen it to reach the flag.
-		CLIFlags: append(defaultCLIFlags(devMode), "local-listen"),
+		CLIFlags: append(defaultCLIFlags(), "local-listen"),
 		Args:     []string{"--local-listen=" + locallistentest.UniqueListenURL(t, "leapmux-hub-solo")},
 	}
 }

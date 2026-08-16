@@ -90,8 +90,6 @@ This means flat, top-level keys map cleanly:
 | ------------------------------------- | ---------------------- |
 | `LEAPMUX_HUB_LISTEN`                  | `listen`               |
 | `LEAPMUX_HUB_LOG_LEVEL`              | `log_level`            |
-| `LEAPMUX_HUB_PUBLIC_URL`             | `public_url`           |
-| `LEAPMUX_HUB_SECURE_COOKIES`        | `secure_cookies`       |
 | `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`   | `encryption_key_path`  |
 | `LEAPMUX_HUB_LOCAL_LISTEN`          | `local_listen`         |
 | `LEAPMUX_WORKER_HUB`                | `hub`                  |
@@ -103,13 +101,12 @@ This means flat, top-level keys map cleanly:
 # Flat keys work cleanly as env vars:
 export LEAPMUX_HUB_LISTEN=":8080"
 export LEAPMUX_HUB_LOG_LEVEL="debug"
-export LEAPMUX_HUB_PUBLIC_URL="https://hub.example.com"
 leapmux hub
 ```
 
 ## Duration values
 
-Every key that holds a duration — `session_duration`, each timeout, and each database pool setting, in both the Hub and the Worker — takes the same spellings.
+Every config-file key that holds a duration — each database pool setting and the Worker's timeouts — takes the same spellings. (The Hub's own timeouts and its session lifetime live in the database instead, as plain seconds: the `timeouts` and `session_duration_seconds` settings.)
 
 | Unit | Meaning | Example |
 | --- | --- | --- |
@@ -122,12 +119,13 @@ Parts combine, in any order: `1h30m`, `1w2d`, `2d12h`.
 
 **A bare number is a count of seconds.** That is what these keys took before they had units, so `api_timeout: 10` still means ten seconds and an existing config file keeps working. A number only means seconds when it is the whole value — `1d30` is rejected rather than read as a day and thirty seconds.
 
-The same spellings work everywhere a key can be set: the config file, the environment variable, and the CLI flag. `0` means "use the default" for the Hub and Worker timeouts, and "leave the database driver's own default alone" for the pool settings.
+The same spellings work everywhere a key can be set: the config file, the environment variable, and the CLI flag. `0` means "use the default" for the Worker timeouts, and "leave the database driver's own default alone" for the pool settings.
 
 A value that cannot be read, or one past roughly 292 years (the largest duration LeapMux can represent), fails at startup naming the key, rather than silently becoming a duration nobody meant.
 
 ```yaml
-session_duration: 7d
+# worker.yaml — the Worker's timeouts (Hub pool settings take the
+# same spellings):
 api_timeout: 10s
 agent_startup_timeout: 5m
 ```
@@ -171,7 +169,7 @@ The same two schemes are also valid values for the Worker's `--hub` URL, so a lo
 
 ## Hub configuration reference
 
-Env prefix: `LEAPMUX_HUB_`. Defaults shown are the built-in values. Each key's CLI flag is `--` followed by the key with underscores replaced by hyphens (for example, `log_level` → `--log-level`); the only keys without a flag are listed under [Keys with no CLI flag](#keys-with-no-cli-flag).
+Env prefix: `LEAPMUX_HUB_`. Defaults shown are the built-in values. Each key's CLI flag is `--` followed by the key with underscores replaced by hyphens (for example, `log_level` → `--log-level`); the only key without a flag is listed under [Keys with no CLI flag](#keys-with-no-cli-flag).
 
 ### Server options
 
@@ -179,28 +177,52 @@ Env prefix: `LEAPMUX_HUB_`. Defaults shown are the built-in values. Each key's C
 | --- | --- | --- |
 | `listen` | `:4327` | TCP listen address (e.g. `:4327` or `127.0.0.1:4327`). |
 | `local_listen` | *(empty)* | Local IPC listen URL (`unix:<path>` or `npipe:<name>`); platform default used if empty. |
-| `public_url` | *(empty)* | Public base URL when behind a reverse proxy (e.g. `https://hub.example.com`). |
 | `data_dir` | `.` | Data directory; relative paths resolve against the config dir. |
 | `dev_frontend` | *(empty)* | Frontend dev-server URL for the local reverse proxy (local development). |
 | `log_level` | `info` | Log level: `debug`, `info`, `warn`, `error` (case-insensitive). |
 
-> **Note:** `public_url` must be an absolute `http`/`https` URL with a host and **nothing else** — no userinfo, no path (sub-path proxying is rejected), no query, no fragment. One trailing slash is trimmed. It is **not supported in solo mode**, where setting it fails with `public_url is not supported in solo mode`. See [Running LeapMux](/docs/operating/running-leapmux/) for reverse-proxy setup.
+These five keys (plus the storage block below and `encryption_key_path`) are the **entire** config-file surface: they are what the process needs before the database exists — sockets to bind, where the database and key ring live, how loudly to log. Everything that describes how the running Hub *behaves* is an instance setting in the database instead (next section), because a setting in the database can change under a running Hub while a file can only change under a restarted one.
 
-### Auth options
+### Instance settings (database)
 
-`session_duration` takes a unit suffix; see [Duration values](#duration-values).
+All behavioral configuration — auth policy, SMTP, timeouts, limits, queue budgets, bot protection — lives in the Hub's database, in one `hub_settings` table managed by the admin CLI:
 
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `signup_enabled` | `false` | Enable user sign-up. |
-| `email_verification_required` | `false` | Require email verification on sign-up. Requires `smtp_host`. |
-| `session_duration` | `7d` | How long a session stays valid after the user's last request. Each request slides the expiry forward, so this is an idle timeout, not a cap on how long a signed-in user may stay signed in. `0` means the default; a value under `5m` is rejected, because the Hub serves a validated session from an in-memory cache for a short window and cannot enforce a shorter policy honestly. |
+```bash
+leapmux admin settings list
+leapmux admin settings set signup_enabled true
+leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"hub@example.com"}'
+leapmux admin settings set-secret smtp '{"password":"..."}'
+leapmux admin settings get smtp
+leapmux admin settings reset signup_enabled
+```
+
+A value is a JSON document; fields it omits keep their current (or default) values, so `{"port":465}` retunes one SMTP field without restating the host. Secret-bearing fields (the SMTP password, captcha signing keys) live in an encrypted half of the row and are written through `set-secret`; they never appear in `list` or `get` output. A key with no stored row sits at its built-in default — `reset` returns a key to exactly that.
+
+Changes fall into two classes, shown by `settings list`:
+
+- **hot** — a running Hub applies the new value within ~30 seconds (this is also the convergence bound between Hub instances sharing one database).
+- **restart** — the value feeds startup-time arithmetic (queue pool floors, frame ceilings), so it is read once at boot; a change prints `applies after a hub restart`.
+
+| Setting key | Shape | Default | Class |
+| --- | --- | --- | --- |
+| `signup_enabled` | boolean | `false` | hot |
+| `email_verification_required` | boolean | `false` | hot (requires `smtp` first; the write is refused otherwise) |
+| `session_duration_seconds` | integer | `604800` (7d) | hot (minimum 300) |
+| `secure_cookies` | boolean | `false` | hot (changes the cookie name, so it signs everyone out) |
+| `public_url` | string | *(empty)* | hot (scheme+host only, no path; ignored in solo mode) |
+| `smtp` | `{host, port, username, from_address, tls_mode}` + secret `{password}` | disabled | hot |
+| `timeouts` | `{api_seconds, agent_startup_seconds, worktree_create_seconds}` | 10 / 300 / 60 | hot |
+| `limits` | `{max_connections_per_user, max_workers_per_user}` | 32 / 64 | hot (`0` = unlimited) |
+| `max_message_size_bytes` | integer | `16777216` (16 MiB) | restart (64 KiB–64 MiB) |
+| `queue_budget` | `{relay_bytes, worker_bytes, userevents_bytes}` | `0` = auto-size | restart |
+| `captcha.*`, `rate_limit.*` | see below | see below | hot |
+
 
 See [Accounts & Authentication](/docs/using/accounts/) for the sign-up/verification flows, and [Authentication Providers](/docs/operating/authentication-providers/) for OAuth/OIDC.
 
 ### Bot protection (captcha & rate limits)
 
-Captcha and rate-limit settings are **not config-file keys** — they live in the Hub's database so they can be changed at runtime (a running Hub picks up changes within ~30 seconds) via the admin CLI:
+Captcha and rate-limit settings are instance settings (the `captcha.*` and `rate_limit.*` keys above), changed at runtime via the admin CLI:
 
 ```bash
 leapmux admin captcha show
@@ -218,44 +240,9 @@ Out of the box, with no configuration at all: captcha is **enabled** with the bu
 
 See the [`captcha`](/docs/operating/admin-cli/#captcha--bot-protection-altcha-recaptcha-v3-turnstile) and [`rate-limit`](/docs/operating/admin-cli/#rate-limit--per-user-operation-limits) admin CLI chapters for the full flag reference.
 
-### SMTP options
-
-Email is needed for verification and notifications. Set `smtp_host` to enable it; when set, `smtp_from_address` is required and must be a valid email.
-
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `smtp_host` | *(empty)* | SMTP server host. |
-| `smtp_port` | `587` | SMTP server port (must be 1–65535 when host is set). |
-| `smtp_username` | *(empty)* | SMTP username. |
-| `smtp_password` | *(empty)* | SMTP password. |
-| `smtp_from_address` | *(empty)* | From address (required and validated when host is set). |
-| `smtp_tls_mode` | `starttls` | TLS mode: `starttls`, `implicit`, or `none`. |
-
-The TLS modes:
-
-- `starttls` — STARTTLS upgrade, typically port 587 (default; an empty value normalizes to this).
-- `implicit` — direct TLS, typically port 465 (SMTPS).
-- `none` — plaintext. Combining `none` with a username on a non-localhost host is rejected, because credentials cannot be sent safely over an unencrypted non-localhost connection.
-
-### Timeout and limit options
-
-Every timeout below takes a unit suffix; see [Duration values](#duration-values).
-
-| Config key | Default | Meaning |
-| --- | --- | --- |
-| `api_timeout` | `10s` | General API timeout. `0` means the default. |
-| `agent_startup_timeout` | `5m` | Agent startup timeout. `0` means the default. |
-| `worktree_create_timeout` | `1m` | Worktree creation timeout. `0` means the default. |
-| `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Clients derive the reassembled send/receive ceiling as this plus 64 KiB of envelope headroom — the wire field on `OpenChannel` / `OpenChannelResponse` is the payload budget, not the reassembled ceiling. Must be between one Noise plaintext chunk (~64 KiB) and 64 MiB when set. Effective per channel is `min(hub, worker)`. Clients (browser, CLI tunnel) do not configure this — they adopt the payload budget from `OpenChannel`. |
-| `relay_queue_memory_budget` | `0` | Bytes the Hub's browser channel relays may queue between them (`0` = auto-size). See [Outbound queue memory](#outbound-queue-memory). |
-| `worker_queue_memory_budget` | `0` | Bytes the Hub's Worker connections may queue between them (`0` = auto-size). See [Outbound queue memory](#outbound-queue-memory). |
-| `max_workers_per_user` | `64` | Workers one account may have registered at once (`0` = unlimited). See [Workers per user](#workers-per-user). |
-| `userevents_queue_memory_budget` | `0` | Bytes the Hub's user-event subscribers may hold between them (`0` = auto-size). See [Outbound queue memory](#outbound-queue-memory). |
-| `max_connections_per_user` | `32` | Concurrent long-lived connections one user may hold (`0` = unlimited). See [Connections per user](#connections-per-user). |
-
 ### Outbound queue memory
 
-Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the goroutine serving everyone else. These three keys bound how much those buffers may hold. They are totals rather than per-connection figures because a per-connection number tells you nothing without a connection count, and nothing bounds how many browser tabs a fleet has open.
+Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the goroutine serving everyone else. The three fields of the `queue_budget` setting bound how much those buffers may hold. They are totals rather than per-connection figures because a per-connection number tells you nothing without a connection count, and nothing bounds how many browser tabs a fleet has open.
 
 **Each kind of connection has its own budget.** When a budget runs out it is that budget's own connections that pay, so a browser tab's backlog can only ever cost another connection of the same kind. That matters because the three failures are not comparable:
 
@@ -265,14 +252,14 @@ Every long-lived stream the Hub writes to — one per browser tab on `/ws/channe
 
 Separate budgets make the blast radius structural rather than a matter of which connection happened to be largest at the time.
 
-Left at `0`, each budget is a share of the memory the process may use — four thirty-seconds for channel relays, two for Workers, two for user events, together a quarter — never below what one largest frame of its kind needs, and never above 8 GiB. Channel relays get the largest share because they carry the bulk direction: terminal output is one frame per PTY read, where a Worker stream carries keystrokes, RPCs and control frames.
+Left at `0` (the default), each budget is a share of the memory the process may use — four thirty-seconds for channel relays, two for Workers, two for user events, together a quarter — never below what one largest frame of its kind needs, and never above 8 GiB. Channel relays get the largest share because they carry the bulk direction: terminal output is one frame per PTY read, where a Worker stream carries keystrokes, RPCs and control frames.
 
 User events gets an equal share to Workers despite carrying the least traffic, because throughput is not what limits it. Its ongoing frames are the smallest in the Hub and are held once however many tabs are waiting on them, but the frame that *opens* a connection carries an account's whole visible state and is unique to that tab — so a Hub restart, when every tab reconnects at once, is the case that sizes this budget rather than the traffic that follows. The memory figure comes from the first of these that applies:
 
 1. `GOMEMLIMIT`, when set. Setting it is the most direct way to state the budget, and it is what the Go runtime holds the heap to anyway.
 2. The cgroup memory limit, on Linux. This is what makes the default correct in a container, where the machine's physical memory is the host's and can be two orders of magnitude larger than what the container may use. The Hub resolves its own cgroup and takes the tightest limit on the chain up to the root, so a limit set on a parent — a `systemd` unit's `MemoryMax=`, say — binds as it should rather than being missed.
 3. Total physical memory.
-4. 512 MiB, if none of the above can be read. This is a guess rather than a probe — a platform with no memory-limit API, or a container without `/proc` mounted — and it says so in the log as `source=fallback`. Seeing that on a large host means the budgets are a fraction of a number the Hub could not determine, and it is the one case where you should set the keys explicitly.
+4. 512 MiB, if none of the above can be read. This is a guess rather than a probe — a platform with no memory-limit API, or a container without `/proc` mounted — and it says so in the log as `source=fallback`. Seeing that on a large host means the budgets are a fraction of a number the Hub could not determine, and it is the one case where you should set the fields explicitly (`leapmux admin settings set queue_budget`, then restart).
 
 The basis and all three resolved figures are logged at startup, the basis once:
 
@@ -292,7 +279,7 @@ That warning is the one signal separating a confined machine the probe could not
 
 Every budget also has to be able to hold one largest frame of its kind, and enough guaranteed per-connection working sets for the sharing rule to have anything to decide — a frame bigger than the whole budget could never be admitted at any occupancy, and a budget the size of a single working set caps every connection at that figure regardless of how idle the Hub is. Those two together are the minimum, and the Hub refuses to start on a configured value below it rather than failing at runtime. It is derived per class, not a flat number, so the shares still hold on a small host: a 512 MiB container gets its quarter rather than having the floor quietly claim 40% of the machine. Set the keys explicitly whenever your fleet's shape differs from the assumption, such as many Workers and few tabs, or the reverse. The metrics below tell you which budget is actually binding.
 
-Note that `max_message_size` does **not** move any of these minimums. That key bounds the reassembled application message the two endpoints rebuild; the Hub is a relay on that path and never holds one, so its queues only ever carry individual encrypted chunks.
+Note that `max_message_size_bytes` does **not** move any of these minimums. That key bounds the reassembled application message the two endpoints rebuild; the Hub is a relay on that path and never holds one, so its queues only ever carry individual encrypted chunks.
 
 **How a budget is shared.** A connection's share is not a fixed slice. Each one may queue up to whatever is still free, so a single backed-up connection on an otherwise-idle Hub can use up to half the budget, while many backed-up connections settle at an even split with a reserve still held back for connections that have not arrived yet. Each connection is also guaranteed a small working set of its own, so a connection whose queue is near empty keeps being served while others are backed up.
 
@@ -361,7 +348,7 @@ It exists because the queue budgets above cannot bound themselves. Those are sha
 
 **Tunnels are cheaper than they look.** All of a machine's tunnels to the same Worker share one encrypted channel, and the individual forwarded connections inside them share it too, so what counts is how many *distinct Workers* you hold tunnels to — not how many tunnels, and not how much traffic they carry. Twenty tunnels to one Worker cost one connection; one tunnel each to three Workers costs three.
 
-> **Note:** in solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does — and because it is the mode where it binds soonest, `solo` and `dev` take it on the command line as `--max-connections-per-user`, alongside `--max-workers-per-user`. The queue budgets have no such flag in those modes: they size themselves from the machine, and the config file is there for the rare case that is wrong.
+> **Note:** in solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does — and because it is the mode where it binds soonest, `solo` and `dev` document it in `leapmux admin settings list`. The queue budgets size themselves from the machine; `settings set queue_budget '{"relay_bytes":...}'` covers the rare case that is wrong.
 
 When a user is at the limit the **newest** connection is refused and everything already open keeps working. Nothing is evicted: the alternative moves the failure to a window the user is not looking at, and a connection dropped to make room for a new one would be dropped again on the next reconnect. In the browser the refused tab says so and stops retrying — for either socket, so opening a terminal while at the limit explains itself rather than failing as a generic connection error. Closing another tab and reloading is all that is needed. Set the key to `0` to turn the cap off entirely.
 
@@ -387,18 +374,13 @@ The reverse direction is bounded too. A WebSocket peer may send its own pings, a
 
 ### When one account's state outgrows the budget
 
-The frame that opens a `/ws/userevents` connection carries the account's whole visible state, so a large enough account can produce one bigger than the entire `userevents_queue_memory_budget`. Such a frame cannot be admitted at *any* occupancy, so there is nothing to wait for: the Hub closes the connection as terminal rather than asking the client to retry, the browser says the workspace exceeds the server's limit, and the Hub logs at error level naming the frame size and the budget.
+The frame that opens a `/ws/userevents` connection carries the account's whole visible state, so a large enough account can produce one bigger than the entire user-events budget. Such a frame cannot be admitted at *any* occupancy, so there is nothing to wait for: the Hub closes the connection as terminal rather than asking the client to retry, the browser says the workspace exceeds the server's limit, and the Hub logs at error level naming the frame size and the budget.
 
-Raising `userevents_queue_memory_budget` is the fix. It is worth distinguishing from ordinary pressure, which looks similar from the client: a *merely full* budget produces a retry-later close and resolves itself as other connections drain. The `bound` label separates them outright — `leapmux_userevents_frames_dropped_total{phase="bootstrap",bound="bytes"}` is the transient one, and `bound="capacity"` is the permanent one. Do not read occupancy to tell them apart: a frame larger than the whole budget is refused on an *empty* pool just as readily, so `leapmux_sendq_pool_used_bytes` near capacity is evidence for the transient case and its absence is no evidence at all.
+Raising the `userevents_bytes` field of `queue_budget` is the fix. It is worth distinguishing from ordinary pressure, which looks similar from the client: a *merely full* budget produces a retry-later close and resolves itself as other connections drain. The `bound` label separates them outright — `leapmux_userevents_frames_dropped_total{phase="bootstrap",bound="bytes"}` is the transient one, and `bound="capacity"` is the permanent one. Do not read occupancy to tell them apart: a frame larger than the whole budget is refused on an *empty* pool just as readily, so `leapmux_sendq_pool_used_bytes` near capacity is evidence for the transient case and its absence is no evidence at all.
 
 ### Keys with no CLI flag
 
-These two keys can only be set through the YAML file or an env var — there is no command-line flag.
-
-| Config key            | Env var                            | Default                       | Meaning                                                              |
-| --------------------- | ---------------------------------- | ----------------------------- | ------------------------------------------------------------------- |
-| `secure_cookies`      | `LEAPMUX_HUB_SECURE_COOKIES`       | `false`                       | Issue secure cookies and use `https` scheme in the derived base URL. |
-| `encryption_key_path` | `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`  | `{data_dir}/encryption.key`   | Path to the encryption key ring file.                               |
+`encryption_key_path` (env `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`, default `{data_dir}/encryption.key`) can only be set through the YAML file or an env var — there is no command-line flag. It names the encryption key ring file the Hub needs before it can read the encrypted halves of its settings rows.
 
 See [Encryption & Data](/docs/operating/encryption-and-data/) for the encryption key ring, rotation, and what is encrypted at rest.
 
@@ -406,7 +388,7 @@ See [Encryption & Data](/docs/operating/encryption-and-data/) for the encryption
 
 - **SQLite DB path:** `storage.sqlite.path` if set, otherwise `{data_dir}/hub.db`.
 - **Encryption key file:** `encryption_key_path` if set, otherwise `{data_dir}/encryption.key`.
-- **Base URL:** `public_url` if set; otherwise derived from `listen` (scheme is `https` only when `secure_cookies` is true, and a bare `:port` listen resolves the host to `localhost`).
+- **Base URL:** the `public_url` setting if set; otherwise derived from `listen` (scheme is `https` only when the `secure_cookies` setting is true, and a bare `:port` listen resolves the host to `localhost`).
 - **Metrics:** the Hub always mounts a Prometheus endpoint at `/metrics`. There is no config flag to enable, disable, or relocate it.
 
 ## Worker configuration reference
@@ -434,7 +416,7 @@ Every timeout below takes a unit suffix; see [Duration values](#duration-values)
 | Config key | Default | Meaning |
 | --- | --- | --- |
 | `max_incomplete_chunked` | `0` | Maximum in-flight chunked sequences per channel (`0` = 4 default). |
-| `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Negotiated per channel as `min(hub, worker)`; the reassembled ceiling is this plus 64 KiB of envelope headroom. |
+| `max_message_size` | `0` | Maximum application payload size in bytes (`0` = 16 MiB default). Negotiated per channel as `min(hub, worker)` — the Hub's side is the `max_message_size_bytes` setting; the reassembled ceiling is this plus 64 KiB of envelope headroom. |
 | `agent_startup_timeout` | `5m` | Agent startup timeout. `0` means the default. |
 | `api_timeout` | `10s` | JSON-RPC request timeout. `0` means the default. |
 
@@ -592,22 +574,9 @@ log_level: debug
 ```yaml
 # /etc/leapmux/hub.yaml
 listen: "127.0.0.1:4327"      # only the reverse proxy reaches the Hub
-public_url: "https://hub.example.com"
-secure_cookies: true
 data_dir: /var/lib/leapmux/hub
 
 log_level: info
-
-signup_enabled: true
-email_verification_required: true
-session_duration: 1d              # sign an idle user out after a day
-
-smtp_host: "smtp.example.com"
-smtp_port: 587
-smtp_username: "leapmux@example.com"
-smtp_password: "${SMTP_PASSWORD}"   # substitute via your secret manager
-smtp_from_address: "no-reply@example.com"
-smtp_tls_mode: starttls
 
 storage:
   type: postgres
@@ -617,6 +586,16 @@ storage:
 
 ```bash
 leapmux hub --config /etc/leapmux/hub.yaml
+
+# Behavioral settings live in the database now — set once, then they
+# survive and can change under the running Hub:
+leapmux admin settings set public_url "https://hub.example.com"
+leapmux admin settings set secure_cookies true
+leapmux admin settings set signup_enabled true
+leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"username":"leapmux@example.com","from_address":"no-reply@example.com","tls_mode":"starttls"}'
+leapmux admin settings set-secret smtp '{"password":"..."}'   # or read from your secret manager
+leapmux admin settings set email_verification_required true   # requires the smtp key above
+leapmux admin settings set session_duration_seconds 86400     # sign an idle user out after a day
 ```
 
 ### Worker connecting to a remote Hub

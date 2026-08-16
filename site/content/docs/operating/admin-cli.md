@@ -34,12 +34,15 @@ Groups:
   session           Manage sessions
   worker            Manage workers
   oauth-provider    Manage OAuth/OIDC providers
-  captcha           Manage captcha bot protection (ALTCHA, reCAPTCHA v3, Turnstile)
+  captcha           Manage captcha bot protection: ALTCHA, reCAPTCHA v3, or Turnstile (a solo-mode hub never enforces captcha)
   rate-limit        Manage per-user rate limits
+  settings          Manage the hub's DB-backed instance settings (auth policy, SMTP, timeouts, limits, captcha, rate limits)
   encryption-key    Manage encryption keys
   db                Database utilities
   api-token         Manage durable API tokens (CLI / integrations)
   delegation-token  Manage worker-minted delegation tokens
+
+Any command name can be shortened as far as it stays unambiguous.
 ```
 
 Help works at every level: `-h`, `-help`, `--help`, and `help` all print the relevant usage and exit. `leapmux admin user --help` lists the `user` group's commands; `leapmux admin user list --help` shows that one command's flags. Running a group with no command exits with `error: <path> command is required`; an unknown group or command prints `unknown admin group: <name>` / `unknown <path> command: <name>`.
@@ -373,11 +376,75 @@ Both take `--id`. Success: `Enabled OAuth provider <id>` / `Disabled OAuth provi
 
 ---
 
+## `settings` — instance settings
+
+The Hub's behavioral configuration — auth policy, SMTP, timeouts, per-user limits, queue budgets, and (under their own friendlier verbs below) captcha and rate limits — lives in the Hub's database as one row per setting key. This group is the generic surface over that table; `captcha` and `rate-limit` are the domain-friendly verbs for their keys.
+
+### How values are written
+
+A value is a JSON document. Fields the document omits keep their current (or default) values, so you can retune one field without restating the rest:
+
+```bash
+leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com","tls_mode":"starttls"}'
+leapmux admin settings set smtp '{"port":465,"tls_mode":"implicit"}'   # only these two fields change
+```
+
+Bare scalars work without quoting JSON: `settings set signup_enabled true`. Every write is validated — per-key rules (port ranges, duration floors, budget ceilings) and cross-key rules (`email_verification_required` needs a configured `smtp`) — before it is stored, so an impossible combination is refused here rather than degrading later.
+
+Secret-bearing fields (the SMTP password) are stored in the row's **encrypted half**, written with `set-secret` and never printed by `list` or `get`:
+
+```bash
+leapmux admin settings set-secret smtp '{"password":"..."}'
+```
+
+### `settings list`
+
+Lists every setting key with its effective value (secrets redacted), how a change reaches a running Hub (`hot` within ~30s, `restart` on next start), whether it is at its default, and each row's last-write time.
+
+### `settings get KEY`
+
+```bash
+leapmux admin settings get smtp
+```
+
+Prints the effective value, the key's JSON shape, and the same propagation/customized metadata.
+
+### `settings set KEY VALUE`
+
+Merges the JSON document (or bare scalar) onto the key's current value and stores it. For `restart`-class keys (`max_message_size_bytes`, `queue_budget`) the command confirms that the change applies after a hub restart — pool floors and frame ceilings are computed from them at startup.
+
+### `settings set-secret KEY JSON`
+
+Writes the key's encrypted half. Refused for keys with no secret fields.
+
+### `settings reset KEY`
+
+Removes the key's row, returning it to its built-in default — the exact state of a fresh install.
+
+### Key reference
+
+| Key | Shape | Default | Class |
+| --- | --- | --- | --- |
+| `signup_enabled` | boolean | `false` | hot |
+| `email_verification_required` | boolean | `false` | hot; requires `smtp` first |
+| `session_duration_seconds` | integer | `604800` (7d) | hot; minimum `300` |
+| `secure_cookies` | boolean | `false` | hot; changes the cookie name, signing everyone out |
+| `public_url` | string | *(empty)* | hot; `https://hub.example.com` — scheme+host only |
+| `smtp` | object + secret | disabled | hot |
+| `timeouts` | `{api_seconds, agent_startup_seconds, worktree_create_seconds}` | 10 / 300 / 60 | hot |
+| `limits` | `{max_connections_per_user, max_workers_per_user}` | 32 / 64 | hot; `0` = unlimited |
+| `max_message_size_bytes` | integer | `16777216` | restart; 64 KiB – 64 MiB |
+| `queue_budget` | `{relay_bytes, worker_bytes, userevents_bytes}` | `0` = auto-size per process | restart |
+
+Adding or removing a setting is a Hub-code change, never a migration: the table stores whole JSON documents whose shape each key declares in Go. A row for a key this binary does not know (an older or newer Hub wrote it) is ignored with a one-time warning.
+
+---
+
 ## `captcha` — bot protection (ALTCHA, reCAPTCHA v3, Turnstile)
 
 LeapMux protects its unauthenticated credential endpoints (`Login`, `SignUp`, and `CompleteOAuthSignup`) with a captcha check plus a hidden honeypot field. Three providers are selectable: the built-in [ALTCHA](https://altcha.org/) proof-of-work (default, no third party), Google [reCAPTCHA v3](https://developers.google.com/recaptcha/docs/v3), and Cloudflare [Turnstile](https://developers.cloudflare.com/turnstile/). A client must present a valid, unexpired, single-use token before those endpoints accept its request; a filled honeypot is rejected regardless. This raises the cost of scripted brute-forcing and signup abuse. The honeypot check stays active even when captcha is disabled: it costs the server nothing and still catches naive bots. The token check is what `captcha enable`/`disable` controls. Solo mode never enforces captcha (and the admin CLI cannot detect a solo data dir — these commands manage multi-user hub configuration).
 
-Configuration lives in the database (`captcha_config`, one row per provider — provider-specific settings are stored as that provider's JSON) so it can be changed at runtime with these commands; a running Hub picks up changes within ~30 seconds. Absent any configuration the safe defaults apply: **enabled**, ALTCHA `PBKDF2/SHA-256` at cost `10000`, challenges expire after 20 minutes.
+Configuration lives in the database (`hub_settings`, one key per provider — provider-specific settings are stored as that key's JSON document) so it can be changed at runtime with these commands; a running Hub picks up changes within ~30 seconds. Absent any configuration the safe defaults apply: **enabled**, ALTCHA `PBKDF2/SHA-256` at cost `10000`, challenges expire after 20 minutes.
 
 Provider notes:
 
@@ -448,7 +515,7 @@ No command-specific flags. Toggles token enforcement on the selected provider; t
 
 Rate limits cap how often an authenticated user may retry operations whose handlers are expensive to service. The first protected operation is **`change-password`** — each attempt runs an Argon2 verification, so a hijacked session could otherwise grind on the current password. Only current-password *failures* count: validation errors and transient server faults never lock anyone out, and a successful change resets the counter.
 
-Limits are stored per operation in `rate_limit_config`; absent rows fall back to the defaults below. A running Hub picks up changes within ~30 seconds. Solo mode never limits.
+Limits are stored per operation as `rate_limit.<operation>` keys in `hub_settings`; absent rows fall back to the defaults below. A running Hub picks up changes within ~30 seconds. Solo mode never limits.
 
 **Scope.** Unauthenticated procedures (login, signup, complete-signup) are limited by **captcha**, not by rate limits — this is deliberate. Out of the box that means the client-side ALTCHA proof-of-work; with an external provider (reCAPTCHA v3, Turnstile) every non-empty token triggers one uncapped siteverify call to the provider, so scripted garbage tokens can burn the operator's siteverify quota; with captcha disabled, those procedures are limited only by the per-attempt Argon2 cost and the honeypot check. There is no per-IP limiter because the Hub deliberately requires no trusted-proxy configuration.
 
