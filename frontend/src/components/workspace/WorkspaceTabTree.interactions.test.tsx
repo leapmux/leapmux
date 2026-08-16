@@ -27,7 +27,7 @@ vi.mock('@thisbeyond/solid-dnd', () => ({
       },
     }
   },
-  transformStyle: () => ({}),
+  maybeTransformStyle: () => undefined,
 }))
 
 vi.mock('~/components/shell/TabDragContext', () => ({

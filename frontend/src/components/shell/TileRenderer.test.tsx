@@ -15,6 +15,7 @@ import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestFloatingWindowStore, createTestTabStores } from '~/test-support/tabStores'
+import { createMobileOverlayState } from './MobileLayout'
 import { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import { createTileRenderer } from './TileRenderer'
 
@@ -121,9 +122,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, getMruAgentCont
       },
       chrome: {
         isMobileLayout: () => false,
-        toggleLeftSidebar: () => {},
-        toggleRightSidebar: () => {},
-        closeAllSidebars: () => {},
+        mobileOverlay: createMobileOverlayState(),
       },
       refs: {
         focusEditorRef: createImperativeRef(),

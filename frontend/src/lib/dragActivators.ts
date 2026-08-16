@@ -7,25 +7,43 @@ import { createEffect, onCleanup } from 'solid-js'
 export type DragActivatorProps = Record<string, (event: PointerEvent) => void>
 
 /**
- * Wrap a draggable's `dragActivators` so its handlers ignore touch presses.
- *
- * Touch drags start ONLY from dedicated drag handles (`data-drag-handle`,
- * `touch-action: none`), which carry the raw activators. Keeping touch off the
- * row bodies is what lets the stock upstream pointer sensor stay safe on touch:
- * a finger that swipes a row pans the list (the press never reaches the sensor,
- * so nothing leaks when the browser claims the pointer), and a finger that
- * holds a row opens the 500ms context menu without the sensor's own 250ms hold
- * timer ghost-starting a drag under it.
- *
- * Mouse presses pass through untouched, and a pen counts as a fine pointer like
- * a mouse — it points precisely, hovers, and usually has a barrel button, so it
- * drags rows the way a mouse does.
+ * Presses that belong to the row's embedded UI, not to the row body: inline
+ * inputs and their native selection gestures, controls such as the close
+ * button, an open menu popover, and the drag grip (which forwards its own
+ * press through its raw activators — a second activation from the bubbled
+ * press would race the first).
  */
-export function finePointerOnlyActivators(activators: DragActivatorProps): DragActivatorProps {
+const EMBEDDED_UI_SELECTOR = 'input, textarea, select, button, [contenteditable="true"], [popover], [data-drag-handle]'
+
+/**
+ * Wrap a draggable's `dragActivators` for a ROW BODY: the press must start on
+ * the row itself, with a fine pointer.
+ *
+ * Touch never passes — touch drags start ONLY from dedicated drag handles
+ * (`data-drag-handle`, `touch-action: none`), which carry the raw activators.
+ * Keeping touch off the row bodies is what lets a finger that swipes a row
+ * pan the list (the press never reaches the sensor, so nothing leaks when the
+ * browser claims the pointer) and lets a finger that holds a row open the
+ * 500ms context menu undisturbed.
+ *
+ * A fine pointer passes only when the press starts on the row itself. A press
+ * on an embedded control (`EMBEDDED_UI_SELECTOR`) belongs to that control: a
+ * text-selection sweep in the rename input must not drag the row, and a slow
+ * or drifting press on the close button must stay a click. A press on the
+ * grip passes only through the grip's own raw activators, so one press
+ * activates the sensor exactly once.
+ *
+ * A pen counts as a fine pointer like a mouse — it points precisely, hovers,
+ * and usually has a barrel button, so it drags rows the way a mouse does.
+ */
+export function rowBodyActivators(activators: DragActivatorProps): DragActivatorProps {
   const guarded: DragActivatorProps = {}
   for (const [eventName, handler] of Object.entries(activators)) {
     guarded[eventName] = (event: PointerEvent) => {
       if (event.pointerType === 'touch')
+        return
+      const target = event.target as Element | null
+      if (target?.closest?.(EMBEDDED_UI_SELECTOR))
         return
       handler(event)
     }
@@ -33,7 +51,7 @@ export function finePointerOnlyActivators(activators: DragActivatorProps): DragA
   return guarded
 }
 
-/** `onPointerdown` → `pointerdown`, the DOM event name a handler key names. */
+/** `onPointerdown` → `pointerdown`, the DOM event name a handler key specifies. */
 function eventNameOf(handlerKey: string): string {
   return handlerKey.replace(/^on/, '').replace(/^([A-Z])/, lead => lead.toLowerCase())
 }
@@ -51,7 +69,7 @@ function eventNameOf(handlerKey: string): string {
  * a subset of the row.
  *
  * `touch: 'block'` routes the handlers through
- * {@link finePointerOnlyActivators} — for row bodies, where a touch press must
+ * {@link rowBodyActivators} — for row bodies, where a touch press must
  * not start a drag. `touch: 'allow'` attaches them raw — for drag handles.
  *
  * Must run under an owner (a component body or a keyed row); the effect and
@@ -67,7 +85,7 @@ export function attachDragActivators(
     if (!el)
       return
     const raw = activators() ?? {}
-    const handlers = opts.touch === 'block' ? finePointerOnlyActivators(raw) : raw
+    const handlers = opts.touch === 'block' ? rowBodyActivators(raw) : raw
     const bound: Array<[string, EventListener]> = []
     for (const [handlerKey, handler] of Object.entries(handlers)) {
       const eventName = eventNameOf(handlerKey)

@@ -4,6 +4,7 @@ import { createDraggable, createDroppable, useDragDropContext } from '@thisbeyon
 import GripVertical from 'lucide-solid/icons/grip-vertical'
 import { createMemo, createSignal, For, Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
+import { attachDragActivators } from '~/lib/dragActivators'
 import * as styles from './CollapsibleSidebar.css'
 import { useOptionalSectionDrag } from './SectionDragContext'
 import { SECTION_DRAG_PREFIX, SIDEBAR_ZONE_PREFIX } from './sectionDragUtils'
@@ -247,6 +248,17 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
               ? createDroppable(`${SECTION_DRAG_PREFIX}${id}`)
               : null
 
+            // The grip element, for the reactive activator binding below. A
+            // signal so the binding follows the grip through its `<Show>`.
+            const [gripEl, setGripEl] = createSignal<HTMLDivElement | undefined>()
+            // Raw activators on the grip (touch included) — the one place a
+            // touch drag of a section may start. Bound reactively, not via a
+            // one-shot JSX spread: a spread evaluated at element creation
+            // captures sensor-less handlers when the pane mounts in the same
+            // tick as the provider (see ~/lib/dragActivators.ts).
+            // eslint-disable-next-line solid/reactivity -- gripEl is read inside attachDragActivators' effect
+            attachDragActivators(gripEl, () => draggable?.dragActivators, { touch: 'allow' })
+
             // Whether this section can currently be collapsed.
             // False when marked non-collapsible OR when it's the only section.
             // When it's the last open section, handleToggle swaps to an adjacent
@@ -339,6 +351,7 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                   >
                     <Show when={isDraggable()}>
                       <div
+                        ref={setGripEl}
                         class={styles.sectionDragHandle}
                         data-drag-handle=""
                         data-testid={`section-drag-handle-${id}`}
@@ -347,8 +360,6 @@ export const CollapsibleSidebar: Component<CollapsibleSidebarProps> = (props) =>
                           e.stopPropagation()
                           e.preventDefault()
                         }}
-                        // Use the draggable's activators for the drag handle only
-                        {...(draggable?.dragActivators ?? {})}
                       >
                         <Icon icon={GripVertical} size="xs" />
                       </div>

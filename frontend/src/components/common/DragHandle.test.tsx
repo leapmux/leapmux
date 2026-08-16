@@ -1,6 +1,8 @@
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { DragHandle } from '~/components/common/DragHandle'
+import { flush } from '~/test-support/async'
+import { pointerEvent } from '~/test-support/pointer'
 
 describe('dragHandle', () => {
   it('renders the grip as a pointer-only affordance', () => {
@@ -19,19 +21,11 @@ describe('dragHandle', () => {
       <DragHandle visibility="auto" activators={() => ({ onPointerdown: handler })} testId="grip" />
     ))
     // Solid flushes the binding effect on a microtask.
-    await Promise.resolve()
-    await Promise.resolve()
+    await flush()
 
-    fireEvent.pointerDown(getByTestId('grip'))
+    fireEvent(getByTestId('grip'), pointerEvent('pointerdown', { pointerType: 'touch' }))
+    fireEvent(getByTestId('grip'), pointerEvent('pointerdown', { pointerType: 'mouse' }))
 
-    expect(handler).toHaveBeenCalledOnce()
-  })
-
-  it('renders without activators without throwing', () => {
-    const { getByTestId } = render(() => (
-      <DragHandle visibility="always" activators={() => undefined} testId="grip" />
-    ))
-
-    expect(getByTestId('grip')).toBeInTheDocument()
+    expect(handler).toHaveBeenCalledTimes(2)
   })
 })

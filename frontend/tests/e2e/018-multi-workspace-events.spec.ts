@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { loginViaToken, openWorkspace, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
@@ -24,8 +24,7 @@ test.describe('Multi-Workspace Events', () => {
       // No preload needed: every workspace is projected at all times.
 
       // Expand ws2 in the sidebar
-      const ws2Item = workspaceRow(page, ws2)
-      await ws2Item.locator('svg').first().click()
+      await workspaceChevron(page, ws2).click()
 
       // ws1 active has 1 leaf (auto-expanded) + ws2 expanded has 1 leaf = 2
       await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
@@ -50,10 +49,8 @@ test.describe('Multi-Workspace Events', () => {
       await waitForInitialAgent(page)
 
       // Visit ws2 to populate its registry, then switch back
-
-      // Expand ws2 in the sidebar
       const ws2Item = workspaceRow(page, ws2)
-      await ws2Item.locator('svg').first().click()
+      await workspaceChevron(page, ws2).click()
 
       // ws1 active (1 leaf) + ws2 expanded (2 leaves) = 3
       await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3)

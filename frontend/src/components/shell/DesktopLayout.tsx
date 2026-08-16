@@ -1,7 +1,5 @@
 import type { Accessor, Component, JSX } from 'solid-js'
-import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import type { createLayoutStore, GridAxis } from '~/stores/layout.store'
-import type { createSectionStore } from '~/stores/section.store'
 import Plus from 'lucide-solid/icons/plus'
 import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
@@ -13,8 +11,6 @@ import { trailingDebounce } from '~/lib/debounce'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import * as styles from './AppShell.css'
-import { SectionDragProvider } from './SectionDragContext'
-import { TabDragProvider } from './TabDragContext'
 import { TilingLayout } from './TilingLayout'
 import { useWindowPointerDrag } from './windowPointerDrag'
 
@@ -125,10 +121,7 @@ interface SidebarState {
 }
 
 interface DesktopLayoutProps {
-  sectionStore: ReturnType<typeof createSectionStore>
   layoutStore: ReturnType<typeof createLayoutStore>
-  onMoveSection: (sectionId: string, sidebar: Sidebar, position: string) => void
-  onMoveSectionServer: (sectionId: string, sidebar: Sidebar, position: string) => void
   activeWorkspaceId: string | null | undefined
   activeWorkspace: () => { id: string } | null
   /**
@@ -149,11 +142,6 @@ interface DesktopLayoutProps {
   onNewWorkspace: () => void
   setCenterPanelHeight: (v: number) => void
   // Tiling
-  onIntraTileReorder: (tileId: string, fromKey: string, toKey: string) => void
-  onCrossTileMove: (fromTileId: string, toTileId: string, draggedTabKey: string, nearTabKey: string | null) => void
-  onCrossWorkspaceMove?: (targetWorkspaceId: string, tabKey: string, sourceWorkspaceId?: string, targetTileId?: string) => void
-  lookupTileIdForTab: (key: string) => string | undefined
-  renderDragOverlay: (key: string) => JSX.Element
   renderTile: (tileId: string) => JSX.Element
   onRatioChange: (splitId: string, ratios: number[]) => void
   onGridRatiosChange?: (gridId: string, axis: GridAxis, ratios: number[]) => void
@@ -405,100 +393,89 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
   const rightPxStyle = rightSide.pxStyle
 
   return (
-    <SectionDragProvider
-      sections={() => props.sectionStore.state.sections}
-      onMoveSection={props.onMoveSection}
-      onMoveSectionServer={props.onMoveSectionServer}
-    >
-      <TabDragProvider
-        onIntraTileReorder={props.onIntraTileReorder}
-        onCrossTileMove={props.onCrossTileMove}
-        onCrossWorkspaceMove={props.onCrossWorkspaceMove}
-        lookupTileIdForTab={props.lookupTileIdForTab}
-        renderDragOverlay={props.renderDragOverlay}
-      >
-        <div class={styles.shell} style={{ display: 'flex' }}>
-          {/* Left sidebar */}
-          <div
-            class={styles.sidebar}
-            style={{ flex: `0 0 ${leftPxStyle()}` }}
-          >
-            {props.createLeftSidebar({
-              isCollapsed: leftSide.collapsed,
-              onExpand: leftSide.expand,
-              initialOpenSections: savedSidebar?.leftOpenSections,
-              initialSectionSizes: savedSidebar?.leftSectionSizes,
-              onStateChange: (open, sizes) => {
-                leftOpenSections = open
-                leftSectionSizes = sizes
-                doSaveSidebarState()
-              },
-            })}
-          </div>
+    <>
+      <div class={styles.shell} style={{ display: 'flex' }}>
+        {/* Left sidebar */}
+        <div
+          class={styles.sidebar}
+          style={{ flex: `0 0 ${leftPxStyle()}` }}
+        >
+          {props.createLeftSidebar({
+            isCollapsed: leftSide.collapsed,
+            onExpand: leftSide.expand,
+            initialOpenSections: savedSidebar?.leftOpenSections,
+            initialSectionSizes: savedSidebar?.leftSectionSizes,
+            onStateChange: (open, sizes) => {
+              leftOpenSections = open
+              leftSectionSizes = sizes
+              doSaveSidebarState()
+            },
+          })}
+        </div>
 
-          {/* Left resize handle */}
-          <div
-            class={styles.resizeHandle}
-            data-testid="resize-handle"
-            onPointerDown={leftSide.drag}
-          />
+        {/* Left resize handle */}
+        <div
+          class={styles.resizeHandle}
+          data-testid="resize-handle"
+          onPointerDown={leftSide.drag}
+        />
 
-          {/* Center panel */}
-          <div
-            class={styles.center}
-            style={{ 'flex': '1 1 0px', 'min-width': '0px' }}
-            ref={(el) => {
-              const observer = createRafResizeObserver((entries) => {
-                for (const entry of entries)
-                  props.setCenterPanelHeight(entry.contentRect.height)
-              })
-              observer?.observe(el)
-              onCleanup(() => observer?.disconnect())
-            }}
+        {/* Center panel */}
+        <div
+          class={styles.center}
+          style={{ 'flex': '1 1 0px', 'min-width': '0px' }}
+          ref={(el) => {
+            const observer = createRafResizeObserver((entries) => {
+              for (const entry of entries)
+                props.setCenterPanelHeight(entry.contentRect.height)
+            })
+            observer?.observe(el)
+            onCleanup(() => observer?.disconnect())
+          }}
+        >
+          <Show
+            when={props.activeWorkspace() && props.workspaceReady}
+            fallback={(
+              <Show
+                when={!props.activeWorkspace() && !props.activeWorkspaceId}
+                fallback={(
+                  // A workspace IS selected but its state has not arrived. Silence
+                  // is only right while it might still be coming: once the watchdog
+                  // has given up, an outage would otherwise render identically to a
+                  // workspace with no tabs, for the rest of the page.
+                  <Show when={props.bootstrapTimedOut}>
+                    <div class={styles.emptyTileActions} data-testid="workspace-bootstrap-failed">
+                      <StartupErrorBody
+                        title="Couldn't load this workspace"
+                        error="The workspace's state never arrived. Check your connection to the hub, then reload."
+                      />
+                      <button class="outline" onClick={() => window.location.reload()}>
+                        <span class={styles.emptyTileActionContent}><span>Reload</span></span>
+                      </button>
+                    </div>
+                  </Show>
+                )}
+              >
+                <div class={styles.emptyTileActions} data-testid="no-workspace-empty-state">
+                  <button
+                    class="outline"
+                    data-testid="create-workspace-button"
+                    onClick={props.onNewWorkspace}
+                  >
+                    <Icon icon={Plus} size="sm" />
+                    <span class={styles.emptyTileActionContent}>
+                      <span>Create a new workspace...</span>
+                      <Show when={getShortcutHintsText('app.newWorkspaceDialog')}>
+                        {shortcut => <span class={styles.emptyTileActionShortcut}>{shortcut()}</span>}
+                      </Show>
+                    </span>
+                  </button>
+                </div>
+              </Show>
+            )}
           >
-            <Show
-              when={props.activeWorkspace() && props.workspaceReady}
-              fallback={(
-                <Show
-                  when={!props.activeWorkspace() && !props.activeWorkspaceId}
-                  fallback={(
-                    // A workspace IS selected but its state has not arrived. Silence
-                    // is only right while it might still be coming: once the watchdog
-                    // has given up, an outage would otherwise render identically to a
-                    // workspace with no tabs, for the rest of the page.
-                    <Show when={props.bootstrapTimedOut}>
-                      <div class={styles.emptyTileActions} data-testid="workspace-bootstrap-failed">
-                        <StartupErrorBody
-                          title="Couldn't load this workspace"
-                          error="The workspace's state never arrived. Check your connection to the hub, then reload."
-                        />
-                        <button class="outline" onClick={() => window.location.reload()}>
-                          <span class={styles.emptyTileActionContent}><span>Reload</span></span>
-                        </button>
-                      </div>
-                    </Show>
-                  )}
-                >
-                  <div class={styles.emptyTileActions} data-testid="no-workspace-empty-state">
-                    <button
-                      class="outline"
-                      data-testid="create-workspace-button"
-                      onClick={props.onNewWorkspace}
-                    >
-                      <Icon icon={Plus} size="sm" />
-                      <span class={styles.emptyTileActionContent}>
-                        <span>Create a new workspace...</span>
-                        <Show when={getShortcutHintsText('app.newWorkspaceDialog')}>
-                          {shortcut => <span class={styles.emptyTileActionShortcut}>{shortcut()}</span>}
-                        </Show>
-                      </span>
-                    </button>
-                  </div>
-                </Show>
-              )}
-            >
-              <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>
-                {/*
+            <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>
+              {/*
                   Key TilingLayout on the active workspace id so the
                   entire tile tree (and all its TabBar instances)
                   re-mounts on every workspace switch. Without this,
@@ -510,46 +487,45 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                   `<For each={props.tabs}>`) sometimes don't re-evaluate
                   in time. A fresh subtree avoids the race entirely.
                 */}
-                <Show when={props.activeWorkspaceId} keyed>
-                  <TilingLayout
-                    root={props.layoutStore.state.root}
-                    renderTile={props.renderTile}
-                    onRatioChange={props.onRatioChange}
-                    onGridRatiosChange={props.onGridRatiosChange}
-                  />
-                </Show>
-                {props.editorPanel}
-              </ChatDropZone>
-            </Show>
-          </div>
-
-          {/* Right resize handle */}
-          <div
-            class={styles.resizeHandle}
-            data-testid="resize-handle"
-            onPointerDown={rightSide.drag}
-          />
-
-          {/* Right sidebar */}
-          <div
-            class={styles.rightPanel}
-            style={{ flex: `0 0 ${rightPxStyle()}` }}
-          >
-            {props.createRightSidebar({
-              isCollapsed: rightSide.collapsed,
-              onExpand: rightSide.expand,
-              initialOpenSections: savedSidebar?.rightOpenSections,
-              initialSectionSizes: savedSidebar?.rightSectionSizes,
-              onStateChange: (open, sizes) => {
-                rightOpenSections = open
-                rightSectionSizes = sizes
-                doSaveSidebarState()
-              },
-            })}
-          </div>
+              <Show when={props.activeWorkspaceId} keyed>
+                <TilingLayout
+                  root={props.layoutStore.state.root}
+                  renderTile={props.renderTile}
+                  onRatioChange={props.onRatioChange}
+                  onGridRatiosChange={props.onGridRatiosChange}
+                />
+              </Show>
+              {props.editorPanel}
+            </ChatDropZone>
+          </Show>
         </div>
-        {props.floatingWindowLayer}
-      </TabDragProvider>
-    </SectionDragProvider>
+
+        {/* Right resize handle */}
+        <div
+          class={styles.resizeHandle}
+          data-testid="resize-handle"
+          onPointerDown={rightSide.drag}
+        />
+
+        {/* Right sidebar */}
+        <div
+          class={styles.rightPanel}
+          style={{ flex: `0 0 ${rightPxStyle()}` }}
+        >
+          {props.createRightSidebar({
+            isCollapsed: rightSide.collapsed,
+            onExpand: rightSide.expand,
+            initialOpenSections: savedSidebar?.rightOpenSections,
+            initialSectionSizes: savedSidebar?.rightSectionSizes,
+            onStateChange: (open, sizes) => {
+              rightOpenSections = open
+              rightSectionSizes = sizes
+              doSaveSidebarState()
+            },
+          })}
+        </div>
+      </div>
+      {props.floatingWindowLayer}
+    </>
   )
 }

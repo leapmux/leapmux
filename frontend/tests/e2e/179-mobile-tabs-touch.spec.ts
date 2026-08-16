@@ -65,10 +65,21 @@ async function openSheet(page: Page): Promise<Locator> {
 }
 
 /**
- * Touch-press `grip`, travel past the 10px activation distance, drop onto
- * `target`. `draggedRow` is the row being dragged: the drag's start is
- * confirmed against its `tabDragging` class, so a press that somehow never
- * activated fails HERE instead of as a mysterious unchanged order later.
+ * Touch-press `grip`, travel past the 10px activation distance, and drag
+ * until the DRAGGED ROW's center sits on `target` — then lift.
+ *
+ * The finger does not stop at `target` itself: solid-dnd's collision
+ * reference is the dragged element's transformed CENTER, which keeps the
+ * grip-to-center offset it had at the press. A grip press therefore carries
+ * the reference half a row past the finger, and a drop aimed at the finger's
+ * position resolves a DIFFERENT droppable (observed: the tab-bar zone, a
+ * same-tile no-op) whenever the drag runs right-to-left. Aiming the row's
+ * center at the target makes the drop land on the target from any direction.
+ *
+ * `draggedRow` is also the oracle: the drag's start AND end are confirmed
+ * against its `tabDragging` class, so a press that somehow never activated —
+ * or a lift the drag pipeline never saw — fails HERE instead of as a
+ * mysterious unchanged order later.
  */
 async function touchDragGripOnto(
   grip: { x: number, y: number },
@@ -76,27 +87,41 @@ async function touchDragGripOnto(
   page: Page,
   draggedRow: Locator,
 ) {
+  const rowBox = (await draggedRow.boundingBox())!
+  // The collision reference sits this far right of the finger for the whole
+  // gesture (grip press): aim the finger so the reference lands on target.
+  const referenceOffsetX = rowBox.x + rowBox.width / 2 - grip.x
+  const fingerTarget = { x: target.x - referenceOffsetX, y: target.y }
+
   const finger = await touchDown(page, grip.x, grip.y)
   try {
     // A move comfortably past the sensor's 10px activation distance, then a
-    // beat for the drag to start before the long haul — solid-dnd recomputes
-    // droppable collisions on every move, the same shape the mouse-driven
-    // reorder specs use.
+    // short pause for the drag to start before the move to the target —
+    // solid-dnd recomputes droppable collisions on every move, the same
+    // shape the mouse-driven reorder specs use.
     await finger.moveTo(grip.x + 8, grip.y + 20)
     await expect(draggedRow).toHaveClass(/tabDragging/)
     const steps = 12
     for (let step = 1; step <= steps; step++) {
       await finger.moveTo(
-        grip.x + 8 + ((target.x - grip.x - 8) * step) / steps,
-        grip.y + 20 + ((target.y - grip.y - 20) * step) / steps,
+        grip.x + 8 + ((fingerTarget.x - grip.x - 8) * step) / steps,
+        grip.y + 20 + ((fingerTarget.y - grip.y - 20) * step) / steps,
       )
     }
-    // A beat before lifting, so the last dragOver settles.
+    // Settle before lifting: CDP acknowledges the DISPATCH of a touchMove,
+    // not its processing on the main thread, so a lift that races the final
+    // dragOver resolves the drop prematurely. Two rAFs guarantee the queued
+    // moves were consumed by a rendered frame; the pause after covers the
+    // dragOver-to-store flush.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     await page.waitForTimeout(100)
   }
   finally {
     await finger.end()
   }
+  // The lift ended the drag: a press whose pointerup the pipeline lost would
+  // leave the row lifted and the reorder would never be attempted.
+  await expect(draggedRow).not.toHaveClass(/tabDragging/)
 }
 
 test.describe('mobile tab sheet (phone)', () => {
@@ -159,7 +184,7 @@ test.describe('mobile tab sheet (phone)', () => {
     await expect.poll(async () => await textIndex(rows, 'Beta') < await textIndex(rows, 'Alpha')).toBe(true)
   })
 
-  test('a long press on a sheet row body opens its menu, not a ghost drag', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  test('a long press on a sheet row body opens its menu, not an unintended drag', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     await openTwoAgentTabs({ ...serverOf(leapmuxServer), workspaceId: authenticatedWorkspace.workspaceId })
     const rows = await openSheet(page)
     const alphaRow = rows.filter({ hasText: 'Alpha' })
@@ -167,8 +192,8 @@ test.describe('mobile tab sheet (phone)', () => {
     const before = await rows.allTextContents()
 
     // Hold past the 500ms long-press threshold on the row BODY. Before the
-    // activator split, the sensor's own 250ms hold timer ghost-started a
-    // drag under the finger and the menu opened over a stuck overlay.
+    // activator split, the sensor's own 250ms hold timer started a drag under
+    // the finger with no movement, and the menu opened over a stuck overlay.
     const box = (await alphaRow.boundingBox())!
     const hold = await touchDown(page, box.x + box.width / 2, box.y + box.height / 2)
     await page.waitForTimeout(650)
@@ -238,11 +263,11 @@ test.describe('mobile drawers (phone)', () => {
     expect(headerBox.y).toBeGreaterThanOrEqual(barBox.y + barBox.height - 1)
     expect(sortBox.y).toBeGreaterThanOrEqual(barBox.y + barBox.height - 1)
 
-    // Full bleed: the drawer is a fixed panel spanning the viewport width —
-    // no dimmed strip is left outside it to tap.
+    // Full bleed: the drawer is an overlay panel spanning the viewport width
+    // — no dimmed strip is left outside it to tap.
     const drawerWidth = await page.evaluate(() => {
       let el = document.querySelector('[data-testid="files-refresh"]') as HTMLElement | null
-      while (el && getComputedStyle(el).position !== 'fixed')
+      while (el && getComputedStyle(el).position !== 'fixed' && getComputedStyle(el).position !== 'absolute')
         el = el.parentElement
       return el ? el.getBoundingClientRect().width : 0
     })

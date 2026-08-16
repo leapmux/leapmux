@@ -5,7 +5,7 @@ import type { TabType, Workspace } from '~/generated/leapmux/v1/workspace_pb'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 
 import type { Tab, TabItemOps } from '~/stores/tab.types'
-import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
+import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import { createEffect, createMemo, createSignal, For, Show } from 'solid-js'
 import { DragHandle } from '~/components/common/DragHandle'
@@ -15,6 +15,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { WORKSPACE_DROP_PREFIX } from '~/components/shell/TabDragContext'
 import { KEY_EXPANDED_WORKSPACES, sessionStorageSet } from '~/lib/browserStorage'
 import { attachDragActivators } from '~/lib/dragActivators'
+import { createGuardedSortableRow } from '~/lib/dragRow'
 import { DiffStatsBadge, LabelWithDiffStats } from '../tree/gitStatusUtils'
 import * as shared from '../tree/sharedTree.css'
 import { sidebarActions } from '../tree/sidebarActions.css'
@@ -169,7 +170,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
           <For each={workspaceIds()}>
             {(id) => {
               const workspace = () => workspaceById().get(id)!
-              const sortable = createSortable(`ws-${id}`, {
+              const dragRow = createGuardedSortableRow(`ws-${id}`, {
                 sectionId: props.sectionId,
                 workspaceId: id,
               })
@@ -187,7 +188,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
               // that fires on mouseup after a drag-and-drop operation.
               let wasDragging = false
               createEffect(() => {
-                if (sortable.isActiveDraggable)
+                if (dragRow.isActiveDraggable)
                   wasDragging = true
               })
 
@@ -195,7 +196,7 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
               const [rowEl, setRowEl] = createContextMenuAnchor()
               // Mouse-only activation on the row body; the grip carries the
               // raw handlers, so touch drags start there and nowhere else.
-              attachDragActivators(() => rowEl(), () => sortable.dragActivators, { touch: 'block' })
+              attachDragActivators(() => rowEl(), dragRow.bodyActivators, { touch: 'block' })
 
               return (
                 <>
@@ -204,16 +205,16 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                       setRowEl(el)
                       // Node registration only — activation lives on the
                       // guarded body and the grip, not the whole row.
-                      sortable.ref(el)
+                      dragRow.ref(el)
                       applyDirective(wsDroppable, el)
                     }}
                     class={styles.item}
                     classList={{
                       [styles.itemActive]: isActive(),
-                      [styles.itemDragging]: sortable.isActiveDraggable,
+                      [styles.itemDragging]: dragRow.isActiveDraggable,
                       [styles.itemDropTarget]: wsDroppable.isActiveDroppable,
                     }}
-                    style={transformStyle(sortable.transform)}
+                    style={dragRow.style()}
                     onClick={() => {
                       if (wasDragging) {
                         wasDragging = false
@@ -233,10 +234,11 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     // cannot tell expanded from collapsed. Expose the bit.
                     data-expanded={isExpanded(id) ? 'true' : 'false'}
                   >
-                    <DragHandle activators={() => sortable.dragActivators} testId="workspace-drag-handle" />
+                    <DragHandle activators={dragRow.gripActivators} testId="workspace-drag-handle" />
                     <ChevronRight
                       size={14}
                       class={`${shared.chevron} ${isExpanded(id) ? shared.chevronExpanded : ''}`}
+                      data-testid={`workspace-chevron-${id}`}
                       onClick={(e) => {
                         e.stopPropagation()
                         toggleExpanded(id)

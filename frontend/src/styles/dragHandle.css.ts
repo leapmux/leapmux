@@ -1,6 +1,12 @@
 import { style } from '@vanilla-extract/css'
 
-const dragHandleBase = style({
+/**
+ * The shared grip affordance: touch-action none (the browser may never turn
+ * a press here into a pan, or the pointer stream never reaches the drag
+ * sensor intact) plus the visual baseline. Surfaces compose this and add
+ * their own visibility rule.
+ */
+export const dragHandleBase = style({
   'display': 'flex',
   'alignItems': 'center',
   'justifyContent': 'center',

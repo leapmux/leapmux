@@ -327,8 +327,8 @@ globalStyle(`[data-tile-height="short"] ${tab}`, {
 // Mobile: current-tab chip + tab list panel dropping from the tab bar
 // ======================================================================
 
-// The chip that replaces the horizontal strip on phones: it names the active
-// tab and opens the sheet that lists them all.
+// The chip that replaces the horizontal strip on phones: it shows the name
+// of the active tab and opens the sheet that lists them all.
 export const tabChip = style({
   'all': 'unset',
   'display': 'flex',
@@ -347,8 +347,12 @@ export const tabChip = style({
   },
 })
 
-/** Composed with an EMPTY rule on purpose — same trick as `tabText` above. */
-export const tabChipLabel = style([clippedText, {}])
+/**
+ * Clipped single-line label for the mobile surfaces (the chip's tab name,
+ * the sheet row's label). Composed with an EMPTY rule on purpose — same
+ * trick as `tabText` above.
+ */
+export const mobileClippedLabel = style([clippedText, {}])
 
 export const tabChipCount = style({
   display: 'inline-flex',
@@ -377,49 +381,19 @@ export const mobileNewTab = style({
   alignItems: 'center',
 })
 
-// Rendered unconditionally while mobile; opacity + pointer-events flip via
-// `sheetOverlayOpen` so the dim fades in AND out alongside the sheet's own
-// slide — the same rationale as the mobile drawer overlay. The scrim starts
-// BELOW the tab bar (the same band the drawers start at), so the bar stays
-// bright and tappable while the sheet is open — its chip is the toggle that
-// closes the sheet again.
-export const sheetOverlay = style({
-  'position': 'fixed',
-  'top': `calc(env(safe-area-inset-top) + var(--mobile-tabbar-h, ${headerHeightPx}px))`,
-  'left': 0,
-  'right': 0,
-  'bottom': 0,
-  'backgroundColor': 'rgba(0, 0, 0, 0.4)',
-  // Local to the tab bar's own stacking context (z-index 100 there), which
-  // itself paints above the mobile drawers — so the sheet covers an open
-  // drawer.
-  'zIndex': 101,
-  'opacity': 0,
-  'pointerEvents': 'none',
-  'transition': `opacity ${motion.medium}ms ease`,
-  '@media': {
-    '(prefers-reduced-motion: reduce)': {
-      transition: 'none',
-    },
-  },
-})
-
-export const sheetOverlayOpen = style({
-  opacity: 1,
-  pointerEvents: 'auto',
-})
+// (The sheet's scrim lives in AppShell.css now: it anchors to the layout's
+// content region below the bar, not to the tab bar.)
 
 // The clip window the tab list drops within. It is ABSOLUTE inside the tab
 // bar's own `position: relative` wrapper (AppShell.css), anchored at the
-// bar's bottom edge — flush by construction, with no `env(safe-area-inset-*)
-// + measured-height` arithmetic to drift (the body's `transform` makes it
-// the containing block for fixed elements, where that sum double-counts the
-// safe-area inset). The panel slides in from translateY(-100%), i.e. from
-// BEHIND the bar; `overflow: hidden` clips the slide to below the bar so it
-// never paints over it (or steals its taps) mid-transition.
-// `pointer-events: none` keeps the empty window from catching taps meant
-// for the workspace under it — the panel turns them back on for itself.
-// The bottom padding leaves room for the panel's drop shadow inside the clip.
+// bar's bottom edge — flush by construction, with no measured-height copy
+// to keep in step with the bar. The panel slides in from
+// translateY(-100%), i.e. from BEHIND the bar; `overflow: hidden` clips the
+// slide to below the bar so it never paints over it (or steals its taps)
+// mid-transition. `pointer-events: none` keeps the empty window from
+// catching taps meant for the workspace under it — the panel turns them
+// back on for itself. The bottom padding leaves room for the panel's drop
+// shadow inside the clip.
 export const sheetPanelClip = style({
   position: 'absolute',
   top: '100%',
@@ -477,6 +451,15 @@ export const sheetList = style({
   // Swipe = native vertical scroll. The drag grips opt out with their own
   // `touch-action: none`, which is what keeps scroll and drag from racing.
   touchAction: 'pan-y',
+  // `role="tablist"` pulls in Oat's global pill styling (inline-flex, gap,
+  // muted background, rounded corners) — this list is a plain full-bleed
+  // column, so every one of those is overridden here.
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'stretch',
+  gap: 0,
+  backgroundColor: 'transparent',
+  borderRadius: 0,
   // Full-bleed horizontally: the rows carry their own padding, so the list
   // itself adds none on the sides.
   padding: '0 0 var(--space-2)',
@@ -485,7 +468,7 @@ export const sheetList = style({
 export const sheetRow = style({
   // `all: unset` first: the Oat design system styles every [role="tab"]
   // globally (inline-flex, centered content, its own padding and font) — the
-  // same fight the strip's `tab` style settles the same way.
+  // same conflict the strip's `tab` style settles the same way.
   all: 'unset',
   display: 'flex',
   alignItems: 'center',
@@ -507,8 +490,8 @@ export const sheetRow = style({
   },
 })
 
-/** Composed with an EMPTY rule on purpose — same trick as `tabText` above. */
-export const sheetRowLabel = style([clippedText, {}])
+/** The sheet row's label — the shared mobile clipped label. */
+export const sheetRowLabel = mobileClippedLabel
 
 export const sheetEmpty = style({
   padding: 'var(--space-4)',

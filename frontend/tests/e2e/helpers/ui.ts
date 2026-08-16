@@ -1057,6 +1057,15 @@ export function workspaceRow(page: Page, workspaceId: string): Locator {
 }
 
 /**
+ * The workspace row's expand chevron. Addressed by its own testid because it
+ * is no longer the row's first SVG: the drag grip precedes it, and the grip
+ * stays `display: none` on fine-pointer devices.
+ */
+export function workspaceChevron(page: Page, workspaceId: string): Locator {
+  return page.locator(`[data-testid="workspace-chevron-${workspaceId}"]`)
+}
+
+/**
  * The tab-tree leaves nested under `workspaceId`'s sidebar row, read from the
  * ON-SCREEN sidebar.
  *
@@ -1180,7 +1189,10 @@ export async function tabbarAgentLabels(page: Page): Promise<string[]> {
   return page.locator('[data-testid="tab"][data-tab-type="agent"]').evaluateAll(els =>
     els.map((el) => {
       const clone = el.cloneNode(true) as HTMLElement
-      clone.querySelectorAll('[data-testid="tab-close"], [data-testid="tab-notification"], [data-testid="tab-remote-badge"]').forEach(n => n.remove())
+      // A row's context menu keeps its items in the DOM behind the popover
+      // attribute while closed; they are not part of the label. Strip every
+      // popover alongside the close button and the badges.
+      clone.querySelectorAll('[data-testid="tab-close"], [data-testid="tab-notification"], [data-testid="tab-remote-badge"], [popover]').forEach(n => n.remove())
       return (clone.textContent ?? '').trim()
     }),
   )

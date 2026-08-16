@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { dragHandleBase } from '~/styles/dragHandle.css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
 import { headerHeight, iconSize } from '~/styles/tokens'
 
@@ -222,28 +223,21 @@ export const bottomSection = style({
   borderTop: '1px solid var(--border)',
 })
 
-/** Drag handle for section headers (visible on hover, absolutely positioned). */
-export const sectionDragHandle = style({
+/**
+ * Drag handle for section headers: the shared grip base, staged as a
+ * full-height strip down the header's left edge and revealed on hover.
+ */
+export const sectionDragHandle = style([dragHandleBase, {
   'position': 'absolute',
   'left': 0,
   'top': 0,
   'bottom': 0,
   'width': 'var(--space-4)',
-  'display': 'flex',
-  'alignItems': 'center',
-  'justifyContent': 'center',
-  'cursor': 'grab',
+  'height': 'auto',
   'opacity': 0,
   'transition': 'opacity var(--transition)',
   'color': 'var(--muted-foreground)',
   'zIndex': 1,
-  // The grip is the one place a touch drag of a section may start: the
-  // browser may never turn a press here into a pan, or the pointer stream
-  // never reaches the drag sensor intact.
-  'touchAction': 'none',
-  ':active': {
-    cursor: 'grabbing',
-  },
   '@media': {
     // Touch-only device: no hover exists to reveal the grip, and it is the
     // only way to drag the section — show it standing.
@@ -251,7 +245,7 @@ export const sectionDragHandle = style({
       opacity: 0.6,
     },
   },
-})
+}])
 
 /** Show drag handle on trigger hover. */
 globalStyle(`${collapsibleTrigger}:hover ${sectionDragHandle}`, {

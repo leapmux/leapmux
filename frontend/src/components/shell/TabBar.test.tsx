@@ -6,26 +6,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabBar } from '~/components/shell/TabBar'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { loadBrowserPrefs } from '~/lib/browserStorage'
+import { loadBrowserPrefs, localStorageClearForTests } from '~/lib/browserStorage'
 import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { tabKey } from '~/stores/tab.helpers'
+import { motion } from '~/styles/tokens'
+import { flush } from '~/test-support/async'
+import { pointerEvent } from '~/test-support/pointer'
 
 // Mock solid-dnd to avoid DragDropProvider context requirement. The sortable
 // mock exposes the contract the strip now relies on — `.ref` for node-only
 // registration and a `dragActivators` getter — plus one press spy per row, so
 // tests can assert WHERE activation reaches: the guarded row body or the raw
-// grip. `createdSortables` collects the spies for exactly that.
+// grip. `isActiveDraggable` is signal-backed so a test can flip a row into
+// (and out of) a drag and the row's reactive effects follow. `createdSortables`
+// collects the mocks for exactly that.
 vi.mock('@thisbeyond/solid-dnd', async () => {
   const { vi } = await import('vitest')
-  const createdSortables: Array<{ ref: ReturnType<typeof vi.fn>, onPointerdown: ReturnType<typeof vi.fn> }> = []
+  const { createSignal } = await import('solid-js')
+  const createdSortables: Array<{ ref: ReturnType<typeof vi.fn>, onPointerdown: ReturnType<typeof vi.fn>, setIsActiveDraggable: (v: boolean) => void }> = []
   return {
     createdSortables,
     createSortable: () => {
       const onPointerdown = vi.fn()
+      const [isActiveDraggable, setIsActiveDraggable] = createSignal(false)
       const sortable = {
         ref: vi.fn(),
-        isActiveDraggable: false,
+        get isActiveDraggable() {
+          return isActiveDraggable()
+        },
+        setIsActiveDraggable,
         transform: undefined,
         onPointerdown,
         get dragActivators() {
@@ -36,8 +46,9 @@ vi.mock('@thisbeyond/solid-dnd', async () => {
       return sortable
     },
     createDroppable: () => () => {},
+    createDraggable: () => () => {},
     SortableProvider: (props: any) => <>{props.children}</>,
-    transformStyle: () => undefined,
+    maybeTransformStyle: () => undefined,
   }
 })
 
@@ -115,12 +126,10 @@ vi.mock('~/components/shell/TabBar.css', () => ({
   collapsedOverflow: 'collapsedOverflow',
   shellDefault: 'shellDefault',
   tabChip: 'tabChip',
-  tabChipLabel: 'tabChipLabel',
+  mobileClippedLabel: 'mobileClippedLabel',
   tabChipCount: 'tabChipCount',
   tabChipChevron: 'tabChipChevron',
   mobileNewTab: 'mobileNewTab',
-  sheetOverlay: 'sheetOverlay',
-  sheetOverlayOpen: 'sheetOverlayOpen',
   sheetPanel: 'sheetPanel',
   sheetPanelOpen: 'sheetPanelOpen',
   sheetPanelClip: 'sheetPanelClip',
@@ -156,26 +165,15 @@ function getBrowserPrefs() {
   return loadBrowserPrefs() as Record<string, unknown>
 }
 
-/**
- * jsdom's PointerEvent constructor ignores the `pointerType` init property in
- * this environment, so the property is defined on the event directly — the
- * same trick as ~/lib/dragActivators.test.ts.
- */
+/** A bubbled pointer press of one type, targeted wherever it is dispatched. */
 function pointerPress(pointerType: string): PointerEvent {
-  const event = new PointerEvent('pointerdown', { bubbles: true })
-  Object.defineProperty(event, 'pointerType', { value: pointerType })
-  return event
-}
-
-/** Solid flushes effects on a microtask; two awaits are enough for that. */
-async function flushEffects(): Promise<void> {
-  await Promise.resolve()
-  await Promise.resolve()
+  return pointerEvent('pointerdown', { pointerType })
 }
 
 interface MockSortable {
   ref: ReturnType<typeof vi.fn>
   onPointerdown: ReturnType<typeof vi.fn>
+  setIsActiveDraggable: (v: boolean) => void
 }
 
 /** The sortable mocks the solid-dnd mock collected from the current render. */
@@ -184,7 +182,7 @@ function createdSortables(): MockSortable[] {
 }
 
 beforeEach(() => {
-  localStorage.clear()
+  localStorageClearForTests()
 })
 
 // `activateBindings` writes into a module singleton and installs a document
@@ -624,13 +622,28 @@ describe('tabBar tooltip mode', () => {
 })
 
 /**
- * The mobile variant replaces the horizontal strip with a chip that names the
- * active tab and opens the tab list dropping from the tab bar. The strip
- * itself must not render — a phone viewport cannot fit it, which is the point.
+ * The mobile variant replaces the horizontal strip with a chip that shows the
+ * name of the active tab and opens the tab list dropping from the tab bar. The
+ * strip itself must not render — a phone viewport cannot fit it, which is the
+ * point.
  */
 describe('tabBar mobile variant', () => {
-  function renderMobileTabBar(tabs: Tab[], activeTabKey: string | null, opts: { onSelect?: (tab: Tab) => void, onClose?: (tab: Tab) => void, onRename?: (tab: Tab, title: string) => void, onNewAgentAdvanced?: () => void, onCloseSidebars?: () => void } = {}) {
-    return render(() => (
+  interface MobileOpts {
+    onSelect?: (tab: Tab) => void
+    onClose?: (tab: Tab) => void
+    onRename?: (tab: Tab, title: string) => void
+    onNewAgentAdvanced?: () => void
+    onToggleDrawer?: (side: 'left' | 'right') => void
+  }
+
+  /**
+       Renders the mobile bar with a real signal behind the sheet-open prop, the
+      same contract AppShell's overlay state feeds it.
+   */
+  function renderMobileTabBar(tabs: Tab[], activeTabKey: string | null, opts: MobileOpts = {}) {
+    const [sheetOpen, setSheetOpen] = createSignal(false)
+    const onToggleSheetSpy = vi.fn(() => setSheetOpen(prev => !prev))
+    const view = render(() => (
       <PreferencesProvider>
         <TabBar
           {...defaultProps}
@@ -641,13 +654,18 @@ describe('tabBar mobile variant', () => {
           onRename={opts.onRename ?? noop}
           newTab={{ ...defaultProps.newTab, onNewAgentAdvanced: opts.onNewAgentAdvanced }}
           mobile={{
-            onToggleLeftSidebar: noop,
-            onToggleRightSidebar: noop,
-            onCloseSidebars: opts.onCloseSidebars,
+            sheetOpen,
+            onToggleDrawer: (side) => {
+              setSheetOpen(false)
+              opts.onToggleDrawer?.(side)
+            },
+            onToggleSheet: onToggleSheetSpy,
+            onCloseSheet: () => setSheetOpen(false),
           }}
         />
       </PreferencesProvider>
     ))
+    return { view, sheetOpen, onToggleSheetSpy }
   }
 
   const twoTabs = () => [
@@ -659,7 +677,7 @@ describe('tabBar mobile variant', () => {
     const two = renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
     fireEvent.click(screen.getByTestId('tab-chip'))
     expect(screen.getByTestId('tab-sheet-title')).toHaveTextContent('2 Tabs')
-    two.unmount()
+    two.view.unmount()
 
     renderMobileTabBar([makeTab(TabType.AGENT, 'a1', 'Agent Olivia')], `${TabType.AGENT}:a1`)
     fireEvent.click(screen.getByTestId('tab-chip'))
@@ -672,19 +690,61 @@ describe('tabBar mobile variant', () => {
     expect(screen.queryByTestId('tab-list')).toBeNull()
     const chip = screen.getByTestId('tab-chip')
     expect(chip).toHaveTextContent('Agent Olivia')
+    expect(chip).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByTestId('tab-chip-count')).toHaveTextContent('2')
   })
 
-  it('opens the sheet on chip tap, lists every tab, and marks the active one', () => {
+  it('keeps no sheet rows mounted while the sheet is closed, and none reachable by Tab', () => {
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+
+    // A closed sheet holds no rows: nothing to tab to, no invisible
+    // droppables, no per-row drag state for the whole session.
+    expect(screen.queryByTestId('tab-sheet-row')).toBeNull()
+    expect(screen.queryByTestId('tab-sheet-list')).toBeNull()
+    // The empty panel is hidden from assistive tech while closed.
+    expect(screen.getByTestId('tab-sheet')).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('opens the sheet on chip tap, lists every tab, and marks the active one', async () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
 
     fireEvent.click(screen.getByTestId('tab-chip'))
+    await flush()
 
     const rows = screen.getAllByTestId('tab-sheet-row')
     expect(rows).toHaveLength(2)
     expect(rows[0]).toHaveAttribute('aria-selected', 'true')
     expect(rows[1]).toHaveAttribute('aria-selected', 'false')
     expect(rows[1]).toHaveTextContent('Terminal Liam')
+    // The rows sit in a tablist, and the panel is exposed while open.
+    expect(screen.getByTestId('tab-sheet-list')).toHaveAttribute('role', 'tablist')
+    expect(screen.getByTestId('tab-sheet')).not.toHaveAttribute('aria-hidden')
+  })
+
+  it('unmounts the sheet rows after the slide-out, not at the close itself', async () => {
+    vi.useFakeTimers()
+    try {
+      renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+      fireEvent.click(screen.getByTestId('tab-chip'))
+      await flush()
+      expect(screen.getAllByTestId('tab-sheet-row')).toHaveLength(2)
+
+      fireEvent.keyDown(screen.getByTestId('tab-sheet'), { key: 'Escape' })
+      await flush()
+      // The rows ride out with the panel — the slide needs them mounted.
+      expect(screen.getAllByTestId('tab-sheet-row')).toHaveLength(2)
+
+      // Once the slide has had its duration, they are gone: no invisible
+      // droppables, nothing left to tab to, and the panel hides from
+      // assistive tech again.
+      vi.advanceTimersByTime(motion.medium + 100)
+      await flush()
+      expect(screen.queryByTestId('tab-sheet-row')).toBeNull()
+      expect(screen.getByTestId('tab-sheet')).toHaveAttribute('aria-hidden', 'true')
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 
   it('tapping a sheet row selects the tab and closes the sheet', () => {
@@ -696,7 +756,7 @@ describe('tabBar mobile variant', () => {
 
     expect(onSelect).toHaveBeenCalledOnce()
     expect(onSelect.mock.calls[0][0].id).toBe('t1')
-    expect(screen.getByTestId('tab-sheet-overlay')).not.toHaveClass('sheetOverlayOpen')
+    expect(screen.getByTestId('tab-sheet')).not.toHaveClass('sheetPanelOpen')
   })
 
   it('the sheet close button closes the tab without dismissing the sheet first', () => {
@@ -709,19 +769,29 @@ describe('tabBar mobile variant', () => {
     expect(onClose).toHaveBeenCalledOnce()
     expect(onClose.mock.calls[0][0].id).toBe('a1')
     // The sheet stays up: closing one tab is not a reason to hide the rest.
-    expect(screen.getByTestId('tab-sheet-overlay')).toHaveClass('sheetOverlayOpen')
+    expect(screen.getByTestId('tab-sheet')).toHaveClass('sheetPanelOpen')
   })
 
-  it('opening the sheet closes the drawers', () => {
-    const onCloseSidebars = vi.fn()
-    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onCloseSidebars })
+  it('the chip routes through the overlay owner\'s toggle', () => {
+    const onToggleDrawer = vi.fn()
+    const { onToggleSheetSpy } = renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`, { onToggleDrawer })
 
-    fireEvent.click(screen.getByTestId('tab-chip'))
+    // The chip asks the one owner to swap the sheet in; the drawers close as
+    // a property of that state, not as a side effect here.
+    const chip = screen.getByTestId('tab-chip')
+    fireEvent.click(chip)
+    expect(chip).toHaveAttribute('aria-expanded', 'true')
+    expect(onToggleSheetSpy).toHaveBeenCalledOnce()
 
-    expect(onCloseSidebars).toHaveBeenCalledOnce()
+    // The bar's drawer buttons route through the same owner.
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle workspaces' }))
+    expect(onToggleDrawer).toHaveBeenCalledWith('left')
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle files' }))
+    expect(onToggleDrawer).toHaveBeenCalledWith('right')
+    expect(onToggleDrawer).toHaveBeenCalledTimes(2)
   })
 
-  it('tapping the overlay or pressing Escape closes the sheet', () => {
+  it('pressing Escape closes the sheet (the scrim is the layout\'s, covered in MobileLayout)', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
 
     fireEvent.click(screen.getByTestId('tab-chip'))
@@ -729,10 +799,6 @@ describe('tabBar mobile variant', () => {
     expect(panel).toHaveClass('sheetPanelOpen')
 
     fireEvent.keyDown(panel, { key: 'Escape' })
-    expect(panel).not.toHaveClass('sheetPanelOpen')
-
-    fireEvent.click(screen.getByTestId('tab-chip'))
-    fireEvent.click(screen.getByTestId('tab-sheet-overlay'))
     expect(panel).not.toHaveClass('sheetPanelOpen')
   })
 
@@ -743,7 +809,7 @@ describe('tabBar mobile variant', () => {
     fireEvent.click(screen.getByTestId('tab-chip'))
 
     expect(onNewAgentAdvanced).toHaveBeenCalledOnce()
-    expect(screen.getByTestId('tab-sheet-overlay')).not.toHaveClass('sheetOverlayOpen')
+    expect(screen.getByTestId('tab-sheet')).not.toHaveClass('sheetPanelOpen')
   })
 
   it('sheet rows carry an always-on drag grip', () => {
@@ -776,7 +842,7 @@ describe('tabBar mobile variant', () => {
 
 /**
  * The desktop strip keeps whole-row mouse dragging, but touch activation now
- * lives on the grip alone — see `finePointerOnlyActivators`. The mocked
+ * lives on the grip alone — see `rowBodyActivators`. The mocked
  * sortable carries a press spy per row, so these tests assert the split
  * itself, not just the affordance's presence.
  */
@@ -815,7 +881,7 @@ describe('tabBar strip drag handles', () => {
         />
       </PreferencesProvider>
     ))
-    await flushEffects()
+    await flush()
 
     const rows = screen.getAllByTestId('tab')
     const grips = screen.getAllByTestId('tab-drag-handle')
@@ -831,16 +897,59 @@ describe('tabBar strip drag handles', () => {
     rows[0].dispatchEvent(pointerPress('touch'))
     expect(presses()).toBe(0)
     // The grip carries the raw activators. A touch press forwards from the
-    // grip and is blocked again where it BUBBLES into the row body — exactly
+    // grip and is skipped again where it BUBBLES into the row body — exactly
     // one activation for a finger.
     grips[0].dispatchEvent(pointerPress('touch'))
     expect(presses()).toBe(1)
-    // A mouse press on the grip forwards from the grip and from the guarded
-    // body it bubbles into — a fine press may start the drag from either.
+    // A mouse press on the grip forwards from the grip alone: the guarded
+    // body skips presses whose target is the grip, so one press activates
+    // the sensor exactly once no matter the pointer type.
     grips[0].dispatchEvent(pointerPress('mouse'))
-    expect(presses()).toBe(3)
-    // The guarded body forwards the mouse directly: the desktop drag path.
+    expect(presses()).toBe(2)
+    // The guarded body forwards a mouse press that starts on the row itself:
+    // the desktop drag path.
     rows[0].dispatchEvent(pointerPress('mouse'))
-    expect(presses()).toBe(4)
+    expect(presses()).toBe(3)
+  })
+})
+
+/**
+ * A drag that ends on its own row must not also fire the row's click: the
+ * workspace rows guard this, and the unified tab row guards it the same way.
+ */
+describe('tabBar click after drag', () => {
+  beforeEach(() => {
+    createdSortables().length = 0
+  })
+
+  it('suppresses the click that follows a drag, exactly once', async () => {
+    const onSelect = vi.fn()
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          onSelect={onSelect}
+          tabs={[
+            makeTab(TabType.AGENT, 'a1', 'Agent Olivia'),
+            makeTab(TabType.TERMINAL, 't1', 'Terminal Liam'),
+          ]}
+          activeTabKey={`${TabType.TERMINAL}:t1`}
+        />
+      </PreferencesProvider>
+    ))
+    await flush()
+
+    // Flip the row into a drag and back out — the state a real drag is in
+    // when the pointer lifts and the browser fires the click.
+    createdSortables()[0].setIsActiveDraggable(true)
+    createdSortables()[0].setIsActiveDraggable(false)
+    await flush()
+
+    fireEvent.click(screen.getAllByTestId('tab')[0])
+    expect(onSelect, 'the click right after a drag is the drag\'s, not a selection').not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getAllByTestId('tab')[0])
+    expect(onSelect, 'the suppression lasts exactly one click').toHaveBeenCalledOnce()
+    expect(onSelect.mock.calls[0][0].id).toBe('a1')
   })
 })

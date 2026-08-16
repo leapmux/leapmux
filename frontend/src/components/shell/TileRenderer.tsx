@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import type { CloseFlow } from './closeFlow'
+import type { createMobileOverlayState } from './MobileLayout'
 import type { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import type { TabContext } from './tabContext'
 import type { TileActions, TilePopAction } from './TileActionsMenu'
@@ -120,13 +121,11 @@ interface TileRendererOpts {
     newAgentDialog: ToggleDialogState
     newTerminalDialog: ToggleDialogState
   }
-  /** Shell chrome state and sidebar toggles. */
+  /** Shell chrome state and the mobile overlay owner. */
   chrome: {
     isMobileLayout: () => boolean
-    toggleLeftSidebar: () => void
-    toggleRightSidebar: () => void
-    /** Mobile only — closes both drawers, for mutual exclusion with the tab sheet. */
-    closeAllSidebars: () => void
+    /** The one owner of which mobile overlay (drawers, tab sheet) is up. */
+    mobileOverlay: ReturnType<typeof createMobileOverlayState>
   }
   /** Cross-component refs the renderer threads to its tab content. */
   refs: {
@@ -194,7 +193,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
     newAgentDialog,
     newTerminalDialog,
   } = opts.newTab
-  const { isMobileLayout, toggleLeftSidebar, toggleRightSidebar, closeAllSidebars } = opts.chrome
+  const { isMobileLayout, mobileOverlay } = opts.chrome
   const { focusEditorRef, getScrollStateRef, forceScrollToBottomRef } = opts.refs
   const branchCallbacks = opts.branch
   const { settingsLoading } = opts
@@ -633,9 +632,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
         }}
         mobile={isMobileLayout()
           ? {
-              onToggleLeftSidebar: toggleLeftSidebar,
-              onToggleRightSidebar: toggleRightSidebar,
-              onCloseSidebars: closeAllSidebars,
+              sheetOpen: () => mobileOverlay.overlay() === 'sheet',
+              onToggleDrawer: mobileOverlay.toggleDrawer,
+              onToggleSheet: mobileOverlay.toggleSheet,
+              onCloseSheet: mobileOverlay.closeSheet,
             }
           : undefined}
         tileActions={liveActions()}

@@ -1,6 +1,6 @@
 import { style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
-import { headerHeightPx, motion } from '~/styles/tokens'
+import { motion } from '~/styles/tokens'
 
 export const shell = style({
   height: '100%',
@@ -121,49 +121,63 @@ export const mobileShell = style({
   width: '100%',
   overflow: 'hidden',
   position: 'relative',
+  // One column: the bar in normal flow, the content region below it. The
+  // region's top edge IS the bar's bottom edge — flush by construction, with
+  // no measured height or safe-area arithmetic to keep in step with the bar.
+  display: 'flex',
+  flexDirection: 'column',
 })
 
+/**
+ * Everything below the tab bar: the tile pane and editor in flow, with the
+ * drawers and the sheet scrim layered absolutely on top. Owns a stacking
+ * context (`z-index: 1`) so its overlays stay BELOW the bar (`z-index: 100`):
+ * the bar paints above an open drawer on purpose, keeping its toggles
+ * tappable, and the sheet panel that drops from the bar covers the drawer.
+ */
 export const mobileCenter = style({
   display: 'flex',
   flexDirection: 'column',
-  // Fill the body's *content* area (body now consumes safe-area insets
-  // via padding + border-box, so `100%` here = visible region inside
-  // the system bars). Previously this was `var(--vvh, 100dvh)` which
-  // double-counted the height and let the layout overshoot the bottom
-  // safe-area in standalone PWA mode. The body still holds the `--vvh`
-  // contract for keyboard-up shrinkage.
-  height: '100%',
-  width: '100%',
+  // Fill the shell column below the bar (the shell itself fills the body's
+  // *content* area — body consumes safe-area insets via padding +
+  // border-box, so the visible region sits inside the system bars). The body
+  // still holds the `--vvh` contract for keyboard-up shrinkage.
+  flex: 1,
   minHeight: 0,
   overflow: 'hidden',
+  position: 'relative',
+  zIndex: 1,
 })
 
+/**
+ * A full-bleed drawer. Absolute in the content region, so it starts exactly
+ * at the bar's bottom edge and spans the workspace entirely — it closes
+ * through the same tab-bar toggle that opened it, and there is deliberately
+ * no dimmed strip left over for a tap-outside-to-close gesture.
+ */
 export const mobileSidebar = style({
-  position: 'fixed',
-  // Start BELOW the tab bar, not under it. The bar paints above the drawers
-  // (later in DOM at equal z-index) and is opaque, so a drawer that starts
-  // at the viewport top has its first section header — the exact 34px band
-  // the bar occupies — permanently covered; its header actions (sort,
-  // refresh) were unreachable on mobile. `--mobile-tabbar-h` is the MEASURED
-  // rendered height of the bar (set on the shell root by MobileLayout via a
-  // ResizeObserver), because the bar is content-driven and has no fixed
-  // height of its own; the fallback is the shared header height.
-  top: `calc(env(safe-area-inset-top) + var(--mobile-tabbar-h, ${headerHeightPx}px))`,
-  bottom: 0,
-  // Full bleed: the drawer covers the workspace entirely, and closes through
-  // the same tab-bar toggle that opened it — there is deliberately no dimmed
-  // strip left over for a tap-outside-to-close gesture.
-  width: '100%',
-  zIndex: 100,
-  backgroundColor: 'var(--card)',
-  // The drawer's own top edge is exposed now that it no longer tucks under
-  // the tab bar — give it a boundary.
-  borderTop: '1px solid var(--border)',
-  transform: 'translateX(-100%)',
-  transition: `transform ${motion.medium}ms ease`,
-  overflow: 'hidden',
-  display: 'flex',
-  flexDirection: 'column',
+  'position': 'absolute',
+  'top': 0,
+  'bottom': 0,
+  'left': 0,
+  'right': 0,
+  'width': '100%',
+  'zIndex': 100,
+  'backgroundColor': 'var(--card)',
+  // The drawer's top edge sits directly under the bar — give it a boundary.
+  'borderTop': '1px solid var(--border)',
+  'transform': 'translateX(-100%)',
+  'transition': `transform ${motion.medium}ms ease`,
+  'overflow': 'hidden',
+  'display': 'flex',
+  'flexDirection': 'column',
+  '@media': {
+    // The drawer slide is the largest motion on the mobile screen; the same
+    // reduce-motion override the tab sheet's scrim and panel carry.
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
 })
 
 export const mobileSidebarRight = style({
@@ -179,6 +193,37 @@ export const mobileSidebarOpen = style({
 export const mobileTabBar = style({
   position: 'relative',
   zIndex: 100,
+})
+
+// The tab sheet's scrim. Rendered unconditionally by MobileLayout; opacity +
+// pointer-events flip via `sheetOverlayOpen` so the dim fades in AND out
+// alongside the sheet's own slide. Anchored to the content region — the same
+// band the drawers start at — so the bar stays bright and tappable while the
+// sheet is open, and the bar's chip is the toggle that closes the sheet again.
+export const sheetOverlay = style({
+  'position': 'absolute',
+  'top': 0,
+  'left': 0,
+  'right': 0,
+  'bottom': 0,
+  'backgroundColor': 'rgba(0, 0, 0, 0.4)',
+  // Above the drawers (z-index 100) inside the region's stacking context,
+  // which itself sits below the bar — so the sheet experience dims an open
+  // drawer but never the bar.
+  'zIndex': 101,
+  'opacity': 0,
+  'pointerEvents': 'none',
+  'transition': `opacity ${motion.medium}ms ease`,
+  '@media': {
+    '(prefers-reduced-motion: reduce)': {
+      transition: 'none',
+    },
+  },
+})
+
+export const sheetOverlayOpen = style({
+  opacity: 1,
+  pointerEvents: 'auto',
 })
 
 // Positioning + flex slot for the absolutely-positioned tilePane fragment

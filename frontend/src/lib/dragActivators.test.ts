@@ -1,16 +1,8 @@
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { attachDragActivators, finePointerOnlyActivators } from '~/lib/dragActivators'
-
-/**
- * jsdom's PointerEvent constructor ignores the `pointerType` init property in
- * this environment, so the property is defined on the event directly.
- */
-function pointerEvent(pointerType: string): PointerEvent {
-  const event = new PointerEvent('pointerdown', { bubbles: true })
-  Object.defineProperty(event, 'pointerType', { value: pointerType })
-  return event
-}
+import { attachDragActivators, rowBodyActivators } from '~/lib/dragActivators'
+import { flush } from '~/test-support/async'
+import { pointerEvent } from '~/test-support/pointer'
 
 /** Run `fn` under an owner and hand back its dispose, like the app does. */
 function setup(fn: () => void): () => void {
@@ -22,18 +14,21 @@ function setup(fn: () => void): () => void {
   return () => dispose()
 }
 
-/** Solid flushes effects on a microtask; two awaits are enough for that. */
-async function flushEffects(): Promise<void> {
-  await Promise.resolve()
-  await Promise.resolve()
+/** A press whose target is `el` (or `undefined`, like a bare constructor call). */
+function pressOn(pointerType: string, el?: Element): PointerEvent {
+  const event = pointerEvent('pointerdown', { pointerType })
+  if (el)
+    Object.defineProperty(event, 'target', { value: el })
+  return event
 }
 
-describe('finePointerOnlyActivators', () => {
-  it('passes a mouse press through to the wrapped handler', () => {
+describe('rowBodyActivators', () => {
+  it('passes a mouse press that starts on the row itself', () => {
     const handler = vi.fn()
-    const activators = finePointerOnlyActivators({ onPointerdown: handler })
+    const activators = rowBodyActivators({ onPointerdown: handler })
+    const row = document.createElement('div')
 
-    activators.onPointerdown(pointerEvent('mouse'))
+    activators.onPointerdown(pressOn('mouse', row))
 
     expect(handler).toHaveBeenCalledOnce()
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ pointerType: 'mouse' }))
@@ -41,24 +36,63 @@ describe('finePointerOnlyActivators', () => {
 
   it('swallows a touch press', () => {
     const handler = vi.fn()
-    const activators = finePointerOnlyActivators({ onPointerdown: handler })
+    const activators = rowBodyActivators({ onPointerdown: handler })
+    const row = document.createElement('div')
 
-    activators.onPointerdown(pointerEvent('touch'))
+    activators.onPointerdown(pressOn('touch', row))
 
     expect(handler).not.toHaveBeenCalled()
   })
 
-  it('passes a pen press through — a pen is a fine pointer like a mouse', () => {
+  it('passes a pen press — a pen is a fine pointer like a mouse', () => {
     const handler = vi.fn()
-    const activators = finePointerOnlyActivators({ onPointerdown: handler })
+    const activators = rowBodyActivators({ onPointerdown: handler })
+    const row = document.createElement('div')
 
-    activators.onPointerdown(pointerEvent('pen'))
+    activators.onPointerdown(pressOn('pen', row))
 
     expect(handler).toHaveBeenCalledOnce()
   })
 
+  it('swallows a mouse press that starts inside an embedded input', () => {
+    const handler = vi.fn()
+    const activators = rowBodyActivators({ onPointerdown: handler })
+    const row = document.createElement('div')
+    const input = document.createElement('input')
+    row.appendChild(input)
+
+    activators.onPointerdown(pressOn('mouse', input))
+
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('swallows a mouse press that starts on an embedded button, such as the close button', () => {
+    const handler = vi.fn()
+    const activators = rowBodyActivators({ onPointerdown: handler })
+    const row = document.createElement('div')
+    const button = document.createElement('button')
+    row.appendChild(button)
+
+    activators.onPointerdown(pressOn('mouse', button))
+
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('swallows a mouse press that starts on a drag grip, so one press activates once', () => {
+    const handler = vi.fn()
+    const activators = rowBodyActivators({ onPointerdown: handler })
+    const row = document.createElement('div')
+    const grip = document.createElement('span')
+    grip.setAttribute('data-drag-handle', '')
+    row.appendChild(grip)
+
+    activators.onPointerdown(pressOn('mouse', grip))
+
+    expect(handler).not.toHaveBeenCalled()
+  })
+
   it('keeps every event name it was given', () => {
-    const activators = finePointerOnlyActivators({
+    const activators = rowBodyActivators({
       onPointerdown: () => {},
       onPointermove: () => {},
     })
@@ -67,7 +101,7 @@ describe('finePointerOnlyActivators', () => {
   })
 
   it('returns an empty set for empty input', () => {
-    const activators = finePointerOnlyActivators({})
+    const activators = rowBodyActivators({})
 
     expect(activators).toEqual({})
   })
@@ -80,9 +114,9 @@ describe('attachDragActivators', () => {
     const dispose = setup(() => {
       attachDragActivators(() => el, () => ({ onPointerdown: handler }), { touch: 'allow' })
     })
-    await flushEffects()
+    await flush()
 
-    el.dispatchEvent(pointerEvent('mouse'))
+    el.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'mouse' }))
 
     expect(handler).toHaveBeenCalledOnce()
     dispose()
@@ -94,10 +128,10 @@ describe('attachDragActivators', () => {
     const dispose = setup(() => {
       attachDragActivators(() => el, () => ({ onPointerdown: handler }), { touch: 'block' })
     })
-    await flushEffects()
+    await flush()
 
-    el.dispatchEvent(pointerEvent('touch'))
-    el.dispatchEvent(pointerEvent('mouse'))
+    el.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'touch' }))
+    el.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'mouse' }))
 
     expect(handler).toHaveBeenCalledOnce()
     expect(handler).toHaveBeenCalledWith(expect.objectContaining({ pointerType: 'mouse' }))
@@ -110,9 +144,9 @@ describe('attachDragActivators', () => {
     const dispose = setup(() => {
       attachDragActivators(() => el, () => ({ onPointerdown: handler }), { touch: 'allow' })
     })
-    await flushEffects()
+    await flush()
 
-    el.dispatchEvent(pointerEvent('touch'))
+    el.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'touch' }))
 
     expect(handler).toHaveBeenCalledOnce()
     dispose()
@@ -126,14 +160,14 @@ describe('attachDragActivators', () => {
     const dispose = setup(() => {
       attachDragActivators(() => el, activators, { touch: 'allow' })
     })
-    await flushEffects()
+    await flush()
 
-    el.dispatchEvent(pointerEvent('mouse'))
+    el.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'mouse' }))
     expect(first).toHaveBeenCalledOnce()
 
     setActivators({ onPointerdown: second })
-    await flushEffects()
-    el.dispatchEvent(pointerEvent('mouse'))
+    await flush()
+    el.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'mouse' }))
 
     expect(first).toHaveBeenCalledOnce()
     expect(second).toHaveBeenCalledOnce()
@@ -148,18 +182,18 @@ describe('attachDragActivators', () => {
     const dispose = setup(() => {
       attachDragActivators(el, () => ({ onPointerdown: handler }), { touch: 'allow' })
     })
-    await flushEffects()
+    await flush()
 
-    first.dispatchEvent(pointerEvent('mouse'))
+    first.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'mouse' }))
     expect(handler).toHaveBeenCalledOnce()
 
     setEl(second)
-    await flushEffects()
-    second.dispatchEvent(pointerEvent('mouse'))
+    await flush()
+    second.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'mouse' }))
     expect(handler).toHaveBeenCalledTimes(2)
 
     // The re-bind tore the old element's listeners down with it.
-    first.dispatchEvent(pointerEvent('mouse'))
+    first.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'mouse' }))
     expect(handler).toHaveBeenCalledTimes(2)
     dispose()
   })
@@ -170,10 +204,10 @@ describe('attachDragActivators', () => {
     const dispose = setup(() => {
       attachDragActivators(() => el, () => ({ onPointerdown: handler }), { touch: 'allow' })
     })
-    await flushEffects()
+    await flush()
     dispose()
 
-    el.dispatchEvent(pointerEvent('mouse'))
+    el.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'mouse' }))
 
     expect(handler).not.toHaveBeenCalled()
   })
@@ -183,7 +217,7 @@ describe('attachDragActivators', () => {
     const dispose = setup(() => {
       attachDragActivators(() => undefined, () => ({ onPointerdown: handler }), { touch: 'allow' })
     })
-    await flushEffects()
+    await flush()
     dispose()
 
     expect(handler).not.toHaveBeenCalled()
