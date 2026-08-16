@@ -3,6 +3,7 @@ package workermgr
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -69,6 +70,66 @@ func pumpStart(t *testing.T, pump *SendPump, conn *Conn) {
 			}
 		}
 	}()
+}
+
+// notifyFailureRecorder swaps in an slog handler that records, under a lock,
+// which workers' shutdown-notification failures have actually been logged.
+//
+// It exists for the deadline tests below. NotifyShutdownAndFence's deadline
+// arm returns without collecting stragglers, so a parked conn's per-conn
+// goroutine goes on to log its Warn whenever the scheduler admits it -- on a
+// loaded runner that can be after this test has returned and a later test has
+// installed its own CaptureDefaultLogger, where the line reads as that test's
+// fault (CI has seen worker_id=parked fail a test that never created it).
+// The Warn is the abandoned goroutine's last use of the default logger, so a
+// test that waits it out before returning leaves nothing behind for the next
+// one to swallow. CaptureDefaultLogger's bytes.Buffer cannot serve this wait:
+// it is not safe to read while the goroutine under observation may still be
+// writing.
+type notifyFailureRecorder struct {
+	mu     sync.Mutex
+	logged map[string]bool
+}
+
+func recordNotifyFailures(t *testing.T) *notifyFailureRecorder {
+	t.Helper()
+	r := &notifyFailureRecorder{logged: map[string]bool{}}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(r))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return r
+}
+
+func (r *notifyFailureRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (r *notifyFailureRecorder) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Message != "failed to send shutdown notification to worker" {
+		return nil
+	}
+	rec.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "worker_id" {
+			r.mu.Lock()
+			r.logged[attr.Value.String()] = true
+			r.mu.Unlock()
+		}
+		return true
+	})
+	return nil
+}
+
+// WithAttrs and WithGroup return the recorder itself: the manager logs through
+// the bare default logger, so there is no attr or group state to carry.
+func (r *notifyFailureRecorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *notifyFailureRecorder) WithGroup(string) slog.Handler      { return r }
+
+// loggedFailure is safe to poll from the test goroutine while the abandoned
+// notify goroutine may still be inside Handle.
+func (r *notifyFailureRecorder) loggedFailure(workerID string) func() bool {
+	return func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.logged[workerID]
+	}
 }
 
 func TestNotifyShutdownAndFence_CustomRetryDelay(t *testing.T) {
@@ -325,6 +386,10 @@ func TestRegister_RacingFenceAllNeverLeavesALiveConn(t *testing.T) {
 
 func TestNotifyShutdownAndFence_DoesNotBlockRegisterWhileAWriteIsParked(t *testing.T) {
 	m := New(DenyAllReach())
+	// The broadcast below ends on its deadline and abandons the blocked conn's
+	// notify goroutine; the recorder is what lets this test wait out that
+	// goroutine's late Warn (see notifyFailureRecorder).
+	failures := recordNotifyFailures(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
@@ -372,10 +437,15 @@ func TestNotifyShutdownAndFence_DoesNotBlockRegisterWhileAWriteIsParked(t *testi
 		t.Fatal("Register blocked behind a parked shutdown write")
 	}
 	<-done
+	testutil.RequireEventually(t, failures.loggedFailure("blocked"),
+		"the deadline arm abandons the blocked conn's goroutine; its Warn must land before this test ends")
 }
 
 func TestNotifyShutdownAndFence_ReturnsWhenContextExpires(t *testing.T) {
 	m := New(DenyAllReach())
+	// The deadline arm abandons the blocked conn's notify goroutine; the
+	// recorder is what lets this test wait out its late Warn.
+	failures := recordNotifyFailures(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
@@ -412,10 +482,15 @@ func TestNotifyShutdownAndFence_ReturnsWhenContextExpires(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("NotifyShutdownAndFence ignored context expiration")
 	}
+	testutil.RequireEventually(t, failures.loggedFailure("blocked"),
+		"the deadline arm abandons the blocked conn's goroutine; its Warn must land before this test ends")
 }
 
 func TestNotifyShutdownAndFence_CountsOnlyFramesThatReachedTheWire(t *testing.T) {
 	m := New(DenyAllReach())
+	// The deadline arm abandons the parked conn's notify goroutine; the
+	// recorder is what lets this test wait out its late Warn.
+	failures := recordNotifyFailures(t)
 
 	var wrote atomic.Int32
 	drained, drainedPump := newTestConn(t, "drained", func(*leapmuxv1.ConnectResponse) error {
@@ -457,6 +532,8 @@ func TestNotifyShutdownAndFence_CountsOnlyFramesThatReachedTheWire(t *testing.T)
 	// Total is what was ATTEMPTED, so it stays 2 while the parked conn's own
 	// outcome never lands: the deadline arm returns without collecting it.
 	assert.Equal(t, ShutdownNotifyResult{Delivered: 1, Total: 2}, got)
+	testutil.RequireEventually(t, failures.loggedFailure("parked"),
+		"the deadline arm abandons the parked conn's goroutine; its Warn must land before this test ends")
 }
 
 // classifyNotifyErr is where "already gone" is told apart from "could not
