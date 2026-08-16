@@ -13,6 +13,7 @@
 package settings
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,9 +24,20 @@ type Propagation int
 
 const (
 	// PropagationHot means the hub applies the new value within the
-	// snapshot TTL (bounded by how the value is consumed — a cookie name
+	// snapshot TTL (set by how the value is consumed — a cookie name
 	// or session duration applies to the next request, a pool budget
 	// cannot apply at all).
+	//
+	// Hot keys are consumed one way: each consumer re-resolves Snapshot
+	// per use, holding no lock of its own. The one exception is the
+	// per-user limits: their read paths hold locks that must not take a
+	// settings read (the auth registry reads its cap inside the
+	// revocation critical section; the registration path reads it inside
+	// a store transaction), so the hub pushes changes into their
+	// pre-existing atomic setters via Manager.Subscribe — see
+	// backend/hub/server.go. A new key follows the re-resolve idiom
+	// unless its consumer cannot take a settings read; push is the
+	// exception, not a second default.
 	PropagationHot Propagation = iota
 	// PropagationRestart means the value is read once at startup; a
 	// change takes effect on the next restart. Used for values that feed
@@ -63,6 +75,9 @@ type Descriptor interface {
 	// HasSecret reports whether the key's shape includes secret fields
 	// (stored in the encrypted half).
 	HasSecret() bool
+	// SecretFieldNames lists the JSON field names stored in the
+	// encrypted half (empty when the key carries no secret).
+	SecretFieldNames() []string
 	// Decode merges a stored row onto the key's default. Unmarshaling the
 	// halves over the default gives partial-row semantics for free: a
 	// field the stored document omits keeps the default, and the secret
@@ -84,6 +99,10 @@ type Descriptor interface {
 	Redacted(v any) any
 	// Default returns the key's default value.
 	Default() any
+	// Doc returns the one-line summary and JSON shape hint the admin CLI
+	// renders for the key. Either may be empty; the CLI falls back to a
+	// type-derived shape and no summary.
+	Doc() (summary, shape string)
 }
 
 // Key is a typed setting handle: the single declaration of one setting's
@@ -103,6 +122,8 @@ type Key[T any] struct {
 	validate    func(T) error
 	// secretFields are the JSON field names stored in the encrypted half.
 	secretFields []string
+	// doc is the (summary, shape) pair the admin CLI renders.
+	summary, shape string
 }
 
 // NewKey declares a setting. The name is the hub_settings key and should
@@ -141,10 +162,21 @@ func (k *Key[T]) Restart() *Key[T] {
 	return k
 }
 
-func (k *Key[T]) Name() string             { return k.name }
-func (k *Key[T]) Propagation() Propagation { return k.propagation }
-func (k *Key[T]) HasSecret() bool          { return len(k.secretFields) > 0 }
-func (k *Key[T]) Default() any             { return k.def }
+// WithDoc attaches the one-line summary and JSON shape hint the admin
+// CLI renders for the key, so a key's documentation lives in its single
+// declaration beside its default and validators rather than in a parallel
+// CLI-side registry a new key must remember to edit.
+func (k *Key[T]) WithDoc(summary, shape string) *Key[T] {
+	k.summary, k.shape = summary, shape
+	return k
+}
+
+func (k *Key[T]) Name() string                 { return k.name }
+func (k *Key[T]) Propagation() Propagation     { return k.propagation }
+func (k *Key[T]) HasSecret() bool              { return len(k.secretFields) > 0 }
+func (k *Key[T]) SecretFieldNames() []string   { return k.secretFields }
+func (k *Key[T]) Default() any                 { return k.def }
+func (k *Key[T]) Doc() (summary, shape string) { return k.summary, k.shape }
 
 // Decode implements Descriptor: defaults first, then the public half, then
 // the secret half — each unmarshal only touches the fields its document
@@ -164,10 +196,21 @@ func (k *Key[T]) Decode(row Row) (any, error) {
 	return v, nil
 }
 
-func (k *Key[T]) Validate(v any) error {
+// asT recovers the concrete type from a value the Manager holds as `any`,
+// with the one type-mismatch error shared by every typed entry point.
+func (k *Key[T]) asT(v any) (T, error) {
 	typed, ok := v.(T)
 	if !ok {
-		return fmt.Errorf("value for %q has type %T, want %T", k.name, v, k.def)
+		var zero T
+		return zero, fmt.Errorf("value for %q has type %T, want %T", k.name, v, zero)
+	}
+	return typed, nil
+}
+
+func (k *Key[T]) Validate(v any) error {
+	typed, err := k.asT(v)
+	if err != nil {
+		return err
 	}
 	if k.validate == nil {
 		return nil
@@ -176,13 +219,18 @@ func (k *Key[T]) Validate(v any) error {
 }
 
 // ApplyPartial implements Descriptor: the partial document's fields
-// overlay the current value's; omitted fields are untouched.
+// overlay the current value's; omitted fields are untouched. Unknown
+// field names are refused — a partial document whose every field name
+// misses (a one-character typo) would otherwise merge to the unchanged
+// value and report success while changing nothing.
 func (k *Key[T]) ApplyPartial(v any, partial json.RawMessage) (any, error) {
-	typed, ok := v.(T)
-	if !ok {
-		return nil, fmt.Errorf("value for %q has type %T, want %T", k.name, v, k.def)
+	typed, err := k.asT(v)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(partial, &typed); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(partial))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&typed); err != nil {
 		return nil, err
 	}
 	return typed, nil
@@ -190,9 +238,9 @@ func (k *Key[T]) ApplyPartial(v any, partial json.RawMessage) (any, error) {
 
 // Split implements Descriptor: the typed delegate of splitHalves.
 func (k *Key[T]) Split(v any) (json.RawMessage, json.RawMessage, error) {
-	typed, ok := v.(T)
-	if !ok {
-		return nil, nil, fmt.Errorf("value for %q has type %T, want %T", k.name, v, k.def)
+	typed, err := k.asT(v)
+	if err != nil {
+		return nil, nil, err
 	}
 	return k.splitHalves(typed)
 }

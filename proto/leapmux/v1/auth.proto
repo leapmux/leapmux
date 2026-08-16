@@ -202,8 +202,9 @@ message GetAltchaChallengeResponse {
 message CompleteOAuthSignupResponse {
   User user = 1;
   // True when an OAuth provider returned an unverified email and the
-  // account requires email verification. The frontend gates the
-  // verify-email screen on this flag exactly as it does for SignUp.
+  // account requires email verification. The frontend shows the
+  // verify-email screen only when this flag is set, exactly as it does
+  // for SignUp.
   bool verification_required = 2;
   // True iff the verification email was successfully dispatched. False
   // means the user account exists but no email was sent (transient mail

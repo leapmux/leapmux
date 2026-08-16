@@ -2,10 +2,12 @@ package settings
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,9 +17,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
-// cacheTTL bounds how long a decoded snapshot is reused, mirroring the
-// session and captcha caches. It is also the bound on how long an admin
-// CLI write takes to reach a running hub (and the convergence bound
+// cacheTTL limits how long a decoded snapshot is reused, mirroring the
+// session and captcha caches. It is also the limit on how long an admin
+// CLI write takes to reach a running hub (and the convergence limit
 // between hub instances sharing one database).
 const cacheTTL = 30 * time.Second
 
@@ -34,9 +36,11 @@ type Snapshot struct {
 	customized map[string]bool
 	// updatedAt records each row's last-write time (zero when absent).
 	updatedAt map[string]time.Time
-	// canon is the canonical encoding of values+customized, used to detect
-	// effective changes for subscribers.
-	canon string
+	// canon is the hash of the canonical encoding of values+customized,
+	// used to detect effective changes for subscribers. A hash, not the
+	// encoding itself: the values include decrypted secret halves, and the
+	// snapshot must not retain them in a second form.
+	canon [sha256.Size]byte
 }
 
 // ValueOf returns the key's effective value, or nil when the key was
@@ -73,8 +77,13 @@ type Manager struct {
 	names  []string // registration order, for stable listing
 	cross  []func(*Snapshot) error
 
-	mu     sync.Mutex
-	snap   *Snapshot
+	mu   sync.Mutex
+	snap *Snapshot
+	// epoch orders publishes: every write-path publish increments it, and
+	// a refresh publishes only at the epoch it started reading at, so a
+	// refresh that read rows before a write committed can never overwrite
+	// the fresher snapshot that write already published.
+	epoch  uint64
 	subs   []func(*Snapshot)
 	warned map[string]bool
 	flight singleflight.Group
@@ -147,11 +156,12 @@ func (m *Manager) Descriptor(name string) (Descriptor, bool) {
 // available before any pool is constructed) instead of degrading every
 // request.
 func (m *Manager) Load(ctx context.Context) error {
+	epoch := m.currentEpoch()
 	s, err := m.refresh(ctx)
 	if err != nil {
 		return err
 	}
-	m.publish(s)
+	m.publishRefresh(s, epoch)
 	return nil
 }
 
@@ -179,7 +189,12 @@ func (m *Manager) Snapshot(ctx context.Context) *Snapshot {
 			return s, nil
 		}
 		m.mu.Unlock()
-		return m.refresh(context.WithoutCancel(ctx))
+		epoch := m.currentEpoch()
+		s, err := m.refresh(context.WithoutCancel(ctx))
+		if err != nil {
+			return nil, err
+		}
+		return refreshResult{s: s, epoch: epoch}, nil
 	})
 	if err != nil {
 		slog.Warn("settings snapshot refresh failed; serving last good snapshot", "error", err)
@@ -188,11 +203,19 @@ func (m *Manager) Snapshot(ctx context.Context) *Snapshot {
 		if m.snap != nil {
 			return m.snap
 		}
-		return defaultsSnapshot(m)
+		return m.buildSnapshot(nil, "", nil)
 	}
-	s := v.(*Snapshot)
-	m.publish(s)
-	return s
+	switch res := v.(type) {
+	case *Snapshot:
+		// The flight found the cache fresh again; nothing to publish.
+		return res
+	case refreshResult:
+		m.publishRefresh(res.s, res.epoch)
+		return res.s
+	default:
+		// Unreachable: the flight returns one of the two shapes above.
+		return m.buildSnapshot(nil, "", nil)
+	}
 }
 
 // Subscribe registers a callback fired whenever an effective snapshot
@@ -206,15 +229,55 @@ func (m *Manager) Subscribe(fn func(*Snapshot)) {
 	m.subs = append(m.subs, fn)
 }
 
-// publish stores the snapshot (computing its canonical form first) and
-// fires subscribers when it differs from the previous one.
-func (m *Manager) publish(s *Snapshot) {
+// refreshResult pairs a refreshed snapshot with the epoch its read
+// started at, so publishRefresh can drop one that a write overtook.
+type refreshResult struct {
+	s     *Snapshot
+	epoch uint64
+}
+
+// currentEpoch reads the publish ordering counter.
+func (m *Manager) currentEpoch() uint64 {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.epoch
+}
+
+// publishWrite stores a snapshot produced by a committed write and fires
+// subscribers when it differs from the previous one. Write publishes
+// advance the epoch, overtaking any in-flight refresh.
+func (m *Manager) publishWrite(s *Snapshot) {
+	m.mu.Lock()
+	m.epoch++
 	prev := m.snap
 	m.snap = s
 	var subs []func(*Snapshot)
 	subs = append(subs, m.subs...)
 	m.mu.Unlock()
+	m.fireSubs(prev, s, subs)
+}
+
+// publishRefresh stores a snapshot produced by a TTL refresh that started
+// reading at the given epoch. A refresh that a write overtook (its epoch
+// is older than the current one) is dropped: publishing it would revert
+// the served snapshot to pre-write state for a further TTL even though
+// the write already published the post-commit state.
+func (m *Manager) publishRefresh(s *Snapshot, epoch uint64) {
+	m.mu.Lock()
+	if epoch < m.epoch {
+		m.mu.Unlock()
+		return
+	}
+	prev := m.snap
+	m.snap = s
+	var subs []func(*Snapshot)
+	subs = append(subs, m.subs...)
+	m.mu.Unlock()
+	m.fireSubs(prev, s, subs)
+}
+
+// fireSubs runs the subscribers when the effective state changed.
+func (m *Manager) fireSubs(prev, s *Snapshot, subs []func(*Snapshot)) {
 	if prev == nil || prev.canon != s.canon {
 		for _, fn := range subs {
 			fn(s)
@@ -258,7 +321,9 @@ func (m *Manager) buildSnapshot(rows []store.SettingRow, overrideName string, ov
 		if has {
 			s.customized[name] = true
 			s.updatedAt[name] = row.UpdatedAt
-			decoded.Value = json.RawMessage(ptrBytes(row.Value))
+			if row.Value != nil {
+				decoded.Value = json.RawMessage(*row.Value)
+			}
 			if len(row.Secret) > 0 && m.ks != nil {
 				plain, err := m.ks.Decrypt(row.Secret, keystore.SettingsSecretAAD(name))
 				if err != nil {
@@ -284,24 +349,47 @@ func (m *Manager) buildSnapshot(rows []store.SettingRow, overrideName string, ov
 			// the real guard.
 			m.warnOnce("invalid:"+name, "settings row invalid; using default", "key", name, "error", err)
 			v = desc.Default()
+		} else {
+			// Healthy: clear this key's warning tags so a row that goes
+			// bad again warns again — a once-per-process tag would hide
+			// the second regression, which is exactly the one an operator
+			// did not already investigate.
+			m.clearWarned("secret:" + name)
+			m.clearWarned("decode:" + name)
+			m.clearWarned("invalid:" + name)
 		}
 		s.values[name] = v
 	}
+	orphans := make(map[string]bool)
 	for key := range stored {
 		if _, known := m.byName[key]; !known {
 			// A row for a key no longer registered (setting removed, or a
 			// hub version that never knew it). Harmless: nobody reads it.
 			m.warnOnce("orphan:"+key, "settings row for unknown key ignored", "key", key)
+			orphans[key] = true
 		}
 	}
-	if b, err := json.Marshal([]any{s.values, s.customized}); err == nil {
-		s.canon = string(b)
-	}
+	m.clearMissingOrphanTags(orphans)
+	s.canon = canonicalSum(s.values, s.customized)
 	return s
 }
 
+// canonicalSum hashes the canonical encoding of values+customized: the
+// change-detection token publish compares. The values include decrypted
+// secret halves, so the token must not keep the encoding itself — only
+// its digest.
+func canonicalSum(values map[string]any, customized map[string]bool) [sha256.Size]byte {
+	b, err := json.Marshal([]any{values, customized})
+	if err != nil {
+		return [sha256.Size]byte{}
+	}
+	return sha256.Sum256(b)
+}
+
 // warnOnce logs at warn level the first time tag is seen, so a persistently
-// bad row does not spam the log on every refresh.
+// bad row does not spam the log on every refresh. Tags clear again when the
+// state they describe recovers (see buildSnapshot), which keeps the
+// once-per-state guarantee while a regression stays visible.
 func (m *Manager) warnOnce(tag, msg string, args ...any) {
 	m.mu.Lock()
 	first := !m.warned[tag]
@@ -314,6 +402,25 @@ func (m *Manager) warnOnce(tag, msg string, args ...any) {
 	}
 }
 
+// clearWarned removes one warning tag.
+func (m *Manager) clearWarned(tag string) {
+	m.mu.Lock()
+	delete(m.warned, tag)
+	m.mu.Unlock()
+}
+
+// clearMissingOrphanTags drops orphan-row warning tags for keys whose
+// rows disappeared, so a row that comes back warns again.
+func (m *Manager) clearMissingOrphanTags(present map[string]bool) {
+	m.mu.Lock()
+	for tag := range m.warned {
+		if key, ok := strings.CutPrefix(tag, "orphan:"); ok && !present[key] {
+			delete(m.warned, tag)
+		}
+	}
+	m.mu.Unlock()
+}
+
 // Update merges a partial JSON document onto the key's current value and
 // writes it. Fields the document omits keep their current (or default)
 // values, so `{"port": 465}` retunes one SMTP field without restating
@@ -324,9 +431,10 @@ func (m *Manager) Update(ctx context.Context, desc Descriptor, partial json.RawM
 }
 
 // UpdateSecret merges a partial JSON document onto the key's secret half.
-// Mechanically identical to Update — the named fields simply belong to
-// the encrypted half — but a separate verb keeps the admin CLI's intent
-// explicit and lets the write path require the key to be secret-bearing.
+// Mechanically identical to Update — the fields the document specifies
+// simply belong to the encrypted half — but a separate verb keeps the
+// admin CLI's intent explicit and lets the write path require the key to
+// be secret-bearing.
 func (m *Manager) UpdateSecret(ctx context.Context, desc Descriptor, partial json.RawMessage) error {
 	if !desc.HasSecret() {
 		return fmt.Errorf("settings key %q has no secret fields", desc.Name())
@@ -349,57 +457,104 @@ func (m *Manager) SetValue(ctx context.Context, desc Descriptor, v any) error {
 
 // SetIfAbsent writes the value only when the key has no row, making
 // first-use provisioning a one-winner race: racing provisioners each
-// generate a value, the transaction serializes them, and the loser's
-// value is discarded rather than overwriting the winner's (a mid-flight
-// challenge signed with the loser's key must not be invalidated by the
-// race itself).
+// generate a value, the insert-if-absent keeps whichever commits first,
+// and the loser's value is discarded rather than overwriting the winner's
+// (a mid-flight challenge signed with the loser's key must not be
+// invalidated by the race itself). The conditional insert is atomic in
+// the store, so this holds across processes and hub instances sharing
+// one database, under every dialect's isolation.
 func (m *Manager) SetIfAbsent(ctx context.Context, desc Descriptor, v any) error {
 	err := m.st.RunInTransaction(ctx, func(tx store.Store) error {
-		row, err := loadRow(ctx, tx, desc.Name())
+		public, secret, err := m.validateForWrite(ctx, tx, desc, v)
 		if err != nil {
 			return err
 		}
-		if len(row.Value) > 0 || len(row.Secret) > 0 {
-			return nil
+		encrypted, err := m.encryptSecret(desc, secret)
+		if err != nil {
+			return err
 		}
-		return m.validateAndWrite(ctx, tx, desc, v)
+		p := paramsFromHalves(desc, public, encrypted)
+		if p.Value == nil && p.Secret == nil {
+			return fmt.Errorf("settings key %q would write an empty row", desc.Name())
+		}
+		if _, err := tx.Settings().InsertIfAbsent(ctx, p); err != nil {
+			return fmt.Errorf("insert setting %q: %w", desc.Name(), err)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	m.publish(m.buildSnapshotFromStore(ctx))
+	m.publishWrite(m.buildSnapshotFromStore(ctx))
 	return nil
 }
 
-// Reset removes the key's row, returning it to its code default.
+// Reset removes the key's row, returning it to its code default. The
+// cross-key rules run against the post-reset view first — the same
+// contract every write path holds — so a reset cannot store the exact
+// combination an update refuses (e.g. dropping the smtp row while
+// email_verification_required stays true).
 func (m *Manager) Reset(ctx context.Context, desc Descriptor) error {
-	if err := m.st.Settings().Delete(ctx, desc.Name()); err != nil {
+	err := m.st.RunInTransaction(ctx, func(tx store.Store) error {
+		rows, err := tx.Settings().GetAll(ctx)
+		if err != nil {
+			return fmt.Errorf("load settings for cross validation: %w", err)
+		}
+		kept := make([]store.SettingRow, 0, len(rows))
+		for _, row := range rows {
+			if row.Key != desc.Name() {
+				kept = append(kept, row)
+			}
+		}
+		candidate := m.buildSnapshot(kept, "", nil)
+		for _, rule := range m.cross {
+			if err := rule(candidate); err != nil {
+				return fmt.Errorf("cross-validation failed: %w", err)
+			}
+		}
+		return tx.Settings().Delete(ctx, desc.Name())
+	})
+	if err != nil {
 		return fmt.Errorf("reset setting %q: %w", desc.Name(), err)
 	}
-	s := m.buildSnapshotFromStore(ctx)
-	m.publish(s)
+	m.publishWrite(m.buildSnapshotFromStore(ctx))
 	return nil
 }
 
 // apply is the shared Update/UpdateSecret path: inside one transaction,
-// read the current row, decode the merged value, overlay the partial
-// document, validate against the post-write view, then split and write.
+// read the current row (locked against concurrent writers), decode the
+// merged value, overlay the partial document, validate against the
+// post-write view, then split and write.
 func (m *Manager) apply(ctx context.Context, desc Descriptor, partial json.RawMessage) error {
 	if _, ok := m.byName[desc.Name()]; !ok {
 		return fmt.Errorf("settings key %q is not registered", desc.Name())
 	}
 	err := m.st.RunInTransaction(ctx, func(tx store.Store) error {
-		row, err := loadRow(ctx, tx, desc.Name())
+		row, err := loadRowForUpdate(ctx, tx, desc.Name())
 		if err != nil {
 			return err
 		}
 		if len(row.Secret) > 0 && m.ks != nil {
-			if plain, derr := m.ks.Decrypt(row.Secret, keystore.SettingsSecretAAD(desc.Name())); derr == nil {
-				row.Secret = json.RawMessage(plain)
+			plain, derr := m.ks.Decrypt(row.Secret, keystore.SettingsSecretAAD(desc.Name()))
+			if derr != nil {
+				if partialNamesSecret(desc, partial) {
+					// An explicit rotation (the document supplies new
+					// secret fields, such as the altcha self-heal's fresh
+					// signing key) may replace a secret the keystore can
+					// no longer read.
+					row.Secret = nil
+				} else {
+					// Refuse the write rather than merge onto a secret we
+					// cannot read: proceeding would upsert a re-encrypted
+					// default over the stored ciphertext, destroying the
+					// only copy of an operator-entered secret. Restoring
+					// the key version (or re-encrypting under the active
+					// one) is the recovery path; a rotation that supplies
+					// the secret fields explicitly is always allowed.
+					return fmt.Errorf("settings key %q stores a secret the current keystore cannot decrypt; restore the key version, run `leapmux admin encryption-key reencrypt`, or supply the secret fields explicitly: %w", desc.Name(), derr)
+				}
 			} else {
-				// The existing secret no longer decrypts; treat it as
-				// absent so the write replaces rather than corrupts it.
-				row.Secret = nil
+				row.Secret = json.RawMessage(plain)
 			}
 		} else {
 			row.Secret = nil
@@ -419,7 +574,7 @@ func (m *Manager) apply(ctx context.Context, desc Descriptor, partial json.RawMe
 	if err != nil {
 		return err
 	}
-	m.publish(m.buildSnapshotFromStore(ctx))
+	m.publishWrite(m.buildSnapshotFromStore(ctx))
 	return nil
 }
 
@@ -427,24 +582,46 @@ func (m *Manager) apply(ctx context.Context, desc Descriptor, partial json.RawMe
 // validation, cross-key validation against the post-write view, then the
 // split-encrypt-upsert.
 func (m *Manager) validateAndWrite(ctx context.Context, tx store.Store, desc Descriptor, merged any) error {
+	public, secret, err := m.validateForWrite(ctx, tx, desc, merged)
+	if err != nil {
+		return err
+	}
+	encrypted, err := m.encryptSecret(desc, secret)
+	if err != nil {
+		return err
+	}
+	p := paramsFromHalves(desc, public, encrypted)
+	if p.Value == nil && p.Secret == nil {
+		return fmt.Errorf("settings key %q would write an empty row", desc.Name())
+	}
+	if err := tx.Settings().Upsert(ctx, p); err != nil {
+		return fmt.Errorf("upsert setting %q: %w", desc.Name(), err)
+	}
+	return nil
+}
+
+// validateForWrite is the validation every write path shares: the key's
+// own rules against the merged value, then the cross-key rules against
+// the post-write view, then the split into public and secret halves.
+func (m *Manager) validateForWrite(ctx context.Context, tx store.Store, desc Descriptor, merged any) (public, secret json.RawMessage, err error) {
 	if err := desc.Validate(merged); err != nil {
-		return fmt.Errorf("invalid value for %q: %w", desc.Name(), err)
+		return nil, nil, fmt.Errorf("invalid value for %q: %w", desc.Name(), err)
 	}
 	rows, err := tx.Settings().GetAll(ctx)
 	if err != nil {
-		return fmt.Errorf("load settings for cross validation: %w", err)
+		return nil, nil, fmt.Errorf("load settings for cross validation: %w", err)
 	}
 	candidate := m.buildSnapshot(rows, desc.Name(), merged)
 	for _, rule := range m.cross {
 		if err := rule(candidate); err != nil {
-			return fmt.Errorf("cross-validation failed: %w", err)
+			return nil, nil, fmt.Errorf("cross-validation failed: %w", err)
 		}
 	}
-	public, secret, err := desc.Split(merged)
+	public, secret, err = desc.Split(merged)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	return m.upsertHalves(ctx, tx, desc, public, secret)
+	return public, secret, nil
 }
 
 // writeHalves is SetValue's path: the caller already holds the fully
@@ -456,40 +633,37 @@ func (m *Manager) writeHalves(ctx context.Context, desc Descriptor, public, secr
 	}); err != nil {
 		return err
 	}
-	m.publish(m.buildSnapshotFromStore(ctx))
+	m.publishWrite(m.buildSnapshotFromStore(ctx))
 	return nil
 }
 
-// upsertHalves encrypts the secret half (when the key has one and a
-// keystore is available) and writes the row. A secret-bearing key with no
-// keystore refuses to write its secret half rather than storing it in the
-// clear: the public half still lands, and the missing keystore is a bug
-// in the caller's wiring.
-func (m *Manager) upsertHalves(ctx context.Context, tx store.Store, desc Descriptor, public, secret json.RawMessage) error {
-	var encrypted []byte
-	if len(secret) > 0 {
-		if m.ks == nil {
-			return fmt.Errorf("settings key %q carries a secret but no keystore is configured", desc.Name())
-		}
-		enc, err := m.ks.Encrypt(secret, keystore.SettingsSecretAAD(desc.Name()))
-		if err != nil {
-			return fmt.Errorf("encrypt secret half of %q: %w", desc.Name(), err)
-		}
-		encrypted = enc
+// encryptSecret encrypts the secret half under the key-name-bound AAD. A
+// secret-bearing key with no keystore refuses rather than storing the
+// secret in the clear: the missing keystore is a bug in the caller's
+// wiring.
+func (m *Manager) encryptSecret(desc Descriptor, secret json.RawMessage) ([]byte, error) {
+	if len(secret) == 0 {
+		return nil, nil
 	}
-	p := store.UpsertSettingParams{Key: desc.Name()}
+	if m.ks == nil {
+		return nil, fmt.Errorf("settings key %q carries a secret but no keystore is configured", desc.Name())
+	}
+	enc, err := m.ks.Encrypt(secret, keystore.SettingsSecretAAD(desc.Name()))
+	if err != nil {
+		return nil, fmt.Errorf("encrypt secret half of %q: %w", desc.Name(), err)
+	}
+	return enc, nil
+}
+
+// paramsFromHalves assembles the row write from the split halves. At least
+// one half must be non-empty to satisfy the table's CHECK.
+func paramsFromHalves(desc Descriptor, public json.RawMessage, encrypted []byte) store.UpsertSettingParams {
+	p := store.UpsertSettingParams{Key: desc.Name(), Secret: encrypted}
 	if len(public) > 0 {
 		s := string(public)
 		p.Value = &s
 	}
-	p.Secret = encrypted
-	if p.Value == nil && p.Secret == nil {
-		return fmt.Errorf("settings key %q would write an empty row", desc.Name())
-	}
-	if err := tx.Settings().Upsert(ctx, p); err != nil {
-		return fmt.Errorf("upsert setting %q: %w", desc.Name(), err)
-	}
-	return nil
+	return p
 }
 
 // buildSnapshotFromStore refreshes from the store and is best-effort: the
@@ -504,15 +678,40 @@ func (m *Manager) buildSnapshotFromStore(ctx context.Context) *Snapshot {
 		if m.snap != nil {
 			return m.snap
 		}
-		return defaultsSnapshot(m)
+		return m.buildSnapshot(nil, "", nil)
 	}
 	return m.buildSnapshot(rows, "", nil)
 }
 
-// loadRow reads one key's row and decodes its halves; a missing row is an
-// empty Row (defaults apply), not an error.
-func loadRow(ctx context.Context, st store.Store, name string) (Row, error) {
-	row, err := st.Settings().Get(ctx, name)
+// partialNamesSecret reports whether a partial document supplies any of
+// the key's secret fields — the difference between an explicit secret
+// rotation and a public-field update that must not silently drop a
+// secret the keystore can no longer read.
+func partialNamesSecret(desc Descriptor, partial json.RawMessage) bool {
+	fields := desc.SecretFieldNames()
+	if len(fields) == 0 || len(partial) == 0 {
+		return false
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(partial, &doc); err != nil {
+		return false
+	}
+	for _, f := range fields {
+		if _, ok := doc[f]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// loadRowForUpdate reads one key's row locked against concurrent writers
+// and decodes its halves; a missing row is an empty Row (defaults apply),
+// not an error. The lock is what makes the read-modify-write merge safe:
+// two overlapping partial writes to one key would otherwise both merge
+// onto the same base and the second commit would erase the first's
+// fields. Callers must hold a transaction.
+func loadRowForUpdate(ctx context.Context, st store.Store, name string) (Row, error) {
+	row, err := st.Settings().GetForUpdate(ctx, name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return Row{}, nil
@@ -525,29 +724,4 @@ func loadRow(ctx context.Context, st store.Store, name string) (Row, error) {
 	}
 	out.Secret = row.Secret
 	return out, nil
-}
-
-// defaultsSnapshot is the pre-Load fallback: every registered key at its
-// default, nothing customized.
-func defaultsSnapshot(m *Manager) *Snapshot {
-	s := &Snapshot{
-		at:         m.now(),
-		values:     make(map[string]any, len(m.byName)),
-		customized: make(map[string]bool),
-		updatedAt:  make(map[string]time.Time),
-	}
-	for name, desc := range m.byName {
-		s.values[name] = desc.Default()
-	}
-	if b, err := json.Marshal([]any{s.values, s.customized}); err == nil {
-		s.canon = string(b)
-	}
-	return s
-}
-
-func ptrBytes(s *string) []byte {
-	if s == nil {
-		return nil
-	}
-	return []byte(*s)
 }

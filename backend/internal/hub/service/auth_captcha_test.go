@@ -129,42 +129,38 @@ func TestGetSystemInfo_ReportsCaptchaState(t *testing.T) {
 	assert.True(t, resp.Msg.GetCaptchaEnabled())
 }
 
-// failingCaptchaStub simulates a config-store outage on the captcha
-// surface, so GetSystemInfo's degradation can be exercised without
-// breaking a real store.
+// failingCaptchaStub simulates a captcha-subsystem outage on the
+// challenge-issuance surface. GetSystemInfo has no captcha error path to
+// exercise: Describe cannot fail (the settings snapshot serves the last
+// good state and degrades invalid rows internally), so the public
+// endpoint's only honest failure surface is challenge issuance.
 type failingCaptchaStub struct {
 	captcha.Config
-	customized bool
-	err        error
+	err error
 }
 
-func (s failingCaptchaStub) Describe(context.Context) (captcha.Config, bool, error) {
-	return s.Config, s.customized, s.err
-}
+func (s failingCaptchaStub) Describe(context.Context) captcha.Config { return s.Config }
 
 func (s failingCaptchaStub) AltchaChallengeJSON(context.Context) (string, error) {
 	return "", s.err
 }
 
-// TestGetSystemInfo_DegradesWhenCaptchaConfigUnreachable pins the
-// degradation: a captcha-config read error must not fail the whole public
-// endpoint (the flags pattern), while the report stays consistent with
-// the interceptor's fail-closed enforcement (reporting "disabled" would
-// unblock a payload-less submit that the hub then denies), and challenge
-// issuance still surfaces its error.
-func TestGetSystemInfo_DegradesWhenCaptchaConfigUnreachable(t *testing.T) {
+// TestGetAltchaChallenge_FailsClosedWhenCaptchaUnreachable pins the one
+// captcha outage surface GetSystemInfo's sibling endpoint has: challenge
+// issuance fails honestly rather than standing down, while the stub's
+// config (enabled, provider) still reports through GetSystemInfo.
+func TestGetAltchaChallenge_FailsClosedWhenCaptchaUnreachable(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	authDeps := servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
-	authDeps.Captcha = failingCaptchaStub{err: errors.New("settings snapshot unavailable")}
+	authDeps.Captcha = failingCaptchaStub{Config: captcha.DisabledConfig(), err: errors.New("settings snapshot unavailable")}
 	authSvc := service.NewAuthService(authDeps)
 
 	resp, err := authSvc.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
-	require.NoError(t, err, "system info must survive a captcha-config outage")
-	assert.True(t, resp.Msg.GetCaptchaEnabled(), "degraded reporting must match the fail-closed interceptor, not unlock a payload-less submit")
-	assert.Equal(t, leapmuxv1.CaptchaProvider_CAPTCHA_PROVIDER_UNSPECIFIED, resp.Msg.GetCaptchaProvider(), "degraded reporting must not name a provider")
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.GetCaptchaEnabled(), "the stub's config reports as-is")
 
 	_, err = authSvc.GetAltchaChallenge(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
-	require.Error(t, err, "challenge issuance still fails honestly on the same outage")
+	require.Error(t, err, "challenge issuance fails honestly on the outage")
 }
 
 func TestGetSystemInfo_SoloReportsCaptchaDisabled(t *testing.T) {

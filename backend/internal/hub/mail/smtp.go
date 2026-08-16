@@ -170,8 +170,11 @@ func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 			return fmt.Errorf("tls handshake: %w", err)
 		}
 		conn = tlsConn
-	case settings.SMTPTLSModeSTARTTLS, settings.SMTPTLSModeNone, "":
+	case settings.SMTPTLSModeSTARTTLS, settings.SMTPTLSModeNone:
 		// Stay plaintext for now; STARTTLS upgrade happens after EHLO.
+		// An empty mode is deliberately absent: validation refuses it, so
+		// an unset value must have resolved to the starttls default
+		// instead of silently dialing plaintext.
 	default:
 		_ = conn.Close()
 		return fmt.Errorf("unsupported smtp tls mode: %q", cfg.TLSMode)

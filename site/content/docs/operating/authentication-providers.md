@@ -36,7 +36,7 @@ Before you add a provider, get two things in order.
 
 ### 1. Sign-up must be enabled for new OAuth users
 
-When a user signs in with OAuth and **no** existing account is linked to that identity, LeapMux treats it as a new sign-up and sends them to a "Complete Sign Up" page to choose a username. That path is gated by the **`signup_enabled`** setting (default **false**; `leapmux admin settings set signup_enabled true`).
+When a user signs in with OAuth and **no** existing account is linked to that identity, LeapMux treats it as a new sign-up and sends them to a "Complete Sign Up" page to choose a username. That path requires the **`signup_enabled`** setting (default **false**; `leapmux admin settings set signup_enabled true`).
 
 - With `signup_enabled=false`, an OAuth sign-in for an unknown identity is rejected with `sign-up is disabled; no existing account linked to this identity`. Only users whose OAuth identity is already linked (or auto-linked by verified email — see [Trusting the provider's email](#trusting-the-providers-email)) can sign in.
 - With `signup_enabled=true`, new OAuth users can self-register through the completion page.

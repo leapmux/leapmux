@@ -50,8 +50,8 @@ func TestTouchSession_StoreErrorIsThrottledLikeAnySlide(t *testing.T) {
 		policy: func() Policy { return Policy{SessionDuration: 36 * time.Hour} },
 	}
 
-	first := a.touchSession(context.Background(), "session", nil)
-	second := a.touchSession(context.Background(), "session", nil)
+	first := a.touchSession(context.Background(), "session", nil, a.currentPolicy())
+	second := a.touchSession(context.Background(), "session", nil, a.currentPolicy())
 
 	assert.True(t, first.IsZero(), "a failed touch slid nothing")
 	assert.True(t, second.IsZero())

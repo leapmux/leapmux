@@ -467,7 +467,6 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 
 	if !cfg.SkipBanner {
 		logging.PrintBanner(modeName)
-		logging.PrintBannerURL("", hubCfg.Listen)
 	}
 
 	// Split data dir into hub and worker subdirectories.
@@ -482,6 +481,13 @@ func start(ctx context.Context, cfg Config, d deps) (*Instance, error) {
 	server, err := hub.NewServer(hubCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create hub server: %w", err)
+	}
+	if !cfg.SkipBanner {
+		// Printed after the server exists so the URL reflects the
+		// public_url setting, exactly like the hub binary's banner.
+		logging.PrintBannerURL(
+			settings.KeyPublicURL.Of(server.SettingsManager().Snapshot(context.Background())),
+			hubCfg.Listen)
 	}
 
 	// Resolved BEFORE the contexts exist, so no failure path has to cancel them:
@@ -882,8 +888,9 @@ func loadOrCreateWorkerState(ctx context.Context, server workerRegistrar, stateP
 		unmarshalErr := json.Unmarshal(data, &s)
 		if unmarshalErr == nil && s.WorkerID != "" && s.AuthToken != "" {
 			// Take the owner from the DB, which is the authority: workers.registered_by
-			// is NOT NULL and set at registration, and it is the fact requireWorkerOwner
-			// gates the whole machine on. The state file's copy is a cache that can lag
+			// is NOT NULL and set at registration, and it is the fact that
+			// requireWorkerOwner uses to control the whole machine. The state
+			// file's copy is a cache that can lag
 			// it, and an empty one is not something to paper over -- a worker launched
 			// with no owner has every machine-scoped family (file, git, sysinfo, tunnel)
 			// permanently dead for its own legitimate user, failing closed in a way that

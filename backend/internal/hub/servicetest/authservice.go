@@ -7,13 +7,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
-	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/hub/settingsregistry"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -40,24 +39,20 @@ func NewSettingsManager(t *testing.T, st store.Store, ks *keystore.Keystore) *se
 		require.NoError(t, err)
 		ks = minted
 	}
-	descs := append(settings.CoreDescriptors(), captcha.SettingsDescriptors()...)
-	descs = append(descs, ratelimit.SettingsDescriptors()...)
-	m := settings.NewManager(st, ks, descs)
+	m := settingsregistry.NewManager(st, ks)
 	require.NoError(t, m.Load(context.Background()))
 	return m
 }
 
 // AuthPolicy adapts a settings manager to the auth interceptor's Policy
-// closure the way the hub wires it, so a test flips verification gating,
-// session duration, or cookie naming by writing the settings key.
+// closure the way the hub wires it, so a test flips the verification
+// requirement, the session duration, or the cookie name by writing the
+// settings key. PolicyFromSettings is the same mapping the hub's own
+// closure uses, so a test cannot enforce a policy the hub computes
+// differently.
 func AuthPolicy(set *settings.Manager) func() auth.Policy {
 	return func() auth.Policy {
-		snap := set.Snapshot(context.Background())
-		return auth.Policy{
-			SecureCookies:             settings.KeySecureCookies.Of(snap),
-			EmailVerificationRequired: settings.EmailVerificationEffective(snap),
-			SessionDuration:           settings.SessionDuration(snap),
-		}
+		return auth.PolicyFromSettings(set.Snapshot(context.Background()))
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -29,6 +30,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/revocationwatcher"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/hub/settingsregistry"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
@@ -233,24 +235,12 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// budgets, max message size) are fixed for the process's life. Loaded
 	// synchronously so a broken store fails startup, before any pool is
 	// constructed from a value it must never see change.
-	allDescriptors := append(settings.CoreDescriptors(), captcha.SettingsDescriptors()...)
-	allDescriptors = append(allDescriptors, ratelimit.SettingsDescriptors()...)
-	setMgr := settings.NewManager(st, ks, allDescriptors,
-		settings.WithCrossValidation(settings.SMTPConfigured))
+	setMgr := settingsregistry.NewManager(st, ks)
 	if err := setMgr.Load(context.Background()); err != nil {
 		return nil, acquired.close(fmt.Errorf("load settings: %w", err))
 	}
 	startupSnap := setMgr.Snapshot(context.Background())
 	startupLimits := settings.KeyLimits.Of(startupSnap)
-	if cfg.DevMode && !startupSnap.Customized(settings.KeySignupEnabled) {
-		// Dev mode runs the full multi-user path; an open signup is the
-		// dev-friendly default the old dev config carried. Seeded only
-		// when the key sits at its default, so an explicit `settings set`
-		// wins over it.
-		if err := settings.KeySignupEnabled.Set(context.Background(), setMgr, true); err != nil {
-			return nil, acquired.close(fmt.Errorf("seed dev signup setting: %w", err))
-		}
-	}
 
 	if err := bootstrap.Run(context.Background(), st, cfg.SoloMode); err != nil {
 		return nil, acquired.close(
@@ -309,8 +299,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	cMgr := channelmgr.New(channelwire.ResolveMaxMessageSize(
 		int(settings.KeyMaxMessageSizeBytes.Of(startupSnap))))
 
-	// Outbound queue memory, bounded per CLASS of connection rather than per
-	// connection: a per-connection budget does not compose into a process bound
+	// Outbound queue memory, limited per CLASS of connection rather than per
+	// connection: a per-connection budget does not compose into a process limit
 	// when nothing limits the connection count.
 	//
 	// Three pools, not one shared total. Within a pool the admission rule
@@ -361,8 +351,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// The API timeout is hot: the closure re-resolves the snapshot on every
 	// call, exactly like the per-request config reads it replaces.
 	apiTimeout := func() time.Duration {
-		return time.Duration(settings.KeyTimeouts.Of(
-			setMgr.Snapshot(context.Background())).APITimeoutSeconds) * time.Second
+		return settings.KeyTimeouts.Of(setMgr.Snapshot(context.Background())).APITimeout()
 	}
 	pendingReqs := workermgr.NewPendingRequests(apiTimeout)
 
@@ -380,12 +369,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		// duration) is DB-backed and hot: re-resolved per use so an admin
 		// change applies to the next request.
 		Policy: func() auth.Policy {
-			snap := setMgr.Snapshot(context.Background())
-			return auth.Policy{
-				SecureCookies:             settings.KeySecureCookies.Of(snap),
-				EmailVerificationRequired: settings.EmailVerificationEffective(snap),
-				SessionDuration:           settings.SessionDuration(snap),
-			}
+			return auth.PolicyFromSettings(setMgr.Snapshot(context.Background()))
 		},
 	})
 	acquired.authContexts = authContexts
@@ -393,8 +377,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// lifecycle) extend its already-open channels' expiry, not just its leases
 	// (which the registry owns directly).
 	authContexts.SetChannelExpiryRescheduler(cMgr)
-	// The count term the queue pools cannot supply themselves: they bound the
-	// bytes one CLASS of connection may hold, and this bounds how many one user
+	// The count term the queue pools cannot supply themselves: they limit the
+	// bytes one CLASS of connection may hold, and this limits how many one user
 	// may open, so a member's guaranteed working set stops multiplying by a
 	// number nothing limits.
 	authContexts.SetMaxConnectionsPerUser(startupLimits.MaxConnectionsPerUser)
@@ -476,14 +460,26 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// the same atomic setters the startup values used, so an admin's
 	// `settings set limits ...` holds from the next registration onward
 	// without a restart.
+	var limitsStateMu sync.Mutex
+	lastLimits := startupLimits
 	setMgr.Subscribe(func(s *settings.Snapshot) {
 		l := settings.KeyLimits.Of(s)
 		authContexts.SetMaxConnectionsPerUser(l.MaxConnectionsPerUser)
 		connectorSvc.SetMaxWorkersPerUser(l.MaxWorkersPerUser)
 		wMgr.SetMaxWorkersPerUser(l.MaxWorkersPerUser)
-		slog.Info("per-user limits changed",
-			"max_connections_per_user", l.MaxConnectionsPerUser,
-			"max_workers_per_user", l.MaxWorkersPerUser)
+		// The subscription fires on every effective snapshot change, not
+		// only the limits: the log reports the limits, so it fires only when
+		// they actually moved (an smtp write must not tell the operator a
+		// limits change happened).
+		limitsStateMu.Lock()
+		changed := l != lastLimits
+		lastLimits = l
+		limitsStateMu.Unlock()
+		if changed {
+			slog.Info("per-user limits changed",
+				"max_connections_per_user", l.MaxConnectionsPerUser,
+				"max_workers_per_user", l.MaxWorkersPerUser)
+		}
 	})
 	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
 	mux.Handle(connectorPath, connectorHandler)

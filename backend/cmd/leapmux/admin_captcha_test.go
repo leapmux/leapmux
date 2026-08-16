@@ -16,6 +16,12 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 )
 
+// effectiveProvider reads Effective's config half for assertions; the
+// fallback reason is asserted separately where it matters.
+func effectiveProvider(snap *settings.Snapshot) captcha.Provider {
+	cfg, _ := captcha.Effective(snap)
+	return cfg.Provider
+}
 func openAdminStore(t *testing.T, dir string) store.Store {
 	t.Helper()
 	st, err := sqlite.Open(dir+"/hub.db", sqlitedb.Config{})
@@ -82,7 +88,7 @@ func TestCLI_CaptchaSetShowEnableDisableReset(t *testing.T) {
 		"--data-dir", dir,
 	}))
 	snap := captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderAltcha, captcha.Effective(snap).Provider)
+	assert.Equal(t, captcha.ProviderAltcha, effectiveProvider(snap))
 	assert.True(t, captcha.CaptchaEnabledKey.Of(snap))
 	assert.True(t, snap.Customized(captcha.AltchaKey), "set must store the altcha row")
 	s := altchaSettingsOf(t, snap)
@@ -94,7 +100,7 @@ func TestCLI_CaptchaSetShowEnableDisableReset(t *testing.T) {
 	require.NoError(t, runCaptchaSetEnabled(testAdminCtx, []string{"--data-dir", dir}, false))
 	snap = captchaSnapshot(t, dir)
 	assert.False(t, captcha.CaptchaEnabledKey.Of(snap))
-	assert.Equal(t, captcha.ProviderAltcha, captcha.Effective(snap).Provider)
+	assert.Equal(t, captcha.ProviderAltcha, effectiveProvider(snap))
 	assert.Equal(t, "SHA-256", altchaSettingsOf(t, snap).Algorithm)
 
 	require.NoError(t, runCaptchaSetEnabled(testAdminCtx, []string{"--data-dir", dir}, true))
@@ -120,7 +126,7 @@ func TestCLI_CaptchaSetShowEnableDisableReset(t *testing.T) {
 	secretBeforeReset := captcha.AltchaKey.Of(captchaSnapshot(t, dir)).HMACKey
 	require.NoError(t, runCaptchaReset(testAdminCtx, []string{"--data-dir", dir}))
 	snap = captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderAltcha, captcha.Effective(snap).Provider, "reset must leave a selected default row")
+	assert.Equal(t, captcha.ProviderAltcha, effectiveProvider(snap), "reset must leave a selected default row")
 	assert.NotEqual(t, secretBeforeReset, captcha.AltchaKey.Of(snap).HMACKey, "the deleted altcha row's secret must not come back")
 }
 
@@ -266,7 +272,7 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 		"--data-dir", dir,
 	}))
 	snap := captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderTurnstile, captcha.Effective(snap).Provider)
+	assert.Equal(t, captcha.ProviderTurnstile, effectiveProvider(snap))
 	assert.True(t, captcha.CaptchaEnabledKey.Of(snap))
 	assert.Equal(t, "1x00000000000000000000AA", captcha.TurnstileKey.Of(snap).SiteKey)
 	assert.Equal(t, "0x00AA", captcha.TurnstileKey.Of(snap).SecretKey)
@@ -298,7 +304,7 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 	// asserted through its decrypted value.
 	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--site-key", "2x00BB", "--data-dir", dir}))
 	snap = captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderTurnstile, captcha.Effective(snap).Provider)
+	assert.Equal(t, captcha.ProviderTurnstile, effectiveProvider(snap))
 	assert.True(t, captcha.CaptchaEnabledKey.Of(snap))
 	assert.Equal(t, "2x00BB", captcha.TurnstileKey.Of(snap).SiteKey)
 	assert.Equal(t, "0x00AA", captcha.TurnstileKey.Of(snap).SecretKey, "a site-key edit must not lose the secret")
@@ -306,7 +312,7 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 	// Switching back to altcha reuses the original row and its secret.
 	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--provider", "altcha", "--data-dir", dir}))
 	snap = captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderAltcha, captcha.Effective(snap).Provider)
+	assert.Equal(t, captcha.ProviderAltcha, effectiveProvider(snap))
 	assert.True(t, captcha.CaptchaEnabledKey.Of(snap))
 	assert.Equal(t, altchaSecret, captcha.AltchaKey.Of(snap).HMACKey)
 
@@ -316,7 +322,7 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 		"--data-dir", dir,
 	}))
 	snap = captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderRecaptchaV3, captcha.Effective(snap).Provider)
+	assert.Equal(t, captcha.ProviderRecaptchaV3, effectiveProvider(snap))
 	rs := captcha.RecaptchaV3Key.Of(snap)
 	assert.Equal(t, "site", rs.SiteKey)
 	assert.Equal(t, 0.7, rs.MinScore)
@@ -335,7 +341,7 @@ func TestCLI_CaptchaProviderSwitching(t *testing.T) {
 	_, err = st.Settings().Get(context.Background(), "captcha.recaptcha_v3")
 	assert.ErrorIs(t, err, store.ErrNotFound)
 	snap = captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderAltcha, captcha.Effective(snap).Provider, "reset must re-select the default provider at once")
+	assert.Equal(t, captcha.ProviderAltcha, effectiveProvider(snap), "reset must re-select the default provider at once")
 	rows, err := st.Settings().GetAll(context.Background())
 	require.NoError(t, err)
 	assert.NotEmpty(t, rows, "the other providers' rows survive")
@@ -365,7 +371,7 @@ func TestCLI_CaptchaSwitchBackKeepsStoredSettings(t *testing.T) {
 	// fix the settings silently reverted to PBKDF2/10000/20m.
 	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--provider", "altcha", "--data-dir", dir}))
 	snap := captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderAltcha, captcha.Effective(snap).Provider)
+	assert.Equal(t, captcha.ProviderAltcha, effectiveProvider(snap))
 	s := altchaSettingsOf(t, snap)
 	assert.Equal(t, "ARGON2ID", s.Algorithm)
 	assert.EqualValues(t, 3, s.Cost)
@@ -380,7 +386,7 @@ func TestCLI_CaptchaSwitchBackKeepsStoredSettings(t *testing.T) {
 	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--provider", "turnstile", "--data-dir", dir}))
 	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--provider", "recaptcha_v3", "--data-dir", dir}))
 	snap = captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderRecaptchaV3, captcha.Effective(snap).Provider)
+	assert.Equal(t, captcha.ProviderRecaptchaV3, effectiveProvider(snap))
 	rs := captcha.RecaptchaV3Key.Of(snap)
 	assert.Equal(t, "site", rs.SiteKey)
 	assert.Equal(t, 0.8, rs.MinScore, "a switch back must keep the stored settings")
@@ -403,8 +409,39 @@ func TestCLI_CaptchaSameProviderFlagTunesInPlace(t *testing.T) {
 		"--provider", "recaptcha_v3", "--min-score", "0.8", "--data-dir", dir,
 	}))
 	snap := captchaSnapshot(t, dir)
-	assert.Equal(t, captcha.ProviderRecaptchaV3, captcha.Effective(snap).Provider)
+	assert.Equal(t, captcha.ProviderRecaptchaV3, effectiveProvider(snap))
 	rs := captcha.RecaptchaV3Key.Of(snap)
 	assert.Equal(t, "site", rs.SiteKey)
 	assert.Equal(t, 0.8, rs.MinScore)
+}
+
+// TestCLI_CaptchaSwitchReenablesVerification pins the old Activate
+// invariant the settings rewrite had dropped: choosing a provider means
+// running it. A switch with the provider's keys must leave verification
+// enabled even when the hub had been disabled — the success message says
+// so, and a hub disabled for debugging must not silently stay undefended
+// through a provider change. In-place tuning leaves the switch alone.
+func TestCLI_CaptchaSwitchReenablesVerification(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	// Disable, then switch to an external provider with its keys.
+	require.NoError(t, runCaptchaSetEnabled(testAdminCtx, []string{"--data-dir", dir}, false))
+	snap := captchaSnapshot(t, dir)
+	assert.False(t, captcha.CaptchaEnabledKey.Of(snap))
+
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--provider", "recaptcha_v3", "--site-key", "site-key", "--secret", "api-secret",
+		"--data-dir", dir,
+	}))
+	snap = captchaSnapshot(t, dir)
+	assert.Equal(t, captcha.ProviderRecaptchaV3, effectiveProvider(snap))
+	assert.True(t, captcha.CaptchaEnabledKey.Of(snap), "switching providers re-enables verification")
+
+	// Disabling again and tuning the selected provider in place must NOT
+	// re-enable: the update path leaves the on/off switch alone.
+	require.NoError(t, runCaptchaSetEnabled(testAdminCtx, []string{"--data-dir", dir}, false))
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{"--min-score", "0.9", "--data-dir", dir}))
+	snap = captchaSnapshot(t, dir)
+	assert.False(t, captcha.CaptchaEnabledKey.Of(snap), "in-place tuning leaves the enabled switch alone")
+	assert.Equal(t, 0.9, captcha.RecaptchaV3Key.Of(snap).MinScore)
 }

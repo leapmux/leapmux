@@ -127,7 +127,7 @@ func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]
 
 // runRotatePepper regenerates the dedicated api_token/delegation_token pepper.
 // This INVALIDATES every existing API token and delegation token (their HMAC
-// hashes can no longer be reproduced), so it is gated behind --yes. The
+// hashes can no longer be reproduced), so it requires --yes. The
 // encryption key ring is untouched; encryption-key rotation never affects the
 // pepper, and vice versa.
 func runRotatePepper(cmd adminCmdCtx, args []string) error {

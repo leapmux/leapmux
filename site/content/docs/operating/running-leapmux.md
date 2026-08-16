@@ -47,9 +47,7 @@ Solo mode accepts a subset of the Hub's flags plus an `--encryption-mode` flag f
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
-Solo also accepts the SQLite, chunked-reassembly, message-size, and timeout tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`, `-max-message-size`, `-api-timeout`, `-agent-startup-timeout`, `-worktree-create-timeout`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those.
-
-> **Note:** The `public_url` setting is ignored in solo mode — there is no proxy in front of a local single-user instance. Reverse-proxy fronting is a job for `hub` or `dev`.
+Solo also accepts the SQLite and chunked-reassembly tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those. The message-size and timeout settings are instance settings now: change them with `leapmux admin settings` instead of launch flags.
 
 The desktop app runs solo mode under the hood, but with no TCP port at all — it serves the Hub only over a local IPC socket (a Unix domain socket or Windows named pipe). See [Installation](/docs/getting-started/installation/) for the desktop app.
 

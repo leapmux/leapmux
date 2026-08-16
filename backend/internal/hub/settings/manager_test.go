@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -372,4 +373,226 @@ func upsertParams(key, value string, secret []byte) store.UpsertSettingParams {
 		p.Value = &v
 	}
 	return p
+}
+
+// TestUpdateStoresExplicitZeroCap pins the round-trip of the one stored
+// value omitempty would eat: an explicit 0 means "unlimited", and the
+// stored document must carry it — otherwise the next decode merges the
+// non-zero default back over it and the hub silently re-arms the cap the
+// administrator lifted.
+func TestUpdateStoresExplicitZeroCap(t *testing.T) {
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	m := NewManager(st, nil, []Descriptor{KeyLimits})
+	require.NoError(t, m.Load(context.Background()))
+	ctx := context.Background()
+
+	require.NoError(t, m.Update(ctx, KeyLimits, json.RawMessage(`{"max_connections_per_user":0}`)))
+	assert.EqualValues(t, 0, KeyLimits.Of(m.Snapshot(ctx)).MaxConnectionsPerUser,
+		"an explicit 0 (unlimited) must survive the write")
+
+	// The stored document itself carries the zero: a fresh manager over
+	// the same rows reads it back, proving the round-trip rather than a
+	// cached view.
+	m2 := NewManager(st, nil, []Descriptor{KeyLimits})
+	require.NoError(t, m2.Load(ctx))
+	assert.EqualValues(t, 0, KeyLimits.Of(m2.Snapshot(ctx)).MaxConnectionsPerUser)
+	assert.EqualValues(t, 64, KeyLimits.Of(m2.Snapshot(ctx)).MaxWorkersPerUser,
+		"the untouched field keeps the declared default")
+}
+
+// TestUpdateRejectsUnknownFields pins the typo guard: a partial document
+// whose every field name misses must fail the write instead of merging
+// to the unchanged value and reporting success.
+func TestUpdateRejectsUnknownFields(t *testing.T) {
+	m, k := newTestManager(t)
+	ctx := context.Background()
+	require.NoError(t, m.Update(ctx, k, json.RawMessage(`{"host":"smtp.example.com"}`)))
+
+	err := m.Update(ctx, k, json.RawMessage(`{"hast":"typo.example.com"}`))
+	require.ErrorContains(t, err, "unknown field")
+	assert.Equal(t, "smtp.example.com", k.Of(m.Snapshot(ctx)).Host, "a rejected write changes nothing")
+}
+
+// TestResetRunsCrossValidation pins that Reset cannot store the exact
+// combination the update path refuses: dropping the smtp row while
+// email_verification_required stays true must fail the same way
+// `settings set smtp '{"host":""}'` does.
+func TestResetRunsCrossValidation(t *testing.T) {
+	m, _ := newTestManager(t)
+	ctx := context.Background()
+	require.NoError(t, m.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`)))
+	require.NoError(t, m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`true`)))
+
+	err := m.Reset(ctx, KeySMTP)
+	require.ErrorContains(t, err, "email_verification_required=true needs smtp host")
+
+	// Lowering the requirement first makes the same reset succeed.
+	require.NoError(t, m.Update(ctx, KeyEmailVerificationRequired, json.RawMessage(`false`)))
+	require.NoError(t, m.Reset(ctx, KeySMTP))
+	assert.False(t, m.Snapshot(ctx).Customized(KeySMTP))
+}
+
+// TestUpdateRefusesToDropUndecryptableSecret pins the secret-preservation
+// rule: when the current keystore cannot decrypt a key's stored secret
+// half, a public-field update must refuse (it would re-encrypt a default
+// over the only ciphertext), while a document that supplies the secret
+// fields explicitly is a rotation and is allowed.
+func TestUpdateRefusesToDropUndecryptableSecret(t *testing.T) {
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	key1, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks1, err := keystore.New(map[uint32][32]byte{1: key1})
+	require.NoError(t, err)
+
+	m1 := NewManager(st, ks1, []Descriptor{KeySMTP})
+	require.NoError(t, m1.Load(context.Background()))
+	ctx := context.Background()
+	require.NoError(t, m1.Update(ctx, KeySMTP, json.RawMessage(`{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls","password":"s3cret"}`)))
+	require.Equal(t, "s3cret", KeySMTP.Of(m1.Snapshot(ctx)).Password)
+
+	// A different key ring cannot decrypt the stored secret half.
+	key2, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks2, err := keystore.New(map[uint32][32]byte{1: key2})
+	require.NoError(t, err)
+	m2 := NewManager(st, ks2, []Descriptor{KeySMTP})
+	require.NoError(t, m2.Load(ctx))
+
+	err = m2.Update(ctx, KeySMTP, json.RawMessage(`{"port":25}`))
+	require.ErrorContains(t, err, "cannot decrypt",
+		"a public-field update must not silently replace an unreadable secret")
+	require.Equal(t, "s3cret", KeySMTP.Of(m1.Snapshot(ctx)).Password,
+		"the stored ciphertext survives the refused write")
+
+	// An explicit rotation supplies the secret field and is allowed.
+	require.NoError(t, m2.Update(ctx, KeySMTP, json.RawMessage(`{"port":25,"password":"rotated"}`)))
+	require.Equal(t, "rotated", KeySMTP.Of(m2.Snapshot(ctx)).Password)
+}
+
+// TestPublishRefreshDropsOvertakenSnapshot pins the publish ordering: a
+// refresh that started reading before a write committed must not
+// overwrite the fresher snapshot that write already published, or the
+// served state would revert to pre-write values for a further TTL.
+func TestPublishRefreshDropsOvertakenSnapshot(t *testing.T) {
+	m, k := newTestManager(t)
+	ctx := context.Background()
+
+	// The state an in-flight refresh read before the write committed.
+	require.NoError(t, m.Update(ctx, k, json.RawMessage(`{"host":"old.example.com"}`)))
+	stale := m.Snapshot(ctx)
+	oldEpoch := m.currentEpoch()
+
+	// The write commits and publishes: the value moves, the epoch advances.
+	require.NoError(t, m.Update(ctx, k, json.RawMessage(`{"host":"fresh.example.com"}`)))
+	assert.Equal(t, "fresh.example.com", k.Of(m.Snapshot(ctx)).Host)
+
+	// The in-flight refresh finishes late with its pre-write view: it is
+	// dropped instead of reverting the served state for a further TTL.
+	m.publishRefresh(stale, oldEpoch)
+	assert.Equal(t, "fresh.example.com", k.Of(m.Snapshot(ctx)).Host,
+		"an overtaken refresh must not revert the published state")
+
+	// A current-epoch refresh publishes as before.
+	m.publishRefresh(m.buildSnapshotFromStore(ctx), m.currentEpoch())
+	assert.Equal(t, "fresh.example.com", k.Of(m.Snapshot(ctx)).Host)
+}
+
+// TestWarnOnceClearsOnRecovery pins the warn-on-transition contract: a
+// row that goes bad, is fixed, and goes bad again warns TWICE — a
+// once-per-process tag would hide the second regression, which is
+// exactly the one an operator did not already investigate.
+func TestWarnOnceClearsOnRecovery(t *testing.T) {
+	var warns atomic.Int64
+	counting := &countingHandler{count: &warns}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(counting))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	now := time.Now()
+	m := NewManager(st, nil, []Descriptor{k2()}, WithNow(func() time.Time { return now }), WithTTL(time.Minute))
+	require.NoError(t, m.Load(context.Background()))
+	ctx := context.Background()
+
+	bad := `{"port":99999}`
+	require.NoError(t, st.Settings().Upsert(ctx, upsertParams("test.obj", bad, nil)))
+	now = now.Add(2 * time.Minute)
+	m.Snapshot(ctx)
+	assert.EqualValues(t, 1, warns.Load(), "the bad row warns once")
+
+	// Fix the row; the next refresh stays silent.
+	good := `{"port":25}`
+	require.NoError(t, st.Settings().Upsert(ctx, upsertParams("test.obj", good, nil)))
+	now = now.Add(2 * time.Minute)
+	m.Snapshot(ctx)
+	assert.EqualValues(t, 1, warns.Load(), "a healthy row adds no warning")
+
+	// Break it again: the regression warns again.
+	require.NoError(t, st.Settings().Upsert(ctx, upsertParams("test.obj", bad, nil)))
+	now = now.Add(2 * time.Minute)
+	m.Snapshot(ctx)
+	assert.EqualValues(t, 2, warns.Load(), "the second regression warns again")
+}
+
+// k2 is a second test key with a validator whose failures exercise the
+// warn-once machinery without the cross rules of the shared testKey.
+func k2() *Key[testValue] {
+	return NewKey[testValue]("test.obj").
+		WithDefault(testValue{Port: 587}).
+		WithValidate(func(v testValue) error {
+			if v.Port < 1 || v.Port > 65535 {
+				return errTest("port out of range")
+			}
+			return nil
+		})
+}
+
+type countingHandler struct {
+	count *atomic.Int64
+}
+
+func (h *countingHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelWarn }
+func (h *countingHandler) Handle(_ context.Context, _ slog.Record) error {
+	h.count.Add(1)
+	return nil
+}
+func (h *countingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *countingHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// TestSignupEnabledEffectiveDevDefaultNotCustomized pins the dev-mode
+// signup default resolved at read time: dev mode serves open signup
+// WITHOUT storing a row (a row stays an operator write), an explicit
+// operator write wins, and a reset restores the dev default without a
+// restart.
+func TestSignupEnabledEffectiveDevDefaultNotCustomized(t *testing.T) {
+	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	m := NewManager(st, nil, CoreDescriptors())
+	require.NoError(t, m.Load(context.Background()))
+	ctx := context.Background()
+
+	snap := m.Snapshot(ctx)
+	assert.False(t, snap.Customized(KeySignupEnabled), "the dev default must not store a row")
+	assert.True(t, SignupEnabledEffective(snap, true), "dev mode defaults to open signup")
+	assert.False(t, SignupEnabledEffective(snap, false), "the production default is closed signup")
+
+	require.NoError(t, KeySignupEnabled.Set(ctx, m, false))
+	snap = m.Snapshot(ctx)
+	assert.True(t, snap.Customized(KeySignupEnabled))
+	assert.False(t, SignupEnabledEffective(snap, true), "an explicit operator write wins over the dev default")
+
+	require.NoError(t, m.Reset(ctx, KeySignupEnabled))
+	snap = m.Snapshot(ctx)
+	assert.False(t, snap.Customized(KeySignupEnabled), "reset returns the key to its rowless default")
+	assert.True(t, SignupEnabledEffective(snap, true), "reset in dev restores the dev default without a restart")
 }

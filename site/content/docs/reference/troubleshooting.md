@@ -243,7 +243,7 @@ Complete the **/setup** form (Username, Display Name, Email, Password). The firs
 Visiting **/signup** shows a page titled **"Sign-up disabled"** with the message **"New account registration is not currently available."**
 
 **Cause**
-Public sign-up is gated by the `signup_enabled` setting, which defaults to **false**. The first-admin **/setup** flow still works even when sign-up is disabled; only public self-registration is blocked.
+Public sign-up is controlled by the `signup_enabled` setting, which defaults to **false**. The first-admin **/setup** flow still works even when sign-up is disabled; only public self-registration is blocked.
 
 **Fix**
 - To allow self-service sign-up: `leapmux admin settings set signup_enabled true`.

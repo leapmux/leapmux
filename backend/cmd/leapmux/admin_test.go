@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -1883,4 +1885,69 @@ func TestFriendlyConstraintError(t *testing.T) {
 		err := friendlyConstraintError(other, "alice", "alice@example.com")
 		assert.Same(t, other, err)
 	})
+}
+
+// TestCLI_SettingsListOmitsAbsentUpdatedAt pins the display contract: a
+// key without a stored row has no last-write time, and rendering the
+// zero time would print a year-1 timestamp that reads as corrupt data.
+func TestCLI_SettingsListOmitsAbsentUpdatedAt(t *testing.T) {
+	dir := setupTestDataDir(t)
+
+	out := captureStdout(t, func() error {
+		return runSettingsList(testAdminCtx, []string{"--data-dir", dir})
+	})
+	require.NoError(t, out.err)
+
+	var entries []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out.text), &entries))
+	require.NotEmpty(t, entries)
+	for _, e := range entries {
+		key, _ := e["key"].(string)
+		if key == "smtp" {
+			// The list runs on a fresh data dir: no key has a row, so no
+			// entry may carry the zero-time rendering.
+			_, has := e["updated_at"]
+			assert.False(t, has, "a key without a row must omit updated_at, not print the zero time (got %v)", e["updated_at"])
+		}
+	}
+
+	// After a write the key carries a real timestamp.
+	require.NoError(t, runSettingsSet(testAdminCtx, []string{"--data-dir", dir, "smtp", `{"host":"smtp.example.com","from_address":"hub@example.com","port":587,"tls_mode":"starttls"}`}))
+	out = captureStdout(t, func() error {
+		return runSettingsList(testAdminCtx, []string{"--data-dir", dir})
+	})
+	require.NoError(t, out.err)
+	require.NoError(t, json.Unmarshal([]byte(out.text), &entries))
+	for _, e := range entries {
+		if e["key"] == "smtp" {
+			stamp, _ := e["updated_at"].(string)
+			assert.NotContains(t, stamp, "0001-", "a written row carries its real timestamp")
+			assert.NotEmpty(t, stamp)
+		}
+	}
+}
+
+// stdoutCapture is the captured text of one stdout-printing closure.
+type stdoutCapture struct {
+	text string
+	err  error
+}
+
+// captureStdout runs fn with os.Stdout replaced by a pipe, returning
+// everything it printed (the admin verbs write their reports there).
+func captureStdout(t *testing.T, fn func() error) stdoutCapture {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	ferr := fn()
+	require.NoError(t, w.Close())
+	os.Stdout = orig
+	return stdoutCapture{text: <-done, err: ferr}
 }

@@ -166,16 +166,15 @@ func TestManagerDefaultsAndProvisioning(t *testing.T) {
 	ctx := context.Background()
 
 	// Describe on a fresh install reports defaults and writes nothing.
-	cfg, customized, err := e.m.Describe(ctx)
-	require.NoError(t, err)
+	cfg := e.m.Describe(ctx)
 	assert.True(t, cfg.Enabled)
 	assert.Equal(t, ProviderAltcha, cfg.Provider)
 	require.NotNil(t, cfg.Altcha)
 	assert.Equal(t, "PBKDF2/SHA-256", cfg.Altcha.Algorithm)
 	assert.EqualValues(t, 10000, cfg.Altcha.Cost)
 	assert.Empty(t, cfg.SiteKey())
-	assert.False(t, customized)
-	_, err = e.st.Settings().Get(ctx, AltchaKey.Name())
+	assert.False(t, e.set.Snapshot(ctx).Customized(AltchaKey))
+	_, err := e.st.Settings().Get(ctx, AltchaKey.Name())
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
 	// The first challenge provisions the altcha row (with a secret).
@@ -337,19 +336,17 @@ func TestManagerDisabledAndSolo(t *testing.T) {
 }
 
 // TestEnsureProvisionedRefreshesDescribeCache pins the provisioning
-// semantics: provisioning flips Describe's customized flag on the next
-// read (the admin CLI's `captcha show` depends on it).
+// semantics: provisioning flips the altcha row's customized flag on the
+// next read (the admin CLI's `captcha show` depends on it).
 func TestEnsureProvisionedRefreshesDescribeCache(t *testing.T) {
 	e := newTestManager(t, false)
 
-	_, customized, err := e.m.Describe(context.Background())
-	require.NoError(t, err)
-	assert.False(t, customized, "fresh install reports built-in defaults")
+	assert.False(t, e.set.Snapshot(context.Background()).Customized(AltchaKey),
+		"fresh install reports built-in defaults")
 
 	require.NoError(t, e.m.EnsureProvisioned(context.Background()))
-	_, customized, err = e.m.Describe(context.Background())
-	require.NoError(t, err)
-	assert.True(t, customized, "a provisioned row is a stored configuration")
+	assert.True(t, e.set.Snapshot(context.Background()).Customized(AltchaKey),
+		"a provisioned row is a stored configuration")
 }
 
 // TestTuningBeforeFirstUseGetsItsSigningKeyFilled pins the order a
@@ -600,49 +597,74 @@ func rawSnapshot(t *testing.T, rows map[string]string) *settings.Snapshot {
 // row written outside the CLI (direct SQL, a future migration) degrades
 // to built-in defaults instead of issuing challenges nothing can solve.
 func TestEffectiveFallsBackOnInvalidRow(t *testing.T) {
+	// Rows the settings manager itself degrades (per-key validation
+	// failures) never reach Effective broken: the snapshot already holds
+	// the key's default, so Effective reports it with no fallback reason
+	// — the warn-once came from the manager's decode path.
+	//
 	// Non-power-of-two SCRYPT N: every derivation would error in
 	// scrypt.Key, denying all logins with the uniform message.
-	assert.Equal(t, DefaultConfig(), Effective(rawSnapshot(t, map[string]string{
+	cfg, reason := Effective(rawSnapshot(t, map[string]string{
 		AltchaKey.Name(): `{"algorithm":"SCRYPT","cost":3000,"memory_cost":8,"parallelism":1}`,
-	})))
+	}))
+	assert.Equal(t, DefaultConfig(), cfg)
+	assert.Empty(t, reason, "the manager degraded the row before Effective saw it")
 
-	// An external provider with an empty site key cannot work at runtime.
-	assert.Equal(t, DefaultConfig(), Effective(rawSnapshot(t, map[string]string{
-		CaptchaSelectedKey.Name(): `"` + ProviderAlias(ProviderTurnstile) + `"`,
-		TurnstileKey.Name():       `{"site_key":""}`,
-	})))
-
-	// An unknown provider alias cannot be dispatched on.
-	assert.Equal(t, DefaultConfig(), Effective(rawSnapshot(t, map[string]string{
+	// An unknown provider alias cannot be dispatched on — the selected
+	// row degrades to the altcha default the same way.
+	cfg, reason = Effective(rawSnapshot(t, map[string]string{
 		CaptchaSelectedKey.Name(): `"hcaptcha"`,
-	})))
+	}))
+	assert.Equal(t, DefaultConfig(), cfg)
+	assert.Empty(t, reason)
 
 	// Undecodable settings degrade to defaults.
-	assert.Equal(t, DefaultConfig(), Effective(rawSnapshot(t, map[string]string{
+	cfg, reason = Effective(rawSnapshot(t, map[string]string{
 		AltchaKey.Name(): "not-json",
-	})))
+	}))
+	assert.Equal(t, DefaultConfig(), cfg)
+	assert.Empty(t, reason)
+
+	// The composite case the per-key validators cannot see: an external
+	// provider selected with a key-valid but unconfigured row (an empty
+	// site key passes key validation; SelectedConfigured is the write-path
+	// guard). Effective falls back to the built-in defaults here and
+	// carries the reason.
+	cfg, reason = Effective(rawSnapshot(t, map[string]string{
+		CaptchaSelectedKey.Name(): `"` + ProviderAlias(ProviderTurnstile) + `"`,
+		TurnstileKey.Name():       `{"site_key":""}`,
+	}))
+	assert.Equal(t, DefaultConfig(), cfg)
+	assert.NotEmpty(t, reason, "the composite fallback carries its reason")
+	assert.Contains(t, reason, ProviderAlias(ProviderTurnstile))
 
 	// The fallback preserves the enabled switch: a deliberately disabled
 	// hub stays disabled through corruption, instead of the fallback
 	// silently re-arming captcha the admin turned off.
 	disabled := DefaultConfig()
 	disabled.Enabled = false
-	assert.Equal(t, disabled, Effective(rawSnapshot(t, map[string]string{
+	cfg, reason = Effective(rawSnapshot(t, map[string]string{
 		CaptchaEnabledKey.Name(): "false",
 		AltchaKey.Name():         "not-json",
-	})))
-	assert.Equal(t, disabled, Effective(rawSnapshot(t, map[string]string{
+	}))
+	assert.Equal(t, disabled, cfg)
+	assert.Empty(t, reason)
+	cfg, reason = Effective(rawSnapshot(t, map[string]string{
 		CaptchaEnabledKey.Name():  "false",
-		CaptchaSelectedKey.Name(): `"hcaptcha"`,
-	})))
+		CaptchaSelectedKey.Name(): `"` + ProviderAlias(ProviderTurnstile) + `"`,
+		TurnstileKey.Name():       `{"site_key":""}`,
+	}))
+	assert.Equal(t, disabled, cfg)
+	assert.NotEmpty(t, reason)
 
-	// A valid altcha row overlays as before.
+	// A valid altcha row overlays as before, with no fallback reason.
 	family, err := DefaultAltchaSettingsFor("SCRYPT")
 	require.NoError(t, err)
-	got := Effective(rawSnapshot(t, map[string]string{
+	got, reason := Effective(rawSnapshot(t, map[string]string{
 		CaptchaEnabledKey.Name(): "false",
 		AltchaKey.Name():         fmtSettings(t, family, 600),
 	}))
+	assert.Empty(t, reason)
 	assert.False(t, got.Enabled)
 	require.NotNil(t, got.Altcha)
 	assert.Equal(t, family.Algorithm, got.Altcha.Algorithm)
@@ -650,25 +672,36 @@ func TestEffectiveFallsBackOnInvalidRow(t *testing.T) {
 	assert.EqualValues(t, 600, got.Altcha.ChallengeExpirySeconds)
 
 	// A valid external row round-trips, with partial JSON filling from
-	// that provider's defaults (min_score 0 means the 0.5 default).
-	recaptcha := Effective(rawSnapshot(t, map[string]string{
+	// that provider's defaults (an absent min_score means the 0.5 default,
+	// an explicit one survives the round-trip).
+	recaptcha, reason := Effective(rawSnapshot(t, map[string]string{
 		CaptchaSelectedKey.Name(): `"` + ProviderAlias(ProviderRecaptchaV3) + `"`,
 		RecaptchaV3Key.Name():     `{"site_key":"site-key"}`,
 	}))
+	assert.Empty(t, reason)
 	require.NotNil(t, recaptcha.RecaptchaV3)
 	assert.Equal(t, "site-key", recaptcha.SiteKey())
 	assert.Equal(t, 0.5, recaptcha.RecaptchaV3.MinScore)
+	recaptcha, reason = Effective(rawSnapshot(t, map[string]string{
+		CaptchaSelectedKey.Name(): `"` + ProviderAlias(ProviderRecaptchaV3) + `"`,
+		RecaptchaV3Key.Name():     `{"site_key":"site-key","min_score":0.7}`,
+	}))
+	assert.Empty(t, reason)
+	assert.Equal(t, 0.7, recaptcha.RecaptchaV3.MinScore)
 
 	// A row whose document names no fields keeps the key's declared
 	// defaults, the partial-row semantics the write path merges with.
-	partial := Effective(rawSnapshot(t, map[string]string{
+	partial, reason := Effective(rawSnapshot(t, map[string]string{
 		AltchaKey.Name(): `{}`,
 	}))
+	assert.Empty(t, reason)
 	require.NotNil(t, partial.Altcha)
 	assert.Equal(t, DefaultAltchaSettings(), *partial.Altcha)
 
 	// An empty snapshot is the built-in default.
-	assert.Equal(t, DefaultConfig(), Effective(rawSnapshot(t, nil)))
+	cfg, reason = Effective(rawSnapshot(t, nil))
+	assert.Equal(t, DefaultConfig(), cfg)
+	assert.Empty(t, reason)
 }
 
 func fmtSettings(t *testing.T, s AltchaSettings, expiry int64) string {
@@ -953,22 +986,17 @@ func TestDescribeCoalescesConcurrentColdLoads(t *testing.T) {
 	const burst = 8
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	errs := make([]error, burst)
 	for i := 0; i < burst; i++ {
 		wg.Add(1)
-		go func(i int) {
+		go func() {
 			defer wg.Done()
 			<-start
-			_, _, err := m.Describe(context.Background())
-			errs[i] = err
-		}(i)
+			m.Describe(context.Background())
+		}()
 	}
 	close(start)
 	wg.Wait()
 
-	for i, err := range errs {
-		require.NoErrorf(t, err, "describe %d", i)
-	}
 	assert.EqualValues(t, 1, wrapped.loads.Load(),
 		"a concurrent cold-cache Describe burst must share one snapshot load (describe never provisions, so one load is exactly one read)")
 }

@@ -41,12 +41,30 @@ func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow,
 	return &row, nil
 }
 
+func (s *settingsStore) GetForUpdate(ctx context.Context, key string) (*store.SettingRow, error) {
+	r, err := s.conn.q.GetSettingForUpdate(ctx, key)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	row := fromDBSetting(r)
+	return &row, nil
+}
+
 func (s *settingsStore) Upsert(ctx context.Context, p store.UpsertSettingParams) error {
 	return mapErr(s.conn.q.UpsertSetting(ctx, gendb.UpsertSettingParams{
 		Key:    p.Key,
 		Value:  ptrconv.PtrToNullString(p.Value),
 		Secret: p.Secret,
 	}))
+}
+
+func (s *settingsStore) InsertIfAbsent(ctx context.Context, p store.UpsertSettingParams) (bool, error) {
+	n, err := s.conn.q.InsertSettingIfAbsent(ctx, gendb.InsertSettingIfAbsentParams{
+		Key:    p.Key,
+		Value:  ptrconv.PtrToNullString(p.Value),
+		Secret: p.Secret,
+	})
+	return n > 0, mapErr(err)
 }
 
 func (s *settingsStore) Delete(ctx context.Context, key string) error {

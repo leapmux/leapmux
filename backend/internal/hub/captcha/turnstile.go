@@ -2,7 +2,6 @@ package captcha
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 )
 
@@ -33,21 +32,6 @@ func (s TurnstileSettings) Validate() error {
 		return fmt.Errorf("turnstile site key must not be empty")
 	}
 	return nil
-}
-
-// parseTurnstileSettings decodes the stored settings JSON; an
-// undecodable blob yields the defaults. Validation happens in Effective,
-// which falls back to DefaultConfig on refusal.
-func parseTurnstileSettings(raw string) TurnstileSettings {
-	s := DefaultTurnstileSettings()
-	if raw == "" {
-		return s
-	}
-	var stored TurnstileSettings
-	if err := json.Unmarshal([]byte(raw), &stored); err == nil && stored.SiteKey != "" {
-		s.SiteKey = stored.SiteKey
-	}
-	return s
 }
 
 // verifyTurnstile checks one Turnstile token against Cloudflare's

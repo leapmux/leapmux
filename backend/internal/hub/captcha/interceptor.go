@@ -77,9 +77,10 @@ func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
 				m.NoteHoneypotDenial(ctx)
 				return nil, connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed)
 			}
-			if !m.Enabled(ctx) {
-				return next(ctx, req)
-			}
+			// Verify alone decides: it no-ops when verification is
+			// disabled and denies closed on a resolve failure, exactly as
+			// an Enabled pre-check would — without resolving the config a
+			// second time per protected request.
 			if err := m.Verify(ctx, proc.action, msg.GetCaptchaPayload()); err != nil {
 				// Uniform denial: the manager has already recorded the
 				// outcome (passed/failed/replayed) under the selected

@@ -9,7 +9,6 @@ package captcha
 
 import (
 	"fmt"
-	"log/slog"
 
 	"github.com/leapmux/leapmux/internal/hub/settings"
 )
@@ -81,21 +80,27 @@ func (c Config) AltchaAlgorithm() string {
 
 // Effective assembles the selected provider's effective configuration
 // from a settings snapshot. The stored documents are validated at
-// consumption: the write paths validate before storing, so a value that
-// fails here was written outside them (direct SQL), and the built-in
-// ALTCHA defaults keep login working instead of issuing unsolvable
-// challenges or calling a provider with missing keys. The fallback
-// preserves the verification on/off switch — a deliberately disabled hub
-// stays disabled through corruption; swapping the provider to defaults is
-// about solvability, not about overriding the admin's on/off decision.
-// The hub and the admin CLI share this one definition of "effective".
-func Effective(s *settings.Snapshot) Config {
+// consumption: the write paths validate before storing (per-key rules
+// plus the SelectedConfigured cross rule), so a value that fails here was
+// written outside them (direct SQL), and the built-in ALTCHA defaults
+// keep login working instead of issuing unsolvable challenges or calling
+// a provider with missing keys. The fallback preserves the verification
+// on/off switch — a deliberately disabled hub stays disabled through
+// corruption; swapping the provider to defaults is about solvability,
+// not about overriding the admin's on/off decision. The hub and the
+// admin CLI share this one definition of "effective".
+//
+// Effective is pure assembly and does not log: the second return carries
+// the fallback reason ("" when the stored state held), and the caller
+// that resolves per request (Manager.resolve) reports it through its
+// warn-on-transition, the one degrade-logging mechanism — a bare warn
+// here fired on every login attempt.
+func Effective(s *settings.Snapshot) (Config, string) {
 	enabled := CaptchaEnabledKey.Of(s)
 	alias := CaptchaSelectedKey.Of(s)
 	provider, err := ParseProvider(alias)
 	if err != nil {
-		slog.Warn("captcha selection names an unsupported provider; using built-in defaults", "selection", alias)
-		return fallbackConfig(enabled)
+		return fallbackConfig(enabled), fmt.Sprintf("captcha selection %q specifies an unsupported provider", alias)
 	}
 	cfg := Config{Provider: provider, Enabled: enabled}
 	switch provider {
@@ -110,10 +115,9 @@ func Effective(s *settings.Snapshot) Config {
 		cfg.Turnstile = &TurnstileSettings{SiteKey: row.SiteKey}
 	}
 	if err := cfg.Validate(); err != nil {
-		slog.Warn("captcha settings invalid; using built-in defaults", "provider", ProviderAlias(provider), "error", err)
-		return fallbackConfig(enabled)
+		return fallbackConfig(enabled), fmt.Sprintf("captcha settings for %s are invalid: %v", ProviderAlias(provider), err)
 	}
-	return cfg
+	return cfg, ""
 }
 
 // fallbackConfig is the invalid-settings fallback: built-in altcha

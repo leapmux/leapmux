@@ -246,7 +246,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 const resendVerificationCooldown = 60 * time.Second
 
 // ResendVerificationEmail re-issues the verification mail for the
-// session user's pending email. It's authenticated and gated to users
+// session user's pending email. It's authenticated and restricted to users
 // who actually have a pending row — there's nothing to re-send
 // otherwise. Cooldown is enforced server-side; frontend rate-limit UI
 // is purely cosmetic.

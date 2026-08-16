@@ -9,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
 
@@ -24,16 +25,29 @@ func knownOperationsSuffix() string {
 }
 
 // parseOperation resolves and validates the --operation flag against the
-// catalogue.
+// catalogue. LimitKey is the single known-operation check: it derives
+// from the same catalogue loop as every other per-operation lookup, so
+// the CLI's "known" answer cannot drift from the keys it then reads.
 func parseOperation(name string) (ratelimit.Operation, error) {
 	if name == "" {
 		return "", fmt.Errorf("--operation is required (known operations: %s)", knownOperationsSuffix())
 	}
 	op := ratelimit.Operation(name)
-	if _, known := ratelimit.DefaultLimits(op); !known {
+	if _, known := ratelimit.LimitKey(op); !known {
 		return "", fmt.Errorf("unknown operation %q (known operations: %s)", name, knownOperationsSuffix())
 	}
 	return op, nil
+}
+
+// rateLimitKey loads the settings manager and resolves the operation's
+// settings key — the prologue the set/set-enabled/reset verbs share.
+func rateLimitKey(ctx context.Context, cfg *config.Config, st store.Store, op ratelimit.Operation) (*settings.Manager, *settings.Key[ratelimit.LimitValue], error) {
+	m, err := settingsManagerFor(cfg, st)
+	if err != nil {
+		return nil, nil, err
+	}
+	key, _ := ratelimit.LimitKey(op)
+	return m, key, nil
 }
 
 func runRateLimitList(cmd adminCmdCtx, args []string) error {
@@ -79,26 +93,21 @@ func runRateLimitSet(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 
-		m, err := settingsManagerFor(cfg, st)
+		m, key, err := rateLimitKey(ctx, cfg, st, op)
 		if err != nil {
 			return err
 		}
-		key, _ := ratelimit.LimitKey(op)
 
 		// Overlay the request onto the current effective limits; an
-		// explicit 0 restores the default for that field.
+		// explicit 0 restores the default for that field. The current
+		// value needs no zero-filling: the key's declared default already
+		// answers an absent or zeroed row.
 		def, _ := ratelimit.DefaultLimits(op)
 		current := key.Of(m.Snapshot(ctx))
 		v := ratelimit.LimitValue{
 			Enabled:       current.Enabled,
 			MaxAttempts:   current.MaxAttempts,
 			WindowSeconds: current.WindowSeconds,
-		}
-		if v.MaxAttempts == 0 {
-			v.MaxAttempts = def.MaxAttempts
-		}
-		if v.WindowSeconds == 0 {
-			v.WindowSeconds = def.WindowSeconds
 		}
 		if set["max-attempts"] {
 			v.MaxAttempts = *maxAttempts
@@ -141,11 +150,10 @@ func runRateLimitSetEnabled(cmd adminCmdCtx, args []string, enabled bool) error 
 			return err
 		}
 
-		m, err := settingsManagerFor(cfg, st)
+		m, key, err := rateLimitKey(ctx, cfg, st, op)
 		if err != nil {
 			return err
 		}
-		key, _ := ratelimit.LimitKey(op)
 		v := key.Of(m.Snapshot(ctx))
 		v.Enabled = enabled
 		if err := key.Set(ctx, m, v); err != nil {
@@ -165,11 +173,10 @@ func runRateLimitReset(cmd adminCmdCtx, args []string) error {
 		if err != nil {
 			return err
 		}
-		m, err := settingsManagerFor(cfg, st)
+		m, key, err := rateLimitKey(ctx, cfg, st, op)
 		if err != nil {
 			return err
 		}
-		key, _ := ratelimit.LimitKey(op)
 		if err := m.Reset(ctx, key); err != nil {
 			return fmt.Errorf("reset rate limit: %w", err)
 		}

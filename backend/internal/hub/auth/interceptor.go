@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/periodic"
 )
@@ -185,6 +186,18 @@ type Policy struct {
 	// user's last request. Zero or less falls back to
 	// DefaultSessionDuration.
 	SessionDuration time.Duration
+}
+
+// PolicyFromSettings resolves the settings-backed Policy fields from a
+// snapshot. The hub's interceptor closure and the service tests share
+// this one mapping, so a new Policy field is wired in exactly one place
+// and a test cannot enforce a policy the hub computes differently.
+func PolicyFromSettings(snap *settings.Snapshot) Policy {
+	return Policy{
+		SecureCookies:             settings.KeySecureCookies.Of(snap),
+		EmailVerificationRequired: settings.EmailVerificationEffective(snap),
+		SessionDuration:           settings.SessionDuration(snap),
+	}
 }
 
 // authInterceptor implements connect.Interceptor to validate session cookies
@@ -742,7 +755,7 @@ func (c *AuthContextRegistry) Stop() {
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		p := a.currentPolicy()
-		ctx, refresh, err := a.authenticate(ctx, req.Spec().Procedure, req.Header().Get("Cookie"), req.Header().Get("Authorization"))
+		ctx, refresh, err := a.authenticate(ctx, req.Spec().Procedure, req.Header().Get("Cookie"), req.Header().Get("Authorization"), p)
 		if err != nil {
 			// authenticate rejects an authenticated request too -- an unverified
 			// user reaches the email-verification gate after the slide committed --
@@ -776,7 +789,7 @@ func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		p := a.currentPolicy()
-		ctx, refresh, err := a.authenticate(ctx, conn.Spec().Procedure, conn.RequestHeader().Get("Cookie"), conn.RequestHeader().Get("Authorization"))
+		ctx, refresh, err := a.authenticate(ctx, conn.Spec().Procedure, conn.RequestHeader().Get("Cookie"), conn.RequestHeader().Get("Authorization"), p)
 		// Before the handler runs, not after: the response header of a stream
 		// goes out with the first message, and a long-lived stream sends that
 		// message long before it returns. The write happens on the rejection path
@@ -799,7 +812,7 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 // caller writes to the response as a refreshed cookie. It is the zero value on
 // every path that slides nothing: solo mode, a public procedure, and bearer
 // auth all hold no session cookie to refresh.
-func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader, authHeader string) (context.Context, sessionRefresh, error) {
+func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHeader, authHeader string, p Policy) (context.Context, sessionRefresh, error) {
 	var noRefresh sessionRefresh
 
 	// Solo mode authenticates every procedure -- public or not -- as the
@@ -819,13 +832,13 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 		if userInfo.Credential.IsDelegation() && !delegationAllowedProcedures[procedure] {
 			return ctx, noRefresh, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("delegation token cannot call this procedure"))
 		}
-		if err := a.enforceEmailVerification(procedure, userInfo); err != nil {
+		if err := a.enforceEmailVerification(procedure, userInfo, p); err != nil {
 			return ctx, noRefresh, err
 		}
 		return ctx, noRefresh, nil
 	}
 
-	token := SessionIDFromHeader(cookieHeader, a.currentPolicy().SecureCookies)
+	token := SessionIDFromHeader(cookieHeader, p.SecureCookies)
 	if token == "" {
 		return ctx, noRefresh, connect.NewError(connect.CodeUnauthenticated, nil)
 	}
@@ -835,7 +848,7 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 		return ctx, noRefresh, err
 	}
 	refresh := noRefresh
-	if slidTo := a.touchSession(ctx, token, userInfo); !slidTo.IsZero() {
+	if slidTo := a.touchSession(ctx, token, userInfo, p); !slidTo.IsZero() {
 		refresh = sessionRefresh{sessionID: token, expiresAt: slidTo}
 	}
 
@@ -847,15 +860,18 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	// an unverified user waiting to verify, whose every non-allowlisted procedure
 	// is denied -- would slide the row again and again and never receive a cookie
 	// for it.
-	if err := a.enforceEmailVerification(procedure, userInfo); err != nil {
+	if err := a.enforceEmailVerification(procedure, userInfo, p); err != nil {
 		return ctx, refresh, err
 	}
 
 	return ctx, refresh, nil
 }
 
-// currentPolicy resolves the settings-backed auth policy; a nil Policy
-// closure (tests, bare constructions) keeps the zero value.
+// currentPolicy resolves the settings-backed auth policy once per
+// request; a nil Policy closure (tests, bare constructions) keeps the
+// zero value. The wrappers pass the result through the call chain, so
+// one request resolves the (mutex-guarded, snapshot-backed) policy
+// exactly once instead of re-reading it at every consumer.
 func (a *authInterceptor) currentPolicy() Policy {
 	if a.policy == nil {
 		return Policy{}
@@ -866,8 +882,8 @@ func (a *authInterceptor) currentPolicy() Policy {
 // enforceEmailVerification rejects a request from an unverified, non-admin user
 // unless the procedure is on the pre-verification allowlist. Shared by the
 // bearer and cookie auth paths so the gate cannot drift between them.
-func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *UserInfo) error {
-	if !a.currentPolicy().EmailVerificationRequired || userInfo.IsAdmin || userInfo.EmailVerified {
+func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *UserInfo, p Policy) error {
+	if !p.EmailVerificationRequired || userInfo.IsAdmin || userInfo.EmailVerified {
 		return nil
 	}
 	if unverifiedAllowedProcedures[procedure] {
@@ -1089,18 +1105,18 @@ const sessionTouchThreshold = 5 * time.Minute
 // touchThreshold is this interceptor's slide interval. It is also the longest
 // that a session row can outlive its last touch, which is the span the mark
 // sweep cutoff measures.
-func (a *authInterceptor) touchThreshold() time.Duration {
-	return touchThreshold(a.currentPolicy().SessionDuration)
+func (a *authInterceptor) touchThreshold(p Policy) time.Duration {
+	return touchThreshold(p.SessionDuration)
 }
 
 // slideDuration is how far past now a touch writes the expiry. See
 // sessionExpiry, which the login path uses for the same span.
-func (a *authInterceptor) slideDuration() time.Duration {
-	return sessionLifetime(a.currentPolicy().SessionDuration) + a.touchThreshold()
+func (a *authInterceptor) slideDuration(p Policy) time.Duration {
+	return sessionLifetime(p.SessionDuration) + a.touchThreshold(p)
 }
 
 // touchSession slides the session expiry to now + slideDuration if the last
-// touch was more than touchThreshold ago. An in-memory map gates the
+// touch was more than touchThreshold ago. An in-memory map throttles the
 // check so that most requests skip the DB call entirely — only the first
 // request after the threshold elapses hits SQLite.
 //
@@ -1110,9 +1126,9 @@ func (a *authInterceptor) slideDuration() time.Duration {
 // Set-Cookie named; without the re-issue the slide extends a row that the
 // browser stops sending a cookie for, and the user is signed out
 // one session duration after the login however active they were.
-func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, user *UserInfo) time.Time {
+func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, user *UserInfo, p Policy) time.Time {
 	now := time.Now()
-	threshold := a.touchThreshold()
+	threshold := a.touchThreshold(p)
 	if v, ok := a.state.lastTouch.Load(sessionID); ok {
 		if now.Sub(v.(time.Time)) < threshold {
 			return time.Time{}
@@ -1127,7 +1143,7 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 	// into one UPDATE for every authenticated request.
 	a.state.lastTouch.Store(sessionID, now)
 
-	newExpiry := now.Add(a.slideDuration()).UTC()
+	newExpiry := now.Add(a.slideDuration(p)).UTC()
 	rows, err := a.store.Sessions().Touch(ctx, store.TouchSessionParams{
 		ID:           sessionID,
 		ExpiresAt:    newExpiry,
@@ -1199,7 +1215,7 @@ const touchSweepInterval = 10 * time.Minute
 // delete is unconditional -- see below).
 func (a *authInterceptor) sweepCachesOnce() {
 	now := time.Now()
-	touchCutoff := now.Add(-a.touchThreshold())
+	touchCutoff := now.Add(-a.touchThreshold(a.currentPolicy()))
 	a.state.lastTouch.Range(func(key, value any) bool {
 		if value.(time.Time).Before(touchCutoff) {
 			a.state.deleteStaleLastTouch(key, value)
@@ -1262,7 +1278,7 @@ func (a *authInterceptor) sweepCachesOnce() {
 	// uses an unconditional Delete (no CAS), so a lock-free scan could drop a fresh
 	// re-revocation mark stored for the same key in the scan->delete gap -- a
 	// security regression. These maps are also far smaller than the caches.
-	revocationCutoff := now.Add(-a.slideDuration())
+	revocationCutoff := now.Add(-a.slideDuration(a.currentPolicy()))
 	sweepRevocationMarks(&a.state.sessionRevocations, revocationCutoff)
 	sweepRevocationMarks(&a.state.userRevocations, revocationCutoff)
 	sweepRevocationMarks(&a.state.userInvalidations, revocationCutoff)

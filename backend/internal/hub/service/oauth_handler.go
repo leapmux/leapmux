@@ -184,7 +184,7 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	// hung IdP during NORMAL operation would otherwise park it for the process's
 	// life). This per-leg deadline bounds exactly that: a slow or wedged IdP
 	// while the hub is healthy.
-	exchangeCtx, cancelExchange := context.WithTimeout(ctx, time.Duration(settings.KeyTimeouts.Of(h.set.Snapshot(r.Context())).APITimeoutSeconds)*time.Second)
+	exchangeCtx, cancelExchange := context.WithTimeout(ctx, settings.KeyTimeouts.Of(h.set.Snapshot(r.Context())).APITimeout())
 	defer cancelExchange()
 	tokenSet, claims, err := provider.Exchange(exchangeCtx, code, oauthState.PkceVerifier)
 	if err != nil {
@@ -266,7 +266,7 @@ func (h *OAuthHandler) handleCallback(w http.ResponseWriter, r *http.Request, pr
 	}
 
 	// New user — store pending signup for username selection.
-	if !settings.KeySignupEnabled.Of(h.set.Snapshot(r.Context())) {
+	if !settings.SignupEnabledEffective(h.set.Snapshot(r.Context()), h.cfg.DevMode) {
 		http.Error(w, "sign-up is disabled; no existing account linked to this identity", http.StatusForbidden)
 		return
 	}

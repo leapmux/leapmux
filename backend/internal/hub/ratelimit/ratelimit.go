@@ -85,7 +85,7 @@ var defaults = map[Operation]opSpec{
 var limitKeys = func() map[Operation]*settings.Key[LimitValue] {
 	keys := make(map[Operation]*settings.Key[LimitValue], len(defaults))
 	for op, spec := range defaults {
-		keys[op] = settings.NewKey[LimitValue]("rate_limit." + string(op)).
+		keys[op] = settings.NewKey[LimitValue]("rate_limit."+string(op)).
 			WithDefault(LimitValue{
 				Enabled:       true,
 				MaxAttempts:   spec.limits.MaxAttempts,
@@ -93,7 +93,10 @@ var limitKeys = func() map[Operation]*settings.Key[LimitValue] {
 			}).
 			WithValidate(func(v LimitValue) error {
 				return ValidateLimits(Limits{MaxAttempts: v.MaxAttempts, WindowSeconds: v.WindowSeconds})
-			})
+			}).
+			WithDoc(
+				fmt.Sprintf("rate limit for %s (failed attempts per window)", op),
+				`{"enabled", "max_attempts", "window_seconds"}`)
 	}
 	return keys
 }()

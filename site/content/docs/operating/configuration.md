@@ -209,7 +209,7 @@ Changes fall into two classes, shown by `settings list`:
 | `email_verification_required` | boolean | `false` | hot (requires `smtp` first; the write is refused otherwise) |
 | `session_duration_seconds` | integer | `604800` (7d) | hot (minimum 300) |
 | `secure_cookies` | boolean | `false` | hot (changes the cookie name, so it signs everyone out) |
-| `public_url` | string | *(empty)* | hot (scheme+host only, no path; ignored in solo mode) |
+| `public_url` | string | *(empty)* | hot (scheme+host only, no path) |
 | `smtp` | `{host, port, username, from_address, tls_mode}` + secret `{password}` | disabled | hot |
 | `timeouts` | `{api_seconds, agent_startup_seconds, worktree_create_seconds}` | 10 / 300 / 60 | hot |
 | `limits` | `{max_connections_per_user, max_workers_per_user}` | 32 / 64 | hot (`0` = unlimited) |
@@ -242,7 +242,7 @@ See the [`captcha`](/docs/operating/admin-cli/#captcha--bot-protection-altcha-re
 
 ### Outbound queue memory
 
-Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the goroutine serving everyone else. The three fields of the `queue_budget` setting bound how much those buffers may hold. They are totals rather than per-connection figures because a per-connection number tells you nothing without a connection count, and nothing bounds how many browser tabs a fleet has open.
+Every long-lived stream the Hub writes to — one per browser tab on `/ws/channel`, one per connected Worker, one per browser tab on `/ws/userevents` — buffers outbound frames, so that one slow reader cannot stall the goroutine serving everyone else. The three fields of the `queue_budget` setting limit how much those buffers may hold. They are totals rather than per-connection figures because a per-connection number tells you nothing without a connection count, and nothing limits how many browser tabs a fleet has open.
 
 **Each kind of connection has its own budget.** When a budget runs out it is that budget's own connections that pay, so a browser tab's backlog can only ever cost another connection of the same kind. That matters because the three failures are not comparable:
 
@@ -279,7 +279,7 @@ That warning is the one signal separating a confined machine the probe could not
 
 Every budget also has to be able to hold one largest frame of its kind, and enough guaranteed per-connection working sets for the sharing rule to have anything to decide — a frame bigger than the whole budget could never be admitted at any occupancy, and a budget the size of a single working set caps every connection at that figure regardless of how idle the Hub is. Those two together are the minimum, and the Hub refuses to start on a configured value below it rather than failing at runtime. It is derived per class, not a flat number, so the shares still hold on a small host: a 512 MiB container gets its quarter rather than having the floor quietly claim 40% of the machine. Set the keys explicitly whenever your fleet's shape differs from the assumption, such as many Workers and few tabs, or the reverse. The metrics below tell you which budget is actually binding.
 
-Note that `max_message_size_bytes` does **not** move any of these minimums. That key bounds the reassembled application message the two endpoints rebuild; the Hub is a relay on that path and never holds one, so its queues only ever carry individual encrypted chunks.
+Note that `max_message_size_bytes` does **not** move any of these minimums. That key limits the reassembled application message the two endpoints rebuild; the Hub is a relay on that path and never holds one, so its queues only ever carry individual encrypted chunks.
 
 **How a budget is shared.** A connection's share is not a fixed slice. Each one may queue up to whatever is still free, so a single backed-up connection on an otherwise-idle Hub can use up to half the budget, while many backed-up connections settle at an even split with a reserve still held back for connections that have not arrived yet. Each connection is also guaranteed a small working set of its own, so a connection whose queue is near empty keeps being served while others are backed up.
 
@@ -374,7 +374,7 @@ The reverse direction is bounded too. A WebSocket peer may send its own pings, a
 
 ### When one account's state outgrows the budget
 
-The frame that opens a `/ws/userevents` connection carries the account's whole visible state, so a large enough account can produce one bigger than the entire user-events budget. Such a frame cannot be admitted at *any* occupancy, so there is nothing to wait for: the Hub closes the connection as terminal rather than asking the client to retry, the browser says the workspace exceeds the server's limit, and the Hub logs at error level naming the frame size and the budget.
+The frame that opens a `/ws/userevents` connection carries the account's whole visible state, so a large enough account can produce one bigger than the entire user-events budget. Such a frame cannot be admitted at *any* occupancy, so there is nothing to wait for: the Hub closes the connection as final rather than asking the client to retry, the browser says the workspace exceeds the server's limit, and the Hub logs the frame size and the budget at error level.
 
 Raising the `userevents_bytes` field of `queue_budget` is the fix. It is worth distinguishing from ordinary pressure, which looks similar from the client: a *merely full* budget produces a retry-later close and resolves itself as other connections drain. The `bound` label separates them outright — `leapmux_userevents_frames_dropped_total{phase="bootstrap",bound="bytes"}` is the transient one, and `bound="capacity"` is the permanent one. Do not read occupancy to tell them apart: a frame larger than the whole budget is refused on an *empty* pool just as readily, so `leapmux_sendq_pool_used_bytes` near capacity is evidence for the transient case and its absence is no evidence at all.
 

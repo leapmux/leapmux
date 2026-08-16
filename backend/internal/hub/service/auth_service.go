@@ -29,7 +29,7 @@ import (
 // passes the SAME *captcha.Manager the captcha interceptor enforces with,
 // so challenge issuance and enforcement cannot disagree; tests pass a stub.
 type CaptchaService interface {
-	Describe(ctx context.Context) (captcha.Config, bool, error)
+	Describe(ctx context.Context) captcha.Config
 	// AltchaChallengeJSON is ALTCHA-specific by name because it is by
 	// behavior: it returns "" when the selected provider is external
 	// (those mint tokens client-side and have nothing to issue).
@@ -41,8 +41,8 @@ type CaptchaService interface {
 // challenges.
 type disabledCaptcha struct{}
 
-func (disabledCaptcha) Describe(context.Context) (captcha.Config, bool, error) {
-	return captcha.DisabledConfig(), false, nil
+func (disabledCaptcha) Describe(context.Context) captcha.Config {
+	return captcha.DisabledConfig()
 }
 
 func (disabledCaptcha) AltchaChallengeJSON(context.Context) (string, error) {
@@ -105,9 +105,10 @@ func (s *AuthService) sessionDuration(ctx context.Context) time.Duration {
 	return settings.SessionDuration(s.snap(ctx))
 }
 
-// signupEnabled reads the signup gate.
+// signupEnabled reads the signup gate, with dev mode's open-signup
+// default applied at read time.
 func (s *AuthService) signupEnabled(ctx context.Context) bool {
-	return settings.KeySignupEnabled.Of(s.snap(ctx))
+	return settings.SignupEnabledEffective(s.snap(ctx), s.cfg.DevMode)
 }
 
 // emailVerificationRequired reads the verification gate with its
@@ -429,20 +430,11 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	// wrong concrete provider — and clients treat anything but a known
 	// enum as altcha. The rest of the system info stays usable, mirroring
 	// the providers flag above.
-	var captchaEnabled bool
-	var captchaProvider leapmuxv1.CaptchaProvider
-	var captchaSiteKey string
-	var altchaAlgorithm string
-	captchaCfg, _, err := s.captcha.Describe(ctx)
-	if err != nil {
-		slog.Warn("describe captcha config failed; reporting captcha enabled (enforcement fails closed)", "error", err)
-		captchaEnabled = true
-	} else {
-		captchaEnabled = captchaCfg.Enabled
-		captchaProvider = captchaCfg.Provider
-		captchaSiteKey = captchaCfg.SiteKey()
-		altchaAlgorithm = captchaCfg.AltchaAlgorithm()
-	}
+	captchaCfg := s.captcha.Describe(ctx)
+	captchaEnabled := captchaCfg.Enabled
+	captchaProvider := captchaCfg.Provider
+	captchaSiteKey := captchaCfg.SiteKey()
+	altchaAlgorithm := captchaCfg.AltchaAlgorithm()
 
 	// Decide what URL workers should target. Precedence:
 	//   1. An explicit public_url setting wins (admin's canonical external URL,

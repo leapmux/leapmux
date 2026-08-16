@@ -389,7 +389,7 @@ leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"from_add
 leapmux admin settings set smtp '{"port":465,"tls_mode":"implicit"}'   # only these two fields change
 ```
 
-Bare scalars work without quoting JSON: `settings set signup_enabled true`. Every write is validated — per-key rules (port ranges, duration floors, budget ceilings) and cross-key rules (`email_verification_required` needs a configured `smtp`) — before it is stored, so an impossible combination is refused here rather than degrading later.
+Bare scalars work without quoting JSON: `settings set signup_enabled true`. The `get`/`set`/`set-secret`/`reset` verbs take the key as a positional argument, so pass flags before it (`settings set --data-dir /path signup_enabled true`) — everything after the key belongs to the value. Every write is validated — per-key rules (port ranges, duration floors, budget floors and ceilings) and cross-key rules (`email_verification_required` needs a configured `smtp`; selecting an external captcha provider needs its keys) — before it is stored, so an impossible combination is refused here rather than degrading later.
 
 Secret-bearing fields (the SMTP password) are stored in the row's **encrypted half**, written with `set-secret` and never printed by `list` or `get`:
 

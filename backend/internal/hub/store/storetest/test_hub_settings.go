@@ -61,12 +61,48 @@ func (s *Suite) testHubSettings(t *testing.T) {
 		assert.Equal(t, "signup_enabled", rows[0].Key)
 		assert.Equal(t, "smtp", rows[1].Key)
 
-		// Delete removes only the named key.
+		// Delete removes only the specified key.
 		require.NoError(t, ss.Delete(ctx, "smtp"))
 		_, err = ss.Get(ctx, "smtp")
 		assert.ErrorIs(t, err, store.ErrNotFound)
 		_, err = ss.Get(ctx, "signup_enabled")
 		assert.NoError(t, err)
+	})
+
+	t.Run("InsertIfAbsent keeps the first writer's row", func(t *testing.T) {
+		st := s.NewStore(t)
+		ss := st.Settings()
+
+		first := `{"host":"first.example.com"}`
+		inserted, err := ss.InsertIfAbsent(ctx, store.UpsertSettingParams{
+			Key: "smtp", Value: &first,
+		})
+		require.NoError(t, err)
+		assert.True(t, inserted, "the first insert lands the row")
+
+		second := `{"host":"second.example.com"}`
+		inserted, err = ss.InsertIfAbsent(ctx, store.UpsertSettingParams{
+			Key: "smtp", Value: &second,
+		})
+		require.NoError(t, err)
+		assert.False(t, inserted, "a racing provisioner does not win the row")
+		got, err := ss.Get(ctx, "smtp")
+		require.NoError(t, err)
+		assert.Equal(t, first, *got.Value, "the winner's value is the row that stays")
+	})
+
+	t.Run("GetForUpdate reads the row like Get", func(t *testing.T) {
+		st := s.NewStore(t)
+		ss := st.Settings()
+
+		_, err := ss.GetForUpdate(ctx, "smtp")
+		assert.ErrorIs(t, err, store.ErrNotFound, "no row means absent, not a fault")
+
+		value := `{"host":"smtp.example.com"}`
+		require.NoError(t, ss.Upsert(ctx, store.UpsertSettingParams{Key: "smtp", Value: &value}))
+		got, err := ss.GetForUpdate(ctx, "smtp")
+		require.NoError(t, err)
+		assert.Equal(t, value, *got.Value)
 	})
 
 	t.Run("a row unknown to the catalog round-trips untouched", func(t *testing.T) {

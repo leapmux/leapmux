@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	altcha "github.com/altcha-org/altcha-lib-go/v2"
@@ -57,6 +59,9 @@ type Manager struct {
 
 	recaptcha *siteverifyClient
 	turnstile *siteverifyClient
+
+	fallbackMu   sync.Mutex
+	lastFallback string // the degrade reason last reported; "" = healthy
 }
 
 type resolvedConfig struct {
@@ -98,16 +103,16 @@ func NewManager(st store.Store, set *settings.Manager, soloMode bool, opts ...Op
 
 // Describe returns the selected provider's effective configuration
 // without provisioning anything — used by GetSystemInfo, which must not
-// write the store on a fresh install just to report defaults. The second
-// return reports whether the selected provider has a stored row (the
-// admin CLI's "customized" flag).
-func (m *Manager) Describe(ctx context.Context) (Config, bool, error) {
+// write the store on a fresh install just to report defaults. It cannot
+// fail: the snapshot serves the last good state (or defaults) and
+// Effective degrades invalid settings to the built-in defaults, so the
+// caller has no error path to handle.
+func (m *Manager) Describe(ctx context.Context) Config {
 	if m.solo {
-		return DisabledConfig(), false, nil
+		return DisabledConfig()
 	}
-	snap := m.set.Snapshot(ctx)
-	cfg := Effective(snap)
-	return cfg, snap.Customized(providerDescriptor(cfg.Provider)), nil
+	cfg, _ := Effective(m.set.Snapshot(ctx))
+	return cfg
 }
 
 // ErrProviderNotAltcha is returned by AltchaChallengeJSON when another
@@ -285,15 +290,7 @@ func (m *Manager) Enabled(ctx context.Context) bool {
 // and runs even when captcha is disabled; the label keeps the denial
 // beside the verification outcomes it belongs with.
 func (m *Manager) NoteHoneypotDenial(ctx context.Context) {
-	cfg, _, err := m.Describe(ctx)
-	if err != nil {
-		// The denial itself already happened; a config read that fails
-		// still counts it, under the "unknown" label, so a store outage
-		// does not silence the honeypot signal.
-		m.countUnattributedDenial()
-		return
-	}
-	m.countResult(cfg.Provider, ResultFailed)
+	m.countResult(m.Describe(ctx).Provider, ResultFailed)
 }
 
 // counted records a verification outcome and returns err, pairing the
@@ -326,7 +323,8 @@ func (m *Manager) countUnattributedDenial() {
 // outside the admin CLI).
 func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 	snap := m.set.Snapshot(ctx)
-	cfg := Effective(snap)
+	cfg, fallback := Effective(snap)
+	m.noteFallback(fallback)
 	if cfg.Provider != ProviderAltcha {
 		return m.resolveSecret(snap, cfg)
 	}
@@ -342,7 +340,32 @@ func (m *Manager) resolve(ctx context.Context) (*resolvedConfig, error) {
 		return nil, err
 	}
 	snap = m.set.Snapshot(ctx)
-	return m.resolveSecret(snap, Effective(snap))
+	cfg, fallback = Effective(snap)
+	m.noteFallback(fallback)
+	return m.resolveSecret(snap, cfg)
+}
+
+// noteFallback reports the effective-config degrade state on transition:
+// a new fallback warns once (not once per request — resolve runs on every
+// protected submission, the exact flood path captcha exists for), and a
+// recovery logs at info so the operator sees the bad window close. The
+// settings manager applies the same warn-on-transition contract to its
+// rows.
+func (m *Manager) noteFallback(reason string) {
+	m.fallbackMu.Lock()
+	prev := m.lastFallback
+	if prev == reason {
+		m.fallbackMu.Unlock()
+		return
+	}
+	m.lastFallback = reason
+	m.fallbackMu.Unlock()
+	switch {
+	case reason != "":
+		slog.Warn("captcha settings degraded; using built-in defaults", "reason", reason)
+	default:
+		slog.Info("captcha settings recovered")
+	}
 }
 
 // resolveSecret extracts the selected provider's secret from its stored
@@ -425,24 +448,23 @@ func provisionAltchaRow(ctx context.Context, set *settings.Manager) error {
 // key — not the selection. The admin CLI overlays flag edits onto this
 // base, so a switch back to a provider keeps that row's stored tuning
 // (only the selection changes), and a key the CLI has never written
-// reports that provider's defaults rather than altcha's. The second
-// return reports whether the provider has a row at all.
-func DescribeProvider(s *settings.Snapshot, provider Provider) (Config, bool) {
+// reports that provider's defaults rather than altcha's.
+func DescribeProvider(s *settings.Snapshot, provider Provider) Config {
 	spec, ok := specFor(provider)
 	if !ok {
-		return DefaultConfig(), false
+		return DefaultConfig()
 	}
 	switch provider {
 	case ProviderAltcha:
 		row := AltchaKey.Of(s)
-		return Config{Provider: provider, Enabled: CaptchaEnabledKey.Of(s), Altcha: &row.AltchaSettings}, s.Customized(AltchaKey)
+		return Config{Provider: provider, Enabled: CaptchaEnabledKey.Of(s), Altcha: &row.AltchaSettings}
 	case ProviderRecaptchaV3:
 		row := RecaptchaV3Key.Of(s)
-		return Config{Provider: provider, Enabled: CaptchaEnabledKey.Of(s), RecaptchaV3: &RecaptchaV3Settings{SiteKey: row.SiteKey, MinScore: row.MinScore}}, s.Customized(RecaptchaV3Key)
+		return Config{Provider: provider, Enabled: CaptchaEnabledKey.Of(s), RecaptchaV3: &RecaptchaV3Settings{SiteKey: row.SiteKey, MinScore: row.MinScore}}
 	case ProviderTurnstile:
 		row := TurnstileKey.Of(s)
-		return Config{Provider: provider, Enabled: CaptchaEnabledKey.Of(s), Turnstile: &TurnstileSettings{SiteKey: row.SiteKey}}, s.Customized(TurnstileKey)
+		return Config{Provider: provider, Enabled: CaptchaEnabledKey.Of(s), Turnstile: &TurnstileSettings{SiteKey: row.SiteKey}}
 	default:
-		return spec.defaults(), false
+		return spec.defaults()
 	}
 }

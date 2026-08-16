@@ -587,6 +587,15 @@ type SettingsStore interface {
 	// clear rather than an accident; at least one half must be non-nil to
 	// satisfy the table's CHECK.
 	Upsert(ctx context.Context, p UpsertSettingParams) error
+	// InsertIfAbsent writes the row only when the key has no row, making
+	// first-use provisioning a one-winner race that holds across processes
+	// under every dialect's isolation. It reports whether this call
+	// inserted the row.
+	InsertIfAbsent(ctx context.Context, p UpsertSettingParams) (bool, error)
+	// GetForUpdate reads one key's row locked against concurrent writers,
+	// for the read-modify-write merge the write path performs inside a
+	// transaction. Like Get, ErrNotFound means the key has no row.
+	GetForUpdate(ctx context.Context, key string) (*SettingRow, error)
 	// Delete removes one key's row, returning the key to its code default.
 	Delete(ctx context.Context, key string) error
 }

@@ -41,8 +41,8 @@ func (r Renderer) hubURL() string {
 	return r.BaseURL()
 }
 
-// footer renders the standard auto-message footer naming LeapMux and
-// the hub's public URL. Every email this package sends uses this
+// footer renders the standard auto-message footer that identifies
+// LeapMux and the hub's public URL. Every email this package sends uses this
 // footer so recipients can identify the sender and know the mailbox is
 // unattended.
 func (r Renderer) footer() string {

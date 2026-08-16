@@ -41,12 +41,39 @@ func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow,
 	return &row, nil
 }
 
+func (s *settingsStore) GetForUpdate(ctx context.Context, key string) (*store.SettingRow, error) {
+	r, err := s.conn.q.GetSettingForUpdate(ctx, key)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	row := fromDBSetting(r)
+	return &row, nil
+}
+
 func (s *settingsStore) Upsert(ctx context.Context, p store.UpsertSettingParams) error {
 	return mapErr(s.conn.q.UpsertSetting(ctx, gendb.UpsertSettingParams{
 		Key:    p.Key,
 		Value:  ptrconv.PtrToNullString(p.Value),
 		Secret: p.Secret,
 	}))
+}
+
+// InsertIfAbsent treats a duplicate key as "not inserted" (false, nil),
+// not a fault: a racing provisioner won. See the query comment for why
+// the duplicate arrives as error 1062 rather than an affected-rows count.
+func (s *settingsStore) InsertIfAbsent(ctx context.Context, p store.UpsertSettingParams) (bool, error) {
+	n, err := s.conn.q.InsertSettingIfAbsent(ctx, gendb.InsertSettingIfAbsentParams{
+		Key:    p.Key,
+		Value:  ptrconv.PtrToNullString(p.Value),
+		Secret: p.Secret,
+	})
+	if err != nil {
+		if isDupEntry(err) {
+			return false, nil
+		}
+		return false, mapErr(err)
+	}
+	return n > 0, nil
 }
 
 func (s *settingsStore) Delete(ctx context.Context, key string) error {

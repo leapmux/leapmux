@@ -208,6 +208,25 @@ func ResolveUserEventsQueueMemoryBudget(configured int64, basis memlimit.Basis) 
 	return userEventsQueueClass(configured).resolve(basis)
 }
 
+// QueueBudgetFloor returns the smallest workable explicit budget for one
+// queue class, keyed by the settings key's field name ("relay_bytes",
+// "worker_bytes", "userevents_bytes"). This package owns the queue-class
+// geometry, so the settings write path's validator calls here rather than
+// restating the numbers: an explicit budget the resolver would degenerate
+// on (or that sendq.NewPool would refuse outright) is rejected before it
+// is stored, by the same expression that clamps the auto-sized arm.
+func QueueBudgetFloor(field string) (int64, error) {
+	switch field {
+	case "relay_bytes":
+		return relayQueueClass(0).minimum(), nil
+	case "worker_bytes":
+		return workerQueueClass(0).minimum(), nil
+	case "userevents_bytes":
+		return userEventsQueueClass(0).minimum(), nil
+	}
+	return 0, fmt.Errorf("unknown queue budget field %q", field)
+}
+
 // QueueMemoryBudget is one outbound queue pool's resolved sizing, plus a
 // human-readable account of where the figure came from for the startup log.
 //
@@ -391,9 +410,11 @@ func userEventsQueueClass(configured int64) queueClass {
 //
 // The floor term reads sendq.DefaultMinFloor, and QueueMemoryBudget.PoolConfig
 // hands NewPool that same constant. Keeping the two equal is what makes
-// NewPool's MinFloor > Capacity panic unreachable from a config file: this is
+// NewPool's MinFloor > Capacity panic unreachable from configuration: this is
 // the check that refuses a budget too small to honour the floor before a pool is
-// ever built with one.
+// ever built with one — on the auto arm here, and on the explicit arm from the
+// settings write path, whose validator asks QueueBudgetFloor for this same
+// number.
 func (q queueClass) minimum() int64 {
 	return max(q.maxFrame, MinQueueMembersAtFloor*sendq.DefaultMinFloor)
 }

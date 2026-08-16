@@ -56,13 +56,15 @@ func runCaptchaShow(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 		snap := d.set.Snapshot(ctx)
-		effective, customized := captcha.Effective(snap), snap.Customized(captcha.AltchaKey)
-		if sel, pErr := captcha.ParseProvider(captcha.CaptchaSelectedKey.Of(snap)); pErr == nil {
-			customized = snap.Customized(captchaProviderDescriptor(sel))
-		}
+		effective, _ := captcha.Effective(snap)
+		// customized follows the EFFECTIVE provider: Effective already
+		// degraded an unusable selection to altcha, and reporting the
+		// broken provider's row as "customized" beside a shown provider
+		// of altcha would say two things at once.
+		customized := snap.Customized(captcha.DescriptorFor(effective.Provider))
 		configured := []string{}
 		for _, p := range []captcha.Provider{captcha.ProviderAltcha, captcha.ProviderRecaptchaV3, captcha.ProviderTurnstile} {
-			if snap.Customized(captchaProviderDescriptor(p)) {
+			if snap.Customized(captcha.DescriptorFor(p)) {
 				configured = append(configured, captcha.ProviderAlias(p))
 			}
 		}
@@ -159,7 +161,7 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 			return err
 		}
 		snap := d.set.Snapshot(ctx)
-		current := captcha.Effective(snap)
+		current, _ := captcha.Effective(snap)
 
 		// The target provider is the --provider flag, else the currently
 		// selected one. Specifying the already-selected provider tunes it
@@ -187,7 +189,7 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 		// Flag edits overlay the TARGET provider's own stored settings, so
 		// a switch back keeps that row's tuning — only the selection
 		// changes. A provider with no row starts from its defaults.
-		base, hasRow := captcha.DescribeProvider(snap, target)
+		base := captcha.DescribeProvider(snap, target)
 
 		// Switching to an external provider that has never been configured
 		// requires its keys in the same invocation: the row cannot exist
@@ -209,7 +211,7 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 		// re-split, so it is never lost), the secret half only when a
 		// --secret flag rotates it, and the selection as its own scalar
 		// when switching.
-		if err := d.set.Update(ctx, captchaProviderDescriptor(target), json.RawMessage(settingsJSON)); err != nil {
+		if err := d.set.Update(ctx, captcha.DescriptorFor(target), json.RawMessage(settingsJSON)); err != nil {
 			return fmt.Errorf("update captcha config: %w", err)
 		}
 		if cf.set("secret") {
@@ -217,7 +219,7 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 			if mErr != nil {
 				return mErr
 			}
-			if err := d.set.UpdateSecret(ctx, captchaProviderDescriptor(target), secretDoc); err != nil {
+			if err := d.set.UpdateSecret(ctx, captcha.DescriptorFor(target), secretDoc); err != nil {
 				return fmt.Errorf("update captcha secret: %w", err)
 			}
 		}
@@ -237,8 +239,19 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 			if err := d.set.Update(ctx, captcha.CaptchaSelectedKey, selDoc); err != nil {
 				return fmt.Errorf("activate captcha provider: %w", err)
 			}
+			// Choosing a provider means running it (the old store's
+			// Activate invariant): a switch re-enables verification, so a
+			// hub disabled for debugging does not silently stay undefended
+			// through a provider change. In-place tuning leaves the switch
+			// alone.
+			enDoc, mErr := json.Marshal(true)
+			if mErr != nil {
+				return mErr
+			}
+			if err := d.set.Update(ctx, captcha.CaptchaEnabledKey, enDoc); err != nil {
+				return fmt.Errorf("enable captcha verification: %w", err)
+			}
 		}
-		_ = hasRow
 
 		fmt.Println(summary)
 		if switching {
@@ -248,20 +261,6 @@ func runCaptchaSet(cmd adminCmdCtx, args []string) error {
 		}
 		return nil
 	})
-}
-
-// captchaProviderDescriptor returns the settings key holding one
-// provider's document (the exported face of the captcha package's own
-// mapping).
-func captchaProviderDescriptor(p captcha.Provider) settings.Descriptor {
-	switch p {
-	case captcha.ProviderRecaptchaV3:
-		return captcha.RecaptchaV3Key
-	case captcha.ProviderTurnstile:
-		return captcha.TurnstileKey
-	default:
-		return captcha.AltchaKey
-	}
 }
 
 // resolveCaptchaSettings builds the target provider's settings JSON and
@@ -464,16 +463,19 @@ func runCaptchaReset(cmd adminCmdCtx, args []string) error {
 				return fmt.Errorf("invalid captcha configuration: %w", err)
 			}
 			snap := d.set.Snapshot(ctx)
-			selected := captcha.Effective(snap).Provider
-			if err := d.set.Reset(ctx, captchaProviderDescriptor(p)); err != nil {
-				return fmt.Errorf("reset captcha config: %w", err)
-			}
-			if selected == p && p != captcha.ProviderAltcha {
+			selected, _ := captcha.Effective(snap)
+			// The selection resets FIRST: the cross-key rule refuses a
+			// state whose selected external provider has no complete row,
+			// and resetting the row alone would create exactly that.
+			if selected.Provider == p && p != captcha.ProviderAltcha {
 				// Resetting the selected external provider falls back to
 				// the default selection (altcha).
 				if err := d.set.Reset(ctx, captcha.CaptchaSelectedKey); err != nil {
 					return fmt.Errorf("reset captcha selection: %w", err)
 				}
+			}
+			if err := d.set.Reset(ctx, captcha.DescriptorFor(p)); err != nil {
+				return fmt.Errorf("reset captcha config: %w", err)
 			}
 			if p == captcha.ProviderAltcha {
 				// The request path must never write: re-provision the
@@ -485,6 +487,10 @@ func runCaptchaReset(cmd adminCmdCtx, args []string) error {
 			fmt.Printf("Reset the %s provider's configuration\n", captcha.ProviderAlias(p))
 			return nil
 		}
+		// SettingsDescriptors lists the selection before the provider
+		// rows, so each reset leaves the cross-key rule satisfiable (the
+		// selected external provider, if any, is deselected before its
+		// row goes).
 		for _, desc := range captcha.SettingsDescriptors() {
 			if err := d.set.Reset(ctx, desc); err != nil {
 				return fmt.Errorf("reset captcha config: %w", err)
