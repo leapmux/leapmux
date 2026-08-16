@@ -524,3 +524,35 @@ func TestValidate_AuthCheck_AllowsOwnerWrite(t *testing.T) {
 	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{op, worker, pos}, false, "p1", onlyOwner{allowed: map[string]bool{"w1": true}})
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_UNSPECIFIED, res.Reason, "owner write should pass")
 }
+
+// The other arm of the placement invariant: the tile EXISTS and is a live
+// leaf, but no workspace register claims its chain, so the tab would belong to
+// no workspace. Placement itself must reject that — the auth pass's
+// UNKNOWN_WORKSPACE is the second check, and a tab-create batch never reaches
+// it. This is the guard that makes "a tab that belongs to no workspace"
+// uncommitable, whatever client emitted the op; allowAll proves the rejection
+// is structural, not an auth deny.
+func TestValidate_TabPlacement_TabOnTileOutsideAnyWorkspace(t *testing.T) {
+	pre := crdt.NewState("user-1")
+	// A live leaf node that no Workspaces entry lists as its root.
+	crdt.Apply(pre, stamped(&leapmuxv1.SetNodeRegisterOp{
+		NodeId: "orphan-root",
+		Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+	}, hlcAt(1, 0, "seed")))
+
+	tab := stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Field: &leapmuxv1.SetTabRegisterOp_TileId{TileId: "orphan-root"},
+	}, hlcAt(10, 0, "a"))
+	worker := stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Field: &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: "w1"},
+	}, hlcAt(10, 1, "a"))
+	pos := stamped(&leapmuxv1.SetTabRegisterOp{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "t1",
+		Field: &leapmuxv1.SetTabRegisterOp_Position{Position: "a"},
+	}, hlcAt(10, 2, "a"))
+
+	res, _ := crdt.ValidateBatch(context.Background(), pre, []*leapmuxv1.CrdtOp{tab, worker, pos}, false /* not internal */, "p1", allowAll{})
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID, res.Reason)
+}

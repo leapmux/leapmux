@@ -630,7 +630,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // renders ungrouped until the next git-status refresh reaches it, even
     // though the answer was on screen at the moment of the open.
     const gitSeed = resolveOptimisticGitInfo(activeTab(), { workingDir: ctx.workingDir })
-    openTabInFocusedTile(
+    const placedTileId = openTabInFocusedTile(
       { view, layoutStore, selection, metadata },
       { type: TabType.FILE, id: tabId, workerId: ctx.workerId },
       {
@@ -649,6 +649,13 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
         hydrated: true,
       },
     )
+    // A refused placement added no tab. Registering the path anyway would
+    // persist a worker-side row (and broadcast it to peers) for a tab id
+    // no tree holds — a phantom the reconciler only sweeps an hour later.
+    if (!placedTileId) {
+      showWarnToast('Cannot open the file', new Error('The workspace is not ready for a new tab yet.'))
+      return
+    }
 
     // E2EE worker-side path registration. The hub never sees the path; the
     // worker persists `(user_id, tab_id, file_path, working_dir)` and emits

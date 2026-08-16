@@ -1,18 +1,15 @@
 import type { Accessor, Component, JSX } from 'solid-js'
 import type { createLayoutStore, GridAxis } from '~/stores/layout.store'
-import Plus from 'lucide-solid/icons/plus'
 import { createEffect, createSignal, onCleanup, onMount, Show } from 'solid-js'
 import { ChatDropZone } from '~/components/chat/ChatDropZone'
-import { Icon } from '~/components/common/Icon'
-import { StartupErrorBody } from '~/components/common/StartupPanel'
 import { useShortcutContext } from '~/hooks/useShortcutContext'
 import { PREFIX_SIDEBAR, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { trailingDebounce } from '~/lib/debounce'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
-import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import * as styles from './AppShell.css'
 import { TilingLayout } from './TilingLayout'
 import { useWindowPointerDrag } from './windowPointerDrag'
+import { WorkspaceCenterFallback } from './WorkspaceCenterFallback'
 
 const DEFAULT_SIDEBAR_PX = 250
 const MIN_SIDEBAR_PX = 250
@@ -123,10 +120,10 @@ interface SidebarState {
 interface DesktopLayoutProps {
   layoutStore: ReturnType<typeof createLayoutStore>
   activeWorkspaceId: string | null | undefined
-  activeWorkspace: () => { id: string } | null
   /**
-   * Has the CRDT bootstrap delivered the active workspace? The tiling area
-   * paints only when this is true.
+   * The center's render gate, derived once in AppShell and shared with the
+   * mobile center: true only when the active workspace exists AND its tree
+   * arrived in the projection.
    *
    * Deliberately NOT `!workspaceLoading`: a watchdog clears that flag on a timer
    * so a wedged bootstrap still renders something, and painting on it meant
@@ -135,7 +132,9 @@ interface DesktopLayoutProps {
    * "open a new agent/terminal" affordances create the worker resource BEFORE
    * that op, so the rejected batch leaves an orphan behind.
    */
-  workspaceReady: boolean
+  centerReady: boolean
+  /** No workspace selected at all — paints the create-workspace empty state. */
+  centerNoWorkspace: boolean
   /** The watchdog fired and the bootstrap still has not delivered a workspace. */
   bootstrapTimedOut: boolean
   getInProgressSectionId: () => string | null
@@ -434,44 +433,13 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
           }}
         >
           <Show
-            when={props.activeWorkspace() && props.workspaceReady}
+            when={props.centerReady}
             fallback={(
-              <Show
-                when={!props.activeWorkspace() && !props.activeWorkspaceId}
-                fallback={(
-                  // A workspace IS selected but its state has not arrived. Silence
-                  // is only right while it might still be coming: once the watchdog
-                  // has given up, an outage would otherwise render identically to a
-                  // workspace with no tabs, for the rest of the page.
-                  <Show when={props.bootstrapTimedOut}>
-                    <div class={styles.emptyTileActions} data-testid="workspace-bootstrap-failed">
-                      <StartupErrorBody
-                        title="Couldn't load this workspace"
-                        error="The workspace's state never arrived. Check your connection to the hub, then reload."
-                      />
-                      <button class="outline" onClick={() => window.location.reload()}>
-                        <span class={styles.emptyTileActionContent}><span>Reload</span></span>
-                      </button>
-                    </div>
-                  </Show>
-                )}
-              >
-                <div class={styles.emptyTileActions} data-testid="no-workspace-empty-state">
-                  <button
-                    class="outline"
-                    data-testid="create-workspace-button"
-                    onClick={props.onNewWorkspace}
-                  >
-                    <Icon icon={Plus} size="sm" />
-                    <span class={styles.emptyTileActionContent}>
-                      <span>Create a new workspace...</span>
-                      <Show when={getShortcutHintsText('app.newWorkspaceDialog')}>
-                        {shortcut => <span class={styles.emptyTileActionShortcut}>{shortcut()}</span>}
-                      </Show>
-                    </span>
-                  </button>
-                </div>
-              </Show>
+              <WorkspaceCenterFallback
+                noWorkspace={props.centerNoWorkspace}
+                bootstrapTimedOut={props.bootstrapTimedOut}
+                onNewWorkspace={props.onNewWorkspace}
+              />
             )}
           >
             <ChatDropZone onDrop={props.onFileDrop} disabled={props.fileDropDisabled}>

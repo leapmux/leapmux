@@ -28,6 +28,7 @@ import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 import { protoToAgentTabFields, resolveOptimisticGitInfo, setOptionValue } from '~/stores/tab.helpers'
 import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
+import { warnUnlessPlaceableTab } from './placeableTabGuard'
 import '~/components/chat/providers'
 
 export interface UseAgentOperationsProps {
@@ -102,8 +103,16 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     return available[0] ?? null
   }
 
-  // Open a new agent in the given workspace
-  const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE) => {
+  // Open a new agent in the given workspace. Answers whether an agent was
+  // actually opened, so callers can record the "use" only on success — a
+  // refused open (see the guard below) is not a use.
+  const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE): Promise<boolean> => {
+    // BEFORE the worker RPC: it is the step that can't be taken back. A
+    // placement refusal after it (no projected tree to place on — e.g. the
+    // workspace's tree hasn't arrived) leaves an orphaned agent behind with
+    // no tab to reach it by.
+    if (!warnUnlessPlaceableTab(props.layoutStore, 'an agent'))
+      return false
     try {
       // Title left empty: the worker picks "Agent <Name>" server-side
       // so CLI and UI paths share one pool (see worker/service/
@@ -139,10 +148,13 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         )
         // Focus the editor after the reactive updates propagate to the DOM.
         requestAnimationFrame(() => props.focusEditor?.())
+        return true
       }
+      return false
     }
     catch (err) {
       showWarnToast('Failed to open agent', err)
+      return false
     }
   }
 
@@ -168,8 +180,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
     props.setNewAgentLoadingProvider(provider)
     try {
-      await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir, undefined, provider)
-      touchMruProvider(provider)
+      // Only a successful open counts as a use: a refused or failed open
+      // records nothing, so the MRU list keeps reflecting real usage.
+      if (await openAgentInWorkspace(ws.id, ctx.workerId, ctx.workingDir, undefined, provider))
+        touchMruProvider(provider)
     }
     finally {
       props.setNewAgentLoadingProvider(null)

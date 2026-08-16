@@ -178,6 +178,12 @@ interface OpenSetupOpts {
   setNewTerminalLoading?: (v: boolean) => void
   setNewShellLoading?: (v: boolean) => void
   dialogOpen?: () => void
+  /**
+   * Key the stores at a workspace the bridge never delivered, so
+   * `focusedTileId` is the locally-minted placeholder leaf — the state a
+   * wedged CRDT bootstrap leaves the shell in.
+   */
+  unbootstrapped?: boolean
 }
 
 // Open-terminal-specific setup: lets each test inject a ctx (to
@@ -192,7 +198,7 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
   )
   let ops!: ReturnType<typeof useTerminalOperations>
   const dispose = createRoot((d) => {
-    stores = createTestTabStores('ws-1')
+    stores = createTestTabStores(opts.unbootstrapped ? 'ws-never-bootstrapped' : 'ws-1')
     ops = useTerminalOperations({
       view: stores.view,
       metadata: stores.metadata,
@@ -331,6 +337,20 @@ describe('useterminaloperations.handleopenterminal', () => {
     expect(openTerminalMock).not.toHaveBeenCalled()
     expect(dialogOpen).not.toHaveBeenCalled()
     expect(setLoading).not.toHaveBeenCalled()
+    expect(view.all()).toHaveLength(0)
+  })
+
+  // The pty RPC is the step that cannot be taken back: a placement refusal
+  // AFTER it strands an orphaned pty on the worker with no tab to reach it
+  // by. When the workspace's tree never arrived, the open must refuse
+  // BEFORE the RPC — with a visible reason, not silence.
+  it('refuses before the worker RPC when the workspace has no projected tree', async () => {
+    const { ops, view } = setupForOpen({ unbootstrapped: true })
+
+    await ops.handleOpenTerminal()
+
+    expect(openTerminalMock).not.toHaveBeenCalled()
+    expect(showWarnToastMock).toHaveBeenCalledTimes(1)
     expect(view.all()).toHaveLength(0)
   })
 

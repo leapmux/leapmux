@@ -1,10 +1,11 @@
 import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/leapmux/v1/agent_pb'
-import { Show } from 'solid-js'
+import { createMemo, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
+import { BlockedReasonNotice } from '~/components/shell/BlockedReasonNotice'
 import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
 import { GitOptions } from '~/components/shell/GitOptions'
@@ -23,6 +24,13 @@ interface NewAgentDialogProps {
   defaultAgentProvider?: AgentProvider
   availableProviders?: AgentProvider[]
   onRefreshProviders?: () => void
+  /**
+   * When this returns a string, no tab can be placed right now (no
+   * workspace, or its tree has not arrived): submit is disabled and the
+   * string is shown as the reason. Guards the worker RPC — creating the
+   * agent first and refusing placement second would orphan the agent.
+   */
+  blockedReason?: () => string | undefined
   onCreated: (agent: AgentInfo) => void
   onClose: () => void
 }
@@ -44,8 +52,14 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
 
   const sessionId = createSessionIdState()
 
+  // One memo, two readers (submit gate + notice): `blockedReason` walks
+  // the layout tree, and the submit computation re-runs on every field
+  // keystroke — the memo keeps those walks to one per actual change.
+  const blockedReason = createMemo(() => props.blockedReason?.())
+
   const submitDisabled = () => isAgentCreateDisabled({
     submitting: submitting.loading(),
+    blockedReason: blockedReason(),
     workerId: worker.workerId(),
     workingDir: worker.workingDir(),
     noProviders: noProviders(),
@@ -103,6 +117,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           />
         </DialogTopRow>
       </DialogTopSection>
+      <BlockedReasonNotice reason={blockedReason()} />
       <DialogColumns
         left={<DirectorySelector state={worker} tree={tree} />}
         right={(

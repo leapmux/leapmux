@@ -24,6 +24,7 @@ import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ENTER_KEY_CR } from '~/li
 import { openedTerminalMetadata, resolveOptimisticGitInfo } from '~/stores/tab.helpers'
 import { emitRemoveTab } from '~/stores/tabOps'
 import { openTabInFocusedTile } from './openTabInFocusedTile'
+import { warnUnlessPlaceableTab } from './placeableTabGuard'
 
 // xterm emits Enter as a single CR byte on a non-modifier press.
 // We gate the EXITED-tab restart flow on exactly that one byte so a stray
@@ -136,6 +137,12 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       props.newTerminalDialog.open()
       return
     }
+    // BEFORE the worker RPC: it is the step that can't be taken back. A
+    // placement refusal after it (no projected tree to place on — e.g. the
+    // workspace's tree hasn't arrived) leaves an orphaned pty behind with
+    // no tab to reach it by.
+    if (!warnUnlessPlaceableTab(props.layoutStore, 'a terminal'))
+      return
     args.setLoading(true)
     try {
       const resp = await workerRpc.openTerminal(ctx.workerId, {
