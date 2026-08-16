@@ -3,17 +3,20 @@ import type { TileActions } from './TileActionsMenu'
 import type { TabPopAction } from '~/components/common/TabContextMenu'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
+import type { GuardedDragRow } from '~/lib/dragRow'
 import type { Tab } from '~/stores/tab.types'
-import { createDroppable, createSortable, SortableProvider, transformStyle } from '@thisbeyond/solid-dnd'
+import { createDroppable, SortableProvider } from '@thisbeyond/solid-dnd'
 import Bot from 'lucide-solid/icons/bot'
+import ChevronDown from 'lucide-solid/icons/chevron-down'
 import Ellipsis from 'lucide-solid/icons/ellipsis'
 import Menu from 'lucide-solid/icons/menu'
 import PanelRight from 'lucide-solid/icons/panel-right'
 import Plus from 'lucide-solid/icons/plus'
 import Terminal from 'lucide-solid/icons/terminal'
 import X from 'lucide-solid/icons/x'
-import { createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createSignal, ErrorBoundary, For, onCleanup, onMount, Show } from 'solid-js'
 import { AgentProviderIcon, agentProviderLabel } from '~/components/common/AgentProviderIcon'
+import { DragHandle } from '~/components/common/DragHandle'
 import { createContextMenuAnchor, DropdownMenu, DropdownMenuCheckableItem, DropdownMenuItemContent } from '~/components/common/DropdownMenu'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { TabContextMenu } from '~/components/common/TabContextMenu'
@@ -22,6 +25,8 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { useMruProviders } from '~/hooks/useMruProviders'
+import { attachDragActivators } from '~/lib/dragActivators'
+import { createGuardedSortableRow } from '~/lib/dragRow'
 import { createKeyedRows, KeyedFor } from '~/lib/keyedRows'
 import { getShortcutHintsText, shortcutHint } from '~/lib/shortcuts/display'
 import { canCloseTab, tabDisplayLabel, tabKey, tabTooltipShowWhen, tabTooltipText, terminalProgressBarProps, terminalProgressVisible } from '~/stores/tab.helpers'
@@ -29,6 +34,7 @@ import { isTerminalTab } from '~/stores/tab.types'
 import { menuSectionHeader } from '~/styles/shared.css'
 import * as styles from './TabBar.css'
 import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
+import { TabSheet } from './TabSheet'
 import { terminalStatusClassList } from './terminalStatus'
 import { TileActionsMenu } from './TileActionsMenu'
 
@@ -91,13 +97,17 @@ interface TabBarNewTabProps {
 }
 
 /**
- * Mobile sidebar toggles rendered in the tab bar header. The presence
- * of the prop bundle itself signals "we're in mobile-layout mode" —
- * pass `undefined` (or omit) on desktop.
+ * Mobile chrome rendered in the tab bar. The presence of the prop bundle
+ * itself signals "we're in mobile-layout mode" — pass `undefined` (or omit)
+ * on desktop. Every field is required, so a partial bundle is a type error
+ * rather than mobile chrome that silently does nothing.
  */
 interface TabBarMobileProps {
-  onToggleLeftSidebar?: () => void
-  onToggleRightSidebar?: () => void
+  /** Whether the tab sheet is open — the shell's overlay state owns this. */
+  sheetOpen: () => boolean
+  onToggleDrawer: (side: 'left' | 'right') => void
+  onToggleSheet: () => void
+  onCloseSheet: () => void
 }
 
 interface TabBarProps {
@@ -158,6 +168,9 @@ export const TabBar: Component<TabBarProps> = (props) => {
 
   let editCancelled = false
   let tabListRef: HTMLDivElement | undefined
+
+  /** The tab the mobile chip speaks for: the active one, falling back to the first. */
+  const chipTab = () => props.tabs.find(t => tabKey(t) === props.activeTabKey) ?? props.tabs[0]
 
   const startEditing = (tab: Tab) => {
     setEditingTabKey(tabKey(tab))
@@ -220,85 +233,144 @@ export const TabBar: Component<TabBarProps> = (props) => {
   }
   catch { /* DragDropProvider context not available */ }
 
+  /** The inline rename input, shared by the strip row and the sheet row. */
+  const TabRenameInput: Component<{ tab: () => Tab }> = renameProps => (
+    <input
+      class={styles.tabEditInput}
+      data-testid="tab-rename-input"
+      type="text"
+      value={editingValue()}
+      onInput={e => setEditingValue(e.currentTarget.value)}
+      onKeyDown={(e) => {
+        e.stopPropagation()
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          commitEdit(renameProps.tab())
+        }
+        else if (e.key === 'Escape') {
+          cancelEdit()
+        }
+      }}
+      onBlur={() => commitEdit(renameProps.tab())}
+      onClick={e => e.stopPropagation()}
+      ref={(el) => {
+        requestAnimationFrame(() => {
+          el.focus()
+          el.select()
+        })
+      }}
+    />
+  )
+
+  /**
+   * Per-row DnD wiring, created by `rowSetup` in the FOR-ROW owner — outside
+   * the `<Show>` — because the guarded body activators are a `createEffect`
+   * and an effect created inside the Show's children evaluation is torn down
+   * by a lookup flicker, mid-gesture. (The grip's activators live in the
+   * `DragHandle` component, which owns its own scope and is safe.)
+   *
+   * The drag row itself comes from the guarded factory (`~/lib/dragRow.ts`),
+   * which owns the activation-split protocol; the context-menu anchor is
+   * created unconditionally so the ErrorBoundary fallbacks keep their menus
+   * even when the sortable context is unavailable.
+   */
+  interface TabRowDnd {
+    /** The guarded drag row: node-only ref, split activators, transform style. */
+    row: GuardedDragRow
+    /** Row-element anchor: the context menu and the guarded body activators. */
+    rowEl: () => HTMLElement | undefined
+    setRowEl: (el: HTMLElement) => void
+  }
+
+  const setupTabRowDnd = (key: string): TabRowDnd => {
+    const [rowEl, setRowEl] = createContextMenuAnchor()
+    // The key is the row's identity for the whole of its life now, so the
+    // sortable id is fixed at creation rather than re-derived from a `Tab`
+    // the row no longer owns. Created HERE, in the for-row owner, so it
+    // outlives a tick where the lookup misses.
+    const row = createGuardedSortableRow(key)
+    // Mouse-only activation on the row body; the grip carries the raw
+    // handlers, so touch drags start there and nowhere else.
+    attachDragActivators(rowEl, row.bodyActivators, { touch: 'block' })
+    return { row, rowEl, setRowEl }
+  }
+
+  /** How one row differs between the desktop strip and the mobile sheet. */
+  interface TabRowSurface {
+    rowClass: string
+    rowTestId: string
+    gripTestId: string
+    /** The sheet shows its grip standing; the strip hides it under a fine pointer. */
+    gripVisibility: 'auto' | 'always'
+    menuTestId: string
+    /** The label, with its surface-specific clipping and tooltip. */
+    renderLabel: () => JSX.Element
+    /** What a click or Enter does: select the tab, and on the sheet close it too. */
+    activate: () => void
+    /** The strip's mouse conveniences; the sheet has none of them. */
+    onAuxClick?: (e: MouseEvent) => void
+    onDblClick?: (e: MouseEvent) => void
+  }
+
   // `tab` is an ACCESSOR, not a value: the row outlives any single `Tab` object
   // now that the `<For>` keys on `ids()`, so every field has to be read through
   // it to stay live. Reading it once here would freeze the row at whatever the
   // tab looked like when it mounted.
-  const renderTab = (tab: () => Tab, sortable?: ReturnType<typeof createSortable>) => {
-    // The tab element, for its right-click / long-press menu.
-    const [tabEl, setTabEl] = createContextMenuAnchor()
+  const renderTabRow = (tab: () => Tab, dnd: TabRowDnd | undefined, surface: TabRowSurface) => {
+    const row = dnd?.row
     const isClosing = () => props.closingTabKeys?.has(tabKey(tab())) ?? false
     const canRename = () => tab().type !== TabType.FILE && !props.readOnly
+    // Suppress the click that fires on pointerup after a drag: dropping a row
+    // back on itself must not also select it (and on the sheet, close it).
+    let wasDragging = false
+    createEffect(() => {
+      if (row?.isActiveDraggable)
+        wasDragging = true
+    })
     return (
       <div
         role="tab"
         ref={(el) => {
-          setTabEl(el)
-          sortable?.(el)
+          dnd?.setRowEl(el)
+          // Node registration only — activation is on the guarded body and
+          // the grip above, never attached wholesale: a touch press on the
+          // row must not reach the drag sensor at all.
+          row?.ref(el)
         }}
         tabIndex={0}
         aria-selected={props.activeTabKey === tabKey(tab())}
-        class={styles.tab}
-        classList={{ [styles.tabDragging]: sortable?.isActiveDraggable }}
-        style={sortable?.transform ? transformStyle(sortable.transform) : undefined}
-        data-testid="tab"
+        class={surface.rowClass}
+        classList={{ [styles.tabDragging]: row?.isActiveDraggable }}
+        style={dnd ? dnd.row.style() : undefined}
+        data-testid={surface.rowTestId}
         data-tab-type={tabTypeLabel(tab().type)}
         data-tab-id={tab().id}
         data-terminal-status={terminalStatusOf(tab())}
-        onClick={() => handleTabChange(tabKey(tab()))}
+        onClick={() => {
+          if (wasDragging) {
+            wasDragging = false
+            return
+          }
+          surface.activate()
+        }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
-            handleTabChange(tabKey(tab()))
+            surface.activate()
           }
         }}
-        onAuxClick={(e: MouseEvent) => {
-          if (e.button === 1) {
-            e.preventDefault()
-            if ((props.readOnly && tab().type !== TabType.FILE) || props.closingTabKeys?.has(tabKey(tab())))
-              return
-            props.onClose(tab())
-          }
-        }}
-        onDblClick={(e: MouseEvent) => {
-          e.preventDefault()
-          e.stopPropagation()
-          if (tab().type !== TabType.FILE && !props.readOnly)
-            startEditing(tab())
-        }}
+        onAuxClick={surface.onAuxClick}
+        onDblClick={surface.onDblClick}
       >
+        <DragHandle visibility={surface.gripVisibility} activators={() => row?.gripActivators()} testId={surface.gripTestId} />
         <span class={styles.tabIcon}>
           <TabTypeIcon tab={tab()} />
         </span>
         <Show
           when={editingTabKey() === tabKey(tab())}
-          fallback={<TabTextWithTooltip label={tabDisplayLabel(tab())} tooltip={tabTooltipText(tab())} showWhen={tabTooltipShowWhen(tab())} status={terminalStatusOf(tab())} />}
+          fallback={surface.renderLabel()}
         >
-          <input
-            class={styles.tabEditInput}
-            data-testid="tab-rename-input"
-            type="text"
-            value={editingValue()}
-            onInput={e => setEditingValue(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              e.stopPropagation()
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                commitEdit(tab())
-              }
-              else if (e.key === 'Escape') {
-                cancelEdit()
-              }
-            }}
-            onBlur={() => commitEdit(tab())}
-            onClick={e => e.stopPropagation()}
-            ref={(el) => {
-              requestAnimationFrame(() => {
-                el.focus()
-                el.select()
-              })
-            }}
-          />
+          <TabRenameInput tab={tab} />
         </Show>
         <Show when={tab().hasNotification}>
           <span class={styles.tabNotification} data-testid="tab-notification" />
@@ -314,12 +386,12 @@ export const TabBar: Component<TabBarProps> = (props) => {
           <IconButton
             icon={X}
             class={styles.tabClose}
-            state={props.closingTabKeys?.has(tabKey(tab())) ? IconButtonState.Loading : IconButtonState.Enabled}
+            state={isClosing() ? IconButtonState.Loading : IconButtonState.Enabled}
             data-testid="tab-close"
             onPointerDown={e => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation()
-              if (props.closingTabKeys?.has(tabKey(tab())))
+              if (isClosing())
                 return
               props.onClose(tab())
             }}
@@ -327,10 +399,10 @@ export const TabBar: Component<TabBarProps> = (props) => {
         </Show>
         {/* Outside the close block: a tab that cannot be closed can still be
             renamed or popped out. The menu host collapses to `display: contents`,
-            so it costs the tab strip no layout either way. */}
+            so it costs the row no layout either way. */}
         <TabContextMenu
-          contextMenuFor={tabEl}
-          data-testid="tab-bar-tab-menu"
+          contextMenuFor={dnd?.rowEl}
+          data-testid={surface.menuTestId}
           onRename={canRename() ? () => startEditing(tab()) : undefined}
           onClose={canCloseTab(props.readOnly, tab()) ? () => props.onClose(tab()) : undefined}
           isClosing={isClosing()}
@@ -339,6 +411,52 @@ export const TabBar: Component<TabBarProps> = (props) => {
       </div>
     )
   }
+
+  /** A row of the desktop strip. */
+  const renderStripRow = (tab: () => Tab, dnd?: TabRowDnd) => renderTabRow(tab, dnd, {
+    rowClass: styles.tab,
+    rowTestId: 'tab',
+    gripTestId: 'tab-drag-handle',
+    gripVisibility: 'auto',
+    menuTestId: 'tab-bar-tab-menu',
+    renderLabel: () => (
+      <TabTextWithTooltip
+        label={tabDisplayLabel(tab())}
+        tooltip={tabTooltipText(tab())}
+        showWhen={tabTooltipShowWhen(tab())}
+        status={terminalStatusOf(tab())}
+      />
+    ),
+    activate: () => handleTabChange(tabKey(tab())),
+    onAuxClick: (e: MouseEvent) => {
+      if (e.button === 1) {
+        e.preventDefault()
+        if ((props.readOnly && tab().type !== TabType.FILE) || props.closingTabKeys?.has(tabKey(tab())))
+          return
+        props.onClose(tab())
+      }
+    },
+    onDblClick: (e: MouseEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (tab().type !== TabType.FILE && !props.readOnly)
+        startEditing(tab())
+    },
+  })
+
+  /** A row of the mobile tab sheet. */
+  const renderSheetRow = (tab: () => Tab, dnd?: TabRowDnd) => renderTabRow(tab, dnd, {
+    rowClass: styles.sheetRow,
+    rowTestId: 'tab-sheet-row',
+    gripTestId: 'tab-sheet-drag-handle',
+    gripVisibility: 'always',
+    menuTestId: 'tab-sheet-row-menu',
+    renderLabel: () => <span class={styles.sheetRowLabel}>{tabDisplayLabel(tab())}</span>,
+    activate: () => {
+      handleTabChange(tabKey(tab()))
+      props.mobile?.onCloseSheet()
+    },
+  })
 
   // Shared menu items for "More options" (used in full, collapsed-new-tab, and collapsed-overflow menus)
   const renderMoreMenuItems = () => (
@@ -402,194 +520,295 @@ export const TabBar: Component<TabBarProps> = (props) => {
     </>
   )
 
+  /**
+   * The collapsed "+" new-tab dropdown, shared by the minimal strip variant
+   * and the mobile bar — one UI in two visibility regimes, kept in lockstep
+   * by one component.
+   */
+  const CollapsedNewTabMenu: Component<{ wrapperClass: string }> = menuProps => (
+    <div class={menuProps.wrapperClass}>
+      <DropdownMenu
+        trigger={triggerProps => (
+          <IconButton
+            icon={Plus}
+            iconSize="md"
+            size="md"
+            data-testid="collapsed-new-tab-button"
+            {...triggerProps}
+          />
+        )}
+      >
+        {renderMoreMenuItems()}
+      </DropdownMenu>
+    </div>
+  )
+
   return (
     <div class={styles.tabBar} data-testid="tab-bar">
       <Show when={props.mobile}>
-        <IconButton
-          icon={Menu}
-          iconSize="lg"
-          size="xl"
-          aria-label="Toggle workspaces"
-          onClick={() => props.mobile?.onToggleLeftSidebar?.()}
-        />
-      </Show>
-      <div
-        role="tablist"
-        ref={(el) => {
-          tabListRef = el
-          zoneDroppable?.(el)
-        }}
-        class={styles.tabList}
-        classList={{ [styles.tabListDropTarget]: isDropTarget() }}
-        data-testid="tab-list"
-        onDblClick={(e: MouseEvent) => {
-          const target = e.target as HTMLElement
-          if (target.closest('[data-testid="tab"]'))
-            return
-          props.newTab.onNewAgentAdvanced?.()
-        }}
-      >
-        <ErrorBoundary fallback={(
-          // No sortable: this fallback exists to render the strip when the drag
-          // machinery is what threw, so it must not touch it.
-          <KeyedFor each={ids()} lookup={key => tabByKey().get(key)}>
-            {tab => renderTab(tab)}
-          </KeyedFor>
+        {mobile => (
+          <IconButton
+            icon={Menu}
+            iconSize="lg"
+            size="xl"
+            aria-label="Toggle workspaces"
+            onClick={() => mobile().onToggleDrawer('left')}
+          />
         )}
-        >
-          <SortableProvider ids={ids()}>
-            <KeyedFor
-              each={ids()}
-              lookup={key => tabByKey().get(key)}
-              rowSetup={(key) => {
-                try {
-                  // The key is the row's identity for the whole of its life now,
-                  // so the sortable id is fixed at creation rather than re-derived
-                  // from a `Tab` the row no longer owns. Created HERE, in the
-                  // for-row owner, so it outlives a tick where the lookup misses.
-                  return createSortable(key)
-                }
-                catch { /* DnD context not ready */ }
-                return undefined
+      </Show>
+
+      <Show
+        when={props.mobile}
+        fallback={(
+          <>
+            <div
+              role="tablist"
+              ref={(el) => {
+                tabListRef = el
+                zoneDroppable?.(el)
+              }}
+              class={styles.tabList}
+              classList={{ [styles.tabListDropTarget]: isDropTarget() }}
+              data-testid="tab-list"
+              onDblClick={(e: MouseEvent) => {
+                const target = e.target as HTMLElement
+                if (target.closest('[data-testid="tab"]'))
+                  return
+                props.newTab.onNewAgentAdvanced?.()
               }}
             >
-              {(tab, _key, sortable) => renderTab(tab, sortable)}
-            </KeyedFor>
-          </SortableProvider>
-        </ErrorBoundary>
-      </div>
-      <Show when={props.newTab.showAddButton}>
-        {/* Full / Compact: individual new-tab buttons */}
-        <div class={styles.newTabWrapper}>
-          <Show
-            when={mruProviders().length > 0}
-            fallback={(
-              <TabBarTooltip text="No agents available">
-                <IconButton
-                  icon={Bot}
-                  iconSize="md"
-                  size="md"
-                  state={IconButtonState.Disabled}
-                  data-testid="new-agent-button-disabled"
-                />
-              </TabBarTooltip>
-            )}
-          >
-            <For each={mruProviders()}>
-              {provider => (
-                <TabBarTooltip text={shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')}>
-                  <Show
-                    when={props.newTab.newAgentLoadingProvider !== provider}
-                    fallback={(
+              <ErrorBoundary fallback={(
+                // No sortable: this fallback exists to render the strip when the drag
+                // machinery is what threw, so it must not touch it. The menu
+                // anchor survives — setupTabRowDnd creates it unconditionally.
+                <KeyedFor each={ids()} lookup={key => tabByKey().get(key)} rowSetup={setupTabRowDnd}>
+                  {(tab, _key, dnd) => renderStripRow(tab, dnd)}
+                </KeyedFor>
+              )}
+              >
+                <SortableProvider ids={ids()}>
+                  <KeyedFor
+                    each={ids()}
+                    lookup={key => tabByKey().get(key)}
+                    rowSetup={setupTabRowDnd}
+                  >
+                    {(tab, _key, dnd) => renderStripRow(tab, dnd)}
+                  </KeyedFor>
+                </SortableProvider>
+              </ErrorBoundary>
+            </div>
+
+            <Show when={props.newTab.showAddButton}>
+              {/* Full / Compact: individual new-tab buttons */}
+              <div class={styles.newTabWrapper}>
+                <Show
+                  when={mruProviders().length > 0}
+                  fallback={(
+                    <TabBarTooltip text="No agents available">
                       <IconButton
                         icon={Bot}
                         iconSize="md"
                         size="md"
-                        state={IconButtonState.Loading}
-                        data-testid={`new-agent-button-${provider}`}
+                        state={IconButtonState.Disabled}
+                        data-testid="new-agent-button-disabled"
                       />
+                    </TabBarTooltip>
+                  )}
+                >
+                  <For each={mruProviders()}>
+                    {provider => (
+                      <TabBarTooltip text={shortcutHint(`New ${agentProviderLabel(provider)} agent`, 'app.newAgent')}>
+                        <Show
+                          when={props.newTab.newAgentLoadingProvider !== provider}
+                          fallback={(
+                            <IconButton
+                              icon={Bot}
+                              iconSize="md"
+                              size="md"
+                              state={IconButtonState.Loading}
+                              data-testid={`new-agent-button-${provider}`}
+                            />
+                          )}
+                        >
+                          <button
+                            type="button"
+                            class={styles.providerButton}
+                            data-testid={`new-agent-button-${provider}`}
+                            onClick={() => handleNewAgent(provider)}
+                          >
+                            <AgentProviderIcon provider={provider} size={16} />
+                          </button>
+                        </Show>
+                      </TabBarTooltip>
                     )}
-                  >
-                    <button
-                      type="button"
-                      class={styles.providerButton}
-                      data-testid={`new-agent-button-${provider}`}
-                      onClick={() => handleNewAgent(provider)}
-                    >
-                      <AgentProviderIcon provider={provider} size={16} />
-                    </button>
-                  </Show>
-                </TabBarTooltip>
-              )}
-            </For>
-          </Show>
-          <TabBarTooltip text={shortcutHint(newTerminalLabel(), 'app.newTerminal')}>
-            <IconButton
-              icon={Terminal}
-              iconSize="md"
-              size="md"
-              state={props.newTab.newTerminalLoading ? IconButtonState.Loading : IconButtonState.Enabled}
-              data-testid="new-terminal-button"
-              onClick={() => props.newTab.onNewTerminal()}
-            />
-          </TabBarTooltip>
-          <DropdownMenu
-            trigger={triggerProps => (
-              <TabBarTooltip text="More options">
-                <IconButton
-                  icon={Plus}
-                  iconSize="md"
-                  size="md"
-                  state={props.newTab.newShellLoading ? IconButtonState.Loading : IconButtonState.Enabled}
-                  data-testid="tab-more-menu"
-                  {...triggerProps}
-                />
-              </TabBarTooltip>
-            )}
-          >
-            {renderMoreMenuItems()}
-          </DropdownMenu>
-        </div>
-
-        {/* Minimal: collapsed "+" button with new-tab + more options */}
-        <div class={styles.collapsedNewTab}>
-          <DropdownMenu
-            trigger={triggerProps => (
-              <IconButton
-                icon={Plus}
-                iconSize="md"
-                size="md"
-                data-testid="collapsed-new-tab-button"
-                {...triggerProps}
-              />
-            )}
-          >
-            {renderMoreMenuItems()}
-          </DropdownMenu>
-        </div>
-
-        {/* Micro: collapsed "..." button with everything including tile actions */}
-        <div class={styles.collapsedOverflow}>
-          <DropdownMenu
-            trigger={triggerProps => (
-              <IconButton
-                icon={Ellipsis}
-                iconSize="md"
-                size="md"
-                data-testid="collapsed-overflow-button"
-                {...triggerProps}
-              />
-            )}
-          >
-            {renderMoreMenuItems()}
-            <Show when={props.tileActions}>
-              {actions => (
-                <>
-                  <hr />
-                  <li class={menuSectionHeader}>Tile</li>
-                  <TileActionsMenu
-                    actions={actions()}
-                    withIcons
-                    // Default size 2×2 from the overflow menu — the micro
-                    // path doesn't have room for a hover-grid. Power users
-                    // can use the full-mode popover.
-                    onMakeGridClick={() => actions().onMakeGrid(2, 2)}
-                    makeGridLabel="Make a 2×2 grid"
+                  </For>
+                </Show>
+                <TabBarTooltip text={shortcutHint(newTerminalLabel(), 'app.newTerminal')}>
+                  <IconButton
+                    icon={Terminal}
+                    iconSize="md"
+                    size="md"
+                    state={props.newTab.newTerminalLoading ? IconButtonState.Loading : IconButtonState.Enabled}
+                    data-testid="new-terminal-button"
+                    onClick={() => props.newTab.onNewTerminal()}
                   />
-                </>
-              )}
+                </TabBarTooltip>
+                <DropdownMenu
+                  trigger={triggerProps => (
+                    <TabBarTooltip text="More options">
+                      <IconButton
+                        icon={Plus}
+                        iconSize="md"
+                        size="md"
+                        state={props.newTab.newShellLoading ? IconButtonState.Loading : IconButtonState.Enabled}
+                        data-testid="tab-more-menu"
+                        {...triggerProps}
+                      />
+                    </TabBarTooltip>
+                  )}
+                >
+                  {renderMoreMenuItems()}
+                </DropdownMenu>
+              </div>
+
+              {/* Minimal: collapsed "+" button with new-tab + more options */}
+              <CollapsedNewTabMenu wrapperClass={styles.collapsedNewTab} />
+
+              {/* Micro: collapsed "..." button with everything including tile actions */}
+              <div class={styles.collapsedOverflow}>
+                <DropdownMenu
+                  trigger={triggerProps => (
+                    <IconButton
+                      icon={Ellipsis}
+                      iconSize="md"
+                      size="md"
+                      data-testid="collapsed-overflow-button"
+                      {...triggerProps}
+                    />
+                  )}
+                >
+                  {renderMoreMenuItems()}
+                  <Show when={props.tileActions}>
+                    {actions => (
+                      <>
+                        <hr />
+                        <li class={menuSectionHeader}>Tile</li>
+                        <TileActionsMenu
+                          actions={actions()}
+                          withIcons
+                          // Default size 2×2 from the overflow menu — the micro
+                          // path doesn't have room for a hover-grid. Power users
+                          // can use the full-mode popover.
+                          onMakeGridClick={() => actions().onMakeGrid(2, 2)}
+                          makeGridLabel="Make a 2×2 grid"
+                        />
+                      </>
+                    )}
+                  </Show>
+                </DropdownMenu>
+              </div>
             </Show>
-          </DropdownMenu>
-        </div>
+          </>
+        )}
+      >
+        {mobile => (
+          <>
+            {/* Mobile: the strip collapses to a chip that opens the tab sheet. */}
+            <button
+              type="button"
+              class={styles.tabChip}
+              data-testid="tab-chip"
+              aria-haspopup="dialog"
+              aria-expanded={mobile().sheetOpen()}
+              onClick={() => {
+                const tab = chipTab()
+                if (!tab) {
+                  // Mirrors the strip's empty-area double-click: no tabs to list,
+                  // so the chip becomes a new-tab trigger.
+                  props.newTab.onNewAgentAdvanced?.()
+                  return
+                }
+                mobile().onToggleSheet()
+              }}
+            >
+              <Show
+                when={chipTab()}
+                fallback={<span class={styles.tabIcon} />}
+              >
+                {tab => (
+                  <>
+                    <span class={styles.tabIcon}>
+                      <TabTypeIcon tab={tab()} />
+                    </span>
+                    <span class={styles.mobileClippedLabel}>{tabDisplayLabel(tab())}</span>
+                    <Show when={tab().hasNotification}>
+                      <span class={styles.tabNotification} data-testid="tab-notification" />
+                    </Show>
+                  </>
+                )}
+              </Show>
+              <span class={styles.tabChipCount} data-testid="tab-chip-count">{props.tabs.length}</span>
+              <ChevronDown size={14} class={styles.tabChipChevron} />
+            </button>
+
+            {/* Mobile keeps the single "+" new-tab dropdown. The mobile bar
+                has no [data-tile-size] ancestor (it renders outside any Tile),
+                so the tile-size rules that reveal `collapsedNewTab` never
+                apply — this variant is visible on its own. */}
+            <Show when={props.newTab.showAddButton}>
+              <CollapsedNewTabMenu wrapperClass={styles.mobileNewTab} />
+            </Show>
+          </>
+        )}
       </Show>
+
       <Show when={props.mobile}>
-        <IconButton
-          icon={PanelRight}
-          iconSize="lg"
-          size="xl"
-          aria-label="Toggle files"
-          onClick={() => props.mobile?.onToggleRightSidebar?.()}
-        />
+        {mobile => (
+          <IconButton
+            icon={PanelRight}
+            iconSize="lg"
+            size="xl"
+            aria-label="Toggle files"
+            onClick={() => mobile().onToggleDrawer('right')}
+          />
+        )}
+      </Show>
+
+      {/* The mobile tab sheet, fixed-positioned within the tab bar's stacking
+          context — which itself paints above the drawers — so it covers an
+          open drawer. Its open state and mutual exclusion with the drawers
+          live in the shell's overlay state, not here. */}
+      <Show when={props.mobile}>
+        {mobile => (
+          <TabSheet
+            open={mobile().sheetOpen}
+            onClose={mobile().onCloseSheet}
+            tileId={props.tileId}
+            tabCount={() => props.tabs.length}
+          >
+            <Show
+              when={ids().length > 0}
+              fallback={<div class={styles.sheetEmpty}>No tabs</div>}
+            >
+              <ErrorBoundary fallback={(
+                <KeyedFor each={ids()} lookup={key => tabByKey().get(key)} rowSetup={setupTabRowDnd}>
+                  {(tab, _key, dnd) => renderSheetRow(tab, dnd)}
+                </KeyedFor>
+              )}
+              >
+                <SortableProvider ids={ids()}>
+                  <KeyedFor
+                    each={ids()}
+                    lookup={key => tabByKey().get(key)}
+                    rowSetup={setupTabRowDnd}
+                  >
+                    {(tab, _key, dnd) => renderSheetRow(tab, dnd)}
+                  </KeyedFor>
+                </SortableProvider>
+              </ErrorBoundary>
+            </Show>
+          </TabSheet>
+        )}
       </Show>
     </div>
   )

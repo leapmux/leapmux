@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { loginViaToken, openWorkspace, sidebarLeafLabels, tabbarAgentLabels, waitForLayoutSave, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { loginViaToken, openWorkspace, sidebarLeafLabels, tabbarAgentLabels, waitForLayoutSave, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 
 /**
  * Regression: dragging a tab from a non-active workspace's expanded
@@ -146,8 +146,7 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
       // draggable. The chevron is the first SVG inside the workspace
       // item; clicking it fires `onExpandWorkspace`, which lazy-loads
       // wsA's tabs, which the projection already carries.
-      const wsAItem = workspaceRow(page, wsA)
-      await wsAItem.locator('svg').first().click()
+      await workspaceChevron(page, wsA).click()
       // One leaf each under wsA (the source) and wsB (the destination --
       // already visible because wsB is active). Counted PER WORKSPACE, not
       // across the whole sidebar: `leapmuxServer` is worker-scoped, so an
@@ -220,8 +219,7 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
       // wsAAgentId must not appear back under wsA's sidebar section
       // after refresh — the move op committed to the hub and the
       // post-reload `listTabs(wsA)` should no longer return it.
-      const wsAItemAfterReload = workspaceRow(page, wsA)
-      await wsAItemAfterReload.locator('svg').first().click()
+      await workspaceChevron(page, wsA).click()
       const wsALabelsAfterReload = await sidebarLeafLabels(page, wsA)
       expect(wsALabelsAfterReload).toEqual([])
     }

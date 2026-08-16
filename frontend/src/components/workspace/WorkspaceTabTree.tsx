@@ -1,12 +1,12 @@
 import type { Accessor, Component } from 'solid-js'
 import type { WorkerInfo } from '~/lib/workerInfoCache'
 import type { Tab, TabItemOps } from '~/stores/tab.types'
-import { createDraggable } from '@thisbeyond/solid-dnd'
 import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FolderGit from 'lucide-solid/icons/folder-git'
 import GitBranch from 'lucide-solid/icons/git-branch'
 import X from 'lucide-solid/icons/x'
 import { createMemo, createSignal, on, Show, useContext } from 'solid-js'
+import { DragHandle } from '~/components/common/DragHandle'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { TabContextMenu } from '~/components/common/TabContextMenu'
@@ -16,6 +16,8 @@ import { SIDEBAR_TAB_PREFIX } from '~/components/shell/TabDragContext'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { PREFIX_TAB_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
+import { attachDragActivators } from '~/lib/dragActivators'
+import { createGuardedDraggableRow } from '~/lib/dragRow'
 import { createKeyedRows, createKeyLookup, createStableKeys, KeyedFor } from '~/lib/keyedRows'
 import { basename, flavorFromOs, tildify } from '~/lib/paths'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
@@ -210,8 +212,8 @@ const TabLeaf: Component<{
 }> = (props) => {
   // The row element, for its right-click / long-press menu.
   const [rowEl, setRowEl] = createContextMenuAnchor()
-  /* eslint-disable solid/reactivity -- stable identifier for createDraggable */
-  const draggable = createDraggable(
+  /* eslint-disable solid/reactivity -- stable identifier for the draggable row */
+  const dragRow = createGuardedDraggableRow(
     `${SIDEBAR_TAB_PREFIX}${props.workspaceId}:${props.tab.type}:${props.tab.id}`,
     // `title` is a GETTER, not a snapshot. solid-dnd stores this object by
     // reference and `TabDragContext`'s overlay renderer reads it when a drag
@@ -231,17 +233,25 @@ const TabLeaf: Component<{
     },
   )
   /* eslint-enable solid/reactivity */
+  // Mouse-only activation on the row body; the grip carries the raw handlers,
+  // so touch drags start there and nowhere else.
+  attachDragActivators(() => rowEl(), dragRow.bodyActivators, { touch: 'block' })
 
   return (
     <div
       ref={(el) => {
         setRowEl(el)
-        draggable(el)
+        // Node registration only — activation lives on the guarded body and
+        // the grip; the transform arrives through the style prop below.
+        dragRow.ref(el)
       }}
-      class={`${shared.node} ${css.leafNode} ${props.isActive ? css.leafActive : ''} ${draggable.isActiveDraggable ? css.leafDragging : ''}`}
-      style={{ 'padding-left': `${4 + props.depth * 16}px` }}
+      class={`${shared.node} ${css.leafNode} ${props.isActive ? css.leafActive : ''} ${dragRow.isActiveDraggable ? css.leafDragging : ''}`}
+      style={{
+        'padding-left': `${4 + props.depth * 16}px`,
+        ...dragRow.style(),
+      }}
       onClick={() => {
-        if (!draggable.isActiveDraggable)
+        if (!dragRow.isActiveDraggable)
           props.onClick()
       }}
       onDblClick={(e) => {
@@ -310,6 +320,7 @@ const TabLeaf: Component<{
           {...terminalProgressBarProps(props.tab)}
         />
       </Show>
+      <DragHandle activators={dragRow.gripActivators} testId="sidebar-tab-drag-handle" />
       <Show when={props.canClose}>
         <div class={`${sidebarActions} ${css.leafActions}`}>
           <IconButton

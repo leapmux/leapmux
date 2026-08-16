@@ -1,35 +1,22 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { createRoot, createSignal } from 'solid-js'
+import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import * as styles from './AppShell.css'
-import { createMobileSidebarToggles, MobileLayout } from './MobileLayout'
-
-/**
- * Build a minimal sectionStore-shaped object — MobileLayout only needs
- * `state.sections` from it (passed through to SectionDragProvider, which
- * shouldn't fire any drag interactions in these tests).
- */
-function makeStubSectionStore() {
-  return {
-    state: { sections: [] },
-  } as unknown as Parameters<typeof MobileLayout>[0]['sectionStore']
-}
+import { createMobileOverlayState, MobileLayout } from './MobileLayout'
 
 interface RenderOpts {
   leftSidebarOpen?: boolean
   rightSidebarOpen?: boolean
-  closeAllSidebars?: () => void
+  sheetOpen?: boolean
 }
 
-function renderMobile(opts: RenderOpts = {}) {
+function renderMobile(opts: RenderOpts = {}, onCloseSheet: () => void = () => {}) {
   return render(() => (
     <MobileLayout
-      sectionStore={makeStubSectionStore()}
-      onMoveSection={() => {}}
-      onMoveSectionServer={() => {}}
       leftSidebarOpen={opts.leftSidebarOpen ?? false}
       rightSidebarOpen={opts.rightSidebarOpen ?? false}
-      closeAllSidebars={opts.closeAllSidebars ?? (() => {})}
+      sheetOpen={opts.sheetOpen ?? false}
+      onCloseSheet={onCloseSheet}
       leftSidebarElement={<div data-testid="sidebar-left">left</div>}
       rightSidebarElement={<div data-testid="sidebar-right">right</div>}
       tabBarElement={<div data-testid="tab-bar">tab-bar</div>}
@@ -61,13 +48,6 @@ describe('mobileLayout', () => {
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(false)
   })
 
-  it('overlay is rendered but not active when both sidebars are closed', () => {
-    const { container } = renderMobile({})
-    const overlay = container.querySelector(`.${styles.mobileOverlay}`)
-    expect(overlay).not.toBeNull()
-    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(false)
-  })
-
   it('applies the open class to the left sidebar when leftSidebarOpen is true', () => {
     renderMobile({ leftSidebarOpen: true })
 
@@ -86,118 +66,86 @@ describe('mobileLayout', () => {
     expect(rightPanel.classList.contains(styles.mobileSidebarOpen)).toBe(true)
   })
 
-  it('toggles the overlay-open class when either sidebar opens or both close', () => {
-    const [leftOpen, setLeftOpen] = createSignal(true)
-    const [rightOpen, setRightOpen] = createSignal(false)
-    const { container } = render(() => (
-      <MobileLayout
-        sectionStore={makeStubSectionStore()}
-        onMoveSection={() => {}}
-        onMoveSectionServer={() => {}}
-        leftSidebarOpen={leftOpen()}
-        rightSidebarOpen={rightOpen()}
-        closeAllSidebars={() => {}}
-        leftSidebarElement={<div data-testid="sidebar-left">left</div>}
-        rightSidebarElement={<div data-testid="sidebar-right">right</div>}
-        tabBarElement={<div data-testid="tab-bar">tab-bar</div>}
-        tileContent={<div data-testid="tile-content">tiles</div>}
-        editorPanel={<div data-testid="editor-panel">editor</div>}
-      />
-    ))
+  it('renders the sheet scrim inert while closed and active when the sheet is open', () => {
+    const closed = renderMobile({})
+    expect(screen.getByTestId('tab-sheet-overlay')).not.toHaveClass(styles.sheetOverlayOpen)
+    closed.unmount()
 
-    const overlay = container.querySelector(`.${styles.mobileOverlay}`)
-    expect(overlay).not.toBeNull()
-    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(true)
-
-    setLeftOpen(false)
-    setRightOpen(true)
-    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(true)
-
-    setLeftOpen(false)
-    setRightOpen(false)
-    expect(overlay!.classList.contains(styles.mobileOverlayOpen)).toBe(false)
+    renderMobile({ sheetOpen: true })
+    expect(screen.getByTestId('tab-sheet-overlay')).toHaveClass(styles.sheetOverlayOpen)
   })
 
-  it('invokes closeAllSidebars when the overlay is clicked', () => {
-    const closeAllSidebars = vi.fn()
-    const { container } = renderMobile({ leftSidebarOpen: true, closeAllSidebars })
+  it('a tap on the sheet scrim asks the overlay owner to close the sheet', () => {
+    const onCloseSheet = vi.fn()
+    renderMobile({ sheetOpen: true }, onCloseSheet)
 
-    const overlay = container.querySelector(`.${styles.mobileOverlay}`)
-    expect(overlay).not.toBeNull()
-    fireEvent.click(overlay!)
+    fireEvent.click(screen.getByTestId('tab-sheet-overlay'))
 
-    expect(closeAllSidebars).toHaveBeenCalledTimes(1)
+    expect(onCloseSheet).toHaveBeenCalledOnce()
   })
 })
 
-describe('createMobileSidebarToggles', () => {
-  it('starts with both sidebars closed', () => {
+describe('createMobileOverlayState', () => {
+  it('starts with nothing open', () => {
     createRoot((dispose) => {
-      const t = createMobileSidebarToggles()
-      expect(t.leftSidebarOpen()).toBe(false)
-      expect(t.rightSidebarOpen()).toBe(false)
+      const s = createMobileOverlayState()
+      expect(s.overlay()).toBe('none')
       dispose()
     })
   })
 
-  it('toggleLeftSidebar opens the left sidebar', () => {
+  it('toggleDrawer opens and closes its own drawer', () => {
     createRoot((dispose) => {
-      const t = createMobileSidebarToggles()
-      t.toggleLeftSidebar()
-      expect(t.leftSidebarOpen()).toBe(true)
-      expect(t.rightSidebarOpen()).toBe(false)
+      const s = createMobileOverlayState()
+      s.toggleDrawer('left')
+      expect(s.overlay()).toBe('left')
+      s.toggleDrawer('left')
+      expect(s.overlay()).toBe('none')
       dispose()
     })
   })
 
-  it('toggleLeftSidebar closes the left sidebar when already open', () => {
+  it('opening one drawer replaces the other, and the sheet', () => {
     createRoot((dispose) => {
-      const t = createMobileSidebarToggles()
-      t.toggleLeftSidebar()
-      t.toggleLeftSidebar()
-      expect(t.leftSidebarOpen()).toBe(false)
+      const s = createMobileOverlayState()
+      s.toggleDrawer('left')
+      s.toggleDrawer('right')
+      expect(s.overlay()).toBe('right')
+
+      s.toggleSheet()
+      expect(s.overlay()).toBe('sheet')
+
+      s.toggleDrawer('left')
+      expect(s.overlay()).toBe('left')
       dispose()
     })
   })
 
-  it('toggleRightSidebar opens the right sidebar and closes the left', () => {
+  it('toggleSheet toggles, and closeSheet closes only the sheet', () => {
     createRoot((dispose) => {
-      const t = createMobileSidebarToggles()
-      t.toggleLeftSidebar()
-      expect(t.leftSidebarOpen()).toBe(true)
+      const s = createMobileOverlayState()
+      s.toggleSheet()
+      s.toggleSheet()
+      expect(s.overlay()).toBe('none')
 
-      t.toggleRightSidebar()
-      expect(t.rightSidebarOpen()).toBe(true)
-      expect(t.leftSidebarOpen()).toBe(false)
+      // closeSheet must not disturb an open drawer.
+      s.toggleDrawer('right')
+      s.closeSheet()
+      expect(s.overlay()).toBe('right')
       dispose()
     })
   })
 
-  it('toggleLeftSidebar closes the right sidebar when opening the left', () => {
+  it('closeAll closes whatever is up', () => {
     createRoot((dispose) => {
-      const t = createMobileSidebarToggles()
-      t.toggleRightSidebar()
-      expect(t.rightSidebarOpen()).toBe(true)
+      const s = createMobileOverlayState()
+      s.toggleSheet()
+      s.closeAll()
+      expect(s.overlay()).toBe('none')
 
-      t.toggleLeftSidebar()
-      expect(t.leftSidebarOpen()).toBe(true)
-      expect(t.rightSidebarOpen()).toBe(false)
-      dispose()
-    })
-  })
-
-  it('closeAllSidebars closes both sidebars', () => {
-    createRoot((dispose) => {
-      const t = createMobileSidebarToggles()
-      t.toggleLeftSidebar()
-      t.closeAllSidebars()
-      expect(t.leftSidebarOpen()).toBe(false)
-      expect(t.rightSidebarOpen()).toBe(false)
-
-      t.toggleRightSidebar()
-      t.closeAllSidebars()
-      expect(t.leftSidebarOpen()).toBe(false)
-      expect(t.rightSidebarOpen()).toBe(false)
+      s.toggleDrawer('left')
+      s.closeAll()
+      expect(s.overlay()).toBe('none')
       dispose()
     })
   })

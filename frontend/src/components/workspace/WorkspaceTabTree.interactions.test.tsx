@@ -14,8 +14,20 @@ const { draggableData } = vi.hoisted(() => ({ draggableData: [] as { title: stri
 vi.mock('@thisbeyond/solid-dnd', () => ({
   createDraggable: (_id: string, data: { title: string }) => {
     draggableData.push(data)
-    return () => {}
+    // The leaf registers its node through `.ref` and applies the transform
+    // via style — the callable form is intentionally unused now.
+    return {
+      ref: () => {},
+      isActiveDraggable: false,
+      get dragActivators() {
+        return {}
+      },
+      get transform() {
+        return { x: 0, y: 0 }
+      },
+    }
   },
+  maybeTransformStyle: () => undefined,
 }))
 
 vi.mock('~/components/shell/TabDragContext', () => ({

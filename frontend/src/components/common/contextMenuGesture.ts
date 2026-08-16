@@ -28,11 +28,11 @@ export function pressAnchorRect(press: ContextMenuPress): PopoverAnchorRect {
 /**
  * Pointer travel that abandons a hold, in CSS pixels.
  *
- * Deliberately BELOW solid-dnd's activation distance of 10 (see
- * ~/components/shell/dragPointerSensor.ts), so a finger that starts to drag always
- * abandons the menu before the drag lifts the row. Also inside iOS's 10-point
- * `allowableMovement` and Android's 8dp touch slop, so an unsteady finger that the
- * platform would still call a long press is one here too.
+ * Inside iOS's 10-point `allowableMovement` and Android's 8dp touch slop, so
+ * an unsteady finger that the platform would still call a long press is one
+ * here too. (Touch drags start only from dedicated drag handles now, so a
+ * finger drifting on a row body races no drag activation distance anymore —
+ * see ~/lib/dragActivators.ts.)
  */
 export const PRESS_SLOP_PX = 8
 

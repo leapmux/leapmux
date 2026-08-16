@@ -5,8 +5,8 @@ import { createSignal, useContext } from 'solid-js'
 import { Sidebar } from '~/generated/leapmux/v1/section_pb'
 import { createStableContext } from '~/lib/createStableContext'
 import { mid } from '~/lib/lexorank'
-import { DragPointerSensor } from './dragPointerSensor'
 import { dragOverlayAboveFloating } from './FloatingWindowContainer.css'
+import { GuardedPointerSensor } from './guardedPointerSensor'
 import {
   computeInsertPosition,
   findClosestSectionDroppable,
@@ -416,7 +416,18 @@ export function SectionDragProvider(props: SectionDragProviderProps) {
         onDragEnd={handleDragEnd}
         collisionDetector={collisionDetector as any}
       >
-        <DragPointerSensor />
+        {/* The stock upstream sensor plus the guards this app needs (see
+            ./guardedPointerSensor.ts): presses inside embedded UI (rename
+            inputs, open menus) never arm it, only the primary pointer drives
+            a press, a `pointercancel` unwinds it, a superseding press clears
+            the previous one, and a stationary touch hold never lifts a row —
+            a touch drag needs travel, and only dedicated drag handles
+            (`data-drag-handle`, `touch-action: none`, raw activators) offer
+            touch that travel. Row bodies forward fine-pointer presses only,
+            and only presses that start on the row itself
+            (~/lib/dragActivators.ts), so a swipe scrolls the list and a
+            hold opens the 500ms context menu. */}
+        <GuardedPointerSensor />
         {props.children}
         <DragOverlay class={dragOverlayAboveFloating}>
           {(draggable: any) => {

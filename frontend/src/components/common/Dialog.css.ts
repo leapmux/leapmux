@@ -3,6 +3,12 @@ import { breakpoints, motion } from '~/styles/tokens'
 
 // Dialog container
 
+// Oat caps every dialog at `max-height: 85vh` from `@layer components`, and a
+// max-height beats `tall`'s `height: 100vh` — so without the raise below, the
+// full-screen phone treatment rendered at 85vh with a strip of backdrop above
+// and below. Unlayered author CSS outranks Oat's layer without a specificity
+// fight, the same mechanic `~/styles/popover.css.ts` records for the card
+// padding.
 export const standard = style({
   'position': 'relative',
   'minWidth': '360px',
@@ -14,6 +20,7 @@ export const standard = style({
       minWidth: 'unset',
       maxWidth: '100vw',
       width: '100vw',
+      maxHeight: '100vh',
     },
   },
 })
@@ -115,7 +122,7 @@ export const wide = style({
 export const tall = style({
   'height': '80vh',
   '@media': {
-    '(max-width: 479px)': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
       height: '100vh',
     },
   },
@@ -164,32 +171,62 @@ globalStyle(`${standard} > .${body} > footer, ${standard} > .${body} > form > fo
 })
 
 // Make dialog forms use flex layout so the tree container can fill remaining space.
+//
+// The negative inline margin + matching padding bleeds the form out to the
+// body's edges so the SECTION below can put its scrollbar at the dialog's edge
+// instead of inside the body's padding. The pair of declarations keeps every
+// other form child (the footer) at its old inset. Clipping stays sound:
+// `overflow` clips at the padding box, which spans the bleed, so neither this
+// box's `overflow: hidden` nor the body's cuts it off.
 globalStyle(`${standard} > .${body} > form`, {
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
   flex: 1,
   minHeight: 0,
+  marginInline: 'calc(-1 * var(--space-6))',
+  paddingInline: 'var(--space-6)',
 })
 
+// Same bleed for the bare (form-less) section, carrying the scroller directly
+// in the padded body. The section repaints the inset itself.
 globalStyle(`${standard} > .${body} > section`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
   minHeight: 0,
   overflowY: 'auto',
+  marginInline: 'calc(-1 * var(--space-6))',
+  paddingInline: 'var(--space-6)',
 })
 
+// The section is the dialog's ONE scroll container, in both the form-wrapped
+// and bare shapes. The `overflowY` was missing here for the form shape for a
+// long time unnoticed: desktop never scrolled the section, because the panels
+// scrolled their own slices inside the fixed-height fill chain. The phone
+// band's single-scroll layout depends on this — without it the section lets
+// its content spill `visible` straight under the footer, with no scrollbar.
+//
+// The bleed-and-repad pair, one level deeper than the form's own, lands the
+// section's border box on the body's edges — the scrollbar draws at the
+// dialog's edge, and the padding restores the content inset.
 globalStyle(`${standard} > .${body} > form > section`, {
   display: 'flex',
   flexDirection: 'column',
   flex: 1,
   minHeight: 0,
+  overflowY: 'auto',
+  marginInline: 'calc(-1 * var(--space-6))',
+  paddingInline: 'var(--space-6)',
 })
 
 globalStyle(`${standard} > .${body} > form > section > .vstack`, {
-  flex: 1,
-  minHeight: 0,
+  '@media': {
+    [`(min-width: ${breakpoints.sm}px)`]: {
+      flex: 1,
+      minHeight: 0,
+    },
+  },
 })
 
 // Layout: top section
@@ -212,6 +249,16 @@ export const topTwoColumn = style({
 })
 
 // Layout: column area
+//
+// The fill rules from here down are DESKTOP-ONLY. The desktop model partitions
+// the dialog's fixed height: each level fills what is left of it, and the
+// panels scroll their own slice. The phone model is one scroll — the section
+// itself, over stacked content — and there every level below the section must
+// size to its CONTENT: a `flex: 1; minHeight: 0` level resolves its basis-0
+// children against the fixed height instead, a row sized shorter than its
+// panel lets the panel's (no longer clipped) content spill into the row below
+// — the overlapping panels this scoping fixed — and the surplus never reaches
+// the section as scrollable height, so no scrollbar appeared.
 
 export const twoColumn = style({
   'display': 'grid',
@@ -221,38 +268,73 @@ export const twoColumn = style({
   'minHeight': 0,
   '@media': {
     [`(max-width: ${breakpoints.sm - 1}px)`]: {
-      gridTemplateColumns: '1fr',
+      // A flex column, not the one-column grid: grid rows still partition the
+      // container's fixed height (auto tracks stretch to fill it), which is
+      // the desktop model wearing a phone costume. Flex items with no grow
+      // factor size to content and simply stack; the surplus becomes the
+      // section's scroll.
+      display: 'flex',
+      flexDirection: 'column',
+      flex: 'none',
     },
   },
 })
 
 export const singleColumn = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flex: 1,
-  minHeight: 0,
+  'display': 'flex',
+  'flexDirection': 'column',
+  'flex': 1,
+  'minHeight': 0,
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      flex: 'none',
+    },
+  },
 })
 
 export const leftPanel = style({
-  display: 'flex',
-  flexDirection: 'column',
-  minHeight: 0,
-  overflow: 'hidden',
-  gap: 'var(--space-4)',
+  'display': 'flex',
+  'flexDirection': 'column',
+  'minHeight': 0,
+  // Desktop: `auto`, not `hidden` — the tree's minHeight floor can exceed the
+  // space the dialog has left for this panel, and that excess must scroll, not
+  // clip. Phone band: `visible` — the columns have stacked by then, and one
+  // scroll for the whole dialog body reads better than two scrollers piled in
+  // a column, so the panel gives up scrolling and lets its content flow into
+  // the section (the body's one scroll container; the title header and the
+  // footer sit outside it and stay pinned).
+  'overflowY': 'auto',
+  'gap': 'var(--space-4)',
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      overflowY: 'visible',
+    },
+  },
 })
 
 export const rightPanel = style({
-  display: 'flex',
-  flexDirection: 'column',
-  minHeight: 0,
-  overflowY: 'auto',
-  gap: 'var(--space-4)',
+  'display': 'flex',
+  'flexDirection': 'column',
+  'minHeight': 0,
+  // Scrolls on desktop for the same reason as the left panel; in the phone
+  // band it defers to the section's single scroll, same as the left panel.
+  'overflowY': 'auto',
+  'gap': 'var(--space-4)',
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      overflowY: 'visible',
+    },
+  },
 })
 
 // In two-column layout, the grid and its left panel must fill remaining height.
 globalStyle(`${standard} > .${body} > form > section > .vstack > .${twoColumn}`, {
-  flex: 1,
-  minHeight: 0,
+  '@media': {
+    [`(min-width: ${breakpoints.sm}px)`]: {
+      flex: 1,
+      minHeight: 0,
+    },
+  },
 })
 
 // Form utilities
@@ -267,14 +349,35 @@ export const labelRow = style({
 // flavor hint, and the tree. As a block it would give the tree its full height
 // beside those siblings, push the last rows past the bottom edge, and clip them
 // out of reach behind `overflow: hidden`.
+//
+// The minHeight is a floor for the whole box. Every ancestor up to the
+// fixed-height `tall` dialog clamps itself with `minHeight: 0`, so a
+// `minHeight: 0` here let the tree be squeezed to a couple of rows whenever
+// the viewport ran short (small windows, tall top sections, the stacked
+// single-column layout). 240px keeps roughly eight tree rows (~25px each,
+// after the path input and the tree's own padding take theirs); a panel too
+// small to spare that scrolls instead of clipping (see `leftPanel`).
+//
+// The phone-band maxHeight pairs with the panels giving up their scrollboxes
+// there: nothing bounds this box once the panel flows into the section's
+// scroll, and an unbounded tree unrolls its whole listing into that scroll —
+// the reader would page past every expanded folder to reach the git options
+// below. Capped, it stays a compact list widget scrolling inside its border.
+// 40vh sits near the 240px floor on phone-portrait viewports; on shorter
+// (landscape) ones the floor wins and the box holds at eight rows.
 export const treeContainer = style({
-  display: 'flex',
-  flexDirection: 'column',
-  flex: 1,
-  minHeight: 0,
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  overflow: 'hidden',
+  'display': 'flex',
+  'flexDirection': 'column',
+  'flex': 1,
+  'minHeight': '240px',
+  'border': '1px solid var(--border)',
+  'borderRadius': 'var(--radius-medium)',
+  'overflow': 'hidden',
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      maxHeight: '40vh',
+    },
+  },
 })
 
 /** For a lone child of {@link treeContainer} that should fill the box. */
@@ -284,11 +387,19 @@ export const treeContainerFill = style({
 })
 
 // The element wrapping the DirectoryTree needs to grow and use flex layout.
+// Desktop-only like the other fill rules; on the phone band Oat's own `vstack`
+// (a flex column of content-sized items) is exactly what the single-scroll
+// layout wants, and this rule's `flex: 1` would re-introduce the basis-0
+// child the left row mis-sized.
 globalStyle(`${standard} > .${body} > form > section > .vstack :has(> .${treeContainer})`, {
-  display: 'flex',
-  flexDirection: 'column',
-  flex: 1,
-  minHeight: 0,
+  '@media': {
+    [`(min-width: ${breakpoints.sm}px)`]: {
+      display: 'flex',
+      flexDirection: 'column',
+      flex: 1,
+      minHeight: 0,
+    },
+  },
 })
 
 export const pathPreview = style({

@@ -1,46 +1,40 @@
 import type { Component, JSX } from 'solid-js'
-import type { Sidebar } from '~/generated/leapmux/v1/section_pb'
-import type { createSectionStore } from '~/stores/section.store'
 import { createSignal } from 'solid-js'
 import * as styles from './AppShell.css'
-import { SectionDragProvider } from './SectionDragContext'
 
 /**
- * Mobile sidebar open/close state with mutual exclusion: opening one sidebar
- * always closes the other; toggling a sidebar closes itself or opens it while
- * closing the other.
+ * Which mobile overlay is up. One state owns the exclusion between the two
+ * drawers and the tab sheet: a value other than `'none'` IS the open overlay,
+ * so two overlays can never be up at once by construction.
  */
-export function createMobileSidebarToggles() {
-  const [leftSidebarOpen, setLeftSidebarOpen] = createSignal(false)
-  const [rightSidebarOpen, setRightSidebarOpen] = createSignal(false)
-  const toggleLeftSidebar = () => {
-    setLeftSidebarOpen(prev => !prev)
-    setRightSidebarOpen(false)
-  }
-  const toggleRightSidebar = () => {
-    setRightSidebarOpen(prev => !prev)
-    setLeftSidebarOpen(false)
-  }
-  const closeAllSidebars = () => {
-    setLeftSidebarOpen(false)
-    setRightSidebarOpen(false)
-  }
+export type MobileOverlay = 'none' | 'left' | 'right' | 'sheet'
+
+/**
+ * The one owner of the mobile overlay state. Every toggle path — the bar's
+ * drawer buttons, the chip, the keyboard shortcuts, workspace selection —
+ * routes through these mutators, which is what keeps the exclusion
+ * structural instead of a close-the-other call at each site.
+ */
+export function createMobileOverlayState() {
+  const [overlay, setOverlay] = createSignal<MobileOverlay>('none')
   return {
-    leftSidebarOpen,
-    rightSidebarOpen,
-    toggleLeftSidebar,
-    toggleRightSidebar,
-    closeAllSidebars,
+    overlay,
+    toggleDrawer: (side: 'left' | 'right') =>
+      setOverlay(prev => (prev === side ? 'none' : side)),
+    toggleSheet: () =>
+      setOverlay(prev => (prev === 'sheet' ? 'none' : 'sheet')),
+    closeSheet: () =>
+      setOverlay(prev => (prev === 'sheet' ? 'none' : prev)),
+    closeAll: () => setOverlay('none'),
   }
 }
 
 interface MobileLayoutProps {
-  sectionStore: ReturnType<typeof createSectionStore>
-  onMoveSection: (sectionId: string, sidebar: Sidebar, position: string) => void
-  onMoveSectionServer: (sectionId: string, sidebar: Sidebar, position: string) => void
   leftSidebarOpen: boolean
   rightSidebarOpen: boolean
-  closeAllSidebars: () => void
+  /** Whether the tab sheet is open (the scrim renders from this). */
+  sheetOpen: boolean
+  onCloseSheet: () => void
   leftSidebarElement: JSX.Element
   rightSidebarElement: JSX.Element
   tabBarElement: JSX.Element
@@ -48,19 +42,27 @@ interface MobileLayoutProps {
   editorPanel: JSX.Element | false
 }
 
+/**
+ * The mobile shell: the tab bar in normal flow, and one content region below
+ * it holding everything else. The region's top edge IS the bar's bottom edge,
+ * so the drawers and the sheet scrim anchor to it absolutely — flush by
+ * construction, with no measured bar height or safe-area arithmetic anywhere.
+ * The region owns a stacking context below the bar, so the bar stays bright
+ * and tappable over an open drawer, and the sheet panel that drops from the
+ * bar covers both.
+ */
 export const MobileLayout: Component<MobileLayoutProps> = (props) => {
   return (
-    <SectionDragProvider
-      sections={() => props.sectionStore.state.sections}
-      onMoveSection={props.onMoveSection}
-      onMoveSectionServer={props.onMoveSectionServer}
-    >
-      <div class={styles.mobileShell}>
-        <div
-          class={styles.mobileOverlay}
-          classList={{ [styles.mobileOverlayOpen]: props.leftSidebarOpen || props.rightSidebarOpen }}
-          onClick={() => props.closeAllSidebars()}
-        />
+    <div class={styles.mobileShell}>
+      <div class={styles.mobileTabBar}>
+        {props.tabBarElement}
+      </div>
+
+      <div class={styles.mobileCenter}>
+        <div class={styles.mobileTilePaneSlot}>
+          {props.tileContent}
+        </div>
+        {props.editorPanel}
 
         <div
           class={styles.mobileSidebar}
@@ -76,16 +78,14 @@ export const MobileLayout: Component<MobileLayoutProps> = (props) => {
           {props.rightSidebarElement}
         </div>
 
-        <div class={styles.mobileCenter}>
-          <div class={styles.mobileTabBar}>
-            {props.tabBarElement}
-          </div>
-          <div class={styles.mobileTilePaneSlot}>
-            {props.tileContent}
-          </div>
-          {props.editorPanel}
-        </div>
+        <div
+          class={styles.sheetOverlay}
+          classList={{ [styles.sheetOverlayOpen]: props.sheetOpen }}
+          onClick={() => props.onCloseSheet()}
+          aria-hidden="true"
+          data-testid="tab-sheet-overlay"
+        />
       </div>
-    </SectionDragProvider>
+    </div>
   )
 }

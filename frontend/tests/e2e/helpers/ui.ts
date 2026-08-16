@@ -1024,6 +1024,11 @@ export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
   await expect.poll(async () => {
     if (await page.locator('[data-testid="tab"]').first().isVisible().catch(() => false))
       return true
+    // Mobile layout: there is no tab strip, and a workspace that HAS tabs
+    // never shows the empty-tile placeholder either — the current-tab chip
+    // is the one signal that the workspace shell rendered with its tabs.
+    if (await page.locator('[data-testid="tab-chip"]').first().isVisible().catch(() => false))
+      return true
     if (await page.locator('[data-testid="empty-tile-actions"]').first().isVisible().catch(() => false))
       return true
     if (await page.locator('[data-testid="empty-tile-hint"]').first().isVisible().catch(() => false))
@@ -1049,6 +1054,15 @@ export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
  */
 export function workspaceRow(page: Page, workspaceId: string): Locator {
   return page.locator(`[data-testid="workspace-item-${workspaceId}"]${VISIBLE}`).first()
+}
+
+/**
+ * The workspace row's expand chevron. Addressed by its own testid because it
+ * is no longer the row's first SVG: the drag grip precedes it, and the grip
+ * stays `display: none` on fine-pointer devices.
+ */
+export function workspaceChevron(page: Page, workspaceId: string): Locator {
+  return page.locator(`[data-testid="workspace-chevron-${workspaceId}"]`)
 }
 
 /**
@@ -1122,8 +1136,16 @@ export async function openWorkspace(page: Page, workspaceId: string) {
   await page.goto('/')
   const row = workspaceRow(page, workspaceId)
   await row.waitFor()
-  if (await row.getAttribute('data-active') !== 'true')
+  if (await row.getAttribute('data-active') !== 'true') {
+    // On the mobile layout the rows live in a drawer that starts closed;
+    // open it so the click can land (selecting a workspace closes the
+    // drawers again). `isVisible` on the off-screen drawer content would
+    // also pass, which is why the row wait alone cannot tell.
+    const toggle = page.getByRole('button', { name: 'Toggle workspaces' })
+    if (await toggle.isVisible().catch(() => false))
+      await toggle.click()
     await row.click()
+  }
   await expect(row).toHaveAttribute('data-active', 'true')
   await waitForWorkspaceReady(page)
 }
@@ -1167,7 +1189,10 @@ export async function tabbarAgentLabels(page: Page): Promise<string[]> {
   return page.locator('[data-testid="tab"][data-tab-type="agent"]').evaluateAll(els =>
     els.map((el) => {
       const clone = el.cloneNode(true) as HTMLElement
-      clone.querySelectorAll('[data-testid="tab-close"], [data-testid="tab-notification"], [data-testid="tab-remote-badge"]').forEach(n => n.remove())
+      // A row's context menu keeps its items in the DOM behind the popover
+      // attribute while closed; they are not part of the label. Strip every
+      // popover alongside the close button and the badges.
+      clone.querySelectorAll('[data-testid="tab-close"], [data-testid="tab-notification"], [data-testid="tab-remote-badge"], [popover]').forEach(n => n.remove())
       return (clone.textContent ?? '').trim()
     }),
   )

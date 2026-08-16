@@ -1,7 +1,6 @@
 import type { JSX } from 'solid-js'
 import { createEffect, createSignal, createUniqueId, getOwner, onCleanup, onMount, runWithOwner, Show } from 'solid-js'
 import { Portal } from 'solid-js/web'
-import { touchReleaseOpensMenu } from '~/components/common/contextMenuGesture'
 import * as styles from './Tooltip.css'
 
 /** Exported so a test advances its fake timers by the real delay. */
@@ -163,8 +162,6 @@ export function Tooltip(props: TooltipProps) {
   let showTimer: ReturnType<typeof setTimeout> | undefined
   let hideTimer: ReturnType<typeof setTimeout> | undefined
   let warnedInvalidChild = false
-  /** True while a tap opened this tooltip, so its own `click` does not close it. */
-  let openedByTouch = false
 
   const resolveTargetEl = (): TooltipTarget | undefined => {
     const node = triggerWrapperEl?.firstElementChild
@@ -190,30 +187,11 @@ export function Tooltip(props: TooltipProps) {
   /** Dismiss this tooltip immediately. */
   const dismiss = () => {
     clearTimers()
-    openedByTouch = false
     if (activeHide === dismiss)
       activeHide = undefined
     // eslint-disable-next-line ts/no-use-before-define -- mutual recursion between dismiss and onPointerMove
     document.removeEventListener('pointermove', onPointerMove)
-    // eslint-disable-next-line ts/no-use-before-define -- mutual recursion between dismiss and onOutsidePointerDown
-    document.removeEventListener('pointerdown', onOutsidePointerDown)
     setVisible(false)
-  }
-
-  /**
-   * Dismisses a tooltip that a TAP opened, on the next press outside the
-   * trigger. `onPointerMove` cannot do this: a touch pointer reports no
-   * movement between taps, so nothing would ever close it.
-   */
-  const onOutsidePointerDown = (e: PointerEvent) => {
-    const rect = getTriggerRect()
-    if (!rect) {
-      dismiss()
-      return
-    }
-    const { clientX: x, clientY: y } = e
-    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom)
-      dismiss()
   }
 
   /**
@@ -238,20 +216,15 @@ export function Tooltip(props: TooltipProps) {
     }
   }
 
-  /**
-   * Show the tooltip now, if it has content and passes the clip test.
-   *
-   * Returns whether it became visible, which the touch path below uses to
-   * decide whether the tap opened anything.
-   */
-  const present = (): boolean => {
+  /** Show the tooltip now, if it has content and passes the clip test. */
+  const present = () => {
     const target = targetEl()
     const rect = target?.getBoundingClientRect()
     if (!target || !rect)
-      return false
+      return
 
     if (props.showWhen === 'clipped' && !isTargetClipped(target))
-      return false
+      return
 
     // Dismiss any other visible tooltip first.
     activeHide?.()
@@ -265,7 +238,6 @@ export function Tooltip(props: TooltipProps) {
 
     // Start watching pointer position as a fallback for mouseleave.
     document.addEventListener('pointermove', onPointerMove)
-    document.addEventListener('pointerdown', onOutsidePointerDown)
 
     // Clamp to viewport after the tooltip renders.
     requestAnimationFrame(() => {
@@ -284,7 +256,6 @@ export function Tooltip(props: TooltipProps) {
         top = rect.bottom + 6 + tr.height
       setPos({ top, left })
     })
-    return true
   }
 
   const show = () => {
@@ -292,47 +263,6 @@ export function Tooltip(props: TooltipProps) {
       return
     clearTimers()
     showTimer = setTimeout(present, SHOW_DELAY_MS)
-  }
-
-  /**
-   * The touch path: a TAP opens the tooltip, with no hover delay.
-   *
-   * Without this a clipped label is unreadable on a touch screen. A tap
-   * synthesizes `mouseenter` and then `click`; the `click` handler below
-   * dismisses, and it lands well before the 700 ms hover timer, so the tooltip
-   * never appeared. A tap is deliberate, unlike a pointer crossing a row, so it
-   * needs no delay to prove intent.
-   */
-  const showOnTouch = (e: PointerEvent) => {
-    if (e.pointerType !== 'touch')
-      return
-    // The release of a long press whose context menu is about to open. The
-    // gesture must let that release propagate (the drag sensor and the chat
-    // scroller consume it), so it flags it here instead of stopping it. A
-    // tooltip presented now enters the top layer a frame AFTER the menu and
-    // would stack above it. See `touchReleaseOpensMenu` in
-    // ~/components/common/contextMenuGesture.ts.
-    if (touchReleaseOpensMenu())
-      return
-    if (!props.text && !props.content)
-      return
-    clearTimers()
-    // Only swallow the following `click` when the tap actually opened
-    // something. A label that fits still dismisses on tap, as a mouse does.
-    openedByTouch = present()
-  }
-
-  /**
-   * `click` dismisses, EXCEPT the one that completes the tap which just opened
-   * this tooltip. A tap fires `pointerup` and then `click`, so without this the
-   * tooltip would close in the same gesture that opened it.
-   */
-  const dismissOnClick = () => {
-    if (openedByTouch) {
-      openedByTouch = false
-      return
-    }
-    dismiss()
   }
 
   const hide = () => {
@@ -362,21 +292,13 @@ export function Tooltip(props: TooltipProps) {
     // Clicking (or activating via Space/Enter) means the user is taking an
     // action — dismiss immediately so the tooltip doesn't linger over a
     // menu or state change. `click` fires for both mouse and keyboard.
-    const handleDismiss = wrapInOwner(dismissOnClick)
-    const handleTouch = (e: PointerEvent) => {
-      const run = () => showOnTouch(e)
-      if (tooltipOwner)
-        runWithOwner(tooltipOwner, run)
-      else
-        run()
-    }
+    const handleDismiss = wrapInOwner(dismiss)
 
     target.addEventListener('mouseenter', handleShow)
     target.addEventListener('mouseleave', handleHide)
     target.addEventListener('focusin', handleShow)
     target.addEventListener('focusout', handleHide)
     target.addEventListener('click', handleDismiss)
-    target.addEventListener('pointerup', handleTouch as EventListener)
 
     onCleanup(() => {
       target.removeEventListener('mouseenter', handleShow)
@@ -384,7 +306,6 @@ export function Tooltip(props: TooltipProps) {
       target.removeEventListener('focusin', handleShow)
       target.removeEventListener('focusout', handleHide)
       target.removeEventListener('click', handleDismiss)
-      target.removeEventListener('pointerup', handleTouch as EventListener)
     })
   })
 

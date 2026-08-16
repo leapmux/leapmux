@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { ListAgentsRequestSchema, ListAgentsResponseSchema } from '../../src/generated/leapmux/v1/agent_pb'
 import { cleanupWorkspaceViaAPI, createWorkspaceViaAPI, deleteWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
-import { boxOf, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { boxOf, loginViaToken, openWorkspace, sidebarLeafIds, tabbarAgentLabels, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 import { ensureWorkerOnline, expect, restartWorker, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 /**
@@ -184,7 +184,7 @@ test.describe('Offline close and cross-workspace move', () => {
       await waitForAgentTabs(page, 1)
       await expect.poll(() => sidebarLeafIds(page, wsB)).toEqual([movedAgentId])
       // Expand wsA so its (now empty) section mounts.
-      await workspaceRow(page, wsA).locator('svg').first().click()
+      await workspaceChevron(page, wsA).click()
       await expect.poll(() => sidebarLeafIds(page, wsA)).toEqual([])
 
       // ─── 4. The Worker converges on reconnect ───────────────────────────

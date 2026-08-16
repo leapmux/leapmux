@@ -62,13 +62,15 @@ import { DesktopLayout } from './DesktopLayout'
 import { FloatingWindowLayer } from './FloatingWindowLayer'
 import { GridPopoverHostProvider } from './GridPopoverHost'
 import { handleBranchChanged } from './handleBranchChanged'
-import { createMobileSidebarToggles, MobileLayout } from './MobileLayout'
+import { createMobileOverlayState, MobileLayout } from './MobileLayout'
 import { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import { openSubagentTab } from './openSubagentTab'
 import { resolveActiveWorkspace } from './resolveActiveWorkspace'
 import { createTabSelectionRestorer } from './restoreTabSelection'
+import { SectionDragProvider } from './SectionDragContext'
 import { createLeftSidebarElement, createRightSidebarElement } from './SidebarElements'
 import { syncGitStatusToTabs, tabStampTarget } from './syncGitStatusToTabs'
+import { TabDragProvider } from './TabDragContext'
 import { activeWorkspaceKey } from './tabPersistenceKeys'
 import { focusTile as focusTileShared } from './tileLifecycle'
 import { createTileRenderer } from './TileRenderer'
@@ -205,15 +207,17 @@ export const AppShell: Component = () => {
   // No-op on desktop beyond a one-time write of window.innerHeight.
   useVisualViewportInset()
 
-  // Mobile layout state
+  // Mobile layout state. The overlay state is the ONE owner of "which
+  // overlay is up" (drawers, tab sheet); exclusion between them is structural
+  // in createMobileOverlayState, not a close-the-other call at each toggle.
   const isMobileLayout = useIsMobileLayout()
+  const mobileOverlayState = createMobileOverlayState()
   const {
-    leftSidebarOpen,
-    rightSidebarOpen,
-    toggleLeftSidebar,
-    toggleRightSidebar,
-    closeAllSidebars,
-  } = createMobileSidebarToggles()
+    overlay: mobileOverlay,
+    toggleDrawer: toggleMobileDrawer,
+    closeSheet: closeMobileSheet,
+    closeAll: closeMobileOverlay,
+  } = mobileOverlayState
 
   // Shared turn-end signal: bumped when an agent turn ends.
   // Drives sound playback, git file status refresh, and directory tree refresh.
@@ -847,7 +851,7 @@ export const AppShell: Component = () => {
 
   // Workspace selection switches in place — there is no per-workspace URL.
   const handleSelectWorkspace = (id: string) => {
-    closeAllSidebars()
+    closeMobileOverlay()
     switchWorkspace(id)
   }
 
@@ -937,8 +941,7 @@ export const AppShell: Component = () => {
     },
     chrome: {
       isMobileLayout,
-      toggleLeftSidebar,
-      toggleRightSidebar,
+      mobileOverlay: mobileOverlayState,
     },
     refs: { focusEditorRef, getScrollStateRef, forceScrollToBottomRef },
     floatingWindow: {
@@ -972,7 +975,7 @@ export const AppShell: Component = () => {
     toggleFloatingTab: handleToggleFloatingTab,
     toggleLeftSidebar: () => {
       if (isMobileLayout()) {
-        toggleLeftSidebar()
+        toggleMobileDrawer('left')
       }
       else {
         toggleLeftSidebarRef()?.()
@@ -1093,12 +1096,10 @@ export const AppShell: Component = () => {
 
   const MobileShellLayer = () => (
     <MobileLayout
-      sectionStore={sectionStore}
-      onMoveSection={handleMoveSection}
-      onMoveSectionServer={handleMoveSectionServer}
-      leftSidebarOpen={leftSidebarOpen()}
-      rightSidebarOpen={rightSidebarOpen()}
-      closeAllSidebars={closeAllSidebars}
+      leftSidebarOpen={mobileOverlay() === 'left'}
+      rightSidebarOpen={mobileOverlay() === 'right'}
+      sheetOpen={mobileOverlay() === 'sheet'}
+      onCloseSheet={closeMobileSheet}
       leftSidebarElement={createLeftSidebarElement(sidebarOpts())}
       rightSidebarElement={createRightSidebarElement(sidebarOpts())}
       tabBarElement={tileRenderer.tabBarElement()}
@@ -1125,10 +1126,7 @@ export const AppShell: Component = () => {
           setToggleRightSidebar={fn => toggleRightSidebarRef.set(fn)}
           setLeftSidebarVisible={setLeftSidebarVisible}
           setRightSidebarVisible={setRightSidebarVisible}
-          sectionStore={sectionStore}
           layoutStore={layoutStore}
-          onMoveSection={handleMoveSection}
-          onMoveSectionServer={handleMoveSectionServer}
           activeWorkspaceId={workspace.activeWorkspaceId()}
           activeWorkspace={activeWorkspace}
           workspaceReady={workspaceReady()}
@@ -1140,11 +1138,6 @@ export const AppShell: Component = () => {
             })
           }}
           setCenterPanelHeight={setCenterPanelHeight}
-          onIntraTileReorder={tileDrag.handleIntraTileReorder}
-          onCrossTileMove={tileDrag.handleCrossTileMove}
-          onCrossWorkspaceMove={handleCrossWorkspaceMove}
-          lookupTileIdForTab={tileDrag.lookupTileIdForTab}
-          renderDragOverlay={tileDrag.renderDragOverlay}
           renderTile={tileRenderer.renderTile}
           onRatioChange={(splitId, ratios) => layoutStore.updateRatios(splitId, ratios)}
           onGridRatiosChange={(gridId, axis, ratios) => layoutStore.updateGridRatios(gridId, axis, ratios)}
@@ -1178,9 +1171,27 @@ export const AppShell: Component = () => {
   const WorkspaceShellLayer = () => (
     <GridPopoverHostProvider>
       <div style={{ '--mono-font-family': preferences.monoFontFamily(), '--ui-font-family': preferences.uiFontFamily(), 'position': 'relative', 'height': '100%', 'width': '100%' }}>
-        <Show when={!isMobileLayout()} fallback={<MobileShellLayer />}>
-          <DesktopShellLayer />
-        </Show>
+        {/* Both layouts sit in the same drag-provider sandwich: the section
+            and tab drag contexts are layout-independent, so the stack lives
+            here once instead of being re-declared and re-fed inside each
+            layout. */}
+        <SectionDragProvider
+          sections={() => sectionStore.state.sections}
+          onMoveSection={handleMoveSection}
+          onMoveSectionServer={handleMoveSectionServer}
+        >
+          <TabDragProvider
+            onIntraTileReorder={tileDrag.handleIntraTileReorder}
+            onCrossTileMove={tileDrag.handleCrossTileMove}
+            onCrossWorkspaceMove={handleCrossWorkspaceMove}
+            lookupTileIdForTab={tileDrag.lookupTileIdForTab}
+            renderDragOverlay={tileDrag.renderDragOverlay}
+          >
+            <Show when={!isMobileLayout()} fallback={<MobileShellLayer />}>
+              <DesktopShellLayer />
+            </Show>
+          </TabDragProvider>
+        </SectionDragProvider>
       </div>
     </GridPopoverHostProvider>
   )

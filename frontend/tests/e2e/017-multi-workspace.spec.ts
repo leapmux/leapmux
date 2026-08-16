@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { boxOf, loginViaToken, openWorkspace, waitForLayoutSave, waitForWorkspaceReady, workspaceRow } from './helpers/ui'
+import { boxOf, loginViaToken, openWorkspace, waitForLayoutSave, waitForWorkspaceReady, workspaceChevron, workspaceRow } from './helpers/ui'
 
 /** Wait for the workspace to be fully loaded with its initial agent tab. */
 async function waitForInitialAgent(page: Page) {
@@ -76,7 +76,7 @@ test.describe('Multi-Workspace', () => {
 
       // Click the chevron on ws2 to expand it — this triggers lazy loading
       // without needing to preload (visit) the workspace first
-      await ws2Item.locator('svg').first().click()
+      await workspaceChevron(page, ws2).click()
 
       // ws2's tab tree should appear — count should be 2 (ws1 active + ws2 expanded)
       await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
@@ -151,8 +151,7 @@ test.describe('Multi-Workspace', () => {
       // Visit ws2 to populate its registry, then switch back to ws1
 
       // Expand ws2 in the sidebar
-      const ws2Item = workspaceRow(page, ws2)
-      await ws2Item.locator('svg').first().click()
+      await workspaceChevron(page, ws2).click()
 
       // Wait for ws2's tab tree leaves to appear (ws1 has 1 leaf + ws2 should have 2)
       await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3)
@@ -259,7 +258,7 @@ test.describe('Multi-Workspace', () => {
       // collapsing only sets `visibility: hidden` on the children wrapper, so
       // the leaves stay in the DOM and a count reads the same either way.
       const ws2Row = workspaceRow(page, ws2)
-      const ws2Chevron = ws2Row.locator('svg').first()
+      const ws2Chevron = workspaceChevron(page, ws2)
       const ws2Leaf = page.locator(`[data-testid="workspace-children-${ws2}"] [data-testid="tab-tree-leaf"]`)
 
       // Drive ws2 to collapsed instead of assuming it. `openWorkspace` loads
@@ -304,8 +303,7 @@ test.describe('Multi-Workspace', () => {
       await waitForInitialAgent(page)
 
       // Expand ws2 in the sidebar
-      const ws2Item = workspaceRow(page, ws2)
-      await ws2Item.locator('svg').first().click()
+      await workspaceChevron(page, ws2).click()
       await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
 
       // Click ws2's tab leaf in the sidebar — should switch to ws2.
@@ -370,8 +368,7 @@ test.describe('Multi-Workspace', () => {
       await saved
 
       // Expand ws2's tab tree in the sidebar
-      const ws2Item = workspaceRow(page, ws2)
-      await ws2Item.locator('svg').first().click()
+      await workspaceChevron(page, ws2).click()
 
       // ws2 should now have 2 leaves (original + moved tab); ws1 has 1 leaf
       await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(3)
@@ -438,8 +435,7 @@ test.describe('Multi-Workspace', () => {
       await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(0)
 
       // Expand ws2's tab tree — should show 2 leaves (tab 1 moved + tab 2 existing)
-      const ws2Item = workspaceRow(page, ws2)
-      await ws2Item.locator('svg').first().click()
+      await workspaceChevron(page, ws2).click()
       await expect(page.locator('[data-testid="tab-tree-leaf"]')).toHaveCount(2)
 
       // Click the first leaf in ws2's sidebar tree immediately.
@@ -605,8 +601,7 @@ test.describe('Multi-Workspace', () => {
       await waitForInitialAgent(page)
 
       // Expand ws2 in the sidebar
-      const ws2Item = workspaceRow(page, ws2)
-      await ws2Item.locator('svg').first().click()
+      await workspaceChevron(page, ws2).click()
 
       // Wait for ws2's tab tree leaves to appear (2 agents)
       await page.waitForFunction((wsId) => {
