@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
+	"github.com/leapmux/leapmux/internal/hub/captcha"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/cleanup"
 	"github.com/leapmux/leapmux/internal/hub/config"
@@ -23,6 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
+	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/hub/revocationwatcher"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -243,6 +245,22 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 
 	shutdownCh := make(chan struct{})
 
+	// Bot-protection managers, shared between the interceptor chain and the
+	// auth service so issuance and enforcement cannot disagree.
+	captchaMgr := captcha.NewManager(st, ks, cfg.SoloMode)
+	rateLimitMgr := ratelimit.NewManager(st, cfg.SoloMode)
+
+	// Provision the default captcha row at startup so the request path
+	// never writes: a first Login on a fresh install must not depend on a
+	// store write completing mid-request (a read-only or locked store
+	// would deny logins with the uniform captcha error, and the first
+	// admin setup flow would fail the same opaque way). Failing startup
+	// here states the real problem. The resolve path's lazy provisioning
+	// stays as an idempotent self-heal behind it.
+	if err := captchaMgr.EnsureProvisioned(context.Background()); err != nil {
+		return nil, acquired.close(fmt.Errorf("provision captcha config: %w", err))
+	}
+
 	// handlerCtx is the parent of every in-flight HTTP handler's request context
 	// (via http.Server.BaseContext below). It is cancelled handlerGrace into
 	// shutdown so a handler the per-registry teardown paths cannot reach (every
@@ -338,6 +356,8 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		metrics.NewInterceptor(),
 		auth.NewTimeoutInterceptor(func() time.Duration { return cfg.APITimeout }),
 		authInterceptor,
+		captcha.NewInterceptor(captchaMgr),
+		ratelimit.NewInterceptor(rateLimitMgr),
 	)
 
 	mux := http.NewServeMux()
@@ -424,7 +444,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, connectOpts)
 	mux.Handle(channelPath, channelHandler)
 
-	authSvc := service.NewAuthService(st, cfg, lifecycle, ks, mailSender, mailRenderer)
+	authSvc := service.NewAuthService(service.AuthServiceDeps{
+		Store: st, Config: cfg, Lifecycle: lifecycle, Keystore: ks,
+		Mail: mailSender, Renderer: mailRenderer, Captcha: captchaMgr,
+	})
 	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
 	mux.Handle(authPath, authHandler)
 

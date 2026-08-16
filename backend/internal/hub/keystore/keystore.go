@@ -49,6 +49,16 @@ func RefreshTokenAAD(userID, providerID string) []byte {
 	return []byte("refresh_token:" + userID + ":" + providerID)
 }
 
+// CaptchaSecretAAD returns the AAD for a captcha provider's secret in its
+// captcha_config row. The provider name is bound into the AAD because rows
+// are keyed by provider: pasting one row's ciphertext into another row's
+// secret column must fail decryption rather than silently verify with the
+// wrong key. The secrets are the ALTCHA HMAC signing key and the external
+// providers' siteverify API secrets.
+func CaptchaSecretAAD(provider string) []byte {
+	return []byte("captcha:secret:" + provider)
+}
+
 // Keystore manages a versioned key ring for XChaCha20-Poly1305 envelope
 // encryption plus a dedicated, stable pepper for bearer-token hashing.
 type Keystore struct {

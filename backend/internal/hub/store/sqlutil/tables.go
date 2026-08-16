@@ -6,6 +6,7 @@ package sqlutil
 var SQLTruncateTableOrder = []string{
 	"cli_authorization_codes", "device_authorizations",
 	"pending_oauth_signups", "oauth_states", "oauth_tokens", "oauth_user_links", "oauth_providers",
+	"rate_limit_config", "captcha_config", "altcha_used_salts",
 	"hub_runtime_lease", "revocation_events", "revocation_event_sequence",
 	"lifecycle_outbox", "user_recent_batch_ids", "workspace_tab_rendered", "workspace_tab_owned",
 	"user_state", "user_op_batches",

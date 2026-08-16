@@ -147,6 +147,12 @@ func (s *pgStore) OAuthUserLinks() store.OAuthUserLinkStore {
 func (s *pgStore) PendingOAuthSignups() store.PendingOAuthSignupStore {
 	return &pendingOAuthSignupStore{conn: s.conn}
 }
+func (s *pgStore) CaptchaConfig() store.CaptchaConfigStore {
+	return &captchaConfigStore{conn: s.conn}
+}
+func (s *pgStore) RateLimitConfig() store.RateLimitConfigStore {
+	return &rateLimitConfigStore{conn: s.conn}
+}
 func (s *pgStore) APITokens() store.APITokenStore { return &apiTokenStore{conn: s.conn} }
 func (s *pgStore) DelegationTokens() store.DelegationTokenStore {
 	return &delegationTokenStore{conn: s.conn}

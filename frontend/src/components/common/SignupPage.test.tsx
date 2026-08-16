@@ -16,11 +16,25 @@ vi.mock('~/api/clients', () => ({
 
 const mockIsSignupEnabled = vi.fn<() => boolean>(() => true)
 const mockLoadOAuthProviders = vi.fn(() => Promise.resolve([] as Record<string, unknown>[]))
+const mockIsCaptchaEnabled = vi.fn<() => boolean>(() => false)
+const mockGetCaptchaProvider = vi.fn<() => number>(() => 1) // CaptchaProvider.ALTCHA
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => mockIsSignupEnabled(),
   loadOAuthProviders: () => mockLoadOAuthProviders(),
+  isSystemInfoLoaded: () => true,
+  isCaptchaEnabled: () => mockIsCaptchaEnabled(),
+  getAltchaAlgorithm: () => '',
+  getCaptchaProvider: () => mockGetCaptchaProvider(),
+  getCaptchaSiteKey: () => '',
+}))
+
+// The stub surfaces the action the form binds, so the signup half of the
+// action contract is pinned (the hub siteverify check enforces the same
+// string server-side).
+vi.mock('~/components/common/CaptchaField', () => ({
+  CaptchaField: (props: { action: string }) => <div data-testid="captcha-field" data-action={props.action} />,
 }))
 
 vi.mock('~/context/AuthContext', () => ({
@@ -84,5 +98,20 @@ describe('signupPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByText(/Sign-up disabled/i)).toBeInTheDocument()
     })
+  })
+
+  it('hands the captcha field the signup action under an external provider', async () => {
+    mockIsCaptchaEnabled.mockReturnValue(true)
+    mockGetCaptchaProvider.mockReturnValue(2) // CaptchaProvider.RECAPTCHA_V3
+
+    renderSignupPage()
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('captcha-field')).toBeInTheDocument()
+    })
+    // The hub refuses tokens minted under any other action, so this
+    // literal is half of a wire contract (the backend half lives in
+    // captcha.procedureActions).
+    expect(screen.getByTestId('captcha-field')).toHaveAttribute('data-action', 'signup')
   })
 })

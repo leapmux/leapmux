@@ -43,6 +43,7 @@ var publicProcedureRationale = map[string]string{
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:     "discloses only which OAuth providers are configured, pre-login",
 	leapmuxv1connect.AuthServiceGetPendingOAuthSignupProcedure: "keyed by the single-use pending-signup id issued by the OAuth callback",
 	leapmuxv1connect.AuthServiceCompleteOAuthSignupProcedure:   "keyed by the single-use pending-signup id issued by the OAuth callback",
+	leapmuxv1connect.AuthServiceGetAltchaChallengeProcedure:    "discloses only a self-authenticating PoW challenge (no secret); needed pre-login so the captcha widget can arm Login/SignUp",
 
 	// Self-authenticating against a worker credential the interceptor cannot
 	// parse. Each handler resolves the caller itself and refuses without it.

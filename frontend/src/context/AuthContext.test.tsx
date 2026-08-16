@@ -41,6 +41,11 @@ const mockLoadSystemInfo = vi.fn<() => Promise<void>>(() => Promise.resolve())
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   loadSystemInfo: () => mockLoadSystemInfo(),
+  isSystemInfoLoaded: () => true,
+  isCaptchaEnabled: () => false,
+  getAltchaAlgorithm: () => '',
+  getCaptchaProvider: () => 1, // CaptchaProvider.ALTCHA
+  getCaptchaSiteKey: () => '',
 }))
 
 function TestConsumer() {

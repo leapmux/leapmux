@@ -184,6 +184,13 @@ func MustGetUser(ctx context.Context) (*UserInfo, error) {
 	return u, nil
 }
 
+// ErrInvalidCurrentPassword wraps every ChangePassword rejection caused by a
+// wrong current password. The rate limiter keys on it via errors.Is so that
+// only genuine credential failures count toward a user's attempt budget —
+// weak-new-password validation and transient internal errors must never
+// lock anyone out.
+var ErrInvalidCurrentPassword = errors.New("current password is incorrect")
+
 // RevokeAllUserCredentials revokes every active api_tokens and
 // delegation_tokens row for userID and, via RevokeUserTokens, bumps
 // users.tokens_revoked_at AND users.auth_generation, emitting the durable

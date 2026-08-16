@@ -34,6 +34,8 @@ Groups:
   session           Manage sessions
   worker            Manage workers
   oauth-provider    Manage OAuth/OIDC providers
+  captcha           Manage captcha bot protection (ALTCHA, reCAPTCHA v3, Turnstile)
+  rate-limit        Manage per-user rate limits
   encryption-key    Manage encryption keys
   db                Database utilities
   api-token         Manage durable API tokens (CLI / integrations)
@@ -368,6 +370,118 @@ Success: `Removed OAuth provider "GitHub" (id: ...)`.
 ### `oauth-provider enable` / `oauth-provider disable`
 
 Both take `--id`. Success: `Enabled OAuth provider <id>` / `Disabled OAuth provider <id>`. Disabling keeps the provider configured but hides it from the login screen.
+
+---
+
+## `captcha` — bot protection (ALTCHA, reCAPTCHA v3, Turnstile)
+
+LeapMux protects its unauthenticated credential endpoints (`Login`, `SignUp`, and `CompleteOAuthSignup`) with a captcha check plus a hidden honeypot field. Three providers are selectable: the built-in [ALTCHA](https://altcha.org/) proof-of-work (default, no third party), Google [reCAPTCHA v3](https://developers.google.com/recaptcha/docs/v3), and Cloudflare [Turnstile](https://developers.cloudflare.com/turnstile/). A client must present a valid, unexpired, single-use token before those endpoints accept its request; a filled honeypot is rejected regardless. This raises the cost of scripted brute-forcing and signup abuse. The honeypot check stays active even when captcha is disabled: it costs the server nothing and still catches naive bots. The token check is what `captcha enable`/`disable` controls. Solo mode never enforces captcha (and the admin CLI cannot detect a solo data dir — these commands manage multi-user hub configuration).
+
+Configuration lives in the database (`captcha_config`, one row per provider — provider-specific settings are stored as that provider's JSON) so it can be changed at runtime with these commands; a running Hub picks up changes within ~30 seconds. Absent any configuration the safe defaults apply: **enabled**, ALTCHA `PBKDF2/SHA-256` at cost `10000`, challenges expire after 20 minutes.
+
+Provider notes:
+
+- **ALTCHA** issues challenges from the hub itself (public `GetAltchaChallenge` RPC); verification is local, with store-backed single-use salts. No network egress, no account needed.
+- **reCAPTCHA v3** is invisible and score-based: the frontend loads Google's script with your site key, executes it per form under a fixed action (`login`, `signup`, `complete_signup`), and the hub verifies the token at Google's siteverify endpoint, requiring the action to match and the score to clear `--min-score` (default `0.5`). Tokens are single-use and live two minutes. The Google-injected badge stays visible (their terms connect it with using the service).
+- **Turnstile** renders Cloudflare's checkbox from your site key; the hub verifies tokens at Cloudflare's siteverify endpoint, requiring the echoed action to match. Tokens are single-use and live five minutes.
+- External providers need a hub served over HTTPS from a real browser origin (their scripts refuse exotic origins) and make one verification call per submission from the hub to the provider. During a provider outage the hub fails closed like any other captcha fault, and after a run of failed calls it stops dialing the provider for a short cooldown (a breaker) before probing again — a brownout cannot pile up blocked logins. The hub deliberately does not forward `remoteip` — behind a reverse proxy the proxy's address would reach the provider and turn correct tokens into denials.
+
+For local testing Cloudflare publishes dummy keys: site key `1x00000000000000000000AA` (always passes) paired with secret `1x0000000000000000000000000000000AA`; Google has no v3 test keys (its v2 test keys return a near-zero score).
+
+> **Note on ALTCHA cost semantics:** ALTCHA v2's cost is the per-derivation iteration count, and the browser brute-forces roughly 256 derivations per solve — total work is ~256 × cost. The default (`10000` ≈ 2.6M PBKDF2 iterations) solves in well under a second with native WebCrypto on desktop. Raising the cost multiplies bot cost **and** your users' wait time equally, so values far above the default mostly punish humans.
+
+### `captcha show`
+
+No command-specific flags. Prints the selected provider's effective configuration as JSON: `"provider"`, `"enabled"`, that provider's settings, `"customized": true/false` for whether a stored row exists, and `"configured"` listing every provider that has a row. Secrets are never printed.
+
+### `captcha set`
+
+| Flag | Description |
+| --- | --- |
+| `--provider` | `altcha`, `recaptcha_v3`, or `turnstile`. Configures that provider and, when it is not already selected, **activates** it: activating selects the provider and enables verification in one step. Naming the already-selected provider tunes it in place. |
+| `--algorithm` | ALTCHA only: `SHA-256`, `SHA-384`, `SHA-512`, `PBKDF2/SHA-256`, `PBKDF2/SHA-384`, `PBKDF2/SHA-512`, `SCRYPT`, or `ARGON2ID`. |
+| `--cost` | ALTCHA only: per-derivation cost. Iterations for SHA (1000–1000000) and PBKDF2 (10000–1000000), N for SCRYPT (a power of two, 1024–1048576), or the time parameter for ARGON2ID (1–64). `0` restores the algorithm default. |
+| `--memory-cost` | ALTCHA only: SCRYPT `r` (a block-count multiplier, NOT bytes — derivation memory is 128·N·r, limited to 64 MiB) or ARGON2ID `m` (KiB, 8–128 MiB). `0` restores the algorithm default. |
+| `--parallelism` | ALTCHA only: SCRYPT `p` (1–8) / ARGON2ID threads (1–4). `0` restores the algorithm default. |
+| `--expires` | ALTCHA only: challenge expiry, e.g. `20m` (whole seconds). Valid range 1m–24h; `0` restores the 20m default. |
+| `--site-key` | External providers: the public site key from the provider's dashboard. |
+| `--secret` | External providers: the secret key, stored keystore-encrypted. Required when configuring an external provider that has no stored keys; optional later (rotation). Must not be empty — an empty secret fails every verification. |
+| `--min-score` | reCAPTCHA v3 only: acceptance threshold, 0–1 (`0` restores the `0.5` default). |
+
+At least one flag is required. Flags that do not apply to the target provider are refused rather than ignored. Switching `--algorithm` resets `--cost`, `--memory-cost`, and `--parallelism` to the new family's defaults (unless passed on the same command line), because the parameters change meaning across families; the algorithm-independent `--expires` keeps its stored value. An explicitly passed `0` always restores that parameter's default. The result is validated before it is written.
+
+Switching providers is cheap and reversible: each provider keeps its own row with its own settings and its own secret, so switching back does not regenerate or reset anything (an ALTCHA switch-back reuses the original signing secret and the stored tuning, and outstanding ALTCHA challenges simply expire within the configured window).
+
+```bash
+# Slow bots down further at the cost of ~2x user wait (ALTCHA)
+leapmux admin captcha set --cost 20000
+
+# Switch to a memory-hard ALTCHA algorithm
+leapmux admin captcha set --algorithm ARGON2ID --cost 2 --memory-cost 65536
+
+# Switch to Turnstile (from the Cloudflare dashboard's widget keys)
+leapmux admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
+
+# Switch to reCAPTCHA v3 with a stricter threshold (Google admin console keys)
+leapmux admin captcha set --provider recaptcha_v3 --site-key 6Lc... --secret 6Lc... --min-score 0.7
+
+# Rotate a provider secret without re-activating
+leapmux admin captcha set --secret 0x4AAAA...new
+
+# Back to the built-in provider
+leapmux admin captcha set --provider altcha
+```
+
+The ALTCHA SHA and PBKDF2 families solve in every browser via native WebCrypto; SCRYPT and ARGON2ID are memory-hard (stronger against GPU farms, slower on low-end mobile) and their solvers load on demand in the web frontend. A browser needs a secure context (HTTPS or localhost) for the WebCrypto solvers, so front the hub with TLS when you reach it from anything other than localhost.
+
+### `captcha enable` / `captcha disable`
+
+No command-specific flags. Toggles token enforcement on the selected provider; the selection and all settings are preserved (a later `enable` restores the same provider), and the honeypot check stays active either way.
+
+### `captcha reset`
+
+`--provider <name>` resets only that provider's row; without it, every row is deleted and the built-in defaults apply again. Deleting the selected provider leaves nothing selected until the Hub's next use, which lazily re-provisions the ALTCHA row (with a fresh signing secret, invalidating challenges in flight — they expire within the configured window anyway).
+
+---
+
+## `rate-limit` — per-user operation limits
+
+Rate limits cap how often an authenticated user may retry operations whose handlers are expensive to service. The first protected operation is **`change-password`** — each attempt runs an Argon2 verification, so a hijacked session could otherwise grind on the current password. Only current-password *failures* count: validation errors and transient server faults never lock anyone out, and a successful change resets the counter.
+
+Limits are stored per operation in `rate_limit_config`; absent rows fall back to the defaults below. A running Hub picks up changes within ~30 seconds. Solo mode never limits.
+
+**Scope.** Unauthenticated procedures (login, signup, complete-signup) are limited by **captcha**, not by rate limits — this is deliberate. Out of the box that means the client-side ALTCHA proof-of-work; with an external provider (reCAPTCHA v3, Turnstile) every non-empty token triggers one uncapped siteverify call to the provider, so scripted garbage tokens can burn the operator's siteverify quota; with captcha disabled, those procedures are limited only by the per-attempt Argon2 cost and the honeypot check. There is no per-IP limiter because the Hub deliberately requires no trusted-proxy configuration.
+
+| Operation | Default | Meaning |
+| --- | --- | --- |
+| `change-password` | 5 failures / 15 minutes | `UserService.ChangePassword`, per user. |
+
+### `rate-limit list`
+
+No command-specific flags. Prints every known operation with its effective settings and whether they come from `default` or a `customized` row.
+
+### `rate-limit set`
+
+| Flag | Description |
+| --- | --- |
+| `--operation` | Operation to configure, e.g. `change-password` (required). |
+| `--max-attempts` | Allowed failed attempts per window (1–1000). |
+| `--window` | Fixed window length, e.g. `15m` (1m–24h). |
+
+At least one of `--max-attempts` / `--window` is required; omitted values keep their current settings.
+
+```bash
+# Lock down password guessing harder
+leapmux admin rate-limit set --operation change-password --max-attempts 3 --window 30m
+```
+
+### `rate-limit enable` / `rate-limit disable`
+
+Both take `--operation`. Disabling keeps the configured numbers but stops enforcement.
+
+### `rate-limit reset`
+
+Takes `--operation`. Deletes the row, returning that operation to its built-in default.
 
 ---
 

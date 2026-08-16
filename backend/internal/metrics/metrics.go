@@ -48,6 +48,11 @@ var (
 		Help: "Number of currently active agents.",
 	})
 
+	CaptchaVerificationsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "leapmux_captcha_verifications_total",
+		Help: "Captcha verification outcomes on protected procedures, by provider (altcha, recaptcha_v3, turnstile, unknown - the label a config-store outage fails closed under).",
+	}, []string{"provider", "result"})
+
 	ActiveTerminals = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "leapmux_active_terminals",
 		Help: "Number of currently active terminals.",

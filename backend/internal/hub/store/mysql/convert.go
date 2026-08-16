@@ -18,6 +18,12 @@ import (
 // mysqlErrDupEntry is the MySQL error number for duplicate-key violations.
 const mysqlErrDupEntry = 1062
 
+// isDupEntry reports whether err is a duplicate-key violation.
+func isDupEntry(err error) bool {
+	var mysqlErr *mysqldriver.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == mysqlErrDupEntry
+}
+
 func mapErr(err error) error {
 	if err == nil {
 		return nil
@@ -25,11 +31,8 @@ func mapErr(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.ErrNotFound
 	}
-	var mysqlErr *mysqldriver.MySQLError
-	if errors.As(err, &mysqlErr) {
-		if mysqlErr.Number == mysqlErrDupEntry {
-			return fmt.Errorf("%w: %w", store.ErrConflict, err)
-		}
+	if isDupEntry(err) {
+		return fmt.Errorf("%w: %w", store.ErrConflict, err)
 	}
 	return err
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mattn/go-isatty"
 	"golang.org/x/term"
@@ -104,6 +105,28 @@ var adminTree = adminGroup{
 				{Name: "remove", Summary: "Remove a provider", Run: runRemoveOAuthProvider},
 				{Name: "enable", Summary: "Enable a provider", Run: func(cmd adminCmdCtx, args []string) error { return runSetOAuthProviderEnabled(cmd, args, true) }},
 				{Name: "disable", Summary: "Disable a provider", Run: func(cmd adminCmdCtx, args []string) error { return runSetOAuthProviderEnabled(cmd, args, false) }},
+			},
+		},
+		{
+			Name:    "captcha",
+			Summary: "Manage captcha bot protection: ALTCHA, reCAPTCHA v3, or Turnstile (a solo-mode hub never enforces captcha)",
+			Commands: []adminCommand{
+				{Name: "show", Summary: "Show the effective captcha configuration", Run: runCaptchaShow},
+				{Name: "set", Summary: "Update captcha settings and/or switch the active provider", Run: runCaptchaSet},
+				{Name: "enable", Summary: "Enable captcha verification", Run: func(cmd adminCmdCtx, args []string) error { return runCaptchaSetEnabled(cmd, args, true) }},
+				{Name: "disable", Summary: "Disable captcha verification (the honeypot check stays active)", Run: func(cmd adminCmdCtx, args []string) error { return runCaptchaSetEnabled(cmd, args, false) }},
+				{Name: "reset", Summary: "Reset captcha configuration to defaults (all providers, or --provider X)", Run: runCaptchaReset},
+			},
+		},
+		{
+			Name:    "rate-limit",
+			Summary: "Manage per-user rate limits",
+			Commands: []adminCommand{
+				{Name: "list", Summary: "List rate limits for all known operations", Run: runRateLimitList},
+				{Name: "set", Summary: "Update an operation's rate limit", Run: runRateLimitSet},
+				{Name: "enable", Summary: "Enable an operation's rate limit", Run: func(cmd adminCmdCtx, args []string) error { return runRateLimitSetEnabled(cmd, args, true) }},
+				{Name: "disable", Summary: "Disable an operation's rate limit", Run: func(cmd adminCmdCtx, args []string) error { return runRateLimitSetEnabled(cmd, args, false) }},
+				{Name: "reset", Summary: "Reset an operation's rate limit to defaults", Run: runRateLimitReset},
 			},
 		},
 		{
@@ -536,6 +559,58 @@ func yesNo(v bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// enabledWord renders an enable/disable command outcome for its output
+// line ("Enabled"/"Disabled"), the sibling of yesNo for toggle verbs.
+func enabledWord(v bool) string {
+	if v {
+		return "Enabled"
+	}
+	return "Disabled"
+}
+
+// explicitlySet returns the names of the flags the user actually passed,
+// excluding the generic --data-dir and --config. flag.Visit visits only
+// set flags, so this works for every flag type and an explicitly-passed
+// zero ("--memory-cost 0") counts — unlike zero-value sentinels, which
+// cannot tell "unset" from "set to 0".
+func explicitlySet(fs *flag.FlagSet) map[string]bool {
+	set := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "data-dir", "config":
+		default:
+			set[f.Name] = true
+		}
+	})
+	return set
+}
+
+// requireAnySet fails when none of the listed flags was passed
+// explicitly. The admin command families share it so the "at least one
+// of" phrasing stays identical everywhere.
+func requireAnySet(set map[string]bool, names ...string) error {
+	for _, name := range names {
+		if set[name] {
+			return nil
+		}
+	}
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = "--" + name
+	}
+	return fmt.Errorf("at least one of %s is required", strings.Join(quoted, ", "))
+}
+
+// wholeSeconds converts a duration flag to whole seconds, rejecting
+// sub-second input instead of silently truncating it to a value the user
+// never typed.
+func wholeSeconds(d time.Duration) (int64, error) {
+	if d%time.Second != 0 {
+		return 0, fmt.Errorf("%s is not a whole number of seconds", d)
+	}
+	return int64(d / time.Second), nil
 }
 
 // printJSON writes v to stdout as indented JSON. Admin commands use it

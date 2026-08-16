@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 
 import type { ChannelManager } from '../../../src/lib/channel'
+import { solveCaptchaViaAPI } from './altcha'
 import { createTestChannelManager } from './e2e-channel'
 
 /**
@@ -93,10 +94,11 @@ export function authedHeaders(cookie: string): Record<string, string> {
  * (e.g. "leapmux-session=abc123") for use in subsequent requests.
  */
 export async function loginViaAPI(hubUrl: string, username: string, password: string): Promise<string> {
+  const captcha = await solveCaptchaViaAPI(hubUrl)
   const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/Login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, captchaPayload: captcha.captchaPayload, honeypot: captcha.honeypot }),
     redirect: 'manual',
   })
   if (!res.ok) {
@@ -152,10 +154,11 @@ export async function signUpViaAPI(
   displayName = '',
   email = '',
 ): Promise<string> {
+  const captcha = await solveCaptchaViaAPI(hubUrl)
   const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/SignUp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, displayName, email }),
+    body: JSON.stringify({ username, password, displayName, email, captchaPayload: captcha.captchaPayload, honeypot: captcha.honeypot }),
     redirect: 'manual',
   })
   if (!res.ok) {

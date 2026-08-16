@@ -123,6 +123,14 @@ func createTestWorker(t *testing.T, q *gendb.Queries, userID string) string {
 
 // ---- OAuth provider tests ----
 
+// enabledWord renders the toggle outcome for every enable/disable command's
+// output line; the polarity contract is pinned because the OAuth call site
+// used to encode it with an inverted if.
+func TestEnabledWord(t *testing.T) {
+	assert.Equal(t, "Enabled", enabledWord(true))
+	assert.Equal(t, "Disabled", enabledWord(false))
+}
+
 // mintResolvedUserID is the single refusal every admin command that resolves a
 // user by --id/--username routes its owner-scoped work through, so both arms
 // are pinned here: an inverted check would silently hand "" to bulk mutations
@@ -445,6 +453,52 @@ func TestCLI_RemoveEncryptionKey_RefusesWhenTokenReferenced(t *testing.T) {
 	err = runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OAuth token")
+}
+
+// TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced pins the
+// third encrypted-secret family: a captcha provider's secret keeps its
+// key version alive in the removal guard, reencrypt migrates it with the
+// same provider-scoped AAD, and only then does the old version become
+// removable. Without the guard leg, removing the version would make
+// every Login fail with the uniform captcha denial.
+func TestCLI_RemoveEncryptionKey_RefusesWhenCaptchaSecretReferenced(t *testing.T) {
+	dir := setupTestDataDir(t)
+	ctx := context.Background()
+
+	// Configure turnstile: the row's secret lands under key version 1.
+	require.NoError(t, runCaptchaSet(testAdminCtx, []string{
+		"--provider", "turnstile", "--site-key", "1x000AA", "--secret", "captcha-secret",
+		"--data-dir", dir,
+	}))
+
+	// Rotate to version 2; the captcha secret is still encrypted under v1.
+	require.NoError(t, runRotateEncryptionKey(testAdminCtx, []string{"--data-dir", dir}))
+
+	// Removing v1 must be refused — it still encrypts the captcha secret.
+	err := runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "still encrypts")
+	assert.Contains(t, err.Error(), "captcha")
+
+	// Reencrypt migrates the secret; it must decrypt under v2 with the
+	// same provider-scoped AAD and the original plaintext.
+	require.NoError(t, runReencryptSecrets(testAdminCtx, []string{"--data-dir", dir}))
+	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))
+	require.NoError(t, err)
+	st, err := storeopen.Open(ctx, adminConfig(dir))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	row, err := st.CaptchaConfig().GetSelected(ctx)
+	require.NoError(t, err)
+	ver, err := keystore.CiphertextVersion(row.Secret)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(2), ver, "reencrypt must migrate the captcha secret to the active version")
+	plain, err := ks.Decrypt(row.Secret, keystore.CaptchaSecretAAD("turnstile"))
+	require.NoError(t, err, "the migrated secret must decrypt under its unchanged provider-scoped AAD")
+	assert.Equal(t, "captcha-secret", string(plain))
+
+	// With the secret migrated, v1 is unreferenced and removal succeeds.
+	require.NoError(t, runRemoveEncryptionKey(testAdminCtx, []string{"--version", "1", "--data-dir", dir}))
 }
 
 func TestCLI_RotatePepper_RequiresYes(t *testing.T) {

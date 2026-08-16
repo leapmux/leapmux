@@ -1,11 +1,13 @@
 import type { Component } from 'solid-js'
-import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 
+import type { OAuthProviderInfo } from '~/generated/leapmux/v1/auth_pb'
 import { A, useNavigate, useSearchParams } from '@solidjs/router'
 import { createEffect, createSignal, Show } from 'solid-js'
+import { CaptchaSection } from '~/components/common/CaptchaSection'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
+import { createCaptchaForm } from '~/lib/captchaForm'
 import { isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
 import { cardNarrow, errorText } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
@@ -18,6 +20,7 @@ export const LoginPage: Component = () => {
   const [password, setPassword] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [oauthProviders, setOAuthProviders] = createSignal<OAuthProviderInfo[]>([])
+  const captcha = createCaptchaForm()
   let usernameRef!: HTMLInputElement
   let passwordRef!: HTMLInputElement
 
@@ -26,14 +29,15 @@ export const LoginPage: Component = () => {
   // (bookmark, typed URL, stale tab) on an instance that has no login to offer:
   // solo mode, or a fresh install with no account yet.
   //
-  // Gated on `auth.loading()`, and that gate is the whole point. The system-info
-  // getters are plain module variables whose pre-fetch values are FABRICATIONS
-  // (`soloMode = false`, `setupRequired = false`), not signals -- so reading
-  // them from `onMount`, as this used to, sampled the defaults on any load that
-  // won this race and then never looked again, because onMount runs once. A
-  // solo-mode visitor was left on a credential form that cannot succeed, which
-  // is exactly the dead end these arms exist to prevent. AuthGuard's copies of
-  // the same two calls are safe only because they sit behind this same gate.
+  // Requires `auth.loading()`, and that gate is the whole point. Before
+  // the first system-info load the getters answer fabricated defaults
+  // (`soloMode = false`, `setupRequired = false`), not the hub's answers
+  // -- so reading them from `onMount`, as this used to, sampled the
+  // defaults on any load that won this race and then never looked again,
+  // because onMount runs once. A solo-mode visitor was left on a
+  // credential form that cannot succeed, which is exactly the dead end
+  // these arms exist to prevent. AuthGuard's copies of the same two
+  // calls are safe only because they sit behind this same gate.
   //
   // createEffect, not onMount: it re-runs when `auth.loading()` flips, which is
   // the earliest moment the getters are answers rather than guesses.
@@ -44,6 +48,10 @@ export const LoginPage: Component = () => {
   // accident rather than by design. The one async step (fetching OAuth
   // providers) is a fire-and-forget continuation at the end, which needs no
   // tracking: it reads nothing reactive and only writes.
+  //
+  // The captcha gate does NOT lean on `auth.loading()`: that signal flips on
+  // every attempt, which would tear the widget down mid-session. It tracks the
+  // system-info signal instead (see createCaptchaForm).
   let bootstrapped = false
   createEffect(() => {
     if (auth.loading() || bootstrapped) {
@@ -75,7 +83,7 @@ export const LoginPage: Component = () => {
     e.preventDefault()
     setSubmitting(true)
     try {
-      await auth.login(username(), password())
+      await auth.login(username(), password(), captcha.fields())
       const user = auth.user()
       if (user) {
         const redirect = typeof searchParams.redirect === 'string' ? searchParams.redirect : undefined
@@ -87,8 +95,10 @@ export const LoginPage: Component = () => {
         }
       }
     }
-    catch {
-      // Error is captured by auth context.
+    catch (err) {
+      // Error is captured by auth context. A rejected captcha (expired
+      // solve, replay) must not linger: force a fresh challenge.
+      captcha.reset(err)
       setSubmitting(false)
     }
   }
@@ -135,22 +145,19 @@ export const LoginPage: Component = () => {
               autocomplete="current-password"
             />
           </label>
+          <CaptchaSection action="login" captcha={captcha} />
           <Show when={auth.error()}>
             <div class={errorText}>{auth.error()}</div>
           </Show>
           <button
             type="submit"
-            disabled={submitting() || !username() || !password()}
+            disabled={submitting() || !username() || !password() || captcha.blocksSubmit()}
           >
             <Show when={submitting()}><Spinner /></Show>
             {submitting() ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
-        {/* Reads auth.loading() so this re-evaluates once bootstrap lands.
-            isSignupEnabled() is a plain module read with no reactivity of its
-            own, so without that dependency the link stayed frozen at the
-            pre-fetch `false` and never appeared on a direct /login load. */}
-        <Show when={!auth.loading() && isSignupEnabled()}>
+        <Show when={isSignupEnabled()}>
           <div class={styles.authFooter}>
             <A href="/signup">Sign up</A>
           </div>

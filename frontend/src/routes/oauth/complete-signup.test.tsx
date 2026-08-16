@@ -20,11 +20,25 @@ vi.mock('~/api/clients', () => ({
   },
 }))
 
+const mockIsCaptchaEnabled = vi.fn<() => boolean>(() => false)
+const mockGetCaptchaProvider = vi.fn<() => number>(() => 1) // CaptchaProvider.ALTCHA
 vi.mock('~/lib/systemInfo', () => ({
   isSoloMode: () => false,
   loadSystemInfo: () => Promise.resolve(),
   isSignupEnabled: () => false,
   loadOAuthProviders: () => Promise.resolve([]),
+  isSystemInfoLoaded: () => true,
+  isCaptchaEnabled: () => mockIsCaptchaEnabled(),
+  getAltchaAlgorithm: () => '',
+  getCaptchaProvider: () => mockGetCaptchaProvider(),
+  getCaptchaSiteKey: () => '',
+}))
+
+// The stub surfaces the action the form binds, so this page's half of the
+// action contract is pinned (the hub siteverify check enforces the same
+// string server-side).
+vi.mock('~/components/common/CaptchaField', () => ({
+  CaptchaField: (props: { action: string }) => <div data-testid="captcha-field" data-action={props.action} />,
 }))
 
 const mockSetAuth = vi.fn()
@@ -122,6 +136,8 @@ describe('oAuthCompleteSignupPage', () => {
         signupToken: 'test-token',
         username: 'testuser',
         displayName: 'Test User',
+        captchaPayload: '',
+        honeypot: '',
       })
     })
 
@@ -169,5 +185,25 @@ describe('oAuthCompleteSignupPage', () => {
     await vi.waitFor(() => {
       expect(screen.getByText('username already taken')).toBeInTheDocument()
     })
+  })
+
+  it('hands the captcha field the complete_signup action under an external provider', async () => {
+    mockGetPendingOAuthSignup.mockResolvedValue({
+      email: 'test@example.com',
+      displayName: 'Test User',
+      providerName: 'GitHub',
+    })
+    mockIsCaptchaEnabled.mockReturnValue(true)
+    mockGetCaptchaProvider.mockReturnValue(3) // CaptchaProvider.TURNSTILE
+
+    renderPage()
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('captcha-field')).toBeInTheDocument()
+    })
+    // The hub refuses tokens minted under any other action, so this
+    // literal is half of a wire contract (the backend half lives in
+    // captcha.procedureActions).
+    expect(screen.getByTestId('captcha-field')).toHaveAttribute('data-action', 'complete_signup')
   })
 })

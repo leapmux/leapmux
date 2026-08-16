@@ -11,6 +11,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [connectrpc.com/connect v1.20.0](#connectrpccomconnect-v1200)
 - [dario.cat/mergo v1.0.2](#dariocatmergo-v102)
 - [filippo.io/edwards25519 v1.2.0](#filippoioedwards25519-v120)
+- [github.com/altcha-org/altcha-lib-go/v2 v2.0.0-20260725115309-2c4fc27a7b2d](#githubcomaltcha-orgaltcha-lib-gov2-v200-20260725115309-2c4fc27a7b2d)
 - [github.com/aymanbagabas/go-pty v0.2.3](#githubcomaymanbagabasgo-pty-v023)
 - [github.com/aymerick/douceur v0.2.0](#githubcomaymerickdouceur-v020)
 - [github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c](#githubcomazurego-ansiterm-v000-20250102033503-faa5f7b0171c)
@@ -689,6 +690,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@xterm/addon-serialize 0.14.0 (MIT)](#xtermaddon-serialize-0140-mit)
 - [@xterm/addon-webgl 0.19.0 (MIT)](#xtermaddon-webgl-0190-mit)
 - [@xterm/xterm 6.0.0 (MIT)](#xtermxterm-600-mit)
+- [altcha 3.2.1 (MIT)](#altcha-321-mit)
 - [diff 9.0.0 (BSD-3-Clause)](#diff-900-bsd-3-clause)
 - [fracturedjsonjs 5.0.1 (MIT)](#fracturedjsonjs-501-mit)
 - [fzstd 0.1.1 (MIT)](#fzstd-011-mit)
@@ -986,6 +988,32 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### github.com/altcha-org/altcha-lib-go/v2 v2.0.0-20260725115309-2c4fc27a7b2d
+
+```
+MIT License
+
+Copyright (c) 2023 Daniel Regeci
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### github.com/aymanbagabas/go-pty v0.2.3
@@ -103744,6 +103772,32 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+```
+
+### altcha 3.2.1 (MIT)
+
+```
+MIT License
+
+Copyright (c) 2023-2026 Daniel Regeci, BAU Software s.r.o.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### diff 9.0.0 (BSD-3-Clause)

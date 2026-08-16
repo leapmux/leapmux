@@ -19,8 +19,8 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
-	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/service"
+	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -56,7 +56,7 @@ func newUnixSocketAuthClient(t *testing.T, st store.Store, interceptor connect.I
 	t.Helper()
 
 	mux := http.NewServeMux()
-	authSvc := service.NewAuthService(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil), nil, mail.NewStubSender(), mail.Renderer{})
+	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connect.WithInterceptors(interceptor))
 	mux.Handle(path, handler)
 

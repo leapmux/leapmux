@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -33,6 +34,8 @@ type Store interface {
 	OAuthTokens() OAuthTokenStore
 	OAuthUserLinks() OAuthUserLinkStore
 	PendingOAuthSignups() PendingOAuthSignupStore
+	CaptchaConfig() CaptchaConfigStore
+	RateLimitConfig() RateLimitConfigStore
 	APITokens() APITokenStore
 	DelegationTokens() DelegationTokenStore
 	RevocationEvents() RevocationEventStore
@@ -568,6 +571,59 @@ type PendingOAuthSignupStore interface {
 	Delete(ctx context.Context, token string) error
 }
 
+// CaptchaConfigStore manages the per-provider captcha configuration rows
+// and the ALTCHA consumed-salt ledger. Exactly one row is selected — the
+// active provider — and Enabled on that row is the verification on/off
+// switch. GetSelected returns ErrNotFound before the first provisioning
+// (the caller applies code-side defaults and provisions).
+type CaptchaConfigStore interface {
+	GetSelected(ctx context.Context) (*CaptchaConfig, error)
+	Get(ctx context.Context, provider leapmuxv1.CaptchaProvider) (*CaptchaConfig, error)
+	List(ctx context.Context) ([]CaptchaConfig, error)
+	InsertIfAbsent(ctx context.Context, p InsertCaptchaConfigIfAbsentParams) error
+	// UpdateSettings rewrites one existing row's settings and never
+	// touches its secret, so a settings change can never lose the key.
+	UpdateSettings(ctx context.Context, provider leapmuxv1.CaptchaProvider, settings string) error
+	// Upsert writes settings together with a secret (first configuration
+	// of an external provider, or key rotation); the secret is required
+	// because a secret-less row fails verification on every submission.
+	Upsert(ctx context.Context, p UpsertCaptchaConfigParams) error
+	// Activate selects and enables the given provider and deselects every
+	// other row in one statement, so the exactly-one-selected invariant
+	// holds under concurrent activations: last writer wins, never two
+	// selected.
+	Activate(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
+	// ActivateIfNoneSelected activates the given provider only when no row
+	// is selected. The hub's first-use self-heal uses it, so read-path
+	// provisioning can never override an admin CLI selection.
+	ActivateIfNoneSelected(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
+	// SetEnabled flips the verification switch on the selected row only;
+	// the selection itself survives, so a later enable restores the same
+	// provider.
+	SetEnabled(ctx context.Context, enabled bool) error
+	Delete(ctx context.Context) error
+	DeleteProvider(ctx context.Context, provider leapmuxv1.CaptchaProvider) error
+	// ConsumeAltchaSalt marks a solved ALTCHA challenge's salt as used; it
+	// returns 1 when the salt was unused (first use accepted) and 0 when
+	// a row already exists (replay denied).
+	ConsumeAltchaSalt(ctx context.Context, p ConsumeAltchaSaltParams) (int64, error)
+	// HasAltchaSalt reports, read-only, whether a salt row exists. The
+	// verifier consults it before the memory-hard solution check so a
+	// replay costs one indexed read; ConsumeAltchaSalt stays the
+	// single-use authority.
+	HasAltchaSalt(ctx context.Context, salt string) (bool, error)
+}
+
+// RateLimitConfigStore manages per-operation rate-limit overrides.
+// Get returns ErrNotFound when the operation has no row; List returns
+// only the customized operations.
+type RateLimitConfigStore interface {
+	Get(ctx context.Context, operation string) (*RateLimitConfig, error)
+	List(ctx context.Context) ([]RateLimitConfig, error)
+	Upsert(ctx context.Context, p UpsertRateLimitConfigParams) error
+	Delete(ctx context.Context, operation string) error
+}
+
 // CleanupStore provides methods for hard-deleting soft-deleted records
 // and expired ephemeral data. Backends may augment these with native
 // mechanisms but must implement all methods for consistent cross-backend
@@ -603,6 +659,12 @@ type CleanupStore interface {
 	DeleteRevokedAPITokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteRevokedDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteExpiredDelegationTokensBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	// DeleteExpiredAltchaSalts purges consumed ALTCHA salts whose
+	// challenge window passed; the salt can no longer verify after
+	// expiry, so the row only caps table growth until this sweep drops
+	// it. External captcha providers enforce single use at their
+	// siteverify endpoint and contribute no rows.
+	DeleteExpiredAltchaSalts(ctx context.Context) (int64, error)
 	// CompactPublishedRevocationEvents removes an expired Hub runtime lease,
 	// then deletes retained events only through the live Hub cursor.
 	CompactPublishedRevocationEvents(ctx context.Context, p CompactRevocationEventsParams) (int64, error)

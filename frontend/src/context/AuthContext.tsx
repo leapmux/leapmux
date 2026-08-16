@@ -1,5 +1,6 @@
 import type { ParentComponent } from 'solid-js'
 import type { User } from '~/generated/leapmux/v1/auth_pb'
+import type { CaptchaRequestFields } from '~/lib/captchaForm'
 import { create } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { createEffect, createSignal, on, onMount, useContext } from 'solid-js'
@@ -37,7 +38,7 @@ export interface AuthState {
   bootstrapError: () => string | null
   /** Retry the bootstrap session-restore after a `bootstrapError`. */
   retryBootstrap: () => Promise<void>
-  login: (username: string, password: string) => Promise<void>
+  login: (username: string, password: string, captcha?: CaptchaRequestFields) => Promise<void>
   logout: () => Promise<void>
   setAuth: (user: User) => void
   refreshUser: () => Promise<void>
@@ -163,11 +164,19 @@ export const AuthProvider: ParentComponent = (props) => {
     setLoading(false)
   }
 
-  const login = async (username: string, password: string) => {
+  const login = async (username: string, password: string, captcha?: CaptchaRequestFields) => {
     setError(null)
     setLoading(true)
     try {
-      const req = create(LoginRequestSchema, { username, password })
+      const req = create(LoginRequestSchema, {
+        username,
+        password,
+        // The honeypot rides on every attempt; the payload is empty until
+        // the widget verifies (the hub ignores it while captcha is
+        // disabled — see createCaptchaForm's requirement gate).
+        captchaPayload: captcha?.captchaPayload ?? '',
+        honeypot: captcha?.honeypot ?? '',
+      })
       const resp = await authClient.login(req)
       // Logging in over a still-authenticated session (a bookmarked /login, a stale
       // tab) is an identity transition just like logout: setUser drives the eager
@@ -180,6 +189,9 @@ export const AuthProvider: ParentComponent = (props) => {
     catch (e) {
       const msg = formatErrorMessage(e, 'Login failed')
       setError(msg)
+      // The login form's captcha.reset() (see createCaptchaForm) triggers
+      // the system-info reload that converges a stale captcha snapshot
+      // after a runtime enable/disable or provider switch.
       throw e
     }
     finally {

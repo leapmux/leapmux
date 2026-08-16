@@ -1,8 +1,10 @@
 import type { Component, JSX } from 'solid-js'
-import type { SignUpResponse } from '~/generated/leapmux/v1/auth_pb'
 
+import type { SignUpResponse } from '~/generated/leapmux/v1/auth_pb'
 import { createSignal, Show } from 'solid-js'
 import { authClient } from '~/api/clients'
+import { CaptchaSection } from '~/components/common/CaptchaSection'
+import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { sanitizeDisplayName, sanitizeSlug, validateEmail, validateReservedUsername } from '~/lib/validate'
 import { errorText } from '~/styles/shared.css'
@@ -31,6 +33,7 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
   const [email, setEmail] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
+  const captcha = createCaptchaForm()
 
   const pwProps = { password, confirmPassword }
 
@@ -66,11 +69,13 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
         password: password(),
         displayName: sanitizedDisplayName,
         email: email(),
+        ...captcha.fields(),
       })
       props.onSuccess(resp)
     }
     catch (e) {
       setError(formatErrorMessage(e, props.errorPrefix ?? 'Sign up failed'))
+      captcha.reset(e)
       setSubmitting(false)
     }
   }
@@ -94,10 +99,11 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
           confirmPassword={confirmPassword}
           setConfirmPassword={setConfirmPassword}
         />
+        <CaptchaSection action="signup" captcha={captcha} />
         <Show when={error()}>
           <div class={errorText}>{error()}</div>
         </Show>
-        <button type="submit" disabled={submitting() || !username() || !passwordCanSubmit(pwProps)}>
+        <button type="submit" disabled={submitting() || !username() || !passwordCanSubmit(pwProps) || captcha.blocksSubmit()}>
           <Show when={submitting()}><Spinner /></Show>
           {submitting() ? props.submittingLabel : props.submitLabel}
         </button>
