@@ -25,7 +25,6 @@ WIN_HEIGHT=360
 WIN_X=100
 WIN_Y=100
 ICON_SIZE=128
-TEXT_SIZE=14
 APP_X=130
 APP_Y=150
 APPS_X=410
@@ -72,11 +71,9 @@ ln -s /Applications "${MOUNT_POINT}/Applications"
 
 # -- 3. Generate .DS_Store with Node.js. --
 node "${SCRIPT_DIR}/generate-dsstore.mjs" \
-  "${MOUNT_POINT}" \
   "${MOUNT_POINT}/.DS_Store" \
   --bg-color "${BG_R},${BG_G},${BG_B}" \
   --icon-size "${ICON_SIZE}" \
-  --text-size "${TEXT_SIZE}" \
   --window-pos "${WIN_X},${WIN_Y}" \
   --window-size "${WIN_WIDTH},${WIN_HEIGHT}" \
   --icon "${APP_NAME},${APP_X},${APP_Y}" \
