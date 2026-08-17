@@ -545,18 +545,6 @@ export const TabBar: Component<TabBarProps> = (props) => {
 
   return (
     <div class={styles.tabBar} data-testid="tab-bar">
-      <Show when={props.mobile}>
-        {mobile => (
-          <IconButton
-            icon={Menu}
-            iconSize="lg"
-            size="xl"
-            aria-label="Toggle workspaces"
-            onClick={() => mobile().onToggleDrawer('left')}
-          />
-        )}
-      </Show>
-
       <Show
         when={props.mobile}
         fallback={(
@@ -711,67 +699,82 @@ export const TabBar: Component<TabBarProps> = (props) => {
           </>
         )}
       >
-        {mobile => (
-          <>
-            {/* Mobile: the strip collapses to a chip that opens the tab sheet. */}
-            <button
-              type="button"
-              class={styles.tabChip}
-              data-testid="tab-chip"
-              aria-haspopup="dialog"
-              aria-expanded={mobile().sheetOpen()}
-              onClick={() => {
-                const tab = chipTab()
-                if (!tab) {
-                  // Mirrors the strip's empty-area double-click: no tabs to list,
-                  // so the chip becomes a new-tab trigger.
-                  props.newTab.onNewAgentAdvanced?.()
-                  return
-                }
-                mobile().onToggleSheet()
-              }}
-            >
+        {(mobile) => {
+          // Closing the last tab from inside the sheet removes the chip —
+          // the sheet's only toggle — so the sheet closes with it instead
+          // of staying open over the empty tile state with no bar control
+          // left to dismiss it by (the scrim still works, but it should
+          // not have to).
+          createEffect(() => {
+            if (props.tabs.length === 0 && mobile().sheetOpen())
+              mobile().onCloseSheet()
+          })
+          return (
+            <>
+              {/* Mobile: the strip collapses to a chip that opens the tab sheet.
+                  The chip is hidden while the tile has no tabs — a "0" chip that
+                  toggles an empty sheet explains nothing, and the main area's
+                  empty-state buttons are the affordance for creating the first
+                  tab. Its flex role (filling the middle so the files toggle
+                  lands at the right end) is held by a spacer in its absence. */}
+              <IconButton
+                icon={Menu}
+                iconSize="lg"
+                size="xl"
+                aria-label="Toggle workspaces"
+                onClick={() => mobile().onToggleDrawer('left')}
+              />
               <Show
-                when={chipTab()}
-                fallback={<span class={styles.tabIcon} />}
+                when={props.tabs.length > 0}
+                fallback={<div class={styles.mobileBarSpacer} data-testid="tab-bar-spacer" aria-hidden="true" />}
               >
-                {tab => (
-                  <>
-                    <span class={styles.tabIcon}>
-                      <TabTypeIcon tab={tab()} />
-                    </span>
-                    <span class={styles.mobileClippedLabel}>{tabDisplayLabel(tab())}</span>
-                    <Show when={tab().hasNotification}>
-                      <span class={styles.tabNotification} data-testid="tab-notification" />
-                    </Show>
-                  </>
-                )}
+                <button
+                  type="button"
+                  class={styles.tabChip}
+                  data-testid="tab-chip"
+                  aria-haspopup="dialog"
+                  aria-expanded={mobile().sheetOpen()}
+                  onClick={() => mobile().onToggleSheet()}
+                >
+                  {/* Always truthy here — the chip renders only with tabs — but
+                      `<Show>` is still the narrowest way to hand the row a live
+                      tab accessor. */}
+                  <Show when={chipTab()}>
+                    {tab => (
+                      <>
+                        <span class={styles.tabIcon}>
+                          <TabTypeIcon tab={tab()} />
+                        </span>
+                        <span class={styles.mobileClippedLabel}>{tabDisplayLabel(tab())}</span>
+                        <Show when={tab().hasNotification}>
+                          <span class={styles.tabNotification} data-testid="tab-notification" />
+                        </Show>
+                      </>
+                    )}
+                  </Show>
+                  <span class={styles.tabChipCount} data-testid="tab-chip-count">{props.tabs.length}</span>
+                  <ChevronDown size={14} class={styles.tabChipChevron} />
+                </button>
               </Show>
-              <span class={styles.tabChipCount} data-testid="tab-chip-count">{props.tabs.length}</span>
-              <ChevronDown size={14} class={styles.tabChipChevron} />
-            </button>
 
-            {/* Mobile keeps the single "+" new-tab dropdown. The mobile bar
-                has no [data-tile-size] ancestor (it renders outside any Tile),
-                so the tile-size rules that reveal `collapsedNewTab` never
-                apply — this variant is visible on its own. */}
-            <Show when={props.newTab.showAddButton}>
-              <CollapsedNewTabMenu wrapperClass={styles.mobileNewTab} />
-            </Show>
-          </>
-        )}
-      </Show>
+              {/* Mobile keeps the single "+" new-tab dropdown. The mobile bar
+                  has no [data-tile-size] ancestor (it renders outside any Tile),
+                  so the tile-size rules that reveal `collapsedNewTab` never
+                  apply — this variant is visible on its own. */}
+              <Show when={props.newTab.showAddButton}>
+                <CollapsedNewTabMenu wrapperClass={styles.mobileNewTab} />
+              </Show>
 
-      <Show when={props.mobile}>
-        {mobile => (
-          <IconButton
-            icon={PanelRight}
-            iconSize="lg"
-            size="xl"
-            aria-label="Toggle files"
-            onClick={() => mobile().onToggleDrawer('right')}
-          />
-        )}
+              <IconButton
+                icon={PanelRight}
+                iconSize="lg"
+                size="xl"
+                aria-label="Toggle files"
+                onClick={() => mobile().onToggleDrawer('right')}
+              />
+            </>
+          )
+        }}
       </Show>
 
       {/* The mobile tab sheet, fixed-positioned within the tab bar's stacking

@@ -347,6 +347,14 @@ export const tabChip = style({
   },
 })
 
+// Holds the chip's flex role while the chip itself is hidden (a tile with no
+// tabs): the chip's `flex: 1` is what fills the bar's middle and lands the
+// files toggle at the right end, so without a stand-in the trailing chrome
+// collapses against the head of the bar instead.
+export const mobileBarSpacer = style({
+  flex: 1,
+})
+
 /**
  * Clipped single-line label for the mobile surfaces (the chip's tab name,
  * the sheet row's label). Composed with an EMPTY rule on purpose — same

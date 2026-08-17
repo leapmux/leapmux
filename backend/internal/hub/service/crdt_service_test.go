@@ -353,6 +353,57 @@ func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 	assert.Equal(t, "wkr1", tab.GetWorkerId().GetValue())
 }
 
+// TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected is the
+// end-to-end form of the tab-placement guard: a batch that creates a tab
+// on a tile no workspace claims is REJECTED, not committed. Browsers and
+// the CLI both refuse to emit such an op client-side (the worker resource
+// is created before the placement op, so a rejection after it strands an
+// orphan); this pins the hub-side check that makes the class impossible
+// for a buggy or hostile client regardless.
+func TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected(t *testing.T) {
+	t.Parallel()
+
+	env := setupCRDTService(t)
+
+	// A live leaf that no workspace register claims — reachable only by
+	// seeding it internally, since a client batch creating it would fail
+	// the same resolution for the node op.
+	_, err := env.mgr.SubmitInternal(context.Background(), crdt.SubmitInput{
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "seed-orphan-leaf", Ops: []*leapmuxv1.CrdtOp{{
+			OpId: "seed-orphan-kind",
+			Body: &leapmuxv1.CrdtOp_SetNodeRegister{SetNodeRegister: &leapmuxv1.SetNodeRegisterOp{
+				NodeId: "orphan-root",
+				Field:  &leapmuxv1.SetNodeRegisterOp_Kind{Kind: leapmuxv1.NodeKind_NODE_KIND_LEAF},
+			}},
+		}}}},
+	})
+	require.NoError(t, err)
+
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(env.userID)})
+	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
+		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "b-orphan", Ops: addTabOps("opX", "tOrphan", "orphan-root", "wkr1", "p1")}},
+	})
+
+	resp, err := env.svc.SubmitOps(ctx, req)
+	require.NoError(t, err, "the rejection is in-band, not an RPC error")
+	rejected := resp.Msg.GetResults()[0].GetRejected()
+	require.NotNil(t, rejected, "the batch must be rejected")
+	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID, rejected.GetReason())
+
+	// Nothing was committed: the tab never entered the materialized state.
+	assert.NotContains(t, env.mgr.State().GetTabs(), "tOrphan")
+	// And the seeded workspace's own root still takes tabs — the guard
+	// rejects the placement, not the submitter.
+	req2 := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
+		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
+		Batches: []*leapmuxv1.OpBatch{{BatchId: "b-ok", Ops: addTabOps("opY", "tFine", "root1", "wkr1", "p1")}},
+	})
+	resp2, err := env.svc.SubmitOps(ctx, req2)
+	require.NoError(t, err)
+	require.NotNil(t, resp2.Msg.GetResults()[0].GetCommitted(), "a tab on a registered root still commits")
+}
+
 // TestCRDTService_UpdatePresence_RequiresAuth ensures presence calls
 // without an authenticated user are rejected with Unauthenticated.
 func TestCRDTService_UpdatePresence_RequiresAuth(t *testing.T) {

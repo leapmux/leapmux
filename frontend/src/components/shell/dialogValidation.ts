@@ -9,6 +9,16 @@ interface BaseDialogState {
   workerId: string
   workingDir: string
   /**
+   * Why a precondition OUTSIDE the dialog blocks creation — e.g. no
+   * workspace to place the new tab in. A non-empty string disables submit
+   * and is shown as the reason. Distinct from the field checks: the
+   * submit it prevents would create the worker-side resource first and
+   * orphan it when placement refuses. Carrying the reason (not a bare
+   * boolean) keeps the gate and the notice from disagreeing about the
+   * same moment.
+   */
+  blockedReason?: string
+  /**
    * The currently-active git-mode intent. Optional so dialogs without
    * git options can skip it entirely — adding a new git mode then only
    * touches `useGitModeState` and the switch in `isGitModeInvalid`.
@@ -71,6 +81,7 @@ export function isGitModeInvalid(intent: GitModeIntent | undefined): boolean {
 // dialog-specific checks layered on top.
 function isBaseDialogInvalid(state: BaseDialogState): boolean {
   return state.submitting
+    || !!state.blockedReason
     || !state.workerId
     || !state.workingDir.trim()
     || isGitModeInvalid(state.git)
@@ -97,6 +108,13 @@ export function isTerminalCreateDisabled(state: TerminalDialogState): boolean {
 interface ChangeBranchDialogState {
   submitting: boolean
   git: GitModeIntent
+  /**
+   * Why tab creation is blocked outside the dialog — set only while the
+   * active mode is `CreateWorktree`, the one mode whose submit opens a
+   * worker-side resource that placement could orphan. The other modes
+   * change no tabs, so no reason applies to them.
+   */
+  blockedReason?: string
   /**
    * When the active mode is `CreateWorktree`, the dialog asks the user
    * what kind of tab to open in the new worktree (AGENT or TERMINAL),
@@ -125,6 +143,8 @@ interface ChangeBranchDialogState {
  */
 export function isChangeBranchSubmitDisabled(state: ChangeBranchDialogState): boolean {
   if (state.submitting)
+    return true
+  if (state.blockedReason)
     return true
   if (!isChangeBranchMode(state.git.mode))
     return true

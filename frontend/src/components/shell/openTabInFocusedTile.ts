@@ -11,7 +11,8 @@ import { emitAddTab, positionAfterKey } from '~/stores/tabOps'
  * Every "open a tab" path does the same five steps in the same order, and the
  * ORDER is the part worth having in one place:
  *
- *   1. resolve the focused tile,
+ *   1. resolve the placement tile (the focused tile, or the first main
+ *      leaf when focus sits on a floating-window tile),
  *   2. read that tile's current selection, so the new tab lands next to it
  *      rather than at the end of the strip,
  *   3. write metadata FIRST — `emitAddTab` applies to `speculativeState`
@@ -38,25 +39,44 @@ export interface OpenTabPlacement {
 }
 
 /**
- * Returns the tile the tab was placed on, or `''` when there is no real tile to
- * place it on.
+ * Whether `openTabInFocusedTile` would place a tab right now: the
+ * workspace's tree really arrived in the projection. Focus does not enter
+ * the question — placement resolves to the first main leaf when the
+ * focused tile is a floating-window tile (`placementTileId`).
  *
- * The empty answer is a refusal, not a failure mode to ignore: `focusedTileId`
- * falls back to the first leaf of `projectedRoot()`, which is a LOCALLY-MINTED
- * placeholder while the projection has no tree for this workspace. Emitting
- * `AddTab` against that names a node the hub has never heard of, and it rejects
- * the batch -- after the caller has already created the agent or terminal on the
- * worker, so the result is an orphaned resource with no tab. Callers already
- * check `workspaceReady` before offering the affordance; this makes the class
- * impossible rather than merely unreached.
+ * Every path that creates a worker-side resource — the quick actions, the
+ * New Agent / New Terminal dialogs, the Change-branch worktree flow, and
+ * file opens — consults this BEFORE the worker RPC, because the RPC is
+ * the step that cannot be taken back: a placement refusal after it leaves
+ * an orphaned agent or pty behind with no tab to reach it by.
+ * `openTabInFocusedTile` keeps its own refusal as well (the predicate
+ * becoming false between the check and the call is always possible),
+ * making the orphan class impossible rather than merely unreached.
+ */
+export function hasPlaceableTab(
+  layoutStore: ReturnType<typeof createLayoutStore>,
+): boolean {
+  return layoutStore.placementTileId() !== ''
+}
+
+/**
+ * Returns the tile the tab was placed on, or `''` when there is no real
+ * tile to place it on.
+ *
+ * The empty answer is a refusal, not a failure mode to ignore: while the
+ * projection has no tree for this workspace, placement resolves to the
+ * locally-minted placeholder leaf. Emitting `AddTab` against that names a
+ * node the hub has never heard of, and it rejects the batch — after the
+ * caller has already created the agent or terminal on the worker, so the
+ * result is an orphaned resource with no tab.
  */
 export function openTabInFocusedTile(
   deps: OpenTabDeps,
   tab: OpenTabPlacement,
   metadataFields: TabMetadata,
 ): string {
-  const tileId = deps.layoutStore.focusedTileId()
-  if (!tileId || !deps.layoutStore.hasProjectedTile(tileId))
+  const tileId = deps.layoutStore.placementTileId()
+  if (!tileId)
     return ''
   const afterKey = deps.selection.activeKeyForTile(tileId)
   deps.metadata.patch(tab.id, metadataFields)

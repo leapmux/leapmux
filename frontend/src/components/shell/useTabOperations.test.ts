@@ -91,11 +91,14 @@ function setup(
   // Default ONLINE, because that is the normal state and it is the state in
   // which a transport failure must NOT be read as "the worker is gone".
   workerOnlineState: (workerId: string) => boolean | undefined = () => true,
+  // `unbootstrapped` keys the stores at a workspace the bridge never
+  // delivered, so placement has no projected tree to resolve to.
+  opts: { unbootstrapped?: boolean } = {},
 ) {
   // Override the global test bridge with a known tile id so the
   // projection's root leaf is the tile these tests address.
   installTestBridge({ rootTileId: 'tile-1' })
-  const stores = createTestTabStores('ws-test')
+  const stores = createTestTabStores(opts.unbootstrapped ? 'ws-never-bootstrapped' : 'ws-test')
   const { view, metadata, selection, layoutStore } = stores
   const chatStore = createChatStore()
 
@@ -225,6 +228,30 @@ describe('useTabOperations', () => {
             gitIsWorktree: false,
             workingDir: '/tmp',
           })
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // A refused placement added no tab, so the worker must not persist a
+    // file-tab path for the id either: the row (and its broadcast to peers)
+    // would name a tab no tree holds, and only the hourly reconciler sweep
+    // would remove it.
+    it('handleFileOpen registers no path and warns when placement refuses', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup(DEFAULT_SCROLL_STATE, () => true, { unbootstrapped: true })
+
+          ops.handleFileOpen('/tmp/orphan.go')
+          await Promise.resolve()
+
+          // The seeded agent tabs are outside this workspace's tree; the
+          // claim is that no FILE tab joined them.
+          expect(view.all().some(t => t.type === TabType.FILE), 'nothing was placed').toBe(false)
+          expect(mockRegisterFileTabPath, 'no phantom row for an unplaced tab id').not.toHaveBeenCalled()
+          expect(mockShowWarnToast).toHaveBeenCalled()
         }
         finally {
           dispose()

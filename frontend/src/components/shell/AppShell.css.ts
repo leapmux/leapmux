@@ -1,6 +1,7 @@
 import { style } from '@vanilla-extract/css'
 import { resizeHandleSelectors } from '~/styles/resizeHandle'
 import { motion } from '~/styles/tokens'
+import { tileContent } from './Tile.css'
 
 export const shell = style({
   height: '100%',
@@ -230,14 +231,15 @@ export const sheetOverlayOpen = style({
 // returned by `renderTileContent`. Without this wrapper the tilePanes fall
 // out of flow (`position: absolute; inset: 0`) and only the tab bar +
 // composer end up in mobileCenter's flex flow — collapsing the composer
-// up against the tab bar at the top of the viewport. Mirrors the desktop
-// `tileContent` style at `./Tile.css.ts`.
-export const mobileTilePaneSlot = style({
-  flex: 1,
-  minHeight: 0,
-  position: 'relative',
-  overflow: 'hidden',
-})
+// up against the tab bar at the top of the viewport. Composes the desktop
+// `tileContent` class at `./Tile.css.ts` so the shared flex facts have one
+// definition; `minHeight: 0` is the one mobile delta — the slot is a
+// shrinking child of mobileCenter's column, while the desktop slot sits in
+// `tile` which already carries it. The in-flow empty states
+// (`emptyTileActions`, `placeholder`) center their content by growing with
+// `flex: 1`, which only fills this pane when the slot itself is a flex
+// container — without it they pinned to the top.
+export const mobileTilePaneSlot = style([tileContent, { minHeight: 0 }])
 
 // --- End mobile layout styles ---
 

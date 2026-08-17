@@ -704,6 +704,37 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
       return focusedTileIdRaw() ?? firstLeafId(projectedRoot()) ?? ''
     },
 
+    /**
+     * The tile a new tab places on: the focused tile when it belongs to
+     * the projected main tree, otherwise the tree's first leaf.
+     *
+     * Focus may legally sit on a floating-window tile (see the invariant
+     * note above), which the main tree does not contain — an op naming it
+     * is rejected by the hub, so placement falls back to the first main
+     * leaf the same way `focusedTileId()` falls back when nothing is
+     * focused. `''` when the workspace's tree has not arrived; the tree,
+     * not the focus, is what makes placement possible.
+     */
+    placementTileId(): string {
+      const local = localTreeFor(opts.getWorkspaceId() ?? '')
+      if (!local)
+        return ''
+      const focused = focusedTileIdRaw()
+      return focused && containsTileId(local, focused) ? focused : firstLeafId(local) ?? ''
+    },
+
+    /**
+     * Has the active workspace's layout tree arrived in the projection?
+     *
+     * The one question the center render gate and tab placement both ask,
+     * so they agree by construction: `localTrees` only holds trees the
+     * projection delivered, and `placementTileId()` answers `''` exactly
+     * when this answers false.
+     */
+    hasProjectedTree(): boolean {
+      return localTreeFor(opts.getWorkspaceId() ?? '') !== undefined
+    },
+
     splitTile,
 
     makeGrid,

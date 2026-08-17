@@ -111,6 +111,14 @@ describe('isAgentCreateDisabled', () => {
     expect(isAgentCreateDisabled(valid)).toBe(false)
   })
 
+  it('returns true when a blocked reason is present (no workspace to place the tab in)', () => {
+    expect(isAgentCreateDisabled({ ...valid, blockedReason: 'Create a workspace first.' })).toBe(true)
+  })
+
+  it('treats an empty blocked reason as absent — it blocks nothing and renders no notice', () => {
+    expect(isAgentCreateDisabled({ ...valid, blockedReason: '' })).toBe(false)
+  })
+
   it('returns true when no providers are available', () => {
     expect(isAgentCreateDisabled({ ...valid, noProviders: true })).toBe(true)
   })
@@ -278,6 +286,10 @@ describe('isTerminalCreateDisabled', () => {
     expect(isTerminalCreateDisabled(valid)).toBe(false)
   })
 
+  it('returns true when a blocked reason is present (no workspace to place the tab in)', () => {
+    expect(isTerminalCreateDisabled({ ...valid, blockedReason: 'Create a workspace first.' })).toBe(true)
+  })
+
   it('returns true when submitting', () => {
     expect(isTerminalCreateDisabled({ ...valid, submitting: true })).toBe(true)
   })
@@ -325,6 +337,17 @@ describe('isChangeBranchSubmitDisabled', () => {
 
   it('returns false when switch-branch mode is valid', () => {
     expect(isChangeBranchSubmitDisabled(switchBranchValid)).toBe(false)
+  })
+
+  // The worktree mode's submit opens a worker-side agent/pty that placement
+  // could orphan, so a blocked reason (no placeable tile, archived
+  // workspace) must disable it like any other tab-creating dialog.
+  it('returns true when a blocked reason is present (worktree mode cannot place its tab)', () => {
+    expect(isChangeBranchSubmitDisabled({
+      ...switchBranchValid,
+      git: { mode: GitMode.CreateWorktree, worktreeBranch: 'feat', worktreeBranchError: null, worktreeBaseBranch: 'main' },
+      blockedReason: 'The workspace view is not ready yet.',
+    })).toBe(true)
   })
 
   it('returns true when submitting', () => {

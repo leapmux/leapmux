@@ -126,6 +126,7 @@ vi.mock('~/components/shell/TabBar.css', () => ({
   collapsedOverflow: 'collapsedOverflow',
   shellDefault: 'shellDefault',
   tabChip: 'tabChip',
+  mobileBarSpacer: 'mobileBarSpacer',
   mobileClippedLabel: 'mobileClippedLabel',
   tabChipCount: 'tabChipCount',
   tabChipChevron: 'tabChipChevron',
@@ -640,14 +641,14 @@ describe('tabBar mobile variant', () => {
        Renders the mobile bar with a real signal behind the sheet-open prop, the
       same contract AppShell's overlay state feeds it.
    */
-  function renderMobileTabBar(tabs: Tab[], activeTabKey: string | null, opts: MobileOpts = {}) {
+  function renderMobileTabBar(tabs: Tab[] | (() => Tab[]), activeTabKey: string | null, opts: MobileOpts = {}) {
     const [sheetOpen, setSheetOpen] = createSignal(false)
     const onToggleSheetSpy = vi.fn(() => setSheetOpen(prev => !prev))
     const view = render(() => (
       <PreferencesProvider>
         <TabBar
           {...defaultProps}
-          tabs={tabs}
+          tabs={typeof tabs === 'function' ? tabs() : tabs}
           activeTabKey={activeTabKey}
           onSelect={opts.onSelect ?? noop}
           onClose={opts.onClose ?? noop}
@@ -791,6 +792,48 @@ describe('tabBar mobile variant', () => {
     expect(onToggleDrawer).toHaveBeenCalledTimes(2)
   })
 
+  it('the files toggle sits at the right end of the bar, chip or no chip', () => {
+    // The chip's `flex: 1` fills the bar's middle, which is what lands the
+    // files toggle at the right end. With the chip hidden (no tabs) a spacer
+    // holds that flex role — without it the trailing chrome collapses against
+    // the head of the bar.
+    const barChromeLabels = () =>
+      [...screen.getByTestId('tab-bar').querySelectorAll('button')]
+        .map(b => b.getAttribute('aria-label') ?? b.dataset.testid ?? '')
+        // The "+" dropdown's menu items render inline with no label — they are
+        // not bar chrome; only the labelled controls carry the layout.
+        .filter(label => label !== '')
+
+    const rendered = renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+    expect(barChromeLabels()).toEqual(['Toggle workspaces', 'tab-chip', 'collapsed-new-tab-button', 'Toggle files'])
+    expect(screen.queryByTestId('tab-bar-spacer')).toBeNull()
+    rendered.view.unmount()
+
+    renderMobileTabBar([], null)
+    expect(barChromeLabels()).toEqual(['Toggle workspaces', 'collapsed-new-tab-button', 'Toggle files'])
+    expect(screen.getByTestId('tab-bar-spacer')).toBeInTheDocument()
+  })
+
+  it('closing the last tab closes the sheet, whose only bar toggle (the chip) is gone', () => {
+    const [tabs, setTabs] = createSignal<Tab[]>([makeTab(TabType.AGENT, 'a1', 'Agent Olivia')])
+    // The close handler drops the row the way the real store does, so the
+    // prop shrinks from inside the event. Passing the ACCESSOR (not a read)
+    // lets the harness prop re-derive per tick; the rule cannot see that.
+    // eslint-disable-next-line solid/reactivity -- accessor passed, never read here
+    renderMobileTabBar(tabs, `${TabType.AGENT}:a1`, { onClose: () => setTabs([]) })
+
+    fireEvent.click(screen.getByTestId('tab-chip'))
+    expect(screen.getByTestId('tab-sheet')).toHaveClass('sheetPanelOpen')
+
+    // Close the last tab from inside the sheet. The chip unmounts with the
+    // last tab, so the sheet must close itself rather than stay open with
+    // no bar control left to dismiss it by.
+    fireEvent.click(screen.getAllByTestId('tab-close')[0])
+
+    expect(screen.queryByTestId('tab-chip')).toBeNull()
+    expect(screen.getByTestId('tab-sheet')).not.toHaveClass('sheetPanelOpen')
+  })
+
   it('pressing Escape closes the sheet (the scrim is the layout\'s, covered in MobileLayout)', () => {
     renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
 
@@ -802,13 +845,16 @@ describe('tabBar mobile variant', () => {
     expect(panel).not.toHaveClass('sheetPanelOpen')
   })
 
-  it('a chip with no tabs opens the new-agent dialog instead of the sheet', () => {
+  it('a chip with no tabs is not rendered at all — no "0" chip, no new-tab trigger', () => {
     const onNewAgentAdvanced = vi.fn()
     renderMobileTabBar([], null, { onNewAgentAdvanced })
 
-    fireEvent.click(screen.getByTestId('tab-chip'))
-
-    expect(onNewAgentAdvanced).toHaveBeenCalledOnce()
+    // The chip toggles a tab sheet; with nothing to list it would only show
+    // a count of 0. The main area's empty-state buttons are the affordance
+    // for the first tab instead.
+    expect(screen.queryByTestId('tab-chip')).toBeNull()
+    expect(screen.queryByTestId('tab-chip-count')).toBeNull()
+    expect(onNewAgentAdvanced).not.toHaveBeenCalled()
     expect(screen.getByTestId('tab-sheet')).not.toHaveClass('sheetPanelOpen')
   })
 

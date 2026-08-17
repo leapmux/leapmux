@@ -344,6 +344,43 @@ describe('changeBranchDialog', () => {
     await waitFor(() => expect(props.onAgentCreated).toHaveBeenCalled())
   })
 
+  // The worktree mode's submit opens a worker-side agent/pty that placement
+  // could orphan, so a blocked reason must disable it like the other
+  // tab-creating dialogs — and the click must never reach the RPC.
+  it('worktree mode: a blocked reason disables Apply, shows the notice, and fires no RPC', async () => {
+    const props = renderDialog({ blockedReason: () => 'The workspace view is not ready yet.' })
+    await awaitFormReady()
+    fireEvent.click(screen.getByText('Create new worktree'))
+
+    expect(await screen.findByTestId('new-tab-blocked-reason'))
+      .toHaveTextContent(/not ready yet/i)
+    const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
+    expect(apply.disabled).toBe(true)
+
+    fireEvent.click(apply)
+    await Promise.resolve()
+    expect(workerRpc.openAgent, 'the guard holds before the worker RPC').not.toHaveBeenCalled()
+    expect(workerRpc.openTerminal).not.toHaveBeenCalled()
+    expect(props.onClose, 'and the dialog did not close as a success').not.toHaveBeenCalled()
+  })
+
+  // The companion: the reason is mode-conditioned, not global. A branch
+  // checkout creates no tab, so the same accessor must not disable it.
+  it('the blocked reason never applies outside worktree mode — a branch checkout opens no tab', async () => {
+    const props = renderDialog({ blockedReason: () => 'The workspace view is not ready yet.' })
+    await awaitFormReady()
+
+    expect(screen.queryByTestId('new-tab-blocked-reason')).toBeNull()
+    const select = screen.getAllByRole('combobox')[0] as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'main' } })
+    const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
+    expect(apply.disabled, 'switch-branch arms despite the reason').toBe(false)
+
+    fireEvent.click(apply)
+    await waitFor(() => expect(workerRpc.checkoutBranch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(props.onClose).toHaveBeenCalled())
+  })
+
   it('worktree mode (terminal): calls openTerminal with the chosen shell', async () => {
     vi.mocked(workerRpc.openTerminal).mockResolvedValue({
       $typeName: 'leapmux.v1.OpenTerminalResponse',

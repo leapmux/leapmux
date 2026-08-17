@@ -9,7 +9,7 @@ import { useAgentOperations } from '~/components/shell/useAgentOperations'
 import { AgentInfoSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/leapmux/v1/agent_pb'
 import { WorktreeAction } from '~/generated/leapmux/v1/common_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
-import { KEY_MRU_AGENT_PROVIDERS, localStorageSet } from '~/lib/browserStorage'
+import { KEY_MRU_AGENT_PROVIDERS, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createControlStore } from '~/stores/control.store'
 import { protoToAgentTabFields } from '~/stores/tab.helpers'
@@ -80,11 +80,16 @@ function addAgent(
   stores.selection.setActiveById(TabType.AGENT, id)
 }
 
-function setup() {
+/**
+ * `storeWorkspaceId` keys the stores the shell answers for. The bridge
+ * always delivers ws-1's tree, so a DIFFERENT id produces the
+ * never-bootstrapped wedge (no projected tree for the active workspace).
+ */
+function setup(storeWorkspaceId: string = 'ws-1') {
   const agentSessionStore = createAgentSessionStore()
   const controlStore = createControlStore()
   const harness = installTestBridge({ workspaceId: 'ws-1' })
-  const stores = createTestTabStores('ws-1')
+  const stores = createTestTabStores(storeWorkspaceId)
 
   const chatStore = {
     getMessages: vi.fn().mockReturnValue([]),
@@ -101,11 +106,11 @@ function setup() {
     view: stores.view,
     metadata: stores.metadata,
     selection: stores.selection,
-    getActiveWorkspaceId: () => 'ws-1',
+    getActiveWorkspaceId: () => storeWorkspaceId,
     layoutStore: stores.layoutStore,
     settingsLoading: { start: vi.fn(), stop: vi.fn() },
     isActiveWorkspaceMutatable: () => true,
-    activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
+    activeWorkspace: () => ({ id: storeWorkspaceId } as Workspace),
     getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp' }),
     newAgentDialog: { open: vi.fn(), close: vi.fn(), isOpen: () => false },
     setNewAgentLoadingProvider: vi.fn(),
@@ -249,6 +254,52 @@ describe('useAgentOperations', () => {
 
           expect(newAgentDialog.open).toHaveBeenCalled()
           expect(mockOpenAgent).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // The worker RPC is the step that cannot be taken back: a placement
+    // refusal AFTER it strands an orphaned agent on the worker with no tab
+    // to reach it by. When the workspace's tree never arrived, the open
+    // must refuse BEFORE the RPC.
+    it('refuses before the worker RPC when the workspace has no projected tree', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          // The bridge delivers ws-1's tree; the shell answers for a
+          // workspace the bootstrap never delivered, so placement has no
+          // projected tile to resolve to.
+          const { ops } = setup('ws-never-bootstrapped')
+
+          await flush()
+          await ops.handleOpenAgent()
+
+          expect(mockOpenAgent).not.toHaveBeenCalled()
+          expect(mockShowWarnToast).toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // A refused open is not a use: recording it would promote a provider
+    // the user never successfully opened, and the next quick-create pick
+    // (MRU order) would follow a phantom.
+    it('does not record an MRU provider use when the open is refused', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX] })
+          const { ops } = setup('ws-never-bootstrapped')
+
+          await flush()
+          await ops.handleOpenAgent(AgentProvider.CODEX)
+
+          expect(mockOpenAgent).not.toHaveBeenCalled()
+          expect(localStorageGet(KEY_MRU_AGENT_PROVIDERS), 'a refused open is not a use').toBeUndefined()
         }
         finally {
           dispose()

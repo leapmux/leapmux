@@ -5,6 +5,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { labelRow } from '~/components/common/Dialog.css'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
+import { BlockedReasonNotice } from '~/components/shell/BlockedReasonNotice'
 import { isChangeBranchSubmitDisabled } from '~/components/shell/dialogValidation'
 import { GitOptions } from '~/components/shell/GitOptions'
 import { GitOptionsLoader } from '~/components/shell/GitOptionsLoader'
@@ -64,6 +65,15 @@ interface ChangeBranchDialogProps {
    * needed rather than waiting for the next git-status poll).
    */
   onBranchChanged?: (newBranch: string) => void
+  /**
+   * When this returns a string in CreateWorktree mode, no tab can be
+   * placed for the new worktree's agent/terminal (no workspace tree, or
+   * an archived workspace): submit is disabled and the string is shown
+   * as the reason. Guards the worker RPC — creating the resource first
+   * and refusing placement second would orphan it. The branch-only modes
+   * open no tab, so the reason never applies to them.
+   */
+  blockedReason?: () => string | undefined
   onAgentCreated?: (agent: AgentInfo) => void
   onTerminalCreated?: (terminalId: string, workerId: string, workingDir: string, title: string) => void
   onClose: () => void
@@ -115,8 +125,16 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
     err => log.warn('Failed to list shells', err),
   )
 
+  // The guard reason applies only to the one mode whose submit opens a
+  // worker-side resource that placement could orphan; branch-only modes
+  // change no tabs. One accessor so the submit gate and the notice read
+  // the same value.
+  const worktreeBlockedReason = () =>
+    gitMode.currentIntent().mode === GitMode.CreateWorktree ? props.blockedReason?.() : undefined
+
   const submitDisabled = () => isChangeBranchSubmitDisabled({
     submitting: submitting.loading(),
+    blockedReason: worktreeBlockedReason(),
     // SwitchBranch intent now carries `checkoutBranchError` set by
     // GitOptions when the destination resolves to the current branch
     // (the path-info probe's currentBranch is the source of truth, and
@@ -257,6 +275,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
         />
       )}
     >
+      <BlockedReasonNotice reason={worktreeBlockedReason()} />
       <GitOptionsLoader gitInfo={pathInfo}>
         {() => (
           <>

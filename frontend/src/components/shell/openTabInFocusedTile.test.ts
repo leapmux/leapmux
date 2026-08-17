@@ -7,7 +7,7 @@ import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestTabStores } from '~/test-support/tabStores'
-import { openTabInFocusedTile } from './openTabInFocusedTile'
+import { hasPlaceableTab, openTabInFocusedTile } from './openTabInFocusedTile'
 
 afterEach(() => setCRDTBridge(null))
 
@@ -96,13 +96,12 @@ describe('openTabInFocusedTile', () => {
   })
 
   /**
-   * `focusedTileId()` never answers "nothing" -- it falls back to the first leaf
-   * of `projectedRoot()`, which is a LOCALLY-MINTED placeholder whenever the
-   * projection has no tree for the workspace. A bootstrap that never lands
-   * leaves the shell in exactly that state, and the caller has already created
-   * the agent or terminal on the worker by the time it gets here: emitting
-   * against the placeholder gets the batch rejected and leaves an orphan with no
-   * tab to reach it by.
+   * `placementTileId()` answers `''` while the projection has no tree for
+   * the workspace — the locally-minted placeholder leaf is not a placeable
+   * tile. A bootstrap that never lands leaves the shell in exactly that
+   * state, and the caller has already created the agent or terminal on the
+   * worker by the time it gets here: emitting against the placeholder gets
+   * the batch rejected and leaves an orphan with no tab to reach it by.
    */
   it('refuses to place a tab when the workspace has no projected tree', () => {
     createRoot((dispose) => {
@@ -112,6 +111,43 @@ describe('openTabInFocusedTile', () => {
 
       expect(tileId, 'no real tile to place it on').toBe('')
       expect(s.view.all(), 'and nothing was emitted against the placeholder').toEqual([])
+      dispose()
+    })
+  })
+
+  /**
+   * Focus may legally sit on a floating-window tile, which the main tree
+   * does not contain — an op naming it is rejected by the hub. Placement
+   * falls back to the first main leaf, the same fallback `focusedTileId`
+   * applies when nothing is focused, so a popped-out window never blocks
+   * tab creation.
+   */
+  it('falls back to the first main leaf when focus sits on a floating tile', () => {
+    createRoot((dispose) => {
+      const s = setup()
+      s.layoutStore.setFocusedTile('floating-tile-1')
+
+      const tileId = openTabInFocusedTile(s, { type: TabType.AGENT, id: 'a1' }, {})
+
+      expect(tileId).toBe(s.harness.rootTileId)
+      expect(s.view.getById(TabType.AGENT, 'a1')?.tileId).toBe(s.harness.rootTileId)
+      dispose()
+    })
+  })
+
+  /** The pre-RPC form of the refusals above, consulted by every tab-creation path. */
+  it('hasPlaceableTab answers whether placement is possible right now', () => {
+    createRoot((dispose) => {
+      const ready = setup()
+      ready.layoutStore.setFocusedTile(ready.harness.rootTileId)
+      expect(hasPlaceableTab(ready.layoutStore)).toBe(true)
+
+      const floatingFocused = setup()
+      floatingFocused.layoutStore.setFocusedTile('floating-tile-1')
+      expect(hasPlaceableTab(floatingFocused.layoutStore), 'a floating focus still places on the main tree').toBe(true)
+
+      const unbootstrapped = setupUnbootstrapped()
+      expect(hasPlaceableTab(unbootstrapped.layoutStore), 'placeholder leaf is not a placeable tile').toBe(false)
       dispose()
     })
   })

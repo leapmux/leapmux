@@ -32,6 +32,22 @@ vi.mock('~/components/common/Toast', () => ({
   showErrorToast: vi.fn(),
 }))
 
+// The two creation dialogs are stubbed for the same reason ChangeBranchDialog
+// is (see below): this suite tests the PARENT's plumbing, not the dialogs' own
+// fields. The stubs surface the guard reason the parent computes so a test can
+// assert what the real dialog would disable submit on.
+vi.mock('~/components/shell/NewAgentDialog', () => ({
+  NewAgentDialog: (props: { blockedReason?: () => string | undefined, onClose: () => void }) => (
+    <div data-testid="new-agent-stub">{props.blockedReason?.() ?? ''}</div>
+  ),
+}))
+
+vi.mock('~/components/shell/NewTerminalDialog', () => ({
+  NewTerminalDialog: (props: { blockedReason?: () => string | undefined, onClose: () => void }) => (
+    <div data-testid="new-terminal-stub">{props.blockedReason?.() ?? ''}</div>
+  ),
+}))
+
 // This stub replaces the ChangeBranch slot, so a test can fire its callbacks
 // in the HOSTILE order (close, then notify). The stub does not drive that
 // dialog's git-mode UI. The point under test is the parent closure, not the
@@ -40,11 +56,13 @@ vi.mock('~/components/common/Toast', () => ({
 // create.
 vi.mock('~/components/workspace/ChangeBranchDialog', () => ({
   ChangeBranchDialog: (props: {
+    blockedReason?: () => string | undefined
     onBranchChanged?: (branch: string) => void
     onTerminalCreated?: (terminalId: string, workerId: string, workingDir: string, title: string) => void
     onClose: () => void
   }) => (
     <>
+      <div data-testid="change-branch-blocked">{props.blockedReason?.() ?? ''}</div>
       <button
         type="button"
         data-testid="change-branch-stub"
@@ -93,7 +111,10 @@ function makeDialogs(): AppShellDialogStates {
   }
 }
 
-function renderDialogs(activeWorkspace: () => { id: string } | null = () => null) {
+function renderDialogs(
+  activeWorkspace: () => { id: string } | null = () => null,
+  opts: { placementTileId?: string, mutatable?: boolean } = {},
+) {
   const dialogs = makeDialogs()
   const onBranchChanged = vi.fn()
   const closeWorktreeTabs = vi.fn().mockResolvedValue({
@@ -102,7 +123,10 @@ function renderDialogs(activeWorkspace: () => { id: string } | null = () => null
     stillReferenced: false,
     unknown: false,
   })
-  const focusedTileId = vi.fn(() => '')
+  // `placementTileId` answers where a new tab would land — `''` means no
+  // projected tree. `hasPlaceableTab` asks exactly this, so one knob drives
+  // every guard-reason arm.
+  const placementTileId = vi.fn(() => opts.placementTileId ?? '')
   // `satisfies` type-checks the fields this fixture DOES fill, so a rename
   // of `closeWorktreeTabs` or a change to the TabContext shape fails to
   // compile. The one widening cast stays at the render call, because each
@@ -116,7 +140,8 @@ function renderDialogs(activeWorkspace: () => { id: string } | null = () => null
     onBranchChanged,
     tabOps: tabOps as unknown as ReturnType<typeof useTabOperations>,
     activeWorkspace,
-    layoutStore: { focusedTileId } as unknown as ComponentProps<typeof AppShellDialogs>['layoutStore'],
+    isActiveWorkspaceMutatable: () => opts.mutatable ?? true,
+    layoutStore: { placementTileId } as unknown as ComponentProps<typeof AppShellDialogs>['layoutStore'],
     getCurrentTabContext: () => ({
       workerId: 'w1',
       workingDir: '/repo',
@@ -125,7 +150,7 @@ function renderDialogs(activeWorkspace: () => { id: string } | null = () => null
     }),
   } satisfies Partial<ComponentProps<typeof AppShellDialogs>>
   render(() => <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} />)
-  return { dialogs, onBranchChanged, closeWorktreeTabs, focusedTileId }
+  return { dialogs, onBranchChanged, closeWorktreeTabs, placementTileId }
 }
 
 async function chooseSwitchToAndConfirm(branch: string) {
@@ -343,7 +368,7 @@ describe('appShellDialogs branch dialogs', () => {
   // may only join the focused tile when the dialog's own workspace IS the
   // active one; otherwise it lands in the wrong workspace's tree.
   it('change branch: inserts a created tab only when the dialog targets the active workspace', async () => {
-    const { dialogs, focusedTileId } = renderDialogs(() => ({ id: 'ws1' }))
+    const { dialogs, placementTileId } = renderDialogs(() => ({ id: 'ws1' }))
     dialogs.changeBranch.open({
       workerId: 'w2',
       gitToplevel: '/other',
@@ -354,11 +379,11 @@ describe('appShellDialogs branch dialogs', () => {
 
     fireEvent.click(await screen.findByTestId('change-branch-terminal-stub'))
 
-    expect(focusedTileId).toHaveBeenCalled()
+    expect(placementTileId).toHaveBeenCalled()
   })
 
   it('change branch: skips the tab insertion when the dialog targets another workspace', async () => {
-    const { dialogs, focusedTileId } = renderDialogs(() => ({ id: 'another-ws' }))
+    const { dialogs, placementTileId } = renderDialogs(() => ({ id: 'another-ws' }))
     dialogs.changeBranch.open({
       workerId: 'w2',
       gitToplevel: '/other',
@@ -369,6 +394,77 @@ describe('appShellDialogs branch dialogs', () => {
 
     fireEvent.click(await screen.findByTestId('change-branch-terminal-stub'))
 
-    expect(focusedTileId).not.toHaveBeenCalled()
+    expect(placementTileId).not.toHaveBeenCalled()
+  })
+
+  // The change-branch guard reason describes the ACTIVE workspace's
+  // placement — the same condition the tab-insertion callbacks gate on. A
+  // dialog opened against another workspace's branch row places no local
+  // tab, so it must not inherit a reason it cannot act on.
+  it('change branch: hands the guard reason only when the dialog targets the active workspace', async () => {
+    const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: '' })
+    dialogs.changeBranch.open({
+      workerId: 'w2',
+      gitToplevel: '/other',
+      workspaceId: 'ws1',
+      branchName: 'feature',
+      isWorktree: false,
+    })
+
+    expect(await screen.findByTestId('change-branch-blocked')).toHaveTextContent(/not ready yet/i)
+  })
+
+  it('change branch: passes no reason when the dialog targets another workspace', async () => {
+    const { dialogs } = renderDialogs(() => ({ id: 'another-ws' }), { placementTileId: '' })
+    dialogs.changeBranch.open({
+      workerId: 'w2',
+      gitToplevel: '/other',
+      workspaceId: 'ws1',
+      branchName: 'feature',
+      isWorktree: false,
+    })
+
+    expect(await screen.findByTestId('change-branch-blocked')).toHaveTextContent(/^$/)
+  })
+
+  // A tab is placed onto the active workspace's projected tree, so the
+  // creation dialogs must not create the worker-side agent/pty when there is
+  // nowhere to place it — the placement refusal arrives only after the RPC,
+  // and the resource it strands has no tab to reach it by. The parent hands
+  // the dialogs the reason; these pin its outcomes, one per arm.
+  describe('new-tab guard reason', () => {
+    it('tells the dialogs to block creation when there is no workspace at all', async () => {
+      const { dialogs } = renderDialogs(() => null)
+      dialogs.newAgent.open()
+
+      expect(await screen.findByTestId('new-agent-stub')).toHaveTextContent(/create a workspace first/i)
+    })
+
+    it('blocks while the active workspace has no projected tree yet', async () => {
+      // placementTileId '' — the tree never arrived, so nothing can take a tab.
+      const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: '' })
+      dialogs.newTerminal.open()
+
+      expect(await screen.findByTestId('new-terminal-stub')).toHaveTextContent(/not ready yet/i)
+    })
+
+    it('blocks when the active workspace is archived', async () => {
+      // An archived workspace keeps its tree, so only the mutatability arm
+      // fires — the same refusal every quick-action path applies.
+      const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: 'tile-1', mutatable: false })
+      dialogs.newAgent.open()
+
+      expect(await screen.findByTestId('new-agent-stub')).toHaveTextContent(/archived/i)
+    })
+
+    it('passes no reason once the workspace can take a tab', async () => {
+      const { dialogs } = renderDialogs(
+        () => ({ id: 'ws1' }),
+        { placementTileId: 'tile-1' },
+      )
+      dialogs.newAgent.open()
+
+      expect(await screen.findByTestId('new-agent-stub')).toHaveTextContent(/^$/)
+    })
   })
 })

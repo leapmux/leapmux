@@ -88,6 +88,7 @@ import { useTurnEnd } from './useTurnEnd'
 import { useWorkerPrivateStreams } from './useWorkerPrivateStreams'
 import { useWorkerSection } from './useWorkerSection'
 import { useWorkspaceLoader } from './useWorkspaceLoader'
+import { WorkspaceCenterFallback } from './WorkspaceCenterFallback'
 import { createWorkspaceSwitcher } from './workspaceSwitcher'
 
 const log = createLogger('shell')
@@ -703,21 +704,42 @@ export const AppShell: Component = () => {
   })
 
   /**
-   * Has the bootstrap delivered the workspace on screen? The ONE question the
-   * tiling area paints on.
+   * Has the bootstrap delivered the workspace on screen? The ONE question
+   * the tiling area paints on — and, through `placementTileId`, the one
+   * tab placement asks, so the render gate and the create guards agree by
+   * construction instead of by coincidence.
    *
-   * Asked of the projection rather than tracked in a flag, so nothing can force
-   * it true. That distinction is the whole point: `state.root` falls back to a
-   * locally-minted placeholder leaf when the projection has no tree, and
-   * painting that as real gives its action handlers a node the hub has never
-   * heard of. The "open a new agent / terminal" affordances create the worker
-   * resource BEFORE emitting the op, so the rejected batch leaves an orphaned
-   * agent behind with no tab to reach it by.
+   * Asked of the projection rather than tracked in a flag, so nothing can
+   * force it true. That distinction is the whole point: a workspace
+   * RECORD can arrive without its tree (a split registration batch), and
+   * `state.root` then falls back to a locally-minted placeholder leaf.
+   * Painting that as real gives its action handlers a node the hub has
+   * never heard of. The "open a new agent / terminal" affordances create
+   * the worker resource BEFORE emitting the op, so the rejected batch
+   * leaves an orphaned agent behind with no tab to reach it by.
    */
   const workspaceReady = createMemo(() => {
     const wsId = workspace.activeWorkspaceId()
-    return !!wsId && hasWorkspace(wsId)
+    return !!wsId && hasWorkspace(wsId) && layoutStore.hasProjectedTree()
   })
+
+  /**
+   * The center's render gate, derived once for both layouts: boolean by
+   * construction so a workspace-list refresh that swaps the ACTIVE
+   * workspace's object identity (a rename, a lifecycle event) cannot
+   * re-run the mobile tile-content insert and remount every pane — the
+   * memo's output simply stays `true`.
+   */
+  const centerReady = createMemo(() => !!activeWorkspace() && workspaceReady())
+
+  /** The shared "nothing to tile" input: no selection AND no saved id. */
+  const centerNoWorkspace = createMemo(() => !activeWorkspace() && !workspace.activeWorkspaceId())
+
+  const openNewWorkspaceDialog = () => {
+    newWorkspaceDialog.open({
+      targetSectionId: sectionStore.getInProgressSection()?.id ?? null,
+    })
+  }
 
   // Watchdog: never leave the shell silent forever on a bootstrap that never
   // arrives.
@@ -1103,7 +1125,27 @@ export const AppShell: Component = () => {
       leftSidebarElement={createLeftSidebarElement(sidebarOpts())}
       rightSidebarElement={createRightSidebarElement(sidebarOpts())}
       tabBarElement={tileRenderer.tabBarElement()}
-      tileContent={tileRenderer.renderTileContent(layoutStore.focusedTileId())}
+      tileContent={
+        // The same gate the desktop center paints on, for the same reason:
+        // `state.root` falls back to a locally-minted placeholder leaf while
+        // the projection has no tree, and rendering tile content against it
+        // hands its action handlers a node the hub has never heard of. A
+        // ternary (not <Show>) so the expression keeps re-deriving on a
+        // focusedTileId change — MobileLayout's insert runs this getter in a
+        // tracking scope. `centerReady()` is a BOOLEAN memo on purpose: the
+        // insert would otherwise track `activeWorkspace()` by object
+        // identity, and a list refresh that swaps the active workspace's
+        // row would remount every pane mid-use.
+        centerReady()
+          ? tileRenderer.renderTileContent(layoutStore.focusedTileId())
+          : (
+              <WorkspaceCenterFallback
+                noWorkspace={centerNoWorkspace()}
+                bootstrapTimedOut={bootstrapTimedOut()}
+                onNewWorkspace={openNewWorkspaceDialog}
+              />
+            )
+      }
       editorPanel={
         tileRenderer.focusedAgentId() && !isActiveWorkspaceArchived()
         && <tileRenderer.FocusedAgentEditorPanel containerHeight={0} />
@@ -1128,15 +1170,11 @@ export const AppShell: Component = () => {
           setRightSidebarVisible={setRightSidebarVisible}
           layoutStore={layoutStore}
           activeWorkspaceId={workspace.activeWorkspaceId()}
-          activeWorkspace={activeWorkspace}
-          workspaceReady={workspaceReady()}
+          centerReady={centerReady()}
+          centerNoWorkspace={centerNoWorkspace()}
           bootstrapTimedOut={bootstrapTimedOut()}
           getInProgressSectionId={() => sectionStore.getInProgressSection()?.id ?? null}
-          onNewWorkspace={() => {
-            newWorkspaceDialog.open({
-              targetSectionId: sectionStore.getInProgressSection()?.id ?? null,
-            })
-          }}
+          onNewWorkspace={openNewWorkspaceDialog}
           setCenterPanelHeight={setCenterPanelHeight}
           renderTile={tileRenderer.renderTile}
           onRatioChange={(splitId, ratios) => layoutStore.updateRatios(splitId, ratios)}
@@ -1231,6 +1269,7 @@ export const AppShell: Component = () => {
           newBranch,
         )}
         activeWorkspace={activeWorkspace}
+        isActiveWorkspaceMutatable={isActiveWorkspaceMutatable}
         getCurrentTabContext={getCurrentTabContext}
         agentOps={agentOps}
         termOps={termOps}

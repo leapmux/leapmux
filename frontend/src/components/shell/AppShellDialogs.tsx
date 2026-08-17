@@ -25,7 +25,7 @@ import { openedTerminalMetadata, protoToAgentTabFields } from '~/stores/tab.help
 import { LastTabCloseDialog } from './LastTabCloseDialog'
 import { NewAgentDialog } from './NewAgentDialog'
 import { NewTerminalDialog } from './NewTerminalDialog'
-import { openTabInFocusedTile } from './openTabInFocusedTile'
+import { hasPlaceableTab, openTabInFocusedTile } from './openTabInFocusedTile'
 import { placeWorkspaceInSection } from './placeWorkspaceInSection'
 
 export interface KeyPinConfirmState {
@@ -115,6 +115,8 @@ interface AppShellDialogsProps {
    */
   onBranchChanged?: (repo: RepoRef, newBranch: string) => void
   activeWorkspace: () => { id: string } | null
+  /** False while the active workspace is archived — read-only, so no new tabs. */
+  isActiveWorkspaceMutatable: () => boolean
   getCurrentTabContext: () => TabContext
   agentOps: ReturnType<typeof useAgentOperations>
   termOps: ReturnType<typeof useTerminalOperations>
@@ -153,6 +155,23 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
     )
   }
 
+  /**
+   * Why a new tab cannot be created right now, or undefined when it can.
+   * A tab is placed onto the active workspace's projected tree, so the
+   * workspace, its mutatability, and its tree are preconditions — the
+   * dialogs disable submit on this reason instead of creating the
+   * worker-side agent/pty first and orphaning it when placement refuses.
+   */
+  const newTabBlockedReason = (): string | undefined => {
+    if (!props.activeWorkspace())
+      return 'Create a workspace first — a tab lives inside a workspace.'
+    if (!props.isActiveWorkspaceMutatable())
+      return 'This workspace is archived. Unarchive it to create tabs.'
+    if (!hasPlaceableTab(props.layoutStore))
+      return 'The workspace view is not ready yet. Try again in a moment.'
+    return undefined
+  }
+
   return (
     <>
       <Show when={props.dialogs.newAgent.isOpen()}>
@@ -161,6 +180,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
           availableProviders={props.availableProviders}
           onRefreshProviders={props.onRefreshProviders}
+          blockedReason={newTabBlockedReason}
           onCreated={(agent) => {
             props.dialogs.newAgent.close()
             addAgentTabToFocusedTile(agent)
@@ -174,6 +194,7 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
         <NewTerminalDialog
           defaultWorkerId={props.getCurrentTabContext().workerId}
           defaultWorkingDir={props.getCurrentTabContext().workingDir}
+          blockedReason={newTabBlockedReason}
           onCreated={(terminalId, workerId, workingDir, title) => {
             props.dialogs.newTerminal.close()
             if (!props.activeWorkspace())
@@ -298,6 +319,14 @@ export const AppShellDialogs: Component<AppShellDialogsProps> = (props) => {
             availableProviders={props.availableProviders}
             onRefreshProviders={props.onRefreshProviders}
             onBranchChanged={newBranch => props.onBranchChanged?.(state, newBranch)}
+            // The guard reason describes the ACTIVE workspace's placement
+            // (the same condition the onAgentCreated/onTerminalCreated
+            // callbacks below gate on) — a dialog opened against another
+            // workspace's branch row places no local tab, so no reason
+            // applies to it.
+            blockedReason={() => state.workspaceId === props.activeWorkspace()?.id
+              ? newTabBlockedReason()
+              : undefined}
             // Local-UI tab insertion only applies when the dialog's
             // target workspace IS the active one — addAgentTabToFocusedTile
             // and addTerminalTabToFocusedTile place the tab on the ACTIVE
