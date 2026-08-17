@@ -8,11 +8,7 @@ import { getShortcutHintsText } from '~/lib/shortcuts/display'
 import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
 import { dangerMenuItem } from '~/styles/shared.css'
 import { motion } from '~/styles/tokens'
-import {
-  setShowAboutDialog,
-  setShowPreferencesDialog,
-  setShowProfileDialog,
-} from './UserMenuState'
+import { openPreferences, setShowAboutDialog } from './UserMenuState'
 
 export const AppAboutMenuItem: Component = () => (
   <button role="menuitem" onClick={() => setShowAboutDialog(true)}>
@@ -56,13 +52,8 @@ export const UserMenuItems: Component = () => {
 
   return (
     <>
-      <Show when={!isSoloMode()}>
-        <button role="menuitem" onClick={() => setShowProfileDialog(true)}>
-          Profile...
-        </button>
-      </Show>
       <AppAboutMenuItem />
-      <button role="menuitem" onClick={() => setShowPreferencesDialog(true)}>
+      <button role="menuitem" onClick={() => openPreferences('appearance')}>
         <DropdownMenuItemContent label="Preferences..." shortcut={getShortcutHintsText('app.openPreferences')} />
       </button>
 

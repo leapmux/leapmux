@@ -9,7 +9,7 @@ This chapter is the complete reference for configuring the LeapMux **Hub** and *
 
 If you are looking for *how to launch* each mode (solo, hub, worker, dev) and what each is for, see [Running LeapMux](/docs/operating/running-leapmux/). For key management, encryption at rest, and database operations, see [Encryption & Data](/docs/operating/encryption-and-data/).
 
-> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app and the `control`/`admin` CLIs are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Remote Control CLI](/docs/operating/control-cli/), and [Admin CLI](/docs/operating/admin-cli/).
+> **Note:** Everything here applies to the long-running daemons. `solo` and `dev` modes reuse the Hub's configuration loader with a restricted flag set; the differences are called out where relevant. The desktop app, the `leapmux control` CLI, and the `leapmux recover` CLI are configured separately — see [Running LeapMux](/docs/operating/running-leapmux/), [Remote Control CLI](/docs/operating/control-cli/), and [Recovery](/docs/operating/recover/).
 
 ## Configuration precedence
 
@@ -185,15 +185,15 @@ These five keys (plus the storage block below and `encryption_key_path`) are the
 
 ### Instance settings (database)
 
-All behavioral configuration — auth policy, SMTP, timeouts, limits, queue budgets, bot protection — lives in the Hub's database, in one `hub_settings` table managed by the admin CLI:
+All behavioral configuration — auth policy, SMTP, timeouts, limits, queue budgets, bot protection — lives in the Hub's database, in one `hub_settings` table managed by `leapmux control admin settings`:
 
 ```bash
-leapmux admin settings list
-leapmux admin settings set signup_enabled true
-leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"hub@example.com"}'
-leapmux admin settings set-secret smtp '{"password":"..."}'
-leapmux admin settings get smtp
-leapmux admin settings reset signup_enabled
+leapmux control admin settings list
+leapmux control admin settings set signup_enabled true
+leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"hub@example.com"}'
+leapmux control admin settings set-secret smtp '{"password":"..."}'
+leapmux control admin settings get smtp
+leapmux control admin settings reset signup_enabled
 ```
 
 A value is a JSON document; fields it omits keep their current (or default) values, so `{"port":465}` retunes one SMTP field without restating the host. Secret-bearing fields (the SMTP password, captcha signing keys) live in an encrypted half of the row and are written through `set-secret`; they never appear in `list` or `get` output. A key with no stored row sits at its built-in default — `reset` returns a key to exactly that.
@@ -201,7 +201,7 @@ A value is a JSON document; fields it omits keep their current (or default) valu
 Changes fall into two classes, shown by `settings list`:
 
 - **hot** — a running Hub applies the new value within ~30 seconds (this is also the convergence bound between Hub instances sharing one database).
-- **restart** — the value feeds startup-time arithmetic (queue pool floors, frame ceilings), so it is read once at boot; a change prints `applies after a hub restart`.
+- **restart** — the value feeds startup-time arithmetic (queue pool floors, frame ceilings), so it is read once at boot; a change reports that it applies after a hub restart.
 
 | Setting key | Shape | Default | Class |
 | --- | --- | --- | --- |
@@ -217,28 +217,40 @@ Changes fall into two classes, shown by `settings list`:
 | `queue_budget` | `{relay_bytes, worker_bytes, userevents_bytes}` | `0` = auto-size | restart |
 | `captcha.*`, `rate_limit.*` | see below | see below | hot |
 
+Solo mode omits the settings a single-user Hub has no use for, from `settings list` and from the preferences dialog alike:
+
+| Omitted in solo | Because |
+| --- | --- |
+| `signup_enabled`, `email_verification_required` | Solo has no sign-up. |
+| `session_duration_seconds`, `secure_cookies` | Solo has no login, so there is no session and no cookie. |
+| `smtp` | Solo has nowhere to send mail. |
+| `captcha.*`, `rate_limit.*` | Solo enforces neither. |
+
+`public_url` stays: it sets the URL in the startup banner, and the `--hub` address you give a remote Worker.
 
 See [Accounts & Authentication](/docs/using/accounts/) for the sign-up/verification flows, and [Authentication Providers](/docs/operating/authentication-providers/) for OAuth/OIDC.
 
 ### Bot protection (captcha & rate limits)
 
-Captcha and rate-limit settings are instance settings (the `captcha.*` and `rate_limit.*` keys above), changed at runtime via the admin CLI:
+Captcha and rate-limit settings are instance settings (the `captcha.*` and `rate_limit.*` keys above), changed at runtime with `leapmux control admin`:
 
 ```bash
-leapmux admin captcha show
-leapmux admin captcha set --algorithm PBKDF2/SHA-256 --cost 10000
-leapmux admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
-leapmux admin rate-limit list
+leapmux control admin captcha show
+leapmux control admin captcha set --algorithm PBKDF2/SHA-256 --cost 10000
+leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
+leapmux control admin rate-limit list
 ```
 
-Out of the box, with no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `change-password` is limited to 5 failed attempts per 15 minutes per user. Google reCAPTCHA v3 and Cloudflare Turnstile are one `--provider` switch away (see the admin CLI chapter). Solo mode enforces neither. Two knobs deserve a warning before you turn them:
+Out of the box, with no configuration at all: captcha is **enabled** with the built-in ALTCHA provider at `PBKDF2/SHA-256` cost `10000` (challenges expire after 20 minutes), and `change-password` is limited to 5 failed attempts per 15 minutes per user. Solo mode enforces neither.
+
+Selecting Google reCAPTCHA v3 or Cloudflare Turnstile needs its site key and its secret, because the Hub refuses a selected provider whose key pair is incomplete. Pass both in the same `captcha set` invocation, as the example above does, or store them first and select the provider after. The Preferences dialog's Bot Protection panel shows every provider's key fields at all times for the same reason: an operator fills a provider in, then switches to it. Two knobs deserve a warning before you turn them:
 
 - **Captcha cost** is the per-derivation iteration count, and the browser performs ~256 derivations per solve — total work scales as ~256 × cost. Raising it multiplies bot cost and your users' wait time equally, so large values mostly punish humans.
 - The challenge-issuing endpoint is itself unauthenticated and costs the Hub one HMAC per challenge (the solver does the expensive side), so issuing challenges stays cheap even at high costs.
 - **Browsers only solve challenges in a secure context** (HTTPS, or localhost): the ALTCHA solvers need WebCrypto, and the external providers' scripts refuse unusual origins. A hub reached over plain HTTP from another machine cannot present a solvable captcha — put TLS in front (reverse proxy), switch to an external provider behind TLS, or disable captcha for such deployments. The honeypot check works everywhere.
 - **External providers verify online and uncapped**: every login/signup attempt with a non-empty token makes one siteverify call to Google or Cloudflare with no per-client throttle, so scripted garbage tokens can spend the operator's siteverify quota. Disabling captcha removes that egress but leaves the unauthenticated procedures limited only by Argon2 cost and the honeypot. The built-in ALTCHA provider has no egress and self-throttles through the client-side proof-of-work.
 
-See the [`captcha`](/docs/operating/admin-cli/#captcha--bot-protection-altcha-recaptcha-v3-turnstile) and [`rate-limit`](/docs/operating/admin-cli/#rate-limit--per-user-operation-limits) admin CLI chapters for the full flag reference.
+See [Captcha](/docs/operating/control-cli/#captcha) and [Rate limits](/docs/operating/control-cli/#rate-limits) in the Remote Control CLI chapter for the full flag reference.
 
 ### Outbound queue memory
 
@@ -259,7 +271,7 @@ User events gets an equal share to Workers despite carrying the least traffic, b
 1. `GOMEMLIMIT`, when set. Setting it is the most direct way to state the budget, and it is what the Go runtime holds the heap to anyway.
 2. The cgroup memory limit, on Linux. This is what makes the default correct in a container, where the machine's physical memory is the host's and can be two orders of magnitude larger than what the container may use. The Hub resolves its own cgroup and takes the tightest limit on the chain up to the root, so a limit set on a parent — a `systemd` unit's `MemoryMax=`, say — binds as it should rather than being missed.
 3. Total physical memory.
-4. 512 MiB, if none of the above can be read. This is a guess rather than a probe — a platform with no memory-limit API, or a container without `/proc` mounted — and it says so in the log as `source=fallback`. Seeing that on a large host means the budgets are a fraction of a number the Hub could not determine, and it is the one case where you should set the fields explicitly (`leapmux admin settings set queue_budget`, then restart).
+4. 512 MiB, if none of the above can be read. This is a guess rather than a probe — a platform with no memory-limit API, or a container without `/proc` mounted — and it says so in the log as `source=fallback`. Seeing that on a large host means the budgets are a fraction of a number the Hub could not determine, and it is the one case where you should set the fields explicitly (`leapmux control admin settings set queue_budget`, then restart).
 
 The basis and all three resolved figures are logged at startup, the basis once:
 
@@ -269,13 +281,7 @@ outbound queue memory budgets basis="8.0 GiB (source=gomemlimit)" relay="1.0 GiB
 
 A budget you set explicitly says so in place of its share: `relay="1.0 GiB (source=config)"`.
 
-On Linux, when the cgroup limit could not be read at all — so the basis may be the host's memory rather than the limit that actually binds this process — a warning follows that line, once:
-
-```
-cgroup memory limit could not be read; outbound queue budgets may be sized off a figure that does not bind this process error="open /custom/inner/memory.max: permission denied"
-```
-
-That warning is the one signal separating a confined machine the probe could not read from a genuinely unconfined one; both otherwise report `source=physical`.
+On Linux, when the cgroup limit could not be read at all — so the basis may be the host's memory rather than the limit that actually binds this process — a warning follows that line, once. The warning states that the cgroup memory limit could not be read, that the queue budgets may be sized off a figure that does not bind this process, and it carries the underlying read error. That warning is the one signal separating a confined machine the probe could not read from a genuinely unconfined one; both otherwise report `source=physical`.
 
 Every budget also has to be able to hold one largest frame of its kind, and enough guaranteed per-connection working sets for the sharing rule to have anything to decide — a frame bigger than the whole budget could never be admitted at any occupancy, and a budget the size of a single working set caps every connection at that figure regardless of how idle the Hub is. Those two together are the minimum, and the Hub refuses to start on a configured value below it rather than failing at runtime. It is derived per class, not a flat number, so the shares still hold on a small host: a 512 MiB container gets its quarter rather than having the floor quietly claim 40% of the machine. Set the keys explicitly whenever your fleet's shape differs from the assumption, such as many Workers and few tabs, or the reverse. The metrics below tell you which budget is actually binding.
 
@@ -348,7 +354,7 @@ It exists because the queue budgets above cannot bound themselves. Those are sha
 
 **Tunnels are cheaper than they look.** All of a machine's tunnels to the same Worker share one encrypted channel, and the individual forwarded connections inside them share it too, so what counts is how many *distinct Workers* you hold tunnels to — not how many tunnels, and not how much traffic they carry. Twenty tunnels to one Worker cost one connection; one tunnel each to three Workers costs three.
 
-> **Note:** in solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does — and because it is the mode where it binds soonest, `solo` and `dev` document it in `leapmux admin settings list`. The queue budgets size themselves from the machine; `settings set queue_budget '{"relay_bytes":...}'` covers the rare case that is wrong.
+> **Note:** in solo and desktop mode *everything* authenticates as the single local user, so all of the above shares one allowance. It is generous enough that this is unlikely to bite, but it is the first key to raise if it does — and because it is the mode where it binds soonest, `solo` and `dev` document it in `leapmux control admin settings list`. The queue budgets size themselves from the machine; `settings set queue_budget '{"relay_bytes":...}'` covers the rare case that is wrong.
 
 When a user is at the limit the **newest** connection is refused and everything already open keeps working. Nothing is evicted: the alternative moves the failure to a window the user is not looking at, and a connection dropped to make room for a new one would be dropped again on the next reconnect. In the browser the refused tab says so and stops retrying — for either socket, so opening a terminal while at the limit explains itself rather than failing as a generic connection error. Closing another tab and reloading is all that is needed. Set the key to `0` to turn the cap off entirely.
 
@@ -407,7 +413,7 @@ Env prefix: `LEAPMUX_WORKER_`. A Worker connects to a Hub over a URL; it does no
 | `encryption_mode` | `post-quantum` | E2EE mode: `classic` or `post-quantum`. |
 | `use_login_shell` | `true` | Wrap the agent invocation in the user's login shell. |
 
-> **Note:** `registration_key` is required on first run and is never persisted to disk. On subsequent runs you simply omit it — the saved credentials are reused. Do **not** pass it again to an already-registered Worker: that fails with `worker is already registered; remove --registration-key or wipe local state to re-register` (the key is rejected, not silently ignored, to keep you from accidentally burning it on a machine that is already configured). For the registration flow and the exact error messages, see [Managing Workers](/docs/operating/managing-workers/).
+> **Note:** `registration_key` is required on first run and is never persisted to disk. On subsequent runs you simply omit it — the saved credentials are reused. Do **not** pass it again to an already-registered Worker: the Worker refuses the key rather than ignoring it, so you cannot burn it by accident on a machine that is already configured. For the registration flow, see [Managing Workers](/docs/operating/managing-workers/).
 
 ### Timeout and limit options
 
@@ -463,7 +469,7 @@ The Hub stores all relational data (users, workers, sessions, workspaces, tokens
 
 An unknown type is rejected at startup with `unsupported storage.type: "<type>" (valid: sqlite, postgres, mysql, cockroachdb, yugabytedb, tidb)`.
 
-> **Note:** Configure storage via the YAML file or the dedicated CLI flags, not env vars (see the warning under [Environment variable mapping](#environment-variable-mapping)). For backups, key/DB interplay, and the `leapmux admin db` / `leapmux admin encryption-key` commands, see [Encryption & Data](/docs/operating/encryption-and-data/).
+> **Note:** Configure storage via the YAML file or the dedicated CLI flags, not env vars (see the warning under [Environment variable mapping](#environment-variable-mapping)). For backups, key/DB interplay, and the `leapmux recover db` / `leapmux recover encryption-key` commands, see [Encryption & Data](/docs/operating/encryption-and-data/).
 
 ### SQLite (default)
 
@@ -589,13 +595,13 @@ leapmux hub --config /etc/leapmux/hub.yaml
 
 # Behavioral settings live in the database now — set once, then they
 # survive and can change under the running Hub:
-leapmux admin settings set public_url "https://hub.example.com"
-leapmux admin settings set secure_cookies true
-leapmux admin settings set signup_enabled true
-leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"username":"leapmux@example.com","from_address":"no-reply@example.com","tls_mode":"starttls"}'
-leapmux admin settings set-secret smtp '{"password":"..."}'   # or read from your secret manager
-leapmux admin settings set email_verification_required true   # requires the smtp key above
-leapmux admin settings set session_duration_seconds 86400     # sign an idle user out after a day
+leapmux control admin settings set public_url "https://hub.example.com"
+leapmux control admin settings set secure_cookies true
+leapmux control admin settings set signup_enabled true
+leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"username":"leapmux@example.com","from_address":"no-reply@example.com","tls_mode":"starttls"}'
+leapmux control admin settings set-secret smtp '{"password":"..."}'   # or read from your secret manager
+leapmux control admin settings set email_verification_required true   # requires the smtp key above
+leapmux control admin settings set session_duration_seconds 86400     # sign an idle user out after a day
 ```
 
 ### Worker connecting to a remote Hub
@@ -623,7 +629,7 @@ Every mode supports the standard help tokens, and each mode honors `--version`:
 - `-h`, `-help`, `--help`, or `help` prints categorized usage to stdout.
 - `--version` (or `-version`) prints the build version and exits.
 
-The bare `version` subcommand is a **top-level** command (`leapmux version`), not a per-mode token. Passing it inside a mode — `leapmux hub version` — is rejected as an unexpected positional argument. Unexpected positional arguments are rejected with `unexpected argument: "<arg>" (use --help for usage)`.
+The bare `version` subcommand is a **top-level** command (`leapmux version`), not a per-mode token. Passing it inside a mode — `leapmux hub version` — is rejected as an unexpected positional argument. LeapMux rejects an unexpected positional argument, identifies it, and points you at `--help`.
 
 ## Related chapters
 

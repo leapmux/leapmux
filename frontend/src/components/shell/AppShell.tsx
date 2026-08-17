@@ -10,8 +10,7 @@ import { useLocation, useSearchParams } from '@solidjs/router'
 import { createEffect, createMemo, createSignal, on, onCleanup, Show } from 'solid-js'
 import { isTauriApp, platformBridge } from '~/api/platformBridge'
 import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
-import { renameAgent, setExpectedUserId } from '~/api/workerRpc'
-import { showWarnToast } from '~/components/common/Toast'
+import { setExpectedUserId } from '~/api/workerRpc'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
 import { setTerminalScreenSink } from '~/components/terminal/TerminalView'
@@ -65,6 +64,7 @@ import { handleBranchChanged } from './handleBranchChanged'
 import { createMobileOverlayState, MobileLayout } from './MobileLayout'
 import { mruAgentEditorDeps } from './mruAgentEditorDeps'
 import { openSubagentTab } from './openSubagentTab'
+import { renameTab } from './renameTab'
 import { resolveActiveWorkspace } from './resolveActiveWorkspace'
 import { createTabSelectionRestorer } from './restoreTabSelection'
 import { SectionDragProvider } from './SectionDragContext'
@@ -1011,6 +1011,8 @@ export const AppShell: Component = () => {
     writeToFocusedTerminal: tileRenderer.writeToFocusedTerminal,
     getCurrentTabContext,
     customKeybindings: preferences.customKeybindings,
+    preferredEditorId: preferences.preferredEditorId,
+    setPreferredEditorId: preferences.setPreferredEditorId,
   })
 
   // Sidebar element factories
@@ -1074,15 +1076,7 @@ export const AppShell: Component = () => {
     },
     tabItemOps: {
       onClose: tabOps.handleTabClose,
-      onRename: (tab, title) => {
-        tabMetadata.patch(tab.id, { title })
-        if (tab.type === TabType.AGENT) {
-          const workerId = tabView.getAgentTab(tab.id)?.workerId ?? ''
-          renameAgent(workerId, { agentId: tab.id, title }).catch((err) => {
-            showWarnToast('Failed to rename agent', err)
-          })
-        }
-      },
+      onRename: (tab, title) => renameTab({ view: tabView, metadata: tabMetadata }, tab, title),
       get closingKeys() { return tabOps.closingTabKeys() },
     },
     // Tile order for sidebar leaf ordering. No active/inactive fork: every

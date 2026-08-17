@@ -34,7 +34,6 @@ import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMar
 import { ChatView } from '~/components/chat/ChatView'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
-import { showWarnToast } from '~/components/common/Toast'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { TerminalView } from '~/components/terminal/TerminalView'
 import { focusedBranchAction } from '~/components/workspace/branchActions'
@@ -58,6 +57,7 @@ import { shouldShowThinkingIndicator } from '~/utils/agentState'
 import * as styles from './AppShell.css'
 import { closePlanWithDispose, createCloseFlow } from './closeFlow'
 import { EmptyTilePlaceholder } from './EmptyTilePlaceholder'
+import { renameTab } from './renameTab'
 import { TabBar } from './TabBar'
 import { Tile } from './Tile'
 import { cleanupAfterWindowDisposal, focusTile as focusTileShared } from './tileLifecycle'
@@ -596,25 +596,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
           handleTabSelect(tab)
         }}
         onClose={handleTabClose}
-        onRename={(tab, title) => {
-          // Clearing ptyTitle lets a manual rename stick: TitleChanged only
-          // patches ptyTitle, and tabDisplayLabel prefers title.
-          metadata.patch(tab.id, tab.type === TabType.TERMINAL
-            ? { title, ptyTitle: '' }
-            : { title })
-          if (tab.type === TabType.AGENT) {
-            const renameWorkerId = view.getAgentTab(tab.id)?.workerId ?? ''
-            workerRpc.renameAgent(renameWorkerId, { agentId: tab.id, title }).catch((err) => {
-              showWarnToast('Failed to rename agent', err)
-            })
-          }
-          else if (tab.type === TabType.TERMINAL) {
-            const renameWorkerId = view.getTerminalTab(tab.id)?.workerId ?? ''
-            workerRpc.updateTerminalTitle(renameWorkerId, { terminalId: tab.id, title }).catch((err) => {
-              showWarnToast('Failed to rename terminal', err)
-            })
-          }
-        }}
+        onRename={(tab, title) => renameTab({ view, metadata }, tab, title)}
         newTab={{
           showAddButton: isActiveWorkspaceMutatable(),
           onNewAgent: agentOps.handleOpenAgent,

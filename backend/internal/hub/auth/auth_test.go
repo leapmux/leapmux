@@ -428,7 +428,6 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: []byte("hash"),
-		Scope:      "remote:*",
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{

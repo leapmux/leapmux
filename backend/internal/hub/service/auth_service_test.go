@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -1141,20 +1142,37 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 
 // TestGetSystemInfo_EmailEnabled covers the email_enabled flag the
 // frontend reads to decide whether to render the "Send email" button on
-// the worker registration dialog. We mirror it directly off the SMTP
-// host so admins control it through the same SMTP block they configure
-// for verification emails.
+// the worker registration dialog. We mirror it directly off SMTPValue's
+// own Enabled() so admins control it through the same SMTP block they
+// configure for verification emails.
+//
+// Enabled() needs the host AND the from address, because the settings
+// write path accepts a half-staged SMTP block on purpose: the dialog
+// writes one field per row, so the host lands before the from address. A
+// flag mirrored off the host alone would offer to send email through a
+// relay with no envelope sender.
 func TestGetSystemInfo_EmailEnabled(t *testing.T) {
 	t.Parallel()
 
-	t.Run("false when the SMTP host is empty", func(t *testing.T) {
+	t.Run("false when the SMTP block is empty", func(t *testing.T) {
 		client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 		require.NoError(t, err)
 		assert.False(t, resp.Msg.GetEmailEnabled())
 	})
 
-	t.Run("true when the SMTP host is set", func(t *testing.T) {
+	t.Run("false when only the host is staged", func(t *testing.T) {
+		client, _, _ := setupEmptyAuthTestServer(t, testConfig(), func(t *testing.T, set *settings.Manager) {
+			t.Helper()
+			require.NoError(t, set.Update(context.Background(), settings.KeySMTP,
+				json.RawMessage(`{"host":"smtp.example.test"}`)))
+		})
+		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		require.NoError(t, err)
+		assert.False(t, resp.Msg.GetEmailEnabled(), "a relay with no from address cannot send")
+	})
+
+	t.Run("true when the host and the from address are both set", func(t *testing.T) {
 		client, _, _ := setupEmptyAuthTestServer(t, testConfig(), seedSMTP)
 		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
 		require.NoError(t, err)

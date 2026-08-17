@@ -1,9 +1,7 @@
 package auth
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -298,10 +297,7 @@ func TestLeaseOutcomeLabelsAreValidCloseReasons(t *testing.T) {
 // the cap, so the count it reports has to be the one that actually gated the
 // decision -- not a second observation taken afterwards.
 func TestRegisterAuthenticatedLeaseLogsTheCountThatGatedTheRefusal(t *testing.T) {
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	buf := testutil.CaptureDefaultLogger(t)
 
 	c := &AuthContextRegistry{state: &authState{}}
 	c.SetMaxConnectionsPerUser(2)

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +20,8 @@ import (
 
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/pkce"
+	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
 // TestPKCEChallenge_DerivesFromVerifier pins the PKCE challenge as
@@ -431,6 +435,122 @@ func TestRunAuthLogin_DeviceCodeFlowSurfacesAccessDenied(t *testing.T) {
 	require.NoError(t, json.Unmarshal(envBytes, &env))
 	assert.Equal(t, "device_grant_failed", env.Error["code"])
 	assert.Contains(t, env.Error["message"], "access_denied")
+}
+
+// TestRunAuthLogin_DeviceCodeFlowDialsSocketHub pins the socket-login
+// hole the HTTP-only tests cannot see: http.DefaultClient cannot dial
+// a unix:/npipe: hub URL, so without cliHTTPClient the device-code
+// flow silently cannot log in against a hub reached over its IPC
+// listener. Serving the RFC 8628 endpoints on a locallisten socket
+// and driving --hub unix:… --device-code proves the CLI actually
+// dials the socket (the handler runs) against the placeholder
+// http://localhost origin LocalHTTPClient uses, and that the
+// credential file is still keyed by the unix: URL.
+func TestRunAuthLogin_DeviceCodeFlowDialsSocketHub(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+
+	sockURL := locallistentest.UniqueListenURL(t, "cli-auth")
+	ln, err := locallisten.Listen(sockURL)
+	require.NoError(t, err)
+
+	var (
+		mu        sync.Mutex
+		seenHost  string
+		authHits  int
+		tokenHits int
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/cli/device-authorization", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seenHost = r.Host
+		authHits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"device_code":      "dev-code-sock",
+			"user_code":        "SOCK-CODE",
+			"verification_uri": "https://example/activate",
+			"expires_in":       60,
+			"interval":         1,
+		})
+	})
+	mux.HandleFunc("/auth/cli/token", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		tokenHits++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "lmx_a_at_sock",
+			"refresh_token": "lmx_a_rt_sock",
+			"expires_in":    3600,
+			"user_id":       "user-sock",
+			"username":      "sockuser",
+		})
+	})
+
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	t.Cleanup(func() { _ = srv.Close() })
+	go func() { _ = srv.Serve(ln) }()
+	require.NoError(t, locallisten.WaitReady(context.Background(), sockURL))
+
+	withCapturedStdout(t, func() {
+		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", sockURL, "--device-code", "--device-name", "ci-runner"})
+		require.NoError(t, err)
+	})
+
+	creds, err := control.LoadCredentials(sockURL)
+	require.NoError(t, err)
+	assert.Equal(t, "lmx_a_at_sock", creds.AccessToken)
+	assert.Equal(t, "user-sock", creds.UserID)
+	assert.Equal(t, sockURL, creds.HubURL, "credentials stay keyed by the unix:/npipe: hub URL, not the placeholder origin")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, authHits, "device-authorization must arrive on the socket — DefaultClient cannot dial it")
+	assert.Equal(t, 1, tokenHits, "the token poll must also arrive on the socket")
+	assert.Equal(t, "localhost", seenHost, "LocalHTTPClient dials the socket against the placeholder http://localhost origin")
+}
+
+// TestRunAuthLogin_LocalRedirectRefusesSocketURL pins the other socket
+// login hole: PKCE needs a browser-reachable hub origin, so a unix:/npipe:
+// --hub without --device-code must refuse by naming the working flag
+// rather than failing later with a scheme error.
+func TestRunAuthLogin_LocalRedirectRefusesSocketURL(t *testing.T) {
+	sockURL := locallistentest.UniqueListenURL(t, "cli-pkce")
+	out := withCapturedStdout(t, func() {
+		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", sockURL})
+		require.Error(t, err)
+		assert.True(t, control.IsEmitted(err))
+	})
+	var env struct {
+		Error map[string]string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	assert.Equal(t, "invalid_request", env.Error["code"])
+	assert.Contains(t, env.Error["message"], "--device-code")
+}
+
+// TestRunAuthLogin_DeviceCodeFlowSocketUnreachable pins the error
+// path of the same socket dial: when the unix:/npipe: path has no
+// listener, the CLI must still use cliHTTPClient (so the failure is a
+// dial error wrapped as device_authorization_failed) rather than
+// http.DefaultClient's "unsupported protocol scheme" rejection, which
+// is what a missing socket client looks like.
+func TestRunAuthLogin_DeviceCodeFlowSocketUnreachable(t *testing.T) {
+	sockURL := locallistentest.UniqueListenURL(t, "cli-auth-down")
+	out := withCapturedStdout(t, func() {
+		err := RunAuthLogin(fakeCmdCtx{}, []string{"--hub", sockURL, "--device-code"})
+		require.Error(t, err)
+		assert.True(t, control.IsEmitted(err))
+	})
+	var env struct {
+		Error map[string]string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(out, &env))
+	assert.Equal(t, "device_authorization_failed", env.Error["code"])
+	assert.NotContains(t, env.Error["message"], "unsupported protocol scheme",
+		"a scheme error means DefaultClient saw the unix:/npipe: URL; cliHTTPClient must dial it")
 }
 
 // jsonTail returns the JSON envelope at the end of out, skipping the

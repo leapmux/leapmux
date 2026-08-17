@@ -91,7 +91,12 @@ message UpdateTerminalTitleRequest {
   string title = 2;
 }
 
-message UpdateTerminalTitleResponse {}
+message UpdateTerminalTitleResponse {
+  // The title the worker actually STORED. Same contract as
+  // RenameAgentResponse.title: cleaned, never refused, and on a request that
+  // cleans to nothing it reports the title the terminal still holds.
+  string title = 1;
+}
 
 message ListTerminalsRequest {
   repeated string tab_ids = 1;

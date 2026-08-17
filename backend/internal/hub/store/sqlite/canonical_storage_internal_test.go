@@ -74,7 +74,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ClientName:       "canon-client",
 		SecretHash:       []byte("at-secret"),
 		RefreshHash:      []byte("at-refresh"),
-		Scope:            "remote:*",
 		ExpiresAt:        ptr(future),
 		RefreshExpiresAt: ptr(farFuture),
 	}))
@@ -96,7 +95,6 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "canon-client-revoked",
 		SecretHash: []byte("at-secret-3"),
-		Scope:      "remote:*",
 		ExpiresAt:  ptr(future),
 	}))
 	revoked, err := st.APITokens().Revoke(ctx, revokedID)

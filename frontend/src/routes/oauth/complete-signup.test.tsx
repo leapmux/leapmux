@@ -70,7 +70,7 @@ function renderPage(token = 'test-token') {
   ))
 }
 
-describe('oAuthCompleteSignupPage', () => {
+describe('signup completion page (OAuthCompleteSignupPage)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })

@@ -87,40 +87,41 @@ func TestMatchCommandToken(t *testing.T) {
 	})
 }
 
-// TestDispatchAdminGroup_Abbreviation verifies the integrated dispatcher
+// TestDispatchGroup_Abbreviation verifies the integrated dispatcher
 // resolves abbreviated subcommands and leaf commands through the real
-// adminTree, and that ambiguity surfaces as an error.
-func TestDispatchAdminGroup_Abbreviation(t *testing.T) {
+// recoverTree, and that ambiguity surfaces as an error.
+func TestDispatchGroup_Abbreviation(t *testing.T) {
 	t.Run("abbreviated subgroup resolves", func(t *testing.T) {
-		// "use" is a unique prefix of "user".
-		err := dispatchAdminGroup(adminTree, []string{"use", "list", "--data-dir", "/nonexistent"},
-			[]string{"admin"})
-		// The dispatch reaches runUserList, which fails on the bad data dir —
-		// that's expected; the important thing is no "unknown group" error.
+		// "pass" is a unique prefix of "password".
+		err := dispatchGroup(recoverTree, []string{"pass", "reset", "--data-dir", "/nonexistent"},
+			[]string{"recover"})
+		// The dispatch reaches runPasswordReset, which fails on the bad data
+		// dir — that's expected; the important thing is no "unknown group"
+		// error.
 		require.Error(t, err)
-		assert.NotContains(t, err.Error(), "unknown admin group: use")
+		assert.NotContains(t, err.Error(), "unknown recover group: pass")
 	})
 
 	t.Run("abbreviated leaf command resolves", func(t *testing.T) {
-		// "lis" is a unique prefix of "list" within the user group.
-		err := dispatchAdminGroup(adminTree, []string{"user", "lis", "--data-dir", "/nonexistent"},
-			[]string{"admin"})
+		// "res" is a unique prefix of "reset" within the password group.
+		err := dispatchGroup(recoverTree, []string{"password", "res", "--data-dir", "/nonexistent"},
+			[]string{"recover"})
 		require.Error(t, err)
-		assert.NotContains(t, err.Error(), "unknown admin user command: lis")
+		assert.NotContains(t, err.Error(), "unknown recover password command: res")
 	})
 
 	t.Run("ambiguous subgroup prefix errors", func(t *testing.T) {
-		// "s" is a prefix of "session" only among admin subgroups — but we
-		// need a genuinely ambiguous case. "de" is not ambiguous because only
-		// "delegation-token" starts with "de". Use a contrived tree instead.
-		tree := adminGroup{
+		// The recover tree has no ambiguous subgroup prefix to use here,
+		// so this case builds a contrived tree with two subgroups that
+		// share one.
+		tree := cmdGroup{
 			Name: "test",
-			Subgroups: []adminGroup{
+			Subgroups: []cmdGroup{
 				{Name: "subvolume"},
 				{Name: "subtree"},
 			},
 		}
-		err := dispatchAdminGroup(tree, []string{"sub"}, []string{"test"})
+		err := dispatchGroup(tree, []string{"sub"}, []string{"test"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "ambiguous")
 	})
@@ -146,13 +147,13 @@ func TestRunCLI_TopLevelAbbreviation(t *testing.T) {
 		assert.Equal(t, "test-version\n", stdout.String())
 	})
 
-	t.Run("abbreviated admin dispatches", func(t *testing.T) {
+	t.Run("abbreviated recover dispatches", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		var calls []cliCall
-		code := runCLI([]string{"adm", "user", "list"}, &stdout, &stderr, testCLIRunners(&calls))
+		code := runCLI([]string{"rec", "db", "path"}, &stdout, &stderr, testCLIRunners(&calls))
 		assert.Equal(t, 0, code)
 		require.Len(t, calls, 1)
-		assert.Equal(t, "admin", calls[0].command)
+		assert.Equal(t, "recover", calls[0].command)
 	})
 
 	t.Run("abbreviated control dispatches", func(t *testing.T) {
@@ -189,7 +190,7 @@ func TestRunCLI_TopLevelAbbreviation(t *testing.T) {
 // is rejected with an error listing the candidates, and that an unknown
 // command (no prefix match at all) reports "unknown command".
 func TestRunCLI_TopLevelAmbiguity(t *testing.T) {
-	// Among {solo, hub, worker, dev, admin, control, version}, "s" is unique
+	// Among {solo, hub, worker, dev, recover, control, version}, "s" is unique
 	// (only "solo"), so there are no genuine ambiguous top-level prefixes.
 	// Test the ambiguity path via the matchCommandToken unit test instead,
 	// and exercise the unknown-command path end-to-end here.
@@ -215,24 +216,23 @@ func TestRunCLI_TopLevelAmbiguity(t *testing.T) {
 	})
 }
 
-// TestWalkAdminArgs_Abbreviation verifies the help/validation walk also
-// resolves abbreviated names, so `leapmux admin use --help` shows the
-// "user" group's help (not "unknown group").
-func TestWalkAdminArgs_Abbreviation(t *testing.T) {
+// TestWalkGroupArgs_Abbreviation verifies the help/validation walk also
+// resolves abbreviated names, so `leapmux recover pass --help` shows the
+// "password" group's help (not "unknown group").
+func TestWalkGroupArgs_Abbreviation(t *testing.T) {
 	t.Run("abbreviated subgroup shows help", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		// "use" uniquely abbreviates "user"; the walk should descend into
-		// the user subgroup and print its usage.
-		code, handled := walkAdminArgs(adminTree, []string{"admin"}, []string{"use", "--help"}, &stdout, &stderr)
+		// "pass" uniquely abbreviates "password"; the walk should descend
+		// into the password subgroup and print its usage.
+		code, handled := walkGroupArgs(recoverTree, []string{"recover"}, []string{"pass", "--help"}, &stdout, &stderr)
 		assert.True(t, handled)
 		assert.Equal(t, 0, code)
-		// The user group's help includes its command list.
-		assert.Contains(t, stdout.String(), "List users")
+		assert.Contains(t, stdout.String(), "Reset a user's password")
 	})
 
 	t.Run("abbreviated subgroup without command prints error+usage", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code, handled := walkAdminArgs(adminTree, []string{"admin"}, []string{"use"}, &stdout, &stderr)
+		code, handled := walkGroupArgs(recoverTree, []string{"recover"}, []string{"pass"}, &stdout, &stderr)
 		assert.True(t, handled)
 		assert.Equal(t, 1, code)
 		assert.Contains(t, stderr.String(), "command is required")
@@ -240,17 +240,17 @@ func TestWalkAdminArgs_Abbreviation(t *testing.T) {
 
 	t.Run("unknown subgroup prints error", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		code, handled := walkAdminArgs(adminTree, []string{"admin"}, []string{"xyz"}, &stdout, &stderr)
+		code, handled := walkGroupArgs(recoverTree, []string{"recover"}, []string{"xyz"}, &stdout, &stderr)
 		assert.True(t, handled)
 		assert.Equal(t, 1, code)
-		assert.Contains(t, stderr.String(), "unknown admin group: xyz")
+		assert.Contains(t, stderr.String(), "unknown recover group: xyz")
 	})
 }
 
-// TestFormatAdminGroupUsage_AbbreviationNote verifies the help text tells
+// TestFormatGroupUsage_AbbreviationNote verifies the help text tells
 // users they can abbreviate.
-func TestFormatAdminGroupUsage_AbbreviationNote(t *testing.T) {
-	usage := formatAdminGroupUsage(adminTree, "admin")
+func TestFormatGroupUsage_AbbreviationNote(t *testing.T) {
+	usage := formatGroupUsage(recoverTree, "recover")
 	assert.Contains(t, usage, "Any command name can be shortened as far as it stays unambiguous.")
 }
 

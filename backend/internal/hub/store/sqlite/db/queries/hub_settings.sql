@@ -32,10 +32,11 @@ INSERT INTO hub_settings (key, value, secret)
 VALUES (?, ?, ?)
 ON CONFLICT (key) DO NOTHING;
 
--- SQLite has no row-level SELECT FOR UPDATE. This no-op write acquires the
--- database writer lock before the settings write path's read-modify-write
--- merge reads the row, so concurrent writers serialize (a racing pair fails
--- loudly under SQLite's snapshot rule instead of losing the earlier write).
--- A missing row returns no row, which the caller reads as "absent".
--- name: GetSettingForUpdate :one
-UPDATE hub_settings SET key = key WHERE key = ? RETURNING *;
+-- LockAllSettings takes the database writer lock before the write path
+-- reads every row -- for the read-modify-write merge of the keys it
+-- writes, and for the cross-key validation over the rest. SQLite has no
+-- SELECT FOR UPDATE, so this no-op write is the lock. The settings store
+-- runs it immediately before GetAllSettings; the pair is GetAllForUpdate,
+-- and it is the only settings lock the write path takes.
+-- name: LockAllSettings :exec
+UPDATE hub_settings SET key = key;

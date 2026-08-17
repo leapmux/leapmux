@@ -48,7 +48,6 @@ func mintAPIToken(t *testing.T, st store.Store, v *auth.TokenValidator, userID s
 		ClientName:  "test",
 		SecretHash:  v.HashSecret(currentSecret),
 		RefreshHash: v.HashSecret(refreshSecret),
-		Scope:       "remote:*",
 	}))
 	return
 }

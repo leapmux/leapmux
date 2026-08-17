@@ -1,11 +1,7 @@
 import type { DevServerHandle } from './helpers/devServer'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
+import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { startDevServer, stopDevServer } from './helpers/devServer'
-import { getGlobalState } from './helpers/server'
-
-const execFileAsync = promisify(execFile)
 
 // Cloudflare's documented dummy keys: the site key always passes client
 // side and the secret always passes verification, so the spec never
@@ -97,13 +93,15 @@ async function setupServerWithProvider(
   use: (server: DevServerHandle) => Promise<void>,
 ): Promise<void> {
   const server = await startDevServer({ dataDirPrefix: `leapmux-e2e-captcha-${provider}` })
+  let cliConfigDir: string | undefined
   try {
-    const { binaryPath } = getGlobalState()
-    // The dev/solo launcher nests the hub's data under {data-dir}/hub
-    // (solo/solo.go), while `admin` addresses the production flat layout —
-    // so the CLI must be pointed at the nested hub dir to reach the same
-    // database the running dev hub uses.
-    await execFileAsync(binaryPath, [
+    // Captcha configuration is an ONLINE admin RPC: `leapmux control admin
+    // captcha set` against the running hub, authenticated as the admin.
+    // There is no offline captcha verb any more, so the CLI needs a minted
+    // bearer rather than the hub's data dir.
+    const cfg = await mintCLITokenForAdmin(server)
+    cliConfigDir = cfg.path
+    await runCLI(cfg, [
       'admin',
       'captcha',
       'set',
@@ -113,21 +111,19 @@ async function setupServerWithProvider(
       siteKey,
       '--secret',
       secret,
-      '--data-dir',
-      `${server.dataDir}/hub`,
     ])
     await waitForSystemInfoProvider(server.hubUrl, provider)
 
-    // `captcha show` reports the switch and never the secret.
-    const { stdout } = await execFileAsync(binaryPath, ['admin', 'captcha', 'show', '--data-dir', `${server.dataDir}/hub`])
-    const shown = JSON.parse(stdout) as Record<string, unknown>
-    expect(shown.provider).toBe(provider)
+    // `captcha show` reports the switch and never the secret. It answers
+    // with one entry per captcha settings key.
+    const shown = await runCLI(cfg, ['admin', 'captcha', 'show']) as Record<string, { effective_json?: unknown }>
+    expect(shown['captcha.selected']?.effective_json).toBe(provider)
     expect(JSON.stringify(shown)).not.toContain(secret)
 
     await use(server)
   }
   finally {
-    await stopDevServer(server)
+    await stopDevServer(server, cliConfigDir ? [cliConfigDir] : [])
   }
 }
 

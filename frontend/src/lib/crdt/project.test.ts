@@ -145,7 +145,7 @@ describe('project', () => {
     expect(proj.ownedTabs.find(t => t.tabId === 't1')).toBeUndefined()
   })
 
-  it('sPLIT with one live child renders as that child, keeping the child own id', () => {
+  it('a SPLIT with one live child renders as that child, keeping the child\'s own id', () => {
     const state = seedRoot('w1', 'root')
     applyOp(state, setNodeKindOp('root', NodeKind.SPLIT, 2n, 0n, 'a'))
     applyOp(state, setNodeDirOp('root', SplitDirection.HORIZONTAL, 2n, 1n, 'a'))

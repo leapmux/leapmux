@@ -115,3 +115,13 @@ LIMIT ?;
 
 -- name: HardDeleteWorkersBefore :execresult
 DELETE FROM workers WHERE id IN (SELECT w.id FROM (SELECT workers.id FROM workers WHERE workers.deleted_at IS NOT NULL AND workers.deleted_at < ? LIMIT 1000) w);
+
+-- GetWorkerAdmin is the single-row form of the admin listing: the same
+-- LEFT JOIN, so a soft-deleted owner reports the same empty username and
+-- owner_deleted=true that the list reports. Soft-deleted workers are
+-- included, because the admin surface inspects them.
+-- name: GetWorkerAdmin :one
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL) AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.id = ?;

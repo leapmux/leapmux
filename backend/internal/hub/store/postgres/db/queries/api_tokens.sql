@@ -1,7 +1,7 @@
 -- name: CreateAPIToken :exec
 INSERT INTO api_tokens (
     id, user_id, client_type, client_name, secret_hash, refresh_hash,
-    scope, expires_at, refresh_expires_at, auth_generation
+    expires_at, refresh_expires_at, auth_generation
 ) VALUES (
     sqlc.arg(id),
     sqlc.arg(user_id),
@@ -9,7 +9,6 @@ INSERT INTO api_tokens (
     sqlc.arg(client_name),
     sqlc.arg(secret_hash),
     sqlc.arg(refresh_hash),
-    sqlc.arg(scope),
     sqlc.arg(expires_at),
     sqlc.arg(refresh_expires_at),
     (SELECT auth_generation FROM users WHERE users.id = sqlc.arg(user_id))

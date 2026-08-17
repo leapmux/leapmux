@@ -140,7 +140,6 @@ func TestLocalSocket_MultiUser_AcceptsBearer(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -169,7 +168,7 @@ func TestLocalSocket_MultiUser_RejectsRevokedBearer(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: tokenID, UserID: userid.MustNew(u.ID), ClientType: "cli", ClientName: "test",
-		SecretHash: tv.HashSecret(secret), Scope: "remote:*",
+		SecretHash: tv.HashSecret(secret),
 	}))
 	_, err = st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)

@@ -1,0 +1,564 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "google/protobuf/timestamp.proto";
+import "leapmux/v1/settings.proto";
+import "leapmux/v1/worker.proto";
+
+// ---------------------------------------------------------------------------
+// AdminSettingsService
+// ---------------------------------------------------------------------------
+
+// AdminSettingsService is called BY administrators (frontend preferences
+// dialog, `leapmux control admin settings`) on Hub via ConnectRPC.
+// Every RPC requires an authenticated admin user; the auth interceptor
+// refuses non-admin callers before the handler runs. Solo mode's
+// synthesized user is an admin, so a local solo hub self-administrates.
+service AdminSettingsService {
+  // List every hub setting with its descriptor and stored value. Descriptors
+  // marked hidden_in_solo are omitted in solo mode. Secrets never leave the
+  // hub: value_json is redacted and secret_set reports their presence.
+  rpc ListSettings(ListSettingsRequest) returns (ListSettingsResponse);
+  // Merge a partial JSON document onto one setting's current value,
+  // validated and written transactionally.
+  rpc UpdateSetting(UpdateSettingRequest) returns (UpdateSettingResponse);
+  // Merge a partial JSON document onto one setting's secret half. The
+  // document must name at least one secret field.
+  rpc UpdateSettingSecret(UpdateSettingSecretRequest) returns (UpdateSettingSecretResponse);
+  // Apply several settings writes ATOMICALLY: one transaction, one
+  // cross-key validation over the whole result.
+  //
+  // A caller that has to change more than one key cannot express that as a
+  // sequence of single-key writes. Each one is validated against the state
+  // the previous one left, so an intermediate state a cross-key rule
+  // refuses blocks the sequence part-way — and a failure after the first
+  // write leaves the hub in a state the caller was told it never reached.
+  // The captcha verbs met both: selecting a provider before its keys are
+  // stored is refused, and re-keying the SELECTED provider could publish a
+  // new site key against the old secret.
+  rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
+  // Remove one setting's row, returning it to its code default.
+  rpc ResetSetting(ResetSettingRequest) returns (ResetSettingResponse);
+  // Remove several settings' rows ATOMICALLY: one transaction, one
+  // cross-key validation over the whole post-reset state.
+  //
+  // A caller that has to clear more than one key cannot express that as a
+  // sequence of single-key resets, for the reason UpdateSettings states: a
+  // cross-key rule refuses an intermediate state, and a failure after the
+  // first delete leaves stored state the caller was told it never reached.
+  // Clearing a captcha provider's row beside the selection that points at
+  // it is exactly that shape.
+  rpc ResetSettings(ResetSettingsRequest) returns (ResetSettingsResponse);
+}
+
+message ListSettingsRequest {}
+
+message ListSettingsResponse {
+  repeated SettingDescriptor descriptors = 1;
+  repeated SettingValue values = 2;
+}
+
+message UpdateSettingRequest {
+  string key = 1;
+  string partial_json = 2;
+}
+
+message UpdateSettingResponse {
+  SettingValue value = 1;
+  // True when the key is restart-class, so the write is stored but the
+  // running hub keeps the previous value until it restarts. The caller
+  // says so instead of leaving the operator to compare the descriptor.
+  bool restart = 2;
+}
+
+// One key's edit inside an atomic UpdateSettings.
+message SettingWrite {
+  string key = 1;
+  // Merged onto the key's public half. Empty leaves it alone.
+  string partial_json = 2;
+  // Merged onto the key's SECRET half. Empty leaves it alone. Both halves
+  // of one key may travel in a single write, which is what lets a provider's
+  // site key and its secret land together or not at all.
+  string secret_partial_json = 3;
+}
+
+message UpdateSettingsRequest {
+  // Applied in order within one transaction. A key may appear once.
+  repeated SettingWrite writes = 1;
+}
+
+message UpdateSettingsResponse {
+  // The resulting value of every key the request named, in request order.
+  repeated SettingValue values = 1;
+}
+
+message UpdateSettingSecretRequest {
+  string key = 1;
+  string partial_json = 2;
+}
+
+message UpdateSettingSecretResponse {
+  SettingValue value = 1;
+}
+
+message ResetSettingRequest {
+  string key = 1;
+}
+
+message ResetSettingResponse {
+  SettingValue value = 1;
+}
+
+message ResetSettingsRequest {
+  // Applied in one transaction. A key may appear once.
+  repeated string keys = 1;
+}
+
+message ResetSettingsResponse {
+  // The resulting value of every key the request listed, in request order.
+  repeated SettingValue values = 1;
+}
+
+// ---------------------------------------------------------------------------
+// AdminUserService — users, sessions, api-tokens, delegation-tokens
+// ---------------------------------------------------------------------------
+
+// AdminUserService is called BY administrators (frontend admin surface,
+// `leapmux control admin user|session|api-token|delegation-token`) on Hub
+// via ConnectRPC. Every RPC requires an authenticated admin user.
+// Offline break-glass variants (create the first admin, reset a password
+// with the hub stopped) live in `leapmux recover`, not here.
+service AdminUserService {
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  rpc UpdateUser(UpdateUserRequest) returns (UpdateUserResponse);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+  rpc SetUserAdmin(SetUserAdminRequest) returns (SetUserAdminResponse);
+  // Sets a new password for a user who cannot supply the old one, and tears
+  // down every credential the old password authenticated. The offline
+  // break-glass variant, for a hub that is stopped, is
+  // `leapmux recover password reset`.
+  rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse);
+  rpc ListUserSessions(ListUserSessionsRequest) returns (ListUserSessionsResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
+  rpc RevokeUserSessions(RevokeUserSessionsRequest) returns (RevokeUserSessionsResponse);
+  rpc PurgeExpiredSessions(PurgeExpiredSessionsRequest) returns (PurgeExpiredSessionsResponse);
+  rpc ListAPITokens(ListAPITokensRequest) returns (ListAPITokensResponse);
+  // Issues a bearer pair for a user. The response carries the secrets
+  // exactly once; they cannot be retrieved again.
+  rpc IssueAPIToken(IssueAPITokenRequest) returns (IssueAPITokenResponse);
+  rpc RevokeAPIToken(RevokeAPITokenRequest) returns (RevokeAPITokenResponse);
+  rpc ListDelegationTokens(ListDelegationTokensRequest) returns (ListDelegationTokensResponse);
+  rpc RevokeDelegationToken(AdminUserServiceRevokeDelegationTokenRequest) returns (AdminUserServiceRevokeDelegationTokenResponse);
+}
+
+message AdminUser {
+  string id = 1;
+  string username = 2;
+  string display_name = 3;
+  string email = 4;
+  bool email_verified = 5;
+  string pending_email = 6;
+  bool password_set = 7;
+  bool is_admin = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message ListUsersRequest {
+  string query = 1;
+  int64 limit = 2;
+  string cursor = 3;
+}
+
+message ListUsersResponse {
+  repeated AdminUser users = 1;
+  string next_cursor = 2;
+}
+
+message GetUserRequest {
+  string id = 1;
+  string username = 2;
+}
+
+message GetUserResponse {
+  AdminUser user = 1;
+}
+
+message CreateUserRequest {
+  string username = 1;
+  string password = 2;
+  string display_name = 3;
+  string email = 4;
+  bool email_verified = 5;
+  bool is_admin = 6;
+}
+
+message CreateUserResponse {
+  AdminUser user = 1;
+}
+
+message UpdateUserRequest {
+  string id = 1;
+  string username = 2;
+  // Fields below use proto3 presence: unset means "leave unchanged".
+  optional string display_name = 3;
+  optional string email = 4;
+  bool clear_pending_email = 5;
+  optional bool email_verified = 6;
+}
+
+message UpdateUserResponse {
+  AdminUser user = 1;
+}
+
+message DeleteUserRequest {
+  string id = 1;
+  string username = 2;
+  // Required when the target is an admin (preventing accidental removal of
+  // the last administrator is the caller's job).
+  bool force = 3;
+}
+
+message DeleteUserResponse {}
+
+message SetUserAdminRequest {
+  string id = 1;
+  string username = 2;
+  bool is_admin = 3;
+  // Required when the caller removes its OWN administrator access
+  // (preventing accidental removal of the last administrator is the
+  // caller's job).
+  bool force = 4;
+}
+
+message SetUserAdminResponse {
+  AdminUser user = 1;
+}
+
+// The subject is (id | username), the same selector every other
+// AdminUserService verb takes.
+//
+// This is an ADMINISTRATOR's reset, so it carries no current password: the
+// verb exists for the user who cannot supply one. UserService.ChangePassword
+// is the user's own path, and it does verify the current password.
+message ResetPasswordRequest {
+  string id = 1;
+  string username = 2;
+  string password = 3;
+}
+
+// The subject is echoed back because the caller addresses the user by id OR
+// by username and holds only the one it sent.
+message ResetPasswordResponse {
+  string user_id = 1;
+  string username = 2;
+  // The bearer tokens the reset revoked, in the shape RevokeUserSessions
+  // reports them. Sessions are deleted rather than revoked, so they have no
+  // count of their own.
+  int64 api_tokens_revoked = 3;
+  int64 delegation_tokens_revoked = 4;
+}
+
+message AdminSession {
+  string id = 1;
+  string user_id = 2;
+  string username = 3;
+  bool user_deleted = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp last_active_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  string ip_address = 8;
+  string user_agent = 9;
+}
+
+message ListUserSessionsRequest {
+  string id = 1;
+  string username = 2;
+  int64 limit = 3;
+  string cursor = 4;
+}
+
+message ListUserSessionsResponse {
+  repeated AdminSession sessions = 1;
+  string next_cursor = 2;
+}
+
+message ListSessionsRequest {
+  int64 limit = 1;
+  string cursor = 2;
+}
+
+message ListSessionsResponse {
+  repeated AdminSession sessions = 1;
+  string next_cursor = 2;
+}
+
+message RevokeSessionRequest {
+  string id = 1;
+}
+
+message RevokeSessionResponse {}
+
+message RevokeUserSessionsRequest {
+  string id = 1;
+  string username = 2;
+}
+
+message RevokeUserSessionsResponse {
+  int64 api_tokens_revoked = 1;
+  int64 delegation_tokens_revoked = 2;
+}
+
+message PurgeExpiredSessionsRequest {}
+
+message PurgeExpiredSessionsResponse {
+  int64 purged = 1;
+}
+
+message AdminAPIToken {
+  string id = 1;
+  string user_id = 2;
+  string username = 3;
+  bool owner_deleted = 4;
+  string client_type = 5;
+  string client_name = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp last_used_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  google.protobuf.Timestamp revoked_at = 10;
+}
+
+message ListAPITokensRequest {
+  string user_id = 1;
+  string username = 2;
+  string client_type = 3;
+  bool include_revoked = 4;
+  int64 limit = 5;
+  string cursor = 6;
+}
+
+message ListAPITokensResponse {
+  repeated AdminAPIToken tokens = 1;
+  string next_cursor = 2;
+}
+
+// The token's owner is (user_id | username), the same selector every other
+// AdminUserService verb takes.
+message IssueAPITokenRequest {
+  string user_id = 1;
+  string client_type = 2;
+  string client_name = 3;
+  // Access-token TTL seconds; 0 = the default (1h). At most 31536000 (one
+  // year): a larger value overflows the nanosecond duration the hub mints
+  // from it.
+  int64 ttl_seconds = 4;
+  string username = 5;
+}
+
+message IssueAPITokenResponse {
+  string token_id = 1;
+  string access_token = 2;
+  string refresh_token = 3;
+}
+
+message RevokeAPITokenRequest {
+  string id = 1;
+}
+
+message RevokeAPITokenResponse {}
+
+message AdminDelegationToken {
+  string id = 1;
+  string user_id = 2;
+  string username = 3;
+  bool owner_deleted = 4;
+  string worker_id = 5;
+  string agent_id = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp last_used_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  google.protobuf.Timestamp revoked_at = 10;
+}
+
+message ListDelegationTokensRequest {
+  string user_id = 1;
+  string username = 2;
+  bool include_revoked = 3;
+  int64 limit = 4;
+  string cursor = 5;
+}
+
+message ListDelegationTokensResponse {
+  repeated AdminDelegationToken tokens = 1;
+  string next_cursor = 2;
+}
+
+message AdminUserServiceRevokeDelegationTokenRequest {
+  string id = 1;
+}
+
+message AdminUserServiceRevokeDelegationTokenResponse {}
+
+// ---------------------------------------------------------------------------
+// AdminWorkerService — cross-user worker administration, registration keys
+// ---------------------------------------------------------------------------
+
+// AdminWorkerService is called BY administrators on Hub via ConnectRPC.
+// Every RPC requires an authenticated admin user. This is the
+// cross-user administration surface; the per-user worker view lives in
+// WorkerManagementService.
+service AdminWorkerService {
+  rpc ListWorkers(AdminWorkerServiceListWorkersRequest) returns (AdminWorkerServiceListWorkersResponse);
+  rpc GetWorker(AdminWorkerServiceGetWorkerRequest) returns (AdminWorkerServiceGetWorkerResponse);
+  rpc DeregisterWorker(AdminWorkerServiceDeregisterWorkerRequest) returns (AdminWorkerServiceDeregisterWorkerResponse);
+  rpc ListRegistrationKeys(ListRegistrationKeysRequest) returns (ListRegistrationKeysResponse);
+  rpc RevokeRegistrationKey(RevokeRegistrationKeyRequest) returns (RevokeRegistrationKeyResponse);
+  rpc PurgeExpiredRegistrationKeys(PurgeExpiredRegistrationKeysRequest) returns (PurgeExpiredRegistrationKeysResponse);
+}
+
+message AdminWorker {
+  string id = 1;
+  string registered_by = 2;
+  string owner_username = 3;
+  bool owner_deleted = 4;
+  WorkerStatus status = 5;
+  bool auto_registered = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp last_seen_at = 8;
+}
+
+message AdminWorkerServiceListWorkersRequest {
+  string user_id = 1;
+  string username = 2;
+  // WORKER_STATUS_UNSPECIFIED = all statuses.
+  WorkerStatus status = 3;
+  int64 limit = 4;
+  string cursor = 5;
+}
+
+message AdminWorkerServiceListWorkersResponse {
+  repeated AdminWorker workers = 1;
+  string next_cursor = 2;
+}
+
+message AdminWorkerServiceGetWorkerRequest {
+  string id = 1;
+}
+
+message AdminWorkerServiceGetWorkerResponse {
+  AdminWorker worker = 1;
+}
+
+message AdminWorkerServiceDeregisterWorkerRequest {
+  string id = 1;
+}
+
+message AdminWorkerServiceDeregisterWorkerResponse {}
+
+message AdminRegistrationKey {
+  string id = 1;
+  string created_by = 2;
+  string creator_username = 3;
+  bool creator_deleted = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp expires_at = 6;
+}
+
+message ListRegistrationKeysRequest {
+  bool include_expired = 1;
+  int64 limit = 2;
+  string cursor = 3;
+}
+
+message ListRegistrationKeysResponse {
+  repeated AdminRegistrationKey keys = 1;
+  string next_cursor = 2;
+}
+
+message RevokeRegistrationKeyRequest {
+  string id = 1;
+}
+
+message RevokeRegistrationKeyResponse {}
+
+message PurgeExpiredRegistrationKeysRequest {}
+
+message PurgeExpiredRegistrationKeysResponse {
+  int64 purged = 1;
+}
+
+// ---------------------------------------------------------------------------
+// AdminOAuthService — OAuth provider administration
+// ---------------------------------------------------------------------------
+
+// AdminOAuthService is called BY administrators on Hub via ConnectRPC.
+// Every RPC requires an authenticated admin user.
+service AdminOAuthService {
+  rpc AddOAuthProvider(AddOAuthProviderRequest) returns (AddOAuthProviderResponse);
+  rpc ListOAuthProviders(ListOAuthProvidersRequest) returns (ListOAuthProvidersResponse);
+  rpc RemoveOAuthProvider(RemoveOAuthProviderRequest) returns (RemoveOAuthProviderResponse);
+  rpc SetOAuthProviderEnabled(SetOAuthProviderEnabledRequest) returns (SetOAuthProviderEnabledResponse);
+}
+
+message AdminOAuthProvider {
+  string id = 1;
+  string provider_type = 2;
+  string name = 3;
+  string issuer_url = 4;
+  string client_id = 5;
+  string scopes = 6;
+  bool trust_email = 7;
+  bool enabled = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message AddOAuthProviderRequest {
+  // "github", "google", "apple", or "oidc".
+  string provider_type = 1;
+  string name = 2;
+  string client_id = 3;
+  // Write-only: never returned by ListOAuthProviders.
+  string client_secret = 4;
+  // Required for "oidc" providers only; presets skip issuer validation.
+  string issuer_url = 5;
+  string scopes = 6;
+  // Unset means "use the preset default"; presets without a default
+  // refuse the call (generic OIDC must state it).
+  optional bool trust_email = 7;
+}
+
+message AddOAuthProviderResponse {
+  AdminOAuthProvider provider = 1;
+}
+
+message ListOAuthProvidersRequest {}
+
+message ListOAuthProvidersResponse {
+  repeated AdminOAuthProvider providers = 1;
+}
+
+message RemoveOAuthProviderRequest {
+  string id = 1;
+  // Remove the provider even when accounts lose their last login method.
+  // Removing the provider row cascades every account link away, so an
+  // account with no password and no other link can no longer sign in;
+  // only `leapmux recover` restores it. The hub refuses the removal
+  // without this flag when the count below is above zero.
+  bool force = 2;
+}
+
+message RemoveOAuthProviderResponse {
+  // How many live accounts lost their last login method. It is zero
+  // unless force was set, because the hub refuses the removal otherwise.
+  int64 locked_out_users = 1;
+}
+
+message SetOAuthProviderEnabledRequest {
+  string id = 1;
+  bool enabled = 2;
+}
+
+message SetOAuthProviderEnabledResponse {}

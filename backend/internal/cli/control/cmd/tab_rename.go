@@ -35,10 +35,16 @@ func RunTabRename(rawCtx any, args []string) error {
 	return resolveAndEmit(hub, resolve.Need{TabID: true, WorkerID: true}, in, func(ctx context.Context, c *control.Client, got resolve.Resolved) error {
 		switch got.TabType {
 		case leapmuxv1.TabType_TAB_TYPE_AGENT:
-			if err := callInnerRPC(ctx, c, got.WorkerID, "RenameAgent", &leapmuxv1.RenameAgentRequest{AgentId: got.TabID, Title: title}, nil); err != nil {
+			// Report the worker's title, not the one this command sent. The
+			// worker cuts the title to 128 UTF-8 bytes and strips the
+			// forbidden characters, and a title that cleans to nothing leaves
+			// the tab with the name it already had -- so echoing --title back
+			// printed a name the tab does not carry.
+			var resp leapmuxv1.RenameAgentResponse
+			if err := callInnerRPC(ctx, c, got.WorkerID, "RenameAgent", &leapmuxv1.RenameAgentRequest{AgentId: got.TabID, Title: title}, &resp); err != nil {
 				return err
 			}
-			return control.EmitData(map[string]string{"tab_id": got.TabID, "tab_type": "agent", "title": title})
+			return control.EmitData(map[string]string{"tab_id": got.TabID, "tab_type": "agent", "title": resp.GetTitle()})
 		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 			return renameTerminalTab(ctx, c, got, title)
 		default:

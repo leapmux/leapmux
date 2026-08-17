@@ -15,6 +15,7 @@ type Suite struct {
 // Run executes all conformance test groups.
 func (s *Suite) Run(t *testing.T) {
 	t.Run("users", s.testUsers)
+	t.Run("user_prefs", s.testUserPrefs)
 	t.Run("sessions", s.testSessions)
 	t.Run("zero id mutations refused", s.testZeroIDMutationsRefused)
 	t.Run("workers", s.testWorkers)

@@ -1,13 +1,9 @@
 import type { DevServerHandle } from './helpers/devServer'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
 import { fetchAltchaChallenge } from './helpers/altcha'
+import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
 import { startDevServer, stopDevServer } from './helpers/devServer'
-import { getGlobalState } from './helpers/server'
 import { loginViaUI } from './helpers/ui'
-
-const execFileAsync = promisify(execFile)
 
 /**
  * Exercises the dynamically loaded WASM solvers for the memory-hard ALTCHA
@@ -48,18 +44,18 @@ async function setupServerWithAlgorithm(
   args: string[],
 ): Promise<void> {
   const server = await startDevServer({ dataDirPrefix: 'leapmux-e2e-captcha-wasm' })
+  let cliConfigDir: string | undefined
   try {
-    const { binaryPath } = getGlobalState()
-    // The dev/solo launcher nests the hub's data under {data-dir}/hub
-    // (solo/solo.go), while `admin` addresses the production flat layout —
-    // so the CLI must be pointed at the nested hub dir to reach the same
-    // database the running dev hub uses.
-    await execFileAsync(binaryPath, ['admin', 'captcha', 'set', ...args, '--data-dir', `${server.dataDir}/hub`])
+    // Captcha configuration is an ONLINE admin RPC against the running
+    // hub; the offline captcha verb no longer exists.
+    const cfg = await mintCLITokenForAdmin(server)
+    cliConfigDir = cfg.path
+    await runCLI(cfg, ['admin', 'captcha', 'set', ...args])
     await waitForChallengeAlgorithm(server.hubUrl, algorithm)
     await use(server)
   }
   finally {
-    await stopDevServer(server)
+    await stopDevServer(server, cliConfigDir ? [cliConfigDir] : [])
   }
 }
 

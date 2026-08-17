@@ -97,3 +97,52 @@ func TestEventToJSON_ClassifiesEveryWatchUserEventKind(t *testing.T) {
 			"frames inside a delta go through the same switch, so a missing arm shows up here too")
 	})
 }
+
+// TestWorkspaceMapKeys_SortsTheIds pins the order of the `workspaces` array
+// in the first line that `events watch` prints.
+//
+// Go randomizes map iteration, so an unsorted projection makes two runs
+// against ONE unchanged account print two different lines. A script that
+// compares snapshots then reports a difference that does not exist. Any
+// account with two or more workspaces reaches this.
+func TestWorkspaceMapKeys_SortsTheIds(t *testing.T) {
+	m := map[string]*leapmuxv1.WorkspaceContentsRecord{
+		"ws-delta":   {},
+		"ws-alpha":   {},
+		"ws-charlie": {},
+		"ws-bravo":   {},
+		"ws-echo":    {},
+	}
+	want := []string{"ws-alpha", "ws-bravo", "ws-charlie", "ws-delta", "ws-echo"}
+
+	// One pass can match by luck. Repetition is what catches a missing sort,
+	// because the randomized order has to lose 32 times in a row.
+	for range 32 {
+		assert.Equal(t, want, workspaceMapKeys(m))
+	}
+
+	t.Run("the materialized line carries the sorted ids", func(t *testing.T) {
+		got := eventToJSON(&leapmuxv1.WatchUserEvent{Event: &leapmuxv1.WatchUserEvent_Initial{
+			Initial: &leapmuxv1.UserMaterialized{Workspaces: m},
+		}})
+		assert.Equal(t, "materialized", got["kind"])
+		assert.Equal(t, want, got["workspaces"])
+	})
+
+	t.Run("an empty map projects an empty array, not null", func(t *testing.T) {
+		got := workspaceMapKeys(map[string]*leapmuxv1.WorkspaceContentsRecord{})
+		assert.NotNil(t, got, "a nil slice encodes as JSON null and breaks a `.workspaces | length` filter")
+		assert.Empty(t, got)
+	})
+
+	t.Run("a nil map projects an empty array too", func(t *testing.T) {
+		got := workspaceMapKeys(nil)
+		assert.NotNil(t, got)
+		assert.Empty(t, got)
+	})
+
+	t.Run("one workspace needs no comparison", func(t *testing.T) {
+		got := workspaceMapKeys(map[string]*leapmuxv1.WorkspaceContentsRecord{"ws-only": {}})
+		assert.Equal(t, []string{"ws-only"}, got)
+	})
+}

@@ -202,7 +202,6 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -225,7 +224,6 @@ func TestInterceptor_LeapMuxBearer_RejectsWrongSecretAfterCacheWarm(t *testing.T
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 
 	validReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
@@ -252,7 +250,6 @@ func TestInterceptor_LeapMuxBearer_RejectsRevoked(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 	_, err := st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -317,7 +314,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: tokenID, UserID: userid.MustNew(userID), ClientType: "cli", ClientName: "test",
-		SecretHash: tv.HashSecret(secret), Scope: "remote:*",
+		SecretHash: tv.HashSecret(secret),
 	}))
 
 	bearer := "Bearer " + auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
@@ -360,7 +357,6 @@ func TestInterceptor_LeapMuxBearer_RejectsExpired(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
-		Scope:      "remote:*",
 		ExpiresAt:  &pastExpiry,
 	}))
 
@@ -386,7 +382,6 @@ func TestInterceptor_LeapMuxBearer_CachedEntryExpiresWithCredential(t *testing.T
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
-		Scope:      "remote:*",
 		ExpiresAt:  &expiresAt,
 	}))
 
@@ -758,7 +753,6 @@ func TestBearerRequest_SendsNoSessionCookie(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: tv.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 
 	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})

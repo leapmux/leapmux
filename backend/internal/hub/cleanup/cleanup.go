@@ -76,12 +76,12 @@ func run(ctx context.Context, st store.Store) {
 	// costs.
 	opBatchCutoff := crdt.OpRetentionCutoffPhysicalMs(now, crdt.OpRetentionTTL)
 	cleanupStep("crdt op batches", func() (int64, error) {
-		return drainUntilEmpty(ctx, maxOpBatchSweepBatches, func() (int64, error) {
+		return DrainUntilEmpty(ctx, maxOpBatchSweepBatches, func() (int64, error) {
 			return cs.DeleteUserOpBatchesBeforePhysical(ctx, opBatchCutoff)
 		})
 	})
 	cleanupStep("published revocation events", func() (int64, error) {
-		return drainUntilEmpty(ctx, maxRevocationCompactionBatches, func() (int64, error) {
+		return DrainUntilEmpty(ctx, maxRevocationCompactionBatches, func() (int64, error) {
 			return cs.CompactPublishedRevocationEvents(ctx, store.CompactRevocationEventsParams{
 				Cutoff: cutoff,
 			})
@@ -89,7 +89,7 @@ func run(ctx context.Context, st store.Store) {
 	})
 }
 
-// drainUntilEmpty runs a paged delete until it deletes nothing, a pass fails, the
+// DrainUntilEmpty runs a paged delete until it deletes nothing, a pass fails, the
 // context is cancelled, or maxPasses is reached, and reports the running total.
 //
 // Terminating on deleted==0 rather than on a short page keeps every caller
@@ -101,7 +101,7 @@ func run(ctx context.Context, st store.Store) {
 // A cancelled context returns the total WITHOUT an error: the rows already
 // deleted are committed and the remainder is picked up by the next scheduled
 // sweep, so shutdown mid-drain is a pause, not a failure worth logging.
-func drainUntilEmpty(ctx context.Context, maxPasses int, pass func() (int64, error)) (int64, error) {
+func DrainUntilEmpty(ctx context.Context, maxPasses int, pass func() (int64, error)) (int64, error) {
 	var total int64
 	for range maxPasses {
 		if ctx.Err() != nil {

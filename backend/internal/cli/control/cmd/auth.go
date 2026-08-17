@@ -1,7 +1,7 @@
 // Package cmd implements the leaf commands of `leapmux control ...`.
-// Each entry is a func compatible with the admin dispatcher's signature
-// (adminCmdCtx-like) so the same flag-parsing scaffolding from the
-// admin tree is reused.
+// Each entry is a func compatible with the dispatcher's signature (the
+// cmdCtx shape) so the same flag-parsing scaffolding the command trees
+// use is reused.
 package cmd
 
 import (
@@ -39,14 +39,14 @@ const (
 )
 
 // Ctx is the dispatcher-supplied context. The cmd package keeps its
-// own minimal shape so it doesn't pull in cmd/leapmux's adminCmdCtx
+// own minimal shape so it doesn't pull in cmd/leapmux's cmdCtx
 // (avoids an import cycle).
 type Ctx interface {
 	Path() string
 	Description() string
 }
 
-// genericCtx adapts adminCmdCtx (any struct with Path / Description
+// adminCmdLike adapts cmdCtx (any struct with Path / Description
 // fields).
 type adminCmdLike struct {
 	PathStr        string
@@ -56,7 +56,7 @@ type adminCmdLike struct {
 func (c adminCmdLike) Path() string        { return c.PathStr }
 func (c adminCmdLike) Description() string { return c.DescriptionStr }
 
-// asCtx accepts the dispatcher's adminCmdCtx (declared in main package)
+// asCtx accepts the dispatcher's cmdCtx (declared in main package)
 // via reflection-free duck typing: callers convert with adminCmdLike.
 func asCtx(v any) Ctx {
 	if c, ok := v.(Ctx); ok {
@@ -75,6 +75,27 @@ func flagSet(cmd Ctx, hubPtr *string) *flag.FlagSet {
 // parseFlags consolidates the boilerplate around ConfigureAndParse.
 func parseFlags(fs *flag.FlagSet, args []string, description string) error {
 	return internalconfig.ConfigureAndParse(fs, args, description, nil, nil)
+}
+
+// parseFlagsWithPositionals is parseFlags for leaves that take positional
+// arguments after the flags (settings get KEY, settings set KEY VALUE):
+// ConfigureAndParse's RejectPositionalArgs would refuse them.
+//
+// usage states the positional form, and --help prints it. PrintFlagUsage
+// knows only the flags, so it writes `Usage: <cmd> [flags]`; without this
+// line the help of a leaf that REQUIRES two positionals never names them,
+// and only a wrong count answered with the form.
+func parseFlagsWithPositionals(fs *flag.FlagSet, args []string, description, usage string) error {
+	if internalconfig.HasHelpArg(args) {
+		fs.SetOutput(os.Stdout)
+	}
+	fs.Usage = func() {
+		internalconfig.PrintFlagUsage(fs, description, nil, nil)
+		if usage != "" {
+			_, _ = fmt.Fprintf(fs.Output(), "\n%s\n", usage)
+		}
+	}
+	return fs.Parse(args)
 }
 
 // pathCmdFlags carries the standard flags every worker-bound path
@@ -135,6 +156,11 @@ func requireClient(hubFlag string) (*control.Client, error) {
 // local-redirect (PKCE) flow by default; falls back to (or honors
 // --device-code) when the local listener can't be reached from a
 // browser.
+//
+// Solo deployments need NO login: the hub's solo mode authenticates every
+// request as the solo user, so there is no credential to obtain. (The
+// device-code flow in particular cannot complete there — activation is
+// cookies-only and solo has no cookie session.)
 func RunAuthLogin(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub, deviceName string
@@ -157,6 +183,16 @@ func RunAuthLogin(rawCtx any, args []string) error {
 }
 
 func runLocalRedirectLogin(ctx context.Context, hubURL, deviceName string) error {
+	// The local-redirect flow needs a browser to reach BOTH the hub (to
+	// load the consent page) and this CLI (the loopback callback). A
+	// socket hub URL gives the browser no hub origin to visit — solo
+	// deployments need no login at all, and a socket-reached multi-user
+	// hub has an http(s) origin derived from its settings. Name the
+	// working alternative instead of failing mysteriously.
+	if locallisten.IsLocal(hubURL) {
+		return control.EmitError("invalid_request",
+			"--hub unix:/npipe: URLs cannot use the local-redirect flow (no browser-reachable hub origin); pass --device-code to authenticate in a browser against the hub's public origin")
+	}
 	verifier := oauth2.GenerateVerifier()
 	challenge := pkce.S256(verifier)
 	state := id.Generate()
@@ -215,8 +251,9 @@ func runLocalRedirectLogin(ctx context.Context, hubURL, deviceName string) error
 }
 
 func runDeviceCodeLogin(ctx context.Context, hubURL, deviceName string) error {
+	hc, baseURL := cliHTTPClient(hubURL)
 	form := url.Values{"device_name": {deviceName}}
-	resp, err := http.PostForm(locallisten.JoinPath(hubURL, "/auth/cli/device-authorization"), form)
+	resp, err := hc.PostForm(locallisten.JoinPath(baseURL, "/auth/cli/device-authorization"), form)
 	if err != nil {
 		return control.EmitErrorWith("device_authorization_failed", err)
 	}
@@ -253,7 +290,7 @@ func runDeviceCodeLogin(ctx context.Context, hubURL, deviceName string) error {
 			return ctx.Err()
 		case <-time.After(interval):
 		}
-		err := tryExchangeDeviceCode(ctx, hubURL, auth.DeviceCode, deviceName)
+		err := tryExchangeDeviceCode(ctx, hc, baseURL, hubURL, auth.DeviceCode, deviceName)
 		if errors.Is(err, errAuthorizationPending) {
 			continue
 		}
@@ -277,20 +314,28 @@ var (
 // tryExchangeDeviceCode performs one /auth/cli/token poll. nil on
 // success (creds saved); errAuthorizationPending / errSlowDown when
 // the user hasn't completed the flow yet.
-func tryExchangeDeviceCode(ctx context.Context, hubURL, deviceCode, deviceName string) error {
+//
+// The caller SUPPLIES the client and its base URL, and hubURL stays a
+// separate parameter because the saved credential is keyed by the
+// user-visible address, not by the placeholder a socket transport dials.
+// Building the client here instead allocated a fresh http.Transport on
+// every poll for a `unix:`/`npipe:` hub: nothing closes it and its
+// IdleConnTimeout is zero, so each poll left one idle socket connection
+// and its read goroutine alive for the life of the process.
+func tryExchangeDeviceCode(ctx context.Context, hc *http.Client, baseURL, hubURL, deviceCode, deviceName string) error {
 	form := url.Values{
 		"grant_type":  {grantTypeDeviceCode},
 		"device_code": {deviceCode},
 		"device_name": {deviceName},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		locallisten.JoinPath(hubURL, "/auth/cli/token"),
+		locallisten.JoinPath(baseURL, "/auth/cli/token"),
 		strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
@@ -320,14 +365,15 @@ func exchangeAuthorizationCode(ctx context.Context, hubURL, code, verifier, devi
 		"code_verifier": {verifier},
 		"device_name":   {deviceName},
 	}
+	hc, baseURL := cliHTTPClient(hubURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		locallisten.JoinPath(hubURL, "/auth/cli/token"),
+		locallisten.JoinPath(baseURL, "/auth/cli/token"),
 		strings.NewReader(form.Encode()))
 	if err != nil {
 		return control.EmitErrorWith("token_exchange_failed", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return control.EmitErrorWith("token_exchange_failed", err)
 	}
@@ -427,20 +473,46 @@ func RunAuthStatus(rawCtx any, args []string) error {
 
 // --- helpers ----------------------------------------------------------
 
+// cliRESTTimeout caps one CLI-auth REST request over a socket transport.
+const cliRESTTimeout = 60 * time.Second
+
+// cliHTTPClient returns the HTTP client the CLI-auth REST calls should
+// use for hubURL: a socket-dialer-backed client (with the placeholder
+// http://localhost base) for `unix:`/`npipe:` hub URLs, the default
+// client otherwise. http.DefaultClient cannot dial a socket URL, so
+// without this the device-code flow silently cannot log in against a
+// hub reached over its IPC listener.
+//
+// A socket client that fails to build falls through to the default
+// client, which SelectClient does for every transport factory in the
+// tree: the request then fails with a scheme error that gives the URL,
+// which is better than a panic here.
+func cliHTTPClient(hubURL string) (*http.Client, string) {
+	return locallisten.SelectClient(hubURL,
+		func() (*http.Client, string, error) { return locallisten.LocalHTTPClient(hubURL, cliRESTTimeout) },
+		func() (*http.Client, string) { return http.DefaultClient, hubURL })
+}
+
 func revokeBearer(hubURL, bearer string) error {
 	if bearer == "" {
 		return nil
 	}
+	// Resolve the transport FIRST and build the request against its base
+	// URL, the way the sibling token calls do. Building against hubURL and
+	// then patching req.URL discarded the parse error, so a URL that failed
+	// to parse left req.URL nil and answered with a generic
+	// `http: nil Request.URL` instead of naming the address.
+	hc, baseURL := cliHTTPClient(hubURL)
 	form := url.Values{"token": {bearer}}
 	req, err := http.NewRequest(http.MethodPost,
-		locallisten.JoinPath(hubURL, "/auth/cli/revoke"),
+		locallisten.JoinPath(baseURL, "/auth/cli/revoke"),
 		strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Bearer "+bearer)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}

@@ -7,8 +7,7 @@ import { labelRow, treeContainer, treeContainerFill } from '~/components/common/
 import { IconButton, IconButtonState } from '~/components/common/IconButton'
 import { RefreshButton } from '~/components/common/RefreshButton'
 import { DirectoryTree } from '~/components/tree/DirectoryTree'
-import { KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN } from '~/lib/browserStorage'
-import { createPersistedSignal, persistedBoolean } from '~/lib/createPersistedSignal'
+import { usePreferences } from '~/context/PreferencesContext'
 import { registerDialogFileTreeOps } from '~/lib/fileTreeOps'
 import { flavorFromOs } from '~/lib/paths'
 import { shortcutHint } from '~/lib/shortcuts/display'
@@ -35,13 +34,12 @@ interface DirectorySelectorProps {
 }
 
 export const DirectorySelector: Component<DirectorySelectorProps> = (props) => {
-  // One fixed key, unlike the Files section's per-tab keys, so the re-read half
-  // of createPersistedSignal never fires. It still owns the write-on-change,
-  // never-on-mount rule.
-  const [showHiddenFiles, setShowHiddenFiles] = createPersistedSignal(
-    () => KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
-    persistedBoolean(true),
-  )
+  // The hidden-files toggle is a reactive preference (the settings dialog's
+  // Files & Editors group edits the same key), so it reads through the
+  // preferences context instead of a local persisted signal.
+  const prefs = usePreferences()
+  const showHiddenFiles = prefs.directoryPickerShowHidden
+  const setShowHiddenFiles = (next: (prev: boolean) => boolean) => prefs.setDirectoryPickerShowHidden(next(showHiddenFiles()))
 
   createEffect(() => {
     const unregister = registerDialogFileTreeOps({

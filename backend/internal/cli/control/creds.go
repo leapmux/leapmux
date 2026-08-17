@@ -113,7 +113,10 @@ func LoadCredentials(hubURL string) (*CredentialFile, error) {
 	}
 	var c CredentialFile
 	if err := json.Unmarshal(data, &c); err != nil {
-		return nil, fmt.Errorf("parse credentials: %w", err)
+		// Name the file. A caller that reports this message has no other
+		// way to say WHICH credential file the operator must repair or
+		// delete, because the path derives from the hub URL.
+		return nil, fmt.Errorf("parse credentials %s: %w", path, err)
 	}
 	return &c, nil
 }

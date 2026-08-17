@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/leapmux/leapmux/util/validate"
 	"github.com/microcosm-cc/bluemonday"
 )
 
@@ -28,7 +29,19 @@ var (
 )
 
 // extractPlanTitle extracts a human-readable title from markdown plan content.
-// It returns the first meaningful line, stripped of markdown formatting.
+// It returns the first meaningful line, stripped of markdown formatting. An
+// empty return value means that no title survived, and the caller keeps the
+// title it already holds.
+//
+// The result always satisfies validate.SanitizeName unchanged. The worker
+// writes this title to the same `title` column that a user-set title reaches
+// through validate.CleanName, so both paths must enforce one rule.
+//
+// The byte limit also keeps the plan file writable. This title becomes the file
+// name stem, and Linux caps one name component at NAME_MAX = 255 BYTES, so a
+// title of 128 CJK or Hangul characters (384 bytes) failed the write with
+// ENAMETOOLONG. macOS hides the failure: APFS caps the component at 255
+// characters instead, and accepts the same name.
 func extractPlanTitle(content string) string {
 	// Skip YAML frontmatter.
 	if strings.HasPrefix(content, "---\n") {
@@ -70,7 +83,10 @@ func extractPlanTitle(content string) string {
 	// Decode HTML entities.
 	line = html.UnescapeString(line)
 
-	// Clean up whitespace and control characters.
+	// Clean up whitespace and control characters. SanitizeName strips control
+	// characters again at the end of this function, and this earlier pass still
+	// has to run: a control character inside a prefix ("Pl\x00an: X") hides that
+	// prefix from rePlanPrefix below, which matches on the raw text.
 	line = strings.TrimSpace(line)
 	line = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -82,12 +98,10 @@ func extractPlanTitle(content string) string {
 	line = rePlanPrefix.ReplaceAllString(line, "")
 	line = strings.TrimSpace(line)
 
-	// Truncate to 128 characters.
-	if len([]rune(line)) > 128 {
-		line = string([]rune(line)[:128])
-	}
-
-	return line
+	// CleanName cuts the line to the byte limit and then applies the character
+	// rule, so this path never has to report an error it has no user for. An
+	// empty result is what the caller expects for a plan with no title.
+	return validate.CleanName(line)
 }
 
 // SanitizePlanFilenameTitle converts a plan title into a kebab-case filename

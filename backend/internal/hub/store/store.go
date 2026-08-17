@@ -92,6 +92,13 @@ type UserStore interface {
 	// for the constant-time code comparison that follows.
 	ConsumeVerificationAttempt(ctx context.Context, id string) (*User, error)
 	GetPrefs(ctx context.Context, id string) (string, error)
+	// GetPrefsForUpdate reads the prefs blob locked against concurrent
+	// writers (SELECT ... FOR UPDATE, or the SQLite self-assign write that
+	// takes the writer lock). The lock is what makes the per-key
+	// read-modify-write merge safe: two overlapping updates to different
+	// keys would otherwise both read the same base blob and the second
+	// commit would erase the first's key. Callers must hold a transaction.
+	GetPrefsForUpdate(ctx context.Context, id string) (string, error)
 	HasAny(ctx context.Context) (bool, error)
 	Count(ctx context.Context) (int64, error)
 	ListAll(ctx context.Context, p ListAllUsersParams) (Page[User], error)
@@ -158,6 +165,14 @@ type WorkerStore interface {
 	GetOwned(ctx context.Context, p GetOwnedWorkerParams) (*Worker, error)
 	ListByUserID(ctx context.Context, p ListWorkersByUserIDParams) (Page[Worker], error)
 	ListAdmin(ctx context.Context, p ListWorkersAdminParams) (Page[WorkerWithOwner], error)
+	// GetAdmin is the single-row form of ListAdmin: the worker plus the
+	// owner projection, resolved by the SAME join. A caller that reads the
+	// worker and then looks the owner up separately re-derives that
+	// projection in Go and gets it wrong -- it cannot report OwnerDeleted
+	// at all, and it reports a deleted owner's username where the listing
+	// reports "". Soft-deleted workers are included, as ListAdmin includes
+	// them for status=WORKER_STATUS_DELETED.
+	GetAdmin(ctx context.Context, id string) (*WorkerWithOwner, error)
 	SetStatus(ctx context.Context, p SetWorkerStatusParams) error
 	UpdateLastSeen(ctx context.Context, id string) error
 	UpdatePublicKey(ctx context.Context, p UpdateWorkerPublicKeyParams) error
@@ -562,6 +577,11 @@ type OAuthUserLinkStore interface {
 	ListByUser(ctx context.Context, userID userid.UserID) ([]OAuthUserLink, error)
 	Delete(ctx context.Context, p DeleteOAuthUserLinkParams) error
 	DeleteByProvider(ctx context.Context, providerID string) error
+	// CountUsersOrphanedByProvider counts the live accounts whose only
+	// login method is a link to this provider: no password set, and no
+	// link to any other provider. Removing the provider row cascades every
+	// link away, so each of these accounts loses its last way in.
+	CountUsersOrphanedByProvider(ctx context.Context, providerID string) (int64, error)
 }
 
 type PendingOAuthSignupStore interface {
@@ -592,10 +612,21 @@ type SettingsStore interface {
 	// under every dialect's isolation. It reports whether this call
 	// inserted the row.
 	InsertIfAbsent(ctx context.Context, p UpsertSettingParams) (bool, error)
-	// GetForUpdate reads one key's row locked against concurrent writers,
-	// for the read-modify-write merge the write path performs inside a
-	// transaction. Like Get, ErrNotFound means the key has no row.
-	GetForUpdate(ctx context.Context, key string) (*SettingRow, error)
+	// GetAllForUpdate is GetAll under the settings table's writer lock. It
+	// is the ONLY lock the write path takes, and it serves both halves of
+	// that path: the read-modify-write merge of the keys being written, and
+	// the cross-key validation over every other key.
+	//
+	// One lock, not one per key plus this one. A plain GetAll for the
+	// cross-key read would see rows a concurrent writer is about to change,
+	// so a rule that spans keys ("email verification needs an SMTP host")
+	// could pass against a sibling row that no longer holds by the time
+	// both transactions commit. A per-key row lock TAKEN FIRST and this one
+	// second would let two writers form a cycle, which Postgres and MySQL
+	// end by aborting one of them.
+	//
+	// Callers must hold a transaction. Rows are locked in key order.
+	GetAllForUpdate(ctx context.Context) ([]SettingRow, error)
 	// Delete removes one key's row, returning the key to its code default.
 	Delete(ctx context.Context, key string) error
 }

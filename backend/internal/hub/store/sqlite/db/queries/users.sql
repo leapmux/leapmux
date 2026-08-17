@@ -141,6 +141,15 @@ DELETE FROM users WHERE rowid IN (
 -- name: GetUserPrefs :one
 SELECT prefs FROM users WHERE id = ? AND deleted_at IS NULL;
 
+-- SQLite has no row-level SELECT FOR UPDATE. This self-assign write takes
+-- the database writer lock before the user-preferences write path's
+-- read-modify-write merge reads the blob, exactly as LockAllSettings
+-- does for hub_settings; without it two concurrent per-key updates both
+-- read the same base and the second commit erases the first's key.
+-- Callers must hold a transaction.
+-- name: GetUserPrefsForUpdate :one
+UPDATE users SET id = id WHERE id = ? AND deleted_at IS NULL RETURNING prefs;
+
 -- name: UpdateUserPrefs :exec
 UPDATE users SET prefs = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = ?;

@@ -1,4 +1,3 @@
-/// <reference types="vitest/globals" />
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
@@ -8,6 +7,8 @@ import * as workerRpc from '~/api/workerRpc'
 import { AgentInfoSchema, AgentProvider, AgentStatus, OpenAgentResponseSchema } from '~/generated/leapmux/v1/agent_pb'
 import { CreateWorkspaceResponseSchema, DeleteWorkspaceResponseSchema, TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { seedTabIntoNewWorkspace } from '~/lib/crdt'
+/// <reference types="vitest/globals" />
+import { withPreferences } from '~/test-support/preferencesProvider'
 import { NewWorkspaceDialog } from './NewWorkspaceDialog'
 
 // Hoisted alongside the `vi.mock` factories below, which read them. A plain
@@ -106,7 +107,7 @@ function renderDialog(overrides: Partial<Parameters<typeof NewWorkspaceDialog>[0
     metadata: { patch: vi.fn() } as unknown as TabMetadataStore,
     ...overrides,
   }
-  render(() => <NewWorkspaceDialog {...props} />)
+  render(withPreferences(() => <NewWorkspaceDialog {...props} />))
   return props
 }
 

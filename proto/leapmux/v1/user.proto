@@ -1,6 +1,7 @@
 syntax = "proto3";
 package leapmux.v1;
 
+import "leapmux/v1/settings.proto";
 import "leapmux/v1/auth.proto";
 
 // UserService manages user profile and preferences.
@@ -28,10 +29,17 @@ service UserService {
   rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
   // Unlink an OAuth provider from the current user's account.
   rpc UnlinkOAuthProvider(UnlinkOAuthProviderRequest) returns (UnlinkOAuthProviderResponse);
-  // Get the current user's preferences.
-  rpc GetPreferences(GetPreferencesRequest) returns (GetPreferencesResponse);
-  // Update the current user's preferences.
-  rpc UpdatePreferences(UpdatePreferencesRequest) returns (UpdatePreferencesResponse);
+  // List the current user's account settings: one descriptor per declared
+  // key plus its stored value. Same shape as AdminSettingsService's
+  // hub-scope listing, so one client widget layer renders both.
+  rpc ListUserSettings(ListUserSettingsRequest) returns (ListUserSettingsResponse);
+  // Merge a partial JSON document onto ONE account setting's current
+  // value. Per-key (not whole-blob) so two devices editing different
+  // settings never overwrite each other.
+  rpc UpdateUserSetting(UpdateUserSettingRequest) returns (UpdateUserSettingResponse);
+  // Remove one account setting's stored value, returning it to its
+  // default.
+  rpc ResetUserSetting(ResetUserSettingRequest) returns (ResetUserSettingResponse);
   // Get the current timeout configuration.
   rpc GetTimeouts(GetTimeoutsRequest) returns (GetTimeoutsResponse);
 }
@@ -87,43 +95,28 @@ message UnlinkOAuthProviderRequest {
 
 message UnlinkOAuthProviderResponse {}
 
-message GetPreferencesRequest {}
+message ListUserSettingsRequest {}
 
-message GetPreferencesResponse {
-  UserPreferences preferences = 1;
+message ListUserSettingsResponse {
+  repeated SettingDescriptor descriptors = 1;
+  repeated SettingValue values = 2;
 }
 
-enum DiffView {
-  DIFF_VIEW_UNSPECIFIED = 0;
-  DIFF_VIEW_UNIFIED = 1;
-  DIFF_VIEW_SPLIT = 2;
+message UpdateUserSettingRequest {
+  string key = 1;
+  string partial_json = 2;
 }
 
-enum TurnEndSound {
-  TURN_END_SOUND_UNSPECIFIED = 0;
-  TURN_END_SOUND_NONE = 1;
-  TURN_END_SOUND_DING_DONG = 2;
+message UpdateUserSettingResponse {
+  SettingValue value = 1;
 }
 
-message UpdatePreferencesRequest {
-  repeated string ui_fonts = 1;
-  repeated string mono_fonts = 2;
-  string theme = 3;
-  string terminal_theme = 4;
-  bool ui_font_custom_enabled = 5;
-  bool mono_font_custom_enabled = 6;
-  DiffView diff_view = 7;
-  TurnEndSound turn_end_sound = 8;
-  optional uint32 turn_end_sound_volume = 9;
-  bool debug_logging = 10;
-  // JSON-encoded array of custom keybinding overrides.
-  // Each element: {"key": "<tinykeys-combo>", "command": "<command-id>", "when": "<optional-expr>"}
-  // Omit the field to preserve existing value; set to "[]" to clear all overrides.
-  optional string custom_keybindings_json = 11;
+message ResetUserSettingRequest {
+  string key = 1;
 }
 
-message UpdatePreferencesResponse {
-  UserPreferences preferences = 1;
+message ResetUserSettingResponse {
+  SettingValue value = 1;
 }
 
 message GetTimeoutsRequest {}
@@ -132,19 +125,4 @@ message GetTimeoutsResponse {
   int32 api_timeout_seconds = 1;
   int32 agent_startup_timeout_seconds = 2;
   int32 worktree_create_timeout_seconds = 3;
-}
-
-message UserPreferences {
-  repeated string ui_fonts = 1;
-  repeated string mono_fonts = 2;
-  string theme = 3;
-  string terminal_theme = 4;
-  bool ui_font_custom_enabled = 5;
-  bool mono_font_custom_enabled = 6;
-  DiffView diff_view = 7;
-  TurnEndSound turn_end_sound = 8;
-  optional uint32 turn_end_sound_volume = 9;
-  bool debug_logging = 10;
-  // JSON-encoded array of custom keybinding overrides.
-  string custom_keybindings_json = 11;
 }

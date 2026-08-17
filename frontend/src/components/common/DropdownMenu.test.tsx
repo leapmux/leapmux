@@ -61,7 +61,7 @@ describe('dropdownMenu', () => {
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('jSX element trigger is wrapped in a div with display:contents', () => {
+  it('a JSX element trigger is wrapped in a div with display:contents', () => {
     render(() => (
       <DropdownMenu
         id="wrap-test"

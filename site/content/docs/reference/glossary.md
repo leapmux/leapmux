@@ -87,7 +87,7 @@ A pseudo-terminal — the operating-system primitive behind a terminal tab. Each
 
 ### Registration key
 
-A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog (or via the admin CLI), then run the Worker with `--registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/operating/managing-workers/).
+A short-lived, single-use secret (5-minute TTL) that authorizes a Worker to join a Hub. You mint one from the Hub's "Register worker" dialog (or via the CLI), then run the Worker with `--registration-key`. Presenting a valid key immediately creates an active Worker — there is no separate approval queue; the gate is possessing the key. See [Managing Workers](/docs/operating/managing-workers/).
 
 ### Remote CLI
 

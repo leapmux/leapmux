@@ -1,0 +1,151 @@
+[
+  {
+    "key": "theme",
+    "category": "appearance",
+    "title": "Theme",
+    "fields": [
+      {
+        "name": "",
+        "kind": "enum",
+        "enumValues": [
+          {
+            "value": "dark"
+          },
+          {
+            "value": "light"
+          },
+          {
+            "value": "system"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "key": "terminal_theme",
+    "category": "appearance",
+    "title": "Terminal theme",
+    "fields": [
+      {
+        "name": "",
+        "kind": "enum",
+        "enumValues": [
+          {
+            "value": "match-ui"
+          },
+          {
+            "value": "dark"
+          },
+          {
+            "value": "light"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "key": "ui_fonts",
+    "category": "appearance",
+    "title": "UI fonts",
+    "fields": [
+      {
+        "name": "enabled",
+        "kind": "bool"
+      },
+      {
+        "name": "fonts",
+        "kind": "string-list"
+      }
+    ]
+  },
+  {
+    "key": "mono_fonts",
+    "category": "appearance",
+    "title": "Monospace fonts",
+    "fields": [
+      {
+        "name": "enabled",
+        "kind": "bool"
+      },
+      {
+        "name": "fonts",
+        "kind": "string-list"
+      }
+    ]
+  },
+  {
+    "key": "diff_view",
+    "category": "appearance",
+    "title": "Diff view",
+    "fields": [
+      {
+        "name": "",
+        "kind": "enum",
+        "enumValues": [
+          {
+            "value": "unified"
+          },
+          {
+            "value": "split"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "key": "turn_end_sound",
+    "category": "notifications",
+    "title": "Turn-end sound",
+    "fields": [
+      {
+        "name": "",
+        "kind": "enum",
+        "enumValues": [
+          {
+            "value": "none"
+          },
+          {
+            "value": "ding-dong"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "key": "turn_end_sound_volume",
+    "category": "notifications",
+    "title": "Turn-end volume",
+    "fields": [
+      {
+        "name": "",
+        "kind": "integer",
+        "min": 0,
+        "max": 100,
+        "unit": "percent"
+      }
+    ]
+  },
+  {
+    "key": "debug_logging",
+    "category": "advanced",
+    "title": "Debug logging",
+    "fields": [
+      {
+        "name": "",
+        "kind": "bool"
+      }
+    ]
+  },
+  {
+    "key": "keybindings",
+    "category": "shortcuts",
+    "title": "Keyboard shortcuts",
+    "fields": [
+      {
+        "name": "",
+        "kind": "custom",
+        "customId": "keybindings"
+      }
+    ]
+  }
+]

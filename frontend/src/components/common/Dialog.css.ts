@@ -18,8 +18,8 @@ export const standard = style({
   '@media': {
     [`(max-width: ${breakpoints.sm - 1}px)`]: {
       minWidth: 'unset',
-      maxWidth: '100vw',
-      width: '100vw',
+      maxWidth: '100%',
+      width: '100%',
       maxHeight: '100vh',
     },
   },
@@ -128,6 +128,35 @@ export const tall = style({
   },
 })
 
+// The Preferences dialog's near-full-screen size. BOTH maxes are required:
+// Oat caps every dialog at `max-height: 85vh` from `@layer components`, and a
+// max-height beats `height`, so without the raise the 820px height renders
+// clamped with a strip of backdrop above and below (the same mechanic the
+// `standard` header comment records for the phone band).
+export const huge = style({
+  'width': 'min(1200px, 92vw)',
+  'maxWidth': 'min(1200px, 92vw)',
+  'height': 'min(820px, 88vh)',
+  'maxHeight': 'min(820px, 88vh)',
+  '@media': {
+    [`(max-width: ${breakpoints.sm - 1}px)`]: {
+      // 100% of the viewport containing block, not 100vw: 100vw includes
+      // the scrollbar gutter and overflows the screen by that strip.
+      width: '100%',
+      maxWidth: '100%',
+      minWidth: 0,
+      // `dvh`, not `vh`: this is the one rule that FORCES a height and then
+      // clips at it. On iOS Safari `vh` resolves against the LARGE viewport,
+      // so with the browser chrome shown the dialog is taller than the space
+      // it has and `overflow: hidden` cuts the bottom of the panel off with
+      // no way to scroll to it.
+      height: '100dvh',
+      maxHeight: '100dvh',
+      overflow: 'hidden',
+    },
+  },
+})
+
 export const header = style({
   display: 'flex',
   flexDirection: 'row',
@@ -156,6 +185,7 @@ export const body = style({
   flexDirection: 'column',
   flex: '1 1 auto',
   minHeight: 0,
+  minWidth: 0,
   overflow: 'hidden',
   padding: 'var(--space-6)',
   paddingBlockStart: 'var(--space-4)',

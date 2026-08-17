@@ -15,73 +15,9 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/internal/hub/usersettings"
 	"github.com/leapmux/leapmux/util/validate"
 )
-
-// storedPreferences maps to the JSON blob stored in user_preferences.prefs.
-type storedPreferences struct {
-	Theme                 string   `json:"theme,omitempty"`
-	TerminalTheme         string   `json:"terminalTheme,omitempty"`
-	UIFontCustomEnabled   bool     `json:"uiFontCustomEnabled,omitempty"`
-	MonoFontCustomEnabled bool     `json:"monoFontCustomEnabled,omitempty"`
-	UIFonts               []string `json:"uiFonts,omitempty"`
-	MonoFonts             []string `json:"monoFonts,omitempty"`
-	DiffView              int      `json:"diffView,omitempty"`
-	TurnEndSound          int      `json:"turnEndSound,omitempty"`
-	TurnEndSoundVolume    *int     `json:"turnEndSoundVolume,omitempty"`
-	DebugLogging          bool     `json:"debugLogging,omitempty"`
-	CustomKeybindingsJSON string   `json:"customKeybindingsJSON,omitempty"`
-}
-
-// maxCustomKeybindings is the maximum number of keybinding overrides allowed.
-const maxCustomKeybindings = 200
-
-// maxKeybindingFieldLen is the maximum length of any single field in a keybinding override.
-const maxKeybindingFieldLen = 256
-
-// customKeybindingEntry matches the expected shape of each element in the
-// custom keybindings JSON array.
-type customKeybindingEntry struct {
-	Key     string `json:"key"`
-	Command string `json:"command"`
-	When    string `json:"when,omitempty"`
-}
-
-// validateCustomKeybindingsJSON validates the custom keybindings JSON string.
-// Returns an error if the JSON is invalid or exceeds limits.
-// An empty string or "[]" is always valid.
-func validateCustomKeybindingsJSON(raw string) error {
-	if raw == "" || raw == "[]" {
-		return nil
-	}
-
-	var entries []customKeybindingEntry
-	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-		return fmt.Errorf("invalid JSON: %w", err)
-	}
-
-	if len(entries) > maxCustomKeybindings {
-		return fmt.Errorf("too many keybinding overrides: %d (max %d)", len(entries), maxCustomKeybindings)
-	}
-
-	for i, e := range entries {
-		if e.Command == "" {
-			return fmt.Errorf("entry %d: command is required", i)
-		}
-		if len(e.Key) > maxKeybindingFieldLen {
-			return fmt.Errorf("entry %d: key too long (%d > %d)", i, len(e.Key), maxKeybindingFieldLen)
-		}
-		if len(e.Command) > maxKeybindingFieldLen {
-			return fmt.Errorf("entry %d: command too long (%d > %d)", i, len(e.Command), maxKeybindingFieldLen)
-		}
-		if len(e.When) > maxKeybindingFieldLen {
-			return fmt.Errorf("entry %d: when too long (%d > %d)", i, len(e.When), maxKeybindingFieldLen)
-		}
-	}
-
-	return nil
-}
 
 // UserService implements the leapmux.v1.UserService ConnectRPC handler.
 type UserService struct {
@@ -487,28 +423,31 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(&leapmuxv1.UnlinkOAuthProviderResponse{}), nil
 }
 
-// preferencesToProto maps a stored preference record to its proto form. Shared
-// by GetPreferences and UpdatePreferences so the update response echoes exactly
-// what was persisted -- the SANITIZED theme/terminalTheme and the round-tripped
-// scalar fields -- rather than the raw request values (which would report an
-// unsanitized theme the store never kept, drifting from the next GetPreferences).
-func preferencesToProto(sp storedPreferences) *leapmuxv1.UserPreferences {
-	return &leapmuxv1.UserPreferences{
-		Theme:                 sp.Theme,
-		TerminalTheme:         sp.TerminalTheme,
-		UiFontCustomEnabled:   sp.UIFontCustomEnabled,
-		MonoFontCustomEnabled: sp.MonoFontCustomEnabled,
-		UiFonts:               sp.UIFonts,
-		MonoFonts:             sp.MonoFonts,
-		DiffView:              leapmuxv1.DiffView(sp.DiffView),
-		TurnEndSound:          leapmuxv1.TurnEndSound(sp.TurnEndSound),
-		TurnEndSoundVolume:    ptrconv.Convert[int, uint32](sp.TurnEndSoundVolume),
-		DebugLogging:          sp.DebugLogging,
-		CustomKeybindingsJson: sp.CustomKeybindingsJSON,
+// userSettingValueToProto assembles one account setting's wire value from
+// the raw blob document: value_json is the stored sub-document verbatim,
+// effective_json the decoded value (which degrades a bad sub-document to
+// the key's default), customized whether a sub-document exists at all.
+func userSettingValueToProto(key string, raw json.RawMessage, decoded any, customized bool) *leapmuxv1.SettingValue {
+	v := &leapmuxv1.SettingValue{
+		Key:           key,
+		EffectiveJson: marshalSettingJSON(decoded),
+		Customized:    customized,
 	}
+	if customized {
+		v.ValueJson = string(raw)
+	}
+	return v
 }
 
-func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[leapmuxv1.GetPreferencesRequest]) (*connect.Response[leapmuxv1.GetPreferencesResponse], error) {
+// userSettingValue reads one key's current state from the blob. A key the
+// registry does not know resolves to the zero state, which is what the
+// caller's own unknown-key refusal already reported.
+func userSettingValue(prefsJSON, key string) *leapmuxv1.SettingValue {
+	state, _ := usersettings.Default.State(prefsJSON, key)
+	return userSettingValueToProto(key, state.Raw, state.Value, state.Customized)
+}
+
+func (s *UserService) ListUserSettings(ctx context.Context, _ *connect.Request[leapmuxv1.ListUserSettingsRequest]) (*connect.Response[leapmuxv1.ListUserSettingsResponse], error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -516,17 +455,110 @@ func (s *UserService) GetPreferences(ctx context.Context, req *connect.Request[l
 
 	prefs, err := s.store.Users().GetPrefs(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		// The same classification the write path uses. GetPrefs filters
+		// `deleted_at IS NULL`, so a user soft-deleted while a session is
+		// still live answers ErrNotFound — an ordinary deleted-account
+		// condition, and it must not read as a hub fault on the read path
+		// while the write path calls it NotFound.
+		return nil, storeConnectError(err, "read preferences")
 	}
+	// One pass over the blob for every key. Resolving each key on its own
+	// re-parsed the whole document once per key.
+	states := usersettings.Default.States(prefs)
 
-	var sp storedPreferences
-	if err := json.Unmarshal([]byte(prefs), &sp); err != nil {
-		sp = storedPreferences{}
+	descrs := make([]*leapmuxv1.SettingDescriptor, 0)
+	vals := make([]*leapmuxv1.SettingValue, 0)
+	for _, d := range usersettings.Default.Descriptors() {
+		name := d.Name()
+		state := states[name]
+		descrs = append(descrs, settingDescriptorToProto(d))
+		vals = append(vals, userSettingValueToProto(name, state.Raw, state.Value, state.Customized))
 	}
-
-	return connect.NewResponse(&leapmuxv1.GetPreferencesResponse{
-		Preferences: preferencesToProto(sp),
+	return connect.NewResponse(&leapmuxv1.ListUserSettingsResponse{
+		Descriptors: descrs,
+		Values:      vals,
 	}), nil
+}
+
+// mutateUserPrefs runs one key-scoped mutation over the caller's prefs
+// blob and answers with the key's new wire value.
+//
+// ONE transaction, row locked: read the blob, apply the mutation to the
+// one key, write the whole blob back. The lock is what makes concurrent
+// updates to different keys (two tabs, two devices) both survive. Update
+// and Reset share it so a third mutation cannot arrive with a weaker lock
+// or a missing error branch.
+func (s *UserService) mutateUserPrefs(
+	ctx context.Context,
+	key string,
+	mutate func(prefs string) (string, error),
+) (*leapmuxv1.SettingValue, error) {
+	userInfo, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if key == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("key is required"))
+	}
+
+	var updated string
+	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
+		prefs, err := tx.Users().GetPrefsForUpdate(ctx, userInfo.ID.String())
+		if err != nil {
+			return err
+		}
+		next, err := mutate(prefs)
+		if err != nil {
+			return err
+		}
+		if err := tx.Users().UpdatePrefs(ctx, store.UpdateUserPrefsParams{
+			Prefs: next,
+			ID:    userInfo.ID.String(),
+		}); err != nil {
+			return err
+		}
+		updated = next
+		return nil
+	})
+	if err != nil {
+		var invalid *settings.InvalidError
+		if errors.As(err, &invalid) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, invalid)
+		}
+		// Stored corruption, not caller input: say so rather than blaming
+		// the request or answering with a bare 500.
+		if errors.Is(err, usersettings.ErrMalformedBlob) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("stored preferences are malformed; contact support: %w", err))
+		}
+		// The store's own sentinels classify the same way here as on the
+		// admin surface. A user soft-deleted while a session is still live
+		// makes GetPrefsForUpdate answer ErrNotFound, which is an ordinary
+		// deleted-account condition and not a hub fault.
+		return nil, storeConnectError(err, "update preferences")
+	}
+	return userSettingValue(updated, key), nil
+}
+
+func (s *UserService) UpdateUserSetting(ctx context.Context, req *connect.Request[leapmuxv1.UpdateUserSettingRequest]) (*connect.Response[leapmuxv1.UpdateUserSettingResponse], error) {
+	key := req.Msg.GetKey()
+	value, err := s.mutateUserPrefs(ctx, key, func(prefs string) (string, error) {
+		return usersettings.Default.ApplyPartial(prefs, key, json.RawMessage(req.Msg.GetPartialJson()))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&leapmuxv1.UpdateUserSettingResponse{Value: value}), nil
+}
+
+func (s *UserService) ResetUserSetting(ctx context.Context, req *connect.Request[leapmuxv1.ResetUserSettingRequest]) (*connect.Response[leapmuxv1.ResetUserSettingResponse], error) {
+	key := req.Msg.GetKey()
+	value, err := s.mutateUserPrefs(ctx, key, func(prefs string) (string, error) {
+		return usersettings.Default.Reset(prefs, key)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&leapmuxv1.ResetUserSettingResponse{Value: value}), nil
 }
 
 func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leapmuxv1.GetTimeoutsRequest]) (*connect.Response[leapmuxv1.GetTimeoutsResponse], error) {
@@ -535,100 +567,13 @@ func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leap
 	}
 
 	t := settings.KeyTimeouts.Of(s.set.Snapshot(ctx))
+	// The narrowing conversions are safe because validateTimeouts caps
+	// every budget at settings.MaxTimeoutSeconds, and the snapshot degrades
+	// a value that fails validation to the default. Widen that cap and the
+	// wire type has to widen with it.
 	return connect.NewResponse(&leapmuxv1.GetTimeoutsResponse{
 		ApiTimeoutSeconds:            int32(t.APITimeoutSeconds),
 		AgentStartupTimeoutSeconds:   int32(t.AgentStartupTimeoutSeconds),
 		WorktreeCreateTimeoutSeconds: int32(t.WorktreeCreateSecs),
-	}), nil
-}
-
-func (s *UserService) UpdatePreferences(ctx context.Context, req *connect.Request[leapmuxv1.UpdatePreferencesRequest]) (*connect.Response[leapmuxv1.UpdatePreferencesResponse], error) {
-	userInfo, err := auth.MustGetUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Sanitize and validate font names.
-	uiFonts := req.Msg.GetUiFonts()
-	for i, name := range uiFonts {
-		sanitized, err := validate.SanitizeName(name)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid UI font name %q: %w", name, err))
-		}
-		uiFonts[i] = sanitized
-	}
-	monoFonts := req.Msg.GetMonoFonts()
-	for i, name := range monoFonts {
-		sanitized, err := validate.SanitizeName(name)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid mono font name %q: %w", name, err))
-		}
-		monoFonts[i] = sanitized
-	}
-
-	theme := req.Msg.GetTheme()
-	if theme != "" {
-		theme, err = validate.SanitizeSlug("theme", theme)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-	}
-	terminalTheme := req.Msg.GetTerminalTheme()
-	if terminalTheme != "" {
-		terminalTheme, err = validate.SanitizeSlug("terminal theme", terminalTheme)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-	}
-
-	// Validate custom keybindings JSON if provided.
-	customKeybindingsJSON := ""
-	if req.Msg.CustomKeybindingsJson != nil {
-		customKeybindingsJSON = *req.Msg.CustomKeybindingsJson
-		if err := validateCustomKeybindingsJSON(customKeybindingsJSON); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("custom_keybindings_json: %w", err))
-		}
-	} else {
-		// Preserve existing value when the field is not provided.
-		existing, err := s.store.Users().GetPrefs(ctx, userInfo.ID.String())
-		if err == nil {
-			var prev storedPreferences
-			if json.Unmarshal([]byte(existing), &prev) == nil {
-				customKeybindingsJSON = prev.CustomKeybindingsJSON
-			}
-		}
-	}
-
-	sp := storedPreferences{
-		Theme:                 theme,
-		TerminalTheme:         terminalTheme,
-		UIFontCustomEnabled:   req.Msg.GetUiFontCustomEnabled(),
-		MonoFontCustomEnabled: req.Msg.GetMonoFontCustomEnabled(),
-		UIFonts:               uiFonts,
-		MonoFonts:             monoFonts,
-		DiffView:              int(req.Msg.GetDiffView()),
-		TurnEndSound:          int(req.Msg.GetTurnEndSound()),
-		TurnEndSoundVolume:    ptrconv.Convert[uint32, int](req.Msg.TurnEndSoundVolume),
-		DebugLogging:          req.Msg.GetDebugLogging(),
-		CustomKeybindingsJSON: customKeybindingsJSON,
-	}
-
-	prefsJSON, err := json.Marshal(sp)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal prefs: %w", err))
-	}
-
-	if err := s.store.Users().UpdatePrefs(ctx, store.UpdateUserPrefsParams{
-		Prefs: string(prefsJSON),
-		ID:    userInfo.ID.String(),
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	// Echo the persisted record, not the raw request: the response must report the
-	// SANITIZED theme/terminalTheme that were actually stored (SanitizeSlug above),
-	// so a client re-reading preferences sees the same values it was just handed.
-	return connect.NewResponse(&leapmuxv1.UpdatePreferencesResponse{
-		Preferences: preferencesToProto(sp),
 	}), nil
 }

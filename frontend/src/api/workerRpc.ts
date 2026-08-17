@@ -69,7 +69,7 @@ import type {
 } from '~/generated/leapmux/v1/workspace_pb'
 import type { ChannelSocket, ChannelTransport, KeyPinDecision, WorkerKeyBundle } from '~/lib/channel'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
-import { createClient } from '@connectrpc/connect'
+import { Code, createClient } from '@connectrpc/connect'
 import { getCapabilities, isTauriApp } from '~/api/platformBridge'
 import { bufferStreamHandle } from '~/api/streamBuffer'
 import { TauriRelayWebSocket } from '~/api/tauriRelaySocket'
@@ -178,8 +178,10 @@ import {
   WatchEventsResponseSchema,
 } from '~/generated/leapmux/v1/workspace_pb'
 import { ChannelManager, KeyPinStore } from '~/lib/channel'
+import { ChannelError } from '~/lib/channelError'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { createLogger } from '~/lib/logger'
+import { sleep } from '~/lib/sleep'
 
 const log = createLogger('workerRpc')
 
@@ -266,7 +268,45 @@ export const channelManager = new ChannelManager(new BrowserChannelTransport(), 
 // Generic helper
 // ---------------------------------------------------------------------------
 
-function callWorker<
+/**
+ * How many extra attempts an `Unavailable` reply earns, and the base of the
+ * exponential backoff between them.
+ *
+ * Exported so a test can reason about the worst-case wall time rather than
+ * hard-coding it: 200 + 400 + 800 = 1.4s of delay on top of the calls.
+ */
+export const UNAVAILABLE_MAX_RETRIES = 3
+export const UNAVAILABLE_RETRY_BASE_MS = 200
+
+/** Whether an error is the worker saying "I could not answer; ask again". */
+function isWorkerUnavailable(err: unknown): err is ChannelError {
+  // `source === 'rpc'` is the load-bearing half. It is set only from a
+  // DECRYPTED InnerRpcResponse.errorCode, so the hub cannot forge it, and
+  // it separates the worker's own refusal from a transport failure that
+  // happens to carry the same numeric code.
+  return err instanceof ChannelError && err.source === 'rpc' && err.code === Code.Unavailable
+}
+
+/**
+ * Every worker RPC goes through here, and every one of them retries an
+ * `Unavailable` reply with a bounded exponential backoff.
+ *
+ * The worker declares that code to mean "the caller should retry": it
+ * answers with it when a provider scan did not finish, when a subagent
+ * registry is not loaded yet, and when a steering message arrives before
+ * the agent can take it. Handling that in one place is the point — a retry
+ * hand-rolled in one component hook covered exactly one of those sites and
+ * left the other three surfacing as hard failures.
+ *
+ * The retry respects both bounds a caller sets. An aborted `signal` stops
+ * it immediately, including mid-backoff. `timeoutMs` bounds each ATTEMPT,
+ * not the sequence, so a caller that sets one should expect the worst case
+ * to be roughly four attempts plus 1.4s of backoff.
+ *
+ * A retry cannot double-apply a write: every site the worker answers
+ * `Unavailable` from returns before it mutates anything.
+ */
+async function callWorker<
   ReqSchema extends GenMessage<any>,
   RespSchema extends GenMessage<any>,
 >(
@@ -277,13 +317,20 @@ function callWorker<
   req: MessageInitShape<ReqSchema>,
   opts?: { timeoutMs?: number, signal?: AbortSignal },
 ): Promise<MessageShape<RespSchema>> {
-  emitDevEvent('leapmux:rpc-send', () => ({ method, at: performance.now() }))
-  const p = channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
-  p.then(
-    () => emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: true })),
-    () => emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: false })),
-  )
-  return p
+  for (let attempt = 0; ; attempt++) {
+    emitDevEvent('leapmux:rpc-send', () => ({ method, at: performance.now() }))
+    try {
+      const resp = await channelManager.callWorker(workerId, method, reqSchema, respSchema, req, opts)
+      emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: true }))
+      return resp
+    }
+    catch (err) {
+      emitDevEvent('leapmux:rpc-recv', () => ({ method, at: performance.now(), ok: false }))
+      if (attempt >= UNAVAILABLE_MAX_RETRIES || !isWorkerUnavailable(err) || opts?.signal?.aborted)
+        throw err
+      await sleep(UNAVAILABLE_RETRY_BASE_MS * (2 ** attempt), opts?.signal)
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -385,8 +432,11 @@ export function updateAgentSettings(workerId: string, req: MessageInitShape<type
   return callWorker(workerId, 'UpdateAgentSettings', UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema, req)
 }
 
-export function listAvailableProviders(workerId: string): Promise<ListAvailableProvidersResponse> {
-  return callWorker(workerId, 'ListAvailableProviders', ListAvailableProvidersRequestSchema, ListAvailableProvidersResponseSchema, {})
+export function listAvailableProviders(
+  workerId: string,
+  opts?: { signal?: AbortSignal },
+): Promise<ListAvailableProvidersResponse> {
+  return callWorker(workerId, 'ListAvailableProviders', ListAvailableProvidersRequestSchema, ListAvailableProvidersResponseSchema, {}, opts)
 }
 
 // ---------------------------------------------------------------------------

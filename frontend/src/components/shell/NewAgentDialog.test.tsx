@@ -1,10 +1,11 @@
-/// <reference types="vitest/globals" />
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
 import { WorkerSchema } from '~/generated/leapmux/v1/worker_pb'
+/// <reference types="vitest/globals" />
+import { withPreferences } from '~/test-support/preferencesProvider'
 
 // The agent dialog's own guard wiring, mirroring the terminal twin: the
 // parent computes the reason (AppShellDialogs suite), but THIS component
@@ -38,7 +39,7 @@ vi.mock('~/api/workerRpc', () => ({
 const openAgentMock = workerRpc.openAgent as unknown as ReturnType<typeof vi.fn>
 
 function renderDialog(blockedReason?: () => string | undefined) {
-  return render(() => (
+  return render(withPreferences(() => (
     <NewAgentDialog
       defaultWorkerId="w-1"
       defaultWorkingDir="/tmp"
@@ -46,7 +47,7 @@ function renderDialog(blockedReason?: () => string | undefined) {
       onCreated={() => {}}
       onClose={() => {}}
     />
-  ))
+  )))
 }
 
 async function findCreateButton(): Promise<HTMLButtonElement> {

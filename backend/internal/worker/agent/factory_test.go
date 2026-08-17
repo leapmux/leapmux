@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"context"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -346,4 +349,109 @@ func TestRegisteredSecondaryFallback(t *testing.T) {
 
 	assert.Nil(t, registeredSecondaryFallback(leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, modeChannelUnmapped),
 		"the unmapped channel has no secondary fallback")
+}
+
+func TestListAvailableProviders_ExpiredContextIsIncomplete(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	providers, complete := ListAvailableProviders(ctx, "/bin/sh", false)
+	assert.False(t, complete, "a cancelled scan is not evidence of absence")
+	assert.Empty(t, providers)
+}
+
+// A shell that cannot START proves nothing about the binary. Caching that
+// false froze a broken environment as "not installed" for the worker's
+// lifetime, and ListAvailableProviders still reported complete=true, so
+// the client never retried and the new-agent button stayed empty until a
+// restart.
+func TestProbeBinaryInconclusiveWhenTheShellCannotStart(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-shell")
+
+	available, conclusive := probeBinary(context.Background(), missing, false, "claude")
+	assert.False(t, available)
+	assert.False(t, conclusive, "a shell that never ran establishes nothing")
+
+	// And nothing is cached, so a later call with a working shell is free
+	// to answer for itself. The inconclusiveness reaches the caller too:
+	// ListAvailableProviders needs it to tell "the shell said no" apart
+	// from "the shell never ran".
+	gotAvailable, gotConclusive := checkBinaryAvailable(context.Background(), missing, false, "claude")
+	assert.False(t, gotAvailable)
+	assert.False(t, gotConclusive, "checkBinaryAvailable must forward the probe's conclusiveness")
+	_, cached := binaryAvailabilityCache.Load(binaryAvailabilityKey{missing, false, "claude"})
+	assert.False(t, cached, "an inconclusive probe must not be cached")
+}
+
+// A shell that runs and reports the binary absent IS an answer, and is
+// cached — that is the case the cache exists for.
+func TestProbeBinaryConclusiveWhenTheShellAnswers(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no POSIX shell on this machine")
+	}
+	const absent = "leapmux-definitely-not-installed"
+
+	available, conclusive := probeBinary(context.Background(), shell, false, absent)
+	assert.False(t, available)
+	assert.True(t, conclusive, "the shell ran and answered")
+
+	gotAvailable, gotConclusive := checkBinaryAvailable(context.Background(), shell, false, absent)
+	assert.False(t, gotAvailable)
+	assert.True(t, gotConclusive)
+	v, cached := binaryAvailabilityCache.Load(binaryAvailabilityKey{shell, false, absent})
+	require.True(t, cached, "a conclusive probe must be cached")
+	assert.Equal(t, false, v)
+}
+
+// A probe killed by an expired context reports an ExitError ("signal:
+// killed"), not the context error — so the status alone would look
+// conclusive.
+func TestProbeBinaryInconclusiveUnderAnExpiredContext(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no POSIX shell on this machine")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, conclusive := probeBinary(ctx, shell, false, "leapmux-cancelled-probe")
+	assert.False(t, conclusive, "a probe under a dead context establishes nothing")
+}
+
+// TestListAvailableProvidersIncompleteWhenTheShellCannotStart is the whole
+// point of threading conclusiveness out of the probe.
+//
+// Completeness used to be read from ctx.Err() alone, so every NON-deadline
+// way a probe proves nothing — a $SHELL that cannot exec, a missing
+// interpreter, EACCES, a fork failure under load, a login profile that
+// exits non-zero — returned an AUTHORITATIVE empty list. The worker sends
+// "provider scan did not finish; retry" only on !complete, so the client
+// showed "no agent providers installed" with no retry, although every CLI
+// was installed.
+func TestListAvailableProvidersIncompleteWhenTheShellCannotStart(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-shell")
+
+	providers, complete := ListAvailableProviders(context.Background(), missing, false)
+	assert.Empty(t, providers)
+	assert.False(t, complete,
+		"a shell that never ran is not evidence that no provider is installed")
+}
+
+// The companion case: a shell that RUNS and reports every binary absent is
+// a complete scan, and an empty list is then the truth.
+func TestListAvailableProvidersCompleteWhenTheShellAnswers(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no POSIX shell on this machine")
+	}
+	// A PATH with nothing on it makes every probe answer "absent" fast.
+	t.Setenv("PATH", t.TempDir())
+	binaryAvailabilityCache.Range(func(k, _ any) bool {
+		binaryAvailabilityCache.Delete(k)
+		return true
+	})
+
+	providers, complete := ListAvailableProviders(context.Background(), shell, false)
+	assert.Empty(t, providers)
+	assert.True(t, complete, "the shell ran and answered for every binary")
 }

@@ -358,16 +358,82 @@ export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
 // UI helpers
 // ──────────────────────────────────────────────
 
-/** Open the Preferences dialog from the app menu. */
-export async function openPreferencesDialog(page: Page) {
-  await page.getByTestId('app-menu-trigger').first().click()
-  await page.getByRole('menuitem', { name: 'Preferences' }).click()
-  await expect(page.getByRole('dialog', { name: 'Preferences' })).toBeVisible()
+/**
+ * The app menu's trigger, in whichever shell is mounted.
+ *
+ * Desktop puts it in the custom titlebar (`app-menu-trigger`); a phone has no
+ * titlebar, so About and Preferences live under the tab bar's collapsed "+"
+ * menu (`collapsed-new-tab-button`) instead. Only `AppShell` renders either,
+ * and only behind `AuthGuard`, so this doubles as the marker that the
+ * authenticated shell mounted — {@link loginViaUI} waits on it.
+ */
+function appMenuTrigger(page: Page): Locator {
+  return page.getByTestId('app-menu-trigger').first().or(page.getByTestId('collapsed-new-tab-button')).first()
 }
 
 /**
- * Login via the UI form. Navigates to /login, fills credentials,
- * and waits for redirect to the app home.
+ * Open the app menu, whichever shell is mounted.
+ *
+ * WAIT for one of the two triggers before branching. `isVisible()` is a
+ * one-shot probe with no auto-wait, so probing it straight after `goto`
+ * raced the shell's mount: the titlebar was not there yet, the helper took
+ * the mobile branch, and on desktop `collapsed-new-tab-button` exists but
+ * is `display: none` — the click then stalled until the action timeout.
+ */
+async function openAppMenu(page: Page) {
+  const appMenu = page.getByTestId('app-menu-trigger').first()
+  const collapsed = page.getByTestId('collapsed-new-tab-button')
+  await appMenuTrigger(page).waitFor({ state: 'visible' })
+  if (await appMenu.isVisible())
+    await appMenu.click()
+  else
+    await collapsed.click()
+}
+
+/**
+ * Open the Preferences dialog from the app menu and land on a category.
+ *
+ * The dialog's navigation is a category list (sidebar tabs on desktop, an
+ * oat-styled section dropdown on phones); `category` is the nav id
+ * (e.g. 'appearance', 'notifications', 'admin-general'), defaulting to the
+ * dialog's own default category.
+ */
+export async function openPreferencesDialog(page: Page, category?: string) {
+  await openAppMenu(page)
+  await page.getByRole('menuitem', { name: 'Preferences' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Preferences' })
+  await expect(dialog).toBeVisible()
+  if (category) {
+    const item = dialog.getByTestId(`preferences-nav-${category}`)
+    const compactTrigger = dialog.getByTestId('preferences-nav')
+    // The dialog is visible before its settings load, and an admin nav id
+    // only exists once ListSettings answers — so wait for either the tab
+    // itself or the compact dropdown trigger before branching. Probing
+    // `item` alone raced the load and clicked a compact trigger that
+    // desktop never renders.
+    await item.or(compactTrigger).first().waitFor({ state: 'visible' })
+    // Compact (phone) keeps the sections inside a closed dropdown; open it
+    // first. Desktop tabs are already visible in the sidebar.
+    if (!(await item.isVisible()))
+      await compactTrigger.click()
+    await item.click()
+  }
+}
+
+/** Sign-in attempts {@link loginViaUI} makes before it gives up. */
+const LOGIN_ATTEMPTS = 3
+/**
+ * Budget for ONE sign-in attempt, so three of them fit inside the 300s test
+ * timeout. Without an explicit slice the URL assertion inherits
+ * `expect.timeout` (120s) and the shell wait inherits `actionTimeout` (30s):
+ * two attempts already exceed the test budget, and the third can never run —
+ * the test dies with a bare "Test timeout" that names no assertion.
+ */
+const LOGIN_ATTEMPT_TIMEOUT_MS = 60_000
+
+/**
+ * Login via the UI form. Navigates to /login, fills credentials, solves the
+ * captcha, and returns once the authenticated app shell is on screen.
  */
 export async function loginViaUI(page: Page, username = 'admin', password = 'admin123') {
   await page.goto('/login')
@@ -381,30 +447,65 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
   // to tolerate a redirect to `/o/{username}` and then to `/workspace/{id}`;
   // both are gone, so this can match exactly.)
   //
+  // Readiness is the app shell's own menu trigger, NOT
+  // `page.waitForLoadState('networkidle')`. A page that solved an ALTCHA
+  // captcha can NEVER reach networkidle: altcha's solveChallengeWorkers
+  // spawns `min(16, navigator.hardwareConcurrency)` workers that all fetch
+  // the same solver chunk at once, and its `finally` terminates every one of
+  // them the moment the first returns a solution. Chromium drops the script
+  // loads of the workers that were still fetching, and Playwright's
+  // CRNetworkManager.removeSession discards that session's listeners without
+  // failing those requests — so they stay in `frame._inflightRequests` for
+  // the rest of the page's life and the idle timer never starts. The wait
+  // then runs to the 300s test budget, because `navigationTimeout` is unset
+  // (0 = no limit). The cheaper the algorithm, the wider the window: a
+  // 1 MiB-per-derivation SCRYPT solve finished while seven of ten workers
+  // were still loading their chunk.
+  //
   // If a transient error occurs (e.g. hub DB not yet ready after restart), retry.
-  // Each attempt waits 10s, for a total of 30s matching the original timeout.
   const loggedInURL = /\/$/
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let lastError: unknown
+  for (let attempt = 0; attempt < LOGIN_ATTEMPTS; attempt++) {
     try {
-      await expect(page).toHaveURL(loggedInURL)
-      await page.waitForLoadState('networkidle')
+      await expect(page).toHaveURL(loggedInURL, { timeout: LOGIN_ATTEMPT_TIMEOUT_MS })
+      await appMenuTrigger(page).waitFor({ state: 'visible', timeout: LOGIN_ATTEMPT_TIMEOUT_MS })
       return // success
     }
-    catch {
+    catch (err) {
+      lastError = err
+      // The test timeout tears the context down mid-wait. Probing a closed
+      // page throws a second, unrelated error that buries the first one.
+      if (page.isClosed())
+        break
       // Check if there's an error message on the login page
       const error = page.locator('[class*="error"], [class*="Error"]')
-      if (await error.count() > 0) {
-        // Transient error — retry sign-in
-        await page.getByRole('button', { name: 'Sign in' }).click()
-        continue
+      if (await error.count().catch(() => 0) > 0) {
+        // Transient error — retry sign-in. The rejected submit consumed the
+        // captcha payload and LoginPage.handleSubmit resets the field, so
+        // `blocksSubmit()` disables the button until a fresh challenge is
+        // solved. Re-solve BEFORE the click, or the click waits out the
+        // action timeout on a disabled button.
+        try {
+          await solveCaptchaViaUI(page)
+          await page.getByRole('button', { name: 'Sign in' }).click()
+        }
+        catch (resubmitError) {
+          // The form cannot be resubmitted, so another attempt reports the
+          // same failure. Report THIS error, which names the step that broke.
+          lastError = resubmitError
+          break
+        }
       }
-      // No error visible — page may still be loading. On the last attempt, give up.
-      if (attempt === 2) {
-        throw new Error('loginViaUI timed out')
-      }
-      // Otherwise, keep waiting (next iteration will check URL again)
+      // No error visible — the page may still be loading; the next iteration
+      // checks the URL again.
     }
   }
+  // Every attempt failed. Carry the last one's error: the retry loop is the
+  // only thing that saw it, and a bare message here hid which wait expired.
+  throw new Error(
+    `loginViaUI: the app shell never mounted after ${LOGIN_ATTEMPTS} sign-in attempts`,
+    { cause: lastError },
+  )
 }
 
 /**
@@ -556,10 +657,10 @@ export async function signUpViaUI(page: Page, username: string, password: string
 }
 
 /**
- * Logout via the app menu in the custom titlebar.
+ * Logout via the app menu (titlebar on desktop, tab-bar "+" menu on mobile).
  */
 export async function logoutViaUI(page: Page) {
-  await page.getByTestId('app-menu-trigger').first().click()
+  await openAppMenu(page)
   await page.getByText('Log out').click()
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
 }

@@ -61,7 +61,8 @@ The binary runs in several modes:
 | `leapmux hub` | Central service only (auth, relay, database) |
 | `leapmux worker` | Connects to a remote Hub |
 | `leapmux dev` | Hub + Worker on all interfaces, login required |
-| `leapmux admin` | CLI for users, workers, OAuth, encryption keys, and the database |
+| `leapmux control admin` | Online, authenticated CLI for users, workers, OAuth, settings, and tokens |
+| `leapmux recover` | Offline break-glass CLI: first-admin bootstrap, password reset, encryption keys, database |
 
 Frontend↔Hub uses ConnectRPC; Frontend↔Worker uses hybrid post-quantum Noise_NK multiplexed over a single Hub-relayed WebSocket; Worker↔Hub uses gRPC. The Hub routes traffic but can't read Frontend↔Worker content. The wire format is Protocol Buffers in [`/proto/leapmux/v1/`](proto/leapmux/v1/).
 
@@ -428,7 +429,7 @@ task dev-site    # Live-reload dev server at http://localhost:1313
 ```
 leapmux/
 ├── backend/             # Go backend: the unified `leapmux` binary (hub + worker)
-│   ├── cmd/leapmux/     # Entry point, subcommand routing, and the admin CLI
+│   ├── cmd/leapmux/     # Entry point, subcommand routing, recover + control trees
 │   └── internal/
 │       ├── hub/         # Hub: auth, channel relay, pluggable store, keystore, OAuth
 │       └── worker/      # Worker: agents, terminals, file browser, git, E2EE channel

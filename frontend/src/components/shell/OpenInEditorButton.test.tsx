@@ -1,9 +1,10 @@
-/// <reference types="vitest/globals" />
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { KEY_PREFERRED_EDITOR, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 
-import { KEY_PREFERRED_EDITOR, localStorageGet, localStorageSet } from '~/lib/browserStorage'
 import { _resetEditorCacheForTests } from '~/lib/externalEditors'
+/// <reference types="vitest/globals" />
+import { withPreferences } from '~/test-support/preferencesProvider'
 import { OpenInEditorButton } from './OpenInEditorButton'
 
 // Hoisted so vi.mock factories can access them; vi.mock runs above top-level const.
@@ -50,7 +51,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  localStorage.clear()
+  localStorageClearForTests()
   listEditorsMock.mockReset()
   openInEditorMock.mockReset()
   runtimeStateMock.mockReset()
@@ -64,11 +65,11 @@ afterEach(() => {
 })
 
 function renderButton(workingDir: string | undefined = '/home/u/proj') {
-  return render(() => <OpenInEditorButton workingDir={() => workingDir} />)
+  return render(withPreferences(() => <OpenInEditorButton workingDir={() => workingDir} />))
 }
 
 function renderButtonNoDir() {
-  return render(() => <OpenInEditorButton workingDir={() => undefined} />)
+  return render(withPreferences(() => <OpenInEditorButton workingDir={() => undefined} />))
 }
 
 describe('open in editor button', () => {
@@ -220,17 +221,34 @@ describe('open in editor button', () => {
       expect(localStorageGet<string>(KEY_PREFERRED_EDITOR)).toBe('vscode')
     })
 
-    it('clears in-memory MRU when refresh returns no editors but leaves storage alone', async () => {
+    // A refresh that comes back EMPTY changes nothing. Detection can return
+    // an empty list for a reason that is not "the user uninstalled it" — a
+    // transient probe failure is enough — so the pin must survive and come
+    // back with the editor.
+    //
+    // This test used to assert the same outcome without ever reaching the
+    // branch that decides it: it passed against a version that DELETED the
+    // pin. It now waits for the button to prove the MRU is live before
+    // refreshing, so the empty-list path is genuinely exercised.
+    it('leaves the MRU alone when refresh returns no editors', async () => {
       listEditorsMock
         .mockResolvedValueOnce([{ id: 'vscode', displayName: 'VS Code' }])
         .mockResolvedValueOnce([])
       localStorageSet(KEY_PREFERRED_EDITOR, 'vscode')
       renderButton('/p')
+
+      // The pin is live in the reactive signal, not merely in storage —
+      // otherwise the branch under test is never entered.
+      const main = await screen.findByTestId('open-in-editor-main')
+      await waitFor(() => expect(main.textContent).toContain('Open in VS Code'))
+
       const refreshBtn = await screen.findByTestId('open-in-editor-refresh')
       fireEvent.click(refreshBtn)
       await waitFor(() => expect(listEditorsMock).toHaveBeenCalledTimes(2))
-      // localStorage MRU is preserved so the user's choice returns when they
-      // re-install the editor — only the in-memory signal is cleared.
+      await waitFor(() => expect(screen.queryByTestId('open-in-editor')).toBeNull())
+
+      // Both tiers keep the choice: storage, so it survives a reload, and
+      // the signal, so the settings row still shows what is pinned.
       expect(localStorageGet<string>(KEY_PREFERRED_EDITOR)).toBe('vscode')
     })
 

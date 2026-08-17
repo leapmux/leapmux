@@ -1,0 +1,536 @@
+import type { CategoryId, SentinelShape, SettingBinding, SettingControl, SettingScope } from '../types'
+import type { PreferencesState } from '~/context/PreferencesContext'
+import { createLogger } from '~/lib/logger'
+import { isDesktopApp, isSoloMode } from '~/lib/systemInfo'
+import { browserToggle, dualFontHalf, dualScalar } from './bindings'
+import { requestTerminalOsNotifications } from './terminalNotifications'
+
+const log = createLogger('settingsRegistry')
+
+/**
+ * What EVERY registry entry declares, whichever tier stores its value: the
+ * row's identity, the text a user reads, its visibility rules, the sentinel
+ * shape of its browser tier, and the binding that edits it.
+ *
+ * The two entry shapes beneath add what the hub cannot supply for them,
+ * under one rule: the hub declares the SHAPE of every account key (see
+ * `usersettings/keys.go`), so an account-backed entry must not restate it,
+ * and a browser-only key exists nowhere else, so that entry states its own.
+ */
+interface SettingDeclBase {
+  /** The row id: the panel anchor, the reset list, and the e2e locators. */
+  id: string
+  label: string
+  help?: string
+  keywords?: string[]
+  scope: SettingScope
+  /**
+   * The sentinel shape of this entry's browser tier. An `account`-scope
+   * entry has no browser tier; its sentinel is recorded for uniformity,
+   * because the registry test walks every entry.
+   */
+  sentinel: SentinelShape
+  /** A visibility rule that reads only the ENVIRONMENT (solo, desktop). */
+  hidden?: () => boolean
+  /**
+   * A visibility rule that reads another PREFERENCE, beside the static
+   * `hidden` that reads only the environment.
+   *
+   * The panels this registry replaced wrapped such rows in `<Show>`: the
+   * font stacks appeared only while their tier was enabled, and the
+   * turn-end volume only while a sound was selected. Without the rule a
+   * user turns custom fonts off, still sees the stack editor, adds a
+   * family, and nothing changes.
+   */
+  hiddenWhen?: (prefs: PreferencesState) => boolean
+  /** Bind this entry's value/set/override state to the preferences context. */
+  bind: (prefs: PreferencesState) => SettingBinding
+}
+
+/**
+ * An entry whose value lives ONLY in this browser. Nothing else declares
+ * it, so it states its own category, control and reset.
+ *
+ * `protoKey?: undefined` is what tells the two shapes apart, at a call site
+ * and inside `createBrowserRows`. Writing it is never required; the type
+ * REFUSES a key here, which is what makes the discrimination sound.
+ */
+export interface BrowserOnlySettingDecl extends SettingDeclBase {
+  protoKey?: undefined
+  category: CategoryId
+  control: SettingControl
+  restart?: boolean
+  /**
+   * Return this entry's browser tier to its sentinel default.
+   *
+   * BROWSER-ONLY entries declare it. A `dual` entry does NOT: its binding
+   * already builds exactly this action as `clearOverride`, and the two
+   * copies had already drifted into a pair that reset one font tier twice
+   * and could reset the other never. `buildBrowserReset` takes the dual
+   * action from the binding.
+   */
+  resetBrowser?: (prefs: PreferencesState) => void
+}
+
+/**
+ * An entry backed by an ACCOUNT key that the hub declares.
+ *
+ * The hub ships a full descriptor for every account key on
+ * `ListUserSettings`, so this entry states none of the value's shape — not
+ * the category, not the control kind, not the enum values, not the numeric
+ * bounds. `createBrowserRows` reads all of that off the wire and joins it
+ * to this declaration on `protoKey` + `protoField`. Restating that shape
+ * here made a second source of truth that one golden file alone pinned to
+ * Go, and a client which offers a value the hub's validator refuses stores
+ * nothing and explains nothing.
+ *
+ * What stays here is what the wire does NOT carry: the text a user reads,
+ * and the browser tier. `usersettings/keys.go` declares no field label and
+ * no enum label, deliberately (see its `schema_golden_test.go`), so a row
+ * driven only by the wire would render both font rows under one label and
+ * an enum whose options have empty names.
+ */
+export interface AccountSettingDecl extends SettingDeclBase {
+  /**
+   * The account setting this entry edits: the wire KEY, and the field
+   * inside it for an object-shaped key.
+   *
+   * It is the JOIN between this registry and the hub's descriptor. The
+   * parity test in index.test.ts reads it, and `CLAIMED_PROTO_KEYS` derives
+   * the claim set from it.
+   *
+   * The key and the field are DECLARED apart, never one dotted string that
+   * a reader has to split: a settings key may itself contain a dot
+   * (`captcha.altcha` on the hub scope), so splitting on the first one is
+   * a rule that holds only until it does not. An absent `protoField`
+   * addresses the key's scalar, which the wire names `''`.
+   */
+  protoKey: string
+  protoField?: string
+  /**
+   * The name a user reads for each value the hub's enum declares, by VALUE.
+   *
+   * A lookup, never an authority: the wire decides which values exist and
+   * in what order, and a value with no entry here renders under its own
+   * slug instead of an empty option. So a value the hub adds is offered as
+   * soon as it is declared, and a value the hub drops takes its stale label
+   * out of the dialog with it.
+   */
+  optionLabels?: Record<string, string>
+  /**
+   * The accessible name of a string-list row's add box and add button.
+   *
+   * `controlForField` has no per-list name to give — it answers for every
+   * key of both scopes at once — so it builds a plain "Add". The two font
+   * stacks render in one panel, and a shared name gives a screen-reader
+   * user two identically named fields and two identically named buttons.
+   */
+  addLabel?: string
+}
+
+/** One entry of the browser registry: either shape. */
+export type BrowserSettingDecl = BrowserOnlySettingDecl | AccountSettingDecl
+
+export const browserSettings: BrowserSettingDecl[] = [
+  // --- Appearance ---
+  {
+    id: 'appearance.theme',
+    protoKey: 'theme',
+    label: 'Theme',
+    help: 'Overall light and dark palette.',
+    keywords: ['dark', 'light', 'palette'],
+    scope: 'dual',
+    optionLabels: { dark: 'Dark', light: 'Light', system: 'System' },
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.theme),
+  },
+  {
+    id: 'appearance.terminalTheme',
+    protoKey: 'terminal_theme',
+    label: 'Terminal theme',
+    help: 'Color scheme for terminal tabs.',
+    scope: 'dual',
+    optionLabels: { 'match-ui': 'Match UI', 'dark': 'Dark', 'light': 'Light' },
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.terminalTheme),
+  },
+  {
+    id: 'appearance.diffView',
+    protoKey: 'diff_view',
+    label: 'Diff view',
+    help: 'How file diffs render in chat and the file viewer.',
+    keywords: ['unified', 'split', 'side-by-side'],
+    scope: 'dual',
+    // The hub declares the VALUES; the name a user reads is the dialog's
+    // alone. "split" reads as "Side by side" here because that is what the
+    // layout does.
+    optionLabels: { unified: 'Unified', split: 'Side by side' },
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.diffView),
+  },
+  {
+    id: 'appearance.uiFonts',
+    protoKey: 'ui_fonts',
+    protoField: 'enabled',
+    label: 'Custom UI fonts',
+    help: 'Replace the interface font stack.',
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualFontHalf('enabled', prefs.dual.uiFonts),
+  },
+  {
+    id: 'appearance.uiFontStack',
+    protoKey: 'ui_fonts',
+    protoField: 'fonts',
+    label: 'UI font stack',
+    help: 'Custom UI font families, in priority order.',
+    scope: 'dual',
+    // The add box and the add button take this string as their accessible
+    // name, and the monospace stack renders the same pair in the same
+    // panel. A shared "Add font" gave a screen-reader user two identically
+    // named fields and two identically named buttons.
+    addLabel: 'Add UI font',
+    sentinel: 'nullable',
+    hiddenWhen: prefs => !prefs.uiFonts().enabled,
+    bind: prefs => dualFontHalf('fonts', prefs.dual.uiFonts),
+  },
+  {
+    id: 'appearance.monoFonts',
+    protoKey: 'mono_fonts',
+    protoField: 'enabled',
+    label: 'Custom monospace fonts',
+    help: 'Replace the terminal and code font stack.',
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualFontHalf('enabled', prefs.dual.monoFonts),
+  },
+  {
+    id: 'appearance.monoFontStack',
+    protoKey: 'mono_fonts',
+    protoField: 'fonts',
+    label: 'Monospace font stack',
+    help: 'Custom monospace families, in priority order.',
+    scope: 'dual',
+    addLabel: 'Add monospace font',
+    sentinel: 'nullable',
+    hiddenWhen: prefs => !prefs.monoFonts().enabled,
+    bind: prefs => dualFontHalf('fonts', prefs.dual.monoFonts),
+  },
+
+  // --- Notifications ---
+  {
+    id: 'notifications.turnEndSound',
+    protoKey: 'turn_end_sound',
+    label: 'Turn-end sound',
+    help: 'Sound played when an agent turn finishes.',
+    keywords: ['volume', 'ding', 'dong', 'alert'],
+    scope: 'dual',
+    optionLabels: { 'none': 'None', 'ding-dong': 'Ding dong' },
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.turnEndSound),
+  },
+  {
+    id: 'notifications.turnEndSoundVolume',
+    protoKey: 'turn_end_sound_volume',
+    label: 'Turn-end volume',
+    help: 'Playback volume for the turn-end sound.',
+    scope: 'dual',
+    sentinel: 'nullable',
+    // The row edits BOTH tiers, so it hides only when NEITHER can play a
+    // sound. A rule on the RESOLVED value alone took the account default's
+    // volume away from a user who muted the sound on THIS device, and that
+    // volume is what their other devices play at.
+    hiddenWhen: prefs => prefs.dual.turnEndSound.resolved() === 'none'
+      && prefs.dual.turnEndSound.account() === 'none',
+    bind: prefs => dualScalar(prefs.dual.turnEndSoundVolume),
+  },
+  {
+    id: 'notifications.terminalOsNotifications',
+    category: 'notifications',
+    label: 'Terminal OS notifications',
+    help: 'Show desktop notifications for terminal alerts (OSC 9 / 777 / 99).',
+    scope: 'browser',
+    control: { kind: 'toggle' },
+    sentinel: 'default-off',
+    bind: (prefs) => {
+      const read = prefs.terminalOsNotifications
+      const write = (v: boolean) => {
+        if (!v) {
+          // Turning OFF stores false and must NOT prompt. The branch is
+          // here, not behind the request helper: re-asking for a
+          // permission the user is in the act of switching off is prompt
+          // fatigue, and a denied origin answers from its own sticky
+          // decision, which would flip the toggle back on.
+          prefs.setTerminalOsNotifications(false)
+          return
+        }
+        // The ON path asks the OS, and `requestTerminalOsNotifications`
+        // holds that call so it stays testable without a render.
+        //
+        // The `.catch` is required. `browserToggle.set` returns void, so
+        // `SettingRow` never sees this promise and its own catch cannot
+        // report the failure: a rejected permission request left the
+        // toggle ON with nothing behind it, and the rejection went
+        // unhandled.
+        void requestTerminalOsNotifications()
+          .then((granted) => {
+            prefs.setTerminalOsNotifications(granted)
+          })
+          .catch((err: unknown) => {
+            log.warn('notification permission request failed', err)
+            prefs.setTerminalOsNotifications(false)
+          })
+      }
+      return browserToggle(read, write)
+    },
+    resetBrowser: prefs => prefs.setTerminalOsNotifications(false),
+  },
+
+  // --- Chat ---
+  {
+    id: 'chat.expandAgentThoughts',
+    category: 'chat',
+    label: 'Expand agent thoughts',
+    help: 'Start thinking and reasoning bubbles expanded.',
+    scope: 'browser',
+    control: { kind: 'toggle' },
+    sentinel: 'default-on',
+    bind: prefs => browserToggle(prefs.expandAgentThoughts, prefs.setExpandAgentThoughts),
+    resetBrowser: prefs => prefs.setExpandAgentThoughts(true),
+  },
+  {
+    id: 'chat.showHiddenMessages',
+    category: 'chat',
+    label: 'Show hidden messages',
+    help: 'Developer feature: render messages the UI normally folds away.',
+    scope: 'browser',
+    control: { kind: 'toggle' },
+    sentinel: 'default-off',
+    bind: prefs => browserToggle(prefs.showHiddenMessages, prefs.setShowHiddenMessages),
+    resetBrowser: prefs => prefs.setShowHiddenMessages(false),
+  },
+  {
+    id: 'chat.enterKeyMode',
+    category: 'chat',
+    label: 'Enter key behavior',
+    help: 'Whether Enter sends the message or inserts a newline.',
+    scope: 'browser',
+    control: { kind: 'enum', options: [
+      { value: 'enter-sends', label: 'Enter sends' },
+      { value: 'cmd-enter-sends', label: 'Cmd/Ctrl+Enter sends' },
+    ] },
+    sentinel: 'nullable',
+    bind: prefs => ({
+      value: prefs.enterKeyMode,
+      set: v => prefs.setEnterKeyMode(v as 'enter-sends' | 'cmd-enter-sends'),
+    }),
+    resetBrowser: prefs => prefs.setEnterKeyMode(null),
+  },
+  {
+    id: 'chat.showComposerStatusBar',
+    category: 'chat',
+    label: 'Composer status bar',
+    help: 'Branch / model / effort chips beneath the message input.',
+    scope: 'browser',
+    control: { kind: 'toggle' },
+    sentinel: 'default-on',
+    bind: prefs => browserToggle(prefs.showComposerStatusBar, prefs.setShowComposerStatusBar),
+    resetBrowser: prefs => prefs.setShowComposerStatusBar(true),
+  },
+
+  // --- Terminal ---
+  {
+    id: 'terminal.renderer',
+    category: 'terminal',
+    label: 'Terminal renderer',
+    help: 'GPU-accelerated (WebGL) or DOM (canvas) text rendering.',
+    scope: 'browser',
+    control: { kind: 'enum', options: [
+      { value: 'auto', label: 'Auto' },
+      { value: 'webgl', label: 'WebGL' },
+      { value: 'canvas', label: 'Canvas' },
+    ] },
+    sentinel: 'nullable',
+    bind: prefs => ({
+      value: prefs.terminalRenderer,
+      set: v => prefs.setTerminalRenderer(v as 'auto' | 'webgl' | 'canvas'),
+    }),
+    resetBrowser: prefs => prefs.setTerminalRenderer(null),
+  },
+
+  // --- Files & editors ---
+  {
+    id: 'files.preferredEditor',
+    category: 'files',
+    label: 'Preferred editor',
+    help: 'Editor the "Open in …" button launches (desktop only).',
+    scope: 'browser',
+    control: { kind: 'text', placeholder: 'e.g. vscode' },
+    sentinel: 'nullable',
+    hidden: () => !isDesktopApp(),
+    bind: prefs => ({
+      value: prefs.preferredEditorId,
+      set: v => prefs.setPreferredEditorId(typeof v === 'string' && v !== '' ? v : undefined),
+    }),
+    resetBrowser: prefs => prefs.setPreferredEditorId(undefined),
+  },
+  {
+    id: 'files.revealAfterDownload',
+    category: 'files',
+    label: 'Reveal after download',
+    help: 'Open the OS file manager on the saved file after a download (desktop only).',
+    scope: 'browser',
+    control: { kind: 'toggle' },
+    sentinel: 'default-on',
+    hidden: () => !isDesktopApp(),
+    bind: prefs => browserToggle(prefs.revealAfterDownload, prefs.setRevealAfterDownload),
+    resetBrowser: prefs => prefs.setRevealAfterDownload(true),
+  },
+  {
+    id: 'files.directoryPickerHiddenFiles',
+    category: 'files',
+    label: 'Hidden files in directory picker',
+    help: 'Show dotfiles in the working-directory picker.',
+    scope: 'browser',
+    control: { kind: 'toggle' },
+    sentinel: 'default-on',
+    bind: prefs => browserToggle(prefs.directoryPickerShowHidden, prefs.setDirectoryPickerShowHidden),
+    resetBrowser: prefs => prefs.setDirectoryPickerShowHidden(true),
+  },
+
+  // --- Shortcuts ---
+  {
+    id: 'shortcuts.keybindings',
+    protoKey: 'keybindings',
+    label: 'Keyboard shortcuts',
+    help: 'Per-command keybinding overrides, saved to your account.',
+    scope: 'account',
+    sentinel: 'nullable',
+    bind: prefs => ({
+      value: prefs.customKeybindings,
+      set: v => prefs.setCustomKeybindings(v as Parameters<typeof prefs.setCustomKeybindings>[0]),
+      customized: () => prefs.accountCustomized().keybindings === true,
+      reset: () => prefs.resetUserSetting('keybindings'),
+    }),
+  },
+
+  // --- Advanced ---
+  {
+    id: 'advanced.debugLogging',
+    protoKey: 'debug_logging',
+    label: 'Debug logging',
+    help: 'Verbose client-side diagnostic logging.',
+    scope: 'dual',
+    sentinel: 'nullable',
+    bind: prefs => dualScalar(prefs.dual.debugLogging),
+  },
+  {
+    id: 'advanced.keyPins',
+    category: 'advanced',
+    label: 'Trusted worker keys',
+    help: 'Worker public keys pinned on first use (TOFU).',
+    scope: 'browser',
+    control: { kind: 'custom', id: 'keyPins' },
+    sentinel: 'nullable',
+    // The key-pin store is trust state, not a preference override: the
+    // "reset all browser overrides" row deliberately leaves it alone, so this
+    // entry declares no resetBrowser.
+    bind: () => ({
+      value: () => null,
+      set: () => {},
+    }),
+  },
+  {
+    id: 'advanced.resetBrowserOverrides',
+    category: 'advanced',
+    label: 'Reset all browser overrides',
+    help: 'Return every this-device preference to its default (account defaults and trusted keys are kept).',
+    scope: 'browser',
+    control: { kind: 'action', label: 'Reset overrides', danger: true },
+    sentinel: 'nullable',
+    bind: prefs => ({
+      value: () => null,
+      set: () => {
+        // ONE document write for the whole run. Each reset is otherwise a
+        // full read, parse, serialize and write of the consolidated
+        // preferences, and one `storage` event per field for the other
+        // tabs.
+        prefs.batchBrowserPrefWrites(() => {
+          for (const action of buildBrowserReset(prefs))
+            action.reset()
+        })
+      },
+    }),
+  },
+
+  // --- Account ---
+  {
+    id: 'account.profile',
+    category: 'account',
+    label: 'Account',
+    help: 'Username, display name, email, password and linked accounts.',
+    scope: 'account',
+    control: { kind: 'custom', id: 'account' },
+    sentinel: 'nullable',
+    hidden: () => isSoloMode(),
+    bind: () => ({
+      value: () => null,
+      set: () => {},
+    }),
+  },
+]
+
+export interface BrowserResetAction {
+  /** The setting id the action resets. */
+  id: string
+  /** The sentinel shape the reset honors. */
+  sentinel: SentinelShape
+  /** Execute the reset: return the browser tier to its sentinel default. */
+  reset: () => void
+}
+
+/**
+ * The reset operations behind "Reset all browser overrides", each
+ * respecting its sentinel shape:
+ *
+ * - `nullable` tiers clear the override (delete the key), restoring the
+ *   account default;
+ * - `default-on` tiers are reset to true, which their setters store as a
+ *   DELETED key (absent means true — storing `true` would be an override in
+ *   the opposite direction);
+ * - `default-off` tiers are reset to false, likewise deleting the key.
+ *
+ * A DUAL entry's action comes from its own binding's `clearOverride`, not
+ * from a second copy on the entry. That is the same operation, and the
+ * copies had drifted. It also makes the action ONE PER KEY rather than one
+ * per row: a font tier renders its toggle and its stack as two rows over
+ * one override document, so a per-row list cleared `ui_fonts` twice and
+ * misstated what it does.
+ *
+ * Pure in the sense that it only closes over the given context: tests pass a
+ * fake prefs object and observe which setters ran.
+ */
+export function buildBrowserReset(prefs: PreferencesState): BrowserResetAction[] {
+  const actions: BrowserResetAction[] = []
+  const clearedKeys = new Set<string>()
+  for (const decl of browserSettings) {
+    // An ACCOUNT-BACKED entry, keyed and deduplicated by its proto key. An
+    // account-only entry (keybindings) has no browser tier, so its binding
+    // builds no `clearOverride` and it drops out here.
+    if (decl.protoKey !== undefined) {
+      if (clearedKeys.has(decl.protoKey))
+        continue
+      const clearOverride = decl.bind(prefs).clearOverride
+      if (clearOverride === undefined)
+        continue
+      clearedKeys.add(decl.protoKey)
+      actions.push({ id: decl.id, sentinel: decl.sentinel, reset: clearOverride })
+      continue
+    }
+    const resetBrowser = decl.resetBrowser
+    if (resetBrowser === undefined)
+      continue
+    actions.push({ id: decl.id, sentinel: decl.sentinel, reset: () => resetBrowser(prefs) })
+  }
+  return actions
+}

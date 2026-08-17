@@ -32,7 +32,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
-	"github.com/leapmux/leapmux/util/validate"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -1311,22 +1310,6 @@ func sendValidationError(sender channel.ResponseWriter, err error) {
 	default:
 		sendInvalidArgument(sender, err.Error())
 	}
-}
-
-// sanitizeOptionalTitle normalizes an OpenAgent/OpenTerminal title. An empty
-// title is allowed (falls back to "Agent N"/"Terminal N" assignments
-// downstream); a non-empty title goes through SanitizeName, which caps
-// length at 128 chars and strips control characters + the set known to
-// cause trouble in downstream string templating.
-func sanitizeOptionalTitle(title string) (string, error) {
-	if title == "" {
-		return "", nil
-	}
-	sanitized, err := validate.SanitizeName(title)
-	if err != nil {
-		return "", fmt.Errorf("invalid title: %w", err)
-	}
-	return sanitized, nil
 }
 
 // expandTilde expands a leading "~" or "~/" in a path to the user's home

@@ -119,3 +119,13 @@ WITH to_delete AS (
     SELECT w.id FROM workers w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < $1 LIMIT 1000
 )
 DELETE FROM workers WHERE id IN (SELECT id FROM to_delete);
+
+-- GetWorkerAdmin is the single-row form of the admin listing: the same
+-- LEFT JOIN, so a soft-deleted owner reports the same empty username and
+-- owner_deleted=true that the list reports. Soft-deleted workers are
+-- included, because the admin surface inspects them.
+-- name: GetWorkerAdmin :one
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, (u.id IS NULL)::boolean AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.id = $1;

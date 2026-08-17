@@ -246,6 +246,61 @@ func (s *Suite) testWorkers(t *testing.T) {
 		assert.Equal(t, dead.ID, page.Rows[0].ID)
 	})
 
+	t.Run("get admin agrees with list admin on a live owner", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "getadmin-live-owner")
+		worker := SeedWorker(t, st, user.ID)
+
+		got, err := st.Workers().GetAdmin(ctx, worker.ID)
+		require.NoError(t, err)
+		assert.Equal(t, worker.ID, got.ID)
+		assert.Equal(t, "getadmin-live-owner", got.OwnerUsername)
+		assert.False(t, got.OwnerDeleted)
+
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{PageParams: store.PageParams{Limit: 10}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, page.Rows[0].OwnerUsername, got.OwnerUsername)
+		assert.Equal(t, page.Rows[0].OwnerDeleted, got.OwnerDeleted)
+	})
+
+	t.Run("get admin agrees with list admin on a soft-deleted owner", func(t *testing.T) {
+		// The two paths MUST report one owner projection. Rebuilding it in Go
+		// -- a worker read plus a users lookup -- reported the deleted owner's
+		// username where the listing reports "", and left owner_deleted false
+		// for every row, so `worker get` and `worker list` described the same
+		// worker two different ways.
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "getadmin-dead-owner")
+		worker := SeedWorker(t, st, user.ID)
+		require.NoError(t, st.Users().Delete(ctx, user.ID))
+
+		got, err := st.Workers().GetAdmin(ctx, worker.ID)
+		require.NoError(t, err)
+		assert.Empty(t, got.OwnerUsername, "a soft-deleted owner reports no username")
+		assert.True(t, got.OwnerDeleted)
+
+		page, err := st.Workers().ListAdmin(ctx, store.ListWorkersAdminParams{PageParams: store.PageParams{Limit: 10}})
+		require.NoError(t, err)
+		require.Len(t, page.Rows, 1)
+		assert.Equal(t, page.Rows[0].OwnerUsername, got.OwnerUsername)
+		assert.Equal(t, page.Rows[0].OwnerDeleted, got.OwnerDeleted)
+	})
+
+	t.Run("get admin includes a soft-deleted worker and reports missing as not found", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "getadmin-deleted-worker")
+		worker := SeedWorker(t, st, user.ID)
+		require.NoError(t, st.Workers().MarkDeleted(ctx, worker.ID))
+
+		got, err := st.Workers().GetAdmin(ctx, worker.ID)
+		require.NoError(t, err, "the admin surface inspects soft-deleted workers")
+		assert.Equal(t, worker.ID, got.ID)
+
+		_, err = st.Workers().GetAdmin(ctx, "no-such-worker")
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
+
 	t.Run("set status", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "status-user")

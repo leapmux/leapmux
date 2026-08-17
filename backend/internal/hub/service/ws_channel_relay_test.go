@@ -294,7 +294,7 @@ func mintAdminAPIToken(t *testing.T, st store.Store, tv *auth.TokenValidator) st
 	secret := auth.MintAccessSecret()
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: tokenID, UserID: userid.MustNew(u.ID), ClientType: "cli", ClientName: "test",
-		SecretHash: tv.HashSecret(secret), Scope: "remote:*",
+		SecretHash: tv.HashSecret(secret),
 	}))
 	return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 }
@@ -346,7 +346,7 @@ func TestChannelRelay_Bearer_RejectsExpiredToken(t *testing.T) {
 	past := time.Now().Add(-time.Minute)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: tokenID, UserID: userid.MustNew(u.ID), ClientType: "cli", ClientName: "test",
-		SecretHash: tv.HashSecret(secret), ExpiresAt: &past, Scope: "remote:*",
+		SecretHash: tv.HashSecret(secret), ExpiresAt: &past,
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)

@@ -71,8 +71,8 @@ func TestNewClientFromEnv_LocalWhoami(t *testing.T) {
 
 	c, err := control.NewClientFromEnv("")
 	require.NoError(t, err)
-	require.True(t, c.IsLocal(), "client should be local when LEAPMUX_CONTROL_SOCK is set")
-	assert.Equal(t, sockURL, c.HubURL, "HubURL preserves the socket URL for display and IsLocal()")
+	require.True(t, c.IsWorkerIPC(), "client should be worker-IPC when LEAPMUX_CONTROL_SOCK is set")
+	assert.Equal(t, sockURL, c.HubURL, "HubURL preserves the socket URL for display and IsWorkerIPC()")
 
 	ipc, err := c.ControlIPCService()
 	require.NoError(t, err)
@@ -277,4 +277,140 @@ func TestOpenE2EEChannel_AcceptsMatchingIdentity(t *testing.T) {
 	assert.NotContains(t, err.Error(), "hub authenticated this channel as",
 		"a hub that agrees with the CLI's creds must pass the cross-check")
 	assert.Contains(t, err.Error(), "handshake2")
+}
+
+// TestHubSocketClientSendsBearerNotIPCHeader pins the peer distinction a
+// URL scheme cannot express: a client for a HUB reached over a unix:
+// socket must present Authorization: Bearer (the hub's own listener
+// reads it), never X-LeapMux-Token (only the worker's IPC server reads
+// that). The old IsLocal() keyed the header off the URL scheme, so this
+// client sent a header nothing consumed.
+func TestHubSocketClientSendsBearerNotIPCHeader(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses unix sockets; npipe variant exercised elsewhere")
+	}
+
+	// NewClient needs stored credentials for the hub URL; seed them
+	// through the package's own writer so the lookup finds them.
+	sockURL := shortIPCSocket(t)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	require.NoError(t, control.SaveCredentials(sockURL, control.CredentialFile{
+		HubURL:       sockURL,
+		AccessToken:  "lmx_test_token",
+		RefreshToken: "lmx_test_refresh",
+		UserID:       "u-1",
+		Username:     "tester",
+	}))
+
+	c, err := control.NewClient(sockURL)
+	require.NoError(t, err)
+	assert.False(t, c.IsWorkerIPC(), "a hub client is not a worker-IPC client even over a socket URL")
+
+	header := http.Header{}
+	c.ApplyAuth(header)
+	assert.Equal(t, "Bearer lmx_test_token", header.Get("Authorization"))
+	assert.Empty(t, header.Get("X-LeapMux-Token"), "the hub's listener does not read the IPC header")
+
+	// ControlIPCService refuses: the peer is the hub, not the worker.
+	_, err = c.ControlIPCService()
+	require.Error(t, err)
+
+	// The WebSocket surfaces refuse a socket hub URL: they build absolute
+	// WS URLs from the hub origin, which a socket URL cannot provide.
+	_, err = c.OpenUserEvents(context.Background(), nil)
+	require.ErrorContains(t, err, "http(s) hub origin")
+	_, err = c.OpenE2EEChannel(context.Background(), context.Background(), "worker-1")
+	require.ErrorContains(t, err, "http(s) hub origin")
+}
+
+// TestWorkerIPCClientSendsIPCHeader is the mirror: a worker-spawned
+// client (NewLocalClient) presents X-LeapMux-Token, not Bearer.
+func TestWorkerIPCClientSendsIPCHeader(t *testing.T) {
+	c, err := control.NewLocalClient("unix:/tmp/does-not-exist.sock", "ipc-token")
+	require.NoError(t, err)
+	assert.True(t, c.IsWorkerIPC())
+
+	header := http.Header{}
+	c.ApplyAuth(header)
+	assert.Equal(t, "ipc-token", header.Get("X-LeapMux-Token"))
+	assert.Empty(t, header.Get("Authorization"), "the worker IPC server does not read the Bearer header")
+}
+
+// The TOFU pin store opens on FIRST USE, so a pins.json that cannot be
+// parsed refuses the one caller that needs a pin and nothing else.
+//
+// Opening it in the constructor made a corrupt file refuse every verb --
+// `control workspace list` and each `control admin ...` verb alike, none of
+// which touches a pin. The admin verbs reported it as `not_logged_in`,
+// which names neither the file nor the cause.
+func TestPinStore_ACorruptFileRefusesOnlyTheChannel(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", dir)
+	host, err := control.HubHost(testHub)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, host), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, host, "pins.json"), []byte("{ not json"), 0o644))
+
+	c, err := control.NewClientOrAnonymous(testHub)
+	require.NoError(t, err, "a verb that never opens a channel must not fail on a pin file")
+
+	require.NoError(t, control.SaveCredentials(testHub, control.CredentialFile{
+		HubURL: testHub, AccessToken: "lmx_a_test",
+	}))
+	_, err = control.NewClient(testHub)
+	require.NoError(t, err, "the credentialed constructor behaves the same way")
+
+	_, err = c.OpenE2EEChannel(context.Background(), context.Background(), "worker-1")
+	require.Error(t, err, "the E2EE channel is the one caller that needs a pin")
+	assert.Contains(t, err.Error(), "open TOFU pin store",
+		"the refusal must name the store, not fail somewhere in the handshake")
+}
+
+// A credential file that exists but cannot be read is a fault the operator
+// must see. Collapsing it into the anonymous fallback turned a broken file
+// into an "unauthenticated" reply from the hub, which points at the login
+// rather than at the file.
+func TestNewClientOrAnonymous_ReportsACredentialFileItCannotParse(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	path, err := control.CredentialsPath(testHub)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte("{ truncated"), 0o600))
+
+	_, err = control.NewClientOrAnonymous(testHub)
+	require.Error(t, err, "a broken credential must not read as 'no credential'")
+	assert.Contains(t, err.Error(), "parse credentials")
+	assert.Contains(t, err.Error(), path, "the message names the file to repair or delete")
+
+	// Only "no credential stored" takes the anonymous fallback, which is
+	// what a solo hub needs.
+	require.NoError(t, os.Remove(path))
+	c, err := control.NewClientOrAnonymous(testHub)
+	require.NoError(t, err)
+	assert.Empty(t, c.Bearer, "no credential means no bearer, not a refusal")
+	assert.Empty(t, c.Username)
+}
+
+// The two constructors build the SAME client apart from the credential, so
+// a field added to one reaches the other. `peer` had to be added twice.
+func TestNewClientAndNewClientOrAnonymous_BuildTheSameTransport(t *testing.T) {
+	t.Setenv("LEAPMUX_CONTROL_CONFIG_DIR", t.TempDir())
+	require.NoError(t, control.SaveCredentials(testHub, control.CredentialFile{
+		HubURL: testHub, AccessToken: "lmx_a_test", UserID: "u-1", Username: "tester",
+	}))
+
+	withCreds, err := control.NewClient(testHub)
+	require.NoError(t, err)
+	anonymous, err := control.NewClientOrAnonymous(testHub)
+	require.NoError(t, err)
+
+	for _, c := range []*control.Client{withCreds, anonymous} {
+		assert.Equal(t, testHub, c.HubURL)
+		assert.Equal(t, testHub, c.ConnectURL())
+		assert.False(t, c.IsWorkerIPC(), "a hub URL is never the worker-IPC peer")
+		assert.NotNil(t, c.HTTPClient)
+	}
+	assert.Equal(t, "lmx_a_test", withCreds.Bearer)
+	assert.Equal(t, "tester", withCreds.Username)
+	assert.Equal(t, "lmx_a_test", anonymous.Bearer, "a stored credential is used when one exists")
 }

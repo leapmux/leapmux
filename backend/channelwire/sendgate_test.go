@@ -349,3 +349,65 @@ func TestSendGateSendChunkErrorReleasesBothPermits(t *testing.T) {
 		t.Fatal("a permit leaked on the sendChunk error path: the next send wedged")
 	}
 }
+
+// FrameWaiters is a test seam, so it needs a test of its own: a seam that
+// silently stops counting makes every test that polls it pass vacuously.
+func TestSendGateFrameWaiters(t *testing.T) {
+	var g SendGate
+	ctx := context.Background()
+
+	assert.Equal(t, 0, g.FrameWaiters(), "an untouched gate has no waiters")
+
+	held := make(chan struct{})
+	released := make(chan struct{})
+	go func() {
+		_ = g.WithFrame(ctx, nil, func() error {
+			close(held)
+			<-released
+			return nil
+		})
+	}()
+	<-held
+	assert.Equal(t, 0, g.FrameWaiters(), "the HOLDER is not a waiter")
+
+	parked := make(chan error, 1)
+	go func() {
+		parked <- g.WithFrame(ctx, nil, func() error { return nil })
+	}()
+	require.Eventually(t, func() bool { return g.FrameWaiters() == 1 },
+		2*time.Second, 100*time.Microsecond, "the second sender must be counted while it waits")
+
+	close(released)
+	require.NoError(t, <-parked)
+	assert.Eventually(t, func() bool { return g.FrameWaiters() == 0 },
+		2*time.Second, 100*time.Microsecond, "the count falls again once the waiter wakes")
+}
+
+// A waiter that gives up must not leak a count.
+func TestSendGateFrameWaitersFallsBackOnAbort(t *testing.T) {
+	var g SendGate
+	held := make(chan struct{})
+	released := make(chan struct{})
+	go func() {
+		_ = g.WithFrame(context.Background(), nil, func() error {
+			close(held)
+			<-released
+			return nil
+		})
+	}()
+	<-held
+
+	ctx, cancel := context.WithCancel(context.Background())
+	aborted := make(chan error, 1)
+	go func() {
+		aborted <- g.WithFrame(ctx, nil, func() error { return nil })
+	}()
+	require.Eventually(t, func() bool { return g.FrameWaiters() == 1 },
+		2*time.Second, 100*time.Microsecond)
+
+	cancel()
+	require.ErrorIs(t, <-aborted, ErrSendAborted)
+	assert.Eventually(t, func() bool { return g.FrameWaiters() == 0 },
+		2*time.Second, 100*time.Microsecond, "an aborted acquire must not leak its count")
+	close(released)
+}

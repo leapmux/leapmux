@@ -1,7 +1,7 @@
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { Tab } from '~/stores/tab.types'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
@@ -32,6 +32,19 @@ vi.mock('~/components/fileviewer/FileViewer', () => ({
   FileViewer: (props: { rootPath?: string, homeDir?: string }) => (
     <div data-testid="file-viewer" data-root={props.rootPath} data-home={props.homeDir} />
   ),
+}))
+
+/**
+ * The two rename RPCs, as spies. The rest of the module stays REAL: this tree
+ * calls `workerRpc` from many places, and a whole-module replacement would
+ * turn each of those into undefined.
+ */
+const renameAgent = vi.hoisted(() => vi.fn(async () => ({})))
+const updateTerminalTitle = vi.hoisted(() => vi.fn(async () => ({})))
+vi.mock('~/api/workerRpc', async importOriginal => ({
+  ...(await importOriginal<typeof import('~/api/workerRpc')>()),
+  renameAgent,
+  updateTerminalTitle,
 }))
 
 vi.mock('~/components/terminal/TerminalView', () => ({
@@ -520,3 +533,99 @@ describe('tileRenderer close-tile flow', () => {
 
 // The branch-action guard and the ref it produces are one function now, tested
 // beside it in `~/components/workspace/branchActions.test.ts`.
+
+/**
+ * The tab strip's rename goes through the shared `renameTab`, which is where
+ * the RULE lives and where `renameTab.test.ts` covers it: the cleaning, the
+ * empty and unchanged short-circuits, the ptyTitle clear, and the failure
+ * toast. These tests cover the WIRING instead — that this renderer hands that
+ * module the live stores and honors what it decides.
+ *
+ * The inline copy this replaced patched the metadata with the RAW typed
+ * string and had no short-circuit, so the strip showed a 400-byte title the
+ * worker had cut to 128, and an untouched edit issued a write.
+ */
+describe('tileRenderer tab rename', () => {
+  beforeEach(() => {
+    renameAgent.mockClear()
+    updateTerminalTitle.mockClear()
+  })
+
+  /** Open the inline editor on the first tab of the strip and commit `typed`. */
+  function renameFirstTab(typed: string) {
+    fireEvent.dblClick(screen.getAllByTestId('tab')[0]!)
+    const input = screen.getByTestId('tab-rename-input') as HTMLInputElement
+    fireEvent.input(input, { target: { value: typed } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+  }
+
+  // 50 CJK characters are 150 bytes, and the worker stores the 42 that fit in
+  // 128. The worker id comes from the VIEW this renderer passes in, so an
+  // empty one here would mean the rename never reached the tab's worker.
+  it('sends the cleaned title to the tab\'s own worker', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId, 'Agent Olivia')
+    renderRenderer(s, tileId)
+    await screen.findByTestId('chat-container')
+
+    renameFirstTab('一'.repeat(50))
+
+    const want = '一'.repeat(42)
+    expect(renameAgent).toHaveBeenCalledWith('worker-1', { agentId: 'a1', title: want })
+    // The optimistic patch lands in the REAL metadata store, holding the same
+    // title the worker stores rather than the raw string.
+    await waitFor(() => expect(s.view.getAgentTab('a1')?.title).toBe(want))
+  })
+
+  it('strips a control character before it reaches the worker or the strip', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId, 'Agent Olivia')
+    renderRenderer(s, tileId)
+    await screen.findByTestId('chat-container')
+
+    renameFirstTab('Deploy\u0000logs')
+
+    expect(renameAgent).toHaveBeenCalledWith('worker-1', { agentId: 'a1', title: 'Deploylogs' })
+    await waitFor(() => expect(s.view.getAgentTab('a1')?.title).toBe('Deploylogs'))
+  })
+
+  // Both short-circuits reach this renderer, because the strip's own guard
+  // compares the RAW text: `$$%%` and `Agent Olivia$` are each non-empty and
+  // each differ from the label, so both arrive at `renameTab`.
+  it('honors the no-op decision for a title that cleaning empties or leaves unchanged', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId, 'Agent Olivia')
+    renderRenderer(s, tileId)
+    await screen.findByTestId('chat-container')
+
+    renameFirstTab('  $$%%  ')
+    expect(renameAgent).not.toHaveBeenCalled()
+    expect(s.view.getAgentTab('a1')?.title).toBe('Agent Olivia')
+
+    renameFirstTab('Agent Olivia$')
+    expect(renameAgent).not.toHaveBeenCalled()
+    expect(s.view.getAgentTab('a1')?.title).toBe('Agent Olivia')
+  })
+
+  // The sidebar's old inline copy never called UpdateTerminalTitle, so a
+  // terminal renamed there lost its name on the next reload. This asserts the
+  // strip's copy reaches the worker AND clears the PTY title, which is what
+  // lets a manual rename outlive the next TitleChanged event.
+  it('persists a terminal rename and clears the pty title', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addTerminal('t1', tileId, 'Terminal Liam')
+    s.metadata.patch('t1', { ptyTitle: 'zsh' })
+    renderRenderer(s, tileId)
+    await screen.findByTestId('terminal-view')
+
+    renameFirstTab('Build watcher')
+
+    expect(updateTerminalTitle).toHaveBeenCalledWith('worker-1', { terminalId: 't1', title: 'Build watcher' })
+    await waitFor(() => expect(s.view.getTerminalTab('t1')?.title).toBe('Build watcher'))
+    expect(s.view.getTerminalTab('t1')?.ptyTitle).toBe('')
+  })
+})

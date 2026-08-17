@@ -37,6 +37,7 @@ import { TABBAR_ZONE_PREFIX, useTabDrag } from './TabDragContext'
 import { TabSheet } from './TabSheet'
 import { terminalStatusClassList } from './terminalStatus'
 import { TileActionsMenu } from './TileActionsMenu'
+import { UserMenuItems } from './UserMenuItems'
 
 const TabBarTooltip: Component<{ text: string, children: JSX.Element }> = tipProps => (
   <Tooltip text={tipProps.text}>
@@ -523,7 +524,8 @@ export const TabBar: Component<TabBarProps> = (props) => {
   /**
    * The collapsed "+" new-tab dropdown, shared by the minimal strip variant
    * and the mobile bar — one UI in two visibility regimes, kept in lockstep
-   * by one component.
+   * by one component. On mobile the titlebar (and its app menu) is gone, so
+   * About / Preferences / Log out hitch a ride here after Advanced.
    */
   const CollapsedNewTabMenu: Component<{ wrapperClass: string }> = menuProps => (
     <div class={menuProps.wrapperClass}>
@@ -539,6 +541,11 @@ export const TabBar: Component<TabBarProps> = (props) => {
         )}
       >
         {renderMoreMenuItems()}
+        <Show when={props.mobile}>
+          <hr />
+          <li class={menuSectionHeader}>App</li>
+          <UserMenuItems />
+        </Show>
       </DropdownMenu>
     </div>
   )

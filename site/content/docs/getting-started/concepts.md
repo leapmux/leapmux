@@ -143,7 +143,7 @@ Key properties:
 
 For registering, approving, pinning, and selecting Workers, see [Managing Workers](/docs/operating/managing-workers/).
 
-> **Note:** A tab can only be used while its Worker is online. If the hosting Worker is offline, opening a channel to it fails with "worker is offline" until it reconnects.
+> **Note:** A tab can only be used while its Worker is online. If the hosting Worker is offline, opening a channel to it fails until it reconnects.
 
 ## End-to-end encrypted channels
 

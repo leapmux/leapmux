@@ -42,6 +42,15 @@ func (s *workerStore) GetByIDIncludeDeleted(ctx context.Context, id string) (*st
 	return fromDBWorker(row), nil
 }
 
+func (s *workerStore) GetAdmin(ctx context.Context, id string) (*store.WorkerWithOwner, error) {
+	row, err := s.conn.q.GetWorkerAdmin(ctx, id)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	out := workerWithOwner(row.Worker, row.OwnerUsername, row.OwnerDeleted)
+	return &out, nil
+}
+
 func (s *workerStore) GetByAuthToken(ctx context.Context, token string) (*store.Worker, error) {
 	row, err := s.conn.q.GetWorkerByAuthToken(ctx, token)
 	if err != nil {

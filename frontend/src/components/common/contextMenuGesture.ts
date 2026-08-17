@@ -1,4 +1,5 @@
 import type { PopoverAnchorRect } from '~/lib/popoverPosition'
+import { INPUT_OR_EDITABLE_SELECTOR } from '~/lib/textInputBehavior'
 import { motion } from '~/styles/tokens'
 import './contextMenuGesture.css'
 
@@ -77,10 +78,26 @@ export function touchReleaseOpensMenu(): boolean {
  * is a DOM child of the row, so a press on a menu item belongs to the menu.
  * Arming on one would swallow the item's click after a decision hold, and a
  * drag would start from under the open menu.
+ *
+ * `INPUT_OR_EDITABLE_SELECTOR` carries the text-entry group that all three
+ * pointer guards share, and `[popover]` stands in the list itself. This
+ * gesture adds nothing else. ~/lib/dragActivators.ts and
+ * ~/components/shell/guardedPointerSensor.ts compose the same fragment into a
+ * constant of the same name.
+ *
+ * Do NOT merge the three lists into one. The drag activators decline `select`,
+ * `button` and `[data-drag-handle]`, which are exclusions a DRAG needs. This
+ * gesture must still act on a `button`: a long press anywhere on a row opens
+ * that row's menu, and a failed chat row renders its recovery actions as
+ * visible buttons -- see `attachRowMenu` in ~/components/chat/MessageBubble.tsx.
+ * Touch has no hover toolbar to fall back on, so a decline over the row's own
+ * controls loses the menu on that area outright.
  */
+const EMBEDDED_UI_SELECTOR = `${INPUT_OR_EDITABLE_SELECTOR}, [popover]`
+
 function pressBelongsToEmbeddedUi(e: PointerEvent | MouseEvent): boolean {
   const target = e.target as Element | null
-  return Boolean(target?.closest?.('input, textarea, [contenteditable="true"], [popover]'))
+  return Boolean(target?.closest?.(EMBEDDED_UI_SELECTOR))
 }
 
 export interface ContextMenuGestureOptions {

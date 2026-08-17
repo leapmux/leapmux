@@ -58,9 +58,14 @@ export const AboutDialog: Component<AboutDialogProps> = (props) => {
           </Show>
           <div>
             <div class={labelRow}>Homepage</div>
-            <a href="https://github.com/leapmux/leapmux" target="_blank" rel="noopener noreferrer">
-              github.com/leapmux/leapmux
-            </a>
+            <div class="vstack gap-1">
+              <a href="https://leapmux.dev/" target="_blank" rel="noopener noreferrer">
+                leapmux.dev
+              </a>
+              <a href="https://github.com/leapmux/leapmux" target="_blank" rel="noopener noreferrer">
+                github.com/leapmux/leapmux
+              </a>
+            </div>
           </div>
           <div>
             <div class={labelRow}>License</div>

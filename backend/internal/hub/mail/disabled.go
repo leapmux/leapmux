@@ -22,7 +22,7 @@ var ErrEmailDisabled = errors.New("hub email is not configured")
 type disabledSender struct{}
 
 // NewDisabledSender returns the production no-SMTP Sender. Use this
-// when the operator has not configured any SMTP host; the hub server
+// when the operator has not configured an SMTP relay; the hub server
 // already does so at backend/hub/server.go.
 func NewDisabledSender() Sender { return disabledSender{} }
 

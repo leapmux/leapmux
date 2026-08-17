@@ -1007,7 +1007,6 @@ type APIToken struct {
 	RefreshHash              []byte
 	PreviousRefreshHash      []byte
 	PreviousRefreshExpiresAt *time.Time
-	Scope                    string
 	CreatedAt                time.Time
 	AuthGeneration           int64
 	LastUsedAt               *time.Time
@@ -1099,7 +1098,6 @@ type CreateAPITokenParams struct {
 	ClientName       string
 	SecretHash       []byte
 	RefreshHash      []byte
-	Scope            string
 	ExpiresAt        *time.Time
 	RefreshExpiresAt *time.Time
 }

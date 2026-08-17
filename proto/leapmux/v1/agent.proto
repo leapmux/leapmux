@@ -169,7 +169,15 @@ message RenameAgentRequest {
   string title = 2;
 }
 
-message RenameAgentResponse {}
+message RenameAgentResponse {
+  // The title the worker actually STORED, which is not always the title the
+  // request carried: the worker cuts the title to 128 UTF-8 bytes and strips
+  // the forbidden characters, and it never refuses it. A request whose title
+  // cleans to nothing changes no row, and this field then reports the title
+  // the agent still holds. A client that does not apply the same rule locally
+  // reads the effective title from here instead of echoing what it sent.
+  string title = 1;
+}
 
 message AgentInfo {
   // Identity. No workspace_id: the Worker does not know which workspace hosts

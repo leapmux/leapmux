@@ -12,6 +12,11 @@ export const tabBar = style({
   flexShrink: 0,
   fontSize: 'var(--text-8)',
   backgroundColor: 'inherit',
+  // Tabs are nowrap; a long set (the file filters in a narrow sidebar) must
+  // scroll inside the bar instead of widening the parent.
+  overflowX: 'auto',
+  minWidth: 0,
+  width: '100%',
 })
 
 export const tabButton = style({

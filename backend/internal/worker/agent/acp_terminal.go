@@ -18,6 +18,7 @@ import (
 	utilid "github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/util/procutil"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // Default retained output size when terminal/create omits outputByteLimit.
@@ -381,7 +382,14 @@ func (b *acpBase) terminalCreate(id json.RawMessage, rawParams json.RawMessage) 
 	// description field for it to be confused with -- so this title IS the
 	// command, and the client can set it as code. The "shell" fallback is not,
 	// which is why the flag tracks the branch rather than the row's kind.
-	title := bgtask.FirstLine(params.Command)
+	//
+	// CleanName runs HERE and not only at the sink, because the registry
+	// applies the same name rule to every title. A command that holds nothing
+	// but the characters that the rule strips would reach the row blank and
+	// skip the "shell" fallback below, which leaves the row with no label at
+	// all. CleanName is idempotent, so the sink's own call changes nothing
+	// after this one.
+	title := validate.CleanName(bgtask.FirstLine(params.Command))
 	titleIsCommand := title != ""
 	if title == "" {
 		title = "shell"

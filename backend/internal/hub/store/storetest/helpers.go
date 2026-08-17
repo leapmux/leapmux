@@ -99,6 +99,28 @@ func SeedUser(t *testing.T, st store.Store, username string) *store.User {
 	return user
 }
 
+// SeedPasswordlessUser creates a user with password_set false, the state
+// an account reaches when it signed up through an OAuth provider and never
+// set a password. Such an account can lose its last login method, which is
+// what CountUsersOrphanedByProvider counts.
+func SeedPasswordlessUser(t *testing.T, st store.Store, username string) *store.User {
+	t.Helper()
+	userID := id.Generate()
+	err := st.Users().Create(ctx, store.CreateUserParams{
+		ID:            userID,
+		Username:      username,
+		DisplayName:   "Display " + username,
+		Email:         username + "@example.com",
+		EmailVerified: true,
+		PasswordSet:   false,
+	})
+	require.NoError(t, err)
+
+	user, err := st.Users().GetByID(ctx, userID)
+	require.NoError(t, err)
+	return user
+}
+
 // SeedRegistrationKey creates a worker_registration_keys row owned by
 // createdBy with the given expires_at and returns its id.
 func SeedRegistrationKey(t *testing.T, st store.Store, createdBy string, expiresAt time.Time) string {

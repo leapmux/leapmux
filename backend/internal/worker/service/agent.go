@@ -75,14 +75,17 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 
-			title, err := sanitizeOptionalTitle(r.GetTitle())
-			if err != nil {
-				sendInvalidArgument(sender, err.Error())
-				return
-			}
-			// Empty title means "you pick one". Default to a random
-			// "Agent <Name>" from the shared pool so CLI-spawned agents
-			// match the format UI-spawned ones get. Collisions are
+			// A client-set title is CLEANED, never refused: CleanName cuts it
+			// to validate.NameByteLimit bytes and strips the forbidden
+			// characters. RenameAgent, UpdateTerminalTitle and the plan
+			// auto-rename apply the same rule, so every writer of a `title`
+			// column enforces one rule and none of them fails the RPC over a
+			// title the user can neither see nor correct.
+			title := validate.CleanName(r.GetTitle())
+			// Empty title means "you pick one" -- the client sent none, or
+			// cleaning removed every character of the one it sent. Default to
+			// a random "Agent <Name>" from the shared pool so CLI-spawned
+			// agents match the format UI-spawned ones get. Collisions are
 			// allowed (cosmetic; the user can rename either tab).
 			if title == "" {
 				title = pickAgentTitle()
@@ -785,17 +788,54 @@ func registerAgentHandlers(d registrar, svc *Service) {
 	// to the owner's other clients. The DB write + broadcast
 	// must complete past a client disconnect (otherwise sibling clients
 	// would miss the rename); dispatcher ctx is intentionally not threaded.
-	// registerAgentGatedByID, not registerAgentGated: the handler never reads the
-	// row. The full-row gate runs `SELECT *`, which copies the agent's `options`
-	// and `option_groups` JSON columns out of SQLite -- for an agent with a large
-	// option-group catalog that is several KB per rename, discarded immediately.
-	// This is the case the package's own note on requireAgentID describes.
+	// registerAgentGatedByID, not registerAgentGated: the handler needs no
+	// agent field on the path that stores a title. The full-row gate runs
+	// `SELECT *`, which copies the agent's `options` and `option_groups` JSON
+	// columns out of SQLite -- for an agent with a large option-group catalog
+	// that is several KB per rename, discarded immediately. This is the case
+	// the package's own note on requireAgentID describes. The one field the
+	// handler ever reads is the title, only on the empty-title path, through
+	// the single-column GetAgentTitle.
 	registerAgentGatedByID(d, "RenameAgent", dispatchPlain,
 		func(_ context.Context, userID userid.UserID, r *leapmuxv1.RenameAgentRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
 
+			// Clean the title, never refuse it -- the same rule OpenAgent and
+			// the plan auto-rename apply. An empty result means the request
+			// carried nothing that survives cleaning, so the stored title
+			// stays as it is: writing "" would leave the tab with no name at
+			// all, and there is no better title available here. The handler
+			// answers OK because the rename is a no-op, not a failure.
+			title := validate.CleanName(r.GetTitle())
+			if title == "" {
+				slog.Debug("ignoring agent rename to an empty title", "agent_id", agentID)
+				// The reply reports the title that is IN FORCE, which on this
+				// path is the one the row already holds -- not the empty
+				// string the handler refused to store. A client that cannot
+				// apply the cleaning rule itself reads this field to learn
+				// what the tab is called, so reporting "" here would make the
+				// field lie in the one case the client cannot work out alone.
+				current, err := svc.Queries.GetAgentTitle(bgCtx(), agentID)
+				if err != nil {
+					// requireAgentID already proved the row exists, so this
+					// is a real DB fault, or another caller deleted the row
+					// between the two reads. The handler cannot state the
+					// effective title, so it reports the failure rather than
+					// answer with "".
+					slog.Error("failed to read agent title", "agent_id", agentID, "error", err)
+					if errors.Is(err, sql.ErrNoRows) {
+						sendNotFoundError(sender, "agent not found")
+					} else {
+						sendInternalError(sender, "failed to read agent title")
+					}
+					return
+				}
+				sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{Title: current})
+				return
+			}
+
 			if _, err := svc.Queries.RenameAgent(bgCtx(), db.RenameAgentParams{
-				Title: r.GetTitle(),
+				Title: title,
 				ID:    agentID,
 			}); err != nil {
 				slog.Error("failed to rename agent", "agent_id", agentID, "error", err)
@@ -809,11 +849,11 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			if svc.PrivateEvents != nil {
 				svc.PrivateEvents.PublishTabRenamed(
 					userID, agentID, leapmuxv1.TabType_TAB_TYPE_AGENT,
-					r.GetTitle(), sender.ChannelID(),
+					title, sender.ChannelID(),
 				)
 			}
 
-			sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{})
+			sendProtoResponse(sender, &leapmuxv1.RenameAgentResponse{Title: title})
 		})
 
 	// DeleteAgentMessage removes the row and broadcasts a MessageDeleted
@@ -1210,7 +1250,17 @@ func registerAgentHandlers(d registrar, svc *Service) {
 		// probe in flight.
 		ctx, cancel := context.WithTimeout(ctx, svc.agentAPITimeout())
 		defer cancel()
-		providers := agent.ListAvailableProviders(ctx, svc.agentShell(), svc.agentLoginShell())
+		providers, complete := agent.ListAvailableProviders(ctx, svc.agentShell(), svc.agentLoginShell())
+		if !complete {
+			// An INCOMPLETE scan is not evidence of absence. A probe
+			// proves nothing when its deadline killed it, and equally
+			// when the shell could not start at all, a login profile
+			// exited non-zero, or a fork failed under load. The factory
+			// refuses to cache any of those, so a retry only re-runs what
+			// did not answer.
+			sendUnavailable(sender, "provider scan did not finish; retry")
+			return
+		}
 		sendProtoResponse(sender, &leapmuxv1.ListAvailableProvidersResponse{
 			Providers: providers,
 		})

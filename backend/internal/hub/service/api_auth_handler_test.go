@@ -712,7 +712,6 @@ func TestAPIAuth_Refresh_RotatesAndReturnsNewPair(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
 		RefreshHash: env.validator.HashSecret(currentRefresh),
-		Scope:       "remote:*",
 	}))
 
 	resp, err := http.PostForm(env.server.URL+"/auth/cli/refresh", url.Values{
@@ -764,7 +763,6 @@ func TestAPIAuth_Refresh_DoesNotPoisonFlightWithCanceledLeaderContext(t *testing
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
 		RefreshHash: env.validator.HashSecret(currentRefresh),
-		Scope:       "remote:*",
 	}))
 
 	mux := http.NewServeMux()
@@ -803,7 +801,6 @@ func TestAPIAuth_Refresh_ReusedWithinGraceReturnsSamePair(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
 		RefreshHash: env.validator.HashSecret(prev),
-		Scope:       "remote:*",
 	}))
 	first, err := http.PostForm(env.server.URL+"/auth/cli/refresh", url.Values{
 		"refresh_token": {auth.FormatBearer(auth.BearerKindAPI, tokenID, prev)},
@@ -840,7 +837,7 @@ func TestAPIAuth_Refresh_GraceRetryReportsStoredRemainingLifetime(t *testing.T) 
 	)
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: tokenID, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
-		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: previousHash, Scope: "remote:*",
+		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: previousHash,
 	}))
 	storedExpiry := now.Add(10 * time.Second)
 	refreshExpiry := now.Add(time.Hour)
@@ -880,7 +877,6 @@ func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
 		RefreshHash: env.validator.HashSecret(previousRefresh),
-		Scope:       "remote:*",
 	}))
 
 	first, err := http.PostForm(env.server.URL+"/auth/cli/refresh", url.Values{
@@ -926,7 +922,6 @@ func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testi
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
 		RefreshHash: env.validator.HashSecret(currentRefresh),
-		Scope:       "remote:*",
 	}))
 	wrapped := apiTokenOverrideStore{
 		Store: env.store,
@@ -961,7 +956,7 @@ func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T)
 	currentRefresh := auth.MintAccessSecret()
 	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: tokenID, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
-		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: env.validator.HashSecret(currentRefresh), Scope: "remote:*",
+		SecretHash: env.validator.HashSecret(auth.MintAccessSecret()), RefreshHash: env.validator.HashSecret(currentRefresh),
 	}))
 	underlying := env.store.APITokens()
 	wrapper := apiTokenOverrideStore{
@@ -1009,7 +1004,6 @@ func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
 		RefreshHash: currentRefreshHash,
-		Scope:       "remote:*",
 	}))
 	wrapped := apiTokenOverrideStore{
 		Store: env.store,
@@ -1054,7 +1048,6 @@ func TestAPIAuth_Refresh_ReusedAfterGraceRevokesRow(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
 		RefreshHash: env.validator.HashSecret(prev),
-		Scope:       "remote:*",
 	}))
 	_, err := env.store.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
 		ID:                       tokenID,
@@ -1097,7 +1090,6 @@ func TestAPIAuth_Revoke_BustsCacheAndRowRevoked(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	// Warm the bearer cache by validating once.
@@ -1495,7 +1487,6 @@ func TestAPIAuth_Revoke_AcceptsRefreshSecrets(t *testing.T) {
 				ClientName:  "test",
 				SecretHash:  env.validator.HashSecret(auth.MintAccessSecret()),
 				RefreshHash: env.validator.HashSecret(refreshSecret),
-				Scope:       "remote:*",
 			}))
 			if previous {
 				currentRefresh := auth.MintAccessSecret()
@@ -1568,7 +1559,6 @@ func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 
@@ -1607,7 +1597,6 @@ func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 
@@ -1710,7 +1699,6 @@ func TestAPIAuth_Revoke_WrongSecretRejected(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 	goodBearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	// Warm the cache so we can later assert it wasn't busted.
@@ -1802,7 +1790,6 @@ func TestAPIAuth_Revoke_AlreadyRevokedIsIdempotent(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: env.validator.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 

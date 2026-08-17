@@ -3,7 +3,7 @@
  *
  * The leapmux binary is built once per Playwright run by global-setup
  * (`task build-backend`) and lives at the repo root. The same binary
- * serves the `control`, `admin`, and daemon commands; tests invoke it
+ * serves the `control` and `recover` commands; tests invoke it
  * as a child process and parse its JSON-on-stdout contract.
  *
  * Auth model used by these helpers
@@ -12,11 +12,11 @@
  * credentials on disk (`~/.config/leapmux/control/<host>.json`). The
  * `LEAPMUX_CONTROL_CONFIG_DIR` env var redirects that lookup to a
  * per-test directory; combined with `mintCLITokenForAdmin` (which
- * runs `leapmux admin api-token issue` against the test hub's
- * SQLite DB and writes the resulting bearer into a credential file)
- * this lets a Playwright test drive the CLI exactly the way a user
- * would after running `leapmux control auth login`, without
- * round-tripping through the OAuth-style flow.
+ * mints an api token over the hub's `AdminUserService/IssueAPIToken`
+ * RPC and writes the resulting bearer into a credential file) this
+ * lets a Playwright test drive the CLI exactly the way a user would
+ * after running `leapmux control auth login`, without round-tripping
+ * through the OAuth-style flow.
  */
 
 import type { Page } from '@playwright/test'
@@ -49,29 +49,34 @@ export interface CLIConfigDir {
  * Both the single-worker `ServerInfo` and the multi-worker harness
  * satisfy this — it's the smallest contract that lets a test hand
  * over "this is my hub URL, this is the cookie that talks to it,
- * here's the data dir the hub opens" without forcing the multi-
- * worker fixture to pretend it's a `ServerInfo`.
+ * here's the admin's credentials" without forcing the multi-worker
+ * fixture to pretend it's a `ServerInfo`.
  */
 export interface CLITokenSource {
   /** http(s) URL the hub listens on. */
   hubUrl: string
   /** Session cookie (e.g. `leapmux-session=…`) for the admin user. */
   adminToken: string
-  /** Data dir the running hub opens; the admin command opens it directly. */
+  /** Data dir the running hub opens. Kept for the interface's callers. */
   dataDir: string
+  /** Admin password; when set the mint logs in itself for a fresh session. */
+  adminPassword?: string
+  /** Admin username; when set the mint logs in itself for a fresh session. */
+  adminUsername?: string
 }
 
 /**
- * Mint an api_tokens row for the test hub's admin user via
- * `leapmux admin api-token issue`, then write a credential file under
- * a fresh per-test config dir. Returns the dir + bearer so subsequent
- * `runCLI` calls can authenticate as the admin without going through
- * the device-code or local-redirect OAuth flows.
+ * Mint an api_tokens row for the test hub's admin user over the hub's own
+ * RPC surface, then write a credential file under a fresh per-test config
+ * dir. Returns the dir + bearer so subsequent `runCLI` calls can
+ * authenticate as the admin without going through the device-code or
+ * local-redirect OAuth flows.
  *
- * `source.dataDir` must be the same `--data-dir` the running hub
- * uses; the admin command opens that DB directly and shares the same
- * encryption key store so the minted bearer validates against the
- * live hub.
+ * The offline admin-token CLI command no longer exists (the `recover`
+ * tree only bootstraps); the online path is `AdminUserService/IssueAPIToken`
+ * with an admin session. The session comes from a fresh `AuthService/Login`
+ * when the source carries credentials, falling back to the fixture's
+ * `adminToken` cookie.
  */
 export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
   /** Override the hub URL written into the credential file (defaults to source.hubUrl). */
@@ -79,35 +84,32 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
   /** User ID to mint the token for. Defaults to the admin user. */
   userID?: string
 }): Promise<CLIConfigDir> {
-  const { binaryPath } = getGlobalState()
-
   const userID = options?.userID ?? await fetchAdminUserID(source)
   const hubURL = options?.hubURL ?? source.hubUrl
-  const dataDir = source.dataDir
 
-  // The admin command writes the freshly-minted bearer to stdout in a
-  // human-readable block. Parse it back rather than re-implementing
-  // the mint flow, so the test exercises the same code path
-  // operators use.
-  const { stdout } = await execFileAsync(binaryPath, [
-    'admin',
-    'api-token',
-    'issue',
-    '--data-dir',
-    dataDir,
-    '--user',
-    userID,
-    '--client-name',
-    `e2e-${Date.now()}`,
-    '--ttl',
-    '3600',
-  ], {
-    env: { ...process.env, LEAPMUX_LOG_LEVEL: 'error' },
+  const cookie = source.adminPassword && source.adminUsername
+    ? await loginForMint(source.hubUrl, source.adminUsername, source.adminPassword)
+    : source.adminToken
+
+  // Connect-JSON: the body is the message object directly (int64s as
+  // strings), and the response JSON is the message object.
+  const res = await fetch(`${source.hubUrl}/leapmux.v1.AdminUserService/IssueAPIToken`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
+    body: JSON.stringify({
+      userId: userID,
+      clientType: 'cli',
+      clientName: `e2e-${Date.now()}`,
+      ttlSeconds: '3600',
+    }),
   })
-
-  const bearer = parseAdminTokenStdout(stdout)
+  if (!res.ok) {
+    throw new Error(`mintCLITokenForAdmin: IssueAPIToken ${res.status}`)
+  }
+  const minted = await res.json() as { accessToken?: string }
+  const bearer = minted.accessToken
   if (!bearer) {
-    throw new Error(`mintCLITokenForAdmin: could not parse access_token out of admin output:\n${stdout}`)
+    throw new Error('mintCLITokenForAdmin: no accessToken in IssueAPIToken response')
   }
 
   // `LEAPMUX_CONTROL_CONFIG_DIR` returns the directory the CLI uses
@@ -136,6 +138,32 @@ export async function mintCLITokenForAdmin(source: CLITokenSource, options?: {
   writeFileSync(credPath, JSON.stringify(cred, null, 2), { mode: 0o600 })
 
   return { path: configDir, hubURL, bearer, userID }
+}
+
+/**
+ * A fresh admin session for the mint: POST the Connect-JSON Login and keep
+ * the `leapmux-session=…` Set-Cookie value verbatim.
+ */
+async function loginForMint(hubUrl: string, username: string, password: string): Promise<string> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/Login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+    redirect: 'manual',
+  })
+  if (!res.ok) {
+    throw new Error(`mintCLITokenForAdmin: Login ${res.status}`)
+  }
+  const setCookie = res.headers.get('set-cookie')
+  if (!setCookie?.includes('leapmux-session=')) {
+    throw new Error('mintCLITokenForAdmin: no session cookie in Login response')
+  }
+  for (const part of setCookie.split(';')) {
+    const trimmed = part.trim()
+    if (trimmed.startsWith('leapmux-session='))
+      return trimmed
+  }
+  throw new Error('mintCLITokenForAdmin: malformed session cookie in Login response')
 }
 
 /**
@@ -315,13 +343,6 @@ async function fetchAdminUserID(source: CLITokenSource): Promise<string> {
   if (!data.user?.id)
     throw new Error('fetchAdminUserID: no user.id in response')
   return data.user.id
-}
-
-const ACCESS_TOKEN_RE = /access_token\s*=\s*(\S+)/
-
-function parseAdminTokenStdout(stdout: string): string | null {
-  const match = ACCESS_TOKEN_RE.exec(stdout)
-  return match ? match[1] : null
 }
 
 /**

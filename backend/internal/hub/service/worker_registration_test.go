@@ -135,7 +135,7 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 	mux.Handle(connectorPath, connectorHandler)
 
 	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, cfg, set, nil)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewHubEventBroadcaster(cMgr), notif, mailer, mail.Renderer{}, set, nil)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 

@@ -164,4 +164,50 @@ func (s *Suite) testOAuthUserLinks(t *testing.T) {
 		})
 		require.NoError(t, err)
 	})
+
+	// CountUsersOrphanedByProvider guards the admin verb that REMOVES a
+	// provider: the delete cascades every link away, so an account with no
+	// password and no other link loses its last way in. Each dialect spells
+	// the false literal and the parameter differently, so all three run it.
+	t.Run("counts only the accounts a provider removal would lock out", func(t *testing.T) {
+		st := s.NewStore(t)
+		target := SeedOAuthProvider(t, st, "oul-orphan-target")
+		other := SeedOAuthProvider(t, st, "oul-orphan-other")
+
+		link := func(user *store.User, provs ...*store.OAuthProvider) {
+			for _, prov := range provs {
+				require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
+					UserID:          userid.MustNew(user.ID),
+					ProviderID:      prov.ID,
+					ProviderSubject: user.Username + "-" + prov.Name,
+				}))
+			}
+		}
+		count := func() int64 {
+			n, err := st.OAuthUserLinks().CountUsersOrphanedByProvider(ctx, target.ID)
+			require.NoError(t, err)
+			return n
+		}
+		assert.Zero(t, count(), "a provider nobody uses orphans nobody")
+
+		// At risk: no password, and this provider is the only link.
+		orphaned := SeedPasswordlessUser(t, st, "oul-orphan-sso-only")
+		link(orphaned, target)
+		assert.Equal(t, int64(1), count())
+
+		// Not at risk: a password, or a second provider to fall back to.
+		link(SeedUser(t, st, "oul-orphan-has-password"), target)
+		twoLinks := SeedPasswordlessUser(t, st, "oul-orphan-two-links")
+		link(twoLinks, target, other)
+		assert.Equal(t, int64(1), count(), "only the password-less single-link account counts")
+
+		// A link to the OTHER provider only is outside this count.
+		linkedElsewhere := SeedPasswordlessUser(t, st, "oul-orphan-elsewhere")
+		link(linkedElsewhere, other)
+		assert.Equal(t, int64(1), count())
+
+		// A soft-deleted account cannot sign in either way.
+		require.NoError(t, st.Users().Delete(ctx, orphaned.ID))
+		assert.Zero(t, count(), "a deleted account is not locked out by the removal")
+	})
 }

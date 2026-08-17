@@ -47,7 +47,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// crdtShutdownTimeout bounds the CRDT registry's drain, both on a construction
+// crdtShutdownTimeout caps the CRDT registry's drain, both on a construction
 // failure and on runtime shutdown -- one constant so the two paths cannot drift.
 const crdtShutdownTimeout = 10 * time.Second
 
@@ -61,12 +61,12 @@ const crdtShutdownTimeout = 10 * time.Second
 // literal in NewServer and the grace timer in the shutdown goroutine in Serve.
 const handlerGrace = 5 * time.Second
 
-// httpDrainTimeout bounds http.Server.Shutdown's wait for in-flight handlers to
+// httpDrainTimeout caps http.Server.Shutdown's wait for in-flight handlers to
 // return. handlerGrace cancels the laggards before this expires, so the drain
 // should not need its full budget in practice; the constant is the hard ceiling.
 const httpDrainTimeout = 10 * time.Second
 
-// maxConnectRequestBytes bounds every inbound message on the hub's Connect
+// maxConnectRequestBytes limits every inbound message on the hub's Connect
 // surface. Per MESSAGE, not per stream -- see connect.WithReadMaxBytes, which
 // also documents that "both clients and handlers default to allowing any request
 // size". Without it an authenticated SubmitOps body is buffered whole before the
@@ -487,7 +487,12 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// One delegation-scope cache shared by SubmitOps (resolve) and worker
 	// deregistration (evict); see auth.DelegationScopeCache.
 	scopeCache := auth.NewDelegationScopeCache(st)
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, cfg, setMgr, scopeCache)
+	// The post-deregister effects, shared by the per-user surface, the
+	// admin surface, and the user-deletion cascade -- so a worker torn down
+	// by any of the three is told to stop, loses its memoized delegation
+	// scope, and leaves its owner's client informed.
+	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, broadcaster)
+	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, setMgr, scopeCache)
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
@@ -538,6 +543,72 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	userSvc := service.NewUserService(st, cfg, setMgr, lifecycle, mailSender, mailRenderer)
 	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
 	mux.Handle(userPath, userHandler)
+
+	// The admin services: the authenticated, online face of hub
+	// administration, restricted to admin users by the auth interceptor's
+	// adminProcedures map (tripwired against these handlers' proto
+	// descriptors in internal/hub/auth and against the mounted mux paths
+	// in this package's tests). `leapmux control admin ...` and the
+	// preferences dialog's administration panels are the callers; the
+	// offline break-glass tree is `leapmux recover`.
+	//
+	// The per-key rules the admin surface reports through. Each one is a
+	// property of its KEY, so it is registered on the settings manager and
+	// every surface that asks "what is in effect" gets the same answer; a
+	// handler that held them would carry per-key knowledge it cannot keep
+	// correct. They are registered HERE rather than at NewManager because
+	// each closes over something that exists only after the manager loads:
+	// the pool capacities are sized from the startup snapshot, and the
+	// captcha manager is itself built on this manager.
+	setMgr.Configure(
+		settings.WithEffective(settings.KeySignupEnabled.Name(), func(s *settings.Snapshot) (any, bool) {
+			return settings.SignupEnabledEffective(s, cfg.DevMode), true
+		}),
+		settings.WithEffective(settings.KeyEmailVerificationRequired.Name(), func(s *settings.Snapshot) (any, bool) {
+			return settings.EmailVerificationEffective(s), true
+		}),
+		settings.WithEffective(captcha.CaptchaSelectedKey.Name(), func(s *settings.Snapshot) (any, bool) {
+			// A selected provider that is not fully configured degrades at
+			// read time; report the provider that actually serves challenges.
+			// A complete selection needs no override.
+			effective, note := captcha.Effective(s)
+			if note == "" {
+				return nil, false
+			}
+			return captcha.ProviderAlias(effective.Provider), true
+		}),
+		settings.WithEffective(settings.KeyQueueBudget.Name(), func(*settings.Snapshot) (any, bool) {
+			// The startup-resolved capacities, not the stored document: a
+			// stored 0 auto-sizes from the process memory limit, and reporting
+			// that 0 told an admin the pool was zero-sized. queue_budget is
+			// restart-class, so these stay correct for the life of the process.
+			return settings.QueueBudgetValue{
+				RelayBytes:      relayBudget.Capacity,
+				WorkerBytes:     workerBudget.Capacity,
+				UserEventsBytes: userEventsBudget.Capacity,
+			}, true
+		}),
+		// A reset of the ALTCHA row removes the signing key every outstanding
+		// challenge carries. Re-provision before the reset answers, so the
+		// next unauthenticated login does not write hub_settings from inside
+		// its own request handler.
+		settings.WithAfterReset(captcha.AltchaKey.Name(), captchaMgr.EnsureProvisioned),
+	)
+	adminSettingsSvc := service.NewAdminSettingsService(setMgr, cfg)
+	adminSettingsPath, adminSettingsHandler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSettingsSvc, connectOpts)
+	mux.Handle(adminSettingsPath, adminSettingsHandler)
+
+	adminUserSvc := service.NewAdminUserService(st, tokenValidator, lifecycle, workerEffects)
+	adminUserPath, adminUserHandler := leapmuxv1connect.NewAdminUserServiceHandler(adminUserSvc, connectOpts)
+	mux.Handle(adminUserPath, adminUserHandler)
+
+	adminWorkerSvc := service.NewAdminWorkerService(st, workerEffects)
+	adminWorkerPath, adminWorkerHandler := leapmuxv1connect.NewAdminWorkerServiceHandler(adminWorkerSvc, connectOpts)
+	mux.Handle(adminWorkerPath, adminWorkerHandler)
+
+	adminOAuthSvc := service.NewAdminOAuthService(st, ks)
+	adminOAuthPath, adminOAuthHandler := leapmuxv1connect.NewAdminOAuthServiceHandler(adminOAuthSvc, connectOpts)
+	mux.Handle(adminOAuthPath, adminOAuthHandler)
 
 	sectionSvc := service.NewSectionService(st)
 	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
@@ -617,7 +688,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 			// across that write -- so ONE wedged worker blocks every other
 			// sender to it (notifier, channel relay, shutdown notice) for the
 			// process's life, and its Connect handler can never return. The
-			// timeout is extended whenever any byte is written, so it bounds
+			// timeout is extended whenever any byte is written, so it caps
 			// zero PROGRESS on a write, not the write's total duration: a slow
 			// but moving consumer never trips it, however large the frame. 30s
 			// is therefore about how long a stalled-but-recoverable socket may
@@ -825,8 +896,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		// Connect streams. Both halves matter to the drain below: a notified
 		// worker still holds its stream until it decides to reconnect, and the
 		// drain waits on the handler that stream is parked in. This releases the
-		// drain for the handlers the worker registry knows about. Handlers it
-		// does not are bounded structurally by the handlerCtx cancel below.
+		// drain for the handlers the worker registry knows about. The handlerCtx
+		// cancel below releases the handlers it does not know about.
 		notifyCtx, cancelNotify := context.WithTimeout(context.Background(), 2*time.Second)
 		s.workerMgr.NotifyShutdownAndFence(notifyCtx, 10)
 		cancelNotify()
@@ -947,7 +1018,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.crdtRegistry.Shutdown(crdtShutdownTimeout)
 
 	// 7. Stop the watcher before removing its durable cursor, then close the
-	// store. A bounded context prevents a broken backend from hanging shutdown.
+	// store. A context with a deadline stops a broken backend from hanging shutdown.
 	watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
 	teardownErrs.watcherClose = s.revocationWatcher.Close(watcherCloseCtx)
 	cancelWatcherClose()

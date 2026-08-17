@@ -78,7 +78,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	mux.Handle(connPath, connHandler)
 
 	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender(), mail.Renderer{}, cfg, set, nil), opts)
+		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender(), mail.Renderer{}, set, nil), opts)
 	mux.Handle(mgmtPath, mgmtHandler)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, sc)

@@ -7,7 +7,7 @@ weight: 8
 
 `leapmux control` is a JSON-emitting command-line surface for driving LeapMux from outside the browser. It lets you open and close tabs, send messages to agents, type into terminals, reshape the tile layout, inspect files and git state on a Worker, and stream live workspace events — all from a script, a CI job, or another agent.
 
-This chapter covers authentication, the universal entity-ID flags, the output envelope, and every command group with its subcommands and key flags. For the operator-facing database/keystore CLI (`leapmux admin`), see [Admin CLI](/docs/operating/admin-cli/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
+This chapter covers authentication, the universal entity-ID flags, the output envelope, and every command group with its subcommands and key flags. The online administration groups (`leapmux control admin ...`) are documented under [`admin` — hub administration over RPC](#admin--hub-administration-over-rpc) below. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/operating/recover/). For the agent and terminal features these commands drive, see [Coding Agents](/docs/using/coding-agents/) and [Terminals](/docs/using/terminals/).
 
 ## Two callers, one CLI
 
@@ -93,7 +93,7 @@ Authorizes the CLI against a Hub and writes a credential file to disk. The `--hu
 | `--device-name <name>` | `$USER@$hostname` | Human-visible name recorded with the credential |
 | `--device-code` | `false` | Force the RFC 8628 device-code flow (headless / SSH / container) |
 
-**Default flow (PKCE local redirect).** The CLI opens a loopback listener on `127.0.0.1`, prints "Open this URL in your browser to authorize the CLI:" followed by the authorization URL, and tries to launch your browser automatically (`open` on macOS, `xdg-open` on Linux, the shell handler on Windows). You sign in on the Hub's web page; the Hub redirects back to the loopback listener to complete the exchange. The CLI waits up to **10 minutes** for the callback before failing with `{"error":{"code":"timeout",...}}`.
+**Default flow (PKCE local redirect).** The CLI opens a loopback listener on `127.0.0.1`, prints the authorization URL with an instruction to open it in your browser, and tries to launch your browser automatically (`open` on macOS, `xdg-open` on Linux, the shell handler on Windows). You sign in on the Hub's web page; the Hub redirects back to the loopback listener to complete the exchange. The CLI waits up to **10 minutes** for the callback before failing with `{"error":{"code":"timeout",...}}`.
 
 ```bash
 leapmux control auth login --hub https://leapmux.example.com
@@ -105,14 +105,9 @@ leapmux control auth login --hub https://leapmux.example.com
 leapmux control auth login --hub https://leapmux.example.com --device-code
 ```
 
-```
-To authorize this CLI, on any device with a browser:
-  1. Visit https://leapmux.example.com/auth/cli/activate
-  2. Enter the code: 7XC-8DZ
-Or open: https://leapmux.example.com/auth/cli/activate?user_code=7XC-8DZ
-```
+The output holds three things: the verification URL (`https://<hub>/auth/cli/activate`), the user code, and a second link that carries the code in its query string.
 
-The user code is six characters from an ambiguity-free alphabet (no `0`/`1`/`I`/`O`/`L`), displayed as `XXX-XXX`. You open the verification URL on any device, enter the code, and the CLI (which polls in the background) completes once you approve. The "Or open" link pre-fills the code so you can skip the typing. On success, both flows persist a credential file and emit:
+The user code is six characters from an ambiguity-free alphabet (no `0`/`1`/`I`/`O`/`L`), displayed as `XXX-XXX`. You open the verification URL on any device, enter the code, and the CLI (which polls in the background) completes once you approve. The second link pre-fills the code so you can skip the typing. On success, both flows persist a credential file and emit:
 
 ```json
 {
@@ -158,13 +153,13 @@ Credentials are written one file per Hub:
 
 ### Headless service accounts
 
-The interactive login flows above are for humans. For unattended scripts and integrations, mint a durable bearer token with the admin CLI instead:
+The interactive login flows above are for humans. For unattended scripts and integrations, mint a durable bearer token with `leapmux control admin` instead:
 
 ```bash
-leapmux admin api-token issue --user usr_... --client-name "ci-bot"
+leapmux control admin api-token issue --user-id usr_... --client-name "ci-bot"
 ```
 
-This prints an `access_token` of the form `lmx_a<id>_<secret>` exactly once. Supply it to the CLI by setting it as the bearer for the Hub transport. Issuing, listing, and revoking these tokens is covered in [Admin CLI](/docs/operating/admin-cli/).
+This prints an `access_token` of the form `lmx_a<id>_<secret>` exactly once. Supply it to the CLI by setting it as the bearer for the Hub transport. Issuing, listing, and revoking these tokens is covered under [API tokens](#api-tokens) below.
 
 ## Worker-spawned environment variables
 
@@ -217,8 +212,8 @@ Commands under `agent ...` and `terminal ...` pin the tab type for you. As a saf
 ### Conflicts and missing IDs
 
 - An **explicit** flag you typed always wins over an env-derived value, silently shadowing a disagreeing env default.
-- Two **explicit** inputs that disagree on the same derived field are a hard error: `{"error":{"code":"invalid_request","message":"conflicting inputs: ..."}}`.
-- If the resolver still can't satisfy a required field, you get `invalid_request` naming the missing ID(s), e.g. "missing required ID(s): `--workspace-id` (or pass `--tab-id` / `--tile-id` to derive it)".
+- Two **explicit** inputs that disagree on the same derived field are a hard error with the code `invalid_request`.
+- If the resolver still can't satisfy a required field, you get `invalid_request`, and the message identifies each missing ID and the flags that can derive it.
 
 Resolver-rejected input always uses code `invalid_request`; a transport/derivation failure (the RPC itself errored) surfaces as `resolve_failed`.
 
@@ -248,7 +243,7 @@ leapmux control workspace create --title "Release 2.0"
 
 `workspace list` returns the workspaces you own; workspace access is owner-only.
 
-`workspace delete` cascades a Hub delete and then fans out worktree cleanup to every Worker that hosted tabs in the workspace, emitting `{workspace_id, worker_ids, status, cleanup:[...]}` where `status` is `ok` or `partial`. If the *calling* tab lives in the workspace you're deleting, the [self-target guard](#self-target-guard) refuses unless you pass `--force` ("delete even if the calling tab lives in the target workspace (would kill the caller's own PTY)").
+`workspace delete` cascades a Hub delete and then fans out worktree cleanup to every Worker that hosted tabs in the workspace, emitting `{workspace_id, worker_ids, status, cleanup:[...]}` where `status` is `ok` or `partial`. If the *calling* tab lives in the workspace you're deleting, the [self-target guard](#self-target-guard) refuses unless you pass `--force`, which deletes the workspace even when the calling tab lives in it and therefore kills the caller's own PTY.
 
 ## Tab commands
 
@@ -319,7 +314,7 @@ leapmux control tab open --type agent \
 | `--before <tab-id>` | Place immediately before the referenced tab |
 | `--after <tab-id>` | Place immediately after the referenced tab |
 
-`--before`/`--after` take a **tab id** (not a rank). For those two, the destination tile is taken from the referenced tab's tile; if you also pass `--tile-id`/`--target-tile-id`, the two must agree. Misuse errors include "--first, --last, --before, and --after are mutually exclusive" and "no such tab".
+`--before`/`--after` take a **tab id** (not a rank). For those two, the destination tile is taken from the referenced tab's tile; if you also pass `--tile-id`/`--target-tile-id`, the two must agree. Two inputs are misuse. The flags `--first`, `--last`, `--before`, and `--after` are mutually exclusive, so the command refuses more than one of them. It also refuses a `--before`/`--after` tab id that no tab uses.
 
 ### Closing a tab
 
@@ -332,7 +327,7 @@ leapmux control tab close --tab-id "$T" --worktree push
 | `--force` | Self-target override: close even if the target is the calling tab |
 | `--worktree keep\|push\|discard` | Worktree disposition (`remove` is a synonym for `discard`) |
 
-`--worktree` is **required** when the close would remove the last tab for a worktree, or close the last tab on a non-worktree branch that has uncommitted or unpushed changes — omitting it then returns an `invalid_request` with the details. `--worktree push` runs `git push` and fails with `invalid_request` if the branch isn't pushable. `--worktree discard` fails with `invalid_request` ("cannot discard: …") when git refuses to remove the worktree — it is locked, or git no longer lists the path. The CLI runs this check before it tombstones the tab. The removal itself starts after the tab is gone, and the frontend disables the same choice for the same reason. The command emits `{tab_id, tab_type, tombstoned, worktree?, worker_close_error?}`. The CLI inspects every tab type, file tabs included: a file tab holds a worktree open and sits on a branch exactly as an agent or terminal tab does. See [Worktrees and Branches](/docs/using/worktrees-and-branches/) for the disposition rules.
+`--worktree` is **required** when the close would remove the last tab for a worktree, or close the last tab on a non-worktree branch that has uncommitted or unpushed changes — omitting it then returns an `invalid_request` with the details. `--worktree push` runs `git push` and fails with `invalid_request` if the branch isn't pushable. `--worktree discard` fails with `invalid_request` when git refuses to remove the worktree — it is locked, or git no longer lists the path. The CLI runs this check before it tombstones the tab. The removal itself starts after the tab is gone, and the frontend disables the same choice for the same reason. The command emits `{tab_id, tab_type, tombstoned, worktree?, worker_close_error?}`. The CLI inspects every tab type, file tabs included: a file tab holds a worktree open and sits on a branch exactly as an agent or terminal tab does. See [Worktrees and Branches](/docs/using/worktrees-and-branches/) for the disposition rules.
 
 ### Renaming and moving
 
@@ -449,7 +444,7 @@ leapmux control agent messages --tab-id "$T" --follow
 
 Notes:
 
-- `agent send` requires one of `--message` or `--stdin`; passing neither is an `invalid_request` ("--message or --stdin is required"). If you pass both, `--message` wins and `--stdin` is ignored.
+- `agent send` requires one of `--message` or `--stdin`; passing neither is an `invalid_request`. If you pass both, `--message` wins and `--stdin` is ignored.
 - `agent messages` returns the most recent page by default (`--anchor latest`). Pick a different page with `--anchor oldest` (the first messages in history), `--anchor before --cursor-seq N` (the page older than seq N), or `--anchor after --cursor-seq N` (the page newer than seq N). `--cursor-seq` is required for `before`/`after` and rejected for `latest`/`oldest`. Messages always come back ascending by seq.
 - `agent messages --limit` defaults to 50, which is also the Hub's cap. Without `--follow` you get one page as a JSON array; with `--follow` you get the first page followed by new messages as JSON-lines, reconnecting automatically on transient drops. `--follow` exists **only** on `agent messages`, not on `events watch`. `--follow` cannot be combined with `--anchor oldest` or `--anchor before` (paging backward through history while tailing the live stream forward is contradictory); use `--anchor latest` (the default) or `--anchor after --cursor-seq N` with `--follow`.
 - `agent set` applies model/effort/permission-mode and repeatable `--option key=value` provider options. Most settings (model, effort, permission-mode) apply live on providers that support it (e.g. Claude Code, Codex); changes a provider can't apply to the running process trigger a restart (e.g. switching effort back to auto). See [Coding Agents](/docs/using/coding-agents/) for the per-provider settings.
@@ -472,7 +467,7 @@ printf 'ls -la\n' | leapmux control terminal send --tab-id "$T" --stdin
 leapmux control terminal get --tab-id "$T" --screen
 ```
 
-`terminal send` rejects an empty payload ("--data or --stdin (with non-empty input) is required"). Use `--stdin` for binary, escape sequences, or pasted content. `terminal get` returns a metadata map by default (geometry, shell, working dir, git info, status); `--screen` prints the retained PTY window directly to stdout with ANSI intact. Terminals receive remote-control env vars automatically — see [Terminals](/docs/using/terminals/).
+`terminal send` rejects an empty payload: pass `--data`, or `--stdin` with non-empty input. Use `--stdin` for binary, escape sequences, or pasted content. `terminal get` returns a metadata map by default (geometry, shell, working dir, git info, status); `--screen` prints the retained PTY window directly to stdout with ANSI intact. Terminals receive remote-control env vars automatically — see [Terminals](/docs/using/terminals/).
 
 ## File and git inspection
 
@@ -582,6 +577,143 @@ leapmux control tile split --tile-id "$TILE" --direction vertical
 leapmux control layout set --workspace-id "$WS" --file before.json
 ```
 
+## `admin` — hub administration over RPC
+
+`leapmux control admin ...` is the online, authenticated face of hub administration. Every group calls the hub's Admin RPCs with your normal control credential. The hub itself checks that the caller is an administrator, and answers `permission_denied` to every other login.
+
+```text
+leapmux control admin settings     list | get KEY | set KEY VALUE | set-secret KEY JSON | reset KEY
+leapmux control admin user         list | get | create | update | delete | grant-admin | revoke-admin | reset-password | list-sessions
+leapmux control admin session      list | revoke | revoke-user | purge-expired
+leapmux control admin worker       list | get | deregister
+leapmux control admin worker reg-key  list | revoke | purge-expired
+leapmux control admin oauth-provider  add | list | remove | enable | disable
+leapmux control admin captcha      show | set | enable | disable | reset
+leapmux control admin rate-limit   list | set | enable | disable | reset
+leapmux control admin api-token    list | issue | revoke
+leapmux control admin delegation-token  list | revoke
+```
+
+These verbs are RPC calls, so there is no `--data-dir` and no `--config`; neither flag exists on any admin leaf. `--hub` behaves like every other control group. Output uses the control JSON envelope (`{"data": ...}`) — pipe it through `jq`.
+
+> **Offline break-glass is `leapmux recover`.** First-admin bootstrap, password reset with the hub stopped, `db`, and `encryption-key` surgery stay offline — see [Recovery](/docs/operating/recover/). Everything else is here.
+
+### The admin gate and the worker-IPC transport
+
+Admin commands **never** use the worker-IPC transport: they refuse when `LEAPMUX_CONTROL_SOCK` is set, because the worker's IPC bridge is a typing device, not a security boundary. From inside a spawned agent there is no way to reach the admin surface; run these from your own machine with an admin login.
+
+### Hub settings
+
+```bash
+leapmux control admin settings list
+leapmux control admin settings get smtp
+leapmux control admin settings set smtp '{"port":465}'
+leapmux control admin settings set-secret smtp '{"password":"..."}'
+leapmux control admin settings reset smtp
+```
+
+`set` merges a partial JSON document (or a bare scalar) onto the key's current value. The hub validates the merged value and commits it in one transaction. The CLI refuses a value that opens a JSON document but does not parse; that check runs locally, before the CLI contacts the hub.
+
+**When a write takes effect** depends on the key's propagation class. A `hot` key reaches the hub instance that serves the write at once, because that instance replaces its cached settings snapshot right after the commit. Another hub instance on the same database picks the same change up within ~30 seconds, the lifetime of its own settings cache. A `restart` key applies only after a hub restart. Every verb that reports one key states the class: `list`, `get`, and `set` each carry a `propagation` field of `hot` or `restart`, and the Preferences dialog's administration panels show a "Requires Restart" badge.
+
+[Configuration](/docs/operating/configuration/) documents what each key does. The [`captcha`](#captcha) and [`rate-limit`](#rate-limits) groups are sugar over the same settings keys; each composes the partial documents for you.
+
+### Captcha
+
+The `captcha` group is client-side sugar over the `captcha.*` settings keys: each verb composes the partial JSON documents for you and sends them in one atomic write.
+
+```bash
+leapmux control admin captcha show
+leapmux control admin captcha set --provider turnstile --site-key 0x4AAAA... --secret 0x4AAAA...
+leapmux control admin captcha set --cost 20000            # tune the active provider in place
+leapmux control admin captcha enable
+leapmux control admin captcha disable
+leapmux control admin captcha reset [--provider altcha|recaptcha_v3|turnstile]
+```
+
+`show` reports every captcha settings key (`captcha.enabled`, `captcha.selected`, `captcha.altcha`, `captcha.recaptcha_v3`, `captcha.turnstile`). `enable` and `disable` take no flags, and `disable` leaves the honeypot check active.
+
+`set` flags, and the provider that owns each one:
+
+| Flag | Owning provider | Meaning |
+| --- | --- | --- |
+| `--provider` | any | Target and select `altcha`, `recaptcha_v3`, or `turnstile`. Omit it to tune the active provider in place. |
+| `--algorithm` | `altcha` | ALTCHA algorithm. |
+| `--cost` | `altcha` | Algorithm cost parameter. |
+| `--memory-cost` | `altcha` | Algorithm memory cost. |
+| `--parallelism` | `altcha` | Algorithm parallelism. |
+| `--expires` | `altcha` | Challenge expiry in seconds. |
+| `--site-key` | `recaptcha_v3`, `turnstile` | Provider site key. |
+| `--secret` | `recaptcha_v3`, `turnstile` | Provider secret. The hub stores it encrypted. |
+| `--min-score` | `recaptcha_v3` | Minimum score, greater than 0 and not greater than 1. |
+
+Four refusals are worth knowing before you type the command:
+
+- A tuning flag whose owning provider is not the target is **refused**, never dropped and never applied to a different key. The error identifies the flag and the target provider.
+- An empty `--site-key` or `--secret` is refused, because an empty half fails every verification.
+- An invocation that passes no flag at all is refused; pass `--provider` or a tuning flag.
+- The hub refuses a selected external provider whose key pair is incomplete, so pass `--site-key` and `--secret` in the same invocation that selects `recaptcha_v3` or `turnstile`.
+
+`--provider` also **enables** captcha when it switches provider, so a hub you disabled for debugging does not stay undefended through a provider change. Tuning in place leaves the switch alone.
+
+`reset` with no flag returns every captcha key to its default. `reset --provider X` resets that provider's row only; when X is the selected provider, the command returns the selection to its ALTCHA default first, so every intermediate state stays legal.
+
+### Rate limits
+
+The `rate-limit` group is sugar over the `rate_limit.<operation>` settings keys. `change-password` is the one catalogued operation today; a typo answers with the known names before the CLI dials the hub.
+
+```bash
+leapmux control admin rate-limit list
+leapmux control admin rate-limit set --operation change-password --max-attempts 5 --window 900
+leapmux control admin rate-limit enable  --operation change-password
+leapmux control admin rate-limit disable --operation change-password
+leapmux control admin rate-limit reset   --operation change-password
+```
+
+| Flag | Applies to | Meaning |
+| --- | --- | --- |
+| `--operation` | `set`, `enable`, `disable`, `reset` | The operation to limit. Required; known value: `change-password`. |
+| `--max-attempts` | `set` | Failed attempts allowed per window (1–1000). |
+| `--window` | `set` | Window length in seconds (60–86400). |
+
+`list` takes no flags and reports every `rate_limit.*` key. `set` needs `--max-attempts`, `--window`, or both; it merges the field you pass and keeps the other. `set` never writes the switch — `enable` and `disable` own it — so adjusting a window cannot re-arm a limiter that you deliberately turned off.
+
+### User passwords
+
+```bash
+leapmux control admin user reset-password --username alice
+# New password: (no echo)
+```
+
+Address the user with `--id` or `--username`. The CLI prompts for the password when `--password` is omitted, so the secret stays out of the shell history and out of the process table.
+
+A reset destroys every credential the old password authenticated: all of the user's sessions are deleted, and all of their API and delegation tokens are revoked. The envelope reports the two token counts. Resetting your **own** password ends your own sessions and tokens too, including the credential that made the call — log in again with the new password.
+
+The offline twin is [`leapmux recover password reset`](/docs/operating/recover/#password-reset), for a hub that is stopped.
+
+### API tokens
+
+```bash
+leapmux control admin api-token issue --user-id usr_... --client-name "ci-bot" --ttl 3600
+```
+
+Address the owner with `--user-id` or `--username`, the selector every other user-addressing verb takes. The envelope carries `access_token` / `refresh_token` / `token_id` exactly once; they cannot be retrieved later. Use the access token as the bearer for a headless `LEAPMUX_HUB=...` control CLI.
+
+## Sockets, `--hub unix:`/`npipe:`, and login
+
+A `--hub` value may be a hub IPC listener (`unix:$HOME/.config/leapmux/hub/hub.sock` on Unix, `npipe:...` on Windows) as well as an http(s) URL. A socket hub URL is still the HUB peer: the CLI presents the same `Authorization: Bearer` credential as over http(s) — only the worker-IPC transport uses the internal `X-LeapMux-Token` header.
+
+Login rules:
+
+- **Solo needs no login.** Solo mode authenticates every request as the local user; there is nothing to log in with (and the device-code flow cannot complete there — CLI activation is cookies-only and solo has no cookie session).
+- A **non-solo hub over a socket** uses `--device-code`: `leapmux control auth login --hub unix:...hub.sock --device-code` dials the socket for the token exchange while you approve in a browser against the hub's **public** origin (which the hub derives itself from its settings — not from `--hub`). The PKCE local-redirect flow is refused for socket URLs with a message pointing at `--device-code`, because a browser cannot reach a socket hub origin.
+
+```bash
+leapmux hub &
+leapmux control auth login --hub unix:$HOME/.config/leapmux/hub/hub.sock --device-code
+leapmux control admin settings list --hub unix:$HOME/.config/leapmux/hub/hub.sock
+```
+
 ## Error code reference
 
 | Code | Typical cause |
@@ -611,6 +743,6 @@ For the full trust model, what the Hub can and cannot see, and the encryption pr
 - [Coding Agents](/docs/using/coding-agents/) — providers, models, effort, control prompts, and resume that `agent` commands drive.
 - [Terminals](/docs/using/terminals/) — PTY sessions, shells, and the automatic `LEAPMUX_CONTROL_*` injection.
 - [Managing Workers](/docs/operating/managing-workers/) — Worker registration, approval, and TOFU pinning.
-- [Admin CLI](/docs/operating/admin-cli/) — `leapmux admin api-token` for headless service-account tokens.
+- [Recovery](/docs/operating/recover/) — the offline break-glass tree.
 - [Tabs and Layout](/docs/using/tabs-and-layout/) — the tile/split/grid model that `tile` and `layout` manipulate.
 - [Worktrees and Branches](/docs/using/worktrees-and-branches/) — the worktree dispositions used by `tab close --worktree`.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -200,51 +199,13 @@ func TestOpenAgent_Validate_UseWorktreePathUnknown(t *testing.T) {
 	assert.Zero(t, countAgentRows(t, svc))
 }
 
-// ---------- OpenAgent: title + session ID validation ----------
-
-func TestOpenAgent_Validate_TitleTooLong(t *testing.T) {
-	t.Parallel()
-
-	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t)
-	defer drainAllInFlight(svc)
-
-	longTitle := strings.Repeat("a", 256) // exceeds the 128-char cap
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir: repoDir,
-		Title:      longTitle,
-	}, w)
-
-	msg := requireInvalidArgument(t, w)
-	assert.Contains(t, msg, "title")
-	assert.Zero(t, countAgentRows(t, svc))
-}
-
-func TestOpenAgent_Validate_TitleStripsControlChars(t *testing.T) {
-	t.Parallel()
-
-	repoDir := initRepo(t)
-	svc, d, w := setupTestService(t)
-	defer drainAllInFlight(svc)
-
-	dispatch(d, "OpenAgent", &leapmuxv1.OpenAgentRequest{
-		WorkingDir: repoDir,
-		Title:      "Hello\x00World", // NUL byte — stripped by SanitizeName
-	}, w)
-
-	// Title sanitization strips control chars rather than rejecting outright;
-	// the request succeeds and the DB row holds the cleaned title.
-	require.Empty(t, w.errors)
-	require.Len(t, w.responses, 1)
-	require.Equal(t, 1, countAgentRows(t, svc))
-
-	rows, err := svc.Queries.ListAllAgentIDs(context.Background())
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	agent, err := svc.Queries.GetAgentByID(context.Background(), rows[0])
-	require.NoError(t, err)
-	assert.Equal(t, "HelloWorld", agent.Title)
-}
+// ---------- OpenAgent: session ID validation ----------
+//
+// The title is NOT validated here. Every title-writing RPC cleans the client's
+// title instead of refusing it, and title_cleaning_test.go covers all three
+// against one table. A session ID keeps its refusal: it is an opaque token
+// whose original bytes matter, so a silent strip would resume the wrong
+// session.
 
 func TestOpenAgent_Validate_SessionIDRejectsControlChar(t *testing.T) {
 	t.Parallel()

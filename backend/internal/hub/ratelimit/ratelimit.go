@@ -18,7 +18,14 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
+
+// SettingKeyPrefix starts every rate_limit.<operation> settings key.
+// limitKeys builds the keys with it and the admin CLI's `rate-limit list`
+// selects on it, so the two cannot disagree about which keys belong to
+// this domain.
+const SettingKeyPrefix = "rate_limit."
 
 // Operation identifies a rate-limited procedure family. The string is the
 // suffix of the rate_limit.<operation> settings key.
@@ -85,7 +92,7 @@ var defaults = map[Operation]opSpec{
 var limitKeys = func() map[Operation]*settings.Key[LimitValue] {
 	keys := make(map[Operation]*settings.Key[LimitValue], len(defaults))
 	for op, spec := range defaults {
-		keys[op] = settings.NewKey[LimitValue]("rate_limit."+string(op)).
+		keys[op] = settings.NewKey[LimitValue](SettingKeyPrefix + string(op)).
 			WithDefault(LimitValue{
 				Enabled:       true,
 				MaxAttempts:   spec.limits.MaxAttempts,
@@ -94,9 +101,19 @@ var limitKeys = func() map[Operation]*settings.Key[LimitValue] {
 			WithValidate(func(v LimitValue) error {
 				return ValidateLimits(Limits{MaxAttempts: v.MaxAttempts, WindowSeconds: v.WindowSeconds})
 			}).
-			WithDoc(
-				fmt.Sprintf("rate limit for %s (failed attempts per window)", op),
-				`{"enabled", "max_attempts", "window_seconds"}`)
+			WithUI(settings.UIMeta{
+				Category:     "rate-limits",
+				Title:        "Rate limit - " + string(op),
+				Summary:      fmt.Sprintf("rate limit for %s (failed attempts per window)", op),
+				HiddenInSolo: true,
+				Fields: []settings.Field{
+					{Name: "enabled", Label: "Enabled", Kind: settings.FieldBool},
+					{Name: "max_attempts", Label: "Max attempts", Kind: settings.FieldInt,
+						Min: ptrconv.Ptr[int64](1), Max: ptrconv.Ptr[int64](1000), Unit: "count"},
+					{Name: "window_seconds", Label: "Window", Kind: settings.FieldInt,
+						Min: ptrconv.Ptr[int64](60), Max: ptrconv.Ptr[int64](86400), Unit: "seconds"},
+				},
+			})
 	}
 	return keys
 }()

@@ -14,6 +14,7 @@
 //   --z-{dropdown,modal}
 
 import { globalFontFace, globalLayer, globalStyle } from '@vanilla-extract/css'
+import { DEFAULT_MONO_FONT_FAMILY } from '~/lib/fontStack'
 import { darkPalette, lightPalette } from '~/styles/palette'
 import { breakpoints } from '~/styles/tokens'
 
@@ -149,7 +150,7 @@ globalStyle(':root', {
     // palette.ts: NOTICE.html has no preference store to read from, so it
     // declares its own literals instead of these indirections.
     '--font-sans': `var(--ui-font-family, system-ui, sans-serif)`,
-    '--font-mono': `var(--mono-font-family, "Hack NF", Hack, "SF Mono", Consolas, monospace)`,
+    '--font-mono': `var(--mono-font-family, ${DEFAULT_MONO_FONT_FAMILY})`,
   },
 })
 

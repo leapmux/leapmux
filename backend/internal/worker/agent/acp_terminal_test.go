@@ -293,6 +293,61 @@ func TestACPTerminal_EmptyCommandTitleIsNotACommand(t *testing.T) {
 	assert.False(t, row.TitleIsCommand, "the fallback label is not a command")
 }
 
+// A command that holds nothing but the characters the title rule strips leaves
+// no label either, so it takes the same "shell" fallback the empty command
+// takes. The clean runs HERE for that reason: the registry cleans every title,
+// so a command left raw would reach the sink non-empty, skip this fallback, and
+// land as a blank row.
+func TestACPTerminal_CommandOfStrippedCharactersFallsBackToShell(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId": "sess-1",
+		"command":   "%",
+		"cwd":       b.workingDir,
+	})
+	resps := rec.wait(t, 1, 3*time.Second)
+	result, ok := resps[0]["result"].(map[string]interface{})
+	require.True(t, ok, "terminal/create must accept the command, or there is no row to inspect")
+	termID, _ := result["terminalId"].(string)
+	require.NotEmpty(t, termID)
+
+	sink.bgTasksMu.Lock()
+	row, found := sink.bgTasks[termID]
+	sink.bgTasksMu.Unlock()
+	require.True(t, found)
+	assert.Equal(t, "shell", row.Title, "a command that cleans to nothing takes the fallback label")
+	assert.False(t, row.TitleIsCommand, "the fallback label is not a command")
+}
+
+// A command that only PARTLY strips keeps its row and its flag. This is the
+// accepted cost of one rule for every title column, asserted at the provider
+// that owns the only rows whose title really is a command.
+func TestACPTerminal_CommandLosesItsTemplatingCharacters(t *testing.T) {
+	sink := &testSink{}
+	b, rec := newTerminalTestBase(t, sink)
+
+	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
+		"sessionId": "sess-1",
+		"command":   `printf '%s' "$HOME"`,
+		"cwd":       b.workingDir,
+	})
+	resps := rec.wait(t, 1, 3*time.Second)
+	result, ok := resps[0]["result"].(map[string]interface{})
+	require.True(t, ok)
+	termID, _ := result["terminalId"].(string)
+	require.NotEmpty(t, termID)
+
+	sink.bgTasksMu.Lock()
+	row, found := sink.bgTasks[termID]
+	sink.bgTasksMu.Unlock()
+	require.True(t, found)
+	assert.Equal(t, "printf 's' HOME", row.Title,
+		"the registry title is a label for the command, not a command to copy back and run")
+	assert.True(t, row.TitleIsCommand, "a stripped command is still a command")
+}
+
 func TestACPTerminal_RelativeCwdRejected(t *testing.T) {
 	sink := &testSink{}
 	b, rec := newTerminalTestBase(t, sink)

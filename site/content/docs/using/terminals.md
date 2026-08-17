@@ -60,10 +60,10 @@ The dialog has these fields:
 | --- | --- |
 | **"Worker"** | Selects which Worker spawns the shell. Options show `name (version, os, arch)`. A **"Refresh workers"** button re-queries online Workers. When none are connected: **"No workers online"**. |
 | **"Shell"** | Picks the shell binary. See [Shell selection](#shell-selection). |
-| **"Working Directory"** | Browses the Worker's filesystem (tree root is `~`). A text box above the tree shows the selected path, abbreviated with `~` for your home directory; type a path and press Enter (or click away) to go there. If the path style does not match the Worker's OS, a hint appears, for example `This looks like a POSIX path but the worker expects Windows paths.` Includes a show/hide-hidden-files toggle and a **"Refresh directory tree"** button. When no Worker is selected: **"No workers online. Connect a worker to browse directories."** |
+| **"Working Directory"** | Browses the Worker's filesystem (tree root is `~`). A text box above the tree shows the selected path, abbreviated with `~` for your home directory; type a path and press Enter (or click away) to go there. If the path style does not match the Worker's OS, a hint appears below the box. Includes a show/hide-hidden-files toggle and a **"Refresh directory tree"** button. When no Worker is selected: **"No workers online. Connect a worker to browse directories."** |
 | **"Git options"** | Appears in the right column when the selected path is (or becomes) a git repository. Lets you open the terminal in a branch or worktree. See [Git options](#git-options-open-a-terminal-in-a-branch-or-worktree). |
 
-Submit with the **"Create"** button (it reads **"Creating..."** while in flight); cancel with **"Cancel"**. The Create button stays disabled until you have a Worker, a non-blank working directory, a selected shell, a valid git-mode choice, and a workspace. If creation fails you'll see **"Failed to create terminal"**.
+Submit with the **"Create"** button (it reads **"Creating..."** while in flight); cancel with **"Cancel"**. The Create button stays disabled until you have a Worker, a non-blank working directory, a selected shell, a valid git-mode choice, and a workspace. If creation fails, the dialog reports the failure.
 
 > **Note:** The dialog sends placeholder terminal dimensions of 80 columns by 25 rows. The real size is sent to the Worker the moment the terminal view mounts and measures itself, so the placeholder size is replaced before you see it.
 
@@ -176,7 +176,7 @@ A terminal moves through several states, reflected both in the terminal pane and
 How each state appears:
 
 - **Starting:** a centered spinner with a per-shell label like **"Starting zsh…"** (falling back to **"Starting terminal…"**). When you open a terminal with git options, the label may instead describe the git work, for example `Creating worktree "feature/x"…`. The spinner stays until the terminal has actually painted visible content, not merely until the PTY spawns.
-- **Startup failed:** a full-pane error titled **"Terminal failed to start"** with the Worker's error message.
+- **Startup failed:** a full-pane error that states the terminal failed to start, with the Worker's error message.
 - **Disconnected:** the tab label is faded.
 - **Exited:** the tab label is faded **and** struck through.
 
@@ -196,19 +196,11 @@ This works because the Worker keeps a rolling **100 KB screen buffer** for each 
 
 ### When a shell exits
 
-When the shell process exits, the Worker writes a notice into the screen so you can see it and so it persists:
+When the shell process exits, the Worker writes a notice into the screen so you can see it and so it persists. The notice reports that the terminal process exited, gives its exit code, and tells you that Enter restarts the shell.
 
-```text
-[Terminal process exited (0) - Press Enter to restart]
-```
+If the Worker was disconnected or forcibly shut down, the exit code is unknown. The notice then reports the disconnected Worker instead of an exit code, and it offers the same restart.
 
-If the Worker was disconnected or forcibly shut down (so the exit code is unknown) the notice instead reads:
-
-```text
-[Worker disconnected - Press Enter to restart]
-```
-
-On an exited terminal, **Enter** is the only key that does anything — it restarts the shell. All other input is ignored. A restart reuses the terminal's saved working directory, shell, and start directory, mints fresh remote-control credentials, and preserves the existing screen so the new prompt appears below the exit notice. If a restart can't proceed you'll see **"Failed to restart terminal"** (for example, the Worker reports the terminal is still running).
+On an exited terminal, **Enter** is the only key that does anything — it restarts the shell. All other input is ignored. A restart reuses the terminal's saved working directory, shell, and start directory, mints fresh remote-control credentials, and preserves the existing screen so the new prompt appears below the exit notice. If a restart can't proceed, LeapMux reports the failure (for example, the Worker reports the terminal is still running).
 
 ## Driving LeapMux from inside a terminal (remote control)
 
@@ -273,7 +265,7 @@ leapmux control tab rename --tab-id <tab> --title "Build watcher"
 
 ## Closing a terminal
 
-Closing a terminal tab removes it from your layout immediately and tells the Worker to tear down the PTY and reap the shell's whole process tree. If the close fails on the Worker side you'll see **"Failed to close terminal"**, but the tab is already gone from your view.
+Closing a terminal tab removes it from your layout immediately and tells the Worker to tear down the PTY and reap the shell's whole process tree. If the close fails on the Worker side, LeapMux reports the failure, but the tab is already gone from your view.
 
 If the terminal you're closing is the **last** tab for a worktree, or the last non-worktree tab on a branch with unsaved work — uncommitted changes, unpushed commits, or a branch that was never pushed to a remote — LeapMux shows the **"Close last tab"** confirmation so you don't lose work. From there you can push, close anyway, or — for a worktree — schedule the worktree for removal. This flow is described in full in [Worktrees & Branches](/docs/using/worktrees-and-branches/).
 

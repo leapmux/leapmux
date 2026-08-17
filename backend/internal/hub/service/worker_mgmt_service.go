@@ -11,7 +11,6 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
-	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -36,34 +35,62 @@ const (
 // WorkerManagementService implements the Hub-side service called by Frontend
 // to manage worker registration keys and worker rows.
 type WorkerManagementService struct {
-	store       store.Store
-	workerMgr   *workermgr.Manager
-	broadcaster *HubEventBroadcaster
-	notifier    *notifier.Notifier
-	mail        mail.Sender
-	renderer    mail.Renderer
-	cfg         *config.Config
-	set         *settings.Manager
-	// scopeCache is the delegation-scope memo SubmitOps resolves through;
-	// DeregisterWorker evicts the deregistered worker synchronously so the
-	// containment action is immediate rather than lagged by the cache TTL.
-	scopeCache *auth.DelegationScopeCache
+	store     store.Store
+	workerMgr *workermgr.Manager
+	mail      mail.Sender
+	renderer  mail.Renderer
+	set       *settings.Manager
+	// deregisterEffects is the shared post-deregister effect set: the
+	// delegation-scope eviction, the worker's stop notification, and the
+	// owner's workers-changed broadcast. It OWNS all three collaborators, so
+	// this surface and the admin surface run exactly the same effects, and
+	// this struct keeps no second handle on any of them.
+	deregisterEffects *WorkerDeregisterEffects
 }
 
 // NewWorkerManagementService creates a new WorkerManagementService.
 //
-// cfg is required so the service can reject EmailRegistrationInstructions
-// when SMTP isn't configured (defense-in-depth — the frontend already
-// hides the button). renderer carries the hub URL used in the
-// registration email's footer. scopeCache may be nil (tests); a private
-// cache is constructed then, so the field is never nil -- production passes
-// the instance shared with CRDTService so the eviction reaches the cache
-// SubmitOps resolves through.
-func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, cfg *config.Config, set *settings.Manager, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
+// The four collaborators every handler ANSWERS from are required, and a nil
+// one panics here rather than on a request. st backs every handler; mgr
+// supplies the per-row online bit ListWorkers and GetWorker report; set gates
+// EmailRegistrationInstructions on whether SMTP is configured
+// (defense-in-depth -- the frontend already hides the button); sender
+// delivers the mail that gate admits. None of the four has a meaningful
+// absent form: a nil mgr would report every worker offline and a nil set
+// would refuse every instruction email, so tolerating them would return a
+// WRONG answer for a wiring bug instead of failing the startup that made it.
+// That is why they differ from the effect collaborators below, and the
+// refusal is loud at construction so a new caller cannot forget one.
+//
+// b and n only carry post-deregister EFFECTS, so each is nil-tolerant
+// through WorkerDeregisterEffects (a test that exercises the store half
+// alone passes nil) -- the same rule auth.CredentialLifecycleEffects holds.
+// renderer is a value type; it carries the hub URL used in the registration
+// email's footer. scopeCache may be nil (tests); a private cache is
+// constructed then, so the effects always hold one -- production passes the
+// instance shared with CRDTService so the eviction reaches the cache
+// SubmitOps resolves through, and the containment action is immediate rather
+// than lagged by the cache TTL.
+func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEventBroadcaster, n *notifier.Notifier, sender mail.Sender, renderer mail.Renderer, set *settings.Manager, scopeCache *auth.DelegationScopeCache) *WorkerManagementService {
+	if st == nil {
+		panic("service: NewWorkerManagementService requires a store")
+	}
+	if mgr == nil {
+		panic("service: NewWorkerManagementService requires a worker registry")
+	}
+	if set == nil {
+		panic("service: NewWorkerManagementService requires a settings manager")
+	}
+	if sender == nil {
+		panic("service: NewWorkerManagementService requires a mail sender (use mail.NewDisabledSender)")
+	}
 	if scopeCache == nil {
 		scopeCache = auth.NewDelegationScopeCache(st)
 	}
-	return &WorkerManagementService{store: st, workerMgr: mgr, broadcaster: b, notifier: n, mail: sender, renderer: renderer, cfg: cfg, set: set, scopeCache: scopeCache}
+	return &WorkerManagementService{
+		store: st, workerMgr: mgr, mail: sender, renderer: renderer, set: set,
+		deregisterEffects: NewWorkerDeregisterEffects(scopeCache, n, b),
+	}
 }
 
 func (s *WorkerManagementService) CreateRegistrationKey(
@@ -258,20 +285,14 @@ func (s *WorkerManagementService) ListWorkers(
 		return nil, err
 	}
 
-	limit := int64(50)
-	cursor := ""
-	if req.Msg.GetPage() != nil {
-		if req.Msg.GetPage().GetLimit() > 0 {
-			limit = int64(req.Msg.GetPage().GetLimit())
-		}
-		if req.Msg.GetPage().GetCursor() != "" {
-			cursor = req.Msg.GetPage().GetCursor()
-		}
-	}
-
+	// AdminPageParams, not a hand-rolled default: it applies the same page
+	// default AND the same ceiling every other paginated handler uses. The
+	// hand-rolled form had no ceiling at all, so `page.limit = 100000`
+	// returned the caller's whole worker row set in one response.
+	reqPage := req.Msg.GetPage()
 	page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
-		PageParams:   store.PageParams{Cursor: cursor, Limit: limit},
+		PageParams:   AdminPageParams(reqPage.GetCursor(), int64(reqPage.GetLimit())),
 	})
 	if err != nil {
 		// A malformed or stale opaque cursor is bad client input, not a server
@@ -362,17 +383,9 @@ func (s *WorkerManagementService) DeregisterWorker(
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
 	}
 
-	// Deregistration is the operator's containment action against a compromised
-	// worker: evict its memoized delegation scope so outstanding tokens minted on
-	// it lose their cross-worker reach on the next SubmitOps, not a cache TTL
-	// later.
-	s.scopeCache.EvictWorker(req.Msg.GetWorkerId())
-
-	if err := s.notifier.SendDeregister(ctx, req.Msg.GetWorkerId()); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("send deregister: %w", err))
+	if err := s.deregisterEffects.Apply(ctx, req.Msg.GetWorkerId(), user.ID.String()); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-
-	s.broadcaster.NotifyWorkersChanged(user.ID.String())
 
 	return connect.NewResponse(&leapmuxv1.DeregisterWorkerResponse{}), nil
 }

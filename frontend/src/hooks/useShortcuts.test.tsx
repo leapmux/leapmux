@@ -28,32 +28,16 @@ vi.mock('~/api/platformBridge', () => ({
   zoomOutWebview: vi.fn(),
 }))
 
-vi.mock('~/lib/externalEditors', () => {
-  // vi.mock replaces the module from importers' perspective, but does NOT
-  // rewrite intra-module references — so the real `resolvePreferredEditor`
-  // would call the real `getPreferredEditorId`, bypassing the test mocks.
-  // Mirror the (tiny) prod logic here against the mocked getters/setters.
-  // The real implementation is covered separately in `externalEditors.test.ts`.
-  const getPreferredEditorId = vi.fn<() => string | undefined>()
-  const setPreferredEditorId = vi.fn<(id: string) => void>()
-  return {
-    getPreferredEditorId,
-    setPreferredEditorId,
-    loadDetectedEditors: () => loadDetectedEditorsMock(),
-    resolvePreferredEditor: <T extends { id: string }>(editors: readonly T[]): T | undefined => {
-      if (editors.length === 0)
-        return undefined
-      const mru = getPreferredEditorId()
-      const target = editors.find(e => e.id === mru) ?? editors[0]
-      if (target.id !== mru)
-        setPreferredEditorId(target.id)
-      return target
-    },
-  }
-})
+// Only the DETECTION is mocked. `resolvePreferredEditor` takes the pin and
+// the writer as arguments, so the real one runs here — a hand-mirrored copy
+// of its logic in this file could pass while the real function was wrong.
+vi.mock('~/lib/externalEditors', async importOriginal => ({
+  ...await importOriginal<typeof import('~/lib/externalEditors')>(),
+  loadDetectedEditors: () => loadDetectedEditorsMock(),
+}))
 
 vi.mock('~/components/shell/UserMenuState', () => ({
-  setShowPreferencesDialog: vi.fn(),
+  openPreferences: vi.fn(),
 }))
 
 vi.mock('~/lib/fileTreeOps', () => ({
@@ -135,6 +119,8 @@ function makeProps() {
     writeToFocusedTerminal: vi.fn(),
     getCurrentTabContext: () => ({ workerId: '', workingDir: '', homeDir: '', gitToplevel: '' }),
     customKeybindings: () => [],
+    preferredEditorId: (): string | undefined => undefined,
+    setPreferredEditorId: vi.fn(),
   }
 }
 
@@ -445,8 +431,7 @@ describe('useShortcuts', () => {
         { id: 'vscode', displayName: 'VS Code' },
         { id: 'zed', displayName: 'Zed' },
       ])
-      const editors = await import('~/lib/externalEditors')
-      vi.mocked(editors.getPreferredEditorId).mockReturnValue('zed')
+      props.preferredEditorId = () => 'zed'
 
       render(() => {
         useShortcuts(props as any)
@@ -455,6 +440,7 @@ describe('useShortcuts', () => {
 
       await getCommand('app.openInExternalEditor')!.handler()
       expect(openInEditorMock).toHaveBeenCalledWith('zed', '/p')
+      expect(props.setPreferredEditorId).not.toHaveBeenCalled()
     })
 
     it('falls back to first detected editor when MRU is unset', async () => {
@@ -464,8 +450,7 @@ describe('useShortcuts', () => {
         { id: 'vscode', displayName: 'VS Code' },
         { id: 'zed', displayName: 'Zed' },
       ])
-      const editors = await import('~/lib/externalEditors')
-      vi.mocked(editors.getPreferredEditorId).mockReturnValue(undefined)
+      props.preferredEditorId = () => undefined
 
       render(() => {
         useShortcuts(props as any)
@@ -474,7 +459,9 @@ describe('useShortcuts', () => {
 
       await getCommand('app.openInExternalEditor')!.handler()
       expect(openInEditorMock).toHaveBeenCalledWith('vscode', '/p')
-      expect(editors.setPreferredEditorId).toHaveBeenCalledWith('vscode')
+      // The fallback persists through the REACTIVE preference the props
+      // carry, so the editor menu and the settings row see it too.
+      expect(props.setPreferredEditorId).toHaveBeenCalledWith('vscode')
     })
 
     it('falls back to first detected when MRU points at an uninstalled editor', async () => {
@@ -483,8 +470,7 @@ describe('useShortcuts', () => {
       loadDetectedEditorsMock.mockResolvedValue([
         { id: 'vscode', displayName: 'VS Code' },
       ])
-      const editors = await import('~/lib/externalEditors')
-      vi.mocked(editors.getPreferredEditorId).mockReturnValue('zed')
+      props.preferredEditorId = () => 'zed'
 
       render(() => {
         useShortcuts(props as any)
@@ -493,7 +479,7 @@ describe('useShortcuts', () => {
 
       await getCommand('app.openInExternalEditor')!.handler()
       expect(openInEditorMock).toHaveBeenCalledWith('vscode', '/p')
-      expect(editors.setPreferredEditorId).toHaveBeenCalledWith('vscode')
+      expect(props.setPreferredEditorId).toHaveBeenCalledWith('vscode')
     })
   })
 })

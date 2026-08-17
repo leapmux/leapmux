@@ -88,7 +88,7 @@ That anonymity is permanent: the initiator is never authenticated at the Noise l
 ### Why this design defeats a curious Hub
 
 - The ML-KEM ciphertext is bound into the handshake hash, so tampering with it makes the next message's authentication fail.
-- The Worker signs a transcript covering the handshake hash plus the ML-KEM material with its SLH-DSA private key. If the signature does not verify, the Frontend aborts with `noise-hybrid: SLH-DSA signature verification failed` and zeroes its handshake state — a Hub that altered the exchange cannot complete the handshake.
+- The Worker signs a transcript covering the handshake hash plus the ML-KEM material with its SLH-DSA private key. If the signature does not verify, the Frontend aborts the handshake and zeroes its handshake state — a Hub that altered the exchange cannot complete the handshake.
 - Both the classical and post-quantum shared secrets are mixed into the final transport keys, so an attacker would have to break *both* X25519 and ML-KEM to recover the session.
 
 ### Transport hardening
@@ -144,9 +144,9 @@ Two details are worth knowing, because both are easy to assume wrong:
 - **A password change spares the session you are changing it from.** That session's channels are restamped to the new authentication generation first, so the user-wide revocation that follows tears down every *other* session's channels but not the one in your hands.
 - **Routine token rotation and profile edits do not close channels.** Rotating an API token's secret keeps the token row valid, so its channels are re-armed at the new expiry rather than dropped; a profile change (an admin-role update, say) only invalidates cached user data.
 
-Teardown is immediate when the Hub handling the request is also the one holding the channel — logout, password change, and in-process token revocation land at once. Admin CLI operations (account deletion, force-logout) run in a separate process, so they reach the Hub through a durable revocation ledger that every Hub replays. That is what makes revocation work across a multi-Hub deployment, at the cost of a brief propagation delay rather than a synchronous kill.
+Teardown is immediate when the Hub handling the request is also the one holding the channel — logout, password change, and in-process token revocation land at once. Online admin operations (account deletion, force-logout) reach the Hub through the same authenticated RPC path, and their revocations land through a durable revocation ledger that every Hub replays. That is what makes revocation work across a multi-Hub deployment, at the cost of a brief propagation delay rather than a synchronous kill.
 
-See [Admin CLI](/docs/operating/admin-cli/) for token revocation and [Remote Control CLI](/docs/operating/control-cli/) for how delegation tokens are used.
+Revoke a credential with `leapmux control admin`: `api-token revoke`, `delegation-token revoke`, `session revoke`, or `session revoke-user`. See [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc) for the flags, and [Remote Control CLI](/docs/operating/control-cli/) for how delegation tokens are used.
 
 ### What a delegation token can reach
 
@@ -178,11 +178,9 @@ This is what defeats a compromised Hub. Because the Hub is the party that tells 
 
 ### The "Worker public key changed" dialog
 
-When a mismatch occurs, the Frontend shows a dialog titled **"Worker public key changed"**:
+When a mismatch occurs, the Frontend shows a dialog titled **"Worker public key changed"**. The dialog identifies the Worker, and it states that the key changed since the last connection. It also states that the cause is either a legitimate key rotation or a security problem.
 
-> The public key for worker `<workerId>` has changed since the last connection. This could indicate a legitimate key rotation or a potential security issue.
-
-It displays an **Expected:** fingerprint and an **Actual:** fingerprint, and warns: *"If you did not expect this change, reject the connection and verify the worker's identity before accepting."* Two buttons are offered — **Reject** and **Accept** (the Accept button is styled as a danger action). Dismissing the dialog counts as Reject. If the confirmation UI is not available for any reason, the transport defaults to reject (fail-closed).
+It displays an **Expected:** fingerprint and an **Actual:** fingerprint, and it tells you to reject the connection and to verify the Worker's identity out-of-band before you accept an unexpected change. Two buttons are offered — **Reject** and **Accept** (the Accept button is styled as a danger action). Dismissing the dialog counts as Reject. If the confirmation UI is not available for any reason, the transport defaults to reject (fail-closed).
 
 > **Tip:** The fingerprints are **4 dash-joined English words** derived from a hash of the Worker's composite public key (for example, `deep-idea-obey-tack`). Every word is drawn from a fixed 256-word list and is exactly four letters, so a fingerprint is always the same shape and easy to read aloud. The wordlist is identical across the browser and the Worker, so you can read the fingerprint over a trusted out-of-band channel (a phone call, an in-person check) and confirm it matches before accepting a changed key.
 
@@ -204,9 +202,7 @@ Solo mode collapses the trust boundary on purpose. It runs the Hub and the Worke
 
 So in solo mode the threat model reduces to **local-host trust**. The E2EE channel, the composite keypair, and TOFU pinning all still operate end-to-end inside the single process, but that protocol-level separation offers **no protection against a local attacker** who can reach the loopback port.
 
-> **Warning:** If you point solo mode at a non-loopback address, LeapMux warns you at startup:
->
-> > solo mode is binding to a non-loopback address — every request is auto-authenticated as the admin, so anyone who can reach this port has full admin access without credentials. Restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or run `leapmux hub` for real authentication.
+> **Warning:** If you point solo mode at a non-loopback address, LeapMux warns you at startup. The warning states that every request is auto-authenticated as the admin, so anyone who can reach the port has full admin access without credentials. It also tells you to restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel) or to run `leapmux hub` for real authentication.
 >
 > Heed it. If you need authentication, run `leapmux hub` (distributed mode) instead of exposing solo mode. See [Running LeapMux](/docs/operating/running-leapmux/) for the differences between run modes.
 
@@ -220,7 +216,7 @@ Distinct from the channel E2EE above, the Hub encrypts a small set of stored sec
 
 Be clear on what this does **not** cover, since "encrypted at rest" invites over-reading. It is not the Frontend↔Worker channel keys, and it does not touch agent or terminal content (which never reaches the Hub at all). Other credentials in the database are protected by their storage form rather than this key: passwords are Argon2id hashes and API/delegation token secrets are HMAC hashes — neither is reversible, so neither needs encrypting. Worker auth tokens, registration keys, and session tokens are stored **as-is**.
 
-The key ring is managed with `leapmux admin encryption-key rotate | remove | reencrypt | rotate-pepper`. The full keystore, key-rotation runbook, database backends, and backup/restore guidance live in [Encryption & Data](/docs/operating/encryption-and-data/).
+The key ring is managed with `leapmux recover encryption-key rotate | remove | reencrypt | rotate-pepper`. The full keystore, key-rotation runbook, database backends, and backup/restore guidance live in [Encryption & Data](/docs/operating/encryption-and-data/).
 
 > **Warning:** The `encryption.key` file holds more than the encryption key ring. It also carries the **token pepper** — the HMAC key for every API and delegation token secret. Two consequences follow. The file and the database are a matched pair that must be backed up together: without the key file, the encrypted columns are permanently undecryptable. And `rotate-pepper` invalidates every API and delegation token at once — it takes effect on the next Hub restart, since a running Hub holds the pepper in memory from startup. Sessions, Worker auth tokens, and registration keys do not use the pepper and survive a rotation. Losing the file is therefore not only an OAuth-data loss; it takes every issued token with it.
 
@@ -235,7 +231,7 @@ If you run a Hub for a team, the security of the deployment rests largely on the
 5. **Never expose solo mode beyond loopback** for real use. If you bound it to a non-loopback address, you exposed unauthenticated admin access. Run `leapmux hub` for authenticated multi-user deployments, and firewall or tunnel any non-loopback access. See [Configuration](/docs/operating/configuration/) for listen addresses.
 6. **Mint registration keys carefully.** A valid registration key immediately produces an active Worker — there is no separate approval queue, so possession of a live key *is* the gate. Keys are single-use, expire 5 minutes after issue, and the UI dialog destroys the key when closed. Note the 5 minutes is per issuance, not a hard lifetime: an open registration dialog auto-extends its key as expiry approaches, so a key stays live as long as the dialog is open. Treat them as one-time secrets, deliver them over a trusted channel, and close the dialog when you are done. See [Managing Workers](/docs/operating/managing-workers/).
 7. **Teach users to take the key-change dialog seriously.** The "Worker public key changed" prompt is the user-facing line of defense against a Hub swapping a Worker. Users should reject unexpected changes and verify the 4-word fingerprint out-of-band before ever accepting.
-8. **Revoke credentials when needed, and know it tears down channels.** Revocation force-closes the affected user's open channels; see [Channels don't outlive their credential](#channels-dont-outlive-their-credential) for which operations do it and the two cases that behave unexpectedly. Use the [Admin CLI](/docs/operating/admin-cli/) for these operations.
+8. **Revoke credentials when needed, and know it tears down channels.** Revocation force-closes the affected user's open channels; see [Channels don't outlive their credential](#channels-dont-outlive-their-credential) for which operations do it and the two cases that behave unexpectedly. Run these operations with `leapmux control admin`: `session revoke-user`, `api-token revoke`, and `delegation-token revoke`. See [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc).
 
 ## Quick reference
 

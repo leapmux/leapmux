@@ -1,13 +1,10 @@
 /// <reference types="vitest/globals" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { KEY_PREFERRED_EDITOR } from './browserStorage'
 import {
   _resetEditorCacheForTests,
-  getPreferredEditorId,
   loadDetectedEditors,
   resolvePreferredEditor,
-  setPreferredEditorId,
 } from './externalEditors'
 
 const listEditorsMock = vi.fn()
@@ -21,30 +18,6 @@ vi.mock('~/api/platformBridge', async (importOriginal) => {
       listEditors: (refresh?: boolean) => listEditorsMock(refresh ?? false),
     },
   }
-})
-
-describe('mru editor preference', () => {
-  beforeEach(() => {
-    localStorage.clear()
-  })
-
-  it('returns undefined when nothing stored', () => {
-    expect(getPreferredEditorId()).toBeUndefined()
-  })
-
-  it('round-trips through localStorage', () => {
-    setPreferredEditorId('vscode')
-    expect(getPreferredEditorId()).toBe('vscode')
-    const raw = localStorage.getItem(KEY_PREFERRED_EDITOR)
-    expect(raw).not.toBeNull()
-    expect(JSON.parse(raw!).v).toBe('vscode')
-  })
-
-  it('handles overwrite', () => {
-    setPreferredEditorId('vscode')
-    setPreferredEditorId('zed')
-    expect(getPreferredEditorId()).toBe('zed')
-  })
 })
 
 describe('loadDetectedEditors', () => {
@@ -149,37 +122,42 @@ describe('loadDetectedEditors', () => {
 })
 
 describe('resolvePreferredEditor', () => {
-  beforeEach(() => {
-    localStorage.clear()
+  const list = [
+    { id: 'vscode', displayName: 'VS Code' },
+    { id: 'zed', displayName: 'Zed' },
+  ]
+
+  it('returns undefined for an empty list, and persists nothing', () => {
+    const persist = vi.fn()
+    expect(resolvePreferredEditor([], 'zed', persist)).toBeUndefined()
+    expect(persist).not.toHaveBeenCalled()
   })
 
-  it('returns undefined for an empty list', () => {
-    expect(resolvePreferredEditor([])).toBeUndefined()
+  it('returns the pinned editor when it is still detected, and persists nothing', () => {
+    const persist = vi.fn()
+    expect(resolvePreferredEditor(list, 'zed', persist)?.id).toBe('zed')
+    expect(persist).not.toHaveBeenCalled()
   })
 
-  it('returns the MRU when it is still detected', () => {
-    setPreferredEditorId('zed')
-    const list = [
-      { id: 'vscode', displayName: 'VS Code' },
-      { id: 'zed', displayName: 'Zed' },
-    ]
-    expect(resolvePreferredEditor(list)?.id).toBe('zed')
-    expect(getPreferredEditorId()).toBe('zed')
+  it('falls back to the first entry and persists when the pin is gone', () => {
+    const persist = vi.fn()
+    expect(resolvePreferredEditor(list, 'idea', persist)?.id).toBe('vscode')
+    expect(persist).toHaveBeenCalledWith('vscode')
   })
 
-  it('falls back to the first entry and persists when MRU is missing', () => {
-    setPreferredEditorId('idea')
-    const list = [
-      { id: 'vscode', displayName: 'VS Code' },
-      { id: 'zed', displayName: 'Zed' },
-    ]
-    expect(resolvePreferredEditor(list)?.id).toBe('vscode')
-    expect(getPreferredEditorId()).toBe('vscode')
+  it('falls back to the first entry when nothing is pinned, and persists it', () => {
+    const persist = vi.fn()
+    expect(resolvePreferredEditor(list, undefined, persist)?.id).toBe('vscode')
+    expect(persist).toHaveBeenCalledWith('vscode')
   })
 
-  it('falls back to the first entry when no MRU is set, and persists it', () => {
-    const list = [{ id: 'vscode', displayName: 'VS Code' }]
-    expect(resolvePreferredEditor(list)?.id).toBe('vscode')
-    expect(getPreferredEditorId()).toBe('vscode')
+  // Both directions are the CALLER's. This module holds no storage
+  // accessor for the pin at all now: a second, non-reactive reader beside
+  // the preference signal is what put the menu label and the editor a
+  // launch opened out of step for the life of a page.
+  it('persists only through the injected writer', () => {
+    const persist = vi.fn()
+    expect(resolvePreferredEditor(list, 'idea', persist)?.id).toBe('vscode')
+    expect(persist).toHaveBeenCalledTimes(1)
   })
 })

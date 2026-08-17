@@ -108,7 +108,7 @@ describe('evaluateWhen', () => {
     })
   })
 
-  describe('aND (&&)', () => {
+  describe('logical and (&&)', () => {
     it('true && true = true', () => {
       setContext('a', true)
       setContext('b', true)
@@ -143,7 +143,7 @@ describe('evaluateWhen', () => {
     })
   })
 
-  describe('oR (||)', () => {
+  describe('logical or (||)', () => {
     it('true || false = true', () => {
       setContext('a', true)
       setContext('b', false)

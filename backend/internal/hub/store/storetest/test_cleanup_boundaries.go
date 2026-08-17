@@ -113,7 +113,6 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 			ClientType: "cli",
 			ClientName: "boundary-client",
 			SecretHash: []byte("secret"),
-			Scope:      "remote:*",
 		}))
 		n, err := st.APITokens().Revoke(ctx, apiID)
 		require.NoError(t, err)

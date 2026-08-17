@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures'
 import { focusActiveTerminal, getTerminalText, typeInTerminal, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI, waitForLayoutSave } from './helpers/ui'
+import { listTerminalsViaAPI } from './helpers/worktree'
 
 test.describe('Terminal', () => {
   test('should open a terminal and render xterm', async ({ page, authenticatedWorkspace }) => {
@@ -226,5 +227,40 @@ test.describe('Terminal', () => {
     expect(await getTerminalText(page)).toContain('KEEP_ON_SWITCH')
     // Shortly: catch-up / live bytes for what ran while hidden.
     await waitForTerminalText(page, 'HIDDEN_OUTPUT')
+  })
+  /**
+   * The sidebar tree's rename used to patch the local metadata and stop there:
+   * it called `renameAgent` for an agent and NOTHING for a terminal, so a
+   * terminal renamed from the sidebar reached no other client and lost the name
+   * on the next reload. Both rename affordances now go through one client-side
+   * write point.
+   *
+   * The title carries characters the rule strips, so this also proves the two
+   * sides agree: the tab strip shows the cleaned title straight away, and the
+   * worker stores that same title rather than the raw one. The worker RPC is
+   * what the poll asks -- the tab label alone is optimistic local state.
+   */
+  test('a sidebar rename stores the cleaned title on the worker', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    await openTerminalViaUI(page)
+
+    const terminalTab = page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+    await expect(terminalTab).toBeVisible()
+    const terminalId = await terminalTab.getAttribute('data-tab-id')
+    expect(terminalId).toBeTruthy()
+
+    const leaf = page.locator(`[data-testid="tab-tree-leaf"][data-tab-id="${terminalId}"]:visible`)
+    await leaf.dblclick()
+    const renameInput = leaf.locator('input')
+    await expect(renameInput).toBeVisible()
+    await renameInput.fill('Build $watcher "1"')
+    await renameInput.press('Enter')
+
+    await expect(terminalTab).toContainText('Build watcher 1')
+
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    await expect.poll(async () => {
+      const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
+      return terminals.map(t => t.title)
+    }, 'the sidebar rename must reach the worker, holding the cleaned title').toContain('Build watcher 1')
   })
 })

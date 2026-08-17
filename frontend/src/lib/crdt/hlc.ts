@@ -71,7 +71,7 @@ export function hlcClone(h: HlcShape | undefined | null): HLC | undefined {
 export function formatHlcWire(hlc: { physical: bigint, logical: bigint, clientId: string }): string {
   // Guard against a corrupted input whose clientId is undefined/null: the
   // template literal would otherwise stringify it as the literal "undefined"
-  // / "null", which parseHlcWire accepts (non-empty, ≤128 chars) and the hub's
+  // / "null", which parseHlcWire accepts (non-empty, ≤128 bytes) and the hub's
   // DecodeResumeHLC mirrors — silently shipping a cursor with a bogus client_id
   // that mis-filters the journal scan. proto3 normalizes an unset string to "",
   // which parseHlcWire rejects, so this only fires for non-proto paths; treat

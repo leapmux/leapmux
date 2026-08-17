@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"runtime"
 	"strings"
@@ -171,7 +172,8 @@ func (w *testResponseWriter) streamsSnapshot() []*leapmuxv1.InnerStreamMessage {
 type setupOption func(*setupConfig)
 
 type setupConfig struct {
-	remoteIPC ControlIPCFactory
+	remoteIPC    ControlIPCFactory
+	rewriteQuery func(string) string
 }
 
 // withRemoteIPC wires the worker's RemoteIPC factory before handlers are
@@ -179,6 +181,43 @@ type setupConfig struct {
 // LEAPMUX_CONTROL_* token without poking svc.ControlIPC directly.
 func withRemoteIPC(ipc ControlIPCFactory) setupOption {
 	return func(c *setupConfig) { c.remoteIPC = ipc }
+}
+
+// withQueryRewrite runs every statement through rewrite before it reaches the
+// database, so a test can fault ONE generated query and leave the rest alone.
+//
+// This is the only seam that reaches a read a handler makes AFTER its own id
+// gate already proved the row exists. Schema surgery cannot separate the two:
+// the gate and the read address the same table, and rewriting the read is the
+// only way to produce the missing row or the store fault that the gate makes
+// unreachable. Match on the `-- name: <Query> :one` header that sqlc puts at
+// the top of each statement, not on the SQL body, so a reworded query still
+// selects the same seam.
+func withQueryRewrite(rewrite func(query string) string) setupOption {
+	return func(c *setupConfig) { c.rewriteQuery = rewrite }
+}
+
+// rewritingDBTX hands each statement to rewrite and runs whatever comes back.
+// A rewrite that returns its argument unchanged is a passthrough.
+type rewritingDBTX struct {
+	inner   db.DBTX
+	rewrite func(string) string
+}
+
+func (r rewritingDBTX) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return r.inner.ExecContext(ctx, r.rewrite(query), args...)
+}
+
+func (r rewritingDBTX) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	return r.inner.PrepareContext(ctx, r.rewrite(query))
+}
+
+func (r rewritingDBTX) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return r.inner.QueryContext(ctx, r.rewrite(query), args...)
+}
+
+func (r rewritingDBTX) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return r.inner.QueryRowContext(ctx, r.rewrite(query), args...)
 }
 
 // setupTestService creates a minimal service.Service with an in-memory DB
@@ -241,6 +280,12 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *channel.Dis
 		SeedRegisteredBy: "user-1",
 	})
 	svc.ControlIPC = cfg.remoteIPC
+	// Before RegisterAll, exactly like every other field of Service: the
+	// struct's own contract makes that the last point at which a write is
+	// ordered ahead of every handler goroutine.
+	if cfg.rewriteQuery != nil {
+		svc.Queries = db.New(rewritingDBTX{inner: sqlDB, rewrite: cfg.rewriteQuery})
+	}
 
 	d := channel.NewDispatcher()
 	// RegisterAll binds svc.Cleanup itself, so tracked handlers dispatched

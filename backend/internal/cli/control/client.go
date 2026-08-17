@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -39,11 +40,33 @@ type Client struct {
 	Bearer     string
 	HTTPClient *http.Client
 	WSClient   *http.Client // HTTP/1.1 client for /ws/channel upgrade
+	// Pins is the per-hub TOFU pin store. Read it through pinStore, which
+	// opens it on first use; a test may set the field directly instead.
 	Pins       *PinStore
+	pinsOnce   sync.Once
+	pinsErr    error
 	UserID     string
 	Username   string
 	connectURL string
+	// peer identifies what the transport talks to. The URL scheme alone
+	// cannot: a `unix:`/`npipe:` URL may address either the hub's own IPC
+	// listener or a worker's per-agent IPC server, and the two consume
+	// DIFFERENT auth headers (the hub reads Authorization: Bearer; the
+	// worker's IPC server reads X-LeapMux-Token). Keying ApplyAuth off the
+	// peer rather than the scheme is what lets `--hub unix:.../hub.sock`
+	// work.
+	peer peerKind
 }
+
+// peerKind distinguishes the two transports a Client can carry.
+type peerKind int
+
+const (
+	// peerHub is the hub itself, over http(s) or its unix:/npipe: listener.
+	peerHub peerKind = iota
+	// peerWorkerIPC is the worker-local per-agent IPC server.
+	peerWorkerIPC
+)
 
 // ConnectURL returns the base URL ConnectRPC clients should use.
 // Equal to HubURL for hub-bound clients; equal to a placeholder
@@ -59,6 +82,56 @@ func (c *Client) ConnectURL() string {
 // a separate WebSocket client with no overall timeout.
 const defaultHTTPTimeout = 60 * time.Second
 
+// newHubClient builds a hub-bound client for hubURL, carrying creds when
+// the caller holds them and running anonymously when creds is nil.
+//
+// Both constructors below route through it, so a field added to Client
+// reaches both. The two differ ONLY in how they treat a credential that
+// does not load, which is the difference each one documents.
+func newHubClient(hubURL string, creds *CredentialFile) (*Client, error) {
+	httpClient, wsClient, connectURL, err := buildHTTPClients(hubURL)
+	if err != nil {
+		return nil, err
+	}
+	c := &Client{
+		HubURL:     hubURL,
+		HTTPClient: httpClient,
+		WSClient:   wsClient,
+		connectURL: connectURL,
+		peer:       peerHub,
+	}
+	if creds != nil {
+		c.Bearer = creds.AccessToken
+		c.UserID = creds.UserID
+		c.Username = creds.Username
+	}
+	return c, nil
+}
+
+// pinStore opens the per-hub TOFU pin store on FIRST USE.
+//
+// Only OpenE2EEChannel needs a pin, so a pins.json that cannot be read or
+// parsed must refuse that call and nothing else. Opening it in the
+// constructor made a corrupt file refuse every verb, including each
+// `control admin ...` verb, which reports the failure under the
+// not_logged_in code — a message that names neither the file nor the
+// cause.
+func (c *Client) pinStore() (*PinStore, error) {
+	// The preset test is INSIDE the Once, so two concurrent opens read the
+	// field through the same happens-before edge. Reading it first as a
+	// fast path is a data race with the Once body that writes it.
+	c.pinsOnce.Do(func() {
+		if c.Pins != nil {
+			return
+		}
+		c.Pins, c.pinsErr = NewPinStore(c.HubURL)
+	})
+	if c.pinsErr != nil {
+		return nil, c.pinsErr
+	}
+	return c.Pins, nil
+}
+
 // NewClient constructs a hub client from the on-disk credentials for
 // hubURL. Returns ErrNotLoggedIn if no credentials exist.
 func NewClient(hubURL string) (*Client, error) {
@@ -66,24 +139,27 @@ func NewClient(hubURL string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpClient, wsClient, connectURL, err := buildHTTPClients(hubURL)
-	if err != nil {
+	return newHubClient(hubURL, creds)
+}
+
+// NewClientOrAnonymous constructs a hub client that falls back to an
+// EMPTY credential when none is STORED. The hub — not the CLI — enforces
+// authentication: against a solo hub the interceptor authenticates every
+// request as the solo user regardless of headers, so `control admin`
+// works there with no login (solo cannot complete a login flow at all);
+// against any other hub the credential-less request simply answers
+// unauthenticated.
+//
+// Only ErrNotLoggedIn takes that fallback. A credential file that exists
+// but cannot be read or parsed is a fault the operator must see: running
+// anonymously instead turns a broken file into an "unauthenticated" reply
+// from the hub, which points at the login rather than at the file.
+func NewClientOrAnonymous(hubURL string) (*Client, error) {
+	creds, err := LoadCredentials(hubURL)
+	if err != nil && !errors.Is(err, ErrNotLoggedIn) {
 		return nil, err
 	}
-	pins, err := NewPinStore(hubURL)
-	if err != nil {
-		return nil, err
-	}
-	return &Client{
-		HubURL:     hubURL,
-		Bearer:     creds.AccessToken,
-		HTTPClient: httpClient,
-		WSClient:   wsClient,
-		Pins:       pins,
-		UserID:     creds.UserID,
-		Username:   creds.Username,
-		connectURL: connectURL,
-	}, nil
+	return newHubClient(hubURL, creds)
 }
 
 // NewClientFromEnv chooses the right transport based on env vars.
@@ -119,23 +195,30 @@ func NewLocalClient(socketURL, token string) (*Client, error) {
 		Bearer:     token,
 		HTTPClient: httpClient,
 		connectURL: connectURL,
+		peer:       peerWorkerIPC,
 	}, nil
 }
 
-// IsLocal reports whether this client targets a per-agent IPC socket
-// rather than a hub.
-func (c *Client) IsLocal() bool {
-	return locallisten.IsLocal(c.HubURL)
+// IsWorkerIPC reports whether this client was spawned inside an agent and
+// talks to the worker-local IPC server — the "am I a worker-spawned
+// agent" question. It is NOT "is the URL a socket": a hub reached over
+// its own `unix:`/`npipe:` listener is a hub peer (Bearer auth), not a
+// worker peer.
+func (c *Client) IsWorkerIPC() bool {
+	return c.peer == peerWorkerIPC
 }
 
-// authHeader returns the appropriate Authorization header for this
-// client's transport. Local IPC clients use X-LeapMux-Token; hub
-// clients use a Bearer header.
-func (c *Client) applyAuth(headers http.Header) {
+// ApplyAuth stamps the credential header the PEER consumes. Worker-IPC
+// peers read X-LeapMux-Token; hub peers read Authorization: Bearer —
+// including a hub addressed by a unix:/npipe: URL, whose listener is the
+// hub's own and expects the same Bearer as its http(s) face. Exported so
+// callers outside this package can apply the same auth shape to a
+// hand-constructed request (the same rationale as AuthInterceptor).
+func (c *Client) ApplyAuth(headers http.Header) {
 	if c.Bearer == "" {
 		return
 	}
-	if c.IsLocal() {
+	if c.IsWorkerIPC() {
 		headers.Set("X-LeapMux-Token", c.Bearer)
 	} else {
 		headers.Set("Authorization", "Bearer "+c.Bearer)
@@ -182,17 +265,18 @@ func (c *Client) ChannelService() leapmuxv1connect.ChannelServiceClient {
 }
 
 // ControlIPCService returns a ConnectRPC client for the worker-local
-// IPC service. Only valid for clients constructed via NewLocalClient.
+// IPC service. Only valid for clients constructed via NewLocalClient
+// (worker-spawned agents).
 //
 // The restriction is ENFORCED, not merely documented, matching
 // OpenUserEvents and OpenE2EEChannel which both refuse the wrong transport.
-// Every caller already gates on IsLocal(), so this is a guard against a future
-// one that forgets: a hub-bound client here would aim worker-namespace
+// Every caller already checks IsWorkerIPC() first, so this is a guard against a
+// future one that forgets: a hub-bound client here would aim worker-namespace
 // CallInner requests at the hub's connect URL, which answers 404 rather than
 // anything a caller could diagnose.
 func (c *Client) ControlIPCService() (leapmuxv1connect.ControlIPCServiceClient, error) {
-	if !c.IsLocal() {
-		return nil, errors.New("ControlIPCService is only valid for local-IPC clients constructed via NewLocalClient")
+	if !c.IsWorkerIPC() {
+		return nil, errors.New("ControlIPCService is only valid for worker-IPC clients constructed via NewLocalClient")
 	}
 	return leapmuxv1connect.NewControlIPCServiceClient(
 		c.HTTPClient, c.connectURL,
@@ -254,8 +338,13 @@ func (s *UserEventsStream) Close() error {
 // per-agent delegation bearer to reach the hub directly (the worker is
 // not in this path).
 func (c *Client) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*UserEventsStream, error) {
-	if c.IsLocal() {
+	if c.IsWorkerIPC() {
 		return nil, errors.New("OpenUserEvents is only valid for hub-bound clients; use the agent-spawned hub URL + delegation bearer to subscribe directly")
+	}
+	// Both the WebSocket handshake and the absolute URL the subscription
+	// builds need an HTTP origin; a socket hub URL has none.
+	if locallisten.IsLocal(c.HubURL) {
+		return nil, errors.New("OpenUserEvents needs an http(s) hub origin; a unix:/npipe: hub URL cannot carry a WebSocket subscription")
 	}
 	dialCtx, dialCancel := context.WithCancel(ctx)
 	ws, err := channelwire.OpenUserEventsWS(dialCtx, c.WSClient, c.HubURL, c.Bearer, workspaceIDs, nil, 0)
@@ -270,16 +359,22 @@ func (c *Client) OpenUserEvents(ctx context.Context, workspaceIDs []string) (*Us
 // via the hub relay. Uses the credential's bearer token and the
 // per-hub TOFU pin store.
 func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, workerID string) (*tunnel.Channel, error) {
-	if c.IsLocal() {
+	if c.IsWorkerIPC() {
 		return nil, errors.New("OpenE2EEChannel is only valid for hub-bound clients")
+	}
+	// Same origin constraint as OpenUserEvents: the channel's WebSocket
+	// upgrade builds an absolute URL from the hub origin.
+	if locallisten.IsLocal(c.HubURL) {
+		return nil, errors.New("OpenE2EEChannel needs an http(s) hub origin; a unix:/npipe: hub URL cannot carry a WebSocket channel")
 	}
 	// A nil *PinStore would still satisfy tunnel.KeyPinStore as a typed-nil
 	// interface, so tunnel.OpenChannel's `pinStore != nil` guard would call
-	// straight into a nil receiver. Refuse loudly instead: NewClient always
-	// builds a pin store, and a hub-bound open that skipped TOFU verification
-	// silently is a downgrade, not a fallback.
-	if c.Pins == nil {
-		return nil, errors.New("OpenE2EEChannel: client has no TOFU pin store")
+	// straight into a nil receiver. Open the store here and report a failure
+	// instead: a hub-bound open that skipped TOFU verification silently is a
+	// downgrade, not a fallback.
+	pins, err := c.pinStore()
+	if err != nil {
+		return nil, fmt.Errorf("open TOFU pin store: %w", err)
 	}
 	return tunnel.OpenChannel(operationCtx, c.HubURL, workerID, &tunnel.OpenChannelOptions{
 		HTTPClient:          c.HTTPClient,
@@ -293,8 +388,47 @@ func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, work
 		// predating user_id resolution) leaves the cross-check disabled, which is
 		// exactly the no-expectation case OpenChannel skips.
 		ExpectedUserID: c.UserID,
-		KeyPin:         c.Pins,
+		KeyPin:         pins,
 	})
+}
+
+// AdminSettingsService returns a ConnectRPC client for the hub's
+// AdminSettingsService. Admin commands deliberately build a hub client
+// directly rather than routing through the worker-IPC bridge: the
+// hubrpc.Registry table is a typing device, not a security boundary
+// (any worker-spawned agent can call whatever it lists), so no admin
+// procedure is registered there.
+func (c *Client) AdminSettingsService() leapmuxv1connect.AdminSettingsServiceClient {
+	return leapmuxv1connect.NewAdminSettingsServiceClient(
+		c.HTTPClient, c.connectURL,
+		connect.WithInterceptors(c.AuthInterceptor()),
+	)
+}
+
+// AdminUserService returns a ConnectRPC client for AdminUserService
+// (users, sessions, api-tokens, delegation-tokens).
+func (c *Client) AdminUserService() leapmuxv1connect.AdminUserServiceClient {
+	return leapmuxv1connect.NewAdminUserServiceClient(
+		c.HTTPClient, c.connectURL,
+		connect.WithInterceptors(c.AuthInterceptor()),
+	)
+}
+
+// AdminWorkerService returns a ConnectRPC client for AdminWorkerService
+// (cross-user worker administration and registration keys).
+func (c *Client) AdminWorkerService() leapmuxv1connect.AdminWorkerServiceClient {
+	return leapmuxv1connect.NewAdminWorkerServiceClient(
+		c.HTTPClient, c.connectURL,
+		connect.WithInterceptors(c.AuthInterceptor()),
+	)
+}
+
+// AdminOAuthService returns a ConnectRPC client for AdminOAuthService.
+func (c *Client) AdminOAuthService() leapmuxv1connect.AdminOAuthServiceClient {
+	return leapmuxv1connect.NewAdminOAuthServiceClient(
+		c.HTTPClient, c.connectURL,
+		connect.WithInterceptors(c.AuthInterceptor()),
+	)
 }
 
 // AuthInterceptor adds the Authorization (or X-LeapMux-Token) header
@@ -314,14 +448,14 @@ func (c *Client) AuthInterceptor() connect.Interceptor {
 	return &authInterceptor{client: c}
 }
 
-// authInterceptor stamps c.applyAuth on every outgoing connect call,
+// authInterceptor stamps c.ApplyAuth on every outgoing connect call,
 // unary or streaming. WrapStreamingHandler is a no-op because the CLI
 // only acts as a client.
 type authInterceptor struct{ client *Client }
 
 func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		a.client.applyAuth(req.Header())
+		a.client.ApplyAuth(req.Header())
 		return next(ctx, req)
 	}
 }
@@ -329,7 +463,7 @@ func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		conn := next(ctx, spec)
-		a.client.applyAuth(conn.RequestHeader())
+		a.client.ApplyAuth(conn.RequestHeader())
 		return conn
 	}
 }

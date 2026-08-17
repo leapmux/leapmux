@@ -38,10 +38,48 @@ func newSettingsSender(t *testing.T, smtpDoc string) mail.Sender {
 	return mail.NewSettingsSender(m)
 }
 
-func TestSettingsSenderDisabledWithoutSMTP(t *testing.T) {
+// probeMessage returns the payload every disabled-path case sends. None
+// of these cases reaches a relay, so the content only has to be well
+// formed. It is a function rather than a shared value so no case can
+// change what the next one sends.
+func probeMessage() mail.Message {
+	return mail.Message{To: "user@example.com", Subject: "s", Body: "b"}
+}
+
+func TestSettingsSenderDisabledWithNothingStored(t *testing.T) {
 	sender := newSettingsSender(t, "")
-	err := sender.Send(context.Background(), mail.Message{To: "user@example.com", Subject: "s", Body: "b"})
+	err := sender.Send(context.Background(), probeMessage())
 	assert.ErrorIs(t, err, mail.ErrEmailDisabled, "an unconfigured hub reports email disabled, loudly")
+}
+
+// TestSettingsSenderDisabledWithHostButNoFromAddress pins the HALF-STAGED
+// relay, which is the state validateSMTP deliberately accepts: the admin
+// surface writes one field per row, so the host is stored before the from
+// address exists. SMTPValue.Enabled() -- not the validator -- is what
+// keeps that document away from Send.
+//
+// The relay here is a LIVE fake on the loopback address, so the refusal
+// cannot be confused with an unreachable host. Nothing must arrive on it,
+// and the error must stay the matchable ErrEmailDisabled that every caller
+// tests with errors.Is. A guard that asks only for the host turns this
+// case into an opaque per-message failure instead.
+func TestSettingsSenderDisabledWithHostButNoFromAddress(t *testing.T) {
+	srv := newFakeSMTPServer(t, withoutSTARTTLS())
+	host, port := hostPort(t, srv.addr())
+	sender := newSettingsSender(t, `{"host":"`+host+`","port":`+port+`,"tls_mode":"none"}`)
+
+	err := sender.Send(context.Background(), probeMessage())
+	assert.ErrorIs(t, err, mail.ErrEmailDisabled, "a relay host without a from address is half staged, not usable")
+	assert.Nil(t, srv.lastMessage(), "the half-staged relay was never contacted")
+}
+
+// TestSettingsSenderDisabledWithFromAddressButNoHost pins the mirror
+// half-staged document: the from address is stored first and no relay
+// exists to carry it.
+func TestSettingsSenderDisabledWithFromAddressButNoHost(t *testing.T) {
+	sender := newSettingsSender(t, `{"from_address":"hub@example.com","tls_mode":"none"}`)
+	err := sender.Send(context.Background(), probeMessage())
+	assert.ErrorIs(t, err, mail.ErrEmailDisabled, "a from address without a relay host is half staged, not usable")
 }
 
 func TestSettingsSenderDeliversThroughConfiguredSMTP(t *testing.T) {

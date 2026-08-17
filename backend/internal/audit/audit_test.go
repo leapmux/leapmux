@@ -191,7 +191,26 @@ func TestRepoInvariants(t *testing.T) {
 	})
 
 	t.Run("MustNew is never called on stored data", func(t *testing.T) {
-		matched := 0
+		// Liveness is proved against the DECLARATION, not against a count of
+		// call sites. Zero production call sites is the healthy state -- the
+		// rule's whole point is that a column-derived id goes through
+		// userid.New and an error -- so "some file still calls MustNew"
+		// cannot be the proof that the detector works.
+		mustNewDeclared := false
+		for _, f := range files {
+			if packageDir(f.rel) != useridDir {
+				continue
+			}
+			for _, decl := range f.file.Decls {
+				fn, isFunc := decl.(*ast.FuncDecl)
+				if isFunc && fn.Recv == nil && fn.Name.Name == "MustNew" {
+					mustNewDeclared = true
+				}
+			}
+		}
+		assert.True(t, mustNewDeclared,
+			"no declaration of userid.MustNew was found; the detection is broken, not the code")
+
 		for _, f := range files {
 			useridAlias, imported := testutil.ImportedAs(f.file, useridPkg)
 			inUseridPkg := packageDir(f.rel) == useridDir
@@ -203,7 +222,6 @@ func TestRepoInvariants(t *testing.T) {
 				if !isMustNewCall(useridAlias, inUseridPkg, ref) {
 					return
 				}
-				matched++
 				call := ref.call
 				// A MustNew taken as a function value has no argument here to
 				// judge, and the call it enables happens through an identifier
@@ -247,8 +265,6 @@ func TestRepoInvariants(t *testing.T) {
 					position(f.fset, call.Pos(), f.rel), site)
 			})
 		}
-		assert.NotZero(t, matched, "the MustNew scan matched nothing; the detection is broken, not the code")
-
 		for site := range mustNewNonLiteralSites {
 			rel, _, found := splitSiteKey(site)
 			require.True(t, found, "mustNewNonLiteralSites key %q is not in \"file#function\" form", site)

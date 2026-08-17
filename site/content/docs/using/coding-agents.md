@@ -241,8 +241,8 @@ In the UI you pick these as named radio options (**Auto**, **YOLO**, **Build**, 
 
 To continue a previous conversation, paste its Session ID into the **Resume an existing session** field (placeholder **"Session ID"**) in the New agent dialog. LeapMux validates the ID as you type:
 
-- Input that contains control characters or any of the characters `"`, `\`, `$`, and `%` produces **"Session ID contains invalid characters."**
-- Input longer than 128 characters produces **"Name must be at most 128 characters"**.
+- The field refuses input that holds a control character, a byte order mark, or any of the characters `"`, `\`, `$`, and `%`. Surrounding whitespace is refused too, because the check compares your input against its own trimmed form.
+- The field refuses input longer than 128 UTF-8 bytes.
 
 Leave the field empty to start a fresh session.
 

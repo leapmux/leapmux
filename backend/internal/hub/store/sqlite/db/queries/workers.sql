@@ -124,3 +124,13 @@ LIMIT sqlc.arg(limit);
 -- raw time.Time would serialize. Sargable for idx_workers_deleted_at (SEARCH
 -- deleted_at<?, not a SCAN-with-residual under datetime()).
 DELETE FROM workers WHERE rowid IN (SELECT w.rowid FROM workers w WHERE w.deleted_at IS NOT NULL AND w.deleted_at < sqlc.arg(cutoff) LIMIT 1000);
+
+-- GetWorkerAdmin is the single-row form of the admin listing: the same
+-- LEFT JOIN, so a soft-deleted owner reports the same empty username and
+-- owner_deleted=true that the list reports. Soft-deleted workers are
+-- included, because the admin surface inspects them.
+-- name: GetWorkerAdmin :one
+SELECT sqlc.embed(w), COALESCE(u.username, '') AS owner_username, CAST(u.id IS NULL AS BOOLEAN) AS owner_deleted
+FROM workers w
+LEFT JOIN users u ON w.registered_by = u.id AND u.deleted_at IS NULL
+WHERE w.id = ?;

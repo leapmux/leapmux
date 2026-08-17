@@ -27,7 +27,8 @@ export type TerminalRendererPreference = 'auto' | 'webgl' | 'canvas'
 /**
  * Browser-level preferences stored as a single JSON object.
  * Fields that are undefined mean "use account default."
- * Schema mirrors the backend storedPreferences struct.
+ * Dual-tier keys override the matching account setting from
+ * UserService; browser-only keys have no account half.
  */
 export interface BrowserPreferences {
   theme?: string
@@ -41,13 +42,17 @@ export interface BrowserPreferences {
   enterKeyMode?: EnterKeyMode
   terminalRenderer?: TerminalRendererPreference
   /**
-   * When true, ignore `ActiveTabRequested` events from other clients
-   * (e.g. `leapmux control tab focus`). Default false: another browser
-   * tab or the CLI can steal focus, which is the intended behaviour
-   * for "tab focus" to "just work" — flip this if your workflow
-   * dislikes remote-driven focus changes.
+   * Whole-object browser override of the account `ui_fonts` tier
+   * ({enabled, fonts}). Absent means "use the account value"; the whole
+   * object is the override unit because overriding the toggle and the list
+   * independently gives incoherent states.
    */
-  ignoreRemoteFocus?: boolean
+  uiFontOverride?: { enabled: boolean, fonts: string[] }
+  /**
+   * Whole-object browser override of the account `mono_fonts` tier. Same
+   * contract as {@link uiFontOverride}.
+   */
+  monoFontOverride?: { enabled: boolean, fonts: string[] }
   /**
    * Whether to reveal the saved file in the OS file manager (Finder /
    * Explorer / Files) after a successful download. Only applies in
