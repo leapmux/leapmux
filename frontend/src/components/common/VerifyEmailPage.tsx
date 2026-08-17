@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { userClient } from '~/api/clients'
 import { useAuth } from '~/context/AuthContext'
-import { cardNarrow, errorText } from '~/styles/shared.css'
+import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
 // normalizeCode strips formatting noise (whitespace, hyphens) and
@@ -95,7 +95,7 @@ export const VerifyEmailPage: Component = () => {
 
   return (
     <div class={styles.container}>
-      <div class={`card ${cardNarrow}`}>
+      <div class={pageCard}>
         <h1>Verify your email</h1>
         <p>
           Enter the 6-character code we sent to your inbox, or click the

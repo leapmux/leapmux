@@ -6,7 +6,7 @@ import { createSignal, onMount, Show } from 'solid-js'
 import { OAuthProviderList } from '~/components/common/OAuthProviderList'
 import { useAuth } from '~/context/AuthContext'
 import { isSignupEnabled, loadOAuthProviders } from '~/lib/systemInfo'
-import { cardNarrow } from '~/styles/shared.css'
+import { pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 import { NotFoundPage } from './NotFoundPage'
 import { SignupForm } from './SignupForm'
@@ -37,7 +37,7 @@ export const SignupPage: Component = () => {
         )}
       >
         <div class={styles.container}>
-          <div class={`card ${cardNarrow}`}>
+          <div class={pageCard}>
             <h1>Sign Up</h1>
             <Show when={verificationSent()}>
               <div class={styles.verificationMessage}>

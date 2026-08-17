@@ -145,12 +145,11 @@ export const heightFull = style({
   height: '100%',
 })
 
-// Card width variants
-
-export const cardNarrow = style({
-  width: '360px',
-})
-
-export const cardMedium = style({
-  width: '400px',
-})
+/**
+ * The full-page card surface: Oat's `card` fill, border, radius and shadow,
+ * plus the one width every centered full-page card uses. Composes Oat's
+ * `card` as a plain class name (vanilla-extract accepts one in a style
+ * list), the same mechanic as `floatingCardSurface` in
+ * `~/styles/popover.css.ts`.
+ */
+export const pageCard = style(['card', { width: '480px' }])

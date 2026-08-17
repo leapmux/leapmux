@@ -30,12 +30,23 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
   const [password, setPassword] = createSignal('')
   const [confirmPassword, setConfirmPassword] = createSignal('')
   const [displayName, setDisplayName] = createSignal('')
+  const [displayNameEdited, setDisplayNameEdited] = createSignal(false)
   const [email, setEmail] = createSignal('')
   const [submitting, setSubmitting] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const captcha = createCaptchaForm()
 
   const pwProps = { password, confirmPassword }
+
+  // The display name mirrors the username until the user edits it directly.
+  // Once edited the mirror never re-arms -- not even after clearing the field
+  // -- so later username typing cannot resurrect what the user deleted.
+  const handleUsernameInput = (v: string) => {
+    setUsername(v)
+    if (!displayNameEdited()) {
+      setDisplayName(v)
+    }
+  }
 
   const handleSubmit = async (e: Event) => {
     e.preventDefault()
@@ -84,10 +95,17 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
     <>
       {props.header}
       <form class="vstack gap-4" onSubmit={handleSubmit}>
-        <UsernameField value={username} onInput={setUsername} />
+        <UsernameField value={username} onInput={handleUsernameInput} />
         <label>
           Display Name
-          <input type="text" value={displayName()} onInput={e => setDisplayName(e.currentTarget.value)} />
+          <input
+            type="text"
+            value={displayName()}
+            onInput={(e) => {
+              setDisplayNameEdited(true)
+              setDisplayName(e.currentTarget.value)
+            }}
+          />
         </label>
         <label>
           Email

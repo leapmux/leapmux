@@ -4,7 +4,7 @@ import { useNavigate } from '@solidjs/router'
 import { createSignal, onMount, Show } from 'solid-js'
 import { useAuth } from '~/context/AuthContext'
 import { isSetupRequired, loadSystemInfo } from '~/lib/systemInfo'
-import { cardNarrow } from '~/styles/shared.css'
+import { pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 import { SignupForm } from './SignupForm'
 
@@ -24,7 +24,7 @@ export const SetupPage: Component = () => {
   return (
     <Show when={ready()} fallback={null}>
       <div class={styles.container}>
-        <div class={`card ${cardNarrow}`}>
+        <div class={pageCard}>
           <h1>Welcome to LeapMux</h1>
           <SignupForm
             submitLabel="Create account"

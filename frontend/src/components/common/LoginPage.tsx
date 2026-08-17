@@ -9,7 +9,7 @@ import { Spinner } from '~/components/common/Spinner'
 import { useAuth } from '~/context/AuthContext'
 import { createCaptchaForm } from '~/lib/captchaForm'
 import { isSetupRequired, isSignupEnabled, isSoloMode, loadOAuthProviders } from '~/lib/systemInfo'
-import { cardNarrow, errorText } from '~/styles/shared.css'
+import { errorText, pageCard } from '~/styles/shared.css'
 import * as styles from './LoginPage.css'
 
 export const LoginPage: Component = () => {
@@ -114,7 +114,7 @@ export const LoginPage: Component = () => {
 
   return (
     <div class={styles.container}>
-      <div class={`card ${cardNarrow}`}>
+      <div class={pageCard}>
         <h1>LeapMux</h1>
         <Show when={oauthProviders().length > 0}>
           <OAuthProviderList

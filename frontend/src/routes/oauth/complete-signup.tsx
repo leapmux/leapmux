@@ -12,7 +12,7 @@ import { createCaptchaForm } from '~/lib/captchaForm'
 import { formatErrorMessage } from '~/lib/errors'
 import { setPageTitle } from '~/lib/pageTitle'
 import { sanitizeDisplayName, sanitizeSlug, validateReservedUsername } from '~/lib/validate'
-import { cardNarrow, errorText } from '~/styles/shared.css'
+import { errorText, pageCard } from '~/styles/shared.css'
 
 const OAuthCompleteSignupPage: Component = () => {
   const navigate = useNavigate()
@@ -101,7 +101,7 @@ const OAuthCompleteSignupPage: Component = () => {
 
   return (
     <div class={styles.container}>
-      <div class={`card ${cardNarrow}`}>
+      <div class={pageCard}>
         <h1>Complete Sign Up</h1>
         <Show when={loading()}>
           <div class={styles.loadingCenter}>
