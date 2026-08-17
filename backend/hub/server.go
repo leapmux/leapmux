@@ -15,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/h2cdeadline"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/captcha"
@@ -601,7 +602,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// derives connCtx from BaseContext in Serve->conn.serve, and h2c's
 	// sc.baseCtx comes from the same chain.
 	server := &http.Server{
-		Handler:           logging.HTTPMiddleware(metrics.HTTPMiddleware(mux)),
+		Handler: logging.HTTPMiddleware(metrics.HTTPMiddleware(mux)),
+		// Bounds reading request HEADERS on HTTP/1.1 connections (the
+		// slowloris guard). It must NOT govern h2c connections, whose streams
+		// outlive any header deadline — see the h2cdeadline.Wrap call in
+		// Serve for why this needs a workaround on current Go.
 		ReadHeaderTimeout: 10 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return handlerCtx },
 		Protocols:         protocols,
@@ -882,10 +887,20 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 	errCh := make(chan listenerResult, listenerCount)
 
+	// h2cdeadline.Wrap disarms the ReadHeaderTimeout read deadline on
+	// connections that turn out to speak h2c. Without it (golang/go#80876,
+	// unfixed as of the Go this builds on), the deadline net/http arms before
+	// the protocol probe survives the HTTP/2 handoff and kills the connection
+	// 10s after ACCEPT — which is every worker Connect stream: in solo/dev
+	// over the local IPC listener (the 10s reconnect loop), and for remote
+	// workers over the TCP listener. HTTP/1.1 connections keep the deadline,
+	// so the slowloris guard on the public listener is unchanged. See the
+	// package doc for why ReadHeaderTimeout=0 and ReadTimeout>0 — the two
+	// shapes that avoid the bug — were rejected.
 	if tcpLn != nil {
-		go func() { errCh <- listenerResult{isTCP: true, err: s.server.Serve(tcpLn)} }()
+		go func() { errCh <- listenerResult{isTCP: true, err: s.server.Serve(h2cdeadline.Wrap(tcpLn))} }()
 	}
-	go func() { errCh <- listenerResult{err: s.server.Serve(localLn)} }()
+	go func() { errCh <- listenerResult{err: s.server.Serve(h2cdeadline.Wrap(localLn))} }()
 
 	if tcpLn != nil {
 		slog.Info("hub listening", "listen", s.cfg.Listen, "local", listenURL)

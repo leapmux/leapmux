@@ -293,6 +293,10 @@ func (c *Client) TrySendOrReset(msg *leapmuxv1.ConnectRequest) bool {
 		return false
 	}
 	if !w.TryEnqueueControl(msg) {
+		// The only place a saturated control reserve turns into a reconnect
+		// without any other trace. Logged because the disconnect it causes
+		// would otherwise look spontaneous from the outside.
+		slog.Warn("hub connect stream control queue saturated; resetting connection")
 		c.cancelConn()
 		return false
 	}

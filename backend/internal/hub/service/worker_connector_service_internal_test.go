@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -357,4 +359,18 @@ func TestCloseWorkerChannels_IsSilentWhenThereIsNothingToClose(t *testing.T) {
 	svc.closeWorkerChannels("w-with-no-channels")
 
 	assert.Empty(t, buf.String())
+}
+
+// TestStreamEndReason pins the vocabulary of the connect-time disconnect log:
+// the two shapes that are the worker's own doing (no observed error, and a
+// clean EOF) collapse to the one healthy phrase, and everything else keeps
+// its verbatim error so an operator reads the actual transport failure.
+func TestStreamEndReason(t *testing.T) {
+	assert.Equal(t, "worker closed the stream", streamEndReason(nil),
+		"no observed receive error is the handler exiting, not the stream failing")
+	assert.Equal(t, "worker closed the stream", streamEndReason(io.EOF),
+		"a clean EOF is the worker's own hang-up")
+	assert.Equal(t,
+		"worker stream failed: read unix /hub.sock->: i/o timeout",
+		streamEndReason(errors.New("read unix /hub.sock->: i/o timeout")))
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -319,6 +320,11 @@ func (s *WorkerConnectorService) Connect(
 		// disconnect and opens fresh channels to the new worker.
 		s.closeWorkerChannels(worker.ID)
 	}
+	// The request context, kept before ctx is shadowed by connCtx below. The
+	// ctx.Done exit distinguishes its two causes by it: a request context
+	// that ALSO ended means the Hub or the transport closed the stream, while
+	// a live one means this conn was fenced or replaced out from under it.
+	reqCtx := ctx
 	ctx = connCtx
 	// Teardown order is deliberate and lives in ONE defer so it cannot drift
 	// via LIFO comment mistakes:
@@ -342,7 +348,19 @@ func (s *WorkerConnectorService) Connect(
 	}
 
 	slog.Info("worker connected", "worker_id", worker.ID, "status", worker.Status)
-	defer slog.Info("worker disconnected", "worker_id", worker.ID)
+	// exitReason names WHY the handler is returning, set on every exit path
+	// below so "worker disconnected" says what ended the stream rather than
+	// only that it ended. It exists because the quiet exits are the ones an
+	// operator cannot otherwise diagnose: the worker's own close, a fenced or
+	// replaced connection, and a transport-level failure all return nil from
+	// here, and before this the log could not tell them apart.
+	var exitReason string
+	defer func() {
+		if exitReason == "" {
+			exitReason = "handler returned without classifying its exit"
+		}
+		slog.Info("worker disconnected", "worker_id", worker.ID, "reason", exitReason)
+	}()
 
 	// Process pending notifications. A deregistering worker used to early-
 	// return after the inline ProcessPendingNotifications call, before the
@@ -416,8 +434,12 @@ func (s *WorkerConnectorService) Connect(
 		idleTimer.Reset(workerIdleTimeout)
 	}
 
+	// recvErr holds the receive error that ended the stream, written by
+	// handle (handler goroutine only) and read by the exit paths below.
+	var recvErr error
 	handle := func(result receiveResult) error {
 		if result.err != nil {
+			recvErr = result.err
 			return errWorkerStreamClosed
 		}
 		resetIdle()
@@ -427,14 +449,25 @@ func (s *WorkerConnectorService) Connect(
 		return nil
 	}
 
+	// onHandleErr classifies handle's terminal errors into an exitReason,
+	// shared by both select arms that run it. A stream-closed error is a
+	// clean exit that still deserves a cause (EOF vs a transport failure vs
+	// a refusal); a processing error is returned and reaches the worker in
+	// the trailers, and is named here so the disconnect log matches.
+	onHandleErr := func(err error) error {
+		if errors.Is(err, errWorkerStreamClosed) {
+			exitReason = streamEndReason(recvErr)
+			return nil
+		}
+		exitReason = fmt.Sprintf("invalid worker message: %v", err)
+		return err
+	}
+
 	for {
 		select {
 		case result := <-msgCh:
 			if err := handle(result); err != nil {
-				if errors.Is(err, errWorkerStreamClosed) {
-					return nil
-				}
-				return err
+				return onHandleErr(err)
 			}
 
 		case <-idleC:
@@ -444,14 +477,12 @@ func (s *WorkerConnectorService) Connect(
 			select {
 			case result := <-msgCh:
 				if err := handle(result); err != nil {
-					if errors.Is(err, errWorkerStreamClosed) {
-						return nil
-					}
-					return err
+					return onHandleErr(err)
 				}
 				continue
 			default:
 			}
+			exitReason = fmt.Sprintf("idle timeout: no messages from worker in %s", workerIdleTimeout)
 			slog.Warn("worker idle timeout, assuming disconnected", "worker_id", worker.ID)
 			return nil
 
@@ -460,17 +491,41 @@ func (s *WorkerConnectorService) Connect(
 			// idle / ctx. Remaining frames re-signal Ready. Teardown uses
 			// the full Drain in the defer above.
 			if err := pump.DrainTurn(); err != nil {
+				exitReason = "outbound queue gave up (see preceding writer warning)"
 				return nil // give-up already fenced + cancelled
 			}
 
 		case <-notifyDone:
+			exitReason = "pending notifications processed"
 			return nil
 
 		case <-ctx.Done():
-			// Hub shutting down or request canceled.
+			// connCtx ends either because the stream's own request context
+			// ended (hub shutdown, transport close) or because this conn was
+			// fenced or replaced — the request context is the tell between
+			// them.
+			if reqCtx.Err() != nil {
+				exitReason = "request context ended (hub shutdown or transport closed)"
+			} else {
+				exitReason = "connection cancelled (fenced or replaced)"
+			}
 			return nil
 		}
 	}
+}
+
+// streamEndReason names why the worker's Connect stream stopped producing
+// messages. A nil error means the receive loop never observed one (the
+// handler exited through another select arm and handle classified the close
+// secondhand), and io.EOF is the worker closing its own stream — the one
+// ordinary, healthy end. Anything else is a transport-level failure worth
+// reading verbatim: resets, protocol errors, and the i/o timeouts that
+// used to make solo's hub drop its worker every ten seconds.
+func streamEndReason(err error) string {
+	if err == nil || errors.Is(err, io.EOF) {
+		return "worker closed the stream"
+	}
+	return fmt.Sprintf("worker stream failed: %v", err)
 }
 
 // errWorkerStreamClosed is the sentinel `handle` returns on receive
