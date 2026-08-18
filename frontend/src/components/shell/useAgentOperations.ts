@@ -12,7 +12,7 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 
 import type { PermissionMode } from '~/utils/controlResponse'
-import { createEffect, createSignal, on } from 'solid-js'
+import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { clearAttachments } from '~/components/chat/attachments'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
@@ -55,16 +55,54 @@ export interface UseAgentOperationsProps {
 
 export function useAgentOperations(props: UseAgentOperationsProps) {
   const [availableProviders, setAvailableProviders] = createSignal<AgentProvider[] | undefined>(undefined)
+  /** The newest provider scan, so a superseded one can be aborted. */
+  let inflightProviderScan: AbortController | undefined
 
-  const loadAvailableProviders = () => {
+  /**
+   * Load the worker's provider list, and stop caring about the answer when
+   * the tab moves off that worker.
+   *
+   * The RETRY is not here. An incomplete provider scan answers Unavailable,
+   * which the worker declares as "ask again", and `callWorker` retries
+   * every such reply with a bounded backoff — so this hook sees only the
+   * settled outcome. The cancellation guard IS here, because it is about
+   * this hook's own state: a reply for the previous worker must not
+   * overwrite the list for the one the user moved to.
+   *
+   * The guard sits on the WRITE, not on the call. Handing a cancel closure
+   * back to the caller only worked for the one caller that registered it;
+   * the refresh button in the agent dialogs reaches this same function
+   * through five hops that each discard the return value, so a manual
+   * refresh for the previous worker could still settle late — after 1.4s
+   * of `Unavailable` backoff — and overwrite the current worker's list.
+   * Both the abort signal and the issuing worker id are re-checked here,
+   * so no caller can hold the guard wrong.
+   */
+  const loadAvailableProviders = (): void => {
+    // One list, so one scan: a newer request supersedes the older one, and
+    // aborting it stops a pending backoff from keeping a dead request
+    // alive. This runs BEFORE the no-worker guard, so a tab that moves off
+    // every worker drops the previous worker's scan rather than leaving it
+    // to retry for an answer nobody can use.
+    inflightProviderScan?.abort()
+    inflightProviderScan = undefined
     const ctx = props.getCurrentTabContext()
     if (!ctx.workerId)
       return
-    workerRpc.listAvailableProviders(ctx.workerId)
+    const abort = new AbortController()
+    inflightProviderScan = abort
+    const issuedFor = ctx.workerId
+    const superseded = () =>
+      abort.signal.aborted || props.getCurrentTabContext().workerId !== issuedFor
+    workerRpc.listAvailableProviders(issuedFor, { signal: abort.signal })
       .then((resp) => {
+        if (superseded())
+          return
         setAvailableProviders([...resp.providers])
       })
       .catch((err) => {
+        if (superseded())
+          return
         // Keep the previous list — a transient refresh failure shouldn't
         // erase a correct list the user was relying on, and conflating
         // failure with "backend said none" would masquerade as an empty
@@ -74,12 +112,13 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       })
   }
 
+  // The signal this scan writes lives on the hook, so the abort does too:
+  // a reply that arrives after the hook is disposed must write nothing.
+  onCleanup(() => inflightProviderScan?.abort())
+
   createEffect(on(
     () => props.getCurrentTabContext().workerId,
-    (workerId) => {
-      if (workerId)
-        loadAvailableProviders()
-    },
+    () => loadAvailableProviders(),
   ))
 
   /** Look up the workerId for a given agent from the projection join. */

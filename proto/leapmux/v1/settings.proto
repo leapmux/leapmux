@@ -1,0 +1,112 @@
+syntax = "proto3";
+package leapmux.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ---------------------------------------------------------------------------
+// Settings metadata — shared by the hub-scope (AdminSettingsService) and
+// user-scope (UserService.ListUserSettings) surfaces. Both report the same
+// descriptor shape so one client widget layer renders both.
+// ---------------------------------------------------------------------------
+
+// SettingFieldKind is the UI kind of one field, mirroring the Go schema's
+// FieldKind one-for-one.
+enum SettingFieldKind {
+  SETTING_FIELD_KIND_UNSPECIFIED = 0;
+  SETTING_FIELD_KIND_BOOL = 1;
+  SETTING_FIELD_KIND_INT = 2;
+  SETTING_FIELD_KIND_FLOAT = 3;
+  SETTING_FIELD_KIND_STRING = 4;
+  SETTING_FIELD_KIND_ENUM = 5;
+  SETTING_FIELD_KIND_STRING_LIST = 6;
+  SETTING_FIELD_KIND_BYTES = 7;
+  SETTING_FIELD_KIND_CUSTOM = 8;
+}
+
+// SettingEnumValue is one allowed value of a SETTING_FIELD_ENUM field.
+message SettingEnumValue {
+  string value = 1;
+  string label = 2;
+  string help = 3;
+}
+
+// SettingFieldCondition makes one field's visibility depend on another: the
+// field renders only when the named field (or, when key is set, the named
+// setting key's scalar) currently holds one of `in`.
+message SettingFieldCondition {
+  // Settings key the condition reads; empty means a sibling field of the
+  // same setting, addressed by `field`.
+  string key = 1;
+  string field = 2;
+  repeated string in = 3;
+}
+
+// SettingField is one editable piece of a setting's value. A scalar-shaped
+// setting carries exactly one field with an empty name (the setting itself
+// is the scalar); an object-shaped setting carries one field per JSON
+// property of its value.
+message SettingField {
+  string name = 1;
+  string label = 2;
+  string help = 3;
+  SettingFieldKind kind = 4;
+  repeated SettingEnumValue enum_values = 5;
+  optional int64 min = 6;
+  optional int64 max = 7;
+  optional double min_f = 8;
+  optional double max_f = 9;
+  // "", "seconds", "bytes", "score", or "count" — rendered beside numeric
+  // inputs.
+  string unit = 10;
+  // Secret fields are write-only: a stored value never leaves the hub.
+  bool secret = 11;
+  string placeholder = 12;
+  SettingFieldCondition depends_on = 13;
+  // SETTING_FIELD_KIND_CUSTOM only: the client-side editor's id (e.g.
+  // "keybindings").
+  string custom_id = 14;
+}
+
+// SettingDescriptor declares one setting: its presentation and its editable
+// shape. Categories are shared between scopes so a settings UI can
+// interleave hub rows and account rows in one navigation.
+message SettingDescriptor {
+  string key = 1;
+  // One of the shared category ids: general, signup, email, captcha,
+  // rate-limits, limits, advanced (hub scope) or appearance, notifications,
+  // shortcuts, advanced (user scope).
+  string category = 2;
+  string title = 3;
+  string summary = 4;
+  // Omitted in solo mode deployments (a single-user local hub has no
+  // sign-up, captcha, or rate limits to administer).
+  bool hidden_in_solo = 5;
+  repeated SettingField fields = 6;
+  // True when the hub applies a change only after restart (hub scope only).
+  bool restart = 7;
+}
+
+// SettingValue reports one setting's stored state. value_json is always
+// redacted: secret fields appear as "<redacted>" markers, and secret_set
+// reports which secret fields carry a stored value.
+message SettingValue {
+  string key = 1;
+  // The stored value as JSON, redacted. Absent when no row is stored, so
+  // an absent value_json is what "this key sits at the code default"
+  // looks like on the wire. It carries only the fields the row stores,
+  // never the defaults merged in.
+  string value_json = 2;
+  // What the hub actually uses right now as JSON. Differs from merged_json
+  // when a read-time rule overrides the stored state (dev-mode signup,
+  // email verification without SMTP, a misconfigured captcha provider).
+  string effective_json = 3;
+  // True when a value is stored (vs. resolved from the code default).
+  bool customized = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  // Secret field name -> a value is stored for it.
+  map<string, bool> secret_set = 6;
+  // The stored row merged onto the code default, redacted. Always present
+  // on the hub scope; empty on the user scope, which has no read-time
+  // override, so effective_json already is the merged value there.
+  string merged_json = 7;
+}

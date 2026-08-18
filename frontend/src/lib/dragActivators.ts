@@ -1,4 +1,5 @@
 import { createEffect, onCleanup } from 'solid-js'
+import { INPUT_OR_EDITABLE_SELECTOR } from '~/lib/textInputBehavior'
 
 /**
  * A solid-dnd `dragActivators` props object, as returned by the `dragActivators`
@@ -12,8 +13,23 @@ export type DragActivatorProps = Record<string, (event: PointerEvent) => void>
  * button, an open menu popover, and the drag grip (which forwards its own
  * press through its raw activators — a second activation from the bubbled
  * press would race the first).
+ *
+ * `INPUT_OR_EDITABLE_SELECTOR` carries the text-entry group that all three
+ * pointer guards share, and `[popover]` stands in the list itself, as it does
+ * in the other two. The last three entries are this guard's own and make it
+ * the widest: `select` and `button` keep a slow or drifting press on a row
+ * control a click, and `[data-drag-handle]` keeps one grip press to one
+ * activation.
+ *
+ * Do NOT push those three into the shared fragment or into the other two
+ * lists. ~/components/shell/guardedPointerSensor.ts would then decline the
+ * grip's own press and break touch reorder, and
+ * ~/components/common/contextMenuGesture.ts would stop opening a row's menu
+ * on a long press over that row's buttons. This guard runs BEFORE the sensor
+ * on a row body, so the two lists already compose where the wider one is
+ * wanted.
  */
-const EMBEDDED_UI_SELECTOR = 'input, textarea, select, button, [contenteditable="true"], [popover], [data-drag-handle]'
+const EMBEDDED_UI_SELECTOR = `${INPUT_OR_EDITABLE_SELECTOR}, [popover], select, button, [data-drag-handle]`
 
 /**
  * Wrap a draggable's `dragActivators` for a ROW BODY: the press must start on

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +91,82 @@ var delegationAllowedProcedures = map[string]bool{
 	leapmuxv1connect.UserCRDTGetMaterializedProcedure:                true,
 	leapmuxv1connect.UserCRDTUpdatePresenceProcedure:                 true,
 }
+
+// adminProcedurePrefix is what MAKES a procedure admin-only: every
+// Connect procedure path is /leapmux.v1.<Service>/<Method>, and the four
+// Admin*Service services are the only ones whose name begins with
+// "Admin". enforceAdmin denies on this prefix, so a procedure that
+// admin.proto declares is restricted the moment it is declared.
+//
+// A hand-maintained allowlist cannot carry that property: it fails OPEN.
+// A new Admin*Service method that nobody remembers to add mounts
+// unrestricted, and the only thing standing between it and any
+// authenticated user is whether somebody runs the suite.
+// TestNoAdminServiceOutsideAdminProto already treats the "Admin" name as
+// authoritative, so the prefix rests on an invariant the suite enforces.
+const adminProcedurePrefix = "/leapmux.v1.Admin"
+
+// adminProcedures lists the procedures of the four Admin*Service
+// services. It is the RECORD, not the enforcement: enforceAdmin denies on
+// adminProcedurePrefix, and the descriptor-walk tests keep this map, the
+// rationale map in admin_procedures_test.go, and the proto in lockstep,
+// so every restricted procedure still carries a stated reason.
+//
+// Ordering note: the admin gate runs AFTER the delegation refusal, so a
+// delegation bearer cannot reach an admin procedure even though its
+// underlying user is an admin (loadUser resolves the full row) — the
+// gate is the only thing standing between a worker-spawned agent and
+// full hub administration. It also runs after the email gate, where
+// admins are exempt by design: an admin who cannot receive mail must
+// still be able to configure SMTP. The solo short-circuit above both
+// returns before enforceAdmin ever runs, so a solo hub serves every
+// admin procedure to its synthetic user whatever IsAdmin holds; bootstrap
+// creates that user as an administrator, and the reserved username rule
+// (usernames.IsReservedSystem) is what keeps a stored row from taking
+// that identity.
+var adminProcedures = map[string]bool{
+	leapmuxv1connect.AdminSettingsServiceListSettingsProcedure:        true,
+	leapmuxv1connect.AdminSettingsServiceUpdateSettingProcedure:       true,
+	leapmuxv1connect.AdminSettingsServiceUpdateSettingSecretProcedure: true,
+	leapmuxv1connect.AdminSettingsServiceUpdateSettingsProcedure:      true,
+	leapmuxv1connect.AdminSettingsServiceResetSettingProcedure:        true,
+	leapmuxv1connect.AdminSettingsServiceResetSettingsProcedure:       true,
+
+	leapmuxv1connect.AdminUserServiceListUsersProcedure:             true,
+	leapmuxv1connect.AdminUserServiceGetUserProcedure:               true,
+	leapmuxv1connect.AdminUserServiceCreateUserProcedure:            true,
+	leapmuxv1connect.AdminUserServiceUpdateUserProcedure:            true,
+	leapmuxv1connect.AdminUserServiceDeleteUserProcedure:            true,
+	leapmuxv1connect.AdminUserServiceSetUserAdminProcedure:          true,
+	leapmuxv1connect.AdminUserServiceResetPasswordProcedure:         true,
+	leapmuxv1connect.AdminUserServiceListUserSessionsProcedure:      true,
+	leapmuxv1connect.AdminUserServiceListSessionsProcedure:          true,
+	leapmuxv1connect.AdminUserServiceRevokeSessionProcedure:         true,
+	leapmuxv1connect.AdminUserServiceRevokeUserSessionsProcedure:    true,
+	leapmuxv1connect.AdminUserServicePurgeExpiredSessionsProcedure:  true,
+	leapmuxv1connect.AdminUserServiceListAPITokensProcedure:         true,
+	leapmuxv1connect.AdminUserServiceIssueAPITokenProcedure:         true,
+	leapmuxv1connect.AdminUserServiceRevokeAPITokenProcedure:        true,
+	leapmuxv1connect.AdminUserServiceListDelegationTokensProcedure:  true,
+	leapmuxv1connect.AdminUserServiceRevokeDelegationTokenProcedure: true,
+
+	leapmuxv1connect.AdminWorkerServiceListWorkersProcedure:                  true,
+	leapmuxv1connect.AdminWorkerServiceGetWorkerProcedure:                    true,
+	leapmuxv1connect.AdminWorkerServiceDeregisterWorkerProcedure:             true,
+	leapmuxv1connect.AdminWorkerServiceListRegistrationKeysProcedure:         true,
+	leapmuxv1connect.AdminWorkerServiceRevokeRegistrationKeyProcedure:        true,
+	leapmuxv1connect.AdminWorkerServicePurgeExpiredRegistrationKeysProcedure: true,
+
+	leapmuxv1connect.AdminOAuthServiceAddOAuthProviderProcedure:        true,
+	leapmuxv1connect.AdminOAuthServiceListOAuthProvidersProcedure:      true,
+	leapmuxv1connect.AdminOAuthServiceRemoveOAuthProviderProcedure:     true,
+	leapmuxv1connect.AdminOAuthServiceSetOAuthProviderEnabledProcedure: true,
+}
+
+// No exported accessor for adminProcedures: unlike PublicProcedures,
+// which the captcha package's classification test consumes, every admin
+// tripwire lives in this package and reads the map directly. Export one
+// when a cross-package test needs it, not before.
 
 // unverifiedAllowedProcedures lists RPC procedures that authenticated
 // users may call before their email is verified. The verify endpoint
@@ -835,6 +912,9 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 		if err := a.enforceEmailVerification(procedure, userInfo, p); err != nil {
 			return ctx, noRefresh, err
 		}
+		if err := enforceAdmin(procedure, userInfo); err != nil {
+			return ctx, noRefresh, err
+		}
 		return ctx, noRefresh, nil
 	}
 
@@ -861,6 +941,9 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	// is denied -- would slide the row again and again and never receive a cookie
 	// for it.
 	if err := a.enforceEmailVerification(procedure, userInfo, p); err != nil {
+		return ctx, refresh, err
+	}
+	if err := enforceAdmin(procedure, userInfo); err != nil {
 		return ctx, refresh, err
 	}
 
@@ -890,6 +973,22 @@ func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *U
 		return nil
 	}
 	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("email verification required"))
+}
+
+// enforceAdmin rejects a non-admin caller from an admin procedure, in the
+// shape of enforceEmailVerification so the two gates read as one family.
+// The unauthenticated case never reaches here: both callers sit behind a
+// user-resolving arm. An unverified admin passes by design — admins are
+// exempt from the email gate, and an admin who cannot receive mail must
+// still be able to configure SMTP.
+func enforceAdmin(procedure string, userInfo *UserInfo) error {
+	// Deny by PREFIX, never by the map. See adminProcedurePrefix: the map
+	// is the rationale record, and a lookup miss there must not open a
+	// procedure that admin.proto declares.
+	if !strings.HasPrefix(procedure, adminProcedurePrefix) || userInfo.IsAdmin {
+		return nil
+	}
+	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("administrator privileges are required"))
 }
 
 // tryAuthenticateBearer attempts Bearer-token auth. Returns (info, true,

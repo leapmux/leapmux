@@ -12,7 +12,7 @@ import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { createEffect, onCleanup, onMount } from 'solid-js'
 import { getRuntimeState, platformBridge } from '~/api/platformBridge'
-import { setShowPreferencesDialog } from '~/components/shell/UserMenuState'
+import { openPreferences } from '~/components/shell/UserMenuState'
 import { TabType } from '~/generated/leapmux/v1/workspace_pb'
 import { loadDetectedEditors, resolvePreferredEditor } from '~/lib/externalEditors'
 import { refreshFileTree, toggleHiddenFiles } from '~/lib/fileTreeOps'
@@ -22,6 +22,7 @@ import { registerLazyContext, setContext, unregisterLazyContext } from '~/lib/sh
 import { WORKSPACE_KEYBINDINGS } from '~/lib/shortcuts/defaults'
 import { activateBindings, mergeKeybindings, unbindAll } from '~/lib/shortcuts/keybindings'
 import { syncMacMenuAccelerator } from '~/lib/shortcuts/tauriAccelerator'
+import { isTypingContext } from '~/lib/textInputBehavior'
 import { getFocusedChatSend } from '~/stores/focusedChatSend.store'
 import { tabKey } from '~/stores/tab.helpers'
 
@@ -53,6 +54,16 @@ interface UseShortcutsProps {
    */
   getCurrentTabContext: () => TabContext
   customKeybindings: Accessor<UserKeybindingOverride[]>
+  /** The pinned external editor, read from the REACTIVE preference. */
+  preferredEditorId: Accessor<string | undefined>
+  /**
+   * Persist the preferred external editor through the REACTIVE preference.
+   * The open-in-editor shortcut can fall back to another editor when the
+   * pinned one is gone, and that fallback must reach the editor menu and
+   * the settings row — a raw storage write leaves both showing the old
+   * pin for the life of the page.
+   */
+  setPreferredEditorId: (id: string | undefined) => void
 }
 
 const TAB_TYPE_LABELS: Partial<Record<TabType, string>> = {
@@ -150,7 +161,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.splitTileHorizontal', 'Split Tile Horizontally', () => withFocusedTile(() => splitFocusedTile('horizontal')), 'Layout')
   cmd('app.splitTileVertical', 'Split Tile Vertically', () => withFocusedTile(() => splitFocusedTile('vertical')), 'Layout')
   cmd('app.openPreferences', 'Open Preferences', () => {
-    setShowPreferencesDialog(true)
+    openPreferences('appearance')
   }, 'App')
   cmd('dialog.close', 'Close Dialog', () => {
     const dialogs = [...document.querySelectorAll('dialog[open]')]
@@ -168,7 +179,15 @@ export function useShortcuts(props: UseShortcutsProps): void {
     const state = await getRuntimeState()
     if (!state.capabilities.localSolo)
       return
-    const target = resolvePreferredEditor(await loadDetectedEditors())
+    // Persist any fallback pick through the reactive preference, not
+    // straight to storage: the editor menu and the settings row both read
+    // that signal, and a raw storage write leaves them showing the
+    // previous editor for the life of the page.
+    const target = resolvePreferredEditor(
+      await loadDetectedEditors(),
+      props.preferredEditorId(),
+      props.setPreferredEditorId,
+    )
     if (!target)
       return
     try {
@@ -226,17 +245,7 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('terminal.wordLeft', 'Go to Previous Word', () => writeToFocusedTerminal('\x1Bb'), 'Terminal')
   cmd('terminal.wordRight', 'Go to Next Word', () => writeToFocusedTerminal('\x1Bf'), 'Terminal')
 
-  registerLazyContext('inputFocused', () => {
-    const el = document.activeElement
-    if (!el)
-      return false
-    const tag = el.tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT')
-      return true
-    if (el.getAttribute('contenteditable') === 'true')
-      return true
-    return false
-  })
+  registerLazyContext('inputFocused', isTypingContext)
 
   registerLazyContext('editorFocused', () => {
     const el = document.activeElement

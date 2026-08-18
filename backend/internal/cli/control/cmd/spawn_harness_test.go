@@ -61,6 +61,14 @@ type recordingHub struct {
 	// its tab lives in.
 	materialized *leapmuxv1.UserMaterialized
 
+	// locateTab, when non-nil, is the tab LocateTab answers with. It
+	// stands alone from materialized, because a command can resolve a
+	// tab without bootstrapping the CRDT: `tab rename` reads only
+	// (tab id, tab type, worker id) and submits no op. A test of such
+	// a command declares the tab here instead of supplying a tree it
+	// never reads.
+	locateTab *leapmuxv1.WorkspaceTab
+
 	mu      sync.Mutex
 	methods []string
 }
@@ -82,14 +90,18 @@ func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method stri
 		return proto.Marshal(&leapmuxv1.GetWorkspaceResponse{
 			Workspace: &leapmuxv1.Workspace{Id: "ws-1", CreatedBy: "u-spawn", Title: "First"},
 		})
-	case method == "LocateTab" && h.materialized != nil:
-		return proto.Marshal(&leapmuxv1.LocateTabResponse{Tab: &leapmuxv1.WorkspaceTab{
-			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-			TabId:       "agent-2",
-			TileId:      "root-1",
-			WorkerId:    "worker-A",
-			WorkspaceId: "ws-1",
-		}})
+	case method == "LocateTab" && (h.locateTab != nil || h.materialized != nil):
+		tab := h.locateTab
+		if tab == nil {
+			tab = &leapmuxv1.WorkspaceTab{
+				TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
+				TabId:       "agent-2",
+				TileId:      "root-1",
+				WorkerId:    "worker-A",
+				WorkspaceId: "ws-1",
+			}
+		}
+		return proto.Marshal(&leapmuxv1.LocateTabResponse{Tab: tab})
 	case method == "GetMaterialized" && h.materialized != nil:
 		return proto.Marshal(&leapmuxv1.GetMaterializedResponse{State: h.materialized})
 	case method == "ListWorkers" && h.listWorkers != nil:

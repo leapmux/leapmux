@@ -19,8 +19,8 @@ import (
 )
 
 func runWorker(args []string) error {
-	// Pre-dispatch admin-style subcommands so the daemon parser doesn't
-	// see flags meant for them. Today the only such subcommand is
+	// Pre-dispatch the subcommands of the worker so the daemon parser
+	// does not see flags meant for them. Today the only such subcommand is
 	// `cross-worker-pins`, which manages the worker-local TOFU pin store
 	// without spinning up a worker process.
 	if len(args) > 0 && args[0] == "cross-worker-pins" {

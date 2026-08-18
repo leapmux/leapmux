@@ -29,12 +29,27 @@ export type KeyPinKeyBundle = WorkerKeyBundle
 interface KeyPin { publicKeyHex: string, firstSeen: number }
 type KeyPinMap = Record<string, KeyPin>
 
+/** One pinned worker key, as the settings surface reads it. */
+export interface KeyPinEntry {
+  workerId: string
+  publicKeyHex: string
+  firstSeen: number
+}
+
 /** Thrown when the user rejects a key change (or auto-rejects in-session). */
 export class KeyPinRejectedError extends Error {
   constructor(message = 'Worker public key rejected by user') {
     super(message)
     this.name = 'KeyPinRejectedError'
   }
+}
+
+/** List every pinned worker key, oldest first. */
+export function listKeyPins(): KeyPinEntry[] {
+  const pins = localStorageGet<KeyPinMap>(KEY_KEY_PINS) ?? {}
+  return Object.entries(pins)
+    .map(([workerId, pin]) => ({ workerId, publicKeyHex: pin.publicKeyHex, firstSeen: pin.firstSeen }))
+    .sort((a, b) => a.firstSeen - b.firstSeen)
 }
 
 /** Remove a pinned key for a worker from browser storage. */

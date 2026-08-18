@@ -91,18 +91,43 @@ func (s *Suite) testHubSettings(t *testing.T) {
 		assert.Equal(t, first, *got.Value, "the winner's value is the row that stays")
 	})
 
-	t.Run("GetForUpdate reads the row like Get", func(t *testing.T) {
+	t.Run("GetAllForUpdate reads every row like GetAll", func(t *testing.T) {
+		// The write path's ONLY settings lock. It has to answer on an empty
+		// table too: the SQLite dialect implements the lock as a no-op write,
+		// which matches no row before the first key is stored.
+		//
+		// A matched row is not what makes the lock hold. SQLite starts a write
+		// transaction when the UPDATE statement runs, so the RESERVED lock is
+		// taken even on an empty table -- verified with two connections, where
+		// the second writer blocked until the first rolled back. The first
+		// settings write on a virgin database is therefore as protected as
+		// every later one.
 		st := s.NewStore(t)
 		ss := st.Settings()
 
-		_, err := ss.GetForUpdate(ctx, "smtp")
-		assert.ErrorIs(t, err, store.ErrNotFound, "no row means absent, not a fault")
+		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+			rows, err := tx.Settings().GetAllForUpdate(ctx)
+			require.NoError(t, err)
+			assert.Empty(t, rows, "an empty table reads no rows")
+			return nil
+		}))
 
+		enabled := `true`
+		require.NoError(t, ss.Upsert(ctx, store.UpsertSettingParams{Key: "signup_enabled", Value: &enabled}))
 		value := `{"host":"smtp.example.com"}`
 		require.NoError(t, ss.Upsert(ctx, store.UpsertSettingParams{Key: "smtp", Value: &value}))
-		got, err := ss.GetForUpdate(ctx, "smtp")
-		require.NoError(t, err)
-		assert.Equal(t, value, *got.Value)
+
+		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
+			rows, err := tx.Settings().GetAllForUpdate(ctx)
+			require.NoError(t, err)
+			require.Len(t, rows, 2)
+			// Key order, which is what makes the lock order canonical.
+			assert.Equal(t, "signup_enabled", rows[0].Key)
+			assert.Equal(t, "smtp", rows[1].Key)
+			require.NotNil(t, rows[1].Value)
+			assert.Equal(t, value, *rows[1].Value)
+			return nil
+		}))
 	})
 
 	t.Run("a row unknown to the catalog round-trips untouched", func(t *testing.T) {

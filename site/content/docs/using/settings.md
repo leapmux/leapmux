@@ -1,250 +1,177 @@
 ---
 title: "Settings & Preferences"
-description: "Every setting in the Preferences and Profile dialogs: appearance, terminal theme, diff view, turn-end sound, fonts, profile, password, and OAuth links."
+description: "Every setting in the Preferences dialog: appearance, notifications, chat, terminal, files, keyboard shortcuts, account, fonts, and the hub administration panels."
 type: docs
 weight: 10
 ---
 
-LeapMux keeps your personal settings in two dialogs reached from the user (avatar) menu: **Preferences** (appearance, terminal theme, diff view, turn-end sound, debug logging, and custom fonts) and **Profile** (username, display name, email, password, and linked OAuth accounts). This chapter covers every setting in both dialogs, the additional browser-only toggles that live elsewhere in the app, and how each preference is stored and resolved.
+LeapMux keeps your settings in one **Preferences** dialog reached from the user (avatar) menu. It is a large, searchable, categorized dialog covering every user, browser, and (for hub administrators) instance setting in one place. This chapter covers every category, the additional in-context toggles, and how each preference is stored and resolved.
 
-## Opening Preferences and Profile
+## Opening Preferences
 
-Both dialogs open from the **user menu** — the avatar dropdown in the app shell. The menu contains:
-
-- **Profile...** — opens the Profile dialog. Shown only when you are **not** in solo mode.
-- **About...** (labeled **About LeapMux Desktop...** in the desktop app) — opens the About dialog.
-- **Preferences...** — opens the Preferences dialog. Always shown. The menu item displays the keyboard shortcut hint next to its label.
-
-### Keyboard shortcut
-
-Press the Open Preferences shortcut to open the dialog from anywhere:
+The dialog opens from the **user menu** — the avatar dropdown in the app shell — via **Preferences...**, or with its keyboard shortcut:
 
 | Platform | Shortcut |
 |---|---|
 | macOS | `⌘,` |
 | Windows / Linux | `Ctrl+,` |
 
-This is the `app.openPreferences` command (default binding `$mod+Comma`). See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the full shortcut system and how to customize bindings.
+This is the `app.openPreferences` command (default binding `$mod+Comma`). In the Tauri desktop app the native menu also has a **Preferences...** item that opens the same dialog.
 
-### Desktop native menu
+> **Note:** The dialog is a tall modal with a titled header. Press `Escape` to close, or click outside the dialog body.
 
-In the Tauri desktop app, the native menu also has a **Preferences...** item that opens the same dialog. On macOS the menu item shows the `⌘,` accelerator; other desktop platforms render their own title-bar controls instead.
+## The dialog
 
-> **Note:** Both dialogs are tall modal dialogs with a titled header (**Preferences** or **Profile**) and a **Close** control. Press `Escape` to close, or click outside the dialog body.
+The dialog's left side is a category navigation; the right side shows the selected category's rows. Press `/` to move focus to the **Search settings** box — the navigation is replaced by flat results across every category while you type, each result labeled with its `Category › Setting` breadcrumb. `Escape` clears the search before it closes the dialog.
 
-## The Preferences dialog
+Every row shows a label, a one-line description, and a control. Rows that exist at two tiers additionally show a **scope chip** naming the tier that currently wins:
 
-What you see in the Preferences dialog depends on whether your Hub runs in distributed mode or [solo mode](/docs/operating/running-leapmux/).
+- **Account** — the setting follows you to every device where you sign in.
+- **This device** — the setting is overridden in this browser (or desktop install) only.
 
-### Distributed mode: two scopes
+Opening the chip offers **Use account default** or **Override on this device**. Single-tier rows show the tier as static text instead of a chip.
 
-In distributed mode the dialog has two tabs:
+The categories:
 
-- **This Browser** — per-browser overrides. Settings here apply only to the browser (or desktop app install) you are currently using. They do not follow you to other devices.
-- **Account Defaults** — your account-wide defaults, stored on the Hub. These apply on every device where you sign in, unless a browser override takes precedence on that device.
+| Category | Covers |
+|---|---|
+| **Appearance** | Theme, terminal theme, diff view, UI fonts, monospace fonts. |
+| **Notifications** | Turn-end sound and volume, terminal OS notifications. |
+| **Chat & Composer** | Expand agent thoughts, show hidden messages, Enter key behavior, composer status bar. |
+| **Terminal** | Terminal renderer. |
+| **Files & Editors** | Preferred editor (desktop), reveal after download (desktop), hidden files in directory picker. |
+| **Keyboard Shortcuts** | The keybinding editor (see below). |
+| **Advanced** | Debug logging, trusted worker keys, reset all browser overrides. |
+| **Account** | Username, display name, email, password, linked OAuth accounts. Hidden in solo mode. |
 
-Every appearance setting on the **This Browser** tab includes an extra **Use account default** option. Selecting it removes the browser override so the setting falls back to your account default. The **Account Defaults** tab has the same options minus **Use account default**, and every change there saves to the Hub immediately.
+Administrators additionally see an **ADMINISTRATION** section in the navigation. These rows administer the hub itself, so the hub authenticates and validates every write. Most rows apply without a restart. The hub that serves the write applies the change at once, and another hub on the same database picks it up within ~30 seconds. The two rows in the ADMINISTRATION **Advanced** category are the exception; they apply only after a hub restart. Solo mode omits the categories a single-user hub has no use for:
 
-The resolution order for any setting is:
+| Category | Covers | In solo mode |
+|---|---|---|
+| **General** | Public base URL, session duration, secure cookies. | Public base URL only |
+| **Sign-up & Access** | Open sign-up, require verified email. | Hidden |
+| **Email (SMTP)** | Relay host and port, credentials, sender address, TLS mode. | Hidden |
+| **Bot Protection** | Captcha provider and its parameters. | Hidden |
+| **Rate Limits** | Failed-attempt limits, per operation. | Hidden |
+| **Limits & Timeouts** | API, agent-startup, and worktree-create timeouts; per-user connection and worker caps. | Shown |
+| **Advanced** | Maximum message size, queue budgets. Both apply only after a hub restart, and both rows carry a **Requires Restart** badge. | Shown |
 
-```
-This Browser override (if set)  →  Account default  →  built-in default
-```
+See [Configuration](/docs/operating/configuration/) for what each instance setting does, and [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc) for the CLI surface over the same settings.
 
-### Solo mode
-
-In solo mode there are no per-browser overrides and no Profile dialog. The Preferences dialog shows only the account-level **Appearance** settings followed by **Fonts**, with no tabs.
-
-## Appearance settings
-
-Each appearance setting is a labeled group of pill buttons; the active option is highlighted, and selecting another applies it immediately.
+## Appearance
 
 ### Theme
 
-Controls the overall light/dark palette of the app.
+The overall light/dark palette: **Dark**, **Light**, or **System** (follows your OS `prefers-color-scheme` and switches live). A dual-tier setting; the built-in default is **System**.
 
-| Option | Effect |
-|---|---|
-| **Use account default** | (This Browser tab only) Falls back to your account default. |
-| **Dark** | Forces the dark palette. |
-| **Light** | Forces the light palette. |
-| **System** | Follows your OS `prefers-color-scheme` setting and switches live when the OS does. |
+### Terminal theme
 
-The built-in default is **System**.
+The color scheme of terminal tabs: **Match UI** (follows the resolved app theme), **Dark**, or **Light**. A dual-tier setting; the built-in default is **Match UI**. See [Terminals](/docs/using/terminals/).
 
-### Terminal Theme
+### Diff view
 
-Controls the color scheme of terminal tabs (see [Terminals](/docs/using/terminals/)).
+How file diffs render in chat tool results and the file viewer: **Unified** (single column) or **Side by side** (two columns). A dual-tier setting; the built-in default is **Unified**.
 
-| Option | Effect |
-|---|---|
-| **Use account default** | (This Browser tab only) Falls back to your account default. |
-| **Match UI** | Follows the resolved app theme (dark/light, including OS when the UI theme is **System**). |
-| **Dark** | Always uses the dark terminal palette. |
-| **Light** | Always uses the light terminal palette. |
+> **Tip:** This setting is the *default* for new diffs. Individual diffs keep their own per-diff control so you can flip a single diff without changing your preference.
 
-The built-in default is **Match UI**.
+### Fonts
 
-### Diff View
+Fonts are a dual-tier setting like the other appearance rows — the account default stack follows you across devices, and either family can be overridden per device. Each family (**Custom UI fonts**, **Custom monospace fonts**) has a master switch and, when enabled, an ordered list editor:
 
-Controls how file diffs render in chat tool results and the file viewer (see [File Browser](/docs/using/file-browser/)).
-
-| Option | Effect |
-|---|---|
-| **Use account default** | (This Browser tab only) Falls back to your account default. |
-| **Unified** | Single-column unified diff. |
-| **Side-by-Side** | Two-column split diff. |
-
-The built-in default is **Unified**.
-
-> **Tip:** This setting is the *default* for new diffs. Individual diffs have their own per-diff control so you can flip a single diff between unified and split without changing your preference. In chat the control is a columns/rows icon button; in the file viewer it is a pair of text buttons labeled **Unified** and **Split**.
-
-### Turn End Sound
-
-Plays a notification sound when a coding agent finishes a turn.
-
-| Option | Effect |
-|---|---|
-| **Use account default** | (This Browser tab only) Falls back to your account default. |
-| **None** | No sound. |
-| **Ding Dong** | Plays a doorbell chime when a turn ends. |
-
-The built-in default is **Ding Dong**.
-
-The sound is intentionally restrained. The chime is active-client gated — only the focused client plays it, so it does not double across tabs or devices — and it is also skipped for single-exchange turns and rate-limited to at most one chime per minute. See [Device Sync & Presence](/docs/using/collaboration/) for why and how that gating works.
-
-#### Volume
-
-When the turn-end sound is set to anything other than **None**, a **Volume** control appears.
-
-- On the **Account Defaults** tab: a slider from 0 to 100 with a percentage readout. The new volume saves when you release the slider.
-- On the **This Browser** tab: a toggle that reads **Use account default** or **Custom volume**. Click it to switch to a per-browser custom volume; a slider then appears, seeded with your current account volume.
-
-The built-in default volume is **100%**.
-
-### Debug Logging
-
-Enables verbose client-side debug logging in the browser console — useful when reporting an issue.
-
-| Option | Effect |
-|---|---|
-| **Use account default** | (This Browser tab only) Falls back to your account default. |
-| **On** | Verbose logging enabled. |
-| **Off** | Verbose logging disabled. |
-
-The built-in default is **Off**.
-
-## Font settings
-
-Fonts are **account-level only** (stored on the Hub) and appear under the **Account Defaults** tab, or directly in solo mode. The section has two master switches:
-
-- **Custom UI fonts** — when on, a **UI Fonts** list editor appears. These fonts apply to the app interface.
-- **Custom monospace fonts** — when on, a **Monospace Fonts** list editor appears. These fonts apply to code, diffs, and terminals.
-
-Both switches are off by default, in which case LeapMux uses its bundled defaults. The default monospace stack is `"Hack NF", Hack, "SF Mono", Consolas, monospace`, and the default UI stack falls back to the system sans-serif font. LeapMux bundles **Hack NF** (Hack Nerd Font) as a web font, so glyph-rich agent output renders correctly out of the box.
-
-### Editing a font list
-
-Both editors work the same way, but their fallbacks differ. For monospace, your custom fonts are tried first, in order, and the bundled `"Hack NF", Hack, "SF Mono", Consolas, monospace` stack is appended after them as a fallback. For UI fonts, only your custom fonts are used — the system sans-serif fallback applies only when no custom UI font is set, not after a non-empty custom list.
-
-- **Add** a font: type a name in the **Font name** field and press Enter, or click the **+** button.
+- **Add** a font: type a name in the add box (**Add UI font** or **Add monospace font**) and press Enter, or click the **+** button.
 - **Reorder** fonts: drag a row by its handle (`⠿`). Order is priority — the first installed font wins.
 - **Edit** a font: double-click its name. Enter commits, Escape cancels.
 - **Remove** a font: click the **×** button on its row.
-- When a list is empty it shows **No fonts configured**.
 
-Font names are limited to 128 characters; the characters `"`, `\`, `$`, and `%` and control characters are stripped, and an empty name is rejected. Every add, remove, reorder, edit, or toggle saves to the Hub immediately (**Font preferences saved.** on success).
+The override unit is the whole family configuration (switch + list together), so a device override can never end up half-applied.
 
-> **Tip:** Custom fonts only take effect for font families actually installed on the machine running the browser. List several fallbacks so the app degrades gracefully on devices that lack your first choice.
+LeapMux limits a font name to 128 UTF-8 bytes and a family to 32 names, strips the characters `"`, `\`, `$`, and `%` and the control characters, and refuses an empty name. 128 bytes holds 128 plain ASCII characters, but only approximately 42 CJK characters. For monospace, your custom fonts are tried first and the bundled `"Hack NF", Hack, "SF Mono", Consolas, monospace` stack is appended as a fallback; for UI fonts only your custom list applies. LeapMux bundles **Hack NF** (Hack Nerd Font) as a web font, so glyph-rich agent output renders correctly out of the box.
 
-## The Profile dialog
+> **Tip:** Custom fonts only take effect for families actually installed on the machine running the browser. List several fallbacks so the app degrades gracefully on devices that lack your first choice.
 
-The Profile dialog manages your account identity. It is **not available in solo mode**. For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/). Each section below shows inline success and error messages and saves independently.
+## Notifications
 
-### Username and Display Name
+### Turn-end sound
 
-- **Username** — your login name. Usernames are 1–32 characters, lowercase letters, digits, and hyphens only, with no leading, trailing, or consecutive hyphens. `solo` is always reserved; `admin` is reserved on most paths.
-- **Display Name** — an optional friendly name. If left empty it falls back to your username. Limited to 128 characters.
-- Click **Save Profile** to apply. The button is disabled until something changes and is valid; it reads **Saving...** while in flight. Success shows **Profile updated.**
+Plays a notification sound when a coding agent finishes a turn: **None** or **Ding dong** (the built-in default). The sound is intentionally restrained — only the focused client plays it, so it does not double across tabs or devices, and it is skipped for single-exchange turns and rate-limited to at most one chime per minute. See [Device Sync & Presence](/docs/using/collaboration/).
 
-### Email
+### Turn-end volume
 
-The **Email** section shows your **Current Email** (or **Not set**) with a **(verified)** or **(unverified)** badge. If you have requested a change that is awaiting verification, a **"Pending email change to … — check your inbox to verify."** notice appears.
+A 0–100% slider (built-in default 100%), shown when the turn-end sound is not **None**. A dual-tier setting.
 
-To change it, enter a new address in **New Email** and click **Change Email**:
+### Terminal OS notifications
 
-- If the Hub requires email verification, you will see **"Verification email sent. Check your inbox."** and must confirm the new address (see [Accounts & Authentication](/docs/using/accounts/)).
-- Otherwise the change applies immediately (**Email updated.**).
+Whether terminal alerts raise OS-level notifications (browser-only; the browser asks for notification permission when you enable it). Off by default.
 
-The button is disabled when the field is empty or equals your current email. Addresses must be valid (contain `@` with a dotted domain) and at most 254 characters.
+## Chat & Composer, Terminal, Files & Editors
 
-### Password
+These categories hold the per-device toggles that used to be scattered across in-app menus. The in-context controls stay exactly where they were — the tab-bar **Advanced** menu, the composer **[+]** menu, the file viewer's save action — and both routes change the same stored value, so a toggle in one place is reflected everywhere.
 
-The **Password** section uses a shared password form with a live strength meter (**Weak / Fair / Good / Strong**). Passwords must be 8–128 characters; there is no complexity requirement, so the meter is advisory.
-
-- If you already have a password, a **Current Password** field appears and is required. The button reads **Change Password**.
-- If you signed up via OAuth and have no password yet, no current-password field is shown and the button reads **Set Password**.
-
-A mismatch between the new password and its confirmation shows **"Passwords do not match."** Success shows **Password changed.** (or **Password set.**).
-
-> **Warning:** Changing your password signs out all your *other* sessions and revokes API/delegation tokens. Your current session stays signed in.
-
-### Linked Accounts
-
-If you have linked one or more OAuth/OIDC providers (GitHub, Google, Apple, or a generic OIDC provider configured by your operator — see [Authentication Providers](/docs/operating/authentication-providers/)), each appears in **Linked Accounts** with an **Unlink** button. This section is hidden when you have no linked providers.
-
-> **Note:** You cannot unlink your only sign-in method. If a provider is your only way in and you have no password, set a password first.
-
-## Browser-only preferences set elsewhere
-
-A handful of per-browser preferences are stored alongside the others but are toggled in context rather than in the Preferences dialog:
-
-| Preference | Default | Where to toggle | What it does |
+| Setting | Default | Also toggled from | What it does |
 |---|---|---|---|
-| **Expand agent thoughts** | On | Tab bar dropdown menu, under **Advanced** | Whether agent thinking/reasoning bubbles start expanded. |
-| **Show hidden messages** | Off | Tab bar dropdown menu, under **Advanced** | Developer view that reveals hidden chat messages. |
-| **Reveal in file manager after save** | On (desktop only) | Checkbox in the file viewer's save action | Reveals a downloaded file in Finder / Explorer / Files after saving. |
-| **Enter-key send mode** | `⌘`/`Ctrl` sends | Composer **[+]** menu (**Send with ⌘⏎**) | Whether plain Enter sends a chat message or inserts a newline. |
-| **Show composer status bar** | On | Composer **[+]** menu (**Show status bar**) | Whether the branch/model/effort/mode chips show beneath the editor box. |
-| Terminal renderer | Auto | Not surfaced in any dialog | Renderer backend for terminals (auto / WebGL / canvas). |
+| **Expand agent thoughts** | On | Tab bar menu | Whether agent thinking/reasoning bubbles start expanded. |
+| **Show hidden messages** | Off | Tab bar menu | Developer view that reveals hidden chat messages. |
+| **Enter key behavior** | **Cmd/Ctrl+Enter sends** | Composer **[+]** menu (**Send with ⌘⏎**) | Whether plain Enter sends a chat message or inserts a newline. The other choice is **Enter sends**. |
+| **Composer status bar** | On | Composer **[+]** menu | Whether the branch/model/effort/mode chips show beneath the editor box. |
+| **Terminal renderer** | Auto | — | Renderer backend for terminals (auto / WebGL / canvas). Automatic selection avoids WebGL on Linux desktop. |
+| **Preferred editor** | First detected (desktop only) | The editor menu on **Open in Editor** | Which external editor opens files. |
+| **Reveal after download** | On (desktop only) | The file viewer's save action | Reveals a downloaded file in Finder / Explorer / Files after saving. |
+| **Hidden files in directory picker** | On | The directory picker itself | Whether the directory picker lists dotfiles. |
 
-The **[+]** menu item reads **Send with ⌘⏎** on macOS and **Send with Ctrl+⏎** on Windows/Linux; the item shows a check when the modifier sends, and no check when plain Enter sends. The Enter-key send mode interacts with the chat editor's send keys; see [Coding Agents](/docs/using/coding-agents/) and [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/). The terminal renderer preference has no UI control — it defaults to automatic selection (and avoids WebGL on Linux desktop).
+## Keyboard shortcuts
 
-## Custom keyboard shortcuts
+The **Keyboard Shortcuts** category is a table of every command with its default binding and source (**Default** or **Custom**). Click a binding to capture a new chord; a chord already bound in the same context is refused with the name of the conflicting command; **Reset** on a customized row returns it to its default. Overrides are stored account-level (up to 200 of them) and follow you to every device. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the command catalogue.
 
-Custom keybindings are stored **account-level** (as JSON on the Hub), not in the Preferences dialog and not per-browser. There is no graphical keybinding editor. See [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) for the default bindings and how overrides work.
+## Advanced
+
+- **Debug logging** — verbose client-side logging in the browser console; a dual-tier setting, off by default.
+- **Trusted worker keys** — the list of worker keys your browser has trusted (TOFU). Remove individual pins or clear them all; the next connect re-prompts.
+- **Reset all browser overrides** — the **Reset overrides** button removes every **This device** override at once, returning every dual-tier setting to its account default.
+
+## Account
+
+The Account category carries what the old Profile dialog managed. It is **not available in solo mode** (a solo deployment has one local identity). For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
+
+- **Username and display name** — usernames are 1–32 characters, lowercase letters, digits, and hyphens only; `solo` is always reserved. Display names are up to 128 UTF-8 bytes and fall back to the username when empty.
+- **Email** — changing it may require verification (an operator-configured policy); a pending change shows a notice until confirmed.
+- **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and revokes API/delegation tokens; your current session stays signed in. OAuth-only accounts can set a first password here.
+- **Linked accounts** — your linked OAuth/OIDC providers with **Unlink** buttons. You cannot unlink your only sign-in method without a password set.
 
 ## How preferences persist
 
-### Per-browser (This Browser)
+### Per-key account storage
 
-Browser overrides live entirely on the device you are using, in the browser's local storage, under a single consolidated key. The value carries a 1-year expiry that is refreshed every time you open the app, so a browser you use within any rolling one-year window keeps its overrides indefinitely. Setting an option to **Use account default** removes that override so the account default takes over. Theme changes also propagate instantly to your other open tabs in the same browser.
+Account settings are stored on the Hub **one key at a time**. Each change sends only the changed key, and the Hub merges it under a row lock — so **two devices (or two tabs) editing different settings no longer overwrite each other**, and a rejected change never partially applies. A value the Hub considers invalid is refused with the row's error; your other settings are untouched.
 
-The settings stored per-browser are Theme, Terminal Theme, Diff View, Turn End Sound, Volume, and Debug Logging, plus the browser-only toggles above (Expand agent thoughts, Show hidden messages, Enter-key send mode, Terminal renderer, and Reveal in file manager after save).
+### Device overrides
 
-> **Note:** Clearing your browser's site data wipes all **This Browser** overrides. Your **Account Defaults** are unaffected — they live on the Hub and reappear after you sign in again.
+Device (**This device**) overrides live entirely in the browser's local storage under one consolidated key with a 1-year rolling expiry — a browser you use within any rolling one-year window keeps its overrides indefinitely. Choosing **Use account default** (or **Reset all browser overrides**) removes the override so the account default takes over. Clearing your browser's site data wipes all device overrides; your account settings are unaffected and reappear after you sign in again.
 
-### Account-wide (Account Defaults)
+### Resolution order
 
-Account defaults are stored on the Hub and loaded when the app starts. The account-level settings are Theme, Terminal Theme, the custom UI/monospace font toggles and lists, Diff View, Turn End Sound, Volume, Debug Logging, and your custom keybindings. They follow you to every device where you sign in.
+For any dual-tier setting:
+
+```
+Device override (if set)  →  Account default  →  built-in default
+```
 
 ### Built-in defaults
-
-When neither a browser override nor an account default is set, LeapMux uses these built-in defaults:
 
 | Setting | Default |
 |---|---|
 | Theme | System |
-| Terminal Theme | Match UI |
-| Diff View | Unified |
-| Turn End Sound | Ding Dong |
+| Terminal theme | Match UI |
+| Diff view | Unified |
+| Turn-end sound | Ding dong |
 | Turn-end volume | 100% |
-| Debug Logging | Off |
+| Debug logging | Off |
 | Custom UI / monospace fonts | Off (empty) |
+| Keybinding overrides | None |
 
 ## Related chapters
 
 - [Accounts & Authentication](/docs/using/accounts/) — sign-up, login, OAuth, email verification, sessions.
 - [Keyboard Shortcuts](/docs/using/keyboard-shortcuts/) — the shortcut system, default bindings, and customization.
+- [Configuration](/docs/operating/configuration/) — the hub instance settings the administration panels manage.
+- [`leapmux control admin`](/docs/operating/control-cli/) — the CLI surface over the same hub settings.
 - [Running LeapMux](/docs/operating/running-leapmux/) — solo vs. distributed mode.
-- [File Browser](/docs/using/file-browser/) and [Terminals](/docs/using/terminals/) — features the Diff View and Terminal Theme settings affect.

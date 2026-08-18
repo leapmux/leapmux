@@ -77,7 +77,7 @@ func hubCallUnaryEmitOn(ctx context.Context, c *control.Client, method string, i
 // the worker-side ControlIPC bridge also reads — one place to add or
 // rename a hub method.
 func hubCallUnary(ctx context.Context, c *control.Client, method string, in proto.Message, out proto.Message) error {
-	if !c.IsLocal() {
+	if !c.IsWorkerIPC() {
 		return hubCallDirect(ctx, c, method, in, out)
 	}
 	return hubCallLocalIPC(ctx, c, method, in, out)

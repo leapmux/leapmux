@@ -62,7 +62,7 @@ describe('normalizeBindAddr', () => {
 // "127.0.0.01" (Number('01') === 1) which the sidecar then rejects with a raw parse
 // error, i.e. the exact failed create this validation exists to prevent.
 describe('isLoopbackAddress', () => {
-  describe('iPv4', () => {
+  describe('in IPv4', () => {
     const accepts = ['127.0.0.1', '127.0.0.2', '127.0.0.0', '127.255.255.254']
     for (const addr of accepts) {
       it(`accepts ${addr}, in the 127.0.0.0/8 block`, () => {
@@ -101,7 +101,7 @@ describe('isLoopbackAddress', () => {
     }
   })
 
-  describe('iPv6', () => {
+  describe('in IPv6', () => {
     const accepts = [
       '::1',
       '0:0:0:0:0:0:0:1', // uncompressed ::1

@@ -11,6 +11,15 @@ SELECT * FROM agents WHERE id = ?;
 -- name: GetAgentID :one
 SELECT id FROM agents WHERE id = ?;
 
+-- GetAgentTitle reads only the title column, for the RenameAgent reply on the
+-- path that stores nothing: a request whose title cleans to empty keeps the
+-- stored title, and the response has to report THAT title rather than the
+-- empty string it refused to store. GetAgentByID would answer the same
+-- question with a SELECT * that deserializes the options / option_groups JSON
+-- blobs -- the cost registerAgentGatedByID exists to avoid on this handler.
+-- name: GetAgentTitle :one
+SELECT title FROM agents WHERE id = ?;
+
 -- name: ListAllOpenAgentIDs :many
 SELECT id FROM agents WHERE closed_at IS NULL;
 

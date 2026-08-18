@@ -447,15 +447,17 @@ func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	if s.bgTasks == nil {
 		s.bgTasks = make(map[string]bgtask.Item)
 	}
-	// task.ToItem().PreservingBlanksFrom(existing), the SAME pair the production
-	// applier uses. Neither half may be hand-written here: the projection so a
-	// new field on Upsert reaches this fake too, and the merge so blank-means-keep
-	// holds for every descriptive field, not just the child id. A partial upsert
-	// (Claude's task_notification carries only status + description) blanked the
-	// Title against this fake while production preserved it, so a test that
-	// asserted the real contract failed against correct code.
+	// task.CleanTitle().ToItem().PreservingBlanksFrom(existing), the SAME chain
+	// the production applier uses. No link may be hand-written here: the clean
+	// so a provider test sees the title the registry really stores, the
+	// projection so a new field on Upsert reaches this fake too, and the merge
+	// so blank-means-keep holds for every descriptive field, not just the child
+	// id. A partial upsert (Claude's task_notification carries only status +
+	// description) blanked the Title against this fake while production
+	// preserved it, so a test that asserted the real contract failed against
+	// correct code.
 	existing := s.bgTasks[task.RowKey]
-	item := task.ToItem().PreservingBlanksFrom(existing)
+	item := task.CleanTitle().ToItem().PreservingBlanksFrom(existing)
 	// A final status is absorbing, as in the registry: a replayed non-final
 	// upsert must not resurrect a row that already ended. Without this the fake
 	// was MORE permissive than production, so a test pinning the guard failed

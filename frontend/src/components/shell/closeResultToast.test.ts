@@ -30,7 +30,7 @@ describe('summarizeWorktreeCloses', () => {
       .toEqual({ removed: false, failed: false, stillReferenced: false, unknown: false })
   })
 
-  it('oRs across a mixed group rather than picking one verdict', () => {
+  it('combines a mixed group with OR rather than picking one verdict', () => {
     expect(summarizeWorktreeCloses([r(WorktreeRemovalOutcome.REMOVED), undefined, r(WorktreeRemovalOutcome.FAILED)]))
       .toEqual({ removed: true, failed: true, stillReferenced: false, unknown: true })
   })

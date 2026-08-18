@@ -21,10 +21,16 @@ type settingsSender struct {
 	set *settings.Manager
 }
 
-// Send delivers msg via the currently configured SMTP relay. The key's
-// declared default owns what an unset field means (port 587, STARTTLS):
-// validateSMTP rejects a zero port whenever a host is set and refuses an
-// empty TLS mode outright, so the value read here always carries both.
+// Send delivers msg via the currently configured SMTP relay.
+//
+// Every field the SMTPConfig below reads is present by the time the
+// Enabled() guard passes. The key's declared default owns what an unset
+// field means (port 587, STARTTLS), and validateSMTP refuses a zero port
+// whenever a host is set and refuses an empty TLS mode outright. The
+// remaining pair is Enabled()'s own: it reports false until the host AND
+// the from address are both stored. validateSMTP deliberately accepts an
+// ABSENT from address, so that guard — not the validator — is what keeps
+// a half-staged relay away from this Send.
 func (s settingsSender) Send(ctx context.Context, msg Message) error {
 	v := settings.KeySMTP.Of(s.set.Snapshot(ctx))
 	if !v.Enabled() {

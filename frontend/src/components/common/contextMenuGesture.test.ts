@@ -2,6 +2,7 @@ import type { ContextMenuPress } from './contextMenuGesture'
 import type { PointerOpts } from '~/test-support/pointer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { motion } from '~/styles/tokens'
+import { inputOrEditableHosts, popoverHost } from '~/test-support/embeddedUi'
 import { pointerEvent } from '~/test-support/pointer'
 import { selectTextWithRect } from '~/test-support/selection'
 import { attachContextMenuGesture, PRESS_SLOP_PX, pressAnchorRect, touchReleaseOpensMenu } from './contextMenuGesture'
@@ -284,6 +285,28 @@ describe('attachContextMenuGesture', () => {
     expect(row.hasAttribute('data-press-hold')).toBe(false)
   })
 
+  it('ignores a press that starts inside any editable host', () => {
+    // A long press inside an editor must keep the native selection handles
+    // and the paste callout, whichever spelling the host carries.
+    for (const spelling of ['true', '', 'plaintext-only']) {
+      const editor = document.createElement('div')
+      editor.setAttribute('contenteditable', spelling)
+      row.appendChild(editor)
+
+      editor.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
+      vi.advanceTimersByTime(HOLD_MS)
+      vi.runAllTimers()
+
+      expect(onOpen, `contenteditable="${spelling}"`).not.toHaveBeenCalled()
+      expect(row.hasAttribute('data-press-hold')).toBe(false)
+
+      const e = new MouseEvent('contextmenu', { clientX: 95, bubbles: true, cancelable: true })
+      editor.dispatchEvent(e)
+      expect(e.defaultPrevented, `contenteditable="${spelling}"`).toBe(false)
+      editor.remove()
+    }
+  })
+
   it('ignores a press that starts inside a popover', () => {
     // On the `contextMenuFor` surfaces the menu is a DOM child of the row. A
     // press on a menu item belongs to the menu: arming here would ramp the tint
@@ -304,6 +327,49 @@ describe('attachContextMenuGesture', () => {
     const e = new MouseEvent('contextmenu', { clientX: 95, bubbles: true, cancelable: true })
     item.dispatchEvent(e)
     expect(e.defaultPrevented).toBe(false)
+  })
+
+  // The membership pin for `EMBEDDED_UI_SELECTOR`, which is composed:
+  // `INPUT_OR_EDITABLE_SELECTOR` supplies the text-entry group and `[popover]`
+  // is this gesture's own. The three tests above give each member its rationale
+  // one at a time; these two hold the BOUNDARY of the list, which is what an
+  // edit to the shared fragment moves.
+  describe('embedded-UI boundary', () => {
+    /** Press `target`, hold past the threshold, then release. */
+    function holdOn(target: Element) {
+      onOpen.mockClear()
+      target.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
+      vi.advanceTimersByTime(HOLD_MS)
+      target.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
+      vi.runAllTimers()
+    }
+
+    it('declines a press inside every element the list covers', () => {
+      for (const { label, host, target } of [...inputOrEditableHosts(), popoverHost()]) {
+        row.appendChild(host)
+
+        holdOn(target)
+
+        expect(onOpen, label).not.toHaveBeenCalled()
+        expect(row.hasAttribute('data-press-hold'), label).toBe(false)
+        host.remove()
+      }
+    })
+
+    it('still opens the menu on a long press over a row button', () => {
+      // `EMBEDDED_UI_SELECTOR` in ~/lib/dragActivators.ts declines `button`;
+      // this one must not, so the two lists cannot merge. A long press anywhere
+      // on a row opens that row's menu, and a failed chat row renders its
+      // recovery actions as visible buttons -- see `attachRowMenu` in
+      // ~/components/chat/MessageBubble.tsx. Touch has no hover toolbar, so a
+      // decline here would lose the menu over that part of the row.
+      const button = document.createElement('button')
+      row.appendChild(button)
+
+      holdOn(button)
+
+      expect(onOpen).toHaveBeenCalledOnce()
+    })
   })
 
   it('keeps a fired hold through another pointer press', () => {

@@ -3,6 +3,7 @@ import { createDraggable, DragDropProvider } from '@thisbeyond/solid-dnd'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PRESS_SLOP_PX } from '~/components/common/contextMenuGesture'
 import { motion } from '~/styles/tokens'
+import { inputOrEditableHosts, popoverHost } from '~/test-support/embeddedUi'
 import { pointerEvent } from '~/test-support/pointer'
 import { ACTIVATION_DELAY_MS, ACTIVATION_DISTANCE_PX, GuardedPointerSensor } from './guardedPointerSensor'
 
@@ -130,6 +131,22 @@ describe('guardedPointerSensor', () => {
     expect(activeDraggableId()).toBeNull()
   })
 
+  it('ignores a press that starts inside any editable host', () => {
+    // Same exemption as the inline input: a selection sweep inside an editor
+    // is not a drag, whichever spelling the host carries.
+    for (const spelling of ['true', '', 'plaintext-only']) {
+      const { rowEl, activeDraggableId } = renderProbe()
+      const editor = document.createElement('div')
+      editor.setAttribute('contenteditable', spelling)
+      rowEl.appendChild(editor)
+
+      editor.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse' }))
+      document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerType: 'mouse' }))
+
+      expect(activeDraggableId(), `contenteditable="${spelling}"`).toBeNull()
+    }
+  })
+
   it('ignores a press that starts inside a row menu popover', () => {
     // A row's context menu is a DOM child of the row. A press on a menu item
     // belongs to the menu, and a drag must not start from under it.
@@ -142,6 +159,43 @@ describe('guardedPointerSensor', () => {
     document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerType: 'mouse' }))
 
     expect(activeDraggableId()).toBeNull()
+  })
+
+  // The membership pin for `EMBEDDED_UI_SELECTOR`, which is composed:
+  // `INPUT_OR_EDITABLE_SELECTOR` supplies the text-entry group and `[popover]`
+  // is this list's own. The tests above give each member its rationale one at a
+  // time; these two hold the BOUNDARY of the list, which is what an edit to the
+  // shared fragment moves.
+  describe('embedded-UI boundary', () => {
+    it('declines a press inside every element the list covers', () => {
+      for (const { label, host, target } of [...inputOrEditableHosts(), popoverHost()]) {
+        const { rowEl, activeDraggableId } = renderProbe()
+        rowEl.appendChild(host)
+
+        target.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse' }))
+        document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerType: 'mouse' }))
+
+        expect(activeDraggableId(), label).toBeNull()
+      }
+    })
+
+    it('still starts a drag from a press on a drag grip', () => {
+      // `EMBEDDED_UI_SELECTOR` in ~/lib/dragActivators.ts declines
+      // `[data-drag-handle]`; this one must not, so the two lists cannot merge.
+      // A grip carries the RAW activators (see ~/components/common/DragHandle.tsx),
+      // which call this sensor's `attach` with the grip as the event target --
+      // and a grip is the ONLY place a touch drag may start. Declining it here
+      // would stop touch reorder on every surface.
+      const { rowEl, activeDraggableId } = renderProbe()
+      const grip = document.createElement('span')
+      grip.setAttribute('data-drag-handle', '')
+      rowEl.appendChild(grip)
+
+      grip.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'touch' }))
+      document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 70, pointerType: 'touch' }))
+
+      expect(activeDraggableId()).toBe('row-1')
+    })
   })
 
   it('unwinds on pointercancel instead of leaking document listeners', () => {

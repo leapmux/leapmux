@@ -15,6 +15,7 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // pendingResizeWaitCap bounds how long runTerminalStartup blocks waiting
@@ -331,7 +332,26 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 		func(_ context.Context, userID userid.UserID, r *leapmuxv1.UpdateTerminalTitleRequest, dbTerm db.Terminal, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
 
-			title := r.GetTitle()
+			// Clean the title, never refuse it -- the same rule OpenAgent,
+			// RenameAgent and the plan auto-rename apply. An empty result
+			// means the request carried nothing that survives cleaning, so
+			// both the manager and the row keep the title they hold: writing
+			// "" would leave the tab with no name at all. The handler answers
+			// OK because the rename is a no-op, not a failure.
+			title := validate.CleanName(r.GetTitle())
+			if title == "" {
+				slog.Debug("ignoring terminal rename to an empty title", "terminal_id", terminalID)
+				// The reply reports the title that is IN FORCE, not the empty
+				// string the handler refused to store. "In force" is the
+				// manager's title while the terminal is live and the row's
+				// title after it exits -- the same precedence ListTerminals
+				// applies, so a client polling either RPC reads one answer.
+				sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{
+					Title: svc.effectiveTerminalTitle(dbTerm),
+				})
+				return
+			}
+
 			svc.Terminals.UpdateTitle(terminalID, title)
 			screen := dbTerm.Screen
 			if screen == nil {
@@ -364,7 +384,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				)
 			}
 
-			sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{})
+			sendProtoResponse(sender, &leapmuxv1.UpdateTerminalTitleResponse{Title: title})
 		})
 
 	// ListTerminals resolves the records behind a set of terminal tab ids.
@@ -812,6 +832,22 @@ func (svc *Service) deriveTerminalStatus(t *db.Terminal) (status leapmuxv1.Termi
 		return leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED, t.StartupError, ""
 	}
 	return leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY, "", ""
+}
+
+// effectiveTerminalTitle returns the title a terminal tab shows right now.
+// The in-memory manager holds it while the terminal is live and the persisted
+// row holds it after the shell exits and the manager drops the entry -- the
+// same precedence ListTerminals applies when it builds a TerminalInfo, so the
+// two RPCs cannot report different titles for the same terminal.
+//
+// UpdateTerminalTitle calls it on the path that stores nothing (the request's
+// title cleaned to empty), so the reply reports the title in force instead of
+// the empty string the handler refused to store.
+func (svc *Service) effectiveTerminalTitle(row db.Terminal) string {
+	if meta, ok := svc.Terminals.GetMeta(row.ID); ok {
+		return meta.Title
+	}
+	return row.Title
 }
 
 // broadcastTerminalStarting fans out a STARTING TerminalStatusChange.

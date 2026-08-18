@@ -30,9 +30,11 @@ export interface FilterTabBarProps<K extends string> {
  * bar does not own.
  *
  * Pure and exported so the contract role=tab requires (Tab reaches the SET, the
- * arrows move within it, and both ends wrap) is testable on its own.
+ * arrows move within it, and both ends wrap) is testable on its own. Unbounded
+ * in K: the pill groups (`PillGroup`) adopt it for one-of-N choices whose
+ * values are booleans or nulls, not just the tab bar's string keys.
  */
-export function nextFilterTab<K extends string>(keys: readonly K[], current: K, key: string): K | undefined {
+export function nextFilterTab<K>(keys: readonly K[], current: K, key: string): K | undefined {
   if (keys.length === 0)
     return undefined
   const i = keys.indexOf(current)

@@ -205,7 +205,6 @@ func (e *envT) seedAPIToken(t *testing.T) string {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: []byte("hash"),
-		Scope:      "remote:*",
 	}))
 	return tokenID
 }
@@ -270,7 +269,6 @@ func TestWatcher_APITokenRotationEvictsRemoteCacheWithoutClosingChannels(t *test
 		ClientName:       "remote-cache-test",
 		SecretHash:       validator.HashSecret(oldAccessSecret),
 		RefreshHash:      validator.HashSecret(oldRefreshSecret),
-		Scope:            "remote:*",
 		ExpiresAt:        &expiresAt,
 		RefreshExpiresAt: &refreshExpiresAt,
 	}))

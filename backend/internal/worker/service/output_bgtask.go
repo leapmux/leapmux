@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // bgTaskCache is the in-memory mirror of one root agent's background-task
@@ -395,6 +396,30 @@ func (h *OutputHandler) WriteSubagentEndDividers(childAgentIDs []string, status 
 func (s *agentOutputSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
 	ctx := s.h.bgTaskCtx()
 	providerChildKey = bgtask.SanitizeRowKey(providerChildKey)
+	// The MODEL supplies this title -- Claude's Task description, Codex's
+	// collab prompt line, an ACP spawn label, Pi's subagent title -- so it
+	// arrives with no length limit and no character rule. Clean it HERE
+	// because the `agents` row that CreateChildAgent inserts takes it
+	// directly, and because the blank test that picks that row's fallback has
+	// to judge the CLEANED title: a title of nothing but stripped characters
+	// is a blank tab label, not a name.
+	//
+	// The registry row that linkRegistryRow upserts, and the broadcast that
+	// follows it, meet the same rule again at applyBackgroundTaskUpsertLocked,
+	// which every registry title write passes through. CleanName is
+	// idempotent, so the title arrives there byte-identical.
+	//
+	// CleanName, not SanitizeName: the title is DERIVED, so there is no caller
+	// to report an error to. Refusing it would lose the child transcript over
+	// a title the user never typed. This is the rule OpenAgent, RenameAgent,
+	// UpdateTerminalTitle and the plan auto-rename apply.
+	//
+	// An empty result stays empty on the REGISTRY path: a blank title in a
+	// bgtask.Upsert means "keep the title the row already holds"
+	// (bgtask.Item.PreservingBlanksFrom), and substituting a fallback here
+	// would overwrite a real title with a placeholder. The `agents` row takes
+	// its own fallback instead -- see the CreateChildAgent call.
+	title = validate.CleanName(title)
 
 	// pendingBroadcast holds a post-mutation snapshot to fan out AFTER the
 	// cache lock is released. Broadcasting under cache.Mu can block on a slow
@@ -467,13 +492,44 @@ func (s *agentOutputSink) ensureChildAgentLocked(ctx context.Context, spawnSpanI
 		return "", fmt.Errorf("get parent agent for child spawn: %w", err)
 	}
 	childID := id.Generate()
+	// The `agents` row must never hold a blank title: it is the tab label the
+	// user reads when the subagent transcript opens, and nothing rewrites it
+	// later (a second EnsureChildAgent for the same spawn finds this row and
+	// only re-links the registry). A blank title arrives two ways, and both
+	// are routine: the provider had none to give (Claude's
+	// routeSubagentMessage passes "" by design, and Codex's collabChildTitle
+	// answers "" for a thread it has not titled yet), or cleaning removed
+	// every character of the one it gave. Both take the SAME fallback
+	// OpenAgent takes, so one rule names every untitled agent row, and two
+	// untitled subagents stay apart in the tab strip -- a fixed literal would
+	// label them identically.
+	//
+	// The insert is the ONLY write of this column from a provider title, and
+	// that is deliberate. A later provider title cannot update the row,
+	// because `agents.title` is also where a user's rename of the child tab
+	// lands (RenameAgent writes the same column) and the row carries no mark
+	// that separates a name the user chose from one the model sent. Codex
+	// calls EnsureChildAgent once per collab-state event for the whole run, so
+	// an updating write would restore the provider's title over the user's
+	// rename on the next event, every time.
+	//
+	// The cost is a real one and it is paid here: a child that an out-of-order
+	// spawn created with no title (Claude's routeSubagentMessage) keeps the
+	// pooled name on its TAB even after a later task_started supplies the real
+	// description. That description is not lost -- the later
+	// EnsureChildAgent links it into the registry row, which is what the
+	// background-tasks sidebar reads.
+	rowTitle := title
+	if rowTitle == "" {
+		rowTitle = pickAgentTitle()
+	}
 	if err := s.h.queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
 		ID:            childID,
 		ParentAgentID: sqlString(s.agentID),
 		SpawnSpanID:   spawnSpanID,
 		WorkingDir:    parent.WorkingDir,
 		HomeDir:       parent.HomeDir,
-		Title:         title,
+		Title:         rowTitle,
 		AgentProvider: parent.AgentProvider,
 	}); err != nil {
 		// UNIQUE violation on idx_agents_spawn_span (race / replay): re-read.
@@ -890,6 +946,19 @@ func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 // (which already holds the cache lock). It bypasses re-locking to avoid a
 // self-deadlock.
 func (h *OutputHandler) applyBackgroundTaskUpsertLocked(cache *bgTaskCache, rootAgentID string, task bgtask.Upsert) (registryChange, error) {
+	// Every write of agent_background_tasks.title passes through here: the
+	// sink's UpsertBackgroundTask, which every provider calls, and
+	// EnsureChildAgent's link upsert. The MODEL supplies these titles, so they
+	// arrive with no length limit and no character rule. This column carries
+	// the SAME name rule as every other title column in the worker -- one rule
+	// for every title, and no per-column exception. bgtask.Upsert.CleanTitle
+	// holds the rule and what it costs a row whose title IS a shell command.
+	//
+	// The clean runs BEFORE the no-op guard below, and it has to. A provider
+	// that replays a raw title would otherwise differ from the stored cleaned
+	// one on every replay, and each replay would rewrite the row and broadcast
+	// again for the life of the agent.
+	task = task.CleanTitle()
 	ctx := h.bgTaskCtx()
 	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
 		return registryChange{}, err

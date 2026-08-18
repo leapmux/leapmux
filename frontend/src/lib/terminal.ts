@@ -8,10 +8,10 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { loadBrowserPrefs } from './browserStorage'
 import { copyTextToClipboard } from './clipboard'
+import { DEFAULT_MONO_FONT_FAMILY } from './fontStack'
 import { createLogger } from './logger'
 import { sleep } from './sleep'
 
-const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
 const log = createLogger('terminal')
 // TextEncoder construction is not free, so one stateless instance serves
 // every call site in this module. (Same pattern as ~/lib/crdt/hlc.)

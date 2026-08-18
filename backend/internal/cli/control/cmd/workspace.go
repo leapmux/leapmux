@@ -23,7 +23,7 @@ func RunWhoami(rawCtx any, args []string) error {
 	if err != nil {
 		return err
 	}
-	if c.IsLocal() {
+	if c.IsWorkerIPC() {
 		ipc, ipcErr := c.ControlIPCService()
 		if ipcErr != nil {
 			return control.EmitErrorWith("invalid_request", ipcErr)

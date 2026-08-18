@@ -1,16 +1,18 @@
 /* eslint-disable no-console */
 import type { ChildProcess } from 'node:child_process'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
+import { promisify } from 'node:util'
 import { test as base, expect } from '@playwright/test'
 import {
   cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
   getWorkerId,
+  loginViaAPI,
   openAgentViaAPI,
   signUpViaAPI,
   TEST_ADMIN_DISPLAY_NAME,
@@ -57,6 +59,35 @@ interface ServerOutput {
  * settings refresh, first turn) without holding a whole run's chatter.
  */
 const SERVER_LOG_LINES = 4000
+
+const execFileAsync = promisify(execFile)
+
+/**
+ * Create the first administrator OFFLINE, before the hub process starts.
+ *
+ * The offline admin-token CLI command tests used to lean on is gone;
+ * first-admin bootstrap lives in `leapmux recover bootstrap
+ * create-admin`, which opens the DB directly and refuses once any admin
+ * exists. Dev mode splits the data dir, so the hub's DB is `<dataDir>/hub`
+ * — the same directory devModeTokenSource hands to the CLI token helper.
+ */
+async function bootstrapFirstAdmin(hubDataDir: string): Promise<void> {
+  await execFileAsync(getGlobalState().binaryPath, [
+    'recover',
+    'bootstrap',
+    'create-admin',
+    '--username',
+    TEST_ADMIN_USERNAME,
+    '--password',
+    TEST_ADMIN_PASSWORD,
+    '--display-name',
+    TEST_ADMIN_DISPLAY_NAME,
+    '--data-dir',
+    hubDataDir,
+  ], {
+    env: { ...process.env, LEAPMUX_LOG_LEVEL: 'error' },
+  })
+}
 
 /**
  * Keep a bounded tail of the dev instance's output instead of discarding it.
@@ -119,6 +150,11 @@ export const test = base.extend<
     const port = await findFreePort()
     const hubUrl = `http://localhost:${port}`
 
+    // The first admin must exist BEFORE the hub opens the DB: the offline
+    // bootstrap refuses once any admin exists, and the online /setup path no
+    // longer reserves the `admin` username once one does.
+    await bootstrapFirstAdmin(join(dataDir, 'hub'))
+
     console.log(`[e2e] Starting dev instance on port ${port}...`)
 
     const proc = spawn(globalState.binaryPath, [
@@ -139,10 +175,9 @@ export const test = base.extend<
     await waitForServer(hubUrl)
     console.log(`[e2e] Dev instance ready on port ${port}`)
 
-    // Register the first admin via setup mode. The /setup flow allows `admin`
-    // as a username only when no users exist yet; after this, `admin` is
-    // reserved for public signup.
-    const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
+    // The admin was bootstrapped offline above; log in over HTTP for the
+    // session cookie the rest of the fixtures auth with.
+    const adminToken = await loginViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
     const workerId = await getWorkerId(hubUrl, adminToken)
 
     // Create newuser for sharing tests

@@ -1,6 +1,7 @@
 import type { Id } from '@thisbeyond/solid-dnd'
 import { useDragDropContext } from '@thisbeyond/solid-dnd'
 import { onCleanup, onMount } from 'solid-js'
+import { INPUT_OR_EDITABLE_SELECTOR } from '~/lib/textInputBehavior'
 import { motion } from '~/styles/tokens'
 
 /**
@@ -27,8 +28,22 @@ const SENSOR_ID = 'pointer-sensor'
  * the inline rename inputs keep their native selection gestures, and a row's
  * open menu is a DOM child of the row, so a press on a menu item must not
  * lift the row from under the menu.
+ *
+ * `INPUT_OR_EDITABLE_SELECTOR` carries the text-entry group that all three
+ * pointer guards share, and `[popover]` stands in the list itself. The value
+ * equals the context menu's list today
+ * (~/components/common/contextMenuGesture.ts), and the two still stay apart:
+ * they guard two different gestures on one press.
+ *
+ * Do NOT adopt the wider list from ~/lib/dragActivators.ts. This sensor is the
+ * floor under EVERY draggable, and a drag grip reaches it directly: the grip
+ * carries the raw activators, which call `attach` below with the grip as the
+ * event target. `[data-drag-handle]` in this list would decline that press,
+ * and touch reorder would stop working on every surface. A row body gets the
+ * wider list from `rowBodyActivators`, which runs before this guard, so the
+ * two compose there without this one growing.
  */
-const EMBEDDED_UI_SELECTOR = 'input, textarea, [contenteditable="true"], [popover]'
+const EMBEDDED_UI_SELECTOR = `${INPUT_OR_EDITABLE_SELECTOR}, [popover]`
 
 /**
  * The stock upstream pointer sensor with the guards this app needs.

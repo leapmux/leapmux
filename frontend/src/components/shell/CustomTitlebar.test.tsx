@@ -1,9 +1,11 @@
-/// <reference types="vitest/globals" />
 import type { WindowMode } from '~/api/platformBridge'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-
 import { openWebInspector, quitApp, windowClose, windowExitFullscreen, windowMinimize, windowToggleMaximize } from '~/api/platformBridge'
+import { localStorageClearForTests } from '~/lib/browserStorage'
+
+/// <reference types="vitest/globals" />
+import { withPreferences } from '~/test-support/preferencesProvider'
 import { CustomTitlebar } from './CustomTitlebar'
 
 // Hoisted so the vi.mock factories below can close over them — vi.mock
@@ -99,7 +101,7 @@ beforeEach(() => {
 })
 
 function renderTitlebar(activeWorkingDir?: () => string | undefined) {
-  return render(() => (
+  return render(withPreferences(() => (
     <CustomTitlebar
       onToggleLeftSidebar={() => {}}
       onToggleRightSidebar={() => {}}
@@ -107,13 +109,13 @@ function renderTitlebar(activeWorkingDir?: () => string | undefined) {
       rightSidebarVisible
       activeWorkingDir={activeWorkingDir}
     />
-  ))
+  )))
 }
 
 function renderMinimalTitlebar() {
-  return render(() => (
+  return render(withPreferences(() => (
     <CustomTitlebar variant="minimal" />
-  ))
+  )))
 }
 
 function getMenuItemLabels(container: HTMLElement) {
@@ -276,7 +278,7 @@ describe('customTitlebar open-in-editor slot', () => {
   beforeEach(() => {
     runtimeLocalSolo.value = false
     detectedEditors.value = []
-    localStorage.clear()
+    localStorageClearForTests()
   })
 
   it('hides the open-in-editor button when not in solo mode (e.g. web)', async () => {

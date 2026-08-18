@@ -10,72 +10,82 @@ import { getBrowserPref, loginViaToken, openAgentViaUI, openPreferencesDialog, s
  */
 const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'
 
+/** The scope chip on the turn-end sound row (dual: browser override vs account). */
+function turnEndSoundScope(page: import('@playwright/test').Page) {
+  return page.getByTestId('scope-chip-notifications.turnEndSound')
+}
+
+/** Switch the turn-end sound row onto the browser (override) tier. */
+async function overrideOnDevice(page: import('@playwright/test').Page) {
+  await turnEndSoundScope(page).click()
+  await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
+}
+
 test.describe('Turn End Sound Preferences', () => {
-  test('should show Turn End Sound section in This Browser tab', async ({ page, leapmuxServer }) => {
+  test('should show the Turn End Sound row in the Notifications category', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page)
-    await expect(page.getByRole('heading', { name: 'Turn End Sound' }).first()).toBeVisible()
-    await expect(page.getByRole('radio', { name: 'None' }).first()).toBeVisible()
-    await expect(page.getByRole('radio', { name: 'Ding Dong' }).first()).toBeVisible()
+    await openPreferencesDialog(page, 'notifications')
+    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
+    await expect(dialog.getByRole('radio', { name: 'None' })).toBeVisible()
+    await expect(dialog.getByRole('radio', { name: 'Ding Dong' })).toBeVisible()
   })
 
   test('should persist browser-level turn end sound in localStorage', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page)
-    await expect(page.getByRole('heading', { name: 'Turn End Sound' }).first()).toBeVisible()
+    await openPreferencesDialog(page, 'notifications')
+    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
+
+    // The dual row edits whichever tier the scope chip selects; persisting to
+    // localStorage means switching to the this-device override first.
+    await overrideOnDevice(page)
 
     // Click "Ding Dong"
-    await page.getByRole('radio', { name: 'Ding Dong' }).first().click()
+    await dialog.getByRole('radio', { name: 'Ding Dong' }).click()
     await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBe('ding-dong')
 
     // Click "None"
-    await page.getByRole('radio', { name: 'None' }).first().click()
+    await dialog.getByRole('radio', { name: 'None' }).click()
     await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBe('none')
 
-    // Click "Use account default" within the Turn End Sound section.
-    // In the browser tab, "Use account default" buttons appear for: Theme, Terminal Theme,
-    // Diff View, Turn End Sound. The Turn End Sound one is the 4th (0-indexed: 3).
-    await page.getByRole('radio', { name: 'Use account default' }).nth(3).click()
+    // Back to the account tier: the chip's "Use account default" deletes the
+    // stored override rather than writing an account-value copy of it.
+    await turnEndSoundScope(page).click()
+    await page.getByRole('menuitemradio', { name: 'Use account default' }).click()
     await expect.poll(() => getBrowserPref(page, 'turnEndSound')).toBeNull()
-  })
-
-  test('should show Turn End Sound section in Account Defaults tab', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    await openPreferencesDialog(page)
-    await page.getByRole('tab', { name: 'Account Defaults' }).click()
-    await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
-    await expect(page.getByRole('radio', { name: 'None' }).first()).toBeVisible()
-    await expect(page.getByRole('radio', { name: 'Ding Dong' }).first()).toBeVisible()
   })
 
   test('should persist account-level turn end sound via API', async ({ page, leapmuxServer }) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await page.goto('/')
-    await openPreferencesDialog(page)
-    await page.getByRole('tab', { name: 'Account Defaults' }).click()
-    await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
+    await openPreferencesDialog(page, 'notifications')
+    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
+    // Default scope: the row edits the ACCOUNT tier (the chip reads
+    // "Account default" until an override exists).
+    await expect(turnEndSoundScope(page)).toHaveText(/Account default/)
 
     // Select "Ding Dong" and wait for the choice to be reflected before reloading:
     // the write is an API round trip, and reloading mid-flight would race it.
     // role=radio, not button: these pill groups are one-of-N, so they carry
     // radiogroup/radio semantics and aria-checked rather than aria-pressed.
-    const dingDong = page.getByRole('radio', { name: 'Ding Dong' }).first()
+    const dingDong = dialog.getByRole('radio', { name: 'Ding Dong' })
     await dingDong.click()
     await expect(dingDong).toBeChecked()
 
     // Reload and verify the account-level choice survived the round trip.
     await page.reload()
-    await openPreferencesDialog(page)
-    await page.getByRole('tab', { name: 'Account Defaults' }).click()
-    await expect(page.getByRole('heading', { name: 'Turn End Sound' })).toBeVisible()
-    await expect(page.getByRole('radio', { name: 'Ding Dong' }).first()).toBeChecked()
+    await openPreferencesDialog(page, 'notifications')
+    const reopened = page.getByRole('dialog', { name: 'Preferences' })
+    await expect(reopened.getByText('Turn-end sound', { exact: true })).toBeVisible()
+    await expect(reopened.getByRole('radio', { name: 'Ding Dong' })).toBeChecked()
 
     // Restore to "None" so the account default cannot leak into a later test
     // on this worker's shared hub instance.
-    const none = page.getByRole('radio', { name: 'None' }).first()
+    const none = reopened.getByRole('radio', { name: 'None' })
     await none.click()
     await expect(none).toBeChecked()
   })

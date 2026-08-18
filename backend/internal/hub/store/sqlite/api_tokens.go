@@ -25,7 +25,6 @@ func fromDBAPIToken(t gendb.ApiToken) store.APIToken {
 		RefreshHash:              t.RefreshHash,
 		PreviousRefreshHash:      t.PreviousRefreshHash,
 		PreviousRefreshExpiresAt: t.PreviousRefreshExpiresAt.Ptr(),
-		Scope:                    t.Scope,
 		CreatedAt:                t.CreatedAt.Time,
 		AuthGeneration:           t.AuthGeneration,
 		LastUsedAt:               t.LastUsedAt.Ptr(),
@@ -45,7 +44,6 @@ func (s *apiTokenStore) Create(ctx context.Context, p store.CreateAPITokenParams
 			ClientName:       p.ClientName,
 			SecretHash:       p.SecretHash,
 			RefreshHash:      p.RefreshHash,
-			Scope:            p.Scope,
 			ExpiresAt:        sqltime.NewSQLiteNullTime(p.ExpiresAt),
 			RefreshExpiresAt: sqltime.NewSQLiteNullTime(p.RefreshExpiresAt),
 		}))

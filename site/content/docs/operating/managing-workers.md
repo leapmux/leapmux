@@ -82,7 +82,7 @@ This is the everyday path for users.
    The `--hub` value is filled in with the address your Hub advertises (falling back to the URL in your browser's address bar).
 3. Copy the command with **Copy command** and run it on the machine where the Worker should live.
 
-The dialog explains the key's lifetime in plain terms: *"This registration key is only valid while this dialog stays open. If you close the dialog, the key is destroyed and you'll need to start over."* Keys are short-lived (5 minutes), but the dialog auto-extends the key as long as it stays open, so you have time to switch machines and paste the command.
+The dialog explains the key's lifetime in plain terms: the key stays valid only while the dialog stays open, and closing the dialog destroys it. Keys are short-lived (5 minutes), but the dialog auto-extends the key as long as it stays open, so you have time to switch machines and paste the command.
 
 > **Note:** If your Hub has email configured and your account email is **verified**, the dialog also offers **Send email**, which mails the command to your verified address — useful when the target machine is elsewhere. The button is hidden in solo mode and on Hubs without SMTP, and disabled until your email is verified. See [Accounts & Authentication](/docs/using/accounts/) for email verification.
 
@@ -90,9 +90,9 @@ The dialog explains the key's lifetime in plain terms: *"This registration key i
 
 On the target machine, run the generated command. What happens next:
 
-- **First run, no key** → the Worker refuses to start: `worker is unregistered: pass --registration-key <key> from the hub UI`. A bare Worker cannot self-register; it always needs a key.
-- **First run, valid key** → the Worker registers, saves its credentials to `state.json`, logs `credentials saved`, and connects. It is now active.
-- **Already registered, but a key was passed anyway** → the Worker refuses: `worker is already registered; remove --registration-key or wipe local state to re-register`. This protects you from accidentally burning a fresh key on a machine that is already set up. After the first successful run, drop `--registration-key` from your command, env, or config — the saved token handles reconnection.
+- **First run, no key** → the Worker refuses to start, and the error tells you to pass a registration key from the hub UI. A bare Worker cannot self-register; it always needs a key.
+- **First run, valid key** → the Worker registers, saves its credentials to `state.json`, logs that it saved them, and connects. It is now active.
+- **Already registered, but a key was passed anyway** → the Worker refuses, and the error tells you to remove `--registration-key` or to wipe the local state. This protects you from accidentally burning a fresh key on a machine that is already set up. After the first successful run, drop `--registration-key` from your command, env, or config — the saved token handles reconnection.
 
 The `--registration-key` value is **never written to disk**; only the resulting auth token is persisted.
 
@@ -101,7 +101,7 @@ The `--registration-key` value is **never written to disk**; only the resulting 
 The Worker distinguishes *transient* from *permanent* failures:
 
 - **Hub unreachable** (network error) → retried automatically with exponential backoff. Leave the Worker running and it will connect once the Hub is reachable.
-- **Invalid, expired, or already-consumed key** → rejected immediately, no retry: `registration rejected: ...` with the underlying reason `registration key invalid or already consumed`. Mint a fresh key and try again.
+- **Invalid, expired, or already-consumed key** → rejected immediately, no retry. The error says that the Hub rejected the registration because the key is invalid or already consumed. Mint a fresh key and try again.
 
 Because keys are one-shot and expire in 5 minutes, a key that worked a moment ago will not work twice; reopen the **Register worker** dialog for a new one.
 
@@ -164,15 +164,15 @@ When the Hub shuts down gracefully it tells the Worker how long to wait before r
 
 Deregistering tells the Hub to forget a Worker and tear down everything running on it.
 
-**From the UI:** choose **Deregister...** from a Worker's context menu. The **Deregister worker** dialog warns: *"This will terminate all active workspaces and terminals on this worker. This action cannot be undone."* Confirm to proceed. Auto-registered (bundled local) Workers cannot be deregistered and don't show the option; attempting it returns `the bundled local worker cannot be deregistered`.
+**From the UI:** choose **Deregister...** from a Worker's context menu. The **Deregister worker** dialog warns that the action terminates every active workspace and terminal on that Worker, and that you cannot undo it. Confirm to proceed. Auto-registered (bundled local) Workers cannot be deregistered and don't show the option; the Hub refuses the attempt.
 
-**From the admin CLI** (operators):
+**From the control CLI** (operators):
 
 ```bash
-leapmux admin worker deregister --id <worker-id>
+leapmux control admin worker deregister --id <worker-id>
 ```
 
-On deregistration the Worker acknowledges the request, shuts down gracefully, clears its local credentials, and exits. See [Admin CLI](/docs/operating/admin-cli/) for the full operator surface.
+On deregistration the Worker acknowledges the request, shuts down gracefully, clears its local credentials, and exits. See [Remote Control CLI](/docs/operating/control-cli/) for the full operator surface.
 
 ## Tunnels (desktop app)
 
@@ -269,20 +269,20 @@ Both pin-management commands run entirely against local pin files — no Worker 
 
 ## Operator reference: admin worker commands
 
-Operators manage all Workers on a Hub (not just their own) with `leapmux admin worker`. These act directly on the Hub's database and need no running Hub. Highlights:
+Operators manage all Workers on a Hub (not just their own) with `leapmux control admin worker`. These are RPC calls to a **running** Hub, so the Hub must be up and you must be logged in as an administrator. Only `leapmux recover` opens the database directly. Highlights:
 
 | Command | Purpose |
 | --- | --- |
-| `leapmux admin worker list` | List Workers. Filters: `--user-id`, `--username`, `--status` (`active`, `deregistering`, `deleted`, `all`; default `active`). |
-| `leapmux admin worker get --id <id>` | Show one Worker's details (includes soft-deleted Workers for auditing). |
-| `leapmux admin worker deregister --id <id>` | Force-deregister a Worker. |
-| `leapmux admin worker reg-key list` | List live registration keys (`--include-expired` to include revoked/expired). |
-| `leapmux admin worker reg-key revoke --id <id>` | Revoke a registration key. |
-| `leapmux admin worker reg-key purge-expired` | Hard-delete all expired or revoked keys. |
+| `leapmux control admin worker list` | List Workers. Filters: `--user-id`, `--username`, `--status` (`active`, `deregistering`, `deleted`, `all`; default `active`). |
+| `leapmux control admin worker get --id <id>` | Show one Worker's details (includes soft-deleted Workers for auditing). |
+| `leapmux control admin worker deregister --id <id>` | Force-deregister a Worker. |
+| `leapmux control admin worker reg-key list` | List live registration keys (`--include-expired` to include revoked/expired). |
+| `leapmux control admin worker reg-key revoke --id <id>` | Revoke a registration key. |
+| `leapmux control admin worker reg-key purge-expired` | Hard-delete all expired or revoked keys. |
 
-> **Note:** The admin CLI deliberately has **no** `reg-key create` — registration keys are minted only by an authenticated user (via the **Register worker** dialog), which is itself the authorization step. The admin CLI lists, revokes, and purges keys but does not issue them.
+> **Note:** `control admin` deliberately has **no** `reg-key create` — registration keys are minted only by an authenticated user (via the **Register worker** dialog), which is itself the authorization step. `control admin` lists, revokes, and purges keys but does not issue them.
 
-For the complete operator surface — including encryption keys, sessions, and tokens — see [Admin CLI](/docs/operating/admin-cli/).
+For the complete operator surface — including sessions, API tokens, and delegation tokens — see [`admin` — hub administration over RPC](/docs/operating/control-cli/#admin--hub-administration-over-rpc). Encryption keys are offline work; see [Recovery](/docs/operating/recover/).
 
 ## Encryption mode
 
@@ -298,7 +298,4 @@ Leave this at the default unless you have a specific reason to change it; both e
 - [Running LeapMux](/docs/operating/running-leapmux/) — run modes, ports, data directories, the bundled Worker.
 - [Configuration](/docs/operating/configuration/) — Worker flags, env vars, and config-file precedence.
 - [Security & Threat Model](/docs/operating/security/) — the E2EE protocol, TOFU pinning, and what the Hub can and cannot see.
-- [Remote Control CLI](/docs/operating/control-cli/) — `leapmux control worker` and `worker pins` for scripting and pin management.
-- [Admin CLI](/docs/operating/admin-cli/) — the full `leapmux admin worker` and registration-key reference.
-</content>
-</invoke>
+- [Remote Control CLI](/docs/operating/control-cli/) — `leapmux control worker` and `worker pins` for scripting and pin management, plus the full [`leapmux control admin worker`](/docs/operating/control-cli/#admin--hub-administration-over-rpc) and registration-key reference.

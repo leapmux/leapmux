@@ -352,7 +352,6 @@ CREATE TABLE api_tokens (
     refresh_hash                  BYTEA,
     previous_refresh_hash         BYTEA,
     previous_refresh_expires_at   TIMESTAMPTZ,
-    scope                         TEXT NOT NULL DEFAULT 'remote:*',
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  TIMESTAMPTZ,

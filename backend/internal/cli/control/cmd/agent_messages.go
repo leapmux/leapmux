@@ -575,7 +575,7 @@ type agentMessagesTransport struct {
 }
 
 func newAgentMessagesTransport(ctx context.Context, c *control.Client, workerID string) (*agentMessagesTransport, error) {
-	if c.IsLocal() {
+	if c.IsWorkerIPC() {
 		// Local-IPC mode: route via ControlIPCService.StreamInner.
 		// workerID may be empty; the router resolves the spawning
 		// worker from the bearer scope, mirroring the existing

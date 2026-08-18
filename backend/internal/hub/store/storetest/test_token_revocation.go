@@ -29,7 +29,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 		oldRefreshHash := []byte("old-refresh-hash")
 		require.NoError(t, st.APITokens().Create(ctx, store.CreateAPITokenParams{
 			ID: tokenID, UserID: userid.MustNew(user.ID), ClientType: "cli", ClientName: "test",
-			SecretHash: []byte("old-access-hash"), RefreshHash: oldRefreshHash, Scope: "remote:*",
+			SecretHash: []byte("old-access-hash"), RefreshHash: oldRefreshHash,
 		}))
 		expiresAt := time.Now().Add(time.Hour)
 		refreshExpiresAt := time.Now().Add(24 * time.Hour)
@@ -799,7 +799,6 @@ func seedAPIToken(t *testing.T, st store.Store, userID string) string {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: []byte("hash"),
-		Scope:      "remote:*",
 	}))
 	return tokenID
 }

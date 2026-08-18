@@ -127,7 +127,7 @@ func (w workerCall) CallEmit(ctx context.Context, method string, in, out proto.M
 // instead of paying it per call. On local-IPC clients there is no channel to
 // share and body gets a socket-routed workerCall.
 func withWorkerChannel(ctx context.Context, c *control.Client, workerID string, body func(w workerCall) error) error {
-	if c.IsLocal() {
+	if c.IsWorkerIPC() {
 		return body(workerCall{c: c, workerID: workerID})
 	}
 	if workerID == "" {
@@ -150,7 +150,7 @@ func withWorkerChannel(ctx context.Context, c *control.Client, workerID string, 
 // surfaces the SAME channel_open_failed code isWorkerUnreachable keys on, which
 // is what lets the CRDT-only fallback fire.
 func withBestEffortWorkerChannel(ctx context.Context, c *control.Client, workerID string, body func(w workerCall) error) error {
-	if c.IsLocal() || workerID == "" {
+	if c.IsWorkerIPC() || workerID == "" {
 		return body(workerCall{c: c, workerID: workerID})
 	}
 	ch, err := c.OpenE2EEChannel(ctx, ctx, workerID)

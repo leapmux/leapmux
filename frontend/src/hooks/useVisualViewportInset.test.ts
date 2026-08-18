@@ -100,6 +100,17 @@ function focusInput(): HTMLInputElement {
   return input
 }
 
+// The same, for an editing host. The chat composer is one of these, not an
+// <input>, so this is the element the keyboard actually comes up for.
+function focusEditable(spelling: string): HTMLElement {
+  const el = document.createElement('div')
+  el.setAttribute('contenteditable', spelling)
+  document.body.appendChild(el)
+  el.focus()
+  el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+  return el
+}
+
 describe('useVisualViewportInset', () => {
   let restoreRaf: () => void
 
@@ -213,6 +224,52 @@ describe('useVisualViewportInset', () => {
       // flip to a microtask so a Tab-key transition between two
       // editables doesn't flicker.
       input.blur()
+      await flush()
+      expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
+    }
+    finally {
+      cleanup()
+    }
+  })
+
+  // jsdom implements neither `isContentEditable` nor `contentEditable`, so
+  // before the predicate gained its attribute fallback this branch answered
+  // false here for every spelling and the whole case was untestable.
+  it('publishes --vvh for a focused editing host, whichever spelling it carries', async () => {
+    for (const spelling of ['true', '', 'plaintext-only']) {
+      Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+      const vv = makeMockVisualViewport(380)
+      Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
+
+      const { cleanup } = renderHook(() => useVisualViewportInset())
+      try {
+        expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
+
+        const editor = focusEditable(spelling)
+        await flush()
+        expect(document.documentElement.style.getPropertyValue('--vvh'), `contenteditable="${spelling}"`).toBe('380px')
+
+        editor.blur()
+        await flush()
+        expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
+      }
+      finally {
+        cleanup()
+        document.body.innerHTML = ''
+      }
+    }
+  })
+
+  // The negative half of the same branch: `false` turns editing off, so no
+  // keyboard comes up and nothing is published.
+  it('publishes no --vvh for a focused contenteditable="false" element', async () => {
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+    const vv = makeMockVisualViewport(380)
+    Object.defineProperty(window, 'visualViewport', { value: vv, configurable: true })
+
+    const { cleanup } = renderHook(() => useVisualViewportInset())
+    try {
+      focusEditable('false')
       await flush()
       expect(document.documentElement.style.getPropertyValue('--vvh')).toBe('')
     }

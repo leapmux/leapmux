@@ -80,3 +80,11 @@ func (s *oauthUserLinkStore) Delete(ctx context.Context, p store.DeleteOAuthUser
 func (s *oauthUserLinkStore) DeleteByProvider(ctx context.Context, providerID string) error {
 	return mapErr(s.conn.q.DeleteOAuthUserLinksByProvider(ctx, providerID))
 }
+
+func (s *oauthUserLinkStore) CountUsersOrphanedByProvider(ctx context.Context, providerID string) (int64, error) {
+	n, err := s.conn.q.CountUsersOrphanedByProvider(ctx, providerID)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return n, nil
+}

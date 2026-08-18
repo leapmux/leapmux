@@ -98,7 +98,7 @@ const (
 // before the database exists, plus per-process facts. Everything that
 // describes the hub instance's behavior at runtime lives in the
 // hub_settings table instead (internal/hub/settings) and changes through
-// `leapmux admin settings` without a restart (or on restart, for the
+// `leapmux control admin settings` without a restart (or on restart, for the
 // keys marked restart-class).
 type Config struct {
 	Listen            string        `koanf:"listen"`

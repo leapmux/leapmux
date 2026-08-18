@@ -541,7 +541,6 @@ func (h *APIAuthHandler) issueAPIToken(
 			ClientName:       clientName,
 			SecretHash:       pair.AccessHash,
 			RefreshHash:      pair.RefreshHash,
-			Scope:            "remote:*",
 			ExpiresAt:        &pair.AccessExpiresAt,
 			RefreshExpiresAt: &pair.RefreshExpiresAt,
 		}); err != nil {

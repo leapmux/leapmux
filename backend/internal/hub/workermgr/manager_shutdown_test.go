@@ -83,9 +83,13 @@ func pumpStart(t *testing.T, pump *SendPump, conn *Conn) {
 // fault (CI has seen worker_id=parked fail a test that never created it).
 // The Warn is the abandoned goroutine's last use of the default logger, so a
 // test that waits it out before returning leaves nothing behind for the next
-// one to swallow. CaptureDefaultLogger's bytes.Buffer cannot serve this wait:
-// it is not safe to read while the goroutine under observation may still be
-// writing.
+// one to swallow.
+//
+// A LogBuffer from CaptureDefaultLogger is safe to poll, so concurrency is no
+// longer the reason to keep the recorder. The reason is precision. The buffer
+// holds formatted text, so a substring search matches the message and the
+// worker_id independently, and two unrelated lines can satisfy it. The recorder
+// reads both fields from one record, which keeps the wait exact.
 type notifyFailureRecorder struct {
 	mu     sync.Mutex
 	logged map[string]bool

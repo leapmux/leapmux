@@ -19,7 +19,7 @@ LeapMux runs in several modes (see [Running LeapMux](/docs/operating/running-lea
 | **Dev** (`leapmux dev`) | Yes | Real password authentication. The first admin is created through the `/setup` flow. |
 | **Hub** (`leapmux hub`) | Yes | Full authentication: signup, password login, sessions, OAuth, API tokens. |
 
-In **solo mode** there is nothing to sign up for and nothing to log out of. If you navigate to `/login` or `/signup` you are redirected straight into the app. Account-related actions are intentionally disabled: changing your profile, email, or password, or unlinking an OAuth provider are all rejected as "not available in solo mode" (the exact wording is action-specific, for example **"profile changes are not available in solo mode"** or **"password changes are not available in solo mode"**).
+In **solo mode** there is nothing to sign up for and nothing to log out of. If you navigate to `/login` or `/signup` you are redirected straight into the app. Account-related actions are intentionally disabled: solo mode refuses a change to your profile, your email, or your password, and it refuses to unlink an OAuth provider. Each refusal identifies the action that solo mode does not support.
 
 > **Note:** Solo mode auto-authenticates *every* request as the admin. If you bind it to a non-loopback address, anyone who can reach the port has full admin access without credentials. LeapMux warns you about this at startup. For a shared or networked deployment, run `leapmux hub` (or `leapmux dev`) so real authentication applies. See [Security & Threat Model](/docs/operating/security/).
 
@@ -51,9 +51,9 @@ A few things are special about this first account:
 
 ## Signing up
 
-After the first admin exists, new self-service accounts are only possible if the operator has enabled the `signup_enabled` setting (`leapmux admin settings set signup_enabled true`; it is **off by default**). See [Configuration](/docs/operating/configuration/).
+After the first admin exists, new self-service accounts are only possible if the operator has enabled the `signup_enabled` setting (`leapmux control admin settings set signup_enabled true`; it is **off by default**). See [Configuration](/docs/operating/configuration/).
 
-- **If signup is disabled**, visiting `/signup` shows a "not found" page titled **"Sign-up disabled"** with the message **"New account registration is not currently available."** and a **"Go to login"** link.
+- **If signup is disabled**, visiting `/signup` shows a "not found" page titled **"Sign-up disabled"**, which states that new account registration is not available and offers a **"Go to login"** link.
 - **If signup is enabled**, you get the **"Sign Up"** page.
 
 The form fields are the same as setup:
@@ -63,7 +63,7 @@ The form fields are the same as setup:
 | **Username** | Required. Lowercase slug, 1–32 characters. See [Username rules](#username-rules). |
 | **Display Name** | Optional; falls back to your username if left blank. |
 | **Email** | Optional, unless your operator requires verification. |
-| **New Password** | 8–128 characters. See [Password requirements](#password-requirements). |
+| **New Password** | 8–128 printable ASCII characters, spaces included. See [Password requirements](#password-requirements). |
 | **Confirm Password** | Must match. |
 
 The submit button reads **Sign up** (and **Signing up...** while submitting). It stays disabled until you have entered a username and a valid, matching password. A footer link, **"Already have an account? Sign in"**, takes you to the login page.
@@ -73,7 +73,7 @@ If your operator has configured OAuth/OIDC providers, a list of provider buttons
 What happens after you submit depends on whether email verification is required:
 
 - **Verification not required:** you are signed in immediately and taken to `/`.
-- **Verification required:** you see **"Check your email to verify your account."**, and you are routed to the email-verification screen. A failed verification email does **not** undo your signup — your account exists and you can request a fresh code.
+- **Verification required:** LeapMux tells you to check your email, and routes you to the email-verification screen. A failed verification email does **not** undo your signup — your account exists and you can request a fresh code.
 
 > **Note:** The username `solo` is rejected in all signup paths, and `admin` is additionally reserved for public signup and OAuth completion (it is allowed only in `/setup`). Self-service signups are never administrators.
 
@@ -87,7 +87,7 @@ Click **Sign in** (**Signing in...** while it works). The button is disabled unt
 - If OAuth providers are configured, their buttons appear above the form under the verb **"Sign in with"** with an **"or"** divider.
 - If you were redirected to login from a protected page, you are sent back there after signing in (LeapMux only honors a same-site relative path, as an open-redirect safeguard).
 
-> **Note:** Both an unknown username and a wrong password produce the same error, **"invalid credentials."** This is deliberate — it prevents anyone from probing which usernames exist.
+> **Note:** Both an unknown username and a wrong password produce the same error, and it says only that the credentials are invalid. This is deliberate — it prevents anyone from probing which usernames exist.
 
 ## Email verification
 
@@ -100,7 +100,7 @@ You reach the **"Verify your email"** screen automatically right after signing u
 > Enter the 6-character code we sent to your inbox, or click the link in that email.
 
 - The input expects a code in the form **`XXX-XXX`**. You can type it with or without the hyphen and in any case — LeapMux normalizes it for you.
-- Click **Verify** (**Verifying…** while it works). If you submit an empty field, you are reminded to **"Enter the 6-character code from your email."**
+- Click **Verify** (**Verifying…** while it works). If you submit an empty field, the form asks you for the 6-character code from your email.
 - A separate **Resend code** button requests a new code.
 
 The verification email arrives with the subject **"[LeapMux] Verify your email address"** and contains both the code and a direct link. Clicking the link opens the verification screen with the code pre-filled and submits it automatically.
@@ -118,9 +118,9 @@ On success you are signed in fully and taken to `/`.
 
 The code alphabet deliberately omits look-alike characters (no `0`, `1`, `I`, `O`, or `L`), so what you read in the email is what you type. An expired code and a wrong code report the same generic error so neither leaks information.
 
-> **Tip:** If you wait too long and your code expires, just press **Resend code** to get a fresh one. Successful resends report **"A fresh code has been sent to your inbox."**
+> **Tip:** If you wait too long and your code expires, press **Resend code** to get a fresh one. The screen confirms that a fresh code went to your inbox.
 
-> **Warning:** While verification is required and you are an unverified non-admin user, you can only view your own account, log out, change/verify your email, and resend the code. Every other action is blocked with "email verification required" until you verify. Administrators are exempt.
+> **Warning:** While verification is required and you are an unverified non-admin user, you can only view your own account, log out, change/verify your email, and resend the code. LeapMux refuses every other action until you verify. Administrators are exempt.
 
 ## Signing in with OAuth / OIDC
 
@@ -158,15 +158,20 @@ Accounts created this way have no password set. You can add one later from your 
 
 ## Password requirements
 
-LeapMux enforces only length on passwords:
+LeapMux enforces a character set and a length on passwords:
 
 | Rule | Value |
 | --- | --- |
+| Character set | **Printable ASCII only** (spaces included) |
 | Minimum length | **8 characters** |
 | Maximum length | **128 characters** |
 | Complexity (uppercase, digits, symbols) | Not required |
 
-There is **no** mandatory mix of character types. The signup, setup, and password-change forms show a live **strength meter** with the labels **Weak**, **Fair**, **Good**, and **Strong**, but this is advisory only — it never blocks you. The form also warns **"Passwords do not match."** when your confirmation differs.
+A password holds printable ASCII characters only — every character from the space (0x20) through the tilde (0x7E): unaccented letters, digits, spaces, and the punctuation on a US keyboard. **Spaces count**, at the start and at the end of the password as well, so a passphrase such as `correct horse battery staple` is taken exactly as you type it. An accented letter, a CJK character, and an emoji are each refused, and so is a control character — the tab or newline a paste sometimes carries. The refusal identifies the character set that a password must stay inside.
+
+The two ends of the range answer two different problems. The upper end keeps one character equal to one byte, so the browser and the Hub measure the length identically and a password the form accepts is one the Hub accepts. The lower end keeps out a character you cannot type again, which would leave you locked out of the account.
+
+There is **no** mandatory mix of character types. The signup, setup, and password-change forms show a live **strength meter** with the labels **Weak**, **Fair**, **Good**, and **Strong**, but this is advisory only — it never blocks you. The form also warns you when your confirmation does not match the password.
 
 > **Tip:** The meter rewards length and variety, but it penalizes any password that is all letters or all digits — regardless of how long it is. So an all-letters passphrase (even with mixed case) won't score above **Fair**; add at least one digit or symbol to reach **Good** or **Strong**. The meter is advisory only — it never blocks you, so treat it as guidance, not a gate.
 
@@ -203,7 +208,7 @@ When you log in, LeapMux issues a session and stores it in a secure, `HttpOnly` 
 
 **Signing out.** Use the log-out action in the app. It ends your session on the server and clears the cookie. (In solo mode, "log out" does nothing — there is no session to end.)
 
-**Changing your password signs out your other sessions.** When you change your password, every *other* active session is invalidated (the one you are using stays signed in), and your API and delegation tokens are revoked. This is a security feature: if someone else had a session, changing your password locks them out. See [Admin CLI](/docs/operating/admin-cli/) for operator-side session management.
+**Changing your password signs out your other sessions.** When you change your password, every *other* active session is invalidated (the one you are using stays signed in), and your API and delegation tokens are revoked. This is a security feature: if someone else had a session, changing your password locks them out. See [Remote Control CLI](/docs/operating/control-cli/) for operator-side session management.
 
 ## Managing your profile
 
@@ -213,19 +218,19 @@ Open the **"Profile"** dialog from the app to manage your account. It has up to 
 
 - **Username** — editable. Taken usernames are rejected.
 - **Display Name** — your shown name.
-- Save with **Save Profile** (disabled until you change something valid). Success shows **"Profile updated."**
+- Save with **Save Profile** (disabled until you change something valid). The dialog confirms the update on success.
 
 ### Email
 
-- **Current Email** shows your address (or **"Not set"**) with a **(verified)** or **(unverified)** badge. A pending change shows **"Pending email change to … — check your inbox to verify."**
+- **Current Email** shows your address (or **"Not set"**) with a **(verified)** or **(unverified)** badge. A pending change shows the new address and asks you to verify it from your inbox.
 - Enter a new address in **New Email** and click **Change Email**.
-- If verification is required, you get **"Verification email sent. Check your inbox."** and must verify the new address before it takes effect; otherwise you see **"Email updated."** Admins change email immediately.
+- If verification is required, LeapMux sends a verification email and tells you to check your inbox. You must verify the new address before it takes effect. Otherwise the dialog confirms the new address at once. Admins change email immediately.
 
 ### Password
 
 - The button reads **Change Password** if you already have a password, or **Set Password** if your account is OAuth-only.
 - If you have a password, a **Current Password** field appears and is required. OAuth-only users can set a password without one.
-- Success shows **"Password changed."** or **"Password set."**
+- On success the dialog confirms that it changed the password, or that it set the first one.
 
 ### Linked Accounts
 

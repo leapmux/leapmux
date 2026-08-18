@@ -121,11 +121,11 @@ For the full image-tag matrix (Alpine vs. Ubuntu variants, version pinning, the 
 
 > **Note:** Use `dev` (not `solo`) for an all-in-one container. In `solo` mode the binary defaults to binding loopback only (`127.0.0.1:4327`), so the port is not reachable from outside the container unless you override the listen address in `/data/solo/solo.yaml`. `dev` mode binds all interfaces (`:4327`) and is the container-friendly all-in-one variant.
 
-> **Warning:** The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and set `public_url` and `secure_cookies` with `leapmux admin settings set`. See [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) for reverse-proxy guidance.
+> **Warning:** The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a reverse proxy in front of the container and set `public_url` and `secure_cookies` with `leapmux control admin settings set`. See [Running LeapMux](/docs/operating/running-leapmux/) and [Configuration](/docs/operating/configuration/) for reverse-proxy guidance.
 
 ### Running a Worker container
 
-A `worker` container connects out to a Hub and must be registered with a registration key minted in the Hub UI. The container doesn't pass any Hub URL or key flags on your behalf, so supply them via the Worker config (`/data/worker/worker.yaml`) or via `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY` environment variables. An unregistered Worker with no key exits with `worker is unregistered: pass --registration-key <key> from the hub UI`. See [Managing Workers](/docs/operating/managing-workers/) for the full registration flow.
+A `worker` container connects out to a Hub and must be registered with a registration key minted in the Hub UI. The container doesn't pass any Hub URL or key flags on your behalf, so supply them via the Worker config (`/data/worker/worker.yaml`) or via `LEAPMUX_WORKER_HUB` and `LEAPMUX_WORKER_REGISTRATION_KEY` environment variables. An unregistered Worker with no key exits, and the error tells you to pass a registration key from the hub UI. See [Managing Workers](/docs/operating/managing-workers/) for the full registration flow.
 
 ### Upgrading
 
@@ -208,5 +208,3 @@ For the platform-specific dependency install commands (Homebrew, pacman, winget)
 - [Running LeapMux](/docs/operating/running-leapmux/) — run modes, ports, data directories, Docker, and reverse proxies in depth.
 - [Configuration](/docs/operating/configuration/) — the full configuration key reference and storage backends.
 - [Managing Workers](/docs/operating/managing-workers/) — register and approve Workers connecting to a Hub.
-</content>
-</invoke>

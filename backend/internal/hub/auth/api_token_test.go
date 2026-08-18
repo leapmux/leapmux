@@ -175,7 +175,6 @@ func TestTokenValidator_AcceptsValidAPIBearer(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: v.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 
 	bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
@@ -203,7 +202,6 @@ func TestTokenValidator_RejectsRevoked(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: v.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 	_, err = st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -226,7 +224,6 @@ func TestTokenValidator_RejectsBearerIssuedBeforeUserRevocation(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: v.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 	_, err = st.Users().RevokeUserTokens(context.Background(), userid.MustNew(userID))
 	require.NoError(t, err)
@@ -251,7 +248,6 @@ func TestTokenValidator_RejectsExpired(t *testing.T) {
 		ClientName: "test",
 		SecretHash: v.HashSecret(secret),
 		ExpiresAt:  &past,
-		Scope:      "remote:*",
 	}))
 	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
 	require.Error(t, err)
@@ -283,7 +279,6 @@ func TestTokenValidator_WrongSecretDoesNotLeakLifecycle(t *testing.T) {
 			ClientName: "test",
 			SecretHash: v.HashSecret(secret),
 			ExpiresAt:  expiresAt,
-			Scope:      "remote:*",
 		}))
 		return tokenID, secret
 	}
@@ -382,7 +377,6 @@ func TestAPITokenRotateRefreshRejectsStalePreviousHash(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  v.HashSecret(accessSecret),
 		RefreshHash: v.HashSecret(firstRefresh),
-		Scope:       "remote:*",
 	}))
 
 	rotated, err := st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
@@ -424,7 +418,6 @@ func TestValidateAPIRefresh_UserLookupFailureIsNotRevocation(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  issuer.HashSecret(auth.MintAccessSecret()),
 		RefreshHash: issuer.HashSecret(refreshSecret),
-		Scope:       "remote:*",
 	}))
 
 	forcedErr := errors.New("forced user lookup failure")
@@ -458,7 +451,6 @@ func TestValidateBearer_UserLookupFailureIsInternal(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: issuer.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 
 	forcedErr := errors.New("forced user lookup failure")
@@ -513,7 +505,6 @@ func TestValidateAPIRefresh_ReusedRefreshReturnsRevokeError(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  issuer.HashSecret(currentSecret),
 		RefreshHash: issuer.HashSecret(previousSecret),
-		Scope:       "remote:*",
 	}))
 	expiredGrace := time.Now().Add(-time.Hour)
 	_, err = st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
@@ -557,7 +548,6 @@ func TestValidateAPIRefresh_GraceWindowReturnsRetry(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  v.HashSecret(currentSecret),
 		RefreshHash: v.HashSecret(prevSecret),
-		Scope:       "remote:*",
 	}))
 	_, err = st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
 		ID:                       tokenID,
@@ -599,7 +589,6 @@ func TestValidateAPIRefresh_ReuseAfterGraceRevokes(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  v.HashSecret(currentSecret),
 		RefreshHash: v.HashSecret(prevSecret),
-		Scope:       "remote:*",
 	}))
 	_, err = st.APITokens().RotateRefresh(context.Background(), store.RotateAPITokenRefreshParams{
 		ID:                       tokenID,
@@ -635,7 +624,6 @@ func TestValidateAPIRefresh_UnknownHashDoesNotRevoke(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  v.HashSecret(currentSecret),
 		RefreshHash: v.HashSecret(currentSecret),
-		Scope:       "remote:*",
 	}))
 
 	// Random unknown secret: must NOT revoke the row (defensive against
@@ -666,7 +654,6 @@ func TestValidateAPIRefresh_RejectsExpiredCurrentRefresh(t *testing.T) {
 		SecretHash:       v.HashSecret(auth.MintAccessSecret()),
 		RefreshHash:      v.HashSecret(currentSecret),
 		RefreshExpiresAt: &expired,
-		Scope:            "remote:*",
 	}))
 
 	_, _, err = v.ValidateAPIRefresh(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, currentSecret))
@@ -691,7 +678,6 @@ func TestValidateAPIRefresh_ExpiredCurrentRefreshDoesNotLoadUser(t *testing.T) {
 		SecretHash:       issuer.HashSecret(auth.MintAccessSecret()),
 		RefreshHash:      issuer.HashSecret(currentSecret),
 		RefreshExpiresAt: &expired,
-		Scope:            "remote:*",
 	}))
 
 	forcedErr := errors.New("forced user lookup failure")
@@ -722,7 +708,6 @@ func TestValidateAPIRefresh_WrongSecretOnRevokedRowStaysInvalidToken(t *testing.
 		ClientName:  "test",
 		SecretHash:  v.HashSecret(auth.MintAccessSecret()),
 		RefreshHash: v.HashSecret(auth.MintAccessSecret()),
-		Scope:       "remote:*",
 	}))
 	_, err = st.APITokens().Revoke(context.Background(), tokenID)
 	require.NoError(t, err)
@@ -816,7 +801,6 @@ func TestTokenValidator_RejectsWrongSecret(t *testing.T) {
 		ClientType: "cli",
 		ClientName: "test",
 		SecretHash: v.HashSecret(secret),
-		Scope:      "remote:*",
 	}))
 	_, err = v.ValidateBearer(context.Background(), auth.FormatBearer(auth.BearerKindAPI, tokenID, "wrong-secret"))
 	require.Error(t, err)
@@ -843,7 +827,6 @@ func TestVerifyBearerSecret(t *testing.T) {
 		ClientName:  "test",
 		SecretHash:  v.HashSecret(secret),
 		RefreshHash: v.HashSecret(refreshSecret),
-		Scope:       "remote:*",
 	}))
 
 	// Match: returns the kind + canonical row id.

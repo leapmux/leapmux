@@ -1,6 +1,10 @@
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import {
+  cleanName,
   isValidBranchName,
   sanitizeName,
   sanitizeSlug,
@@ -39,7 +43,7 @@ describe('sanitizeName', () => {
     expect(sanitizeName('hello\u{1F600}').error).toBeNull()
   })
 
-  it('accepts names at max length (128 chars)', () => {
+  it('accepts names at max length (128 bytes)', () => {
     expect(sanitizeName('a'.repeat(128)).error).toBeNull()
   })
 
@@ -73,12 +77,139 @@ describe('sanitizeName', () => {
     expect(sanitizeName('   ').error).not.toBeNull()
   })
 
-  it('returns error for names exceeding 128 characters', () => {
+  it('returns error for names exceeding 128 bytes', () => {
     expect(sanitizeName('a'.repeat(129)).error).not.toBeNull()
+  })
+
+  // The hub measures with Go's `len`, which counts BYTES. A character count
+  // accepted 128 CJK characters here and the hub then refused all 384 bytes
+  // of them, with the refusal arriving as a failed write and no explanation
+  // at the field.
+  it('counts UTF-8 bytes, not UTF-16 units', () => {
+    expect(sanitizeName('\u4E00'.repeat(42)).error).toBeNull()
+    expect(sanitizeName('\u4E00'.repeat(43)).error).not.toBeNull()
+    expect(sanitizeName('\u4E00'.repeat(45)).error).not.toBeNull()
+  })
+
+  // The hub strips every rune `unicode.IsControl` reports, and the Unicode
+  // Cc category covers U+0080-U+009F as well as U+0000-U+001F. A name that
+  // carries one is not a name the hub stores unchanged, so it must not pass
+  // here either.
+  it('strips the C1 control block', () => {
+    expect(sanitizeName('hello\u0085world')).toEqual({ value: 'helloworld', error: null })
+    expect(sanitizeName('hello\u009Fworld')).toEqual({ value: 'helloworld', error: null })
+    expect(sanitizeName('\u0085').error).not.toBeNull()
+  })
+
+  // U+FEFF is category Cf, so Go's `unicode.IsControl` reports false for it.
+  // It is stripped anyway: `String.prototype.trim` removes it and Go's
+  // `strings.TrimSpace` keeps it, so a pasted byte order mark was the one input
+  // on which this rule and its Go copy disagreed.
+  it('strips the byte order mark', () => {
+    expect(sanitizeName('\uFEFFhello\uFEFFworld')).toEqual({ value: 'helloworld', error: null })
+    expect(sanitizeName('\uFEFF').error).not.toBeNull()
   })
 
   it('returns error when only forbidden characters remain', () => {
     expect(sanitizeName('"\\\t\n').error).not.toBeNull()
+  })
+})
+
+describe('cleanName', () => {
+  it('returns a name sanitizeName already accepts unchanged', () => {
+    expect(cleanName('Refactor the parser')).toBe('Refactor the parser')
+    expect(cleanName('a'.repeat(128))).toBe('a'.repeat(128))
+  })
+
+  // The case a character count misses: 50 CJK characters is 50 characters and
+  // 150 BYTES. sanitizeName refuses it; cleanName cuts it to the 42 characters
+  // that fit, which is what the worker stores.
+  it('cuts to the byte limit instead of refusing', () => {
+    const long = '一'.repeat(50)
+    expect(sanitizeName(long).error).not.toBeNull()
+    expect(cleanName(long)).toBe('一'.repeat(42))
+  })
+
+  // `slice(0, 128)` counts UTF-16 code units and would leave half a surrogate
+  // pair, which the worker's protobuf decode then turns into U+FFFD.
+  it('cuts on a character boundary, never inside a surrogate pair', () => {
+    const cleaned = cleanName('a\u{1F600}'.repeat(30))
+    expect(cleaned).toBe(`${'a\u{1F600}'.repeat(25)}a`)
+    expect(cleaned).not.toContain('\uFFFD')
+    expect(new TextEncoder().encode(cleaned).length).toBeLessThanOrEqual(128)
+  })
+
+  it('returns empty when nothing survives', () => {
+    expect(cleanName('')).toBe('')
+    expect(cleanName('   ')).toBe('')
+    expect(cleanName('$$%%')).toBe('')
+    expect(cleanName('%'.repeat(200))).toBe('')
+  })
+
+  // The property that lets the browser and the worker both apply the rule: the
+  // title the user sees after a rename is the title the worker stores.
+  it('is idempotent', () => {
+    for (const input of ['hello', '  spaced  ', 'a"b\\c$d%e', '一'.repeat(50), 'a'.repeat(200), '']) {
+      const once = cleanName(input)
+      expect(cleanName(once)).toBe(once)
+    }
+  })
+
+  it('returns a name sanitizeName accepts unchanged', () => {
+    for (const input of ['a'.repeat(500), '一'.repeat(500), '\u{1F600}'.repeat(100)]) {
+      const cleaned = cleanName(input)
+      expect(sanitizeName(cleaned)).toEqual({ value: cleaned, error: null })
+    }
+  })
+})
+
+/**
+ * One case of the shared title-cleaning fixture. `input` and `cleaned` are both
+ * SPECS: a spec builds one string as `text` repeated `repeat` times followed by
+ * `tail`.
+ */
+interface TitleConformanceSpec {
+  text?: string
+  repeat?: number
+  tail?: string
+}
+
+interface TitleConformanceCase {
+  input: TitleConformanceSpec
+  cleaned: TitleConformanceSpec
+  why: string
+}
+
+function buildTitle(spec: TitleConformanceSpec): string {
+  return (spec.text ?? '').repeat(spec.repeat ?? 1) + (spec.tail ?? '')
+}
+
+/**
+ * Resolved from this file rather than the CWD: vitest's working directory is
+ * not part of the contract, and the fixture lives at the repo root (outside
+ * `src`, so outside tsconfig's `include` and vite's root -- which is why this
+ * is a runtime read rather than a static JSON import).
+ */
+const titleConformancePath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../testdata/title_cleaning_conformance.json',
+)
+
+describe('cleanName conformance', () => {
+  const fixture = JSON.parse(readFileSync(titleConformancePath, 'utf8')) as {
+    cases: TitleConformanceCase[]
+  }
+
+  // A fixture that silently loads zero cases would make this block pass while
+  // asserting nothing -- the one failure mode a shared fixture must not have.
+  it('loads the shared fixture', () => {
+    expect(fixture.cases.length).toBeGreaterThan(0)
+  })
+
+  it.each(fixture.cases)('$why', (c) => {
+    const want = buildTitle(c.cleaned)
+    expect(cleanName(buildTitle(c.input))).toBe(want)
+    expect(cleanName(want), 'cleaning a cleaned title must change nothing').toBe(want)
   })
 })
 
@@ -142,6 +273,136 @@ describe('validatePassword', () => {
 
   it('rejects password exceeding 128 characters', () => {
     expect(validatePassword('a'.repeat(129))).not.toBeNull()
+  })
+
+  it('rejects a non-ASCII password whatever its length', () => {
+    expect(validatePassword('p\u00E4ssw\u00F6rd')).not.toBeNull()
+    expect(validatePassword('\u4E2D'.repeat(43))).not.toBeNull()
+  })
+
+  // The control block and DEL are ASCII, and the rule refuses them anyway:
+  // such a character reaches a password field through a paste accident or a
+  // terminal control sequence, never through deliberate typing.
+  it('rejects an unprintable ASCII character', () => {
+    for (const code of [0x00, 0x09, 0x0A, 0x0D, 0x1F, 0x7F]) {
+      expect(validatePassword(`passwor${String.fromCharCode(code)}`), `code unit ${code}`)
+        .toContain('printable ASCII')
+    }
+  })
+
+  // The space is printable, so a passphrase keeps its spaces. Neither side
+  // trims a password, so a leading space and a trailing space survive too.
+  it('accepts a space anywhere in the password', () => {
+    expect(validatePassword('correct horse battery staple')).toBeNull()
+    expect(validatePassword(' password ')).toBeNull()
+    expect(validatePassword(' '.repeat(8))).toBeNull()
+  })
+
+  // Both edges of the range at once: 0x1F and 0x7F are refused, 0x20 and
+  // 0x7E are accepted, and no code unit above 0x7E passes. Each probe is 8
+  // code units long, so only the character-set rule can refuse one.
+  it('accepts exactly the printable ASCII code units', () => {
+    for (let code = 0; code <= 0xFF; code++) {
+      const error = validatePassword(`passwor${String.fromCharCode(code)}`)
+      const label = `code unit 0x${code.toString(16)}`
+      if (code >= 0x20 && code <= 0x7E) {
+        expect(error, label).toBeNull()
+      }
+      else {
+        expect(error, label).toContain('printable ASCII')
+      }
+    }
+  })
+
+  // The character set is the actionable complaint when a password breaks
+  // both rules: a user who counted 3 characters cannot act on a minimum of
+  // 8 that the hub measured in bytes.
+  it('reports the character set before the length', () => {
+    expect(validatePassword('\u4E2D'.repeat(3))).toContain('printable ASCII')
+    expect(validatePassword('\u4E2D'.repeat(200))).toContain('printable ASCII')
+    expect(validatePassword(`ab${String.fromCharCode(0x01)}`)).toContain('printable ASCII')
+    expect(validatePassword(`a${String.fromCharCode(0x07)}`.repeat(100))).toContain('printable ASCII')
+  })
+
+  // The property the character-set rule exists for: an accepted password
+  // holds one UTF-16 code unit for each UTF-8 byte, so this limit and the
+  // hub's are the same limit.
+  it('accepts only passwords whose code units and bytes agree', () => {
+    for (const password of [
+      'a'.repeat(8),
+      'a'.repeat(128),
+      '~ !@#$%^&*()_+',
+      'my-secure-password',
+      'correct horse battery staple',
+      ' password ',
+    ]) {
+      expect(validatePassword(password)).toBeNull()
+      expect(new TextEncoder().encode(password).length).toBe(password.length)
+    }
+  })
+})
+
+/**
+ * A case from the cross-language conformance fixture. See that file's
+ * `_readme` for the contract; the short version is that the password is
+ * `password` repeated `repeat` times, both validators accept it iff `valid`,
+ * and a refusal reports the rule named by `refusal`. This suite asserts the
+ * browser's half; backend/util/validate/password_test.go asserts the hub's.
+ */
+interface PasswordConformanceCase {
+  password: string
+  repeat?: number
+  valid: boolean
+  refusal: string
+  why: string
+}
+
+/**
+ * The substring this module's message carries for each fixture refusal
+ * token. The Go suite holds the same map against its own wording, because
+ * the two messages differ by the leading capital only.
+ */
+const PASSWORD_REFUSAL_MARKERS: Record<string, string> = {
+  too_short: 'at least',
+  too_long: 'at most',
+  not_printable_ascii: 'printable ASCII',
+}
+
+/**
+ * Resolved from this file rather than the CWD: vitest's working directory is
+ * not part of the contract, and the fixture lives at the repo root (outside
+ * `src`, so outside tsconfig's `include` and vite's root -- which is why this
+ * is a runtime read rather than a static JSON import).
+ */
+const passwordConformancePath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../testdata/password_policy_conformance.json',
+)
+
+describe('validatePassword conformance', () => {
+  const fixture = JSON.parse(readFileSync(passwordConformancePath, 'utf8')) as {
+    cases: PasswordConformanceCase[]
+  }
+
+  // A fixture that silently loads zero cases would make this block pass
+  // while asserting nothing -- the one failure mode a shared fixture must
+  // not have.
+  it('loads the shared fixture', () => {
+    expect(fixture.cases.length).toBeGreaterThan(0)
+  })
+
+  it.each(fixture.cases)('$why', (c) => {
+    const password = c.password.repeat(c.repeat ?? 1)
+    const error = validatePassword(password)
+    if (c.valid) {
+      expect(c.refusal).toBe('')
+      expect(error).toBeNull()
+      return
+    }
+    expect(error).not.toBeNull()
+    const marker = PASSWORD_REFUSAL_MARKERS[c.refusal]
+    expect(marker, `unknown refusal token "${c.refusal}"`).toBeDefined()
+    expect(error).toContain(marker)
   })
 })
 

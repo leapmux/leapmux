@@ -32,8 +32,8 @@ INSERT INTO hub_settings (key, value, secret)
 VALUES ($1, $2, $3)
 ON CONFLICT (key) DO NOTHING;
 
--- The settings write path's read-modify-write merge reads under this row
--- lock, so two overlapping partial writes to one key serialize instead of
--- both merging onto the same stale base.
--- name: GetSettingForUpdate :one
-SELECT * FROM hub_settings WHERE key = $1 FOR UPDATE;
+-- The write path's cross-key validation reads every row under this table
+-- lock, so a rule that spans keys cannot be checked against a sibling row
+-- another writer is about to change.
+-- name: GetAllSettingsForUpdate :many
+SELECT * FROM hub_settings ORDER BY key FOR UPDATE;

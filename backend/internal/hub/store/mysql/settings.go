@@ -32,17 +32,16 @@ func (s *settingsStore) GetAll(ctx context.Context) ([]store.SettingRow, error) 
 	return store.MapSlice(rows, fromDBSetting), nil
 }
 
-func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow, error) {
-	r, err := s.conn.q.GetSetting(ctx, key)
+func (s *settingsStore) GetAllForUpdate(ctx context.Context) ([]store.SettingRow, error) {
+	rows, err := s.conn.q.GetAllSettingsForUpdate(ctx)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	row := fromDBSetting(r)
-	return &row, nil
+	return store.MapSlice(rows, fromDBSetting), nil
 }
 
-func (s *settingsStore) GetForUpdate(ctx context.Context, key string) (*store.SettingRow, error) {
-	r, err := s.conn.q.GetSettingForUpdate(ctx, key)
+func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow, error) {
+	r, err := s.conn.q.GetSetting(ctx, key)
 	if err != nil {
 		return nil, mapErr(err)
 	}

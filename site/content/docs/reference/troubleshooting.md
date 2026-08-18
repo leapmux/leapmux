@@ -1,11 +1,11 @@
 ---
 title: "Troubleshooting"
-description: "A symptom-to-fix reference for LeapMux: common problems with their likely cause and the exact fix, grouped by area, using real flags and messages."
+description: "A symptom-to-fix reference for LeapMux: common problems with their likely cause and the exact fix, grouped by area, with the real flags and settings."
 type: docs
 weight: 2
 ---
 
-This chapter is a problem-to-fix reference. Each entry gives the **symptom** you see, the **likely cause**, and the **fix** using real flags, labels, and messages. Entries are grouped by area. Use your browser's find (Ctrl/Cmd+F) to jump to a symptom.
+This chapter is a problem-to-fix reference. Each entry gives the **symptom** you see, the **likely cause**, and the **fix** with the real flags and settings. Entries are grouped by area. Use your browser's find (Ctrl/Cmd+F) to jump to a symptom.
 
 > **Tip:** Most "nothing works" problems trace back to one of three things: the Worker isn't online, you're bound to the wrong listen address, or first-run setup wasn't completed. Start there.
 
@@ -13,14 +13,10 @@ This chapter is a problem-to-fix reference. Each entry gives the **symptom** you
 
 A Worker (`leapmux worker`) dials *out* to the Hub and holds a single bidirectional stream open. Its online/offline state is computed live from whether that stream is currently connected — there is no separate "approval" queue. For the full Worker lifecycle, see [Managing Workers](/docs/operating/managing-workers/).
 
-### A Worker exits immediately with "worker is unregistered"
+### A Worker exits at once and reports that it is unregistered
 
 **Symptom**
-The Worker process prints and exits:
-
-```
-worker is unregistered: pass --registration-key <key> from the hub UI
-```
+The Worker process prints an error and exits. The error says that the Worker is unregistered, and it tells you to pass a registration key from the hub UI.
 
 **Cause**
 The Worker has no saved credentials (no `state.json` in its data dir) and you started it without a `--registration-key`. Bare Workers cannot self-register — registration is single-shot and gated entirely by possessing a valid key.
@@ -32,35 +28,29 @@ Mint a key in the Hub UI: open the sidebar **Workers** section, click the **+** 
 leapmux worker --hub https://hub.example.com --registration-key <key>
 ```
 
-The key is only valid while the **Register worker** dialog stays open (5-minute TTL, auto-extended while open). If you close the dialog, the key is destroyed — reopen it to mint a fresh one. See [Managing Workers](/docs/operating/managing-workers/) for minting keys via the UI, email, or the admin CLI.
+The key is only valid while the **Register worker** dialog stays open (5-minute TTL, auto-extended while open). If you close the dialog, the key is destroyed — reopen it to mint a fresh one. See [Managing Workers](/docs/operating/managing-workers/) for minting keys via the UI, email, or the CLI.
 
-### "registration rejected" / "registration key invalid or already consumed"
+### The Hub rejects the registration because the key is invalid or already used
 
 **Symptom**
-
-```
-registration rejected: ... registration key invalid or already consumed
-```
+The Worker prints an error and exits. The error says that the Hub rejected the registration because the key is invalid or already consumed.
 
 **Cause**
 Registration keys are **consumed atomically** on first use and live only 5 minutes. This error means the key was already used by another Worker, was revoked, or expired. These are permanent errors — the Worker does **not** retry them (unlike a transient network failure, which it does retry with backoff).
 
 **Fix**
-Mint a brand-new key from the **Register worker** dialog and run the Worker with it. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux admin worker reg-key list` and revoke stale ones with `leapmux admin worker reg-key revoke --id <id>` (see [Admin CLI](/docs/operating/admin-cli/)).
+Mint a brand-new key from the **Register worker** dialog and run the Worker with it. Never reuse a key across machines. If you mint keys via the CLI, check live keys with `leapmux control admin worker reg-key list` and revoke stale ones with `leapmux control admin worker reg-key revoke --id <id>` (see [Remote Control CLI](/docs/operating/control-cli/)).
 
-### "worker is already registered" when you pass --registration-key
+### The Worker refuses `--registration-key` because it is already registered
 
 **Symptom**
-
-```
-worker is already registered; remove --registration-key or wipe local state to re-register
-```
+The Worker prints an error and exits. The error says that the Worker is already registered, and it tells you to remove `--registration-key` or to wipe the local state.
 
 **Cause**
 This Worker already has saved credentials in `state.json`, and you passed `--registration-key` again. This guard exists so you don't burn a fresh key on a machine that's already configured.
 
 **Fix**
-Just run `leapmux worker --hub <url>` with **no** `--registration-key` — it reconnects with its saved credentials. If you genuinely want a clean re-registration, deregister the Worker first (sidebar **Workers** row > **Deregister...**, or `leapmux admin worker deregister --id <id>`), delete the Worker's `state.json` from its data dir, then register again with a new key.
+Just run `leapmux worker --hub <url>` with **no** `--registration-key` — it reconnects with its saved credentials. If you genuinely want a clean re-registration, deregister the Worker first (sidebar **Workers** row > **Deregister...**, or `leapmux control admin worker deregister --id <id>`), delete the Worker's `state.json` from its data dir, then register again with a new key.
 
 ### Worker process runs but never appears online
 
@@ -74,7 +64,7 @@ The Worker process is alive and logging reconnection attempts, but it never show
 | Wrong Hub URL | Worker logs show repeated dial failures to the wrong host/port | Set `--hub` to the Hub's reachable URL. Default is `http://127.0.0.1:4327`; behind a reverse proxy use the public `https://` URL. The Worker accepts `http[s]://...`, `unix:<socket-path>` (Unix only), or `npipe:<pipe-name>` (Windows only). |
 | Hub not actually listening on a reachable address | `curl http://hub-host:4327/` from the Worker machine | Make sure the Hub binds an interface the Worker can reach. The Hub default is `:4327` (all interfaces); solo mode defaults to `127.0.0.1:4327` (loopback only — unreachable from another machine). See [Running LeapMux](/docs/operating/running-leapmux/). |
 | Firewall / NAT between Worker and Hub | Network tools on the Worker host | The Worker connects **outbound** (NAT-friendly), so the Worker needs outbound access to the Hub's port, not an inbound port. Open egress to the Hub. |
-| Registered to a different Hub / owner | `leapmux admin worker list` on the Hub | A Worker belongs to the Hub and user that minted its key. Re-register against the correct Hub if it's pointed at the wrong one. |
+| Registered to a different Hub / owner | `leapmux control admin worker list` on the Hub | A Worker belongs to the Hub and user that minted its key. Re-register against the correct Hub if it's pointed at the wrong one. |
 | Worker was deregistered server-side | Worker logs show `Unauthenticated` on reconnect, then exits | When the Hub deletes a Worker, the Worker clears its local state and exits on next connect. Register it again from the UI. |
 
 > **Note:** A Worker reconnects automatically with exponential backoff (1s up to 180s between attempts). If you just restarted the Hub, give the Worker up to ~3 minutes to reconnect, or restart the Worker to retry immediately.
@@ -88,7 +78,7 @@ The Worker is registered and online, but its sidebar status dot is grey/disconne
 The sidebar status reflects whether **your browser** has a live end-to-end-encrypted channel to that Worker — which is distinct from the Hub's Worker-online flag. If you haven't opened anything on the Worker yet (or the channel was torn down), the Frontend has no open channel.
 
 **Fix**
-Open an agent or terminal on the Worker — that's what opens the channel; it opens on demand. The refresh button in the **Worker** selector only re-fetches the Worker list/status, which can clear a stale "offline" display, but it does not open the content channel by itself. If the Worker is genuinely offline at the Hub, opening a channel fails with **"worker is offline"** (`CodeUnavailable`) — bring the Worker process back up.
+Open an agent or terminal on the Worker — that's what opens the channel; it opens on demand. The refresh button in the **Worker** selector only re-fetches the Worker list/status, which can clear a stale "offline" display, but it does not open the content channel by itself. If the Worker is genuinely offline at the Hub, opening a channel fails with the status `CodeUnavailable` and an error that says the Worker is offline — bring the Worker process back up.
 
 ## "Worker public key changed" / handshake rejected (TOFU pin mismatch)
 
@@ -108,14 +98,10 @@ The Worker's remembered key no longer matches the key the Worker is now presenti
 
 > **Warning:** Accepting overwrites the pinned key permanently. Only accept after confirming the new fingerprint really belongs to your Worker.
 
-### A `leapmux control` or Worker-to-Worker connection aborts with "key mismatch"
+### A `leapmux control` or Worker-to-Worker connection aborts on a key mismatch
 
 **Symptom**
-A CLI or cross-worker connection fails with:
-
-```
-worker <id> key mismatch — <hint>
-```
+A CLI or cross-worker connection fails. The error identifies the Worker whose key no longer matches, and it gives a hint that tells you how to clear the pin.
 
 **Cause**
 Non-browser clients also pin Worker keys TOFU, but they cannot pop a dialog, so a mismatch aborts the connection. The hint tells you exactly how to clear the pin. There are two separate pin stores:
@@ -183,11 +169,7 @@ Solo mode binds **`127.0.0.1:4327`** (loopback only) by default — it is unreac
 - For local single-user use, browse to `http://127.0.0.1:4327` on the same machine.
 - To serve other machines, do **not** simply rebind solo to all interfaces. Either:
   - Run `leapmux hub` (or `dev`), which use real authentication and bind `:4327` (all interfaces) by default; or
-  - If you must expose solo mode, restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel). Solo mode emits a warning when it binds a non-loopback address:
-
-    > solo mode is binding to a non-loopback address — every request is auto-authenticated as the admin, so anyone who can reach this port has full admin access without credentials.
-
-    See [Security & Threat Model](/docs/operating/security/) for the full implications.
+  - If you must expose solo mode, restrict access externally (firewall, Tailscale/WireGuard, SSH tunnel). Solo mode emits a warning when it binds a non-loopback address. The warning states that every request is auto-authenticated as the admin, so anyone who can reach the port has full admin access without credentials. See [Security & Threat Model](/docs/operating/security/) for the full implications.
 
 See [Running LeapMux](/docs/operating/running-leapmux/) for binding and listen-address options.
 
@@ -216,8 +198,8 @@ The Hub does not terminate TLS itself, and it needs to know its external URL and
 Set both — they are database settings, and both are hot (a running Hub applies them within ~30 seconds):
 
 ```bash
-leapmux admin settings set public_url "https://hub.example.com"   # scheme + host only; no path/query
-leapmux admin settings set secure_cookies true
+leapmux control admin settings set public_url "https://hub.example.com"   # scheme + host only; no path/query
+leapmux control admin settings set secure_cookies true
 ```
 
 `public_url` must be scheme + host only — **sub-path mounting** (e.g. `https://example.com/leapmux`) is explicitly rejected. Enabling `secure_cookies` changes the cookie name and signs every current session out — do it once, at setup. See [Configuration](/docs/operating/configuration/) and [Running LeapMux](/docs/operating/running-leapmux/).
@@ -240,53 +222,53 @@ Complete the **/setup** form (Username, Display Name, Email, Password). The firs
 ### "Sign-up disabled" when trying to create an account
 
 **Symptom**
-Visiting **/signup** shows a page titled **"Sign-up disabled"** with the message **"New account registration is not currently available."**
+Visiting **/signup** shows a page titled **"Sign-up disabled"**, which states that new account registration is not available.
 
 **Cause**
 Public sign-up is controlled by the `signup_enabled` setting, which defaults to **false**. The first-admin **/setup** flow still works even when sign-up is disabled; only public self-registration is blocked.
 
 **Fix**
-- To allow self-service sign-up: `leapmux admin settings set signup_enabled true`.
-- Otherwise have an admin create the account with `leapmux admin user create` (see [Admin CLI](/docs/operating/admin-cli/)).
+- To allow self-service sign-up: `leapmux control admin settings set signup_enabled true`.
+- Otherwise have an admin create the account with `leapmux control admin user create` (see [Remote Control CLI](/docs/operating/control-cli/)).
 
-### "invalid credentials" on login
+### Login is refused although the username and the password look right
 
 **Symptom**
-Login fails with **"invalid credentials"** even when you think the username/password is right.
+Sign-in is refused, and the form says only that the credentials are invalid.
 
 **Cause**
-For security, the Hub returns the identical **"invalid credentials"** error for both an unknown username and a wrong password — there's no way to tell which from the message. Usernames are lowercase slugs; passwords are 8-128 characters.
+For security, the Hub returns the identical error for both an unknown username and a wrong password — there's no way to tell which from the message. Usernames are lowercase slugs; passwords are 8-128 printable ASCII characters, and a password may hold spaces.
 
 **Fix**
-Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux admin user reset-password` (see [Admin CLI](/docs/operating/admin-cli/)). Note: solo mode has no login at all — if you expected a login page in solo mode, you won't get one; it auto-authenticates.
+Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/operating/control-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/operating/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped. Either way, every session and token the account holds is revoked. Note: solo mode has no login at all — if you expected a login page in solo mode, you won't get one; it auto-authenticates.
 
-### Blocked everywhere with "email verification required"
+### Almost every action is refused until you verify your email
 
 **Symptom**
-After signing up you're stuck — almost every action returns **"email verification required"**, and you land on the **"Verify your email"** page.
+After signing up you're stuck — almost every action is refused because your email is unverified, and you land on the **"Verify your email"** page.
 
 **Cause**
 The Hub runs with `email_verification_required` enabled, so non-admin users with an unverified email may only verify, log out, or change their email until they verify. Verification uses a 6-character code (display form `XXX-XXX`) that expires in 30 minutes with a 5-attempt budget.
 
 **Fix**
-Enter the code from the verification email, or click the link in it. If you didn't receive it, use **"Resend code"** (60-second cooldown between resends). Email features require SMTP to be configured on the Hub — if the operator hasn't configured SMTP (`leapmux admin settings set smtp …`), verification emails can't be sent at all (and enabling `email_verification_required` without SMTP is refused at write time). See [Configuration](/docs/operating/configuration/).
+Enter the code from the verification email, or click the link in it. If you didn't receive it, use **Resend code** (60-second cooldown between resends). Email features require SMTP to be configured on the Hub — if the operator hasn't configured SMTP (`leapmux control admin settings set smtp …`), verification emails can't be sent at all (and enabling `email_verification_required` without SMTP is refused at write time). See [Configuration](/docs/operating/configuration/).
 
 ### OAuth sign-in fails or the provider isn't shown
 
 **Symptom**
-OAuth buttons don't appear on the login page, or clicking one ends in an error such as **"OAuth provider did not return an email address; ensure the 'email' scope is granted"** or **"sign-up is disabled; no existing account linked to this identity"**.
+OAuth buttons don't appear on the login page, or clicking one ends in an error. Two errors are common: the provider returned no email address, or sign-up is disabled and no existing account is linked to that identity.
 
 **Cause and fix:**
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| No OAuth buttons at all | No enabled OAuth provider configured | Add one with `leapmux admin oauth-provider add` (see [Authentication Providers](/docs/operating/authentication-providers/)). |
-| "did not return an email address" | The provider config is missing the email scope | Ensure the `email`/`user:email` scope is granted; reconfigure the provider's `--scopes`. |
-| Stuck on "Complete Sign Up" then rejected | New OAuth user but sign-up is disabled | `leapmux admin settings set signup_enabled true`, or link the OAuth identity to an existing account by signing in and verifying the matching email. |
-| "This signup link is invalid or has expired." on the **Complete Sign Up** page | The pending OAuth signup expired or the `?token=` link was reused | Start the OAuth sign-in over from the login page (see note below). |
+| No OAuth buttons at all | No enabled OAuth provider configured | Add one with `leapmux control admin oauth-provider add` (see [Authentication Providers](/docs/operating/authentication-providers/)). |
+| The error says the provider returned no email address | The provider config is missing the email scope | Ensure the `email`/`user:email` scope is granted; reconfigure the provider's `--scopes`. |
+| Stuck on "Complete Sign Up" then rejected | New OAuth user but sign-up is disabled | `leapmux control admin settings set signup_enabled true`, or link the OAuth identity to an existing account by signing in and verifying the matching email. |
+| The **Complete Sign Up** page says the signup link is invalid or expired | The pending OAuth signup expired or the `?token=` link was reused | Start the OAuth sign-in over from the login page (see note below). |
 | OAuth user logs in but can't unlink | It's their only login method | Set a password first in the **Profile** dialog, then unlink. |
 
-> **Note:** "This signup link is invalid or has expired." means the pending OAuth signup expired (5-minute window) or the `?token=` link was reused/already completed. Start the OAuth sign-in over from the login page to mint a fresh pending signup, then pick a username promptly. A blank **Complete Sign Up** page that says **"Missing signup token."** means you opened the URL without its `?token=` — restart from the login page.
+> **Note:** An invalid or expired signup link means the pending OAuth signup ran past its 5-minute window, or the `?token=` link was reused or already completed. Start the OAuth sign-in over from the login page to mint a fresh pending signup, then pick a username promptly. A blank **Complete Sign Up** page that reports a missing signup token means you opened the URL without its `?token=` — restart from the login page.
 
 Operators configuring providers should also confirm the OIDC issuer is reachable and the `public_url` setting is set so redirect/login URLs are built correctly. See [Authentication Providers](/docs/operating/authentication-providers/).
 
@@ -305,10 +287,10 @@ A provider only appears if **its CLI binary is detected on the Worker**. The Wor
 **Fix**
 Install the agent's own CLI on the **Worker** machine (not where the browser runs) and make sure it's on the Worker's `PATH`. Then click the refresh button (**"Refresh available providers"**) in the selector, or reopen the dialog. Note: Pi only ever shows when the `pi` binary is actually detected.
 
-### The agent shows "failed to start"
+### The agent fails to start
 
 **Symptom**
-The chat pane shows a centered error titled **"&lt;Provider&gt; failed to start"** (e.g. "Claude Code failed to start") with an error message from the Worker.
+The chat pane shows a centered error. Its title names the provider that failed to start, and the pane carries an error message from the Worker.
 
 **Cause**
 The agent subprocess couldn't be launched or didn't complete its startup handshake. Common reasons: the CLI binary isn't actually runnable on the Worker (wrong version, broken install, missing auth), the working directory is invalid, or startup exceeded the timeout (`--agent-startup-timeout`, default **5m**).
@@ -328,7 +310,7 @@ Changing the model or effort from a composer chip or the **[+]** menu restarts t
 Most settings changes are applied **live**, without a restart: switching effort to a concrete level (e.g. high → xhigh) and changing the permission mode are applied in place for both Claude Code and Codex. A restart only happens when you switch effort back to **Auto** (the CLI has to relaunch without an `--effort` flag to hand the default back to the CLI), or — implicitly — when you change the model, which resets effort to Auto and trips the same relaunch. The change is applied optimistically and rolled back on failure.
 
 **Fix**
-No action needed — wait for the agent to come back up. If it fails to restart, you'll see the "failed to start" error above; resolve that.
+No action needed — wait for the agent to come back up. If it fails to restart, you'll see the start failure described above; resolve that.
 
 ## Docker
 
@@ -337,11 +319,7 @@ For the full Docker setup, see [Running LeapMux](/docs/operating/running-leapmux
 ### Container exits immediately
 
 **Symptom**
-The container starts and dies right away, printing:
-
-```
-error: LEAPMUX_MODE must be one of: hub, worker, dev, solo
-```
+The container starts and dies right away. It prints an error that says `LEAPMUX_MODE` must be one of `hub`, `worker`, `dev`, or `solo`.
 
 **Cause**
 The image's supervisor requires the `LEAPMUX_MODE` environment variable to choose a run mode. Without it (or with an invalid value) it exits 1.
@@ -358,7 +336,7 @@ docker run -p 4327:4327 -e LEAPMUX_MODE=hub -v leapmux-data:/data ghcr.io/leapmu
 ### A Worker container can't connect
 
 **Symptom**
-A `LEAPMUX_MODE=worker` container fails with **"worker is unregistered..."** or never connects.
+A `LEAPMUX_MODE=worker` container fails because the Worker is unregistered, or it never connects.
 
 **Cause**
 The container's supervisor starts the Worker with no `--hub` or `--registration-key` flags, so a Worker container must get its Hub URL and (first-run) key from config or env vars. See [Running LeapMux](/docs/operating/running-leapmux/) for how the container supervisor launches each mode.
@@ -424,7 +402,7 @@ After restoring the database, OAuth or token-backed features fail to decrypt.
 You restored `hub.db` but not the matching `encryption.key`, or restored a key from a different point in time. The two must be in sync.
 
 **Fix**
-Restore the `encryption.key` from the same backup as the database. For planned key rotation, use `leapmux admin encryption-key rotate` then `reencrypt` — and follow the on-screen instruction to restart the Hub between the two. See [Encryption & Data](/docs/operating/encryption-and-data/).
+Restore the `encryption.key` from the same backup as the database. For planned key rotation, use `leapmux recover encryption-key rotate` then `reencrypt` — and follow the on-screen instruction to restart the Hub between the two. See [Encryption & Data](/docs/operating/encryption-and-data/).
 
 ## Terminals and `leapmux control`
 
@@ -433,11 +411,7 @@ For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see
 ### `leapmux control` inside a terminal/agent says it can't find the Hub
 
 **Symptom**
-Running `leapmux control ...` from inside a LeapMux terminal or agent fails with something like:
-
-```
-no --hub flag or LEAPMUX_HUB / LEAPMUX_CONTROL_SOCK env var; run `leapmux control auth login --hub <url>` or invoke from inside an agent
-```
+Running `leapmux control ...` from inside a LeapMux terminal or agent fails. The error says that it found no `--hub` flag and no `LEAPMUX_HUB` or `LEAPMUX_CONTROL_SOCK` environment variable.
 
 **Cause**
 `leapmux control` resolves its target from `LEAPMUX_CONTROL_SOCK` (+ `LEAPMUX_CONTROL_TOKEN`) when spawned inside a LeapMux terminal/agent, or from `--hub`/`LEAPMUX_HUB` plus saved login credentials otherwise. Those `LEAPMUX_CONTROL_*` env vars are injected automatically for every terminal and agent spawn — but if they're missing, the command can't locate the Hub.
@@ -452,16 +426,10 @@ no --hub flag or LEAPMUX_HUB / LEAPMUX_CONTROL_SOCK env var; run `leapmux contro
 
   For headless/SSH/container shells where a browser can't open, add `--device-code` to use the device-code flow. Check your identity with `leapmux control whoami` and `leapmux control auth status`.
 
-### A terminal shows "[Terminal process exited ... Press Enter to restart]"
+### A terminal stops accepting input and offers a restart
 
 **Symptom**
-The terminal stops accepting input and shows a notice like:
-
-```
-[Terminal process exited (0) - Press Enter to restart]
-```
-
-or `[Worker disconnected - Press Enter to restart]`.
+The terminal stops accepting input and shows a notice in square brackets. The notice reports that the shell process exited, with its exit code, or that the Worker disconnected. It also tells you that Enter restarts the shell.
 
 **Cause**
 The shell process exited (you typed `exit`, the shell crashed, or the Worker connection dropped). The tab persists so its scrollback isn't lost.

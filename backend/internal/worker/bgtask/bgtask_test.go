@@ -1,6 +1,7 @@
 package bgtask
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -103,4 +104,72 @@ func TestSanitizeRowKey(t *testing.T) {
 	assert.Equal(t, "a/b:c-d_e.1", SanitizeRowKey("a/b:c-d_e.1"))
 	// DEL (0x7f) is NOT a control char per the < 0x20 rule and is preserved.
 	assert.Equal(t, "a\x7fb", SanitizeRowKey("a\x7fb"))
+}
+
+func TestUpsertCleanTitle(t *testing.T) {
+	cases := []struct {
+		name  string
+		title string
+		want  string
+	}{
+		{"cuts an over-long ASCII title to the byte limit", strings.Repeat("a", 200), strings.Repeat("a", 128)},
+		{"cuts an over-long CJK title at a rune boundary", strings.Repeat("一", 50), strings.Repeat("一", 42)},
+		{"strips a control character", "Hello\x00World", "HelloWorld"},
+		{"strips the templating characters", `100% of $HOME "quoted" c:\path`, "100 of HOME quoted c:path"},
+		{"trims the surrounding whitespace", "   Deploy the hub   ", "Deploy the hub"},
+		{"keeps a clean title unchanged", "Ship the parser", "Ship the parser"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Upsert{Title: tc.title}.CleanTitle()
+			assert.Equal(t, tc.want, got.Title)
+			// The rule runs again on its own output without changing it, which
+			// is what lets EnsureChildAgent clean once and the applier clean
+			// again on the same string.
+			assert.Equal(t, got, got.CleanTitle(), "CleanTitle must be idempotent")
+		})
+	}
+}
+
+// The accepted cost of one rule for every title column: a shell command handed
+// over as a title loses the characters that make it runnable. The flag stays,
+// because what is left is still a command, only stripped.
+func TestUpsertCleanTitleStripsAShellCommand(t *testing.T) {
+	got := Upsert{Title: `npm test --grep "$FOO"`, TitleIsCommand: true}.CleanTitle()
+	assert.Equal(t, "npm test --grep FOO", got.Title)
+	assert.True(t, got.TitleIsCommand, "a stripped command is still a command")
+}
+
+// A title the rule empties clears the command flag with it: the flag describes
+// a title, and there is none left to describe.
+func TestUpsertCleanTitleEmptiedTitleClearsTheCommandFlag(t *testing.T) {
+	got := Upsert{Title: `  $$%%  `, TitleIsCommand: true}.CleanTitle()
+	assert.Empty(t, got.Title)
+	assert.False(t, got.TitleIsCommand)
+}
+
+// An emptied title is the same blank a caller sends deliberately, so the merge
+// answers both the same way: the row keeps the title it already holds.
+func TestUpsertCleanTitleEmptiedTitleKeepsTheStoredOne(t *testing.T) {
+	existing := Item{Title: "Ship the parser", TitleIsCommand: false}
+	merged := Upsert{Title: `  $$%%  `, TitleIsCommand: true}.CleanTitle().ToItem().PreservingBlanksFrom(existing)
+	assert.Equal(t, "Ship the parser", merged.Title)
+	assert.False(t, merged.TitleIsCommand, "the stored pair is restored whole")
+}
+
+// CleanTitle touches the title pair and nothing else.
+func TestUpsertCleanTitleLeavesEveryOtherFieldAlone(t *testing.T) {
+	u := Upsert{
+		RowKey:        "task-1",
+		Kind:          KindShell,
+		ChildAgentID:  "child-1",
+		ParentAgentID: "root-1",
+		GroupKey:      "wf-1",
+		GroupLabel:    "Workflow $1",
+		Title:         "Ship the parser",
+		Description:   "/tmp/out$.txt",
+		ActiveForm:    "running $HOME",
+		Status:        StatusRunning,
+	}
+	assert.Equal(t, u, u.CleanTitle())
 }

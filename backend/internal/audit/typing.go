@@ -28,9 +28,11 @@ package audit
 // answering invalid_grant. Both times the sites read as correct, because "is
 // this column ever blank?" is a question about the database, not about the code
 // in front of you.
-var mustNewNonLiteralSites = map[string]string{
-	"cmd/leapmux/admin_api_token.go#runAPITokenIssue": "the --user CLI flag, refused as empty by the guard on the line above the mint",
-}
+// The table is EMPTY, and that is the goal state: every production mint
+// now goes through a helper that returns an error instead of panicking.
+// It stays because the rule needs somewhere to record the next site that
+// genuinely earns the exemption.
+var mustNewNonLiteralSites = map[string]string{}
 
 // typedIdentityPackages are the packages whose in-process structs must carry a
 // user identity as userid.UserID rather than string. Keys are repo-relative

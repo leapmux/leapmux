@@ -82,9 +82,11 @@ func TestRecoverAndLogIsSilentWithoutAPanic(t *testing.T) {
 }
 
 // Three of the five call sites have no logger of their own.
+//
+// NOT parallel, although the tests around it are: this one swaps the
+// process-global default logger, and the tests around it inject their own.
+// testutil.CaptureDefaultLogger's doc states the rule.
 func TestRecoverAndLogAcceptsANilLogger(t *testing.T) {
-	t.Parallel()
-
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(logTo(&buf))

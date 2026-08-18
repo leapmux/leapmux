@@ -54,7 +54,7 @@ type CRDTBootstrap struct {
 func crdtBootstrap(ctx context.Context, c *control.Client, workspaceIDs []string) (*CRDTBootstrap, error) {
 	var initial *leapmuxv1.UserMaterialized
 	var err error
-	if c.IsLocal() {
+	if c.IsWorkerIPC() {
 		initial, err = crdtBootstrapLocal(ctx, c, workspaceIDs)
 	} else {
 		initial, err = crdtBootstrapHub(ctx, c, workspaceIDs)

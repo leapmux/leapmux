@@ -407,7 +407,6 @@ CREATE TABLE api_tokens (
     refresh_hash                  BLOB,
     previous_refresh_hash         BLOB,
     previous_refresh_expires_at   DATETIME,
-    scope                         TEXT NOT NULL DEFAULT 'remote:*',
     created_at                    DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  DATETIME,

@@ -51,3 +51,9 @@ func (h *UserEventsHandler) FillBootstrapGateForTest() (held int, release func()
 		}
 	}
 }
+
+// UserConflictErrorForTest exposes the user-write conflict classifier. The
+// classifier only runs on a lost unique-index RACE, which an external test
+// cannot provoke through the RPC surface -- the pre-checks answer first --
+// so the seam is what lets its four arms be pinned at all.
+var UserConflictErrorForTest = userConflictError

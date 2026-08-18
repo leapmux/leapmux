@@ -282,8 +282,13 @@ func EncodeResumeHLC(h *leapmuxv1.HLC) string {
 
 // DecodeResumeHLC parses the resume_after_hlc query param back into an HLC,
 // returning nil for malformed input (non-numeric physical/logical, a
-// `+`-signed number, missing client_id, or a client_id longer than 128 chars
-// as a sanity bound). Inverse of EncodeResumeHLC.
+// `+`-signed number, missing client_id, or a client_id longer than 128 bytes
+// as a sanity limit). Inverse of EncodeResumeHLC.
+//
+// The client_id limit counts UTF-8 BYTES, because `len` counts bytes: 128 bytes
+// holds 128 ASCII characters but only about 42 CJK ones. The TypeScript decoder
+// measures the same bytes (hlc.ts parseHlcWire), and the corpus pins both edges
+// of the limit in each language.
 //
 // nil is NOT a silent degrade: the only caller, ParseResumeCursor, turns it
 // into an error that the hub answers with HTTP 400 and the desktop sidecar

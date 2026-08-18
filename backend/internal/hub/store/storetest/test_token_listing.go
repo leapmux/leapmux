@@ -25,7 +25,6 @@ func seedAPITokenForList(t *testing.T, st store.Store, userID, clientType, clien
 		ClientName:  clientName,
 		SecretHash:  []byte("hash"),
 		RefreshHash: []byte("refresh"),
-		Scope:       "remote:*",
 	}))
 	return tokenID
 }

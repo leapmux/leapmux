@@ -7,7 +7,7 @@ import { useAuth } from '~/context/AuthContext'
 import { formatErrorMessage } from '~/lib/errors'
 import { sanitizeDisplayName, sanitizeName, sanitizeSlug, validateEmail } from '~/lib/validate'
 import { errorText, successText, warningText } from '~/styles/shared.css'
-import * as styles from './PreferencesDialog.css'
+import * as styles from './ProfileSettings.css'
 
 export const ProfileSettings: Component = () => {
   const auth = useAuth()

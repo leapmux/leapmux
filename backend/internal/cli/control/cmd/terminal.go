@@ -186,8 +186,11 @@ func renameTerminalTab(ctx context.Context, c *control.Client, got resolve.Resol
 		TerminalId: got.TabID,
 		Title:      title,
 	}
-	if err := callInnerRPC(ctx, c, got.WorkerID, "UpdateTerminalTitle", req, nil); err != nil {
+	// The reply carries the title the worker stored, which is not always the
+	// one this command sent -- see the agent arm of RunTabRename for the rule.
+	var resp leapmuxv1.UpdateTerminalTitleResponse
+	if err := callInnerRPC(ctx, c, got.WorkerID, "UpdateTerminalTitle", req, &resp); err != nil {
 		return err
 	}
-	return control.EmitData(map[string]string{"tab_id": got.TabID, "tab_type": "terminal", "title": title})
+	return control.EmitData(map[string]string{"tab_id": got.TabID, "tab_type": "terminal", "title": resp.GetTitle()})
 }

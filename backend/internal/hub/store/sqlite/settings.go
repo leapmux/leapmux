@@ -32,17 +32,19 @@ func (s *settingsStore) GetAll(ctx context.Context) ([]store.SettingRow, error) 
 	return store.MapSlice(rows, fromDBSetting), nil
 }
 
-func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow, error) {
-	r, err := s.conn.q.GetSetting(ctx, key)
-	if err != nil {
+// GetAllForUpdate takes the database writer lock with a no-op write
+// before it reads, because SQLite has no SELECT FOR UPDATE. The two
+// statements are one unit only inside the caller's transaction, which the
+// settings write path always holds.
+func (s *settingsStore) GetAllForUpdate(ctx context.Context) ([]store.SettingRow, error) {
+	if err := s.conn.q.LockAllSettings(ctx); err != nil {
 		return nil, mapErr(err)
 	}
-	row := fromDBSetting(r)
-	return &row, nil
+	return s.GetAll(ctx)
 }
 
-func (s *settingsStore) GetForUpdate(ctx context.Context, key string) (*store.SettingRow, error) {
-	r, err := s.conn.q.GetSettingForUpdate(ctx, key)
+func (s *settingsStore) Get(ctx context.Context, key string) (*store.SettingRow, error) {
+	r, err := s.conn.q.GetSetting(ctx, key)
 	if err != nil {
 		return nil, mapErr(err)
 	}

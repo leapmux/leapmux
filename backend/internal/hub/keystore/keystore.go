@@ -439,8 +439,8 @@ func writeKeyRing(path string, keys map[uint32][keySize]byte, pepper [keySize]by
 		sb.WriteByte('\n')
 	}
 	// The dedicated token pepper (api_token / delegation_token HMAC key).
-	// Regenerate via: leapmux admin encryption-key rotate-pepper
-	sb.WriteString("# api_token/delegation_token HMAC pepper (regenerate via: leapmux admin encryption-key rotate-pepper)\n")
+	// Regenerate via: leapmux recover encryption-key rotate-pepper
+	sb.WriteString("# api_token/delegation_token HMAC pepper (regenerate via: leapmux recover encryption-key rotate-pepper)\n")
 	sb.WriteString(pepperTag)
 	sb.WriteByte(':')
 	sb.WriteString(base64.StdEncoding.EncodeToString(pepper[:]))

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
@@ -40,6 +41,26 @@ type SendGate struct {
 	once    sync.Once
 	frame   chan struct{}
 	chunked chan struct{}
+	// frameWaiters counts senders parked on the frame permit. Production
+	// never reads it; see FrameWaiters for why it exists.
+	frameWaiters atomic.Int32
+}
+
+// FrameWaiters reports how many senders are currently parked waiting for
+// the frame permit.
+//
+// A TEST SEAM, and the only reason it is exported. Proving that a small
+// send overtakes a multi-chunk send requires the small send to be QUEUED
+// before the big send releases the permit between chunks. Nothing else
+// makes that observable, and a sleep sized to "queued by now" is a flake
+// the moment the machine is loaded: the sleep expires, the big send
+// re-acquires first, and the assertion about ordering fails for a reason
+// that has nothing to do with the code under test.
+//
+// The count rises just before a sender parks and falls when it wakes, so
+// poll it (require.Eventually) rather than reading it once.
+func (g *SendGate) FrameWaiters() int {
+	return int(g.frameWaiters.Load())
 }
 
 // ErrSendAborted reports that a send gave up waiting for a permit rather than
@@ -67,11 +88,18 @@ func (g *SendGate) init() {
 // itself is not reused here: it bounds an acquire by ONE context, and this needs
 // two (operation + transport lifetime) without allocating a linked context per
 // frame -- which is exactly the per-frame allocation this change exists to remove.
-func acquire(permit chan struct{}, ctx, lifetime context.Context) error {
+//
+// waiting counts the callers parked on this permit, for the test seam on
+// FrameWaiters. Pass nil for a permit no test observes.
+func acquire(permit chan struct{}, waiting *atomic.Int32, ctx, lifetime context.Context) error {
 	select {
 	case permit <- struct{}{}:
 		return nil
 	default:
+	}
+	if waiting != nil {
+		waiting.Add(1)
+		defer waiting.Add(-1)
 	}
 	var life <-chan struct{}
 	if lifetime != nil {
@@ -91,7 +119,7 @@ func acquire(permit chan struct{}, ctx, lifetime context.Context) error {
 // mutate send-side CipherState without racing Encrypt on another goroutine.
 func (g *SendGate) WithFrame(ctx, lifetime context.Context, fn func() error) error {
 	g.init()
-	if err := acquire(g.frame, ctx, lifetime); err != nil {
+	if err := acquire(g.frame, &g.frameWaiters, ctx, lifetime); err != nil {
 		return err
 	}
 	defer func() { <-g.frame }()
@@ -114,7 +142,7 @@ func (g *SendGate) Send(ctx, lifetime context.Context, plaintext []byte,
 	sendChunk func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error) error {
 	g.init()
 	if len(plaintext) > MaxPlaintextPerChunk {
-		if err := acquire(g.chunked, ctx, lifetime); err != nil {
+		if err := acquire(g.chunked, nil, ctx, lifetime); err != nil {
 			return err
 		}
 		defer func() { <-g.chunked }()
@@ -126,7 +154,7 @@ func (g *SendGate) Send(ctx, lifetime context.Context, plaintext []byte,
 			// Committed: only the transport's own lifetime may abort us now.
 			entryCtx = context.Background()
 		}
-		if err := acquire(g.frame, entryCtx, lifetime); err != nil {
+		if err := acquire(g.frame, &g.frameWaiters, entryCtx, lifetime); err != nil {
 			return err
 		}
 		defer func() { <-g.frame }()

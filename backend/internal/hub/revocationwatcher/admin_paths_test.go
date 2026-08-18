@@ -22,7 +22,7 @@ import (
 )
 
 // TestAdminPath_APITokenRevoke_ClosesBearerChannels mirrors what
-// `leapmux admin api-token revoke --id <id>` does (Revoke a single
+// `leapmux control admin api-token revoke --id <id>` does (Revoke a single
 // row). The watcher must pick that up and close any bearer-keyed
 // channel that token authenticated.
 func TestAdminPath_APITokenRevoke_ClosesBearerChannels(t *testing.T) {
@@ -31,7 +31,7 @@ func TestAdminPath_APITokenRevoke_ClosesBearerChannels(t *testing.T) {
 	apiTokenID := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: apiTokenID, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
-		SecretHash: []byte("hash"), Scope: "remote:*",
+		SecretHash: []byte("hash"),
 	}))
 
 	// Admin CLI revoke shape: the row gets revoked_at; cache /
@@ -44,7 +44,7 @@ func TestAdminPath_APITokenRevoke_ClosesBearerChannels(t *testing.T) {
 }
 
 // TestAdminPath_UserDelete_TearsDownEverything emulates the
-// `leapmux admin user delete` admin transaction: every credential
+// `leapmux control admin user delete` admin transaction: every credential
 // the user had — sessions (separate concern), api_tokens,
 // delegation_tokens — gets revoked, and `users.tokens_revoked_at`
 // is bumped. The generation-bearing user event closes every channel;
@@ -55,7 +55,7 @@ func TestAdminPath_UserDelete_TearsDownEverything(t *testing.T) {
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: apiTok, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
-		SecretHash: []byte("hash"), Scope: "remote:*",
+		SecretHash: []byte("hash"),
 	}))
 	env.seedDelegationToken(t)
 
@@ -78,7 +78,7 @@ func TestAdminPath_UserDelete_TearsDownEverything(t *testing.T) {
 }
 
 // TestAdminPath_ResetPassword_RevokesTokensAndChannels mirrors
-// `leapmux admin user reset-password`. The shape is the same as
+// `leapmux recover password reset`. The shape is the same as
 // user delete except the user row stays and sessions are deleted
 // instead of soft-revoked; from the watcher's perspective only
 // the (api_tokens revoke + delegation revoke + tokens_revoked_at
@@ -88,7 +88,7 @@ func TestAdminPath_ResetPassword_RevokesTokensAndChannels(t *testing.T) {
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: apiTok, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
-		SecretHash: []byte("hash"), Scope: "remote:*",
+		SecretHash: []byte("hash"),
 	}))
 	env.seedDelegationToken(t)
 
@@ -109,7 +109,7 @@ func TestAdminPath_ResetPassword_RevokesTokensAndChannels(t *testing.T) {
 }
 
 // TestAdminPath_SessionRevokeUser_TearsDownAllChannels mirrors
-// `leapmux admin session revoke-user`. Sessions are deleted (the
+// `leapmux control admin session revoke-user`. Sessions are deleted (the
 // watcher doesn't see those — they're hard-deleted, not flagged),
 // so the user-wide tokens_revoked_at bump carries the signal for cookie
 // channels; api / delegation tokens are revoked in the same
@@ -119,7 +119,7 @@ func TestAdminPath_SessionRevokeUser_TearsDownAllChannels(t *testing.T) {
 	apiTok := id.Generate()
 	require.NoError(t, env.st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID: apiTok, UserID: userid.MustNew(env.userID), ClientType: "cli", ClientName: "test",
-		SecretHash: []byte("hash"), Scope: "remote:*",
+		SecretHash: []byte("hash"),
 	}))
 	env.seedDelegationToken(t)
 
@@ -142,7 +142,7 @@ func TestAdminPath_SessionRevokeUser_TearsDownAllChannels(t *testing.T) {
 }
 
 // TestAdminPath_RevokeAdmin_FencesUserCredentials mirrors
-// `leapmux admin user revoke-admin`. A grant stays on the soft user_info
+// `leapmux control admin user grant-admin` / `revoke-admin`. A grant stays on the soft user_info
 // path (no channel teardown); a demotion emits a generation-bearing
 // user_tokens event that CloseChannelsByUserRevocation fences.
 func TestAdminPath_RevokeAdmin_FencesUserCredentials(t *testing.T) {

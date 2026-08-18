@@ -47,7 +47,7 @@ Solo mode accepts a subset of the Hub's flags plus an `--encryption-mode` flag f
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
 | `-config` | `~/.config/leapmux/solo/solo.yaml` | Config file path |
 
-Solo also accepts the SQLite and chunked-reassembly tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those. The message-size and timeout settings are instance settings now: change them with `leapmux admin settings` instead of launch flags.
+Solo also accepts the SQLite and chunked-reassembly tuning flags (`-storage-sqlite-max-conns`, `-max-incomplete-chunked`) plus `-dev-frontend`; see [Configuration](/docs/operating/configuration/) for those. The message-size and timeout settings are instance settings now: change them with `leapmux control admin settings` instead of launch flags.
 
 The desktop app runs solo mode under the hood, but with no TCP port at all — it serves the Hub only over a local IPC socket (a Unix domain socket or Windows named pipe). See [Installation](/docs/getting-started/installation/) for the desktop app.
 
@@ -59,7 +59,7 @@ The desktop app runs solo mode under the hood, but with no TCP port at all — i
 leapmux hub -listen :4327
 ```
 
-A fresh Hub has no users and (by default) sign-up disabled. To allow accounts to be created, enable sign-up, or pre-create users with the [Admin CLI](/docs/operating/admin-cli/). The most important Hub flags:
+A fresh Hub has no users and (by default) sign-up disabled. Create the first administrator offline with [`leapmux recover bootstrap create-admin`](/docs/operating/recover/). That command refuses once any admin exists. Then log in as that administrator. Enable sign-up with `leapmux control admin settings set signup_enabled true`, or create each account with `leapmux control admin user create`. The most important Hub flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -73,11 +73,11 @@ A fresh Hub has no users and (by default) sign-up disabled. To allow accounts to
 The flags are the process's bootstrap surface only. Everything behavioral — sign-up, email verification, sessions, SMTP, timeouts, per-user limits — is an instance setting in the Hub's database, changed at runtime and without a restart:
 
 ```bash
-leapmux admin settings set signup_enabled true
-leapmux admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com"}'
+leapmux control admin settings set signup_enabled true
+leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"from_address":"no-reply@example.com"}'
 ```
 
-By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference — every flag, every storage backend, the YAML layout, and the settings table — is in [Configuration](/docs/operating/configuration/) and the [admin CLI's `settings` chapter](/docs/operating/admin-cli/#settings--instance-settings).
+By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference — every flag, every storage backend, the YAML layout, and the settings table — is in [Configuration](/docs/operating/configuration/) and the [Hub settings](/docs/operating/control-cli/#hub-settings) section of the Remote Control CLI chapter.
 
 > **Note:** The Hub does not terminate TLS itself. For HTTPS you put a reverse proxy in front of it; see [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
 
@@ -104,13 +104,9 @@ After a successful registration, the Worker saves its credentials and keypair to
 | `-log-level` | `info` | Log level |
 | `-config` | `~/.config/leapmux/worker/worker.yaml` | Config file path |
 
-If a Worker has no saved credentials and no key, it refuses to start with:
+If a Worker has no saved credentials and no key, it refuses to start, and the error tells you to pass a registration key from the Hub UI.
 
-```
-worker is unregistered: pass --registration-key <key> from the hub UI
-```
-
-And if you pass `--registration-key` to a Worker that is already registered, it stops with `worker is already registered; remove --registration-key or wipe local state to re-register` — this protects you from burning a key by accident.
+And if you pass `--registration-key` to a Worker that is already registered, it stops rather than burning the key by accident. The error tells you to remove `--registration-key` or to wipe the local state.
 
 Minting registration keys, approving Workers, the trust-on-first-use (TOFU) pinning of Worker keys, and choosing which Worker a tab runs on are all covered in [Managing Workers](/docs/operating/managing-workers/).
 
@@ -122,7 +118,7 @@ Minting registration keys, approving Workers, the trust-on-first-use (TOFU) pinn
 leapmux dev -listen :4327
 ```
 
-Because dev mode uses real authentication, it bootstraps its first admin through the `/setup` flow rather than auto-authenticating. The in-process Worker's auto-registration is deferred until that first admin signs up; until then the log shows *"dev mode: deferring worker auto-registration until first admin signs up via /setup"*. Open the URL, complete `/setup` to create the admin, and the bundled Worker comes online.
+Because dev mode uses real authentication, it bootstraps its first admin through the `/setup` flow rather than auto-authenticating. The in-process Worker's auto-registration is deferred until that first admin signs up; until then the log says that dev mode defers the auto-registration until the first admin signs up through `/setup`. Open the URL, complete `/setup` to create the admin, and the bundled Worker comes online.
 
 Dev mode accepts the same flags as solo, plus `-encryption-mode`. The most important dev flags:
 
@@ -139,7 +135,7 @@ Like solo, dev also accepts the SQLite tuning flags plus `-dev-frontend` (see [C
 Dev mode seeds `signup_enabled=true` (it runs the full multi-user path), and the runtime knobs the old flags carried are settings now — a short session for exercising the signed-out path is:
 
 ```bash
-leapmux admin settings set session_duration_seconds 300   # the 5-minute minimum
+leapmux control admin settings set session_duration_seconds 300   # the 5-minute minimum
 ```
 
 ## Running under Docker
@@ -157,11 +153,7 @@ Both variants target `linux/amd64` and `linux/arm64`. Release tags (`:latest`, `
 
 ### Selecting the mode
 
-`LEAPMUX_MODE` is **required** and must be one of `hub`, `worker`, `dev`, or `solo`. If it is unset or invalid the container exits with:
-
-```
-error: LEAPMUX_MODE must be one of: hub, worker, dev, solo
-```
+`LEAPMUX_MODE` is **required** and must be one of `hub`, `worker`, `dev`, or `solo`. If it is unset or invalid, the container exits, and the error lists the four accepted modes.
 
 The supervisor always invokes `leapmux <mode> -config /data/<mode>/<mode>.yaml`, creating an empty `0600` config file if none exists. It passes no other flags — so any additional settings must come from the YAML config file or from `LEAPMUX_HUB_*` / `LEAPMUX_WORKER_*` environment variables (see [Configuration](/docs/operating/configuration/)).
 
@@ -231,8 +223,8 @@ The image entrypoint is s6-overlay's `/init`, which runs the `leapmux` process a
 
 The Hub never terminates TLS on its own. To serve LeapMux over HTTPS, put a reverse proxy (nginx, Caddy, Traefik, etc.) in front of it and tell the Hub its external address:
 
-1. Set `public_url` to the external HTTPS URL: `leapmux admin settings set public_url "https://hub.example.com"`.
-2. Enable secure cookies so they are `__Host-` prefixed and the derived base URL uses `https`: `leapmux admin settings set secure_cookies true`. (This changes the cookie name, which signs every current session out — do it once, at setup.)
+1. Set `public_url` to the external HTTPS URL: `leapmux control admin settings set public_url "https://hub.example.com"`.
+2. Enable secure cookies so they are `__Host-` prefixed and the derived base URL uses `https`: `leapmux control admin settings set secure_cookies true`. (This changes the cookie name, which signs every current session out — do it once, at setup.)
 3. Point each Worker's `-hub` URL at the same external `https://` address. Workers always initiate outbound connections, so they need no inbound ports of their own.
 
 Both settings are hot: a running Hub applies them within ~30 seconds — no restart.
@@ -264,7 +256,8 @@ leapmux --version
 
 - [Configuration](/docs/operating/configuration/) — full flag and config-key reference, storage backends, listen addresses, env-var precedence.
 - [Managing Workers](/docs/operating/managing-workers/) — registration keys, Worker approval, TOFU pinning, Worker selection.
-- [Admin CLI](/docs/operating/admin-cli/) — manage users, sessions, workers, OAuth providers, and the database directly.
+- [Recovery](/docs/operating/recover/) — the offline break-glass tree: first-admin bootstrap, password reset, schema migrations, and encryption-key surgery.
+- [Remote Control CLI](/docs/operating/control-cli/) — [`leapmux control admin`](/docs/operating/control-cli/#admin--hub-administration-over-rpc) for users, sessions, workers, OAuth providers, instance settings, and tokens on a running Hub.
 - [Installation](/docs/getting-started/installation/) — desktop app, Docker images, and building from source.
 - [Security & Threat Model](/docs/operating/security/) — trust boundaries, the E2EE relay, and solo-mode caveats.
 - [CLI Reference](/docs/reference/cli-reference/) — consolidated cheat-sheet for every subcommand.

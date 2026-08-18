@@ -153,8 +153,8 @@ func CheckUsernameAvailable(ctx context.Context, st store.Store, username string
 // plain sentence for the admin CLI.
 //
 // It replaces three separate implementations of one uniqueness rule -- this
-// pair plus the admin CLI's own copy -- which had drifted on blank handling and
-// on wording, and duplicated friendlyConstraintError's message strings besides.
+// pair plus the admin CLI's own copy -- which drifted on blank handling and
+// on wording.
 type FieldTakenError struct {
 	Field string
 	Value string

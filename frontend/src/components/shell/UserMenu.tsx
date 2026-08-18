@@ -1,8 +1,7 @@
 import type { Component } from 'solid-js'
 import { Show } from 'solid-js'
 import { PreferencesDialog } from '~/components/settings/PreferencesDialog'
-import { ProfileDialog } from '~/components/settings/ProfileDialog'
-import { setShowPreferencesDialog, setShowProfileDialog, showPreferencesDialog, showProfileDialog } from './UserMenuState'
+import { closePreferences, preferencesOpenSeq, showPreferencesDialog } from './UserMenuState'
 
 /**
  * Renders dialogs triggered from the menu. Mount once in a stable parent so
@@ -10,12 +9,9 @@ import { setShowPreferencesDialog, setShowProfileDialog, showPreferencesDialog, 
  * re-render triggered by `auth.refreshUser()`).
  */
 export const UserMenuDialogs: Component = () => (
-  <>
-    <Show when={showProfileDialog()}>
-      <ProfileDialog onClose={() => setShowProfileDialog(false)} />
-    </Show>
-    <Show when={showPreferencesDialog()}>
-      <PreferencesDialog onClose={() => setShowPreferencesDialog(false)} />
-    </Show>
-  </>
+  <Show when={showPreferencesDialog()}>
+    {category => (
+      <PreferencesDialog category={category()} openSeq={preferencesOpenSeq()} onClose={closePreferences} />
+    )}
+  </Show>
 )

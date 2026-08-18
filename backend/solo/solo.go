@@ -1131,7 +1131,7 @@ func defaultExtraFlags() []hubconfig.ExtraFlagDef {
 //
 // The list shrank to the process's bootstrap flags because everything else an
 // operator tunes -- timeouts, per-user caps, SMTP, signup, session policy --
-// moved into the hub_settings table: `leapmux admin settings set limits
+// moved into the hub_settings table: `leapmux control admin settings set limits
 // '{"max_connections_per_user":...}'` changes them on a RUNNING solo or dev
 // instance, where the old flags needed a relaunch. Solo is still the mode
 // where the connection cap actually binds (every socket belongs to the one

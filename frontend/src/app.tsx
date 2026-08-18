@@ -9,10 +9,11 @@ import { LauncherView } from '~/components/desktop/LauncherView'
 import { AboutDialog } from '~/components/shell/AboutDialog'
 import { DesktopMinimalChrome, DesktopRouteChrome } from '~/components/shell/DesktopChrome'
 import { UserMenuDialogs } from '~/components/shell/UserMenu'
-import { setShowAboutDialog, setShowPreferencesDialog, showAboutDialog } from '~/components/shell/UserMenuState'
+import { openPreferences, setShowAboutDialog, showAboutDialog } from '~/components/shell/UserMenuState'
 import { AuthProvider } from '~/context/AuthContext'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { useCoreShortcuts } from '~/hooks/useCoreShortcuts'
+import { useReloadPreferencesOnIdentityChange } from '~/hooks/useReloadPreferencesOnIdentityChange'
 import { initStorageCleanup, KEY_BROWSER_PREFS, loadBrowserPrefs } from '~/lib/browserStorage'
 import { createLogger } from '~/lib/logger'
 import { disableTextSubstitutions } from '~/lib/textInputBehavior'
@@ -48,9 +49,17 @@ function resolveTheme(pref: ThemePreference): 'light' | 'dark' {
 /**
  * Syncs the resolved theme and font preferences from PreferencesContext
  * to the app-level theme signal and DOM.
+ *
+ * It is also the ONE component that sits inside both AuthProvider and
+ * PreferencesProvider, so it hosts the account-settings reload that an
+ * identity change needs. That trigger cannot live in PreferencesProvider
+ * itself: `useAuth` throws without an AuthProvider, and the component tests
+ * that render PreferencesProvider alone supply none.
  */
 const PreferencesApplier: ParentComponent = (props) => {
   const preferences = usePreferences()
+
+  useReloadPreferencesOnIdentityChange()
 
   // When the resolved theme changes (e.g. account data loaded), push to app signal.
   createEffect(() => {
@@ -191,7 +200,7 @@ export default function App() {
           .catch(err => log.warn(`onEvent(${event}) failed`, err))
       }
       registerListener('menu:show-about', () => setShowAboutDialog(true))
-      registerListener('menu:show-preferences', () => setShowPreferencesDialog(true))
+      registerListener('menu:show-preferences', () => openPreferences('appearance'))
 
       getRuntimeState()
         .then((state) => {

@@ -19,6 +19,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -1433,20 +1434,21 @@ func TestReassembly_MaxIncompleteExceeded(t *testing.T) {
 func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 	t.Parallel()
 
-	mgr, kp, _ := setupTestManagerWith(t, 100, 0) // Very small limit.
+	mgr, kp, sender := setupTestManagerWith(t, 100, 0) // Very small limit.
 
-	// Register a handler that tries to send a response larger than the limit.
+	// The handler runs on the dispatcher's goroutine, so its error must come
+	// BACK to the test body. An assert inside the handler is not a test
+	// result: a dispatch that never reaches the handler leaves the test green,
+	// and one that arrives after the test finishes asserts on a dead *T.
+	sendErr := make(chan error, 1)
 	dispatcher := NewDispatcher()
 	dispatcher.Register("big", func(_ context.Context, _ userid.UserID, _ *leapmuxv1.InnerRpcRequest, s ResponseWriter) {
-		err := s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, 200)})
-		// sendEncrypted should return an error for oversized messages.
-		assert.Error(t, err)
-		assert.ErrorIs(t, err, ErrMessageRejected,
-			"the size cap is a per-message rejection, not a dead transport")
+		sendErr <- s.SendResponse(&leapmuxv1.InnerRpcResponse{Payload: make([]byte, 200)})
 	})
 	mgr.SetDispatcher(dispatcher)
 
 	session := performHandshake(t, mgr, kp, "ch-sendmax", "user-1")
+	before := len(sender.messages())
 
 	ct := sendRequest(t, session, "ch-sendmax", &leapmuxv1.InnerRpcRequest{Method: "big"})
 	mgr.HandleMessage(&leapmuxv1.ChannelMessage{
@@ -1456,12 +1458,17 @@ func TestSendEncrypted_MaxMessageSizeExceeded(t *testing.T) {
 		CorrelationId:   1,
 	})
 
-	// Give async dispatch time to complete.
-	require.Eventually(t, func() bool {
-		// No response should be sent since the message was too large to send.
-		// The handler above already verified the error was returned.
-		return true
-	}, time.Second, 10*time.Millisecond)
+	select {
+	case err := <-sendErr:
+		require.ErrorIs(t, err, ErrMessageRejected,
+			"the size cap is a per-message rejection, not a dead transport")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler never ran; the size cap was never exercised")
+	}
+
+	// The rejection happens before the write, so nothing over the cap reaches
+	// the transport.
+	assert.Len(t, sender.messages(), before, "an over-cap response must not be sent")
 }
 
 func TestReassembly_FinalChunkExceedsMaxSize(t *testing.T) {
@@ -1866,14 +1873,8 @@ func TestSendFailureLevel(t *testing.T) {
 // around it only cover in pieces: the sentinel reaches logSendFailure through
 // a real send, and a disconnect therefore costs a Debug line rather than a
 // warning per stream that was open when it landed.
-//
-// NOT parallel: it swaps the process-global default logger. Go never overlaps
-// a sequential test with a parallel one, so the buffer only sees this test.
 func TestSendStream_ReportsAGoneTransportAtDebug(t *testing.T) {
-	buf := &bytes.Buffer{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	buf := testutil.CaptureDefaultLogger(t)
 
 	workerSession, _ := setupTestSessions(t)
 	sender := &boundSender{
@@ -2063,7 +2064,18 @@ func TestChannelSenderSmallResponseOvertakesMultiChunk(t *testing.T) {
 	go func() {
 		smallDone <- cs.sendResponse(2, &leapmuxv1.InnerRpcResponse{Payload: []byte("hi")})
 	}()
-	time.Sleep(20 * time.Millisecond)
+
+	// Wait for the small send to be QUEUED on the permit, do not guess at it.
+	// Go hands a buffered-channel slot to waiting senders in FIFO order, so
+	// once the small send is queued it necessarily wins the acquire that
+	// follows the first chunk's release -- which is the property under test.
+	// Sizing that window with a sleep instead made the test fail on a loaded
+	// machine: the sleep expired before the goroutine parked, and the big
+	// send re-acquired for its second chunk, and the ordering assertion below
+	// failed for a scheduling reason rather than a code one.
+	require.Eventually(t, func() bool { return cs.gate.FrameWaiters() == 1 },
+		2*time.Second, 100*time.Microsecond,
+		"the small response never parked on the frame permit")
 	close(holdFirst)
 
 	select {

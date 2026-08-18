@@ -1,33 +1,71 @@
-import type { ParentComponent } from 'solid-js'
+import type { Accessor, ParentComponent } from 'solid-js'
 import type { ThemePreference } from '~/app'
-import type { BrowserPreferences, EnterKeyMode } from '~/lib/browserStorage'
+import type { SettingDescriptor, SettingValue } from '~/generated/leapmux/v1/settings_pb'
+import type { BrowserPreferences, EnterKeyMode, TerminalRendererPreference } from '~/lib/browserStorage'
 import type { UserKeybindingOverride } from '~/lib/shortcuts/types'
 import type { TerminalThemePreference } from '~/lib/terminal'
 import { createEffect, createSignal, onMount, useContext } from 'solid-js'
 import { userClient } from '~/api/clients'
-import { DiffView, TurnEndSound } from '~/generated/leapmux/v1/user_pb'
-import { KEY_BROWSER_PREFS, loadBrowserPrefs, localStorageSet } from '~/lib/browserStorage'
+import {
+  KEY_BROWSER_PREFS,
+  KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN,
+  KEY_PREFERRED_EDITOR,
+  loadBrowserPrefs,
+  localStorageGet,
+  localStorageRemove,
+  localStorageSet,
+} from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
-import { setDebugEnabled } from '~/lib/logger'
+import { formatErrorMessage } from '~/lib/errors'
+import { buildFontFamily, DEFAULT_MONO_FONT_FAMILY } from '~/lib/fontStack'
+import { createKeyedQueue } from '~/lib/keyedQueue'
+import { createKeyedSeq } from '~/lib/keyedSeq'
+import { createLogger, setDebugEnabled } from '~/lib/logger'
+import { parseSettingJson } from '~/lib/settingJson'
+import { getTerminalRendererPreference } from '~/lib/terminal'
+import { sanitizeName } from '~/lib/validate'
 
-const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, monospace'
+const log = createLogger('PreferencesContext')
+
+/**
+ * A failed account write that also records whether it was still the newest
+ * write for its key when it failed.
+ *
+ * A superseded failure must not roll the control back: the value it would
+ * restore predates a write the user has since made.
+ */
+class SupersededAwareError extends Error {
+  readonly newest: boolean
+  constructor(message: string, newest: boolean) {
+    super(message)
+    this.name = 'SupersededAwareError'
+    this.newest = newest
+  }
+}
 
 export type DiffViewPreference = 'unified' | 'split'
 export type TurnEndSoundPreference = 'none' | 'ding-dong'
 
-interface PreferencesState {
+/**
+ * One font-family tier: the enable switch plus the ordered stack. Mirrors the
+ * backend's `FontFamilyValue` (usersettings keys `ui_fonts` / `mono_fonts`)
+ * exactly — the whole object is the override unit on both tiers, because
+ * overriding the toggle and the list independently gives incoherent states.
+ */
+export interface FontTier {
+  enabled: boolean
+  fonts: string[]
+}
+
+export interface PreferencesState {
   /** Resolved theme preference (localStorage override → account default → hardcoded default). */
   theme: () => ThemePreference
   /** Resolved terminal theme preference. */
   terminalTheme: () => TerminalThemePreference
-  /** Whether UI custom fonts are enabled (resolved). */
-  uiFontCustomEnabled: () => boolean
-  /** Whether mono custom fonts are enabled (resolved). */
-  monoFontCustomEnabled: () => boolean
-  /** Account-level UI font list. */
-  uiFonts: () => string[]
-  /** Account-level mono font list. */
-  monoFonts: () => string[]
+  /** Resolved UI font tier (browser override → account). */
+  uiFonts: () => FontTier
+  /** Resolved mono font tier (browser override → account). */
+  monoFonts: () => FontTier
   /** CSS font-family for monospace contexts. Uses custom fonts if enabled, else default. */
   monoFontFamily: () => string
   /** CSS font-family for UI contexts. Only returns a value if custom fonts are enabled and non-empty. */
@@ -54,7 +92,7 @@ interface PreferencesState {
   setRevealAfterDownload: (value: boolean) => void
   /** Resolved enter key mode. */
   enterKeyMode: () => EnterKeyMode
-  setEnterKeyMode: (value: EnterKeyMode) => void
+  setEnterKeyMode: (value: EnterKeyMode | null) => void
   /**
    * Whether the composer status bar (branch/model/effort/mode +
    * rate-limit/context chips) is shown beneath the input box. Default on.
@@ -63,331 +101,808 @@ interface PreferencesState {
   setShowComposerStatusBar: (value: boolean) => void
   /** Custom keybinding overrides (account-level, stored in Hub DB). */
   customKeybindings: () => UserKeybindingOverride[]
-  setCustomKeybindings: (value: UserKeybindingOverride[]) => void
+  setCustomKeybindings: (value: UserKeybindingOverride[]) => Promise<void>
+  /** Terminal renderer preference (browser-only). */
+  terminalRenderer: () => TerminalRendererPreference
+  setTerminalRenderer: (value: TerminalRendererPreference | null) => void
+  /** Preferred external editor id (browser-only, desktop). */
+  preferredEditorId: () => string | undefined
+  setPreferredEditorId: (id: string | undefined) => void
+  /** Whether the directory picker shows hidden files (browser-only, default on). */
+  directoryPickerShowHidden: () => boolean
+  setDirectoryPickerShowHidden: (value: boolean) => void
 
-  // --- Browser-level overrides (localStorage) ---
-  /** Raw browser-level theme override. null means "use account default". */
-  browserTheme: () => ThemePreference | null
-  setBrowserTheme: (value: ThemePreference | null) => void
-  browserTerminalTheme: () => TerminalThemePreference | null
-  setBrowserTerminalTheme: (value: TerminalThemePreference | null) => void
-  browserDiffView: () => DiffViewPreference | null
-  setBrowserDiffView: (value: DiffViewPreference | null) => void
-  browserTurnEndSound: () => TurnEndSoundPreference | null
-  setBrowserTurnEndSound: (value: TurnEndSoundPreference | null) => void
-  browserTurnEndSoundVolume: () => number | null
-  setBrowserTurnEndSoundVolume: (value: number | null) => void
-  browserDebugLogging: () => boolean | null
-  setBrowserDebugLogging: (value: boolean | null) => void
   /** Browser-level terminal OSC desktop notifications (default off). */
   terminalOsNotifications: () => boolean
   setTerminalOsNotifications: (value: boolean) => void
 
-  // --- Account-level setters (Hub DB) ---
-  /** Account-level theme default. */
-  accountTheme: () => ThemePreference
-  accountTerminalTheme: () => TerminalThemePreference
-  accountUiFontCustomEnabled: () => boolean
-  accountMonoFontCustomEnabled: () => boolean
-  accountDiffView: () => DiffViewPreference
-  accountTurnEndSound: () => TurnEndSoundPreference
-  accountTurnEndSoundVolume: () => number
-  accountDebugLogging: () => boolean
+  /**
+   * Every dual-tier preference, addressed by name.
+   *
+   * ONE member per key instead of one per TIER OPERATION (`browserX`,
+   * `setBrowserX`, `accountX`, `setAccountX`, `resetX`, plus the resolved
+   * accessor above). They are never useful apart — the settings registry
+   * reads the resolved value, decides which tier a write lands on from
+   * `browser()`, seeds an override from the other tier, and resets the
+   * account tier by its own key — so naming them individually made a new
+   * key cost an interface line, a provider line and a binding argument
+   * EACH, every one of which could be wrong on its own.
+   *
+   * The RESOLVED accessors stay named above (`theme()`, `monoFonts()`,
+   * …). They have consumers all over the app that care about the value and
+   * nothing about its tiers.
+   */
+  dual: {
+    theme: DualPreference<ThemePreference>
+    terminalTheme: DualPreference<TerminalThemePreference>
+    uiFonts: DualPreference<FontTier>
+    monoFonts: DualPreference<FontTier>
+    diffView: DualPreference<DiffViewPreference>
+    turnEndSound: DualPreference<TurnEndSoundPreference>
+    turnEndSoundVolume: DualPreference<number>
+    debugLogging: DualPreference<boolean>
+  }
 
-  setAccountTheme: (value: ThemePreference) => void
-  setAccountTerminalTheme: (value: TerminalThemePreference) => void
-  setAccountUiFontCustomEnabled: (enabled: boolean) => void
-  setAccountMonoFontCustomEnabled: (enabled: boolean) => void
-  setAccountDiffView: (value: DiffViewPreference) => void
-  setAccountTurnEndSound: (value: TurnEndSoundPreference) => void
-  setAccountTurnEndSoundVolume: (value: number) => void
-  setAccountDebugLogging: (value: boolean) => void
-  setUiFonts: (fonts: string[]) => void
-  setMonoFonts: (fonts: string[]) => void
-  /** Save current account preferences to Hub. */
-  saveAccountPreferences: () => Promise<void>
-  /** Reload account preferences from Hub. */
+  /** Which account keys carry a stored (customized) value, by proto key. */
+  accountCustomized: () => Record<string, boolean>
+
+  /**
+   * The hub's SCHEMA for every account key, from the newest load that
+   * succeeded. EMPTY until one does.
+   *
+   * The hub declares each account key's category, control kind, enum values
+   * and numeric bounds (`usersettings/keys.go`), and the settings registry
+   * joins its own presentation onto this rather than restating any of it.
+   * So an account row cannot exist before the reply that describes it: a
+   * failed load renders those rows not at all, which `accountLoadError`
+   * beneath is what states to the user.
+   *
+   * The reply is kept here, and not in a second store, because this context
+   * already fetches it once for the values and hands the result to every
+   * reader. A second fetch is a second thing that can fail on its own.
+   */
+  accountDescriptors: () => SettingDescriptor[]
+
+  /**
+   * Run `body` with every browser-preference write it makes applied to ONE
+   * consolidated document, stored once when it returns.
+   *
+   * For a caller that writes many preferences at once ("Reset all browser
+   * overrides"). Each write is otherwise a full read, parse, serialize and
+   * write of the whole document, and one `storage` event per field for the
+   * other tabs.
+   */
+  batchBrowserPrefWrites: (body: () => void) => void
+
+  /**
+   * Merge a partial JSON document onto ONE account setting, server-first:
+   * the server's effective value is applied to the signals on success.
+   * REJECTS when the server refuses, so the row that made the write can
+   * state the reason inline.
+   */
+  updateUserSetting: (key: string, partial: unknown) => Promise<void>
+  /** Remove one account setting's stored value, returning it to its default. */
+  resetUserSetting: (key: string) => Promise<void>
+  /** The most recent account-settings load failure, or null. */
+  accountLoadError: () => string | null
+  /** Reload account settings from Hub. */
   reload: () => Promise<void>
 }
 
 const PreferencesContext = createStableContext<PreferencesState>('context/PreferencesContext')
 
-/** Build a CSS font-family string by quoting each font name and joining with commas. */
-function buildFontFamily(fonts: string[]): string {
-  return fonts.map(f => `"${f}"`).join(', ')
+/** Accept one of a closed set of string values, and refuse anything else. */
+function oneOf<T extends string>(...allowed: T[]): (raw: unknown) => T | undefined {
+  return raw => (allowed.includes(raw as T) ? raw as T : undefined)
 }
 
-function diffViewFromProto(dv: DiffView): DiffViewPreference {
-  return dv === DiffView.SPLIT ? 'split' : 'unified'
+/**
+ * Accept one font tier, normalized to exactly its two fields, so a stored
+ * document cannot carry an extra key into the signal. Anything else is
+ * refused, at both tiers.
+ */
+function parseFontTier(raw: unknown): FontTier | undefined {
+  if (typeof raw !== 'object' || raw === null)
+    return undefined
+  const tier = raw as { enabled?: unknown, fonts?: unknown }
+  if (typeof tier.enabled !== 'boolean')
+    return undefined
+  // `fonts` may be ABSENT, and an absent list is an EMPTY list. The Go
+  // field is `json:"fonts,omitempty"`, so the hub's own document for an
+  // enabled tier with no families is `{"enabled":true}` — and that is the
+  // mandatory FIRST state, because the stack row stays hidden until the
+  // tier is on. Refusing it turned the toggle back off on the next load,
+  // under a "Customized" badge over a value the row never showed.
+  // `protoRegistry` states the same omitempty rule for the numeric zeros.
+  if (tier.fonts !== undefined && !Array.isArray(tier.fonts))
+    return undefined
+  const stored: unknown[] = tier.fonts ?? []
+  // Every element must be a string the HUB would also store, for two
+  // separate reasons. `buildFontFamily` calls `.replace` on each one, so a
+  // non-string element throws a TypeError inside the synchronous font
+  // accessors and breaks the whole reactive computation that renders the
+  // UI and terminal font family. And one parse guards BOTH tiers, so a
+  // name the hub's `validateFontFamily` refuses must not reach the screen
+  // from a hand-edited localStorage document either.
+  const fonts: string[] = []
+  for (const name of stored) {
+    if (typeof name !== 'string' || !isStorableFontName(name))
+      return undefined
+    fonts.push(name)
+  }
+  return { enabled: tier.enabled, fonts }
 }
 
-function diffViewToProto(dv: DiffViewPreference): DiffView {
-  return dv === 'split' ? DiffView.SPLIT : DiffView.UNIFIED
+/**
+ * Whether the hub would store this font name unchanged.
+ *
+ * `usersettings.validateFontFamily` runs `validate.SanitizeName` and
+ * refuses the name when the sanitized form differs — no control
+ * character, no quote, no backslash, no `$` or `%`, no leading or
+ * trailing space, non-empty, at most 128 UTF-8 bytes. `sanitizeName` is
+ * that same rule on this side, so the two are asserted equal here rather
+ * than re-typed as a fourth character class.
+ */
+function isStorableFontName(name: string): boolean {
+  const { value, error } = sanitizeName(name)
+  return error === null && value === name
 }
 
-function turnEndSoundFromProto(tes: TurnEndSound): TurnEndSoundPreference {
-  return tes === TurnEndSound.NONE ? 'none' : 'ding-dong'
-}
+/** One value the consolidated browser-preferences document can hold. */
+type BrowserPrefValue = NonNullable<BrowserPreferences[keyof BrowserPreferences]>
 
-function turnEndSoundToProto(tes: TurnEndSoundPreference): TurnEndSound {
-  return tes === 'ding-dong' ? TurnEndSound.DING_DONG : TurnEndSound.NONE
-}
+/**
+ * The document every browser-preference write shares while a batch is
+ * open, or null while each write owns its own read and write.
+ */
+let batchedPrefs: BrowserPreferences | null = null
 
 /** Update a single field in the consolidated browser preferences. */
-function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserPreferences[keyof BrowserPreferences] | undefined): void {
-  const prefs = loadBrowserPrefs()
+function updateBrowserPref(key: keyof BrowserPreferences, value: BrowserPrefValue | undefined): void {
+  const prefs = batchedPrefs ?? loadBrowserPrefs()
   if (value === undefined) {
     delete prefs[key]
   }
   else {
     (prefs as Record<string, unknown>)[key] = value
   }
-  localStorageSet(KEY_BROWSER_PREFS, prefs)
+  // The batch owns the write while one is open. Storing here as well would
+  // defeat it and publish a half-applied document to the other tabs.
+  if (batchedPrefs === null)
+    localStorageSet(KEY_BROWSER_PREFS, prefs)
+}
+
+/**
+ * Run `body` with every browser-preference write applied to ONE document,
+ * stored once at the end.
+ *
+ * "Reset all browser overrides" clears seventeen fields, and each one is
+ * otherwise a full read, parse, serialize and write of the whole
+ * document. One write is also one `storage` event for the other tabs
+ * rather than seventeen.
+ *
+ * Both guards are required. The `finally` closes the batch even when a
+ * write inside `body` throws; without it every later write in the page
+ * would accumulate into a document that nothing stores. The re-entrancy
+ * check holds the same invariant from the other side: a nested call must
+ * not adopt a second document and store it over the outer one.
+ */
+function batchBrowserPrefWrites(body: () => void): void {
+  if (batchedPrefs !== null) {
+    body()
+    return
+  }
+  batchedPrefs = loadBrowserPrefs()
+  try {
+    body()
+  }
+  finally {
+    const written = batchedPrefs
+    batchedPrefs = null
+    localStorageSet(KEY_BROWSER_PREFS, written)
+  }
+}
+
+/**
+ * One setting the hub stores against the account.
+ *
+ * A key is declared ONCE, as a call to one of the two factories below. The
+ * signal, the parse that guards a stored value, the optimistic write, and
+ * the dispatch of a server reply all come from that single declaration —
+ * before, each key was written out in four places that could disagree.
+ */
+interface AccountSetting<T> {
+  /** The `usersettings` key on the wire. */
+  protoKey: string
+  /** The hub's stored value, or the built-in default until it answers. */
+  account: Accessor<T>
+  /**
+   * Write the account value, server-first: apply it at once so the control
+   * feels local, then let the hub's effective value replace it. REJECTS
+   * when the hub refuses, after restoring the pre-write value, so the row
+   * that made the write states the reason inline.
+   */
+  setAccount: (value: T) => Promise<void>
+  /** Whether the hub holds a stored value for this key. */
+  customized: Accessor<boolean>
+  /** Remove the stored value, returning this key to its built-in default. */
+  reset: () => Promise<void>
+  /**
+   * Apply one server document onto the account signal, and report whether
+   * it was applied.
+   *
+   * A document the parse REFUSES leaves the signal at what it holds, so
+   * the caller must not then record the key as customized: the badge and
+   * the Reset button would sit over a value the row does not show.
+   */
+  applyServer: (raw: unknown) => boolean
+}
+
+/**
+ * An account setting that a browser override can shadow. The override
+ * wins while it is set; null means "use the account value".
+ */
+interface DualSetting<T> extends AccountSetting<T> {
+  browser: Accessor<T | null>
+  setBrowser: (value: T | null) => void
+  /** browser() ?? account(). */
+  resolved: Accessor<T>
+}
+
+/**
+ * One dual-tier preference, as a consumer addresses it.
+ *
+ * The members travel TOGETHER because a caller that has one almost always
+ * needs the rest: the settings registry reads the resolved value, decides
+ * which tier a write lands on from `browser()`, seeds an override from
+ * the other tier, and states whether the account tier holds a stored value
+ * it can remove. Naming them individually on the context meant one
+ * interface member, one provider line and one binding argument EACH, all
+ * of which a new key had to get right separately — and a `bind` that
+ * wired one key's browser tier to another key's account tier compiled
+ * cleanly.
+ *
+ * `applyServer` stays off this type: it is how the context talks to the
+ * wire, not how a consumer edits a value. `protoKey` travels WITH the
+ * preference, because a consumer that resets the account tier has to name
+ * the key it removes — and re-stating that key at each binding is how a
+ * row for one key came to reset another.
+ */
+export interface DualPreference<T> {
+  /** The `usersettings` key this preference's account tier is stored under. */
+  protoKey: string
+  /** browser() ?? account(). */
+  resolved: Accessor<T>
+  /** The device-local override, or null while the account value applies. */
+  browser: Accessor<T | null>
+  setBrowser: (value: T | null) => void
+  account: Accessor<T>
+  /** REJECTS when the hub refuses, after restoring the pre-write value. */
+  setAccount: (value: T) => Promise<void>
+  /** Whether the hub holds a stored value for this key. */
+  customized: Accessor<boolean>
+  /** Remove the stored value, returning this key to its built-in default. */
+  reset: () => Promise<void>
+}
+
+interface AccountSettingOptions<T> {
+  protoKey: string
+  /** The value in force before the hub answers. */
+  fallback: T
+  /**
+   * Accept one stored value, or return undefined to refuse it and keep
+   * what the signal holds.
+   */
+  parse: (raw: unknown) => T | undefined
+}
+
+interface DualSettingOptions<T> extends AccountSettingOptions<T> {
+  /** The field of the consolidated browser-preferences document. */
+  browserPrefKey: keyof BrowserPreferences
+  /** Runs after a browser write, with the newly resolved value. */
+  onBrowserWrite?: (resolved: T) => void
 }
 
 export const PreferencesProvider: ParentComponent = (props) => {
-  // --- Account-level (Hub DB) ---
-  const [accountTheme, setAccountTheme] = createSignal<ThemePreference>('system')
-  const [accountTerminalTheme, setAccountTerminalTheme] = createSignal<TerminalThemePreference>('match-ui')
-  const [accountUiFontCustomEnabled, setAccountUiFontCustomEnabled] = createSignal(false)
-  const [accountMonoFontCustomEnabled, setAccountMonoFontCustomEnabled] = createSignal(false)
-  const [uiFonts, setUiFonts] = createSignal<string[]>([])
-  const [monoFonts, setMonoFonts] = createSignal<string[]>([])
-  const [accountDiffView, setAccountDiffView] = createSignal<DiffViewPreference>('unified')
-  const [accountTurnEndSound, setAccountTurnEndSound] = createSignal<TurnEndSoundPreference>('ding-dong')
-  const [accountTurnEndSoundVolume, setAccountTurnEndSoundVolume] = createSignal<number>(100)
-  const [accountDebugLogging, setAccountDebugLogging] = createSignal(false)
+  /** Which account keys carry a stored value, by proto key. */
+  const [accountCustomized, setAccountCustomized] = createSignal<Record<string, boolean>>({})
 
   // --- Browser-level (localStorage) --- load once from consolidated key
   const initialPrefs = loadBrowserPrefs()
 
-  const [browserTheme, setBrowserThemeSignal] = createSignal<ThemePreference | null>(
-    (initialPrefs.theme as ThemePreference) ?? null,
-  )
-  const [browserTerminalTheme, setBrowserTerminalThemeSignal] = createSignal<TerminalThemePreference | null>(
-    (initialPrefs.terminalTheme as TerminalThemePreference) ?? null,
-  )
-
-  const setBrowserTheme = (value: ThemePreference | null) => {
-    setBrowserThemeSignal(value)
-    updateBrowserPref('theme', value ?? undefined)
-    // Notify app.tsx for instant reactivity
-    const setter = window.__leapmux_setTheme
-    if (setter) {
-      setter(value ?? accountTheme())
+  /**
+   * One browser-only boolean with a fixed default.
+   *
+   * The document stores only the value that DIFFERS from the default, so a
+   * preference left alone costs no bytes and a changed default reaches
+   * every browser that never touched it.
+   */
+  function createBrowserToggle(key: keyof BrowserPreferences, defaultOn: boolean) {
+    const stored = initialPrefs[key]
+    const [value, setSignal] = createSignal(typeof stored === 'boolean' ? stored : defaultOn)
+    const set = (next: boolean) => {
+      setSignal(next)
+      updateBrowserPref(key, next === defaultOn ? undefined : next)
     }
+    return [value, set] as const
   }
 
-  const setBrowserTerminalTheme = (value: TerminalThemePreference | null) => {
-    setBrowserTerminalThemeSignal(value)
-    updateBrowserPref('terminalTheme', value ?? undefined)
-  }
-
-  const [browserDiffView, setBrowserDiffViewSignal] = createSignal<DiffViewPreference | null>(
-    (initialPrefs.diffView as DiffViewPreference) ?? null,
-  )
-
-  const setBrowserDiffView = (value: DiffViewPreference | null) => {
-    setBrowserDiffViewSignal(value)
-    updateBrowserPref('diffView', value ?? undefined)
-  }
-
-  const [browserTurnEndSound, setBrowserTurnEndSoundSignal] = createSignal<TurnEndSoundPreference | null>(
-    (initialPrefs.turnEndSound as TurnEndSoundPreference) ?? null,
-  )
-
-  const setBrowserTurnEndSound = (value: TurnEndSoundPreference | null) => {
-    setBrowserTurnEndSoundSignal(value)
-    updateBrowserPref('turnEndSound', value ?? undefined)
-  }
-
-  const [browserTurnEndSoundVolume, setBrowserTurnEndSoundVolumeSignal] = createSignal<number | null>(
-    initialPrefs.turnEndSoundVolume ?? null,
-  )
-
-  const setBrowserTurnEndSoundVolume = (value: number | null) => {
-    setBrowserTurnEndSoundVolumeSignal(value)
-    updateBrowserPref('turnEndSoundVolume', value ?? undefined)
-  }
-
-  const [browserDebugLogging, setBrowserDebugLoggingSignal] = createSignal<boolean | null>(
-    initialPrefs.debugLogging ?? null,
-  )
-
-  const setBrowserDebugLogging = (value: boolean | null) => {
-    setBrowserDebugLoggingSignal(value)
-    updateBrowserPref('debugLogging', value ?? undefined)
+  /**
+   * One browser-only boolean that lives in its OWN localStorage key.
+   *
+   * Its sibling above holds the same two rules for a field of the
+   * consolidated document, and the rules are what matter. Store only the
+   * value that DIFFERS from the default, so the default at its sentinel is
+   * a DELETED key: storing `true` for a default-on preference is an
+   * override in the opposite direction, and it stops a changed default
+   * from reaching the browsers that never touched it. Read the key back
+   * through a type test, because the stored document is editable by hand
+   * and survives a downgrade: an accessor that returned the string
+   * `"true"` read as truthy everywhere except the toggle bound to it,
+   * which compares against `true` and rendered OFF.
+   */
+  function createOwnKeyToggle(storageKey: string, defaultOn: boolean) {
+    const stored = localStorageGet<unknown>(storageKey)
+    const [value, setSignal] = createSignal(typeof stored === 'boolean' ? stored : defaultOn)
+    const set = (next: boolean) => {
+      setSignal(next)
+      if (next === defaultOn)
+        localStorageRemove(storageKey)
+      else
+        localStorageSet(storageKey, next)
+    }
+    return [value, set] as const
   }
 
   // --- Browser-only preferences ---
-  const [expandAgentThoughts, setExpandAgentThoughtsSignal] = createSignal(
-    initialPrefs.expandAgentThoughts !== false,
-  )
-  const setExpandAgentThoughts = (value: boolean) => {
-    setExpandAgentThoughtsSignal(value)
-    updateBrowserPref('expandAgentThoughts', value ? undefined : false)
-  }
+  const [expandAgentThoughts, setExpandAgentThoughts] = createBrowserToggle('expandAgentThoughts', true)
+  const [showHiddenMessages, setShowHiddenMessages] = createBrowserToggle('showHiddenMessages', false)
+  const [revealAfterDownload, setRevealAfterDownload] = createBrowserToggle('revealAfterDownload', true)
+  const [terminalOsNotifications, setTerminalOsNotifications] = createBrowserToggle('terminalOsNotifications', false)
+  const [showComposerStatusBar, setShowComposerStatusBar] = createBrowserToggle('showComposerStatusBar', true)
 
-  const [showHiddenMessages, setShowHiddenMessagesSignal] = createSignal(
-    initialPrefs.showHiddenMessages === true,
-  )
-  const setShowHiddenMessages = (value: boolean) => {
-    setShowHiddenMessagesSignal(value)
-    updateBrowserPref('showHiddenMessages', value || undefined)
-  }
-
-  // Default-on preference: undefined and true both mean "reveal";
-  // only an explicit `false` opts out. Mirrors the `expandAgentThoughts`
-  // shape — store `false` to opt out, `undefined` to fall back to the
-  // default.
-  const [revealAfterDownload, setRevealAfterDownloadSignal] = createSignal(
-    initialPrefs.revealAfterDownload !== false,
-  )
-  const setRevealAfterDownload = (value: boolean) => {
-    setRevealAfterDownloadSignal(value)
-    updateBrowserPref('revealAfterDownload', value ? undefined : false)
-  }
-
+  // A stored value is UNTRUSTED. `localStorageGet` casts rather than
+  // checks, and the document it reads is editable by hand and outlives the
+  // value set it was written against. An unrecognised mode reaches the
+  // composer, whose menu compares against 'cmd-enter-sends' and renders
+  // neither entry as checked, so the first click appears to do nothing.
   const [enterKeyMode, setEnterKeyModeSignal] = createSignal<EnterKeyMode>(
-    initialPrefs.enterKeyMode ?? 'cmd-enter-sends',
+    oneOf<EnterKeyMode>('enter-sends', 'cmd-enter-sends')(initialPrefs.enterKeyMode) ?? 'cmd-enter-sends',
   )
-  const setEnterKeyMode = (value: EnterKeyMode) => {
-    setEnterKeyModeSignal(value)
-    updateBrowserPref('enterKeyMode', value)
+  const setEnterKeyMode = (value: EnterKeyMode | null) => {
+    setEnterKeyModeSignal(value ?? 'cmd-enter-sends')
+    updateBrowserPref('enterKeyMode', value ?? undefined)
   }
 
-  const [terminalOsNotifications, setTerminalOsNotificationsSignal] = createSignal(
-    initialPrefs.terminalOsNotifications === true,
+  // `~/lib/terminal` reads this same field with its own guard, so the
+  // guard is imported rather than re-typed: two readers of one field that
+  // disagree is the whole defect. A stored 'x' resolved to 'auto' for the
+  // terminal and to 'x' for the settings row, whose enum control then held
+  // a value absent from its three options.
+  const [terminalRenderer, setTerminalRendererSignal] = createSignal<TerminalRendererPreference>(
+    getTerminalRendererPreference(initialPrefs),
   )
-  const setTerminalOsNotifications = (value: boolean) => {
-    setTerminalOsNotificationsSignal(value)
-    updateBrowserPref('terminalOsNotifications', value || undefined)
+  const setTerminalRenderer = (value: TerminalRendererPreference | null) => {
+    setTerminalRendererSignal(value ?? 'auto')
+    updateBrowserPref('terminalRenderer', value ?? undefined)
   }
 
-  // Default-on preference: undefined and true both mean "shown"; only an
-  // explicit `false` hides the bar. Mirrors the `revealAfterDownload` shape.
-  const [showComposerStatusBar, setShowComposerStatusBarSignal] = createSignal(
-    initialPrefs.showComposerStatusBar !== false,
+  const [preferredEditorId, setPreferredEditorIdSignal] = createSignal<string | undefined>(
+    localStorageGet<string>(KEY_PREFERRED_EDITOR),
   )
-  const setShowComposerStatusBar = (value: boolean) => {
-    setShowComposerStatusBarSignal(value)
-    updateBrowserPref('showComposerStatusBar', value ? undefined : false)
+  const setPreferredEditorId = (id: string | undefined) => {
+    setPreferredEditorIdSignal(id)
+    if (id === undefined)
+      localStorageRemove(KEY_PREFERRED_EDITOR)
+    else
+      localStorageSet(KEY_PREFERRED_EDITOR, id)
   }
 
-  const [customKeybindings, setCustomKeybindingsSignal] = createSignal<UserKeybindingOverride[]>([])
+  const [directoryPickerShowHidden, setDirectoryPickerShowHidden]
+    = createOwnKeyToggle(KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, true)
+
+  /**
+   * The most recent account-settings load failure, or null.
+   *
+   * The surface that renders account rows has to state it, and only this
+   * context can know. It fetches the reply once and hands it to every
+   * reader, so a reader has no request of its own that could fail.
+   */
+  const [accountLoadError, setAccountLoadError] = createSignal<string | null>(null)
+
+  /**
+   * The hub's account-key schema, from the newest load that succeeded.
+   *
+   * A FAILED load leaves the previous schema in place rather than clearing
+   * it. The keys the hub declares do not change while a page is open, so
+   * dropping them on a transient failure would empty the dialog's account
+   * rows for a reload that changes nothing.
+   */
+  const [accountDescriptors, setAccountDescriptors] = createSignal<SettingDescriptor[]>([])
+
+  /**
+   * The newest write issued per key.
+   *
+   * Every response applies the server's effective value onto the signal, so
+   * two writes to one key that complete out of order would leave the OLDER
+   * value on screen — two fast clicks on a toggle, and it snaps back. The
+   * sequence is per key, not global: writes to different keys are
+   * independent and must not cancel each other. Same guard the stores use
+   * for `load`; the write path simply never had one.
+   *
+   * EVERY applier passes through it, the list reply included. A write is
+   * not the only thing that can carry a stale value: `reload` reads every
+   * key at once, so a list reply that lands after a faster write reply
+   * would restore the pre-write value for the key the user just changed.
+   */
+  const writeSeq = createKeyedSeq()
+
+  /**
+   * The write REQUESTS in flight per key, so the next one for a key is
+   * issued only after the previous one settles.
+   *
+   * The sequence above decides which ANSWER is applied. It cannot decide
+   * which REQUEST the hub commits first, and `mutateUserPrefs` merges the
+   * partial under a row lock, so the request that commits LAST is the one
+   * the hub keeps. Two fast clicks on "+" in a font stack could leave the
+   * hub holding the one-font document while the screen showed two.
+   */
+  const writeQueue = createKeyedQueue()
+
+  /**
+   * The newest LOAD, which is a separate rule from the write sequence.
+   *
+   * Two reloads with no write between them carry identical per-key write
+   * stamps, so those stamps cannot separate them and both replies apply in
+   * arrival order. This counter is unkeyed: a load reads the whole account
+   * at once, so there is one subject to be newest for.
+   */
+  const loadSeq = createKeyedSeq()
+
+  /**
+   * Read every account key from the hub and apply the values the caller has
+   * not written since the read was issued.
+   *
+   * The reply is stamped against the per-key write sequence taken BEFORE the
+   * request: a key whose sequence moved while the list was in flight has a
+   * newer answer already on screen, so this reply is stale for that key
+   * alone. The other keys still apply, because the list is the only source
+   * for a key the user never touched.
+   */
+  const reload = async () => {
+    const mySeq = loadSeq.next()
+    const issuedAt = writeSeq.snapshot()
+    let resp
+    try {
+      resp = await userClient.listUserSettings({})
+    }
+    catch (err) {
+      // RECORD, then rethrow. The failure has to be recorded HERE, in the
+      // function that owns the invariant, so `accountLoadError` is true for
+      // every caller of the exported `reload` — not only for the one call
+      // site that remembers to catch it. Only while this load is still the
+      // newest, though: a later load that already succeeded cleared the
+      // record, and nothing on the page clears it a second time.
+      if (loadSeq.isNewest(undefined, mySeq))
+        setAccountLoadError(formatErrorMessage(err, 'Failed to load account settings'))
+      throw err
+    }
+    if (!loadSeq.isNewest(undefined, mySeq))
+      return
+    setAccountLoadError(null)
+    // The SCHEMA, kept beside the values it describes. The settings
+    // registry joins its presentation onto these descriptors instead of
+    // restating each key's category, control kind, enum values and bounds,
+    // so discarding them here left the dialog with nothing to render an
+    // account row from.
+    setAccountDescriptors(resp.descriptors)
+    for (const value of resp.values) {
+      if (!writeSeq.isNewest(value.key, issuedAt.get(value.key) ?? 0))
+        continue
+      // applyAccountValue records the customized flag for the key it
+      // applies, so a skipped key keeps the flag its own newer reply set.
+      applyAccountValue(value.key, value)
+    }
+  }
+
+  /**
+   * Server-first per-key write. On success the server's effective value
+   * (the source of truth after validation and defaults) replaces the
+   * optimistic one.
+   *
+   * REJECTS on failure. The row that made the write is the one place the
+   * user is looking, and `SettingRow` already renders a rejected `set`
+   * inline; swallowing the rejection left the control reverting with no
+   * stated reason and only a toast that had already gone.
+   */
+  const updateUserSetting = async (key: string, partial: unknown): Promise<void> => {
+    // Both the document and the sequence are fixed at ISSUE time, before
+    // the request waits its turn: the sequence so it matches the order the
+    // user clicked in, and the JSON so the queued request sends what the
+    // caller asked for rather than whatever `partial` holds by then.
+    const partialJson = JSON.stringify(partial)
+    const seq = writeSeq.next(key)
+    try {
+      const resp = await writeQueue.run(key, () => userClient.updateUserSetting({ key, partialJson }))
+      // A superseded response is still a SUCCESS — it just no longer
+      // describes what the user last asked for, so it must not be applied.
+      if (resp.value && writeSeq.isNewest(key, seq))
+        applyAccountValue(key, resp.value)
+    }
+    catch (err) {
+      // LOG, never toast. The rejection travels to the row that made the
+      // write and `SettingRow` renders it under the control, so a toast put
+      // the same text on screen twice — and it fired before the superseded
+      // flag was even computed, so a superseded write that this path and
+      // `writeAccount` both go out of their way to suppress toasted anyway.
+      log.warn('account setting write failed', { key }, err)
+      throw new SupersededAwareError(formatErrorMessage(err, 'Failed to save setting'), writeSeq.isNewest(key, seq))
+    }
+  }
+
+  const resetUserSetting = async (key: string): Promise<void> => {
+    const seq = writeSeq.next(key)
+    try {
+      const resp = await writeQueue.run(key, () => userClient.resetUserSetting({ key }))
+      if (resp.value && writeSeq.isNewest(key, seq))
+        applyAccountValue(key, resp.value)
+    }
+    catch (err) {
+      log.warn('account setting reset failed', { key }, err)
+      throw new SupersededAwareError(formatErrorMessage(err, 'Failed to reset setting'), writeSeq.isNewest(key, seq))
+    }
+  }
+
+  /**
+   * One account write: apply the value optimistically (the control should
+   * feel local), hand it to the server, and restore the pre-write value if
+   * the server refuses. The rejection travels on so the row can state it.
+   */
+  function writeAccount<T>(
+    key: string,
+    value: T,
+    read: () => T,
+    write: (v: T) => void,
+  ): Promise<void> {
+    const prev = read()
+    write(value)
+    return updateUserSetting(key, value).catch((err: unknown) => {
+      // Roll back only while this write is still the newest for its key.
+      // `prev` was captured before this write; a newer write has since
+      // replaced it, and restoring `prev` would revert the user's LATER
+      // selection out from under its own in-flight request.
+      if (!(err instanceof SupersededAwareError) || err.newest)
+        write(prev)
+      throw err
+    })
+  }
+
+  function createAccountSetting<T>(opts: AccountSettingOptions<T>): AccountSetting<T> {
+    const [account, setSignal] = createSignal<T>(opts.fallback)
+    // The functional form, so a value that is itself callable would be
+    // stored rather than invoked as an updater.
+    const write = (value: T) => setSignal(() => value)
+    return {
+      protoKey: opts.protoKey,
+      account,
+      setAccount: (value: T) => writeAccount(opts.protoKey, value, account, write),
+      customized: () => accountCustomized()[opts.protoKey] === true,
+      reset: () => resetUserSetting(opts.protoKey),
+      applyServer: (raw: unknown) => {
+        const parsed = opts.parse(raw)
+        if (parsed === undefined)
+          return false
+        write(parsed)
+        return true
+      },
+    }
+  }
+
+  function createDualSetting<T extends BrowserPrefValue>(opts: DualSettingOptions<T>): DualSetting<T> {
+    const base = createAccountSetting<T>(opts)
+    // The stored browser value passes the SAME parse as a server document,
+    // so a corrupt localStorage entry cannot put a value on screen that the
+    // hub would refuse.
+    const [browser, setSignal] = createSignal<T | null>(opts.parse(initialPrefs[opts.browserPrefKey]) ?? null)
+    const resolved = () => browser() ?? base.account()
+    const setBrowser = (value: T | null) => {
+      setSignal(() => value)
+      updateBrowserPref(opts.browserPrefKey, value ?? undefined)
+      opts.onBrowserWrite?.(resolved())
+    }
+    return { ...base, browser, setBrowser, resolved }
+  }
+
+  /**
+   * Every account-backed setting that ALSO has a browser tier, declared
+   * once.
+   *
+   * The dialog, the resolution order, the browser override, and the server
+   * dispatch all read this one record, so a new dual key is one entry here
+   * and nothing else. An account-only key is declared beneath it.
+   */
+  const dualSettings = {
+    theme: createDualSetting<ThemePreference>({
+      protoKey: 'theme',
+      browserPrefKey: 'theme',
+      fallback: 'system',
+      parse: oneOf('dark', 'light', 'system'),
+      // app.tsx owns the live theme, so tell it at once rather than wait
+      // for the next render pass.
+      onBrowserWrite: resolved => window.__leapmux_setTheme?.(resolved),
+    }),
+    terminalTheme: createDualSetting<TerminalThemePreference>({
+      protoKey: 'terminal_theme',
+      browserPrefKey: 'terminalTheme',
+      fallback: 'match-ui',
+      parse: oneOf('match-ui', 'dark', 'light'),
+    }),
+    // The font overrides are whole-object tiers: null means "use the
+    // account value" and deletes the key; any object is a full override.
+    uiFonts: createDualSetting<FontTier>({
+      protoKey: 'ui_fonts',
+      browserPrefKey: 'uiFontOverride',
+      fallback: { enabled: false, fonts: [] },
+      parse: parseFontTier,
+    }),
+    monoFonts: createDualSetting<FontTier>({
+      protoKey: 'mono_fonts',
+      browserPrefKey: 'monoFontOverride',
+      fallback: { enabled: false, fonts: [] },
+      parse: parseFontTier,
+    }),
+    diffView: createDualSetting<DiffViewPreference>({
+      protoKey: 'diff_view',
+      browserPrefKey: 'diffView',
+      fallback: 'unified',
+      parse: oneOf('unified', 'split'),
+    }),
+    turnEndSound: createDualSetting<TurnEndSoundPreference>({
+      protoKey: 'turn_end_sound',
+      browserPrefKey: 'turnEndSound',
+      fallback: 'ding-dong',
+      parse: oneOf('none', 'ding-dong'),
+    }),
+    turnEndSoundVolume: createDualSetting<number>({
+      protoKey: 'turn_end_sound_volume',
+      browserPrefKey: 'turnEndSoundVolume',
+      fallback: 100,
+      // The hub refuses `v < 0 || v > 100` (usersettings/keys.go), and the
+      // consumer needs the same bound for its own reason: `useTurnEnd`
+      // assigns `volume / 100` to an HTMLAudioElement, and a value outside
+      // 0..1 throws IndexSizeError SYNCHRONOUSLY, after the rate limiter
+      // already recorded the play. No sound, and no turn-end event.
+      // `Number.isFinite` is required, because `typeof NaN === 'number'`.
+      parse: raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 100 ? raw : undefined),
+    }),
+    debugLogging: createDualSetting<boolean>({
+      protoKey: 'debug_logging',
+      browserPrefKey: 'debugLogging',
+      fallback: false,
+      parse: raw => (typeof raw === 'boolean' ? raw : undefined),
+    }),
+  }
+
+  // Keybindings live at the account tier only: an override that follows
+  // the person is the whole point, so there is no browser half. Declared
+  // BESIDE the record rather than inside it, because `dualSettings` is
+  // what the context publishes as `dual`, and every member of that record
+  // must carry the browser tier its consumers address.
+  const keybindings = createAccountSetting<UserKeybindingOverride[]>({
+    protoKey: 'keybindings',
+    fallback: [],
+    // A malformed document is an EMPTY override set, not "keep what is
+    // on screen": a stored value the client cannot read must not leave
+    // stale bindings in force.
+    parse: raw => (Array.isArray(raw) ? raw as UserKeybindingOverride[] : []),
+  })
+
+  const settingsByProtoKey = new Map(
+    [...Object.values(dualSettings), keybindings].map(setting => [setting.protoKey, setting] as const),
+  )
+
+  /**
+   * Apply one SettingValue's effective JSON onto its account signal.
+   *
+   * A key that no setting declares is reported, never dropped in silence:
+   * the hub declares the account keys, so an unlisted one means this file
+   * fell behind `usersettings/keys.go`, and the row would otherwise show a
+   * "Customized" badge over a value no signal holds.
+   *
+   * Declared as a function, not a const, so that hoisting resolves a loop:
+   * the write path above calls this, and the settings that this reads are
+   * themselves built on that write path.
+   */
+  function applyAccountValue(key: string, value: SettingValue) {
+    const setting = settingsByProtoKey.get(key)
+    if (!setting) {
+      log.warn('account setting has no local signal; ignoring', { key })
+      return
+    }
+    // The flag follows the APPLY. A document the parse refuses leaves the
+    // signal alone, so recording the key as customized would put a badge
+    // and a Reset button over a stored value that no row is showing.
+    if (!setting.applyServer(parseSettingJson(value.effectiveJson))) {
+      log.warn('account setting value refused by the local parse; leaving the customized flag alone', { key })
+      return
+    }
+    setAccountCustomized(prev => ({ ...prev, [key]: value.customized }))
+  }
 
   // --- Resolved values (browser override → account default → hardcoded) ---
-  const theme = (): ThemePreference => browserTheme() ?? accountTheme()
-  const terminalTheme = (): TerminalThemePreference => browserTerminalTheme() ?? accountTerminalTheme()
-  const uiFontCustomEnabled = () => accountUiFontCustomEnabled()
-  const monoFontCustomEnabled = () => accountMonoFontCustomEnabled()
-  const diffView = (): DiffViewPreference => browserDiffView() ?? accountDiffView()
-  const turnEndSound = (): TurnEndSoundPreference => browserTurnEndSound() ?? accountTurnEndSound()
-  const turnEndSoundVolume = (): number => browserTurnEndSoundVolume() ?? accountTurnEndSoundVolume()
-  const debugLogging = (): boolean => browserDebugLogging() ?? accountDebugLogging()
+  const uiFonts = dualSettings.uiFonts.resolved
+  const monoFonts = dualSettings.monoFonts.resolved
 
   const monoFontFamily = () => {
-    if (!monoFontCustomEnabled() || monoFonts().length === 0) {
+    const tier = monoFonts()
+    if (!tier.enabled || tier.fonts.length === 0) {
       return DEFAULT_MONO_FONT_FAMILY
     }
-    return `${buildFontFamily(monoFonts())}, ${DEFAULT_MONO_FONT_FAMILY}`
+    return `${buildFontFamily(tier.fonts)}, ${DEFAULT_MONO_FONT_FAMILY}`
   }
 
   const uiFontFamily = () => {
-    if (!uiFontCustomEnabled() || uiFonts().length === 0) {
+    const tier = uiFonts()
+    if (!tier.enabled || tier.fonts.length === 0) {
       return undefined
     }
-    return buildFontFamily(uiFonts())
-  }
-
-  const reload = async () => {
-    try {
-      const resp = await userClient.getPreferences({})
-      if (resp.preferences) {
-        const p = resp.preferences
-        setAccountTheme((p.theme || 'system') as ThemePreference)
-        setAccountTerminalTheme((p.terminalTheme || 'match-ui') as TerminalThemePreference)
-        setAccountUiFontCustomEnabled(p.uiFontCustomEnabled)
-        setAccountMonoFontCustomEnabled(p.monoFontCustomEnabled)
-        setUiFonts(p.uiFonts)
-        setMonoFonts(p.monoFonts)
-        setAccountDiffView(diffViewFromProto(p.diffView))
-        setAccountTurnEndSound(turnEndSoundFromProto(p.turnEndSound))
-        setAccountTurnEndSoundVolume(p.turnEndSoundVolume ?? 100)
-        setAccountDebugLogging(p.debugLogging)
-        if (p.customKeybindingsJson) {
-          try {
-            const parsed = JSON.parse(p.customKeybindingsJson)
-            setCustomKeybindingsSignal(Array.isArray(parsed) ? parsed as UserKeybindingOverride[] : [])
-          }
-          catch {
-            setCustomKeybindingsSignal([])
-          }
-        }
-        else {
-          setCustomKeybindingsSignal([])
-        }
-      }
-    }
-    catch {
-      // Ignore errors on load
-    }
-  }
-
-  // Serialize saves so concurrent callers don't clobber each other.
-  // If a save is requested while one is in flight, we queue a re-save
-  // that will read the latest signal values when it runs.
-  let saveInFlight = false
-  let saveQueued = false
-
-  const saveAccountPreferences = async () => {
-    if (saveInFlight) {
-      saveQueued = true
-      return
-    }
-    saveInFlight = true
-    try {
-      await userClient.updatePreferences({
-        theme: accountTheme(),
-        terminalTheme: accountTerminalTheme(),
-        uiFontCustomEnabled: accountUiFontCustomEnabled(),
-        monoFontCustomEnabled: accountMonoFontCustomEnabled(),
-        uiFonts: uiFonts(),
-        monoFonts: monoFonts(),
-        diffView: diffViewToProto(accountDiffView()),
-        turnEndSound: turnEndSoundToProto(accountTurnEndSound()),
-        turnEndSoundVolume: accountTurnEndSoundVolume(),
-        debugLogging: accountDebugLogging(),
-        customKeybindingsJson: customKeybindings().length > 0 ? JSON.stringify(customKeybindings()) : '',
-      })
-    }
-    finally {
-      saveInFlight = false
-      if (saveQueued) {
-        saveQueued = false
-        saveAccountPreferences().catch(() => {})
-      }
-    }
-  }
-
-  const setCustomKeybindings = (value: UserKeybindingOverride[]) => {
-    setCustomKeybindingsSignal(value)
-    saveAccountPreferences().catch(() => {})
+    return buildFontFamily(tier.fonts)
   }
 
   createEffect(() => {
-    setDebugEnabled(debugLogging())
+    setDebugEnabled(dualSettings.debugLogging.resolved())
   })
 
   onMount(() => {
-    reload()
+    reload().catch((err) => {
+      // The provider mounts before the session is guaranteed, so a failed
+      // load here is ORDINARY: it keeps the defaults and the next reload()
+      // converges. Debug level, not warn — an expected outcome on the mount
+      // path must not write to the console on every unauthenticated page
+      // view.
+      //
+      // `reload` already recorded it in `accountLoadError`, and the record is
+      // what the dialog reads: the store there reads this already-fetched
+      // reply rather than asking again, so it never sees an error of its
+      // own. Every account setting keeps its built-in default until a load
+      // succeeds, and `accountDescriptors` stays empty, so the dialog builds
+      // no account ROW either and says why where the rows would have been.
+      //
+      // This is the only load this provider issues on its own. Two callers
+      // ask again, and each owns a different failure:
+      // `useReloadPreferencesOnIdentityChange` reloads whenever the
+      // signed-in identity changes, which is what covers the user who signs
+      // in through the form after this attempt answered Unauthenticated;
+      // `PreferencesDialog` retries on open, which covers a failure with no
+      // identity change behind it (an unreachable hub, a timeout, a 500).
+      log.debug('account settings load failed; using defaults until the next reload', err)
+    })
   })
 
   return (
     <PreferencesContext.Provider value={{
-      theme,
-      terminalTheme,
-      debugLogging,
+      // The RESOLVED value of each dual preference, which is what the app
+      // at large reads. Its tiers travel together under `dual` below, so a
+      // new key adds one entry there rather than one line per tier here.
+      theme: dualSettings.theme.resolved,
+      terminalTheme: dualSettings.terminalTheme.resolved,
+      uiFonts,
+      monoFonts,
+      diffView: dualSettings.diffView.resolved,
+      turnEndSound: dualSettings.turnEndSound.resolved,
+      turnEndSoundVolume: dualSettings.turnEndSoundVolume.resolved,
+      debugLogging: dualSettings.debugLogging.resolved,
+
+      // Derived from the same record the settings are built from, so a
+      // tier this literal could forget to wire cannot exist.
+      dual: dualSettings,
+
+      customKeybindings: keybindings.account,
+      setCustomKeybindings: keybindings.setAccount,
+
+      monoFontFamily,
+      uiFontFamily,
+
       expandAgentThoughts,
       setExpandAgentThoughts,
       showHiddenMessages,
@@ -396,53 +911,24 @@ export const PreferencesProvider: ParentComponent = (props) => {
       setRevealAfterDownload,
       enterKeyMode,
       setEnterKeyMode,
-      customKeybindings,
-      setCustomKeybindings,
-      uiFontCustomEnabled,
-      monoFontCustomEnabled,
-      uiFonts,
-      monoFonts,
-      monoFontFamily,
-      uiFontFamily,
-      diffView,
-      turnEndSound,
-      turnEndSoundVolume,
-      browserTheme,
-      setBrowserTheme,
-      browserTerminalTheme,
-      setBrowserTerminalTheme,
-      browserDiffView,
-      setBrowserDiffView,
-      browserTurnEndSound,
-      setBrowserTurnEndSound,
-      browserTurnEndSoundVolume,
-      setBrowserTurnEndSoundVolume,
-      browserDebugLogging,
-      setBrowserDebugLogging,
+      terminalRenderer,
+      setTerminalRenderer,
+      preferredEditorId,
+      setPreferredEditorId,
+      directoryPickerShowHidden,
+      setDirectoryPickerShowHidden,
       terminalOsNotifications,
       setTerminalOsNotifications,
       showComposerStatusBar,
       setShowComposerStatusBar,
-      accountTheme,
-      accountTerminalTheme,
-      accountUiFontCustomEnabled,
-      accountMonoFontCustomEnabled,
-      accountDiffView,
-      accountTurnEndSound,
-      accountTurnEndSoundVolume,
-      accountDebugLogging,
-      setAccountTheme,
-      setAccountTerminalTheme,
-      setAccountUiFontCustomEnabled,
-      setAccountMonoFontCustomEnabled,
-      setAccountDiffView,
-      setAccountTurnEndSound,
-      setAccountTurnEndSoundVolume,
-      setAccountDebugLogging,
-      setUiFonts,
-      setMonoFonts,
-      saveAccountPreferences,
+
+      accountCustomized,
+      accountDescriptors,
+      accountLoadError,
+      updateUserSetting,
+      resetUserSetting,
       reload,
+      batchBrowserPrefWrites,
     }}
     >
       {props.children}

@@ -1,10 +1,8 @@
 package streamevents
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +14,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // fakeHandle is an in-memory Handle for subscription tests.
@@ -1690,10 +1689,7 @@ func TestSubscription_BudgetExhaustionLogsOnce(t *testing.T) {
 	sub.mu.Unlock()
 
 	// Capture slog output during the ack dispatches.
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	defer slog.SetDefault(prev)
+	buf := testutil.CaptureDefaultLogger(t)
 
 	// Drive several LOOKUP_FAILED acks post-exhaustion. Only the FIRST must log.
 	// Each Warn is emitted on the dispatch goroutine before pushFrame returns,

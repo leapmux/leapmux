@@ -1,6 +1,5 @@
 import type { DetectedEditor } from '~/api/platformBridge'
 import { platformBridge } from '~/api/platformBridge'
-import { KEY_PREFERRED_EDITOR, localStorageGet, localStorageSet } from './browserStorage'
 import { createIdentityCache } from './identityCache'
 import { createInflightCache } from './inflightCache'
 
@@ -75,30 +74,38 @@ export function _resetEditorCacheForTests(): void {
   editorIdentity.clear()
 }
 
-export function getPreferredEditorId(): string | undefined {
-  return localStorageGet<string>(KEY_PREFERRED_EDITOR)
-}
-
-export function setPreferredEditorId(id: string): void {
-  localStorageSet(KEY_PREFERRED_EDITOR, id)
-}
+// NO storage accessors for the preferred editor live here. The pin has one
+// owner — the reactive preference in `~/context/PreferencesContext` — and a
+// second, non-reactive reader/writer beside it is what put the editor menu
+// and the editor a launch actually opened out of step. `resolvePreferredEditor`
+// takes the pin and the writer as arguments for the same reason.
 
 /**
- * Pick the editor to launch from a fresh detection list: the user's MRU if
- * still detected, otherwise the first available — and persist the new MRU
- * so subsequent invocations are stable. Returns undefined when the list is
- * empty (callers can decide whether to also clear in-memory MRU state).
+ * Pick the editor to launch from a fresh detection list: the current pin if
+ * it is still detected, otherwise the first available — and persist the new
+ * pin so later invocations are stable. Returns undefined when the list is
+ * empty (callers can decide whether to also clear their in-memory state).
  *
  * Used by both the keyboard-shortcut launch path and the post-refresh
  * fallback inside the menu component. Centralized here so they cannot
  * disagree about which editor a "default launch" picks.
+ *
+ * The caller supplies BOTH the current pin and the writer, so this function
+ * touches no storage at all. Reading storage here while the caller wrote
+ * through the reactive preference put the two out of step: another tab's
+ * write reached storage but not this tab's signal, so the menu label and
+ * the editor a launch actually opened disagreed for the life of the page.
+ * Both directions now come from the one source the caller already holds.
  */
-export function resolvePreferredEditor(editors: DetectedEditor[]): DetectedEditor | undefined {
+export function resolvePreferredEditor(
+  editors: DetectedEditor[],
+  pinned: string | undefined,
+  persist: (id: string) => void,
+): DetectedEditor | undefined {
   if (editors.length === 0)
     return undefined
-  const mru = getPreferredEditorId()
-  const target = editors.find(e => e.id === mru) ?? editors[0]
-  if (target.id !== mru)
-    setPreferredEditorId(target.id)
+  const target = editors.find(e => e.id === pinned) ?? editors[0]
+  if (target.id !== pinned)
+    persist(target.id)
   return target
 }

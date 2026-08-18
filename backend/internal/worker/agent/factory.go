@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -463,7 +464,13 @@ func IsEffortAutoTransition(newEffort, curEffort string) bool {
 // ListAvailableProviders returns providers whose binary is found in the
 // user's shell environment. Checks run concurrently to minimize latency
 // when login shells are used (each check reads shell profiles).
-func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell bool) []leapmuxv1.AgentProvider {
+//
+// The second return is false when the scan did not finish under ctx — at
+// least one probe was cut short, so the list is NOT evidence of absence.
+// The caller must treat that as a retryable failure, not as "none
+// installed": probes that DID complete are cached, so a retry only
+// re-runs what was cut short.
+func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell bool) ([]leapmuxv1.AgentProvider, bool) {
 	type check struct {
 		provider leapmuxv1.AgentProvider
 		binaries []string
@@ -476,20 +483,49 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 	}
 
 	found := make([]bool, len(checks))
+	// settled[i] reports whether every probe this check ran ESTABLISHED
+	// something. A check that never found its binary and whose last probe
+	// proved nothing is not evidence of absence.
+	settled := make([]bool, len(checks))
 	var wg sync.WaitGroup
 	for i, c := range checks {
 		wg.Add(1)
 		go func(idx int, binaries []string) {
 			defer wg.Done()
+			settled[idx] = true
 			for _, b := range binaries {
-				if checkBinaryAvailable(ctx, shellPath, useLoginShell, b) {
+				available, conclusive := checkBinaryAvailable(ctx, shellPath, useLoginShell, b)
+				if available {
 					found[idx] = true
 					return
+				}
+				if !conclusive {
+					settled[idx] = false
 				}
 			}
 		}(i, c.binaries)
 	}
 	wg.Wait()
+
+	// The scan is complete only when every probe it ran answered.
+	//
+	// An expired ctx is ONE way a probe proves nothing: exec.CommandContext
+	// killed its shell, and every cache write below would freeze a killed
+	// probe as "absent" for the worker's lifetime. But it is not the only
+	// way — probeBinary also reports "inconclusive" for a $SHELL that
+	// cannot start, a missing interpreter, EACCES, a fork failure under
+	// load, and a login profile that exits non-zero before the probe runs.
+	// Reading ctx alone made all of those answer with an AUTHORITATIVE
+	// empty list, so a user with a broken shell saw "no agent providers
+	// installed" with no retry, although every CLI was installed.
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	for i := range checks {
+		if !found[i] && !settled[i] {
+			return nil, false
+		}
+	}
 
 	var result []leapmuxv1.AgentProvider
 	for i, c := range checks {
@@ -498,7 +534,7 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
-	return result
+	return result, true
 }
 
 // resolveBinaryName returns the first binary from candidates that is
@@ -507,7 +543,7 @@ func ListAvailableProviders(ctx context.Context, shellPath string, useLoginShell
 // "command not found" error rather than silently picking an alias.
 func resolveBinaryName(ctx context.Context, shellPath string, loginShell bool, candidates []string) string {
 	for _, c := range candidates {
-		if checkBinaryAvailable(ctx, shellPath, loginShell, c) {
+		if available, _ := checkBinaryAvailable(ctx, shellPath, loginShell, c); available {
 			return c
 		}
 	}
@@ -519,10 +555,14 @@ func resolveBinaryName(ctx context.Context, shellPath string, loginShell bool, c
 // commonly hundreds of milliseconds — so repeat calls from
 // ListAvailableProviders and resolveBinaryName share results for the
 // worker's lifetime. Installed binaries don't appear or disappear within
-// a session, so no TTL is needed.
+// a session, so no TTL is needed — but only a probe that RAN TO COMPLETION
+// establishes anything: one killed by an expired context proves neither
+// presence nor absence, and caching its result would freeze a load-induced
+// timeout as "not installed" for the rest of the session (the new-agent
+// button then stays disabled no matter how idle the machine becomes).
 var (
 	binaryAvailabilityCache   sync.Map // binaryAvailabilityKey -> bool
-	binaryAvailabilitySingles sync.Map // binaryAvailabilityKey -> *sync.Once
+	binaryAvailabilityMutexes sync.Map // binaryAvailabilityKey -> *sync.Mutex
 )
 
 type binaryAvailabilityKey struct {
@@ -531,20 +571,58 @@ type binaryAvailabilityKey struct {
 	binaryName string
 }
 
-func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool, binaryName string) bool {
+// checkBinaryAvailable answers whether one binary resolves, and whether
+// that answer ESTABLISHES anything.
+//
+// The second result is not optional bookkeeping: a caller that reports an
+// authoritative "not installed" needs to know the difference between a
+// shell that ran and said no, and a shell that never ran at all. A cached
+// answer is conclusive by construction, because only a conclusive probe
+// is ever cached.
+func checkBinaryAvailable(ctx context.Context, shellPath string, loginShell bool, binaryName string) (available, conclusive bool) {
 	key := binaryAvailabilityKey{shellPath, loginShell, binaryName}
 	if v, ok := binaryAvailabilityCache.Load(key); ok {
-		return v.(bool)
+		return v.(bool), true
 	}
-	onceAny, _ := binaryAvailabilitySingles.LoadOrStore(key, &sync.Once{})
-	onceAny.(*sync.Once).Do(func() {
-		binaryAvailabilityCache.Store(key, probeBinary(ctx, shellPath, loginShell, binaryName))
-	})
-	v, _ := binaryAvailabilityCache.Load(key)
-	return v.(bool)
+	// Single-flight per key. A mutex rather than the previous sync.Once:
+	// once an attempt ends without caching (deadline-killed probe), the
+	// next caller must be able to probe again, and a spent Once cannot.
+	muAny, _ := binaryAvailabilityMutexes.LoadOrStore(key, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	if v, ok := binaryAvailabilityCache.Load(key); ok {
+		return v.(bool), true
+	}
+	available, conclusive = probeBinary(ctx, shellPath, loginShell, binaryName)
+	if conclusive {
+		binaryAvailabilityCache.Store(key, available)
+	}
+	// An inconclusive probe's false is this call's best answer but never a
+	// cached one — the next caller re-probes with its own deadline.
+	return available, conclusive
 }
 
-func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryName string) bool {
+// probeBinary asks the shell whether binaryName resolves, and reports
+// whether the answer ESTABLISHES anything.
+//
+// The two are not the same, and conflating them is what froze a broken
+// environment as "not installed" for the worker's lifetime. `cmd.Run()`
+// returns an error for four different reasons, and only one of them is an
+// answer:
+//
+//   - the shell ran and reported the binary absent (ExitError) — conclusive;
+//   - the shell could not START at all (a $SHELL that is not executable, a
+//     missing interpreter, EACCES, fork failure under load) — proves
+//     nothing about the binary;
+//   - a login profile exited non-zero before reaching the probe — likewise;
+//   - ctx expired and CommandContext killed the process — likewise, and
+//     note the process reports an ExitError ("signal: killed") rather than
+//     the context error, so ctx must be checked separately.
+//
+// $SHELL reaches here unvalidated (terminal.ResolveDefaultShell does no
+// LookPath), so the start-failure case is reachable, not theoretical.
+func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryName string) (available, conclusive bool) {
 	shellName := terminal.ShellBaseName(shellPath)
 
 	var inner, flag string
@@ -573,5 +651,14 @@ func probeBinary(ctx context.Context, shellPath string, loginShell bool, binaryN
 	cmd := exec.CommandContext(ctx, shellPath, args...)
 	cmd.Dir = os.TempDir()
 	procutil.HideConsoleWindow(cmd)
-	return cmd.Run() == nil
+	err := cmd.Run()
+	if err == nil {
+		return true, ctx.Err() == nil
+	}
+	// Only a real exit status means the shell ran and answered. Anything
+	// else (exec.Error, a permission fault, a fork failure) is a broken
+	// environment, and a killed process reports an ExitError too — so the
+	// context still has to be clean for the status to mean anything.
+	var exitErr *exec.ExitError
+	return false, errors.As(err, &exitErr) && ctx.Err() == nil
 }

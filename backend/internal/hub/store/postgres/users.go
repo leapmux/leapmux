@@ -136,6 +136,11 @@ func (s *userStore) GetPrefs(ctx context.Context, id string) (string, error) {
 	return prefs, mapErr(err)
 }
 
+func (s *userStore) GetPrefsForUpdate(ctx context.Context, id string) (string, error) {
+	prefs, err := s.conn.q.GetUserPrefsForUpdate(ctx, id)
+	return prefs, mapErr(err)
+}
+
 func (s *userStore) HasAny(ctx context.Context) (bool, error) {
 	ok, err := s.conn.q.HasAnyUser(ctx)
 	if err != nil {

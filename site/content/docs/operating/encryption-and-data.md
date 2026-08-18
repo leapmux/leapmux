@@ -12,7 +12,7 @@ It covers two distinct encryption systems that are easy to confuse:
 - **Encryption at rest** — the Hub encrypts a small set of stored secrets (OAuth client secrets and OAuth tokens) using a local **keystore** (the `encryption.key` file). This chapter is mostly about this.
 - **End-to-end encryption (E2EE)** — all Frontend-to-Worker traffic is encrypted so the Hub can route it but never read it. That protocol is covered in [Security & Threat Model](/docs/operating/security/); this chapter only touches the Worker key material you must back up.
 
-For where these settings live and how to set them, see [Configuration](/docs/operating/configuration/). For the full `leapmux admin` command surface, see [Admin CLI](/docs/operating/admin-cli/).
+For where these settings live and how to set them, see [Configuration](/docs/operating/configuration/). For key rotation commands, see [Recovery](/docs/operating/recover/).
 
 ## What is stored, and what is encrypted
 
@@ -45,7 +45,7 @@ The keystore loads its versioned key ring from `encryption.key` (highest version
 
 The key lives in a separate file from the database, so a copy of the database alone leaves the encrypted OAuth secrets readable only as ciphertext — which is why the two must be backed up together.
 
-API-token and delegation-token secrets are **not** encrypted — they are HMAC-SHA256 hashed with a dedicated, stable pepper that is independent of the encryption key ring, so the database never contains a recoverable token. See [Accounts & Authentication](/docs/using/accounts/) and [Admin CLI](/docs/operating/admin-cli/) for token management.
+API-token and delegation-token secrets are **not** encrypted — they are HMAC-SHA256 hashed with a dedicated, stable pepper that is independent of the encryption key ring, so the database never contains a recoverable token. See [Accounts & Authentication](/docs/using/accounts/) and the [Remote Control CLI](/docs/operating/control-cli/) for token management.
 
 ## The encryption key file (`encryption.key`)
 
@@ -76,7 +76,8 @@ There is nothing to configure to turn encryption on. Running the Hub once is eno
 ```bash
 leapmux hub
 # On first start, the Hub generates ~/.config/leapmux/hub/encryption.key
-# and logs: "encryption keystore loaded" active_version=1 versions=1
+# and logs that it loaded the keystore, with the active version and the
+# number of retained versions.
 ```
 
 ## Key rotation
@@ -85,10 +86,10 @@ Rotation generates a new active key version. Existing ciphertext stays readable 
 
 | Command | Summary |
 | --- | --- |
-| `leapmux admin encryption-key rotate` | Generate and add a new encryption key version |
-| `leapmux admin encryption-key reencrypt` | Re-encrypt all secrets with the active key |
-| `leapmux admin encryption-key remove --version <N>` | Remove an old encryption key version |
-| `leapmux admin encryption-key rotate-pepper --yes` | Regenerate the token pepper (invalidates all API/delegation tokens) |
+| `leapmux recover encryption-key rotate` | Generate and add a new encryption key version |
+| `leapmux recover encryption-key reencrypt` | Re-encrypt all secrets with the active key |
+| `leapmux recover encryption-key remove --version <N>` | Remove an old encryption key version |
+| `leapmux recover encryption-key rotate-pepper --yes` | Regenerate the token pepper (invalidates all API/delegation tokens) |
 
 These commands do **not** all take the same flags, because they touch different things:
 
@@ -99,7 +100,7 @@ These commands do **not** all take the same flags, because they touch different 
 | `remove` | `--data-dir`, `--config`, `--version` (required) | The local key file **and** the Hub database |
 | `reencrypt` | `--data-dir`, `--config` | The local key file **and** the Hub database |
 
-`reencrypt` and `remove` open the database, so both accept `--config` (point it at the same config file the Hub uses, so they target the same backend). `remove` reads the database to check whether any ciphertext still depends on the version being removed (see the runbook warning below). `rotate` and `rotate-pepper` work purely on the local key file and accept `--data-dir` only — passing `--config` to either makes the command fail flag parsing. See [Admin CLI](/docs/operating/admin-cli/) for the full admin flag reference.
+`reencrypt` and `remove` open the database, so both accept `--config` (point it at the same config file the Hub uses, so they target the same backend). `remove` reads the database to check whether any ciphertext still depends on the version being removed (see the runbook warning below). `rotate` and `rotate-pepper` work purely on the local key file and accept `--data-dir` only — passing `--config` to either makes the command fail flag parsing. See [Recovery](/docs/operating/recover/) for the full flag reference.
 
 > **Note:** `rotate` and `rotate-pepper` only read and rewrite the local key file — they do not touch the database, which is why they take no `--config`. `reencrypt` and `remove` open the database (and, like any store-opening command, run pending migrations first).
 
@@ -110,9 +111,9 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
 1. **Add a new key version.**
 
    ```bash
-   leapmux admin encryption-key rotate
+   leapmux recover encryption-key rotate
    # Added encryption key version 2.
-   # Restart the hub, then run: leapmux admin encryption-key reencrypt
+   # Restart the hub, then run: leapmux recover encryption-key reencrypt
    ```
 
    This generates a random 32-byte key as version 2, makes it active, and rewrites `encryption.key`. Existing data is untouched and still decrypts using version 1.
@@ -127,7 +128,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
 3. **Re-encrypt existing secrets to the new version.**
 
    ```bash
-   leapmux admin encryption-key reencrypt
+   leapmux recover encryption-key reencrypt
    # Re-encrypted 7 secrets to key version 2.
    ```
 
@@ -136,7 +137,7 @@ Follow these steps in order. The `remove` step is guarded — it refuses to dele
 4. **(Optional) Remove the retired version** once nothing references it, then restart the Hub.
 
    ```bash
-   leapmux admin encryption-key remove --version 1
+   leapmux recover encryption-key remove --version 1
    # Removed encryption key version 1.
    # Restart the hub to apply.
    sudo systemctl restart leapmux-hub
@@ -153,13 +154,13 @@ The pepper used to hash API-token and delegation-token secrets is a **dedicated,
 To deliberately invalidate **every** API token and delegation token — for example after a suspected keystore compromise — regenerate the pepper:
 
 ```bash
-leapmux admin encryption-key rotate-pepper --yes
+leapmux recover encryption-key rotate-pepper --yes
 # Regenerated the API-token pepper.
 # All existing API tokens and delegation tokens are now invalid.
-# Restart the hub to apply, then re-issue API tokens with: leapmux admin api-token issue
+# Restart the hub to apply, then re-issue API tokens with: leapmux control admin api-token issue
 ```
 
-Token hashes are one-way, so regenerating the pepper cannot migrate existing tokens — it invalidates them all at once, and they must be reissued (`leapmux admin api-token issue`) or re-authenticated. The command requires `--yes` and takes effect on the next Hub restart. See [Admin CLI](/docs/operating/admin-cli/) for `api-token` and `delegation-token` management.
+Token hashes are one-way, so regenerating the pepper cannot migrate existing tokens — it invalidates them all at once, and they must be reissued (`leapmux control admin api-token issue`) or re-authenticated. The command requires `--yes` and takes effect on the next Hub restart. See the [Remote Control CLI](/docs/operating/control-cli/) for `api-token` and `delegation-token` management.
 
 ## Databases
 
@@ -194,35 +195,35 @@ LeapMux uses **goose** for schema migrations, and migrations are applied **autom
 
 Each backend embeds its own migrations. The current schema is a single initial migration, so the latest version is `1`.
 
-The `leapmux admin db` commands let you inspect and (where supported) control migrations:
+The `leapmux recover db` commands let you inspect and (where supported) control migrations:
 
 | Command | Summary | Notes |
 | --- | --- | --- |
-| `leapmux admin db path` | Print the database path | Always prints `{data_dir}/hub.db`. Because `db path` takes no `--config`, it cannot load the config file, so it never reflects a custom `storage.sqlite.path` and does **not** consult `storage.type` — it prints the default SQLite path even when a SQL backend is configured. |
-| `leapmux admin db version` | Show current schema version | Opens the store (which applies pending migrations), then prints current and latest versions. |
-| `leapmux admin db migrate` | Run schema migrations | `--version <int64>` selects a target (default `-1` = latest). |
+| `leapmux recover db path` | Print the database path | Always prints `{data_dir}/hub.db`. Because `db path` takes no `--config`, it cannot load the config file, so it never reflects a custom `storage.sqlite.path` and does **not** consult `storage.type` — it prints the default SQLite path even when a SQL backend is configured. |
+| `leapmux recover db version` | Show current schema version | Opens the store (which applies pending migrations), then prints current and latest versions. |
+| `leapmux recover db migrate` | Run schema migrations | `--version <int64>` selects a target (default `-1` = latest). |
 
 Example:
 
 ```bash
-leapmux admin db version
+leapmux recover db version
 # Current schema version: 1
 # Latest available version: 1
 
-leapmux admin db migrate
+leapmux recover db migrate
 # Current schema version: 1
 # Latest available version: 1
 # Already at latest version.
 ```
 
-Because opening the store already migrates up to the latest version, an explicit `migrate` to the latest is mostly a confirmation. Supplying an explicit `--version` lower than the current schema attempts a **down**-migration to that version (where the backend's migrations support it). Targeting a specific version prints `Migrating to version N...` and then the new current version.
+Because opening the store already migrates up to the latest version, an explicit `migrate` to the latest is mostly a confirmation. Supplying an explicit `--version` lower than the current schema attempts a **down**-migration to that version (where the backend's migrations support it). Targeting a specific version reports the version it migrates to, and then the new current version.
 
 ```bash
 # Target a specific version (down-migration support depends on the backend)
-leapmux admin db migrate --version 1
+leapmux recover db migrate --version 1
 ```
 
-Like `encryption-key reencrypt`, both `admin db version` and `admin db migrate` open the store, so both accept `--data-dir` and `--config`; pass `--config` so the command targets the same backend the Hub uses. `admin db path` does not open the store, so it accepts `--data-dir` only. See [Admin CLI](/docs/operating/admin-cli/).
+Like `encryption-key reencrypt`, both `recover db version` and `recover db migrate` open the store, so both accept `--data-dir` and `--config`; pass `--config` so the command targets the same backend the Hub uses. `recover db path` does not open the store, so it accepts `--data-dir` only. See [Recovery](/docs/operating/recover/).
 
 ## Backup & restore
 
@@ -294,5 +295,6 @@ The handshake primitives, Worker identity pinning (TOFU), and the key-change dia
 
 - [Configuration](/docs/operating/configuration/) — config precedence, the full storage-key reference, data directories, and listen addresses.
 - [Security & Threat Model](/docs/operating/security/) — the E2EE protocol, the Hub-as-relay trust boundary, Worker TOFU pinning, and the solo-mode caveat.
-- [Admin CLI](/docs/operating/admin-cli/) — the complete `leapmux admin` reference, including `encryption-key`, `db`, and token commands.
+- [Recovery](/docs/operating/recover/) — the offline break-glass commands (`bootstrap`, `password`, `encryption-key`, `db`).
+- [Remote Control CLI](/docs/operating/control-cli/) — the online `control admin` reference, including token commands.
 - [Managing Workers](/docs/operating/managing-workers/) — registering and approving Workers, registration keys, and key-pin handling.

@@ -199,13 +199,13 @@ A few key names also render specially: `Escape` shows as `Esc`, arrows as `← �
 
 ## Customizing keybindings
 
-> **Warning:** There is currently **no supported way to customize keybindings.** The engine reads per-account overrides from a `custom_keybindings_json` field, but nothing in the product writes that field: the Preferences dialog has no keybinding panel (its sections cover appearance, fonts, and debug logging — see [Settings & Preferences](/docs/using/settings/)), and there is no remote-control or admin command for it either. The override format below documents the mechanism for completeness, not a workflow you can perform today.
+Customize bindings in the **Preferences → Keyboard Shortcuts** category: a table of every command with its binding and source (Default or Custom). Click a binding to capture a new chord; a chord already bound in the same context is refused with the conflicting command's name; **Reset** restores the default. Overrides are stored account-level (the `keybindings` user setting, capped at 200 entries), so they follow you to every device — see [Settings & Preferences](/docs/using/settings/#keyboard-shortcuts). The override format below is what the editor writes.
 
 LeapMux's shortcut engine is built to rebind, add, or remove shortcuts through **account-level overrides** stored as JSON. The rest of this section describes that format and how the engine merges it with the defaults.
 
 ### Where overrides live
 
-When present, overrides are read from your user-preferences record in the Hub database (field `custom_keybindings_json`), not from browser storage. Because the field is account-level, overrides would follow you across browsers and devices when you sign in to the same account. The value is a JSON-encoded array of override objects:
+Overrides live in your account settings on the Hub (the `keybindings` key), not in browser storage, so they follow you across browsers and devices when you sign in to the same account. The value is a JSON-encoded array of override objects:
 
 ```json
 [

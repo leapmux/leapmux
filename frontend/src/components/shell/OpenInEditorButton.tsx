@@ -3,16 +3,15 @@ import type { DetectedEditor } from '~/api/platformBridge'
 import Check from 'lucide-solid/icons/check'
 import ChevronDown from 'lucide-solid/icons/chevron-down'
 import RefreshCw from 'lucide-solid/icons/refresh-cw'
-import { createMemo, createResource, createSignal, For, getOwner, onMount, runWithOwner, Show } from 'solid-js'
+import { createMemo, createResource, createSignal, For, getOwner, runWithOwner, Show } from 'solid-js'
 import { getRuntimeState, platformBridge } from '~/api/platformBridge'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { EditorIcon } from '~/components/common/EditorIcons'
 import { Tooltip } from '~/components/common/Tooltip'
+import { usePreferences } from '~/context/PreferencesContext'
 import {
-  getPreferredEditorId,
   loadDetectedEditors,
   resolvePreferredEditor,
-  setPreferredEditorId,
 } from '~/lib/externalEditors'
 import { createLogger } from '~/lib/logger'
 import { shortcutHint } from '~/lib/shortcuts/display'
@@ -64,10 +63,13 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
 
   const [refreshing, setRefreshing] = createSignal(false)
 
-  const [preferredId, setPreferredId] = createSignal<string | undefined>(undefined)
-  onMount(() => {
-    setPreferredId(getPreferredEditorId())
-  })
+  // The MRU editor is a reactive preference (the settings dialog edits it),
+  // so it comes from the context rather than externalEditors' storage-only
+  // get/set. externalEditors keeps the detection cache and the non-reactive
+  // fallback the keyboard-shortcut launch path uses.
+  const prefs = usePreferences()
+  const preferredId = prefs.preferredEditorId
+  const setPreferredId = prefs.setPreferredEditorId
 
   const [menuOpen, setMenuOpen] = createSignal(false)
 
@@ -94,7 +96,6 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
     if (!dir)
       return
     setPreferredId(id)
-    setPreferredEditorId(id)
     platformBridge.openInEditor(id, dir).catch((err: unknown) => {
       log.warn('open_in_editor failed', { id, dir, err })
     })
@@ -105,7 +106,6 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
     // The user runs the editor by clicking the main face afterwards (or
     // pressing the keyboard shortcut).
     setPreferredId(id)
-    setPreferredEditorId(id)
     setMenuOpen(false)
   }
 
@@ -145,14 +145,17 @@ export const OpenInEditorButton: Component<OpenInEditorButtonProps> = (props) =>
           await refetchEditors()
       }
       // If the MRU points at an editor that's no longer detected, fall
-      // back to the first remaining one. Shared resolvePreferredEditor
-      // also persists the new MRU to localStorage so the keyboard
-      // shortcut and the menu agree on which editor "default launch"
-      // picks. Empty list → clear in-memory MRU only; leave localStorage
-      // alone so the user's choice returns when they reinstall it.
+      // back to the first remaining one. `resolvePreferredEditor` persists
+      // through the reactive setter, so the keyboard shortcut and the menu
+      // agree on which editor "default launch" picks.
+      //
+      // An EMPTY list changes nothing. Detection can come back empty for a
+      // reason that is not "the user uninstalled it" — a transient probe
+      // failure is enough — and clearing the pin then would throw away a
+      // choice that must return when the editor does.
       const mru = preferredId()
-      if (mru && !fresh.some(ed => ed.id === mru))
-        setPreferredId(resolvePreferredEditor(fresh)?.id)
+      if (mru && fresh.length > 0 && !fresh.some(ed => ed.id === mru))
+        resolvePreferredEditor(fresh, mru, setPreferredId)
     }
     catch (err) {
       log.warn('refresh editors failed', err)

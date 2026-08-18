@@ -1,8 +1,12 @@
 // Package bgtask holds the provider-neutral model for the background-task
 // registry (the "Background tasks" sidebar section). Providers feed rows to the
 // worker OutputSink via neutral Upsert/Close primitives (see OutputSink);
-// this package owns ONLY the in-memory model and the proto / DB-column
-// conversions. There is no reducer here -- unlike agent_todos, the provider
+// this package owns the in-memory model, the proto / DB-column conversions,
+// and the neutral normalization rules that every provider's write meets
+// (SanitizeRowKey, Upsert.CleanTitle, Item.PreservingBlanksFrom). Each rule
+// lives here so the registry applier and the provider tests' recording sink
+// share one copy and cannot drift.
+// There is no reducer here -- unlike agent_todos, the provider
 // integrations translate their native events directly into sink calls, so the
 // shared package stays free of provider-specific names and shapes.
 //
@@ -15,6 +19,7 @@ import (
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // MaxTasks caps how many rows OF EACH KIND an agent's background-task registry
@@ -201,6 +206,42 @@ type Upsert struct {
 	Description    string
 	ActiveForm     string
 	Status         Status
+}
+
+// CleanTitle returns a copy of u whose Title meets the rule that every title
+// column in the worker shares: validate.CleanName cuts the title to a byte
+// limit, then strips the control characters and " \ $ %. The registry applier
+// calls it, and so does the recording sink the provider tests assert against,
+// so the two cannot disagree about what a provider's title becomes.
+//
+// A row that sets TitleIsCommand loses the shell templating characters with
+// the rest: `npm test --grep "$FOO"` reads as `npm test --grep FOO`. That is
+// the accepted cost of one rule for every title column. A registry title is a
+// LABEL for a command that already runs somewhere else. It is not a command to
+// copy back and run.
+//
+// A Title that the rule empties says what a blank Title says: this upsert
+// carries no usable title. So it takes the same answer -- the row keeps the
+// title it already holds (see PreservingBlanksFrom), and a new row is born
+// untitled. A placeholder written here would overwrite a real title with a
+// name the model never wrote. A provider that has a better fallback applies it
+// BEFORE it calls the sink, the way acpBridge's terminal/create falls back to
+// "shell".
+//
+// TitleIsCommand travels with the title it describes, so an emptied title
+// clears it. PreservingBlanksFrom restores the stored pair on the update path;
+// on the insert path there is no pair to restore, and a blank title set as
+// code is a blank in the monospace face.
+//
+// validate.CleanName is idempotent, so a caller that cleaned the title already
+// (EnsureChildAgent does, for the `agents` row it writes first) passes it
+// through byte-identical.
+func (u Upsert) CleanTitle() Upsert {
+	u.Title = validate.CleanName(u.Title)
+	if u.Title == "" {
+		u.TitleIsCommand = false
+	}
+	return u
 }
 
 // ToItem projects an Upsert onto the Item it describes, leaving the fields the

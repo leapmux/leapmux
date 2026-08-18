@@ -404,7 +404,6 @@ CREATE TABLE api_tokens (
     refresh_hash                  VARBINARY(64),
     previous_refresh_hash         VARBINARY(64),
     previous_refresh_expires_at   DATETIME(3),
-    scope                         VARCHAR(255) NOT NULL DEFAULT 'remote:*',
     created_at                    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     auth_generation               BIGINT NOT NULL DEFAULT 0,
     last_used_at                  DATETIME(3),

@@ -130,6 +130,13 @@ DELETE FROM users WHERE id IN (SELECT id FROM to_delete);
 -- name: GetUserPrefs :one
 SELECT prefs FROM users WHERE id = $1 AND deleted_at IS NULL;
 
+-- Locks the row for the user-preferences write path's read-modify-write
+-- merge; without it two concurrent per-key updates both read the same
+-- base and the second commit erases the first's key. Callers must hold
+-- a transaction.
+-- name: GetUserPrefsForUpdate :one
+SELECT prefs FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+
 -- name: UpdateUserPrefs :exec
 UPDATE users SET prefs = $1, updated_at = NOW()
 WHERE id = $2;

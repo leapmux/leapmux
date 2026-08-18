@@ -100,7 +100,6 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 			ClientType:       "cli",
 			ClientName:       "floor-client",
 			SecretHash:       []byte("secret"),
-			Scope:            "remote:*",
 			ExpiresAt:        &expiresAt,
 			RefreshExpiresAt: &refreshExpiresAt,
 		}))

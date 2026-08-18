@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { LANGUAGES } from './languages'
 import { resolveBundledLang } from './shikiLazyHighlighter'
 
-describe('lANGUAGES', () => {
+describe('language option list (LANGUAGES)', () => {
   it('lists Plain Text first, then all bundled grammars', () => {
     expect(LANGUAGES[0]).toEqual({ id: 'plaintext', label: 'Plain Text' })
     // ~235 bundled grammars + plaintext, far beyond the old 140-entry curated list.

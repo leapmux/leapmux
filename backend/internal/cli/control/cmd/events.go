@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os/signal"
+	"slices"
 	"syscall"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -51,7 +52,7 @@ func RunEvents(rawCtx any, args []string) error {
 	if got.WorkspaceID != "" {
 		workspaceIDs = []string{got.WorkspaceID}
 	}
-	if c.IsLocal() {
+	if c.IsWorkerIPC() {
 		return runEventsLocal(ctx, c, workspaceIDs)
 	}
 	return runEventsHub(ctx, c, workspaceIDs)
@@ -183,11 +184,16 @@ func hlcToJSON(h *leapmuxv1.HLC) map[string]any {
 	}
 }
 
+// workspaceMapKeys lists the workspace ids of m. Go randomizes the iteration
+// order of a map, so the keys are sorted: the JSONL line goes to a script that
+// compares two snapshots, and an unsorted list makes every account with two or
+// more workspaces report a difference that does not exist.
 func workspaceMapKeys(m map[string]*leapmuxv1.WorkspaceContentsRecord) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
 	}
+	slices.Sort(out)
 	return out
 }
 

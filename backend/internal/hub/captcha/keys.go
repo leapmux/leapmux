@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/util/ptrconv"
 )
 
 // The captcha domain's hub_settings keys. The old captcha_config table's
@@ -20,35 +21,175 @@ import (
 // "selected provider must be complete" rule lives in SelectedConfigured
 // (the write-path cross rule) with Effective's read-time fallback behind
 // it.
+// captchaProviderEnumValues derives the captcha.selected enum from the
+// provider registry itself (providerSpecs via SupportedProviders), the
+// same catalogue validateSelectedProvider dispatches on, so the UI and
+// the validator cannot drift.
+var captchaProviderEnumValues = func() []settings.EnumValue {
+	aliases := SupportedProviders()
+	out := make([]settings.EnumValue, 0, len(aliases))
+	for _, alias := range aliases {
+		p, err := ParseProvider(alias)
+		if err != nil {
+			panic("captcha: supported provider alias failed to parse: " + err.Error())
+		}
+		var ev settings.EnumValue
+		ev.Value = alias
+		switch p {
+		case ProviderAltcha:
+			ev.Label = "ALTCHA"
+			ev.Help = "Built-in proof-of-work challenges; no third party, no egress."
+		case ProviderRecaptchaV3:
+			ev.Label = "Google reCAPTCHA v3"
+			ev.Help = "Invisible score-based verification via Google's siteverify."
+		case ProviderTurnstile:
+			ev.Label = "Cloudflare Turnstile"
+			ev.Help = "Checkbox challenge rendered from Cloudflare's script."
+		}
+		out = append(out, ev)
+	}
+	return out
+}()
+
+// altchaAlgorithmEnumValues derives the algorithm enum from
+// SupportedAltchaAlgorithms — the same deriveKeyFuncs catalogue
+// AltchaSettings.Validate dispatches on, so the UI and the validator
+// cannot drift.
+var altchaAlgorithmEnumValues = func() []settings.EnumValue {
+	out := make([]settings.EnumValue, 0)
+	for _, name := range SupportedAltchaAlgorithms() {
+		out = append(out, settings.EnumValue{Value: name, Label: name})
+	}
+	return out
+}()
+
 var (
 	CaptchaEnabledKey = settings.NewKey[bool]("captcha.enabled").
 				WithDefault(true).
-				WithDoc("whether captcha verification runs (the honeypot stays active either way)", "boolean")
+				WithUI(settings.UIMeta{
+			Category:     "captcha",
+			Title:        "Bot protection enabled",
+			Summary:      "whether captcha verification runs (the honeypot stays active either way)",
+			HiddenInSolo: true,
+			Fields:       []settings.Field{{Name: "", Label: "Bot protection enabled", Kind: settings.FieldBool}},
+		})
 
 	CaptchaSelectedKey = settings.NewKey[string]("captcha.selected").
 				WithDefault(altchaSpec{}.alias()).
 				WithValidate(validateSelectedProvider).
-				WithDoc("the active captcha provider alias", "string")
+				WithUI(settings.UIMeta{
+			Category:     "captcha",
+			Title:        "Provider",
+			Summary:      "the active captcha provider alias",
+			HiddenInSolo: true,
+			Fields: []settings.Field{{
+				Name: "", Label: "Provider", Kind: settings.FieldEnum,
+				EnumValues: captchaProviderEnumValues,
+			}},
+		})
 
 	AltchaKey = settings.NewKey[AltchaRow]("captcha.altcha").
 			WithDefault(defaultAltchaRow()).
 			WithValidate(func(r AltchaRow) error { return r.AltchaSettings.Validate() }).
+			WithNormalize(normalizeAltchaFamily).
 			SecretFields("hmac_key").
-			WithDoc("built-in ALTCHA proof-of-work parameters; the signing key lives in the secret half",
-			`{"algorithm", "cost", "memory_cost", "parallelism", "challenge_expiry_seconds"} + secret {"hmac_key"}`)
+			WithUI(settings.UIMeta{
+			Category:     "captcha",
+			Title:        "ALTCHA parameters",
+			Summary:      "built-in ALTCHA proof-of-work parameters; the signing key lives in the secret half",
+			HiddenInSolo: true,
+			Fields: []settings.Field{
+				{Name: "algorithm", Label: "Algorithm", Kind: settings.FieldEnum, EnumValues: altchaAlgorithmEnumValues},
+				{Name: "cost", Label: "Cost", Kind: settings.FieldInt, Unit: "count",
+					Min: ptrconv.Ptr[int64](MinAltchaCost), Max: ptrconv.Ptr[int64](MaxAltchaCost)},
+				{Name: "memory_cost", Label: "Memory cost", Kind: settings.FieldInt, Unit: "count",
+					Min:       ptrconv.Ptr[int64](MinAltchaMemoryCost),
+					Max:       ptrconv.Ptr[int64](MaxAltchaMemoryCost),
+					DependsOn: &settings.FieldCondition{Field: "algorithm", In: []string{"SCRYPT", "ARGON2ID"}}},
+				{Name: "parallelism", Label: "Parallelism", Kind: settings.FieldInt, Unit: "count",
+					Min:       ptrconv.Ptr[int64](MinAltchaParallelism),
+					Max:       ptrconv.Ptr[int64](MaxAltchaParallelism),
+					DependsOn: &settings.FieldCondition{Field: "algorithm", In: []string{"SCRYPT", "ARGON2ID"}}},
+				{Name: "challenge_expiry_seconds", Label: "Challenge expiry", Kind: settings.FieldInt,
+					Min: ptrconv.Ptr[int64](60), Max: ptrconv.Ptr[int64](86400), Unit: "seconds"},
+				{Name: "hmac_key", Label: "Signing key", Kind: settings.FieldBytes, Secret: true},
+			},
+		})
 
 	RecaptchaV3Key = settings.NewKey[RecaptchaV3Row]("captcha.recaptcha_v3").
 			WithDefault(defaultRecaptchaV3Row()).
 			WithValidate(validateRecaptchaRow).
 			SecretFields("secret_key").
-			WithDoc("Google reCAPTCHA v3 site key and score threshold; the API secret lives in the secret half",
-			`{"site_key", "min_score"} + secret {"secret_key"}`)
+			WithUI(settings.UIMeta{
+			Category:     "captcha",
+			Title:        "Google reCAPTCHA v3",
+			Summary:      "Google reCAPTCHA v3 site key and score threshold; the API secret lives in the secret half",
+			HiddenInSolo: true,
+			// NO DependsOn on the credential fields. Hiding them until the
+			// provider is selected made the provider unconfigurable: the
+			// cross-key rule (SelectedConfigured) refuses the selection
+			// until the keys are stored, and the keys had no field on
+			// screen until the selection went through. An operator
+			// configures a provider first and selects it after, which is
+			// the same order the CLI writes in.
+			Fields: []settings.Field{
+				{Name: "site_key", Label: "Site key", Kind: settings.FieldString},
+				{Name: "min_score", Label: "Minimum score", Kind: settings.FieldFloat,
+					MinF: ptrconv.Ptr(minRecaptchaScore), MaxF: ptrconv.Ptr(1.0), Unit: "score",
+					Help: "Tokens score below this are rejected; must be greater than 0 and at most 1."},
+				{Name: "secret_key", Label: "API secret", Kind: settings.FieldString, Secret: true},
+			},
+		})
 
 	TurnstileKey = settings.NewKey[TurnstileRow]("captcha.turnstile").
 			SecretFields("secret_key").
-			WithDoc("Cloudflare Turnstile site key; the API secret lives in the secret half",
-			`{"site_key"} + secret {"secret_key"}`)
+			WithUI(settings.UIMeta{
+			Category:     "captcha",
+			Title:        "Cloudflare Turnstile",
+			Summary:      "Cloudflare Turnstile site key; the API secret lives in the secret half",
+			HiddenInSolo: true,
+			// NO DependsOn on the credential fields; see RecaptchaV3Key.
+			Fields: []settings.Field{
+				{Name: "site_key", Label: "Site key", Kind: settings.FieldString},
+				{Name: "secret_key", Label: "API secret", Kind: settings.FieldString, Secret: true},
+			},
+		})
 )
+
+// normalizeAltchaFamily resets the family-specific parameters when a
+// write changes the algorithm.
+//
+// Cost, memory_cost and parallelism carry a DIFFERENT unit per family
+// (SCRYPT's r is a block-count multiplier, ARGON2ID's m is KiB, and
+// PBKDF2/SHA use neither), so carrying the old family's numbers into the
+// new family reinterprets them — and Validate then refuses the result.
+// Without this, a client that writes one field at a time could never
+// switch to SCRYPT or ARGON2ID at all: the preferences dialog sends
+// exactly {"algorithm":"SCRYPT"}, which merged onto the PBKDF2 default
+// (cost 10000) is not a power of two.
+//
+// A parameter the document specifies always wins, so `--algorithm ARGON2ID
+// --cost 3` means what it says. An unsupported algorithm passes through
+// untouched for Validate to refuse with its own message.
+func normalizeAltchaFamily(prev, next AltchaRow, specified map[string]bool) AltchaRow {
+	if !specified["algorithm"] || next.Algorithm == prev.Algorithm {
+		return next
+	}
+	defaults, err := DefaultAltchaSettingsFor(next.Algorithm)
+	if err != nil {
+		return next
+	}
+	if !specified["cost"] {
+		next.Cost = defaults.Cost
+	}
+	if !specified["memory_cost"] {
+		next.MemoryCost = defaults.MemoryCost
+	}
+	if !specified["parallelism"] {
+		next.Parallelism = defaults.Parallelism
+	}
+	return next
+}
 
 // AltchaRow is the captcha.altcha document: the proof-of-work parameters
 // plus the HMAC signing key (encrypted half, base64 in JSON).
@@ -71,6 +212,14 @@ type RecaptchaV3Row struct {
 func defaultRecaptchaV3Row() RecaptchaV3Row {
 	return RecaptchaV3Row{MinScore: defaultRecaptchaMinScore}
 }
+
+// minRecaptchaScore is the LOWEST threshold the declared bound may
+// advertise. The validator refuses 0 outright, so the interval it enforces
+// is half-open -- (0, 1] -- and Field.MinF can only express a closed one.
+// The declared floor is therefore the smallest score control step above
+// zero, not zero: advertising 0.0 offered the operator a value every write
+// refused.
+const minRecaptchaScore = 0.05
 
 // validateRecaptchaRow checks only what must hold even unconfigured. The
 // score threshold must sit in (0, 1]: zero is excluded because the

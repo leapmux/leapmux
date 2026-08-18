@@ -9,6 +9,7 @@ interface DialogProps {
   'title': string
   'tall'?: boolean
   'wide'?: boolean
+  'huge'?: boolean
   'busy'?: boolean
   'class'?: string
   'data-testid'?: string
@@ -110,7 +111,7 @@ export const Dialog: Component<DialogProps> = (props) => {
   return (
     <dialog
       ref={dialogRef}
-      class={`${styles.standard}${props.tall ? ` ${styles.tall}` : ''}${props.wide ? ` ${styles.wide}` : ''}${props.class ? ` ${props.class}` : ''}`}
+      class={`${styles.standard}${props.tall ? ` ${styles.tall}` : ''}${props.wide ? ` ${styles.wide}` : ''}${props.huge ? ` ${styles.huge}` : ''}${props.class ? ` ${props.class}` : ''}`}
       classList={{ [styles.closing]: closing() }}
       data-testid={props['data-testid']}
       data-busy={props.busy ? '' : undefined}

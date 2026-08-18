@@ -162,7 +162,7 @@ func TestRun_StopsRevocationCompactionWhenContextIsCanceled(t *testing.T) {
 	require.Equal(t, 1, spy.compactionRuns)
 }
 
-// drainUntilEmpty is the shared loop behind both paged sweeps, so its contract
+// DrainUntilEmpty is the shared loop behind both paged sweeps, so its contract
 // is pinned directly rather than only through the two callers: terminate on a
 // pass that deletes nothing, stop on the first error, respect the runaway bound,
 // and report a cancelled context as a PAUSE (total, no error) rather than a
@@ -172,7 +172,7 @@ func TestDrainUntilEmpty(t *testing.T) {
 	t.Run("drains until a pass deletes nothing", func(t *testing.T) {
 		pages := []int64{1000, 1000, 250, 0}
 		var calls int
-		total, err := drainUntilEmpty(context.Background(), 10, func() (int64, error) {
+		total, err := DrainUntilEmpty(context.Background(), 10, func() (int64, error) {
 			n := pages[calls]
 			calls++
 			return n, nil
@@ -184,7 +184,7 @@ func TestDrainUntilEmpty(t *testing.T) {
 
 	t.Run("stops on the first error and keeps what was already deleted", func(t *testing.T) {
 		var calls int
-		total, err := drainUntilEmpty(context.Background(), 10, func() (int64, error) {
+		total, err := DrainUntilEmpty(context.Background(), 10, func() (int64, error) {
 			calls++
 			if calls == 2 {
 				return 7, assert.AnError
@@ -198,7 +198,7 @@ func TestDrainUntilEmpty(t *testing.T) {
 
 	t.Run("honours the runaway bound", func(t *testing.T) {
 		var calls int
-		total, err := drainUntilEmpty(context.Background(), 3, func() (int64, error) {
+		total, err := DrainUntilEmpty(context.Background(), 3, func() (int64, error) {
 			calls++
 			return 1000, nil
 		})
@@ -210,7 +210,7 @@ func TestDrainUntilEmpty(t *testing.T) {
 	t.Run("treats a cancelled context as a pause, not a failure", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		var calls int
-		total, err := drainUntilEmpty(ctx, 10, func() (int64, error) {
+		total, err := DrainUntilEmpty(ctx, 10, func() (int64, error) {
 			calls++
 			cancel()
 			return 100, nil
@@ -224,7 +224,7 @@ func TestDrainUntilEmpty(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		var calls int
-		total, err := drainUntilEmpty(ctx, 10, func() (int64, error) {
+		total, err := DrainUntilEmpty(ctx, 10, func() (int64, error) {
 			calls++
 			return 100, nil
 		})

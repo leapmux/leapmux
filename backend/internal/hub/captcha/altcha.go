@@ -77,12 +77,13 @@ func DefaultAltchaSettings() AltchaSettings {
 // own defaults for zero values, and these constants match those
 // substitutions.
 //
-// The admin CLI applies this on an algorithm switch so parameters from
-// the old family are never reinterpreted in the new family's units
-// (SCRYPT's r is a block-count multiplier, not KiB; ARGON2ID's m is KiB).
+// normalizeAltchaFamily applies this inside the key's partial merge on an
+// algorithm switch, so parameters from the old family are never
+// reinterpreted in the new family's units (SCRYPT's r is a block-count
+// multiplier, not KiB; ARGON2ID's m is KiB).
 func DefaultAltchaSettingsFor(algorithm string) (AltchaSettings, error) {
-	if _, ok := deriveKeyFuncs[algorithm]; !ok {
-		return AltchaSettings{}, fmt.Errorf("unsupported captcha algorithm %q (supported: %s)", algorithm, strings.Join(SupportedAltchaAlgorithms(), ", "))
+	if err := ValidateAltchaAlgorithm(algorithm); err != nil {
+		return AltchaSettings{}, err
 	}
 	s := DefaultAltchaSettings()
 	s.Algorithm = algorithm
@@ -100,6 +101,17 @@ func DefaultAltchaSettingsFor(algorithm string) (AltchaSettings, error) {
 	return s, nil
 }
 
+// ValidateAltchaAlgorithm reports whether name is an algorithm the hub
+// can derive with. It is the ONE refusal for an unknown algorithm, so a
+// pre-dial check in the CLI, the default lookup, and the write-path
+// validator all answer with the same message and the same supported list.
+func ValidateAltchaAlgorithm(name string) error {
+	if _, ok := deriveKeyFuncs[name]; ok {
+		return nil
+	}
+	return fmt.Errorf("unsupported captcha algorithm %q (supported: %s)", name, strings.Join(SupportedAltchaAlgorithms(), ", "))
+}
+
 // Derivation memory limits for the memory-hard families. Both the browser
 // worker and the hub's server-side re-derivation allocate the full
 // per-derivation memory on every solve and every Verify call, and Verify
@@ -112,13 +124,47 @@ const (
 	maxArgon2idMemoryKiB = 131072 // 128 MiB
 )
 
+// The bounds the ALTCHA parameter controls advertise.
+//
+// Each is the UNION of what Validate accepts across the algorithm
+// families, because a Field declares one static range and the three
+// tunables carry a different unit per family (SCRYPT's r is a block-count
+// multiplier, ARGON2ID's m is KiB, and PBKDF2/SHA use neither). The union
+// is the widest range that is legal for SOME algorithm, so the control
+// never hides a value an operator can reach — Validate still refuses the
+// combination that the SELECTED family does not take.
+//
+// TestAltchaAdvertisedBoundsAreTheFamilyUnion proves the union is exact:
+// every bound is reachable by some family, and no family accepts a value
+// outside it. Widen a family's range and that test fails here.
+const (
+	// MinAltchaCost is ARGON2ID's time-parameter floor, the lowest cost
+	// any family takes.
+	MinAltchaCost = 1
+	// MaxAltchaCost is the PBKDF2 and SHA iteration ceiling.
+	//
+	// It is NOT SCRYPT's nominal N ceiling of 1048576. That value is
+	// unreachable: maxScryptMemoryBytes caps 128 * N * r, so even at the
+	// smallest legal r of 1 the largest storable N is 524288. Advertising
+	// 1048576 would offer a cost no algorithm accepts.
+	MaxAltchaCost = 1000000
+	// MinAltchaMemoryCost is zero because PBKDF2 and SHA require it.
+	MinAltchaMemoryCost = 0
+	// MaxAltchaMemoryCost is ARGON2ID's m ceiling in KiB.
+	MaxAltchaMemoryCost = maxArgon2idMemoryKiB
+	// MinAltchaParallelism is zero because PBKDF2 and SHA require it.
+	MinAltchaParallelism = 0
+	// MaxAltchaParallelism is SCRYPT's p ceiling.
+	MaxAltchaParallelism = 8
+)
+
 // Validate rejects ALTCHA settings that could break login for every
 // user: unknown algorithms, parameters the KDF libraries refuse (SCRYPT
 // requires a power-of-two N), costs that would stall or OOM browsers,
 // family-foreign parameters, or expiry windows outside a sane range.
 func (s AltchaSettings) Validate() error {
-	if _, ok := deriveKeyFuncs[s.Algorithm]; !ok {
-		return fmt.Errorf("unsupported captcha algorithm %q (supported: %s)", s.Algorithm, strings.Join(SupportedAltchaAlgorithms(), ", "))
+	if err := ValidateAltchaAlgorithm(s.Algorithm); err != nil {
+		return err
 	}
 	// The shared Cost/MemoryCost/Parallelism fields carry a different unit
 	// per family, so every range is family-specific and parameters that the

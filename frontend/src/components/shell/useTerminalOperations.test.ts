@@ -302,7 +302,7 @@ describe('useterminaloperations.handleopenterminal', () => {
   // the whole point -- without it the tab renders ungrouped until the worker's
   // phase-1 broadcast lands. A test for the rejection alone would still pass if
   // the seed were removed entirely.
-  it('dOES seed git info when the new terminal shares the active tab directory', async () => {
+  it('does seed git info when the new terminal shares the active tab directory', async () => {
     const s = setupForOpen()
     seedActiveRepoTab(s)
 

@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+	"github.com/leapmux/leapmux/internal/hub/usersettings"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
@@ -247,119 +250,198 @@ func TestUserService_ChangePassword_WrongCurrent(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
-func TestUserService_GetPreferences_Default(t *testing.T) {
+func TestUserService_ListUserSettings_Default(t *testing.T) {
 	t.Parallel()
 
 	env := setupUserTest(t)
 
-	resp, err := env.client.GetPreferences(context.Background(), authedReq(&leapmuxv1.GetPreferencesRequest{}, env.token))
+	resp, err := env.client.ListUserSettings(context.Background(), authedReq(&leapmuxv1.ListUserSettingsRequest{}, env.token))
 	require.NoError(t, err)
 
-	prefs := resp.Msg.GetPreferences()
-	assert.False(t, prefs.GetUiFontCustomEnabled(), "ui_font_custom_enabled should be false by default")
-	assert.False(t, prefs.GetMonoFontCustomEnabled(), "mono_font_custom_enabled should be false by default")
-	assert.Empty(t, prefs.GetTheme(), "theme should be empty by default")
-	assert.Empty(t, prefs.GetTerminalTheme(), "terminal_theme should be empty by default")
+	require.NotEmpty(t, resp.Msg.GetDescriptors(), "every declared account setting has a descriptor")
+	byKey := map[string]*leapmuxv1.SettingValue{}
+	for _, v := range resp.Msg.GetValues() {
+		byKey[v.GetKey()] = v
+	}
+	for _, d := range resp.Msg.GetDescriptors() {
+		require.Contains(t, byKey, d.GetKey())
+		assert.False(t, byKey[d.GetKey()].GetCustomized(), "a fresh user has no stored value for %q", d.GetKey())
+	}
+	// The effective value of an absent key is the decoded default.
+	assert.JSONEq(t, `"system"`, byKey["theme"].GetEffectiveJson())
+	assert.JSONEq(t, `{"enabled":false}`, byKey["ui_fonts"].GetEffectiveJson())
 }
 
-func TestUserService_UpdatePreferences(t *testing.T) {
+func TestUserService_UpdateUserSetting_PerKeyMerge(t *testing.T) {
 	t.Parallel()
 
 	env := setupUserTest(t)
 
-	_, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
-		Theme:                 "dark",
-		TerminalTheme:         "match-ui",
-		UiFontCustomEnabled:   true,
-		MonoFontCustomEnabled: true,
-		UiFonts:               []string{"Inter", "Roboto"},
-		MonoFonts:             []string{"JetBrains Mono"},
+	_, err := env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "theme",
+		PartialJson: `"dark"`,
 	}, env.token))
 	require.NoError(t, err)
 
-	// Verify via GetPreferences.
-	resp, err := env.client.GetPreferences(context.Background(), authedReq(&leapmuxv1.GetPreferencesRequest{}, env.token))
-	require.NoError(t, err)
-
-	prefs := resp.Msg.GetPreferences()
-	assert.True(t, prefs.GetUiFontCustomEnabled())
-	assert.True(t, prefs.GetMonoFontCustomEnabled())
-	assert.Equal(t, "dark", prefs.GetTheme())
-	assert.Equal(t, "match-ui", prefs.GetTerminalTheme())
-	assert.Len(t, prefs.GetUiFonts(), 2)
-	assert.Len(t, prefs.GetMonoFonts(), 1)
-}
-
-func TestUserService_UpdatePreferences_ResponseEchoesSanitizedTheme(t *testing.T) {
-	t.Parallel()
-
-	env := setupUserTest(t)
-
-	// theme / terminal_theme are sanitized via SanitizeSlug (lowercase + trim),
-	// so send values that transform -- raw != sanitized.
-	resp, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
-		Theme:         "Dark",       // -> "dark"
-		TerminalTheme: "  Match-UI", // -> "match-ui"
+	// A second update touching a DIFFERENT key must leave the first
+	// untouched — the whole-blob clobber the per-key merge replaced.
+	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "ui_fonts",
+		PartialJson: `{"enabled":true,"fonts":["Inter","Roboto"]}`,
 	}, env.token))
 	require.NoError(t, err)
 
-	// The UpdatePreferences RESPONSE must echo the persisted (sanitized) values,
-	// NOT the raw request -- otherwise a client re-reading preferences would see a
-	// value different from the one the update just reported.
-	updated := resp.Msg.GetPreferences()
-	assert.Equal(t, "dark", updated.GetTheme(), "response must carry the sanitized theme, not the raw request")
-	assert.Equal(t, "match-ui", updated.GetTerminalTheme(), "response must carry the sanitized terminal theme")
-
-	// A follow-up GetPreferences must AGREE with the update response (no drift).
-	got, err := env.client.GetPreferences(context.Background(), authedReq(&leapmuxv1.GetPreferencesRequest{}, env.token))
+	resp, err := env.client.ListUserSettings(context.Background(), authedReq(&leapmuxv1.ListUserSettingsRequest{}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, updated.GetTheme(), got.Msg.GetPreferences().GetTheme())
-	assert.Equal(t, updated.GetTerminalTheme(), got.Msg.GetPreferences().GetTerminalTheme())
+	byKey := map[string]*leapmuxv1.SettingValue{}
+	for _, v := range resp.Msg.GetValues() {
+		byKey[v.GetKey()] = v
+	}
+	assert.True(t, byKey["theme"].GetCustomized())
+	assert.JSONEq(t, `"dark"`, byKey["theme"].GetEffectiveJson())
+	assert.True(t, byKey["ui_fonts"].GetCustomized())
+	assert.JSONEq(t, `{"enabled":true,"fonts":["Inter","Roboto"]}`, byKey["ui_fonts"].GetEffectiveJson())
 }
 
-func TestUserService_UpdatePreferences_InvalidFontName(t *testing.T) {
+func TestUserService_UpdateUserSetting_PartialMergeWithinKey(t *testing.T) {
 	t.Parallel()
 
 	env := setupUserTest(t)
 
-	_, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
-		UiFonts: []string{"  "},
+	_, err := env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "ui_fonts",
+		PartialJson: `{"enabled":true,"fonts":["Hack NF"]}`,
+	}, env.token))
+	require.NoError(t, err)
+
+	// A partial document merges onto the current value: omitting fonts
+	// keeps the stored stack.
+	resp, err := env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "ui_fonts",
+		PartialJson: `{"enabled":false}`,
+	}, env.token))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"enabled":false,"fonts":["Hack NF"]}`, resp.Msg.GetValue().GetEffectiveJson())
+
+	// An unknown field name is refused, not silently ignored.
+	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "ui_fonts",
+		PartialJson: `{"bogus":true}`,
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-func TestUserService_UpdatePreferences_DebugLogging(t *testing.T) {
+func TestUserService_UpdateUserSetting_InvalidValueStoresNothing(t *testing.T) {
 	t.Parallel()
 
 	env := setupUserTest(t)
 
-	_, err := env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
-		DebugLogging: true,
+	_, err := env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "ui_fonts",
+		PartialJson: `{"enabled":true,"fonts":["  "]}`,
 	}, env.token))
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
-	resp, err := env.client.GetPreferences(context.Background(), authedReq(&leapmuxv1.GetPreferencesRequest{}, env.token))
-	require.NoError(t, err)
-	assert.True(t, resp.Msg.GetPreferences().GetDebugLogging())
-
-	// Disable again.
-	_, err = env.client.UpdatePreferences(context.Background(), authedReq(&leapmuxv1.UpdatePreferencesRequest{
-		DebugLogging: false,
+	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "nope",
+		PartialJson: `"x"`,
 	}, env.token))
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
-	resp, err = env.client.GetPreferences(context.Background(), authedReq(&leapmuxv1.GetPreferencesRequest{}, env.token))
+	resp, err := env.client.ListUserSettings(context.Background(), authedReq(&leapmuxv1.ListUserSettingsRequest{}, env.token))
 	require.NoError(t, err)
-	assert.False(t, resp.Msg.GetPreferences().GetDebugLogging())
+	for _, v := range resp.Msg.GetValues() {
+		assert.False(t, v.GetCustomized(), "a rejected write stores nothing")
+	}
 }
 
-func TestUserService_Unauthenticated(t *testing.T) {
+func TestUserService_UpdateUserSetting_KeybindingCap(t *testing.T) {
 	t.Parallel()
 
 	env := setupUserTest(t)
 
-	_, err := env.client.GetPreferences(context.Background(), connect.NewRequest(&leapmuxv1.GetPreferencesRequest{}))
+	entries := make([]map[string]any, usersettings.MaxKeybindings+1)
+	for i := range entries {
+		entries[i] = map[string]any{"key": "ctrl+k", "command": fmt.Sprintf("cmd.%d", i)}
+	}
+	blob, err := json.Marshal(entries)
+	require.NoError(t, err)
+
+	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "keybindings",
+		PartialJson: string(blob),
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	entries = entries[:usersettings.MaxKeybindings]
+	blob, err = json.Marshal(entries)
+	require.NoError(t, err)
+	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "keybindings",
+		PartialJson: string(blob),
+	}, env.token))
+	require.NoError(t, err)
+}
+
+func TestUserService_UpdateUserSetting_EmptyKeyAndMalformedBlob(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+
+	_, err := env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		PartialJson: `"dark"`,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "key is required")
+
+	_, err = env.client.ResetUserSetting(context.Background(), authedReq(&leapmuxv1.ResetUserSettingRequest{}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "key is required")
+
+	require.NoError(t, env.store.Users().UpdatePrefs(context.Background(), store.UpdateUserPrefsParams{
+		ID:    env.userID,
+		Prefs: `[1,2,3]`,
+	}))
+	_, err = env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "theme",
+		PartialJson: `"dark"`,
+	}, env.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "malformed")
+}
+
+func TestUserService_ResetUserSetting(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+
+	_, err := env.client.UpdateUserSetting(context.Background(), authedReq(&leapmuxv1.UpdateUserSettingRequest{
+		Key:         "turn_end_sound_volume",
+		PartialJson: `42`,
+	}, env.token))
+	require.NoError(t, err)
+
+	resp, err := env.client.ResetUserSetting(context.Background(), authedReq(&leapmuxv1.ResetUserSettingRequest{
+		Key: "turn_end_sound_volume",
+	}, env.token))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.GetValue().GetCustomized())
+	assert.JSONEq(t, `100`, resp.Msg.GetValue().GetEffectiveJson())
+}
+
+func TestUserService_UserSettings_Unauthenticated(t *testing.T) {
+	t.Parallel()
+
+	env := setupUserTest(t)
+
+	_, err := env.client.ListUserSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListUserSettingsRequest{}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }

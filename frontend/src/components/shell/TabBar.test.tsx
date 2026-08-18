@@ -60,6 +60,45 @@ vi.mock('~/components/shell/TabDragContext', () => ({
   },
 }))
 
+vi.mock('~/context/AuthContext', () => ({
+  useAuth: () => ({
+    logout: vi.fn(async () => {}),
+    user: () => ({ username: 'admin', isAdmin: false }),
+  }),
+}))
+
+vi.mock('@solidjs/router', () => ({
+  useNavigate: () => vi.fn(),
+}))
+
+const {
+  setShowAboutDialog,
+  openPreferences,
+  isDesktopApp,
+  isSoloMode,
+} = vi.hoisted(() => ({
+  setShowAboutDialog: vi.fn(),
+  openPreferences: vi.fn(),
+  isDesktopApp: { value: false },
+  isSoloMode: { value: false },
+}))
+
+vi.mock('~/components/shell/UserMenuState', () => ({
+  setShowAboutDialog,
+  openPreferences,
+  showPreferencesDialog: () => false,
+  showAboutDialog: () => false,
+}))
+
+vi.mock('~/lib/systemInfo', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/lib/systemInfo')>()
+  return {
+    ...actual,
+    isDesktopApp: () => isDesktopApp.value,
+    isSoloMode: () => isSoloMode.value,
+  }
+})
+
 // Mock DropdownMenu to render children directly (jsdom lacks popover API)
 vi.mock('~/components/common/DropdownMenu', async () => {
   const { createSignal } = await import('solid-js')
@@ -184,6 +223,8 @@ function createdSortables(): MockSortable[] {
 
 beforeEach(() => {
   localStorageClearForTests()
+  isDesktopApp.value = false
+  isSoloMode.value = false
 })
 
 // `activateBindings` writes into a module singleton and installs a document
@@ -392,6 +433,20 @@ describe('tabBar readOnly prop', () => {
     fireEvent.click(menuItem)
     expect(checkbox.checked).toBe(true)
     expect(getBrowserPrefs().expandAgentThoughts).toBeUndefined()
+  })
+
+  it('keeps About / Preferences out of the desktop more-options menu (titlebar owns them)', () => {
+    render(() => (
+      <PreferencesProvider>
+        <TabBar
+          {...defaultProps}
+          newTab={{ ...defaultProps.newTab, availableProviders: [] }}
+        />
+      </PreferencesProvider>
+    ))
+    expect(screen.queryByRole('menuitem', { name: /Preferences/ })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: /About/ })).toBeNull()
+    expect(screen.queryByText('App')).toBeNull()
   })
 })
 
@@ -812,6 +867,39 @@ describe('tabBar mobile variant', () => {
     renderMobileTabBar([], null)
     expect(barChromeLabels()).toEqual(['Toggle workspaces', 'collapsed-new-tab-button', 'Toggle files'])
     expect(screen.getByTestId('tab-bar-spacer')).toBeInTheDocument()
+  })
+
+  it('puts About and Preferences in the + menu after Advanced (no titlebar app menu on mobile)', () => {
+    setShowAboutDialog.mockClear()
+    openPreferences.mockClear()
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+
+    expect(screen.getByText('App')).toBeInTheDocument()
+    const prefs = screen.getByRole('menuitem', { name: /Preferences/ })
+    const about = screen.getByRole('menuitem', { name: /About/ })
+    const advanced = screen.getByText('Advanced')
+    expect(advanced.compareDocumentPosition(prefs) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(screen.getByRole('menuitem', { name: 'Log out' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /Switch mode/ })).toBeNull()
+
+    fireEvent.click(about)
+    expect(setShowAboutDialog).toHaveBeenCalledWith(true)
+    fireEvent.click(prefs)
+    expect(openPreferences).toHaveBeenCalledWith('appearance')
+  })
+
+  it('hides Log out from the mobile App menu in solo mode', () => {
+    isSoloMode.value = true
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+    expect(screen.getByRole('menuitem', { name: /Preferences/ })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Log out' })).toBeNull()
+  })
+
+  it('offers Switch mode on the mobile App menu in the desktop app', () => {
+    isDesktopApp.value = true
+    renderMobileTabBar(twoTabs(), `${TabType.AGENT}:a1`)
+    expect(screen.getByRole('menuitem', { name: /Switch mode/ })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /About LeapMux Desktop/ })).toBeInTheDocument()
   })
 
   it('closing the last tab closes the sheet, whose only bar toggle (the chip) is gone', () => {
