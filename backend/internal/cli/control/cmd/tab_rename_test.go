@@ -15,16 +15,17 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // renameDispatcher answers the ONE inner RPC each arm of `tab rename`
 // makes, with a stored title that DIFFERS from the requested one.
 //
-// The difference is the whole point. The worker cleans a title (it cuts
-// it to 128 UTF-8 bytes and strips the control characters and " \ $ %),
-// and it never refuses one, so the name the tab carries afterwards is
-// the REPLY's title. A stub that echoes the request cannot tell the two
-// sources apart, and a leaf that prints the request passes against it.
+// The difference is the whole point. The worker cleans a title with the rule
+// that validate.CleanName documents, and it never refuses one, so the name the
+// tab carries afterwards is the REPLY's title. A stub that echoes the request
+// cannot tell the two sources apart, and a leaf that prints the request passes
+// against it.
 type renameDispatcher struct {
 	// stored is the title the worker reports it kept.
 	stored string
@@ -146,21 +147,29 @@ func terminalTab() *leapmuxv1.WorkspaceTab {
 }
 
 // The agent arm must print the title the WORKER stored, not the one the
-// operator typed. The worker cuts a title to 128 UTF-8 bytes and strips
-// the control characters and " \ $ %, so echoing --title back reports a
-// name no tab carries -- and the operator's next command, which addresses
-// the tab by that name, finds nothing.
+// operator typed. The worker cleans a title with the rule that
+// validate.CleanName documents, so echoing --title back reports a name no tab
+// carries -- and the operator's next command, which addresses the tab by that
+// name, finds nothing.
+//
+// The requested title carries a TAB, which the rule folds to one space, and a
+// `$` and a `%`, which the rule keeps. The pair is deliberate: the stored
+// title must differ from the requested one for this test to bite, and the
+// fixture has to state a difference the CURRENT rule can produce. It read
+// ("release 100", `release $100%`) before, which the relaxed rule can no
+// longer produce at all -- the worker now stores `release $100%` unchanged, so
+// the stub was reporting a transformation that exists nowhere.
 func TestRunTabRename_AgentPrintsTheWorkersStoredTitle(t *testing.T) {
-	data, disp := runTabRename(t, agentTab(), "release 100", `release $100%`)
+	data, disp := runTabRename(t, agentTab(), `release $100%`, "release\t$100%")
 
-	assert.Equal(t, "release 100", data["title"],
+	assert.Equal(t, `release $100%`, data["title"],
 		"the envelope must carry the worker's cleaned title, not the requested one")
 	assert.Equal(t, "agent-2", data["tab_id"])
 	assert.Equal(t, "agent", data["tab_type"])
 
 	assert.Equal(t, []string{"RenameAgent"}, disp.called(),
 		"the agent arm dispatches RenameAgent and nothing else")
-	assert.Equal(t, []string{`release $100%`}, disp.sentTitles(),
+	assert.Equal(t, []string{"release\t$100%"}, disp.sentTitles(),
 		"the CLI sends the operator's text unchanged; the worker owns the cleaning rule")
 }
 
@@ -183,12 +192,21 @@ func TestRunTabRename_TerminalPrintsTheWorkersStoredTitle(t *testing.T) {
 // row, and the worker answers with the name the tab already had. An
 // envelope that echoed the request would report a rename that never
 // happened, under a name that exists nowhere.
+//
+// The requested title is a run of invisible format characters. It read `$$$`
+// before, which the relaxed rule now keeps whole, so the case no longer showed
+// what its own name says -- silently, because the stub's `stored` field
+// carries the answer either way.
 func TestRunTabRename_ReportsTheUnchangedTitleWhenTheRequestCleansToNothing(t *testing.T) {
-	data, disp := runTabRename(t, agentTab(), "nightly build", `$$$`)
+	const emptyingTitle = "\u200b\u00ad\ufeff"
+	require.Empty(t, validate.CleanName(emptyingTitle),
+		"this case only tests the fallback branch while the rule empties the requested title")
+
+	data, disp := runTabRename(t, agentTab(), "nightly build", emptyingTitle)
 
 	assert.Equal(t, "nightly build", data["title"],
 		"a request that cleans to nothing leaves the old title, and the envelope must say so")
-	assert.Equal(t, []string{`$$$`}, disp.sentTitles())
+	assert.Equal(t, []string{emptyingTitle}, disp.sentTitles())
 }
 
 // A tab type that neither arm renames is refused, and the refusal must

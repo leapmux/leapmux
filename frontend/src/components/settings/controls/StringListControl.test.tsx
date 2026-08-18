@@ -28,6 +28,62 @@ describe('stringListControl', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  // The same one-sided rule the cap obeys, for the CHARACTER class: this tier
+  // refuses what `usersettings.validateFontFamily` refuses and nothing more, so
+  // a name that the hub would accept is never blocked here. The hub stores a
+  // quote, a backslash, a `$` and a `%` — `buildFontFamily` escapes at the
+  // emitter — and a stricter check here would refuse a name the account can
+  // already hold.
+  it('accepts a name carrying the characters the hub stores', () => {
+    const onChange = vi.fn()
+    render(() => (
+      <StringListControl value={[]} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
+    ))
+    const input = screen.getByPlaceholderText('Name') as HTMLInputElement
+    fireEvent.input(input, { target: { value: 'Fira$Code "100%"' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onChange).toHaveBeenCalledWith(['Fira$Code "100%"'])
+  })
+
+  // The other side of the same rule: a name the hub REFUSES must not reach it,
+  // or the write fails with the reason arriving as a failed save rather than at
+  // the field.
+  it('refuses a name the hub would refuse, and says why', () => {
+    const onChange = vi.fn()
+    render(() => (
+      <StringListControl value={[]} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
+    ))
+    const input = screen.getByPlaceholderText('Name') as HTMLInputElement
+    fireEvent.input(input, { target: { value: '\u200B\uFEFF' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.getByText(/must not be empty/i)).toBeTruthy()
+  })
+
+  // The control writes the SANITIZED name, not the raw one, and this commit is
+  // what made the difference reachable: the rule now FOLDS, so
+  // `usersettings.validateFontFamily` REFUSES `Fira  Code` outright. Every
+  // other case in this file supplies a name that is already in its sanitized
+  // form, so raw and sanitized are equal in each and a regression to writing
+  // the raw value passes them all. If it regresses, the user sees the refusal
+  // arrive as a failed save with no message at the field.
+  it.each([
+    ['a repeated space', 'Fira  Code', 'Fira Code'],
+    ['a tab', 'Fira\tCode', 'Fira Code'],
+    ['surrounding whitespace', '  Fira Code  ', 'Fira Code'],
+    ['an invisible format character', 'Fira\u200BCode', 'FiraCode'],
+    ['a control character', 'Fira\x00Code', 'FiraCode'],
+  ])('writes the cleaned name when the input carries %s', (_label, typed, stored) => {
+    const onChange = vi.fn()
+    render(() => (
+      <StringListControl value={[]} addLabel="Add font" ariaLabel="Fonts" onChange={onChange} />
+    ))
+    const input = screen.getByPlaceholderText('Name') as HTMLInputElement
+    fireEvent.input(input, { target: { value: typed } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onChange).toHaveBeenCalledWith([stored])
+  })
+
   it('removes an item', () => {
     const onChange = vi.fn()
     render(() => (

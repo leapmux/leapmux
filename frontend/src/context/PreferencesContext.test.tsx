@@ -3,6 +3,7 @@ import { render, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { KEY_BROWSER_PREFS, KEY_DIRECTORY_SELECTOR_SHOW_HIDDEN, loadBrowserPrefs, localStorageClearForTests, localStorageGet, localStorageSet } from '~/lib/browserStorage'
+import { buildFontFamily } from '~/lib/fontStack'
 import { goldenAccountSchema } from '~/test-support/accountSchema'
 
 // Mock the user settings API: ListUserSettings returns no values (every
@@ -788,9 +789,10 @@ describe('preferencesContext — font tier parse', () => {
   // path. One parse guards BOTH tiers, so a hand-edited localStorage
   // document must not put on screen what the hub would refuse.
   it.each([
-    ['a quote', '{"enabled":true,"fonts":["Ev\\"il"]}'],
-    ['a backslash', '{"enabled":true,"fonts":["back\\\\slash"]}'],
     ['a control character', '{"enabled":true,"fonts":["My\\nFont"]}'],
+    ['an invisible format character', '{"enabled":true,"fonts":["Fi\\u200bra"]}'],
+    ['a byte order mark', '{"enabled":true,"fonts":["\\ufeffInter"]}'],
+    ['a repeated space', '{"enabled":true,"fonts":["Fira  Code"]}'],
     ['a leading space', '{"enabled":true,"fonts":[" Inter"]}'],
     ['an empty name', '{"enabled":true,"fonts":[""]}'],
     ['a non-string element', '{"enabled":true,"fonts":[7]}'],
@@ -808,6 +810,35 @@ describe('preferencesContext — font tier parse', () => {
     expect(ctx.get().accountCustomized().ui_fonts).toBeUndefined()
   })
 
+  // The name rule relaxed, and this parse relaxed with it, because the two must
+  // agree: a value this parse refuses and the hub stores leaves the row showing
+  // a font the account does not have. The CSS stays safe because
+  // `buildFontFamily` escapes a quote and a backslash at the emitter, which is
+  // the guard that covers a hand-edited document like this one.
+  // `family` is a LITERAL, not `buildFontFamily([name])`. `uiFontFamily()` is
+  // defined as `buildFontFamily(tier.fonts)`, so comparing the two calls
+  // asserts `buildFontFamily(x) === buildFontFamily(x)`, which holds for every
+  // possible body — including one with the escape deleted. This commit makes
+  // that escape the ONLY guard on a quote and a backslash, so the expected CSS
+  // has to be spelled out.
+  it.each([
+    ['a quote', '{"enabled":true,"fonts":["Ev\\"il"]}', 'Ev"il', '"Ev\\"il"'],
+    ['a backslash', '{"enabled":true,"fonts":["back\\\\slash"]}', 'back\\slash', '"back\\\\slash"'],
+    ['a dollar', '{"enabled":true,"fonts":["Fira$Code"]}', 'Fira$Code', '"Fira$Code"'],
+    ['a percent', '{"enabled":true,"fonts":["Fira%Code"]}', 'Fira%Code', '"Fira%Code"'],
+  ])('keeps a font name carrying %s, and escapes it at the emitter', async (_label, effectiveJson, name, family) => {
+    listUserSettings.mockResolvedValue({
+      descriptors: [],
+      values: [settingValue('ui_fonts', effectiveJson, true)],
+    })
+    const ctx = captureContext()
+    await waitFor(() => expect(ctx.get().uiFonts()).toEqual({ enabled: true, fonts: [name] }))
+    expect(ctx.get().uiFontFamily()).toBe(family)
+    // …and the same string is what the emitter produces on its own, so the two
+    // stay one rule rather than two.
+    expect(buildFontFamily([name])).toBe(family)
+  })
+
   it('keeps a font name the hub would store', async () => {
     listUserSettings.mockResolvedValue({
       descriptors: [],
@@ -815,6 +846,33 @@ describe('preferencesContext — font tier parse', () => {
     })
     const ctx = captureContext()
     await waitFor(() => expect(ctx.get().uiFonts().fonts).toEqual(['Noto Sans KR', 'Inter']))
+  })
+
+  // One name the hub would REFUSE refuses the WHOLE tier, which is what
+  // `parseFontTier` states: a document that carries a name the account cannot
+  // hold is not a document this side renders half of.
+  //
+  // The rule now FOLDS, so a repeated space is refused where it used to pass,
+  // and each of these reaches the parse from a hand-edited localStorage
+  // document that never passes the hub's validator at all.
+  it.each([
+    ['a repeated space', 'Fira  Code'],
+    ['surrounding whitespace', '  Fira Code  '],
+    ['an invisible format character', 'Fira\u200BCode'],
+    ['a control character', 'Fira\u0000Code'],
+    ['a name over the byte limit', 'a'.repeat(129)],
+    ['a CJK name over the BYTE limit but under a character count', '\u4E00'.repeat(43)],
+    // The length guard in `isStorableFontName` runs BEFORE `sanitizeName`, so
+    // a hand-edited document cannot make every page load run three regex
+    // passes over a megabyte. It must not change the ANSWER, only the work.
+    ['a name of a megabyte', 'x'.repeat(1_000_000)],
+  ])('refuses the whole tier when one name carries %s', async (_label, bad) => {
+    listUserSettings.mockResolvedValue({
+      descriptors: [],
+      values: [settingValue('ui_fonts', JSON.stringify({ enabled: true, fonts: [bad, 'Inter'] }), true)],
+    })
+    const ctx = captureContext()
+    await waitFor(() => expect(ctx.get().uiFonts()).toEqual({ enabled: false, fonts: [] }))
   })
 })
 

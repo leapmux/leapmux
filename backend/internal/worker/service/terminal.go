@@ -886,6 +886,16 @@ func (svc *Service) broadcastTerminalReady(terminalID string) {
 // per keystroke, so at most one bell event per terminal per window is enough.
 const bellCoalesceWindow = 250 * time.Millisecond
 
+// notificationBodyByteLimit caps the OSC notification body that the browser
+// hands to the OS notification service.
+//
+// The body is a message rather than a name, so validate.NameByteLimit is too
+// short for it: a build failure or a test summary needs more than one line.
+// The cap exists because the process that wrote the OSC chose the length, and
+// oscBufCap alone lets it be 2 KB of one word that no notification panel can
+// render.
+const notificationBodyByteLimit = 512
+
 // makeTerminalOutputFn builds the OutputHandler closure that broadcasts
 // data events to subscribers and pings the wake lock.
 func (svc *Service) makeTerminalOutputFn(terminalID string) terminal.OutputHandler {
@@ -928,12 +938,31 @@ func (svc *Service) broadcastTerminalSignal(terminalID string, sig terminal.Sign
 			Event:      &leapmuxv1.TerminalEvent_Bell{Bell: &leapmuxv1.TerminalBell{}},
 		})
 	case terminal.SignalNotification:
+		// The PTY wrote this, so ANY process with the terminal open chose the
+		// text: the user's shell, an `ssh` session whose prompt the REMOTE
+		// host writes, a `cat` of a hostile file, or a command an agent ran.
+		// The browser hands both fields to the OS notification service, so
+		// clean them here for the reason every other title writer cleans:
+		// a right-to-left override reorders what the reader sees, and an
+		// invisible run pads text past the width the visible characters fit.
+		//
+		// The title takes the name rule, because it IS a title. The body is a
+		// message, so it takes the strip and the cap WITHOUT the fold and the
+		// trim: a run of spaces inside a build summary is the sender's
+		// formatting, and nothing here has a reason to rewrite it.
+		//
+		// The body still loses every character a reader cannot see, the line
+		// breaks included. That is one definition of "unreadable" rather than
+		// two, and an OS notification renders a body as one block in any case.
+		// notificationBodyByteLimit caps it, because the process that wrote
+		// the OSC chose the length and the notification panel has no limit of
+		// its own.
 		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
 			Event: &leapmuxv1.TerminalEvent_Notification{
 				Notification: &leapmuxv1.TerminalNotification{
-					Title: sig.Title,
-					Body:  sig.Body,
+					Title: validate.CleanName(sig.Title),
+					Body:  validate.StripUnreadable(sig.Body, notificationBodyByteLimit),
 				},
 			},
 		})
@@ -949,10 +978,27 @@ func (svc *Service) broadcastTerminalSignal(terminalID string, sig terminal.Sign
 		// TerminalEvent_TitleChanged payload into a separate ptyTitle overlay
 		// that yields to an explicit rename, so the broadcast alone is the
 		// correct worker-side effect.
+		//
+		// CleanName runs here for the reason UpdateTerminalTitle runs it above,
+		// and this is the writer that needs it most: the bytes came from
+		// whatever process holds the PTY, which includes the REMOTE host of an
+		// `ssh` session and any command an agent ran. The browser renders the
+		// result as the tab label and the tab tooltip, so an OSC title of
+		// "‮txt.exe" reordered what the tab strip showed, and an OSC
+		// title could reach oscBufCap (2048 bytes), 16 times the limit every
+		// other writer of a tab title obeys.
+		//
+		// A title that cleans to nothing is a no-op, not a clear: the same
+		// answer UpdateTerminalTitle gives, and the answer the browser's own
+		// `if (!value.title) return` already expects.
+		title := validate.CleanName(sig.Title)
+		if title == "" {
+			return
+		}
 		svc.Watchers.BroadcastTerminalEvent(terminalID, &leapmuxv1.TerminalEvent{
 			TerminalId: terminalID,
 			Event: &leapmuxv1.TerminalEvent_TitleChanged{
-				TitleChanged: &leapmuxv1.TerminalTitleChanged{Title: sig.Title},
+				TitleChanged: &leapmuxv1.TerminalTitleChanged{Title: title},
 			},
 		})
 	case terminal.SignalProgress:

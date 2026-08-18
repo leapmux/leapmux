@@ -84,7 +84,7 @@ The panel warns you about three cases. You picked the branch you are already on.
 - **Branch Name** — type a name, or click the **Generate random name** button to fill in a three-word kebab-case slug (e.g. `brave-amber-otter`). The input placeholder is `feature-branch`.
 - **Base Branch** — the branch to start from. It is seeded to the current branch once branches load. Leaving it empty is allowed — the Worker defaults to the current HEAD, which lets you create a branch even on a detached or unborn HEAD.
 
-LeapMux validates the name against its own approximation of git's `check-ref-format` rules. It rejects an empty name, a name over 256 characters, control characters, the characters space `~ ^ : ? * [ ] \`, a name that starts with `/ . - @`, a name that ends with `/`, `.`, or `.lock`, and a name that holds `..`, `//`, or `/.`. A rejected name, or one an existing branch already uses, shows the reason below the input.
+LeapMux validates the name against its own approximation of git's `check-ref-format` rules. It rejects an empty name, a name over 256 characters, control characters, the characters space `~ ^ : ? * [ ] \ $ %`, a name that starts with `/ . - @`, a name that ends with `/`, `.`, or `.lock`, and a name that holds `..`, `//`, or `/.`. A rejected name, or one an existing branch already uses, shows the reason below the input.
 
 A new branch here carries the working copy with it, uncommitted changes included. The panel states this when it finds any.
 

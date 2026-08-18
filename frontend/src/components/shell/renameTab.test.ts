@@ -65,10 +65,23 @@ describe('renameTab', () => {
     const tab = agentTab()
     const d = deps(tab)
 
-    renameTab(d, tab, '  Refactor the $parser"  ')
+    renameTab(d, tab, '  Refactor   the\tparser  ')
 
     expect(d.patch).toHaveBeenCalledWith('a1', { title: 'Refactor the parser' })
     expect(mockRenameAgent).toHaveBeenCalledWith('worker-1', { agentId: 'a1', title: 'Refactor the parser' })
+  })
+
+  // The characters the rule used to strip. A tab title is a label that no sink
+  // reads as syntax, so the user gets back what the user typed.
+  it('keeps a quote, a backslash, a dollar and a percent', () => {
+    const tab = agentTab()
+    const d = deps(tab)
+
+    renameTab(d, tab, 'Ship $100 "raises" 50% c:\\tmp')
+
+    const want = 'Ship $100 "raises" 50% c:\\tmp'
+    expect(d.patch).toHaveBeenCalledWith('a1', { title: want })
+    expect(mockRenameAgent).toHaveBeenCalledWith('worker-1', { agentId: 'a1', title: want })
   })
 
   // 50 CJK characters is 50 characters and 150 BYTES. The worker cuts it to the
@@ -93,6 +106,17 @@ describe('renameTab', () => {
     renameTab(d, tab, 'Hello\u0000World')
 
     expect(mockRenameAgent).toHaveBeenCalledWith('worker-1', { agentId: 'a1', title: 'HelloWorld' })
+  })
+
+  // A pasted two-line title FOLDS to one line rather than running its two
+  // lines together, and the tab strip is one line either way.
+  it('folds a pasted newline to one space', () => {
+    const tab = agentTab()
+    const d = deps(tab)
+
+    renameTab(d, tab, 'Fix parser\nAdd tests')
+
+    expect(mockRenameAgent).toHaveBeenCalledWith('worker-1', { agentId: 'a1', title: 'Fix parser Add tests' })
   })
 
   // The sidebar tree used to patch the metadata and stop there, so a terminal
@@ -120,7 +144,7 @@ describe('renameTab', () => {
     const tab = agentTab({ title: 'Agent Olivia' })
     const d = deps(tab)
 
-    renameTab(d, tab, '  $$%%  ')
+    renameTab(d, tab, '  \u0000\u200B\uFEFF  ')
 
     expect(d.patch).not.toHaveBeenCalled()
     expect(mockRenameAgent).not.toHaveBeenCalled()
@@ -133,7 +157,7 @@ describe('renameTab', () => {
     const tab = agentTab({ title: 'Agent Olivia' })
     const d = deps(tab)
 
-    renameTab(d, tab, 'Agent Olivia$')
+    renameTab(d, tab, 'Agent Olivia\u200B')
 
     expect(d.patch).not.toHaveBeenCalled()
     expect(mockRenameAgent).not.toHaveBeenCalled()

@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/util/validate"
+
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -58,20 +60,62 @@ var titleCleaningCases = []struct {
 		want:  "HelloWorld",
 	},
 	{
-		name:  "the templating characters are stripped",
+		// The characters the rule used to strip. A title is a LABEL that no
+		// sink reads as syntax, so the ban only removed what the user typed.
+		name:  "a quote, a backslash, a dollar and a percent survive",
 		title: "100% of $HOME \"quoted\" c:\\path",
-		want:  "100 of HOME quoted c:path",
+		want:  "100% of $HOME \"quoted\" c:\\path",
 	},
 	{
 		name:  "surrounding whitespace is trimmed",
 		title: "   Deploy the hub   ",
 		want:  "Deploy the hub",
 	},
+	{
+		// A newline FOLDS to one space. Stripping it ran the last word of one
+		// line into the first word of the next.
+		name:  "a run of whitespace folds to one space",
+		title: "  Fix   parser \t\n Add\u00a0tests  ",
+		want:  "Fix parser Add tests",
+	},
+	{
+		// An invisible character carries no meaning in a label, and it can
+		// only hide text or pad the title past a limit the visible characters
+		// fit.
+		name:  "an invisible format character is stripped",
+		title: "\u202eDeploy\u200b the\u00ad hub\ufeff",
+		want:  "Deploy the hub",
+	},
 }
 
-// emptyingTitle cleans to nothing: every character is stripped or trimmed. It
-// is the input each handler answers with its own fallback.
-const emptyingTitle = "  $$%%  "
+// emptyingTitle cleans to nothing: every character is a control character, an
+// invisible format character, or whitespace. It is the input each handler
+// answers with its own fallback.
+//
+// It holds no `$` or `%` any more. Those are ordinary text now, so a title made
+// of them survives, and this constant would have stopped reaching the fallback
+// branch it exists to cover -- silently, because every assertion on it still
+// passed.
+//
+// TestEmptyingTitleStillEmpties below is what makes that silence loud. Nine
+// assertion sites read this constant, and each of them tests the ORDINARY path
+// once the rule keeps one of these characters.
+const emptyingTitle = "  \x00\u200b\ufeff\u00ad  "
+
+// TestEmptyingTitleStillEmpties guards the constant above, and not the code.
+//
+// Every other test in this file feeds emptyingTitle to a handler and asserts
+// the FALLBACK answer. None of them asserts that the rule empties it, so a
+// relaxation that keeps one of its characters turns all nine into tests of the
+// ordinary path while each assertion still passes, and the fallback branch
+// loses its only coverage with nothing to report it. That is exactly how the
+// `$$$` version of this constant decayed.
+func TestEmptyingTitleStillEmpties(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, validate.CleanName(emptyingTitle),
+		"every test that reads emptyingTitle covers the fallback branch only while the rule empties it")
+}
 
 // lastResponse decodes the newest response the writer captured into msg. The
 // title tests need the reply body, not only the absence of an error: a handler
@@ -256,7 +300,7 @@ func TestRenameAgent_KeepsTheCurrentTitleWhenCleaningEmptiesIt(t *testing.T) {
 
 	// This is the case the reply's title field exists for: the handler stored
 	// nothing, so a client that echoes its own request believes the tab is now
-	// called "  $$%%  ". The reply reports the title that is IN FORCE.
+	// called by emptyingTitle. The reply reports the title that is IN FORCE.
 	var resp leapmuxv1.RenameAgentResponse
 	lastResponse(t, w, &resp)
 	assert.Equal(t, "Agent Olivia", resp.GetTitle(),
@@ -634,7 +678,7 @@ func TestEnsureChildAgent_NamesTheAgentRowWhenCleaningEmptiesTheTitle(t *testing
 // DOES reach the column.
 //
 // When that second title cleans to empty, the row must keep the title the
-// upsert gave it. Before the fix EnsureChildAgent passed the raw "  $$%%  "
+// upsert gave it. Before the fix EnsureChildAgent passed the raw emptyingTitle
 // through and overwrote "Ship the parser" with it. Substituting the agent
 // row's pooled fallback on the registry path would overwrite it just as badly,
 // with "Agent <Name>".
@@ -693,30 +737,32 @@ func TestUpsertBackgroundTask_CleansTheModelSuppliedTitle(t *testing.T) {
 	}
 }
 
-// The accepted cost of one rule for every title column, asserted rather than
-// left as a surprise: a shell row whose title IS the command loses the
-// templating characters the rule strips. `$`, `%`, `"` and `\` all go.
+// A shell row whose title IS the command keeps every character of it. The row
+// reports title_is_command, so the client sets it in the monospace face, and
+// what it shows is what ran.
 //
-// The row still reports title_is_command, so the client still sets it as code.
-// What the row carries is a LABEL for a command that already runs somewhere
-// else -- it is not a command to copy back and run.
-func TestUpsertBackgroundTask_StripsTemplatingFromAShellCommandTitle(t *testing.T) {
+// This case is why the rule relaxed. One rule for every title column used to
+// mean that a command lost its quoting: `npm test --grep "$FOO"` reached the
+// registry as `npm test --grep FOO`, and the label identified a command that
+// nobody ran. The rule still holds for every title column -- it just no longer strips
+// a character that no sink reads as syntax.
+func TestUpsertBackgroundTask_KeepsAShellCommandTitleWhole(t *testing.T) {
 	t.Parallel()
 
+	const command = `npm test --grep "$FOO" 100% c:\tmp`
 	svc, w := upsertTaskWithTitle(t, bgtask.Upsert{
 		RowKey: "term-1", Kind: bgtask.KindShell,
-		Title:          `npm test --grep "$FOO" 100% c:\tmp`,
+		Title:          command,
 		TitleIsCommand: true,
 		Status:         bgtask.StatusRunning,
 	})
 
-	const want = `npm test --grep FOO 100 c:tmp`
 	row := registryRow(t, svc)
-	assert.Equal(t, want, row.Title, "the shell command title meets the same rule as every other title")
-	assert.EqualValues(t, 1, row.TitleIsCommand, "a stripped command is still a command, so the flag survives")
+	assert.Equal(t, command, row.Title, "the command reaches the row unchanged")
+	assert.EqualValues(t, 1, row.TitleIsCommand, "the flag survives")
 
 	broadcast := broadcastTask(t, w, "term-1")
-	assert.Equal(t, want, broadcast.GetTitle(), "the broadcast carries the cleaned command")
+	assert.Equal(t, command, broadcast.GetTitle(), "the broadcast carries the same command")
 	assert.True(t, broadcast.GetTitleIsCommand(), "the broadcast keeps the flag")
 }
 

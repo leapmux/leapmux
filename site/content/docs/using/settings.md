@@ -85,7 +85,7 @@ Fonts are a dual-tier setting like the other appearance rows — the account def
 
 The override unit is the whole family configuration (switch + list together), so a device override can never end up half-applied.
 
-LeapMux limits a font name to 128 UTF-8 bytes and a family to 32 names, strips the characters `"`, `\`, `$`, and `%` and the control characters, and refuses an empty name. 128 bytes holds 128 plain ASCII characters, but only approximately 42 CJK characters. For monospace, your custom fonts are tried first and the bundled `"Hack NF", Hack, "SF Mono", Consolas, monospace` stack is appended as a fallback; for UI fonts only your custom list applies. LeapMux bundles **Hack NF** (Hack Nerd Font) as a web font, so glyph-rich agent output renders correctly out of the box.
+LeapMux limits a font name to 128 UTF-8 bytes and a family to 32 names, strips the control characters and the invisible characters, refuses a repeated space or a leading or trailing space, and refuses an empty name. 128 bytes holds 128 plain ASCII characters, but only approximately 42 CJK characters. For monospace, your custom fonts are tried first and the bundled `"Hack NF", Hack, "SF Mono", Consolas, monospace` stack is appended as a fallback; for UI fonts only your custom list applies. LeapMux bundles **Hack NF** (Hack Nerd Font) as a web font, so glyph-rich agent output renders correctly out of the box.
 
 > **Tip:** Custom fonts only take effect for families actually installed on the machine running the browser. List several fallbacks so the app degrades gracefully on devices that lack your first choice.
 

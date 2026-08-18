@@ -171,11 +171,18 @@ message RenameAgentRequest {
 
 message RenameAgentResponse {
   // The title the worker actually STORED, which is not always the title the
-  // request carried: the worker cuts the title to 128 UTF-8 bytes and strips
-  // the forbidden characters, and it never refuses it. A request whose title
-  // cleans to nothing changes no row, and this field then reports the title
-  // the agent still holds. A client that does not apply the same rule locally
-  // reads the effective title from here instead of echoing what it sent.
+  // request carried. The worker strips the control characters and the
+  // invisible format characters, folds each run of whitespace to one space,
+  // trims both ends, and cuts what remains to 128 UTF-8 bytes -- IN THAT
+  // ORDER. Visible punctuation survives, `"`, `\`, `$` and `%` included, and
+  // the worker never refuses a title. A request whose title cleans to nothing
+  // changes no row, and this field then reports the title the agent still
+  // holds. A client that does not apply the same rule locally reads the
+  // effective title from here instead of echoing what it sent.
+  //
+  // The order matters to a client that DOES apply the rule locally. A rule
+  // that cut first returns the empty string for a title of 200 invisible
+  // characters followed by "Plan", because the cut takes "Plan" with it.
   string title = 1;
 }
 

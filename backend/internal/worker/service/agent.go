@@ -75,12 +75,12 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 
-			// A client-set title is CLEANED, never refused: CleanName cuts it
-			// to validate.NameByteLimit bytes and strips the forbidden
-			// characters. RenameAgent, UpdateTerminalTitle and the plan
-			// auto-rename apply the same rule, so every writer of a `title`
-			// column enforces one rule and none of them fails the RPC over a
-			// title the user can neither see nor correct.
+			// A client-set title is CLEANED, never refused, with the rule
+			// that validate.CleanName documents. RenameAgent,
+			// UpdateTerminalTitle and the plan auto-rename apply the same
+			// rule, so every writer of a `title` column enforces one rule and
+			// none of them fails the RPC over a title the user can neither see
+			// nor correct.
 			title := validate.CleanName(r.GetTitle())
 			// Empty title means "you pick one" -- the client sent none, or
 			// cleaning removed every character of the one it sent. Default to

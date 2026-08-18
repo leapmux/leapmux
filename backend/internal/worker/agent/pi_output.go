@@ -470,11 +470,14 @@ func piExtractDescription(input json.RawMessage, toolName string) string {
 		Prompt      string `json:"prompt"`
 	}
 	if json.Unmarshal(input, &in) == nil {
+		// Both branches take the same cap. The description arrives as a
+		// label the model wrote, so it is no more bounded than the prompt is,
+		// and a caller that reads one branch must not have to know which.
 		if in.Description != "" {
-			return in.Description
+			return bgtask.CleanTitleRunes(bgtask.FirstLine(in.Description), 80)
 		}
 		if in.Prompt != "" {
-			return bgtask.TruncateRunes(bgtask.FirstLine(in.Prompt), 80)
+			return bgtask.CleanTitleRunes(bgtask.FirstLine(in.Prompt), 80)
 		}
 	}
 	return toolName

@@ -88,33 +88,54 @@ func validateEnum(allowed []settings.EnumValue) func(string) error {
 }
 
 // validateFontFamily REFUSES a stack longer than MaxFonts, and any family
-// name that is not already in its sanitized form — no control characters,
-// no quotes, no backslash, none of the shell metacharacters $ and %,
-// trimmed, non-empty, at most 128 bytes.
+// name that `validate.SanitizeName` does not return unchanged.
 //
-// The length cap comes first, for the reason validateKeybindings caps its
-// own list: a per-name limit caps one entry and says nothing about how
-// many entries the list holds, and this key is one an account can grow
-// without limit.
+// The list cap comes first, for the reason validateKeybindings caps its own
+// list: a per-name limit caps one entry and says nothing about how many
+// entries the list holds, and this key is one an account can grow without
+// limit. The per-name BYTE cap comes second, and it comes before the two
+// `%q` verbs below, which each expand an unprintable byte roughly fourfold:
+// without it, one 4 MiB name (the hub's whole request cap) turns into a
+// 16 MiB error string in an uncapped Connect response and in a log line.
 //
-// A validator cannot rewrite the value it checks, so refusing is the only
-// way to keep the stored name equal to the sanitized one. Discarding the
-// sanitized copy and reporting only its error let a quoted name through:
-// `SanitizeName` STRIPS a `"` rather than failing on it, so the raw name
-// was stored and then emitted into a CSS `font-family` value, where the
-// quote ends the declaration. `validate.ValidateSessionID` refuses the
-// same way, for the same reason.
+// This function refuses rather than rewrites, although the settings framework
+// does supply a rewrite hook (Key.WithNormalize, which ApplyPartial runs).
+// Refusing is a decision and not a limit: a session ID and a font name are
+// both values a client SENT, and a silent rewrite of either gives the client
+// back something it did not ask for. A tab title takes the other answer,
+// because it has no client to report to.
+//
+// The error reports the SANITIZED FORM rather than a list of causes.
+// SanitizeName rewrites as well as strips, so a list of causes cannot stay
+// correct: `Fira Code` with a no-break space is refused, and a no-break
+// space is neither a control character, nor an invisible format character,
+// nor a repeated space. `%q` escapes both strings, so the user reads
+// `"Fira Code"` against `"Fira Code"` and can see the difference that
+// the screen hides.
+//
+// The rule no longer refuses a quote, a backslash, a `$` or a `%`, and the
+// CSS stays safe: `buildFontFamily` in frontend/src/lib/fontStack.ts escapes
+// a quote and a backslash where the name is interpolated into the
+// `font-family` value. That escape is the guard worth having, because it
+// holds for whatever the store holds — including the hand-edited
+// localStorage document that never reaches this function at all. A second
+// character ban here only duplicated it, in two languages that drift apart.
+// A font named `Fira$Code` matches no installed family, and that is all the
+// harm it does.
 func validateFontFamily(v FontFamilyValue) error {
 	if len(v.Fonts) > MaxFonts {
 		return fmt.Errorf("too many font names: %d (max %d)", len(v.Fonts), MaxFonts)
 	}
-	for _, name := range v.Fonts {
+	for i, name := range v.Fonts {
+		if len(name) > validate.NameByteLimit {
+			return fmt.Errorf("invalid font name at index %d: must be at most %d bytes (got %d)", i, validate.NameByteLimit, len(name))
+		}
 		sanitized, err := validate.SanitizeName(name)
 		if err != nil {
 			return fmt.Errorf("invalid font name %q: %w", name, err)
 		}
 		if sanitized != name {
-			return fmt.Errorf("invalid font name %q: must not contain quotes, backslashes, $, %%, control characters, or leading or trailing spaces", name)
+			return fmt.Errorf("invalid font name %q: must be its cleaned form %q", name, sanitized)
 		}
 	}
 	return nil

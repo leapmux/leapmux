@@ -235,10 +235,17 @@ test.describe('Terminal', () => {
    * on the next reload. Both rename affordances now go through one client-side
    * write point.
    *
-   * The title carries characters the rule strips, so this also proves the two
-   * sides agree: the tab strip shows the cleaned title straight away, and the
-   * worker stores that same title rather than the raw one. The worker RPC is
-   * what the poll asks -- the tab label alone is optimistic local state.
+   * The title carries whitespace the rule folds AND punctuation the rule keeps,
+   * so this proves both halves of the agreement: the tab strip shows the
+   * cleaned title straight away, and the worker stores that same title rather
+   * than the raw one. The worker RPC is what the poll asks -- the tab label
+   * alone is optimistic local state.
+   *
+   * The browser half asserts on `textContent` rather than with `toContainText`.
+   * Playwright normalizes whitespace for a string expectation, so
+   * `toContainText` trims and collapses BOTH sides: the raw typed title and the
+   * folded one compare equal under it, and the assertion passed whether the
+   * browser cleaned the title or showed the text the user typed.
    */
   test('a sidebar rename stores the cleaned title on the worker', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     await openTerminalViaUI(page)
@@ -252,15 +259,21 @@ test.describe('Terminal', () => {
     await leaf.dblclick()
     const renameInput = leaf.locator('input')
     await expect(renameInput).toBeVisible()
-    await renameInput.fill('Build $watcher "1"')
+    await renameInput.fill('  Build \t $watcher   "1"  ')
     await renameInput.press('Enter')
 
-    await expect(terminalTab).toContainText('Build watcher 1')
+    await expect.poll(
+      async () => (await terminalTab.textContent())?.includes('Build $watcher "1"'),
+      'the tab strip must show the CLEANED title, with the whitespace run folded',
+    ).toBe(true)
+    // …and it must not still show the raw text, which the fold rewrote. This is
+    // the half a whitespace-normalizing matcher cannot see.
+    expect(await terminalTab.textContent()).not.toContain('Build \t $watcher')
 
     const { hubUrl, adminToken, workerId } = leapmuxServer
     await expect.poll(async () => {
       const terminals = await listTerminalsViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
       return terminals.map(t => t.title)
-    }, 'the sidebar rename must reach the worker, holding the cleaned title').toContain('Build watcher 1')
+    }, 'the sidebar rename must reach the worker, holding the cleaned title').toContain('Build $watcher "1"')
   })
 })

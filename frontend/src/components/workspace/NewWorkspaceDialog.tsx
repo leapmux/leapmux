@@ -73,7 +73,13 @@ export const NewWorkspaceDialog: Component<NewWorkspaceDialogProps> = (props) =>
     let createdWorkspaceId: string | undefined
     try {
       const wsResp = await workspaceClient.createWorkspace({
-        title: title().trim(),
+        // Send the CLEANED title, not the raw one. `titleError` above already
+        // runs `sanitizeName`, and the hub applies the same rule to whatever
+        // arrives, so sending the raw text made the dialog show one title
+        // while the hub stored another until the next refresh overwrote it.
+        // The gap widened when the rule started to FOLD: a plain double space
+        // is a far more common typo than a control character was.
+        title: sanitizeName(title()).value,
       })
       if (!wsResp.workspaceId)
         throw new Error('No workspace ID in response')

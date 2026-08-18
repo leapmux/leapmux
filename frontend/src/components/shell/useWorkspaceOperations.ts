@@ -8,6 +8,7 @@ import * as workerRpc from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
 import { SectionType } from '~/generated/leapmux/v1/section_pb'
 import { appendPosition, mid } from '~/lib/lexorank'
+import { sanitizeName } from '~/lib/validate'
 import { isWorkspaceSection } from './sectionUtils'
 
 export interface SectionGroup {
@@ -162,7 +163,12 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
 
   const commitRename = async () => {
     const id = renamingWorkspaceId()
-    const title = renameValue().trim()
+    // Send the CLEANED title, not the raw one: the hub applies this rule to
+    // whatever arrives, so the raw text left the sidebar showing one name
+    // while the hub stored another until the next refresh overwrote it. An
+    // empty result means nothing survived the clean, which is the same answer
+    // an empty input gets.
+    const title = sanitizeName(renameValue()).value
     if (!id || !title) {
       cancelRename()
       return

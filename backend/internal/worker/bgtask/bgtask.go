@@ -33,18 +33,36 @@ import (
 // burst of one cannot push out the other.
 const MaxTasks = 64
 
-// SanitizeRowKey strips control characters (bytes < 0x20) from a
-// provider-supplied registry row key. Row keys reach DOM data-attributes and
-// log lines; at least one provider (Cursor) ships toolCallIds with an embedded
-// newline. Applied in the neutral layer (the sink entry points) so every
-// provider is covered without a per-integration fix.
+// RowKeyByteLimit caps a provider-supplied registry row key.
+//
+// A row key is not a name, so NameByteLimit is the wrong number for it: it is
+// an opaque provider identifier, and a UUID with a prefix already runs past
+// 64 bytes. The cap exists because the PROVIDER chooses the length and
+// nothing else on the path does: the key is a primary key column, it is held
+// in memory for the life of the agent, and every registry snapshot broadcast
+// carries it again. MaxTasks caps how MANY rows exist and says nothing about
+// how large one is.
+const RowKeyByteLimit = 256
+
+// SanitizeRowKey strips what a reader cannot see from a provider-supplied
+// registry row key, and caps it at RowKeyByteLimit bytes.
+//
+// A row key reaches a log line (`slog.Warn(..., "row_key", rowKey)`) and the
+// label of a registry row that carries neither a title nor a description. At
+// least one provider (Cursor) ships toolCallIds with an embedded newline.
+// This runs in the neutral layer (the sink entry points), so every provider
+// is covered without a per-integration fix.
+//
+// It uses validate.StripUnreadable rather than its own loop, so the set of
+// characters a reader cannot see has one definition. The old loop tested
+// `r < 0x20`, which let DEL, the whole C1 block and every bidi override
+// through, and it used strings.Map, which grows one invalid byte into a
+// 3-byte U+FFFD.
+//
+// A row key is a KEY, so the rule does NOT fold whitespace and does not trim:
+// two keys that differ only in their whitespace must stay two keys.
 func SanitizeRowKey(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 {
-			return -1
-		}
-		return r
-	}, s)
+	return validate.StripUnreadable(s, RowKeyByteLimit)
 }
 
 // FirstLine returns the content up to the first newline (trimmed). Empty input
@@ -69,6 +87,28 @@ func TruncateRunes(s string, max int) string {
 		return string(r[:max])
 	}
 	return s
+}
+
+// CleanTitleRunes cleans s with the shared title rule and then cuts it to at
+// most max runes. Call it instead of TruncateRunes wherever the cut result
+// becomes a title.
+//
+// The order is CLEAN FIRST, CUT SECOND, for the reason validate.CleanName
+// gives: a cut that runs first spends its budget on characters the clean is
+// about to remove. A spawn prompt whose first line opens with `max`
+// zero-width characters lost its whole title that way -- the cut kept the
+// invisible run, the clean then emptied it, and the row kept the title it
+// already had.
+//
+// The trailing trim is required because the rune cut can land on the one
+// space that separated two words, exactly as it is inside CleanName.
+//
+// The result is already what CleanName returns for it, so the sink's own
+// CleanName is a no-op on it: the rule is idempotent, and max runes of a
+// value that is at most NameByteLimit bytes stays at most NameByteLimit
+// bytes.
+func CleanTitleRunes(s string, max int) string {
+	return strings.TrimSpace(TruncateRunes(validate.CleanName(s), max))
 }
 
 // Kind discriminates subagent rows (an openable transcript tab) from shell
@@ -209,16 +249,16 @@ type Upsert struct {
 }
 
 // CleanTitle returns a copy of u whose Title meets the rule that every title
-// column in the worker shares: validate.CleanName cuts the title to a byte
-// limit, then strips the control characters and " \ $ %. The registry applier
-// calls it, and so does the recording sink the provider tests assert against,
-// so the two cannot disagree about what a provider's title becomes.
+// column in the worker shares: validate.CleanName, whose doc holds the steps.
+// The registry applier calls it, and so does the recording sink the provider
+// tests assert against, so the two cannot disagree about what a provider's
+// title becomes.
 //
-// A row that sets TitleIsCommand loses the shell templating characters with
-// the rest: `npm test --grep "$FOO"` reads as `npm test --grep FOO`. That is
-// the accepted cost of one rule for every title column. A registry title is a
-// LABEL for a command that already runs somewhere else. It is not a command to
-// copy back and run.
+// A row that sets TitleIsCommand keeps its command whole, quoting included.
+// The rule used to strip `"`, `\`, `$` and `%`, so `npm test --grep "$FOO"`
+// reached the row as `npm test --grep FOO` and the label identified a command
+// that nobody ran. Nothing depended on that strip: the command executes from
+// the provider's own field, never from this title.
 //
 // A Title that the rule empties says what a blank Title says: this upsert
 // carries no usable title. So it takes the same answer -- the row keeps the

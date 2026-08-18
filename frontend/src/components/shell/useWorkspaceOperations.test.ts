@@ -11,12 +11,14 @@ interface TabRefLike { tabType: TabType, tabId: string }
 interface WorkerTabsLike { workerId: string, tabs: TabRefLike[] }
 
 const mockDeleteWorkspace = vi.fn<(req: { workspaceId: string }) => Promise<{ workerTabs: WorkerTabsLike[] }>>()
+const mockRenameWorkspace = vi.fn<(req: { workspaceId: string, title: string }) => Promise<unknown>>()
 const mockCleanupWorkspace = vi.fn<(workerId: string, req: { tabs: TabRefLike[] }) => Promise<unknown>>()
 const mockShowWarnToast = vi.fn()
 
 vi.mock('~/api/clients', () => ({
   workspaceClient: {
     deleteWorkspace: (...args: unknown[]) => mockDeleteWorkspace(...args as [{ workspaceId: string }]),
+    renameWorkspace: (...args: unknown[]) => mockRenameWorkspace(...args as [{ workspaceId: string, title: string }]),
   },
   sectionClient: {},
 }))
@@ -295,5 +297,67 @@ describe('useworkspaceoperations buildsectiongroups', () => {
     )
     expect(groups.get('s-archived')).toEqual(['w1'])
     expect(groups.get('s-progress')).toEqual([])
+  })
+})
+
+/**
+ * `commitRename` sends the CLEANED title, not the raw one.
+ *
+ * The hub applies `validate.SanitizeName` to whatever arrives, so a raw send
+ * left the sidebar showing one name while the hub stored another until the
+ * next refresh overwrote it. The gap widened when the rule started to FOLD: a
+ * plain double space is a far more common typo than a control character was.
+ */
+describe('useworkspaceoperations commitrename', () => {
+  beforeEach(() => {
+    mockRenameWorkspace.mockReset()
+    mockRenameWorkspace.mockResolvedValue({})
+    mockShowWarnToast.mockReset()
+  })
+
+  async function rename(typed: string) {
+    const h = harness()
+    try {
+      h.ops.startRename({ id: 'ws-1', title: 'Old' } as Workspace)
+      h.ops.onRenameInput(typed)
+      await h.ops.commitRename()
+    }
+    finally {
+      h.dispose()
+    }
+  }
+
+  it.each([
+    ['a repeated space', 'Auth  fix', 'Auth fix'],
+    ['a tab', 'Auth\tfix', 'Auth fix'],
+    ['surrounding whitespace', '  Auth fix  ', 'Auth fix'],
+    ['a newline', 'Auth\nfix', 'Auth fix'],
+    ['a no-break space', 'Auth\u00A0fix', 'Auth fix'],
+    ['an invisible format character', 'Auth\u200Bfix', 'Authfix'],
+    ['a control character', 'Auth\u0000fix', 'Authfix'],
+  ])('sends the cleaned title when the input carries %s', async (_label, typed, stored) => {
+    await rename(typed)
+    expect(mockRenameWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-1', title: stored })
+  })
+
+  // The punctuation the rule now KEEPS must reach the hub untouched, so the
+  // clean does not become a second, stricter character ban on this side.
+  it('sends visible punctuation unchanged', async () => {
+    await rename('100% of $HOME "quoted"')
+    expect(mockRenameWorkspace).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      title: '100% of $HOME "quoted"',
+    })
+  })
+
+  // A title that cleans to nothing is not a rename. It takes the same answer
+  // an empty input takes: cancel, and send no RPC.
+  it.each([
+    ['an empty input', ''],
+    ['only whitespace', '   '],
+    ['only invisible characters', '\u200B\uFEFF\u00AD'],
+  ])('sends nothing for %s', async (_label, typed) => {
+    await rename(typed)
+    expect(mockRenameWorkspace).not.toHaveBeenCalled()
   })
 })
