@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -834,4 +835,54 @@ func TestPi_ProviderForModel_LooksUpCatalog(t *testing.T) {
 	assert.Equal(t, "openai-codex", a.providerForModel("gpt-5.5"))
 	assert.Equal(t, "anthropic", a.providerForModel("claude-3.5"))
 	assert.Equal(t, "openai-codex", a.providerForModel("unknown"), "fallback to current provider")
+}
+
+// TestPiLaunchDefaults pins the pair Pi is launched on, and the fallback
+// catalog entry that describes it.
+//
+// The pair is a LAUNCH default, not a label: applyModel sends
+// {provider, modelId} together, so a pair Pi does not carry fails set_model at
+// every startup and the agent then answers nothing. No unit test can ask the
+// installed Pi whether the pair exists -- that is what the E2E specs do -- so
+// this pins the half that IS checkable: the constants and the entry that
+// describes them cannot drift apart.
+func TestPiLaunchDefaults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the fallback catalog describes the default model", func(t *testing.T) {
+		require.Len(t, piDefaultModels, 1, "the fallback stands in for one model until Pi reports its catalog")
+		entry := piDefaultModels[0]
+		assert.Equal(t, PiDefaultModel, entry.Id)
+		assert.True(t, entry.IsDefault)
+		assert.Equal(t, PiDefaultThinkingLevel, entry.DefaultEffort)
+		assert.Equal(t, piDefaultEfforts, entry.SupportedEfforts)
+	})
+
+	// The display name is hand-written beside the id, so it is the half that
+	// goes stale when the id moves: the picker would show "GPT-5.5" for a
+	// glm-5.3 agent. Compared case-insensitively, because the label
+	// capitalizes what the id spells in lower case.
+	t.Run("the display name names the default model", func(t *testing.T) {
+		assert.True(t, strings.EqualFold(piDefaultModels[0].DisplayName, PiDefaultModel),
+			"display name %q must name model %q", piDefaultModels[0].DisplayName, PiDefaultModel)
+	})
+
+	// A cold agent -- no catalog yet, no provider chosen -- is the state every
+	// launch starts in, and it is the state the failing pair was sent from.
+	t.Run("a cold agent resolves the default provider", func(t *testing.T) {
+		cold := &PiAgent{processBase: processBase{agentID: "test-agent"}}
+		assert.Equal(t, PiDefaultProvider, cold.providerForModel(PiDefaultModel))
+		assert.Equal(t, PiDefaultProvider, cold.providerForModel("anything-else"))
+	})
+
+	// Once Pi reports its catalog, the catalog wins -- the default is only a
+	// fallback, so a real model's own provider must override it.
+	t.Run("the reported catalog overrides the default provider", func(t *testing.T) {
+		warm := &PiAgent{
+			processBase:    processBase{agentID: "test-agent"},
+			modelProviders: map[string]string{"some-model": "some-provider"},
+		}
+		assert.Equal(t, "some-provider", warm.providerForModel("some-model"))
+		assert.Equal(t, PiDefaultProvider, warm.providerForModel("absent-model"))
+	})
 }
