@@ -395,7 +395,12 @@ func (h *OutputHandler) WriteSubagentEndDividers(childAgentIDs []string, status 
 // and the registry row key, so the two roles collapse to one string.
 func (s *agentOutputSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
 	ctx := s.h.bgTaskCtx()
-	providerChildKey = bgtask.SanitizeRowKey(providerChildKey)
+	// Refused, not rewritten -- see bgtask.ValidateRowKey. The key identifies
+	// the registry row this child links to, so a rewrite here would link the
+	// child to a DIFFERENT provider's row.
+	if err := bgtask.ValidateRowKey(providerChildKey); err != nil {
+		return "", fmt.Errorf("child registry key: %w", err)
+	}
 	// The MODEL supplies this title -- Claude's Task description, Codex's
 	// collab prompt line, an ACP spawn label, Pi's subagent title -- so it
 	// arrives with no length limit and no character rule. Clean it HERE
@@ -801,9 +806,9 @@ func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 
 // applyAndBroadcast runs a registry mutation, broadcasts the post-mutation
 // snapshot when it changed, and writes the closing divider for a child
-// transcript the mutation ended. The sanitize+broadcast+close-the-transcript
+// transcript the mutation ended. The validate+broadcast+close-the-transcript
 // contract is shared by every sink registry primitive; centralizing it here
-// means a future mutation can't forget to sanitize its key, skip a broadcast,
+// means a future mutation can't forget to check its key, skip a broadcast,
 // or leave a subagent transcript that simply stops.
 //
 // The apply callback runs with the cache lock held internally (it acquires and
@@ -811,7 +816,14 @@ func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
 // the lock -- a slow gRPC consumer or a DB write cannot serialize every other
 // registry op for this root.
 func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentID, key string) (registryChange, error)) error {
-	change, err := apply(s.rootAgentID, bgtask.SanitizeRowKey(rowKey))
+	// The key is checked and passed through unchanged, never rewritten: a
+	// rewrite is not injective, and two provider keys that map onto one string
+	// become one registry row (see bgtask.ValidateRowKey). Refusing here fails
+	// the one mutation and leaves every other row addressable.
+	if err := bgtask.ValidateRowKey(rowKey); err != nil {
+		return err
+	}
+	change, err := apply(s.rootAgentID, rowKey)
 	if err != nil {
 		return err
 	}
@@ -827,7 +839,10 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 }
 
 func (s *agentOutputSink) UpsertBackgroundTask(task bgtask.Upsert) error {
-	task.RowKey = bgtask.SanitizeRowKey(task.RowKey)
+	// No key normalization here: applyAndBroadcast below checks the key, and
+	// the value it checks is the one the closure carries, so the two cannot
+	// address different rows.
+	//
 	// The parent agent id is the agent that owns THIS sink. Providers that
 	// spawn subagents don't need to thread it through every call site -- the
 	// sink knows its own identity. For a root sink this is the root; for a
@@ -863,18 +878,23 @@ func (s *agentOutputSink) CloseBackgroundTask(rowKey string, status bgtask.Statu
 // worker restart, or the first registry touch for a root), renameRowKeyLocked
 // sees an empty Rows slice and returns false, so the DB rename must NOT be
 // gated on the in-memory rename succeeding -- seed first, then re-key.
-// oldKey is sanitized the same way every other registry primitive sanitizes its
-// key: the spawn row was opened under the SANITIZED toolCallId
-// (UpsertBackgroundTask sanitizes at the sink boundary), so the raw toolCallId
-// a provider passes as RenameFrom never matches unless it is sanitized here too.
+// Both keys are checked and neither is rewritten, the same way every other
+// registry primitive treats a key. The spawn row was opened under the
+// toolCallId the provider sent, so the raw toolCallId it passes as RenameFrom
+// matches by construction -- a rewrite on one path and not the other is
+// exactly how a rename stops finding its own row.
 // The DB write runs BEFORE the cache mutation commits: on a DB error the cache
 // stays keyed at oldKey (matching the DB), not the half-renamed newKey.
 func (s *agentOutputSink) RenameBackgroundTask(oldKey, newKey string) error {
 	if oldKey == "" || newKey == "" {
 		return nil
 	}
-	newKey = bgtask.SanitizeRowKey(newKey)
-	oldKey = bgtask.SanitizeRowKey(oldKey)
+	if err := bgtask.ValidateRowKey(oldKey); err != nil {
+		return fmt.Errorf("rename from: %w", err)
+	}
+	if err := bgtask.ValidateRowKey(newKey); err != nil {
+		return fmt.Errorf("rename to: %w", err)
+	}
 	ctx := s.h.bgTaskCtx()
 	var pendingBroadcast []bgtask.Item
 	cache := s.h.bgTaskCache(s.rootAgentID)

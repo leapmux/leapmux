@@ -8,6 +8,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -94,65 +95,102 @@ func TestItemsToProto(t *testing.T) {
 	assert.Equal(t, "b", out[1].GetId())
 }
 
-func TestSanitizeRowKey(t *testing.T) {
-	// Embedded newline (observed in Cursor toolCallIds) is stripped, not replaced.
-	assert.Equal(t, "call-abcfc-def", SanitizeRowKey("call-abc\nfc-def"))
-	// Tab + carriage return + NUL stripped.
-	assert.Equal(t, "key", SanitizeRowKey("ke\ty\r\x00"))
-	// Clean key unchanged.
-	assert.Equal(t, "task-1", SanitizeRowKey("task-1"))
-	// Empty stays empty.
-	assert.Empty(t, SanitizeRowKey(""))
-	// Printable punctuation (>= 0x20) preserved.
-	assert.Equal(t, "a/b:c-d_e.1", SanitizeRowKey("a/b:c-d_e.1"))
-	// DEL and the whole C1 block are control characters too. The old rule
-	// tested `r < 0x20` and let both through; validate.IsUnreadable reports
-	// the whole Cc category, which is U+0000-U+001F AND U+007F-U+009F.
-	assert.Equal(t, "ab", SanitizeRowKey("a\x7fb"))
-	assert.Equal(t, "ab", SanitizeRowKey("a\u009bb"))
-	// An invisible format character is stripped for the reason a control
-	// character is: the key reaches a log line, and a right-to-left override
-	// reverses what the reader of that line sees.
-	assert.Equal(t, "ab", SanitizeRowKey("a\u202eb"))
-	assert.Equal(t, "ab", SanitizeRowKey("a\u200b\u00adb"))
-	// A row key is a KEY, so an interior space is not folded and the ends are
-	// not trimmed: two keys that differ only in whitespace stay two keys.
-	assert.Equal(t, " a  b ", SanitizeRowKey(" a  b "))
-	// An invalid byte is dropped rather than grown into a 3-byte U+FFFD. The
-	// old strings.Map turned 1 byte into 3, which is how a key could get
-	// LONGER than the value the provider sent.
-	assert.Equal(t, "ab", SanitizeRowKey("a\xffb"))
-	// A U+FFFD the provider sent deliberately survives, because it decodes
-	// with size 3 and is neither a control nor an invisible character.
-	assert.Equal(t, "a�b", SanitizeRowKey("a�b"))
-}
+// A row key is an IDENTITY, so the rule REFUSES and never rewrites. The
+// earlier version stripped what a reader cannot see and capped the length,
+// which made it non-injective: two provider keys mapped onto one string, the
+// second background task overwrote the first's registry row, and one of the
+// two vanished from the sidebar.
+func TestValidateRowKey(t *testing.T) {
+	t.Parallel()
 
-// TestSanitizeRowKeyCapsLength pins the cap that nothing else on the path
-// supplies. A row key is a primary key column, it stays in memory for the
-// life of the agent, and every registry snapshot broadcast carries it again.
-// MaxTasks caps how MANY rows exist and says nothing about how large one is.
-func TestSanitizeRowKeyCapsLength(t *testing.T) {
-	assert.Len(t, SanitizeRowKey(strings.Repeat("a", RowKeyByteLimit)), RowKeyByteLimit,
-		"a key exactly at the limit is kept whole")
-	assert.Len(t, SanitizeRowKey(strings.Repeat("a", RowKeyByteLimit+1)), RowKeyByteLimit,
-		"one byte over the limit loses one byte")
-	assert.Len(t, SanitizeRowKey(strings.Repeat("a", 100_000)), RowKeyByteLimit,
-		"a provider cannot store a key of any size it likes")
+	t.Run("accepts the keys providers actually send", func(t *testing.T) {
+		for _, key := range []string{
+			"task-1",
+			"call-abc123",
+			"a/b:c-d_e.1",
+			"toolu_01A2b3C4d5E6f7G8h9",
+			strings.Repeat("a", RowKeyByteLimit),
+		} {
+			assert.NoErrorf(t, ValidateRowKey(key), "%q must be accepted", key)
+		}
+	})
 
-	// The cut lands at a rune boundary, never inside one: a partial rune is
-	// invalid UTF-8, which fails the proto broadcast marshal.
-	//
-	// RowKeyByteLimit is 256, which is not a multiple of 3, so a run of 3-byte
-	// runes puts the limit inside the 86th rune. The cut moves back to 255
-	// bytes.
-	cut := SanitizeRowKey(strings.Repeat("中", 100))
-	assert.True(t, utf8.ValidString(cut), "the cut result must be valid UTF-8")
-	assert.Equal(t, strings.Repeat("中", RowKeyByteLimit/3), cut)
+	// The empty key means "this call carries no registry linkage".
+	// EnsureChildAgent and RenameBackgroundTask each test for it, so the rule
+	// must not turn it into an error.
+	t.Run("accepts the empty key", func(t *testing.T) {
+		assert.NoError(t, ValidateRowKey(""))
+	})
 
-	// The cap counts the KEPT bytes, not the input bytes: a key padded with
-	// invisible characters does not lose the text behind them.
-	padded := strings.Repeat("\u200b", 1000) + "call-abc"
-	assert.Equal(t, "call-abc", SanitizeRowKey(padded))
+	// The characters the OLD rule stripped are accepted now. Stripping them
+	// was the collision: at least one provider (Cursor) ships toolCallIds with
+	// an embedded newline, so refusing them would drop that provider's rows,
+	// and rewriting them merged distinct keys. They are cleaned where the key
+	// is READ instead -- rowTitle in BackgroundTaskList.tsx.
+	t.Run("accepts what a reader cannot see, because a key is not prose", func(t *testing.T) {
+		for _, key := range []string{
+			"call-abc\nfc-def", // the observed Cursor shape
+			"ke\ty\r\x00",      // tab, carriage return, NUL
+			"a\x7fb",           // DEL
+			"a\u009bb",         // a C1 control
+			"a\u202eb",         // a right-to-left override
+			"a\u200b\u00adb",   // a zero width space and a soft hyphen
+			" a  b ",           // untrimmed and unfolded
+		} {
+			assert.NoErrorf(t, ValidateRowKey(key), "%q must be accepted verbatim", key)
+		}
+	})
+
+	// The invariant the whole rule exists for. Two keys that differ AT ALL
+	// must stay two keys, so no accepted pair may share an identity. The old
+	// rule mapped each of these pairs onto one string.
+	t.Run("tells apart every pair the old rewrite merged", func(t *testing.T) {
+		for _, pair := range [][2]string{
+			{"call-abc", "call-a\u200bbc"}, // an invisible character
+			{"call-abc", "call-abc\n"},     // a trailing newline
+			{"call-abc", "call\u202e-abc"}, // a bidirectional override
+			{"call abc", "call  abc"},      // a run the name rule would fold
+			{"call-abc", " call-abc"},      // an edge the name rule would trim
+			{"a\u200bb", "ab"},             // a key and the old strip's output for it
+		} {
+			require.NoErrorf(t, ValidateRowKey(pair[0]), "%q must be accepted for this case to bite", pair[0])
+			require.NoErrorf(t, ValidateRowKey(pair[1]), "%q must be accepted for this case to bite", pair[1])
+			assert.NotEqualf(t, pair[0], pair[1],
+				"%q and %q must stay two keys: one registry row for two tasks loses one of them", pair[0], pair[1])
+		}
+	})
+
+	// Refused, and refused rather than cut. A cap is not injective -- no total
+	// function onto a bounded set is -- so the bound is kept by saying no.
+	t.Run("refuses a key past the byte limit", func(t *testing.T) {
+		err := ValidateRowKey(strings.Repeat("a", RowKeyByteLimit+1))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be at most 256 bytes")
+		assert.Contains(t, err.Error(), "got 257", "the message must say how far over the key is")
+
+		assert.Error(t, ValidateRowKey(strings.Repeat("a", 100_000)))
+
+		// The limit counts BYTES. 86 three-byte runes is 258 bytes and 86
+		// characters, so a character count would have accepted it.
+		assert.NoError(t, ValidateRowKey(strings.Repeat("中", 85)))
+		assert.Error(t, ValidateRowKey(strings.Repeat("中", 86)))
+	})
+
+	// BackgroundTaskItem.id is a proto `string`. A marshal of an invalid one
+	// fails the WHOLE registry broadcast, so this is the one rewrite that
+	// would be worth its collision -- and refusing costs nothing, because a
+	// provider that emits an invalid byte in an identifier is already broken.
+	t.Run("refuses invalid UTF-8", func(t *testing.T) {
+		for _, key := range []string{"a\xffb", "\xff", "a\xed\xa0\x80b", "\xc0\x80"} {
+			err := ValidateRowKey(key)
+			require.Errorf(t, err, "%q must be refused", key)
+			assert.Contains(t, err.Error(), "must be valid UTF-8")
+		}
+
+		// A U+FFFD the provider sent deliberately is valid UTF-8, so it is an
+		// ordinary key. The rule tells the two apart by the ENCODING.
+		assert.NoError(t, ValidateRowKey("a�b"))
+	})
 }
 
 func TestUpsertCleanTitle(t *testing.T) {

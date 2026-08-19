@@ -85,7 +85,7 @@ Fonts are a dual-tier setting like the other appearance rows — the account def
 
 The override unit is the whole family configuration (switch + list together), so a device override can never end up half-applied.
 
-LeapMux limits a font name to 128 UTF-8 bytes and a family to 32 names, strips the control characters and the invisible characters, refuses a repeated space or a leading or trailing space, and refuses an empty name. 128 bytes holds 128 plain ASCII characters, but only approximately 42 CJK characters. For monospace, your custom fonts are tried first and the bundled `"Hack NF", Hack, "SF Mono", Consolas, monospace` stack is appended as a fallback; for UI fonts only your custom list applies. LeapMux bundles **Hack NF** (Hack Nerd Font) as a web font, so glyph-rich agent output renders correctly out of the box.
+A family holds up to 32 names, and the panel reports a name it cannot use. For monospace, your custom fonts are tried first and the bundled `"Hack NF", Hack, "SF Mono", Consolas, monospace` stack is appended as a fallback; for UI fonts only your custom list applies. LeapMux bundles **Hack NF** (Hack Nerd Font) as a web font, so glyph-rich agent output renders correctly out of the box.
 
 > **Tip:** Custom fonts only take effect for families actually installed on the machine running the browser. List several fallbacks so the app degrades gracefully on devices that lack your first choice.
 
@@ -132,7 +132,7 @@ The **Keyboard Shortcuts** category is a table of every command with its default
 
 The Account category carries what the old Profile dialog managed. It is **not available in solo mode** (a solo deployment has one local identity). For the broader account lifecycle — sign-up, login, OAuth, email verification, sessions — see [Accounts & Authentication](/docs/using/accounts/).
 
-- **Username and display name** — usernames are 1–32 characters, lowercase letters, digits, and hyphens only; `solo` is always reserved. Display names are up to 128 UTF-8 bytes and fall back to the username when empty.
+- **Username and display name** — a username is a lowercase slug, and `solo` is always reserved. A display name falls back to the username when empty.
 - **Email** — changing it may require verification (an operator-configured policy); a pending change shows a notice until confirmed.
 - **Password** — 8–128 printable ASCII characters, spaces included (see [Password requirements](/docs/using/accounts/#password-requirements)) with a live strength meter. Changing it signs out all your *other* sessions and revokes API/delegation tokens; your current session stays signed in. OAuth-only accounts can set a first password here.
 - **Linked accounts** — your linked OAuth/OIDC providers with **Unlink** buttons. You cannot unlink your only sign-in method without a password set.

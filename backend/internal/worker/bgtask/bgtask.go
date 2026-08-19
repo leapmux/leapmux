@@ -3,7 +3,7 @@
 // worker OutputSink via neutral Upsert/Close primitives (see OutputSink);
 // this package owns the in-memory model, the proto / DB-column conversions,
 // and the neutral normalization rules that every provider's write meets
-// (SanitizeRowKey, Upsert.CleanTitle, Item.PreservingBlanksFrom). Each rule
+// (ValidateRowKey, Upsert.CleanTitle, Item.PreservingBlanksFrom). Each rule
 // lives here so the registry applier and the provider tests' recording sink
 // share one copy and cannot drift.
 // There is no reducer here -- unlike agent_todos, the provider
@@ -15,8 +15,11 @@
 package bgtask
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/validate"
@@ -44,25 +47,50 @@ const MaxTasks = 64
 // how large one is.
 const RowKeyByteLimit = 256
 
-// SanitizeRowKey strips what a reader cannot see from a provider-supplied
-// registry row key, and caps it at RowKeyByteLimit bytes.
+// ValidateRowKey reports why a provider-supplied registry row key is unusable,
+// or nil when the key is usable. The empty key is accepted and means "this
+// call carries no registry linkage" -- EnsureChildAgent and
+// RenameBackgroundTask each test for it and do less work.
 //
-// A row key reaches a log line (`slog.Warn(..., "row_key", rowKey)`) and the
-// label of a registry row that carries neither a title nor a description. At
-// least one provider (Cursor) ships toolCallIds with an embedded newline.
-// This runs in the neutral layer (the sink entry points), so every provider
-// is covered without a per-integration fix.
+// THIS RULE REFUSES AND NEVER REWRITES, and that is the whole point of it. A
+// row key is an IDENTITY: it is the second half of the
+// (owner_agent_id, row_key) primary key, and every later upsert, status
+// change, close and rename addresses the row by it. A rule that rewrites an
+// identifier is not injective, so two provider keys can map onto one string --
+// and then two background tasks share one registry row, the second overwrites
+// the first's title and status, and one of the two disappears from the
+// sidebar. validate.ValidateSessionID refuses rather than strips for the same
+// reason, and the earlier version of this function stated the invariant ("two
+// keys that differ only in their whitespace must stay two keys") while a strip
+// and a cap broke it.
 //
-// It uses validate.StripUnreadable rather than its own loop, so the set of
-// characters a reader cannot see has one definition. The old loop tested
-// `r < 0x20`, which let DEL, the whole C1 block and every bidi override
-// through, and it used strings.Map, which grows one invalid byte into a
-// 3-byte U+FFFD.
+// It refuses exactly what makes a key UNUSABLE, and nothing that makes it
+// merely hard to read:
 //
-// A row key is a KEY, so the rule does NOT fold whitespace and does not trim:
-// two keys that differ only in their whitespace must stay two keys.
-func SanitizeRowKey(s string) string {
-	return validate.StripUnreadable(s, RowKeyByteLimit)
+//   - Over RowKeyByteLimit bytes. The PROVIDER chooses the length and nothing
+//     else on the path limits it: the key is a primary-key column, it stays in
+//     memory for the life of the agent, and every registry snapshot broadcast
+//     carries it again. Refusing keeps that bound AND injectivity, which a cap
+//     cannot do -- no total function onto a bounded set is injective.
+//   - Invalid UTF-8. BackgroundTaskItem.id is a proto `string`, and a marshal
+//     of an invalid one fails the WHOLE registry broadcast, not this row alone.
+//
+// A control character, a C1 byte, a bidirectional override and an embedded
+// newline are NOT refused. At least one provider (Cursor) ships toolCallIds
+// with an embedded newline, so refusing them would drop that provider's rows
+// altogether. They are a READABILITY problem, and they are answered where the
+// key is READ: the row key is the last fallback of a registry row's label, and
+// `rowTitle` in frontend/src/components/backgroundtasks/BackgroundTaskList.tsx
+// cleans it there. A log line needs no help, because slog quotes a value that
+// holds a control character.
+func ValidateRowKey(s string) error {
+	if len(s) > RowKeyByteLimit {
+		return fmt.Errorf("registry row key must be at most %d bytes (got %d)", RowKeyByteLimit, len(s))
+	}
+	if !utf8.ValidString(s) {
+		return errors.New("registry row key must be valid UTF-8")
+	}
+	return nil
 }
 
 // FirstLine returns the content up to the first newline (trimmed). Empty input

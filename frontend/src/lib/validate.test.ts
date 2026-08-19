@@ -1034,6 +1034,30 @@ describe('validateSessionId', () => {
     expect(validateSessionId('   ')).not.toBeNull()
   })
 
+  // The argv rule. The worker hands the token to `claude --resume <id>` as its
+  // own argv element, and `--resume` takes an optional value, so a
+  // hyphen-prefixed token parses as a flag of its own instead. Only the FIRST
+  // character is refused: a hyphen is ordinary inside a UUID.
+  it('refuses a leading hyphen', () => {
+    for (const id of ['-abc-123', '--dangerously-skip-permissions', '--resume', '-', '--'])
+      expect(validateSessionId(id), id).toBe('Session ID must not start with a hyphen')
+  })
+
+  it('accepts a hyphen anywhere but the first character', () => {
+    for (const id of ['abc-123', '3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f', 'abc-123-', 'a--b'])
+      expect(validateSessionId(id), id).toBeNull()
+  })
+
+  // The hyphen test runs LAST, so an input that breaks two rules reports the
+  // earlier one. The Go copy runs them in the same order, and the shared
+  // fixture pins it: without that, one side reports the hyphen and the other
+  // the whitespace, and this field refuses a token the worker accepts.
+  it('reports an earlier rule than the hyphen when both apply', () => {
+    expect(validateSessionId('-abc ')).toBe('Session ID must not start or end with whitespace')
+    expect(validateSessionId('-abc\x00')).toBe('Session ID contains invalid characters')
+    expect(validateSessionId(' -abc')).toBe('Session ID must not start or end with whitespace')
+  })
+
   // The limit counts UTF-8 BYTES, because the hub's `len` does. 43 CJK
   // characters is 43 characters and 129 bytes.
   it('counts UTF-8 bytes, not UTF-16 units', () => {
@@ -1155,6 +1179,7 @@ describe('validateSessionId conformance', () => {
     not_utf8: 'must be valid UTF-8',
     forbidden_character: 'contains invalid characters',
     whitespace_at_edge: 'must not start or end with whitespace',
+    leading_hyphen: 'must not start with a hyphen',
   }
 
   const sessionIdConformancePath = resolve(

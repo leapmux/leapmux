@@ -2,6 +2,7 @@ package validate
 
 import (
 	"fmt"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -55,8 +56,8 @@ var sessionIDInvisible = &unicode.RangeTable{
 // correct answer for a character this rule does not want is to report it.
 //
 // The class is: valid UTF-8, no control character, no invisible format
-// character, none of `"`, `\`, `$`, `%`, no whitespace at either end,
-// non-empty, at most SessionIDByteLimit bytes.
+// character, none of `"`, `\`, `$`, `%`, no whitespace at either end, no
+// leading hyphen, non-empty, at most SessionIDByteLimit bytes.
 //
 // The browser copy is `validateSessionId` in `frontend/src/lib/validate.ts`,
 // and `testdata/session_id_conformance.json` pins the two against each other.
@@ -100,6 +101,25 @@ func ValidateSessionID(sessionID string) error {
 	}
 	if last, _ := utf8.DecodeLastRuneInString(sessionID); IsNameWhitespace(last) {
 		return fmt.Errorf("session ID must not start or end with whitespace")
+	}
+	// A token that STARTS with a hyphen is refused, because argv cannot tell it
+	// from a flag. `claude --resume <id>` passes the token as its own argv
+	// element, and `--resume` takes an OPTIONAL value, so a parser of that
+	// shape does not read a hyphen-prefixed token as the value: it leaves
+	// `--resume` empty and parses the token as a flag of its own. One argv
+	// element is enough to reach `--dangerously-skip-permissions`. Quoting
+	// stops a shell from reading the token as syntax; it does nothing about a
+	// token that the AGENT reads as syntax.
+	//
+	// Nothing legitimate is lost. Every provider issues an opaque identifier --
+	// a UUID, a ULID, a thread ID, a file path -- and none of them starts with
+	// a hyphen. A hyphen anywhere else is ordinary and stays accepted.
+	//
+	// This test runs LAST, so ` -abc` and `-abc ` both report the whitespace
+	// rule. Either order is correct; the shared fixture pins THIS one, so the
+	// two languages report one message for one input.
+	if strings.HasPrefix(sessionID, "-") {
+		return fmt.Errorf("session ID must not start with a hyphen")
 	}
 	return nil
 }

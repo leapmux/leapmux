@@ -619,10 +619,13 @@ func TestNameWhitespaceIsNotUnreadable(t *testing.T) {
 	}
 }
 
-// TestStripUnreadable covers the exported helper directly. Two callers read
-// it -- bgtask.SanitizeRowKey and the OSC notification body -- and each wants
-// the half of the name rule that a NON-name value needs: the strip and the
-// cap, without the fold and without the trim.
+// TestStripUnreadable covers the exported helper directly. The OSC
+// notification body reads it, and it wants the half of the name rule that a
+// non-name value needs: the strip and the cap, without the fold and without
+// the trim. A registry row key read it too until that key became an identity
+// that is refused rather than rewritten (bgtask.ValidateRowKey), so a body is
+// the only caller now -- a body is PROSE, and rewriting prose loses nothing
+// that a later lookup depends on.
 func TestStripUnreadable(t *testing.T) {
 	t.Run("strips what a reader cannot see", func(t *testing.T) {
 		for _, tc := range []struct{ in, want string }{

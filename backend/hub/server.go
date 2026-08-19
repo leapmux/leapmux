@@ -24,6 +24,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/frontend"
+	"github.com/leapmux/leapmux/internal/hub/httpsec"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
@@ -134,6 +135,45 @@ func logQueueMemoryBudgets(logger *slog.Logger, basis memlimit.Basis, budgets ..
 		logger.Warn("cgroup memory limit could not be read; outbound queue budgets may be sized off a figure that does not bind this process",
 			"error", basis.CgroupErr)
 	}
+}
+
+// resolveFrontend picks the handler that serves "/" and the
+// Content-Security-Policy that goes with it.
+//
+// The two are returned TOGETHER, from one function, because the script-src
+// hashes are derived from the assets that are actually mounted. Choosing the
+// handler in one place and the policy in another lets the two drift, and a
+// policy built for a different frontend than the one being served is an
+// OUTAGE rather than a weaker defence: the browser refuses the app's own
+// script and the user gets a blank page.
+//
+// A function rather than an inline branch so all three arms are reachable
+// from a test without standing up a whole Server, which needs a live store,
+// listeners and a keystore. connectOptions above exists for the same reason.
+//
+// The three arms, in the order they are tested:
+//
+//   - An INJECTED handler (hub.WithFrontendHandler) brings assets this process
+//     cannot read, so it gets no policy at all. See
+//     frontend.UnknownAssetsPolicy.
+//   - A DEV proxy fronts the Vite dev server, whose HMR client injects inline
+//     scripts and evaluates source maps, so its policy is report-only. See
+//     frontend.DevPolicy.
+//   - Otherwise the EMBEDDED assets are served, and the policy is enforced and
+//     derived from those exact bytes. See frontend.Policy.
+func resolveFrontend(injected http.Handler, devFrontend string) (http.Handler, httpsec.Policy, error) {
+	if injected != nil {
+		return injected, frontend.UnknownAssetsPolicy(), nil
+	}
+	if devFrontend != "" {
+		devProxy, err := frontend.DevProxy(devFrontend)
+		if err != nil {
+			return nil, httpsec.Policy{}, fmt.Errorf("create dev proxy: %w", err)
+		}
+		slog.Info("dev mode: proxying frontend", "target", devFrontend)
+		return devProxy, frontend.DevPolicy(), nil
+	}
+	return frontend.Handler(), frontend.Policy(), nil
 }
 
 // ServerOption configures optional aspects of a Hub server.
@@ -647,19 +687,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.HandleFunc("/version", versionHandler)
 
 	// Frontend handler.
-	if so.frontendHandler != nil {
-		mux.Handle("/", so.frontendHandler)
-	} else if cfg.DevFrontend != "" {
-		devProxy, proxyErr := frontend.DevProxy(cfg.DevFrontend)
-		if proxyErr != nil {
-			return nil, acquired.close(
-				fmt.Errorf("create dev proxy: %w", proxyErr))
-		}
-		mux.Handle("/", devProxy)
-		slog.Info("dev mode: proxying frontend", "target", cfg.DevFrontend)
-	} else {
-		mux.Handle("/", frontend.Handler())
+	frontendHandler, csp, frontendErr := resolveFrontend(so.frontendHandler, cfg.DevFrontend)
+	if frontendErr != nil {
+		return nil, acquired.close(frontendErr)
 	}
+	mux.Handle("/", frontendHandler)
 
 	protocols := &http.Protocols{}
 	protocols.SetHTTP1(true)
@@ -673,7 +705,11 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// derives connCtx from BaseContext in Serve->conn.serve, and h2c's
 	// sc.baseCtx comes from the same chain.
 	server := &http.Server{
-		Handler: logging.HTTPMiddleware(metrics.HTTPMiddleware(mux)),
+		// httpsec wraps the WHOLE mux, not the frontend handler alone: nosniff
+		// and Referrer-Policy protect every response, and the hub renders HTML
+		// outside the frontend handler (the device-code and PKCE callback
+		// pages), which deserve the same treatment as the app document.
+		Handler: logging.HTTPMiddleware(metrics.HTTPMiddleware(httpsec.Middleware(csp, mux))),
 		// Bounds reading request HEADERS on HTTP/1.1 connections (the
 		// slowloris guard). It must NOT govern h2c connections, whose streams
 		// outlive any header deadline — see the h2cdeadline.Wrap call in

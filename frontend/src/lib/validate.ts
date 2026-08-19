@@ -393,6 +393,13 @@ const SESSION_ID_FORBIDDEN = /[\x00-\x1F\x7F-\x9F"\\$%\u00AD\u061C\u180E\u200B\u
  * token the user never typed, and the hub reads U+FFFD as ordinary text. The
  * Go copy refuses an invalid byte for the same reason.
  *
+ * The leading-hyphen test is last, and it is here because argv cannot tell a
+ * hyphen-prefixed token from a flag: the worker passes the token to
+ * `claude --resume <id>` as its own argv element, `--resume` takes an optional
+ * value, and a parser of that shape reads the token as a flag of its own
+ * instead. No provider issues an identifier that starts with a hyphen, so the
+ * field refuses one here rather than after a round trip.
+ *
  * The empty value is accepted here and means "no resume". The caller that
  * requires one checks for it separately.
  */
@@ -412,6 +419,8 @@ export function validateSessionId(value: string): string | null {
     return 'Session ID contains invalid characters'
   if (EDGE_WHITESPACE.test(value))
     return 'Session ID must not start or end with whitespace'
+  if (value.startsWith('-'))
+    return 'Session ID must not start with a hyphen'
   return null
 }
 

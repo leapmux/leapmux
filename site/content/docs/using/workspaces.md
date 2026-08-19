@@ -36,7 +36,7 @@ The dialog is titled **New workspace** and contains these fields:
 
 Click **Create** to confirm. The button shows **Creating…** while the workspace is provisioned. Creating a workspace spins up its first agent automatically, then opens the new workspace.
 
-> **Note:** Workspace titles are sanitized server-side. Punctuation is kept, including `"`, `\`, `$`, and `%`. Control characters and invisible characters (the byte order mark, the zero width space, the soft hyphen, the bidi marks) are stripped, each run of whitespace becomes one space, surrounding whitespace is trimmed, the result must not be empty, and it must be at most 128 UTF-8 bytes. 128 bytes holds 128 plain ASCII characters, but only approximately 42 CJK characters. If validation fails, the dialog shows the reason inline.
+> **Note:** Workspace titles are checked and tidied server-side. If a title cannot be used, the dialog shows the reason inline.
 
 > **Tip:** If anything fails after the workspace row is created — for example the agent cannot start — LeapMux attempts to roll the creation back automatically, so you normally aren't left with an empty orphan workspace.
 

@@ -128,6 +128,55 @@ func TestValidateSessionID(t *testing.T) {
 		assert.NoError(t, ValidateSessionID("a  b"))
 	})
 
+	// The argv rule. A hyphen-prefixed token is not read as the value of
+	// `claude --resume`; it parses as a flag of its own, and one argv element
+	// reaches `--dangerously-skip-permissions`. Only the FIRST character is
+	// refused, because a hyphen anywhere else is ordinary in a UUID and a ULID.
+	t.Run("refuses a leading hyphen", func(t *testing.T) {
+		for _, id := range []string{
+			"-abc-123",
+			"--dangerously-skip-permissions",
+			"--resume",
+			"-",
+			"--",
+		} {
+			err := ValidateSessionID(id)
+			require.Errorf(t, err, "expected rejection for %q", id)
+			assert.EqualError(t, err, "session ID must not start with a hyphen")
+		}
+	})
+
+	t.Run("accepts a hyphen anywhere but the first character", func(t *testing.T) {
+		for _, id := range []string{
+			"abc-123",
+			"3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f",
+			"abc-123-",
+			"a--b",
+		} {
+			assert.NoErrorf(t, ValidateSessionID(id), "%q must be accepted", id)
+		}
+	})
+
+	// The hyphen test runs LAST, so an input that breaks two rules reports the
+	// earlier one. The two languages pin this order through the shared fixture:
+	// without it, one side reports the hyphen and the other the whitespace, and
+	// the browser refuses a token the worker accepts.
+	t.Run("reports an earlier rule than the hyphen when both apply", func(t *testing.T) {
+		err := ValidateSessionID("-abc ")
+		require.Error(t, err)
+		assert.EqualError(t, err, "session ID must not start or end with whitespace")
+
+		err = ValidateSessionID("-abc\x00")
+		require.Error(t, err)
+		assert.EqualError(t, err, "session ID contains invalid characters")
+
+		// A leading SPACE beats the hyphen that follows it, because the first
+		// rune is what each edge test reads.
+		err = ValidateSessionID(" -abc")
+		require.Error(t, err)
+		assert.EqualError(t, err, "session ID must not start or end with whitespace")
+	})
+
 	t.Run("accepts the byte limit and refuses one byte past it", func(t *testing.T) {
 		assert.NoError(t, ValidateSessionID(strings.Repeat("a", SessionIDByteLimit)))
 		err := ValidateSessionID(strings.Repeat("a", SessionIDByteLimit+1))
@@ -222,6 +271,7 @@ var sessionIDRefusalMarkers = map[string]string{
 	"not_utf8":            "must be valid UTF-8",
 	"forbidden_character": "contains invalid characters",
 	"whitespace_at_edge":  "must not start or end with whitespace",
+	"leading_hyphen":      "must not start with a hyphen",
 }
 
 func TestValidateSessionIDConformance(t *testing.T) {
