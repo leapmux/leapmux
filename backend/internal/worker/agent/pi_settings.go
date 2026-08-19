@@ -10,10 +10,17 @@ import (
 )
 
 // Pi default option values.
+//
+// The provider and the model name a pair that Pi's own catalog carries, and
+// they are sent together by applyModel as {provider, modelId}. A pair Pi does
+// not know fails set_model at startup ("Model not found: <provider>/<model>"),
+// and the agent then answers nothing at all -- so this is a launch default,
+// not a cosmetic label. The previous openai-codex/gpt-5.5 pair named neither a
+// provider nor a model that `pi --list-models` reports.
 const (
 	PiDefaultThinkingLevel = "medium"
-	PiDefaultProvider      = "openai-codex"
-	PiDefaultModel         = "gpt-5.5"
+	PiDefaultProvider      = "zai"
+	PiDefaultModel         = "glm-5.3"
 )
 
 // PiThinkingLevelLabel is Pi's display label for its effort axis: Pi's CLI exposes a
@@ -72,7 +79,7 @@ var piNonReasoningEfforts = []*EffortInfo{
 var piDefaultModels = []*ModelInfo{
 	{
 		Id:               PiDefaultModel,
-		DisplayName:      "GPT-5.5",
+		DisplayName:      "GLM-5.3",
 		Description:      "Default Pi model (overridden once Pi reports its catalog)",
 		IsDefault:        true,
 		DefaultEffort:    PiDefaultThinkingLevel,

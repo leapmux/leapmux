@@ -1,5 +1,5 @@
 import { codexTest, expect } from './codex-fixtures'
-import { ARITHMETIC_PROMPT, assistantBubbles, expectAssistantAnswer, lastAssistantBubble, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_PROMPT, assistantBubbles, expectAssistantAnswer, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 codexTest.describe('Codex Basic Chat', () => {
   codexTest('send message and receive response', async ({ authenticatedCodexWorkspace, page }) => {
@@ -14,13 +14,13 @@ codexTest.describe('Codex Basic Chat', () => {
     await sendMessage(page, 'Say hello world')
     await waitForAgentIdle(page, 120_000)
 
-    const bubbles = assistantBubbles(page)
-    const count = await bubbles.count()
-    expect(count).toBeGreaterThan(0)
+    await expect(assistantBubbles(page)).not.toHaveCount(0)
 
-    const bubble = await lastAssistantBubble(page)
-    const text = await bubble.textContent()
-    expect(text?.toLowerCase()).toContain('hello')
+    // expectAssistantAnswer, not lastAssistantBubble: a turn-end divider is an
+    // agent-role bubble too, so the LAST one is the divider whenever it lands
+    // after the reply. This asserted on its "turn completed" text instead of
+    // the answer.
+    await expectAssistantAnswer(page, { answer: /hello/i })
   })
 
   codexTest('thinking indicator appears and disappears during response', async ({ authenticatedCodexWorkspace, page }) => {

@@ -21,7 +21,6 @@ function startServerWithFailingClaude(): Promise<DevServerHandle> {
     dataDirPrefix: 'leapmux-startup-err',
     env: {
       LEAPMUX_WORKER_NAME: 'Local',
-      LEAPMUX_HUB_SIGNUP_ENABLED: 'true',
       LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet',
       LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low',
       LEAPMUX_WORKER_AGENT_STARTUP_TIMEOUT_SECONDS: '5',

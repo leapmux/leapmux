@@ -221,7 +221,7 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 - Sandbox defaults to **Workspace Write** (also Full Access / Read Only); Network defaults to **Restricted** (also Enabled).
 - The **Bypass permissions** item sets network = enabled, sandbox = full access, and approval = Full Auto in one click.
 
-**Pi** — **Thinking Level** (effort) and **Model**. Default model **gpt-5.5**. Pi has no permission mode, no plan mode, and no bypass.
+**Pi** — **Thinking Level** (effort) and **Model**. Default model **glm-5.3**. Pi has no permission mode, no plan mode, and no bypass.
 
 **Other providers** — a single option group plus a model selector. Each axis gets its own chip, and each chip shows the current value.
 

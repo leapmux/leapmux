@@ -165,7 +165,7 @@ export const test = base.extend<
       dataDir,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_CODEX_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_COPILOT_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_WORKER_NAME: 'Local', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
+      env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_CODEX_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_COPILOT_DEFAULT_MODEL: 'gpt-5.4-mini', LEAPMUX_WORKER_NAME: 'Local' },
     })
 
     // Consume server output (also prevents backpressure), keeping a tail for

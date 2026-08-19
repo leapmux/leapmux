@@ -93,13 +93,7 @@ export async function startMultiWorkerHarness(count = 2): Promise<MultiWorkerHar
     hubDataDir,
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      // Disable shell quirks that would otherwise leak into worker
-      // spawn paths. Multi-worker tests don't drive real agents,
-      // they just exercise the channel and event plumbing.
-      LEAPMUX_HUB_SIGNUP_ENABLED: 'true',
-    },
+    env: { ...process.env },
   })
   hubProc.stdout?.resume()
   hubProc.stderr?.resume()

@@ -47,7 +47,7 @@ func TestSanitizePath_Empty(t *testing.T) {
 	runSanitizeCases(t, cases)
 }
 
-// TestSanitizePathDropsInvalidBytes pins the repair of the growth that this
+// assertSanitizePathDropsInvalidBytes pins the repair of the growth that this
 // package removed from the name rule and left standing here.
 //
 // `for range` over a Go string yields U+FFFD for an invalid byte, and U+FFFD
@@ -56,21 +56,30 @@ func TestSanitizePath_Empty(t *testing.T) {
 // limit for that growth to overflow today, so this repairs the mechanism
 // rather than a reported failure -- and it stops the next reader from copying
 // the pattern out of this file.
-func TestSanitizePathDropsInvalidBytes(t *testing.T) {
-	got, err := SanitizePath("/tmp/a\xffb", "/home/u")
+//
+// It takes `dir` and `home` because SanitizePath refuses a path that is not
+// absolute, and the two platforms disagree about what absolute means: the
+// POSIX form this used to hardcode is ErrNotAbsolute on Windows, which failed
+// the whole test there over its fixture rather than over its subject. The
+// per-OS callers live in path_unix_test.go and path_windows_test.go, which is
+// where this file's other OS-dependent cases already are.
+func assertSanitizePathDropsInvalidBytes(t *testing.T, dir, home string) {
+	t.Helper()
+
+	got, err := SanitizePath(dir+"a\xffb", home)
 	require.NoError(t, err)
 	assert.True(t, utf8.ValidString(got), "the result must be valid UTF-8")
 	assert.NotContains(t, got, "�", "an invalid byte is dropped, not grown into a replacement character")
 
 	// The result never grows. 10 invalid bytes used to become 30.
-	in := "/tmp/" + strings.Repeat("\xff", 10)
-	got, err = SanitizePath(in, "/home/u")
+	in := dir + strings.Repeat("\xff", 10)
+	got, err = SanitizePath(in, home)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(got), len(in), "SanitizePath must never grow the path it is given")
 
 	// A U+FFFD the caller sent deliberately decodes with size 3 and survives,
 	// so the case above tells the two apart by the ENCODING and not the rune.
-	got, err = SanitizePath("/tmp/a�b", "/home/u")
+	got, err = SanitizePath(dir+"a�b", home)
 	require.NoError(t, err)
 	assert.Contains(t, got, "�")
 }

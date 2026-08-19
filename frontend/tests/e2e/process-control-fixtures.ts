@@ -12,6 +12,7 @@ import {
   cleanupWorkspaceViaAPI,
   createWorkspaceViaAPI,
   deleteWorkspaceViaAPI,
+  enableSignupViaAPI,
   listOnlineWorkerIDsViaAPI,
   loginViaAPI,
   mintRegistrationKeyViaAPI,
@@ -240,7 +241,7 @@ export async function restartHub(serverInfo: SeparateServerInfo) {
   ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
+    env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low' },
   })
   hubProc.unref()
   // Track immediately so a crash before state update still gets cleaned
@@ -319,7 +320,7 @@ export const processTest = base.extend<
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
-      env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low', LEAPMUX_HUB_SIGNUP_ENABLED: 'true' },
+      env: { ...process.env, LEAPMUX_CLAUDE_DEFAULT_MODEL: 'sonnet', LEAPMUX_CLAUDE_DEFAULT_EFFORT: 'low' },
     })
     hubProc.unref()
     trackSpawnedPid(dataDir, hubProc.pid!)
@@ -329,8 +330,17 @@ export const processTest = base.extend<
     await waitForServer(hubUrl)
     console.log(`[e2e] Hub ready on port ${hubPort}`)
 
-    // Create admin via setup mode (first signup becomes admin)
+    // Create the admin. A hub with no users at all accepts one sign-up and
+    // makes it an administrator, so this account needs no open-signup setting.
     const adminToken = await signUpViaAPI(hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
+
+    // Every LATER sign-up does. This is a plain `leapmux hub`, not `leapmux
+    // dev`, and `signup_enabled` resolves from its stored row with a closed
+    // code default -- only dev mode reports it open. So the `newuser` sign-up
+    // below answered `failed_precondition: sign-up is disabled`, the fixture
+    // threw, and every test in the nine spec files that use this fixture
+    // failed with it.
+    await enableSignupViaAPI(hubUrl, adminToken)
 
     // Mint a registration key (new flow: admin creates key, hands it to
     // worker via --registration-key). The old self-serve token flow
