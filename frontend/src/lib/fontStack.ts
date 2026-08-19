@@ -13,10 +13,13 @@ export const DEFAULT_MONO_FONT_FAMILY = '"Hack NF", Hack, "SF Mono", Consolas, m
  * Render an ordered list of family names as a CSS `font-family` value.
  *
  * Every name is quoted, and TWO classes of character inside it are
- * escaped. The account write path refuses both (`usersettings.
- * validateFontFamily`), but the escape at the emitter makes them
- * harmless whatever a stored value holds — which is the property worth
- * having on a string interpolated into a stylesheet.
+ * escaped. This escape is the ONLY guard on the quote and the backslash:
+ * the account write path (`usersettings.validateFontFamily`) refuses a
+ * control character but stores a quote, and a hand-edited localStorage
+ * document never reaches that validator at all. The escape holds for
+ * whatever the store holds, which is the property worth having on a
+ * string interpolated into a stylesheet — a character ban at the store
+ * only duplicates it, in two languages that drift apart.
  *
  * - A quote or a backslash would END the declaration it sits in, and the
  *   rest of the rule would be read as live CSS. This string reaches a

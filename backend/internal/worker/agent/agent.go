@@ -315,12 +315,12 @@ type OutputSink interface {
 	// linked to the provider's child key. Idempotent across replays and worker
 	// restarts. providerChildKey doubles as the registry row_key when non-empty.
 	//
-	// title is the MODEL's, so the sink cleans it: it cuts the title to 128
-	// UTF-8 bytes and strips the forbidden characters, the same rule every
-	// other writer of a title column applies. A provider passes what it has
-	// and does not cap or strip it first. Pass "" when the provider has no
-	// title: the sink keeps the registry row's current title and names the
-	// agent row itself.
+	// title is the MODEL's, so the sink cleans it with validate.CleanName --
+	// the same rule every other writer of a title column applies, and the one
+	// place that documents its steps. A provider passes what it has, and does
+	// not cap or strip it first. Pass "" when the provider has no title: the
+	// sink keeps the registry row's current title and gives the agent row its
+	// own name.
 	EnsureChildAgent(spawnSpanID, providerChildKey, title string) (childAgentID string, err error)
 
 	// ChildSink returns an OutputSink bound to the child agent's transcript.
@@ -359,15 +359,13 @@ type OutputSink interface {
 
 	// Registry writes. All are keyed under the ROOT owner of this sink.
 
-	// UpsertBackgroundTask cleans Title with the rule that every title column
-	// in the worker shares: it cuts the title to a byte limit, then strips the
-	// control characters and " \ $ %. A command handed over as the title
-	// therefore loses its templating characters -- the registry title is a
-	// LABEL for a command that already runs somewhere else, not a command to
-	// copy back and run. A Title that the rule empties says what a blank Title
-	// says: the row keeps the title it already holds. A provider that has a
-	// better fallback for that case applies it BEFORE it calls (acpBridge's
-	// terminal/create falls back to "shell").
+	// UpsertBackgroundTask cleans Title with validate.CleanName, the rule that
+	// every title column in the worker shares. A command handed over as the
+	// title keeps every character of itself, quoting included, so the row
+	// labels the command that ran. A Title that the rule empties says what a
+	// blank Title says: the row keeps the title it already holds. A provider
+	// that has a better fallback for that case applies it BEFORE it calls
+	// (acpBridge's terminal/create falls back to "shell").
 	UpsertBackgroundTask(task bgtask.Upsert) error
 	UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error
 	CloseBackgroundTask(rowKey string, status bgtask.Status) error

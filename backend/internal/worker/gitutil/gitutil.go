@@ -560,20 +560,37 @@ func branchNameErrorf(format string, args ...any) *BranchNameError {
 	return &BranchNameError{Reason: fmt.Sprintf(format, args...)}
 }
 
-// ValidateBranchName validates a git branch name according to git-check-ref-format rules.
+// BranchNameByteLimit is the maximum size of a git branch name, in UTF-8
+// bytes. The browser copy states the same number and counts the same unit.
+const BranchNameByteLimit = 256
+
+// ValidateBranchName validates a git branch name according to
+// git-check-ref-format rules.
+//
+// The browser copy is `validateBranchName` in `frontend/src/lib/validate.ts`,
+// and the two must refuse the same names: the panel offers a branch that this
+// function then refuses, or the reverse, and the user reads two answers for
+// one name. Both count UTF-8 BYTES, because `len` counts bytes and a
+// character count would let an 86-character CJK name past the panel and into
+// a refusal here.
+//
+// `$` and `%` are here although git itself accepts them. A branch name
+// reaches a shell command line and a file path under `.git/refs/`, so the
+// rule keeps the set narrow. `\` is refused for the same reason and is what
+// git refuses on its own.
 func ValidateBranchName(name string) error {
 	if name == "" {
 		return branchNameErrorf("must not be empty")
 	}
-	if len(name) > 256 {
-		return branchNameErrorf("must be at most 256 characters")
+	if len(name) > BranchNameByteLimit {
+		return branchNameErrorf("must be at most %d bytes", BranchNameByteLimit)
 	}
 	for _, r := range name {
 		if unicode.IsControl(r) {
 			return branchNameErrorf("must not contain control characters")
 		}
 		switch r {
-		case ' ', '~', '^', ':', '?', '*', '[', ']', '\\':
+		case ' ', '~', '^', ':', '?', '*', '[', ']', '\\', '$', '%':
 			return branchNameErrorf("must not contain '%c'", r)
 		}
 	}

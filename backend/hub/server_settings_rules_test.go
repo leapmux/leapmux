@@ -2,10 +2,6 @@ package hub
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,28 +12,28 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
-
-// testSocketSeq keeps each test's local socket path distinct. Two servers in
-// one package run one after the other, but a leftover socket from a previous
-// run would still collide.
-var testSocketSeq atomic.Int64
 
 // startTestServer boots the REAL server wiring — the same NewServer the
 // solo, dev, and hub binaries call — over a temporary data directory, and
 // serves it in the background so the deferred teardown (store close,
 // listener close) runs.
 //
-// It binds no TCP port: cfg.Listen stays empty, and a local socket goes
-// under /tmp because a path under the test temp directory can exceed macOS's
-// sun_path limit.
+// It binds no TCP port: cfg.Listen stays empty, and the local listener comes
+// from locallistentest.UniqueListenURL. That helper picks the scheme the
+// PLATFORM supports — `unix:` on Unix and `npipe:` on Windows — and keeps each
+// test's address distinct. Building the URL here instead hardcoded `unix:`
+// under /tmp, and locallisten.Listen has no unix listener on Windows, so every
+// test in this file failed there with "unsupported local-listen scheme" before
+// it reached the wiring it exists to pin. The helper also answers the reason
+// the hand-built path avoided t.TempDir(): it roots the socket in a short temp
+// directory, so the path stays inside macOS's 104-byte sun_path limit.
 func startTestServer(t *testing.T, cfg *config.Config) *Server {
 	t.Helper()
-	sock := filepath.Join("/tmp", fmt.Sprintf("lmx-test-%d-%d.sock", os.Getpid(), testSocketSeq.Add(1)))
-	t.Cleanup(func() { _ = os.Remove(sock) })
 
 	cfg.DataDir = t.TempDir()
-	cfg.LocalListen = "unix:" + sock
+	cfg.LocalListen = locallistentest.UniqueListenURL(t, "lmx-hub-test")
 	cfg.Storage = config.StorageConfig{Type: config.StorageTypeSQLite}
 
 	srv, err := NewServer(cfg)

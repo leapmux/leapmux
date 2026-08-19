@@ -34,11 +34,23 @@ var (
 //
 // Rejected on both:    relative paths, "..", empty/whitespace input.
 func SanitizePath(value, homeDir string) (string, error) {
-	s := value
-	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+	// Drop an invalid byte BEFORE the control-character loop below.
+	//
+	// `for range` cannot report an invalid byte: it yields U+FFFD, which is not
+	// a control character, so `WriteRune` writes the full 3-byte encoding and
+	// the result is LONGER than the input. That is the same growth that
+	// CleanNameChars decodes by hand to avoid, and this loop is the copy of the
+	// old pattern that it left behind. A path has no byte limit for the growth
+	// to overflow today, so this is a repair of the mechanism and not of a
+	// reported failure.
+	//
+	// ToValidUTF8 rather than a hand decode, because this function has no scan
+	// limit for a whole-string copy to defeat: it already builds one.
+	s := strings.ToValidUTF8(value, "")
+	if strings.IndexFunc(s, unicode.IsControl) >= 0 {
 		var b strings.Builder
-		b.Grow(len(value))
-		for _, r := range value {
+		b.Grow(len(s))
+		for _, r := range s {
 			if !unicode.IsControl(r) {
 				b.WriteRune(r)
 			}

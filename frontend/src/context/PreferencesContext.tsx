@@ -23,7 +23,7 @@ import { createKeyedSeq } from '~/lib/keyedSeq'
 import { createLogger, setDebugEnabled } from '~/lib/logger'
 import { parseSettingJson } from '~/lib/settingJson'
 import { getTerminalRendererPreference } from '~/lib/terminal'
-import { sanitizeName } from '~/lib/validate'
+import { NAME_BYTE_LIMIT, sanitizeName } from '~/lib/validate'
 
 const log = createLogger('PreferencesContext')
 
@@ -238,12 +238,31 @@ function parseFontTier(raw: unknown): FontTier | undefined {
  *
  * `usersettings.validateFontFamily` runs `validate.SanitizeName` and
  * refuses the name when the sanitized form differs — no control
- * character, no quote, no backslash, no `$` or `%`, no leading or
- * trailing space, non-empty, at most 128 UTF-8 bytes. `sanitizeName` is
+ * character, no invisible format character, no repeated space, no leading
+ * or trailing space, non-empty, at most 128 UTF-8 bytes. `sanitizeName` is
  * that same rule on this side, so the two are asserted equal here rather
  * than re-typed as a fourth character class.
+ *
+ * Neither side refuses a quote, a backslash, a `$` or a `%` any more. The
+ * guard against a name that ends a CSS declaration is the escape in
+ * {@link buildFontFamily}, which holds for whatever the store holds —
+ * including the hand-edited document this function reads, which never
+ * passes through the hub's validator at all.
  */
 function isStorableFontName(name: string): boolean {
+  // The length guard runs FIRST, and it is what bounds the work on this path.
+  // `parseFontTier` calls this for every entry of the localStorage document on
+  // every mount, and a hand-edited document can carry a string of any size.
+  // `sanitizeName` below runs three regex passes over the whole value, and the
+  // Go copy stops appending at 129 bytes where this one has no such stop.
+  //
+  // The guard cannot reject a storable name: `String.length` counts UTF-16
+  // units, which is never MORE than the UTF-8 byte count, so a name over the
+  // limit here is over the limit in bytes too. A name that the clean would
+  // SHRINK under the limit is not storable either, because the test below
+  // demands the cleaned form equal the input.
+  if (name.length > NAME_BYTE_LIMIT)
+    return false
   const { value, error } = sanitizeName(name)
   return error === null && value === name
 }

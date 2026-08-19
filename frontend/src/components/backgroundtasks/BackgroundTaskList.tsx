@@ -7,6 +7,7 @@ import { createMemo, createSignal, createUniqueId, For, Show } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { FilterTabBar } from '~/components/common/FilterTabBar'
 import { StatusDot } from '~/components/common/StatusDot'
+import { cleanName } from '~/lib/validate'
 import {
   backgroundTaskEndLabel,
   backgroundTaskEndTooltip,
@@ -71,8 +72,23 @@ const LOAD_FAILED_MESSAGE = 'Could not load background tasks from the worker'
 // The row's first line. Shared by the renderer and by the echo guard below, so
 // the guard compares against the string the row ACTUALLY shows: two copies of
 // this fallback chain could drift and silently disable the guard.
+//
+// Each arm is cleaned, and the fallback reads the CLEANED arm, so an arm that
+// holds nothing a reader can see falls through to the next one instead of
+// rendering as a blank line.
+//
+// The row key arm is why the clean is here. A row key is an IDENTITY -- the
+// worker refuses an unusable one and never rewrites it (bgtask.ValidateRowKey),
+// because a rewrite merges two provider keys into one registry row. So the key
+// arrives exactly as the provider wrote it, and at least one provider (Cursor)
+// writes toolCallIds with an embedded newline. Cleaning at the READER is what
+// lets the identity stay verbatim. `title` is already cleaned by the worker and
+// `cleanName` is idempotent, so that arm passes through unchanged.
 function rowTitle(item: BackgroundTaskItem): string {
-  return item.title || item.description || item.rowKey
+  // `description` is optional, so the arm is guarded rather than passed as
+  // `?? ''` -- an absent arm does no regex work at all.
+  const arm = (text: string | undefined): string => (text ? cleanName(text) : '')
+  return arm(item.title) || arm(item.description) || arm(item.rowKey)
 }
 
 // Code type only for a title the PROVIDER says is a verbatim command. Not every

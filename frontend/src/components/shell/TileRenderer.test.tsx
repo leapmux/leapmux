@@ -592,8 +592,9 @@ describe('tileRenderer tab rename', () => {
   })
 
   // Both short-circuits reach this renderer, because the strip's own guard
-  // compares the RAW text: `$$%%` and `Agent Olivia$` are each non-empty and
-  // each differ from the label, so both arrive at `renameTab`.
+  // compares the RAW text: a run of invisible characters and
+  // `Agent Olivia<U+200B>` are each non-empty and each differ from the label,
+  // so both arrive at `renameTab`.
   it('honors the no-op decision for a title that cleaning empties or leaves unchanged', async () => {
     const s = createSetup()
     const tileId = s.layoutStore.focusedTileId()!
@@ -601,11 +602,11 @@ describe('tileRenderer tab rename', () => {
     renderRenderer(s, tileId)
     await screen.findByTestId('chat-container')
 
-    renameFirstTab('  $$%%  ')
+    renameFirstTab('  \u0000\u200B\uFEFF  ')
     expect(renameAgent).not.toHaveBeenCalled()
     expect(s.view.getAgentTab('a1')?.title).toBe('Agent Olivia')
 
-    renameFirstTab('Agent Olivia$')
+    renameFirstTab('Agent Olivia\u200B')
     expect(renameAgent).not.toHaveBeenCalled()
     expect(s.view.getAgentTab('a1')?.title).toBe('Agent Olivia')
   })

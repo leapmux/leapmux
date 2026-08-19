@@ -221,7 +221,7 @@ For providers that support a plan mode, **Shift+Tab** in the editor toggles betw
 - Sandbox defaults to **Workspace Write** (also Full Access / Read Only); Network defaults to **Restricted** (also Enabled).
 - The **Bypass permissions** item sets network = enabled, sandbox = full access, and approval = Full Auto in one click.
 
-**Pi** — **Thinking Level** (effort) and **Model**. Default model **gpt-5.5**. Pi has no permission mode, no plan mode, and no bypass.
+**Pi** — **Thinking Level** (effort) and **Model**. Default model **glm-5.3**. Pi has no permission mode, no plan mode, and no bypass.
 
 **Other providers** — a single option group plus a model selector. Each axis gets its own chip, and each chip shows the current value.
 
@@ -239,10 +239,7 @@ In the UI you pick these as named radio options (**Auto**, **YOLO**, **Build**, 
 
 ## Resuming an existing session
 
-To continue a previous conversation, paste its Session ID into the **Resume an existing session** field (placeholder **"Session ID"**) in the New agent dialog. LeapMux validates the ID as you type:
-
-- The field refuses input that holds a control character, a byte order mark, or any of the characters `"`, `\`, `$`, and `%`. Surrounding whitespace is refused too, because the check compares your input against its own trimmed form.
-- The field refuses input longer than 128 UTF-8 bytes.
+To continue a previous conversation, paste its Session ID into the **Resume an existing session** field (placeholder **"Session ID"**) in the New agent dialog. The field checks the ID as you type and reports one it cannot use.
 
 Leave the field empty to start a fresh session.
 

@@ -304,7 +304,7 @@ func TestACPTerminal_CommandOfStrippedCharactersFallsBackToShell(t *testing.T) {
 
 	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
 		"sessionId": "sess-1",
-		"command":   "%",
+		"command":   "\u200b\ufeff",
 		"cwd":       b.workingDir,
 	})
 	resps := rec.wait(t, 1, 3*time.Second)
@@ -321,10 +321,11 @@ func TestACPTerminal_CommandOfStrippedCharactersFallsBackToShell(t *testing.T) {
 	assert.False(t, row.TitleIsCommand, "the fallback label is not a command")
 }
 
-// A command that only PARTLY strips keeps its row and its flag. This is the
-// accepted cost of one rule for every title column, asserted at the provider
-// that owns the only rows whose title really is a command.
-func TestACPTerminal_CommandLosesItsTemplatingCharacters(t *testing.T) {
+// The command reaches the registry row whole, quoting included. This is
+// asserted at the provider that owns the only rows whose title really IS a
+// command: `$`, `%`, `"` and `\` used to go, and the row then labelled a
+// command that nobody ran.
+func TestACPTerminal_CommandReachesTheRowWhole(t *testing.T) {
 	sink := &testSink{}
 	b, rec := newTerminalTestBase(t, sink)
 
@@ -343,9 +344,9 @@ func TestACPTerminal_CommandLosesItsTemplatingCharacters(t *testing.T) {
 	row, found := sink.bgTasks[termID]
 	sink.bgTasksMu.Unlock()
 	require.True(t, found)
-	assert.Equal(t, "printf 's' HOME", row.Title,
-		"the registry title is a label for the command, not a command to copy back and run")
-	assert.True(t, row.TitleIsCommand, "a stripped command is still a command")
+	assert.Equal(t, `printf '%s' "$HOME"`, row.Title,
+		"the row labels the command that ran, so it has to hold the command that ran")
+	assert.True(t, row.TitleIsCommand)
 }
 
 func TestACPTerminal_RelativeCwdRejected(t *testing.T) {

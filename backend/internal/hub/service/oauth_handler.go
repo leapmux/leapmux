@@ -335,6 +335,32 @@ func tokenExpiryTime(tokenSet *huboauth.TokenSet) time.Time {
 	return time.Now().Add(defaultTokenExpiry).UTC()
 }
 
+// cleanProviderDisplayName picks the display name for a pending OAuth signup
+// and cleans it HERE, at the boundary where an identity provider's value
+// enters LeapMux, rather than at the field that reads it later.
+//
+// validate.SanitizeDisplayName decides its fallback from the RAW value, so it
+// treats "" as absent and a lone zero width space as present. That is right
+// for a form FIELD, where the user reads the error and corrects it. It is
+// wrong for this value: the provider chose it, no field shows it, and
+// CompleteOAuthSignup refused the whole signup with "display name: name must
+// not be empty" over a name that LOOKS empty, while the username fallback sat
+// unused in the same call.
+//
+// CleanName never fails, so an all-invisible claim becomes "" and takes the
+// fallback, and a claim over the byte limit is cut instead of refused. Its
+// result is idempotent and already within the limit, so the later
+// SanitizeDisplayName passes it through unchanged.
+//
+// An empty return value means the provider supplied no usable name, and the
+// caller that reads the stored row then falls back to the username.
+func cleanProviderDisplayName(claims *huboauth.UserClaims) string {
+	if name := validate.CleanName(claims.DisplayName); name != "" {
+		return name
+	}
+	return validate.CleanName(claims.Name)
+}
+
 func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string, claims *huboauth.UserClaims, tokenSet *huboauth.TokenSet, redirectURI string) (string, error) {
 	token := id.Generate()
 
@@ -346,10 +372,7 @@ func (h *OAuthHandler) storePendingSignup(ctx context.Context, providerID string
 
 	tokenExpiresAt := tokenExpiryTime(tokenSet)
 
-	displayName := claims.DisplayName
-	if displayName == "" {
-		displayName = claims.Name
-	}
+	displayName := cleanProviderDisplayName(claims)
 
 	if err := h.store.PendingOAuthSignups().Create(ctx, store.CreatePendingOAuthSignupParams{
 		Token:           token,

@@ -1,15 +1,117 @@
-// The C1 block (U+0080-U+009F) is here because the hub strips every rune
-// `unicode.IsControl` reports, and the Unicode Cc category is BOTH
-// U+0000-U+001F and U+007F-U+009F. Leaving the C1 half out let a name
-// through that the hub then refused, with no explanation at the field.
-//
-// U+FEFF (the byte order mark) is here for the opposite reason: Go's
-// `unicode.IsControl` reports FALSE for it, because its category is Cf. It has
-// to go anyway, since `String.prototype.trim` removes it and Go's
-// `strings.TrimSpace` keeps it — a pasted byte order mark was the one input on
-// which this rule and its Go copy disagreed.
+/**
+ * Every character that a name or a title loses to the strip.
+ *
+ * Two groups, and a reader sees neither of them:
+ *
+ * - The control blocks. Go's `unicode.IsControl` covers the Unicode Cc
+ *   category, which is BOTH U+0000-U+001F and U+007F-U+009F. Leaving the C1
+ *   half out let a name through that the hub then refused, with no explanation
+ *   at the field.
+ * - The format characters that occupy no width: the soft hyphen, the zero
+ *   width space, the word joiner, the bidirectional marks, overrides and
+ *   isolates, and U+FEFF. A reader cannot see one, so it can only hide text or
+ *   pad a name past a limit that the visible characters fit. U+FEFF also
+ *   settles the one input on which this rule and its Go copy disagreed:
+ *   `String.prototype.trim` removes it and Go's `strings.TrimSpace` keeps it.
+ *
+ * The set is written out by CODE POINT rather than as `\p{Cf}`, because
+ * `backend/util/validate/name.go` must strip the SAME characters, and Go and
+ * each JavaScript engine update their Unicode tables on their own release
+ * schedules. A category test would let the two sides disagree on a character
+ * that one of them classifies first.
+ * `testdata/title_cleaning_conformance.json` pins the two lists together.
+ *
+ * Three groups stay deliberately, although they are also invisible. U+200C
+ * and U+200D stay, because the joiner builds an emoji family or a profession,
+ * and both shape a word in Indic, Persian and Arabic orthography. The
+ * variation selectors U+FE00-U+FE0F stay, because U+FE0F is what makes a
+ * character render as an emoji. The tag characters U+E0020-U+E007F stay,
+ * because they spell out a subdivision flag.
+ *
+ * Other invisible characters stay because nobody added them, and not because
+ * a name may hold them: the invisible math operators U+2061-U+2064, the
+ * interlinear annotation controls U+FFF9-U+FFFB, and the blank-glyph
+ * characters U+115F, U+1160, U+2800 and U+3164 all survive today. Add a code
+ * point HERE and in the Go copy together, and add a case to the shared
+ * fixture, or the two sides drift.
+ *
+ * The control blocks have TWO gaps -- U+0009-U+000D and U+0085 -- and both
+ * gaps are deliberate. Those characters are control characters AND whitespace
+ * at the same time, so {@link NAME_WHITESPACE_G} below folds them to a space
+ * instead. A strip here made `Fix parser\nAdd tests` read as
+ * `Fix parserAdd tests`.
+ *
+ * The two gaps are the COMPLEMENT of {@link NAME_WHITESPACE_G} inside the Cc
+ * category, transcribed by hand, and the Go copy computes the same overlap by
+ * testing whitespace before control. Narrow the fold class and a gap becomes
+ * a hole: a control character then reaches the stored name, and the hub
+ * refuses it with no explanation at the field. `cleanName leaves no C0 or C1
+ * control in the result` in `./validate.test.ts` walks every code point from
+ * U+0000 to U+009F and is what turns red for it.
+ *
+ * `"`, `\`, `$` and `%` are NOT here. No sink reads a stored name as syntax:
+ * the shell path quotes each argument, the stylesheet path escapes at the
+ * emitter (`buildFontFamily` in `~/lib/fontStack`), the plan file name keeps
+ * letters and digits only, and the SQL is parameterized. A guard at the
+ * emitter holds for whatever the store holds; a character ban here only
+ * removed the user's text.
+ */
 // eslint-disable-next-line no-control-regex
-const NAME_FORBIDDEN_G = /[\x00-\x1F\x7F-\x9F"\\$%\uFEFF]/g
+const NAME_INVISIBLE_G = /[\x00-\x08\x0E-\x1F\x7F-\x84\x86-\x9F\u00AD\u061C\u180E\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g
+
+/**
+ * A surrogate code unit with no partner.
+ *
+ * A JavaScript string can hold one; a UTF-8 string cannot represent one, so
+ * `TextEncoder` turns it into U+FFFD and the byte count below would measure a
+ * character the hub never receives. The Go copy drops an invalid byte for the
+ * same reason. Dropping it also keeps the rule from ever GROWING a string,
+ * which is what lets the cut run last.
+ */
+const LONE_SURROGATE_G = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+
+/**
+ * Every character a name rule folds to one space, as a regex character-class
+ * body. {@link NAME_WHITESPACE_G} and {@link EDGE_WHITESPACE} are both built
+ * from it, so the set has one spelling on this side.
+ *
+ * It is written out by CODE POINT rather than as `\s`, for the reason
+ * {@link NAME_INVISIBLE_G} is, and the reason applies with MORE force here.
+ * `\s` moves with the JavaScript engine's Unicode version and Go's
+ * `unicode.IsSpace` moves with the Go release, so a Space_Separator added to
+ * Unicode later would reach the browser and the worker in different weeks:
+ * one side folds a character the other keeps, and the tab strip shows one
+ * title while the worker stores another with no error anywhere. The Cc
+ * category is frozen, so the STRIP was already deterministic; the fold was
+ * the last half of this rule that two runtimes could answer differently.
+ *
+ * The set is Go's `unicode.IsSpace`, which is `\s` with two edits. U+0085 is
+ * IN, because Go claims it and `\s` does not. U+FEFF is OUT, because `\s`
+ * claims it and Go does not -- and {@link NAME_INVISIBLE_G} strips it before
+ * this pass reads the string anyway.
+ *
+ * Pinning makes the set stale on purpose: a Space_Separator added later
+ * renders as a visible character inside a title on BOTH sides until somebody
+ * adds it here. That failure is visible, and the drift it replaces was
+ * silent. The `matches Go's whitespace set` test reports the day the pinned
+ * set and `\s` stop differing by exactly those two code points.
+ */
+export const NAME_WHITESPACE_CLASS = '\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000'
+
+/** A run of whitespace, which becomes one space. */
+const NAME_WHITESPACE_G = new RegExp(`[${NAME_WHITESPACE_CLASS}]+`, 'g')
+
+/**
+ * Whitespace at either end of a value, for a rule that REFUSES rather than
+ * folds.
+ *
+ * `validateSessionId` uses this and not `String.prototype.trim`, because
+ * `trim` reads the engine's own whitespace set. Go's `strings.TrimSpace`
+ * reads a different one, so the two would ACCEPT and REFUSE the same token
+ * once either runtime claims a new Space_Separator first \u2014 a browser that
+ * offers a resume the worker then rejects.
+ */
+const EDGE_WHITESPACE = new RegExp(`^[${NAME_WHITESPACE_CLASS}]|[${NAME_WHITESPACE_CLASS}]$`)
 
 /**
  * The maximum size of a name or a title, in UTF-8 BYTES. Mirrors
@@ -22,10 +124,42 @@ export const NAME_BYTE_LIMIT = 128
 const UTF8 = new TextEncoder()
 
 /**
+ * The character rule that every name and title shares: strip what a reader
+ * cannot see, fold each run of whitespace to one space, and trim both ends.
+ *
+ * It never GROWS the string, and {@link cleanName} depends on that. Each pass
+ * either removes code units or replaces a run of them with a single space.
+ *
+ * The passes run in THIS order. A fold that ran first would leave a U+200B
+ * between two spaces untouched, because U+200B is not `\s`, and the strip
+ * would then produce the double space that the fold was supposed to collapse.
+ * `trim` runs last, because the fold leaves at most one space at each end.
+ *
+ * The strip and the fold read DISJOINT sets, which is what lets two passes do
+ * the work of the Go copy's one. {@link NAME_INVISIBLE_G} leaves every
+ * whitespace character alone, and {@link NAME_WHITESPACE_G} claims all of them.
+ */
+function cleanNameChars(name: string): string {
+  return name
+    .replace(LONE_SURROGATE_G, '')
+    .replace(NAME_INVISIBLE_G, '')
+    .replace(NAME_WHITESPACE_G, ' ')
+    .trim()
+}
+
+/**
  * Sanitizes and validates a name/title string.
- * Forbidden characters (control characters, the byte order mark, ", \, $, %)
- * are silently stripped. Returns the sanitized string and an error if the
- * result is empty or exceeds 128 bytes.
+ *
+ * Applies the {@link cleanNameChars} rule. That rule strips the control
+ * characters, the invisible format characters, and the lone surrogates. It
+ * folds each run of whitespace to one space, and it trims both ends.
+ * `sanitizeName` then reports an error when nothing survived, or when the
+ * result exceeds 128 bytes.
+ *
+ * The rule REWRITES as well as strips, so a caller that compares the result
+ * against its input refuses more than a character ban would: `Fira Code`
+ * holds a no-break space, which folds to a plain space and makes the two
+ * differ.
  *
  * This is the browser copy of `backend/util/validate/name.go`, and the hub
  * REFUSES a name that differs from its own sanitized form rather than
@@ -36,7 +170,7 @@ const UTF8 = new TextEncoder()
  * Use {@link cleanName} for a tab title. That path never refuses.
  */
 export function sanitizeName(name: string): { value: string, error: string | null } {
-  const value = name.replace(NAME_FORBIDDEN_G, '').trim()
+  const value = cleanNameChars(name)
   let error: string | null = null
   if (value === '') {
     error = 'Name must not be empty'
@@ -66,46 +200,56 @@ function utf8Size(codePoint: number): number {
  * `String.prototype.slice` counts UTF-16 code units instead, and slicing at
  * byte 128 both measures the wrong unit and splits a pair — the fixture case
  * `the cut lands inside a surrogate pair` is what refuses that shortcut.
+ *
+ * The loop is the ONLY measurement. A `UTF8.encode(value).length <= limit`
+ * guard in front of it read the same length a second way, and it allocated a
+ * byte array for the whole string to do so — on a pasted title of a megabyte,
+ * for a question the loop answers after `limit` steps.
  */
 function truncateToBytes(value: string, limit: number): string {
   if (limit <= 0)
     return ''
-  if (UTF8.encode(value).length <= limit)
-    return value
 
   let bytes = 0
   let units = 0
   for (const char of value) {
     const size = utf8Size(char.codePointAt(0)!)
     if (bytes + size > limit)
-      break
+      return value.slice(0, units)
     bytes += size
     // `char.length` is 1 for a BMP character and 2 for an astral one, so this
-    // counts the UTF-16 units that `slice` below wants.
+    // counts the UTF-16 units that `slice` above wants.
     units += char.length
   }
-  return value.slice(0, units)
+  return value
 }
 
 /**
- * Cleans a name/title, and never refuses one. Cuts it to
- * {@link NAME_BYTE_LIMIT} bytes, then applies the {@link sanitizeName}
- * character rule to what remains. An empty return value means that no
- * character survived, and each caller decides its own fallback for that case.
+ * Cleans a name/title, and never refuses one. Applies the
+ * {@link sanitizeName} character rule, then cuts what remains to
+ * {@link NAME_BYTE_LIMIT} bytes. An empty return value means that no character
+ * survived, and each caller decides its own fallback for that case.
  *
  * This is the browser copy of `validate.CleanName`, and
  * `testdata/title_cleaning_conformance.json` pins the two against each other.
  * Every tab title goes through it, in the browser and in the worker alike, so
- * the title the user sees after a rename is the title the worker stores. The
- * order is load-bearing: the strip only REMOVES bytes, so a cut string still
- * fits the limit, which is what makes `sanitizeName`'s "too long" error
- * unreachable here and makes the result idempotent.
+ * the title the user sees after a rename is the title the worker stores.
  *
- * The discarded `error` is the empty-result one, which the empty return value
- * already reports.
+ * The order is CLEAN FIRST, CUT SECOND. Do not reverse it. Cutting last makes
+ * the result fit the limit by construction, which is what makes
+ * `sanitizeName`'s "too long" error unreachable here. It also keeps the text
+ * the user typed: a title of 200 invisible characters followed by `Plan`
+ * returns `Plan`, where a cut-first rule already took `Plan` away.
+ *
+ * The result is idempotent, because it holds no stripped character, no
+ * whitespace run longer than one space, no whitespace at either end, and at
+ * most {@link NAME_BYTE_LIMIT} bytes.
+ *
+ * The trim runs again after the cut, because the cut can expose the one space
+ * that separated two words.
  */
 export function cleanName(name: string): string {
-  return sanitizeName(truncateToBytes(name, NAME_BYTE_LIMIT)).value
+  return truncateToBytes(cleanNameChars(name), NAME_BYTE_LIMIT).trim()
 }
 
 /**
@@ -115,21 +259,41 @@ export function sanitizeDisplayName(displayName: string, fallback: string): { va
   return sanitizeName(displayName || fallback)
 }
 
-// Characters forbidden in git branch names: space ~ ^ : ? * [ ] \ $ %
-// Also control characters (0x00-0x1F, 0x7F).
+/**
+ * A character forbidden in a git branch name: the space, `~ ^ : ? * [ ] \ $
+ * %`, and the control blocks.
+ *
+ * The control blocks run to U+009F, not to U+007F, because the worker copy
+ * (`gitutil.ValidateBranchName`) asks `unicode.IsControl`, and the Unicode Cc
+ * category is BOTH U+0000-U+001F and U+007F-U+009F. A class that stopped at
+ * U+007F let a name through that the worker then refused.
+ */
 // eslint-disable-next-line no-control-regex
-const BRANCH_FORBIDDEN_CHARS = /[\x00-\x1F\x7F ~^:?*[\]\\$%]/
+const BRANCH_FORBIDDEN_CHARS = /[\x00-\x1F\x7F-\x9F ~^:?*[\]\\$%]/
+
+/**
+ * The maximum size of a git branch name, in UTF-8 BYTES. Mirrors
+ * `gitutil.BranchNameByteLimit`.
+ */
+export const BRANCH_NAME_BYTE_LIMIT = 256
 
 /**
  * Validates a git branch name according to git-check-ref-format rules.
  * Returns an error message string, or null if valid.
+ *
+ * This is the browser copy of `gitutil.ValidateBranchName`, and the two must
+ * refuse the same names: the panel offers a branch that the worker then
+ * refuses, or the reverse, and the user reads two answers for one name. The
+ * limit counts UTF-8 BYTES because Go's `len` does — an 86-character CJK name
+ * is 258 bytes, which a `String.length` count accepted here and the worker
+ * then refused.
  */
 export function validateBranchName(name: string): string | null {
   if (name === '') {
     return 'Branch name must not be empty'
   }
-  if (name.length > 256) {
-    return 'Branch name must be at most 256 characters'
+  if (UTF8.encode(name).length > BRANCH_NAME_BYTE_LIMIT) {
+    return `Branch name must be at most ${BRANCH_NAME_BYTE_LIMIT} bytes`
   }
   if (BRANCH_FORBIDDEN_CHARS.test(name)) {
     return 'Branch name contains invalid characters'
@@ -171,17 +335,92 @@ export function stripRemotePrefix(ref: string): string {
 }
 
 /**
+ * The maximum size of an agent session ID, in UTF-8 BYTES. Mirrors
+ * `validate.SessionIDByteLimit`.
+ *
+ * The number matches {@link NAME_BYTE_LIMIT} today, and the two are NOT
+ * linked on purpose. A session ID is a token, a name is text a user reads,
+ * and a change to what one may hold must not move the other.
+ */
+export const SESSION_ID_BYTE_LIMIT = 128
+
+/**
+ * A character an agent session ID must not hold: the control blocks, the
+ * invisible format characters, and the four characters the name rule used to
+ * strip.
+ *
+ * Written out here rather than borrowed from {@link NAME_INVISIBLE_G}, so
+ * that a later change to what a NAME may hold cannot widen or narrow what a
+ * TOKEN may hold. The repetition is the point.
+ *
+ * The class carries the invisible format characters, and not U+FEFF alone,
+ * because every one of them travels through a copy and a paste unseen. A
+ * session ID that carries one names no session that the agent knows, and the
+ * resume then starts a new conversation with no report of why.
+ */
+// eslint-disable-next-line no-control-regex
+const SESSION_ID_FORBIDDEN = /[\x00-\x1F\x7F-\x9F"\\$%\u00AD\u061C\u180E\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/
+
+/**
  * Validates a session ID for resuming an agent session.
- * Delegates to sanitizeName for control-character and length checks,
- * and additionally rejects input that contains forbidden characters.
  * Returns an error message string, or null if valid.
+ *
+ * This rule REFUSES rather than strips, and it owns its own character class.
+ * A session ID is an opaque token that the worker hands to the agent: it
+ * becomes an argv element of `claude --resume <id>` and the `sessionId` member
+ * of an ACP request. A rewritten token resumes a different session, or no
+ * session, so the only correct answer for a character this rule does not want
+ * is to report it. `validate.ValidateSessionID` refuses the same way, for the
+ * same reason.
+ *
+ * The tests run in THIS order, and the Go copy runs them in the same order,
+ * because the two languages disagree about which characters a trim removes:
+ * `String.prototype.trim` claims U+FEFF and Go's `strings.TrimSpace` does
+ * not, and Go's claims U+0085 where `trim` does not. A trim-first rule
+ * therefore reported "must not start or end with whitespace" on one side and
+ * "contains invalid characters" on the other, for one input.
+ * `testdata/session_id_conformance.json` pins the order together with the
+ * class.
+ *
+ * The edge test reads {@link EDGE_WHITESPACE} and not `trim`, which is the
+ * second half of that problem: a trim reads the runtime's OWN whitespace set,
+ * so a Space_Separator that one runtime claims first would make the browser
+ * accept a token the worker refuses — an accept/refuse split rather than the
+ * message split the ordering fixed.
+ *
+ * The lone-surrogate test is here because `TextEncoder` rewrites an unpaired
+ * surrogate to U+FFFD: the browser would otherwise measure and then send a
+ * token the user never typed, and the hub reads U+FFFD as ordinary text. The
+ * Go copy refuses an invalid byte for the same reason.
+ *
+ * The leading-hyphen test is last, and it is here because argv cannot tell a
+ * hyphen-prefixed token from a flag: the worker passes the token to
+ * `claude --resume <id>` as its own argv element, `--resume` takes an optional
+ * value, and a parser of that shape reads the token as a flag of its own
+ * instead. No provider issues an identifier that starts with a hyphen, so the
+ * field refuses one here rather than after a round trip.
+ *
+ * The empty value is accepted here and means "no resume". The caller that
+ * requires one checks for it separately.
  */
 export function validateSessionId(value: string): string | null {
-  const { value: sanitized, error } = sanitizeName(value)
-  if (error)
-    return error
-  if (sanitized !== value)
-    return 'Session ID contains invalid characters.'
+  if (value === '')
+    return null
+  if (UTF8.encode(value).length > SESSION_ID_BYTE_LIMIT)
+    return `Session ID must be at most ${SESSION_ID_BYTE_LIMIT} bytes`
+  // `LONE_SURROGATE_G` carries the `g` flag for its use in `replace`, and
+  // `RegExp.prototype.test` on a global regex advances `lastIndex` and answers
+  // from there on the NEXT call. Reset it, so this test reads the whole value
+  // every time.
+  LONE_SURROGATE_G.lastIndex = 0
+  if (LONE_SURROGATE_G.test(value))
+    return 'Session ID contains invalid characters'
+  if (SESSION_ID_FORBIDDEN.test(value))
+    return 'Session ID contains invalid characters'
+  if (EDGE_WHITESPACE.test(value))
+    return 'Session ID must not start or end with whitespace'
+  if (value.startsWith('-'))
+    return 'Session ID must not start with a hyphen'
   return null
 }
 

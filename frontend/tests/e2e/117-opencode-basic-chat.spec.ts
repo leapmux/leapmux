@@ -1,4 +1,4 @@
-import { ARITHMETIC_PROMPT, expectAssistantAnswer, lastAssistantBubble, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { ARITHMETIC_PROMPT, expectAssistantAnswer, sendMessage, waitForAgentIdle } from './helpers/ui'
 import { expect, OPENCODE_E2E_SKIP_REASON, opencodeTest } from './opencode-fixtures'
 
 opencodeTest.skip(!!OPENCODE_E2E_SKIP_REASON, OPENCODE_E2E_SKIP_REASON || '')
@@ -16,10 +16,11 @@ opencodeTest.describe('OpenCode Basic Chat', () => {
     await sendMessage(page, 'Say hello world')
     await waitForAgentIdle(page, 120_000)
 
-    // Wait for the assistant bubble to appear after the persisted message lands.
-    const bubble = await lastAssistantBubble(page)
-    const text = await bubble.textContent()
-    expect(text?.toLowerCase()).toContain('hello')
+    // expectAssistantAnswer, not lastAssistantBubble: a turn-end divider is an
+    // agent-role bubble too, so the LAST one is the divider whenever it lands
+    // after the reply. This asserted on its "turn completed" text instead of
+    // the answer.
+    await expectAssistantAnswer(page, { answer: /hello/i })
   })
 
   opencodeTest('thinking indicator appears and disappears during response', async ({ authenticatedOpencodeWorkspace, page }) => {

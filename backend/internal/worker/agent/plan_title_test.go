@@ -307,6 +307,59 @@ func TestExtractPlanTitleCapsBytes(t *testing.T) {
 	}
 }
 
+// TestExtractPlanTitleKeepsTheWholeBudgetBehindAPrefix pins the reason
+// extractPlanTitle calls CleanNameChars with NO scan limit.
+//
+// The prefix strip runs AFTER the character rule, so a character rule that
+// stopped at the byte limit would hand the strip a result that already fills
+// it, and the title would come back as many bytes shorter as the prefix was
+// long. The bound belongs on the INPUT line instead, well above the title
+// limit, which is what planLineScanLimit is.
+//
+// Without the fix, "# Plan: " + 128 letters returned 123 bytes rather than
+// 128, and the plan file name shortened with it.
+func TestExtractPlanTitleKeepsTheWholeBudgetBehindAPrefix(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		content   string
+		wantBytes int
+		wantRunes int
+	}{
+		{"a Plan prefix costs the title nothing", "# Plan: " + strings.Repeat("A", 400), 128, 128},
+		{"a Design Doc prefix costs the title nothing", "# Design Doc: " + strings.Repeat("A", 400), 128, 128},
+		{"a bracketed prefix costs the title nothing", "# [Design Doc] " + strings.Repeat("A", 400), 128, 128},
+		{"a prefix costs a Hangul title nothing", "# Plan: " + strings.Repeat("한", 400), 126, 42},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := extractPlanTitle(tc.content)
+			assert.Equal(t, tc.wantBytes, len(got), "byte length")
+			assert.Equal(t, tc.wantRunes, utf8.RuneCountInString(got), "rune count")
+			assert.NotContains(t, got, "Plan", "the prefix must be gone")
+			assert.NotContains(t, got, "Design", "the prefix must be gone")
+		})
+	}
+}
+
+// TestExtractPlanTitleBoundsTheLine pins the input bound. A plan file is
+// written by a model, so nothing upstream caps one line of it, and seven
+// regexes, an HTML sanitizer and an entity decode all run on whatever length
+// arrives.
+//
+// The bound must not change the ANSWER for any line a plan realistically
+// carries, so it sits far above the title limit: a 4 KiB line still yields the
+// full 128-byte title.
+func TestExtractPlanTitleBoundsTheLine(t *testing.T) {
+	t.Parallel()
+
+	huge := "# Plan: " + strings.Repeat("A", 5_000_000)
+	got := extractPlanTitle(huge)
+	assert.Equal(t, strings.Repeat("A", 128), got,
+		"a huge line still yields the full title, so the bound changes no realistic answer")
+}
+
 // TestExtractPlanTitleSatisfiesSanitizeName pins the one rule that both title
 // paths obey. The auto-rename in worker/service writes extractPlanTitle's
 // result to the same `title` column that a user-set title reaches through
@@ -326,9 +379,105 @@ func TestExtractPlanTitleSatisfiesSanitizeName(t *testing.T) {
 			want:    "Add dark mode toggle",
 		},
 		{
-			name:    "characters that SanitizeName strips",
+			// The characters the name rule used to strip. A plan title is
+			// prose, and a price, a percentage and a quoted word belong in it.
+			name:    "characters the name rule keeps",
 			content: `# Plan: Ship $100 "raises" 50% \ now`,
-			want:    "Ship 100 raises 50  now",
+			want:    `Ship $100 "raises" 50% \ now`,
+		},
+		{
+			// The fold, on the one input that reaches it here: the markdown
+			// strip leaves a double space where an emphasis marker was.
+			name:    "a run of whitespace folds to one space",
+			content: "# Plan:  Ship  the \t parser",
+			want:    "Ship the parser",
+		},
+		{
+			name:    "an invisible format character is stripped",
+			content: "# \u202eShip\u200b the\u00ad parser",
+			want:    "Ship the parser",
+		},
+		{
+			// The pre-pass that hides a control character from rePlanPrefix
+			// must not take the tab with it: CleanName folds a tab to a space,
+			// and dropping it first gave "Shipthe parser".
+			name:    "a tab between two words folds rather than vanishing",
+			content: "# Ship\tthe parser",
+			want:    "Ship the parser",
+		},
+		{
+			// The same pre-pass still has to drop a control character INSIDE a
+			// prefix, or rePlanPrefix stops matching it.
+			name:    "a control character inside the prefix still hides nothing",
+			content: "# Pl\x00an: Ship the parser",
+			want:    "Ship the parser",
+		},
+		{
+			// An INVISIBLE format character hides the prefix the same way a
+			// control character does, and the local pre-pass this function used
+			// to run could not see one: rePlanPrefix matched on the raw text,
+			// missed "Plan", and CleanName then stripped U+200B afterwards --
+			// so the stored title kept the "Plan: " the function exists to
+			// remove. The shared character rule now runs BEFORE the match.
+			name:    "a zero width space inside the prefix hides nothing",
+			content: "# Pl\u200ban: Ship the parser",
+			want:    "Ship the parser",
+		},
+		{
+			name:    "a soft hyphen inside the prefix hides nothing",
+			content: "# Pl\u00adan: Ship the parser",
+			want:    "Ship the parser",
+		},
+		{
+			name:    "a byte order mark inside the prefix hides nothing",
+			content: "# Pl\ufeffan: Ship the parser",
+			want:    "Ship the parser",
+		},
+		{
+			// html.UnescapeString runs one line above the character rule, so it
+			// can MANUFACTURE an invisible character that the prefix match then
+			// has to survive.
+			name:    "an entity-encoded zero width space inside the prefix hides nothing",
+			content: "# Pl&#x200b;an: Ship the parser",
+			want:    "Ship the parser",
+		},
+		{
+			name:    "an entity-encoded soft hyphen inside the prefix hides nothing",
+			content: "# Pl&shy;an: Ship the parser",
+			want:    "Ship the parser",
+		},
+		{
+			// An INVALID BYTE is stripped rather than grown into a visible
+			// replacement character. strings.Map decoded it as U+FFFD and wrote
+			// all 3 bytes, and CleanName deliberately KEEPS a real U+FFFD (it
+			// decodes with size 3), so the title carried a visible "" into the
+			// tab strip and into the plan file name -- while CleanName's own
+			// test asserted the byte was dropped. Two title paths, two answers,
+			// for one input.
+			name:    "an invalid byte is dropped, not grown into a replacement character",
+			content: "# Fix\xffparser",
+			want:    "Fixparser",
+		},
+		{
+			name:    "an invalid byte inside the prefix hides nothing",
+			content: "# Pl\xffan: Ship the parser",
+			want:    "Ship the parser",
+		},
+		{
+			// A TAB is control AND whitespace, so it folds to a visible space
+			// rather than vanishing -- which is what keeps "Ship\tthe parser"
+			// from reading as "Shipthe parser". The cost is that a tab inside
+			// the prefix leaves "Pl an:", which is not the word "plan", so the
+			// whole line stays. That is the coherent answer, and this case pins
+			// it: the exempted branch had no coverage at all.
+			name:    "a tab inside the prefix leaves the line whole",
+			content: "# Pl\tan: Ship the parser",
+			want:    "Pl an: Ship the parser",
+		},
+		{
+			name:    "a tab between two words folds to one space",
+			content: "# Ship\tthe parser",
+			want:    "Ship the parser",
 		},
 		{
 			name:    "long ASCII title",
@@ -362,11 +511,11 @@ func TestExtractPlanTitleSatisfiesSanitizeName(t *testing.T) {
 	}
 }
 
-// TestExtractPlanTitleDropsFullyStrippedTitle covers the branch where
-// SanitizeName refuses the derived title. Truncation runs first, so the only
-// refusal left is an empty result, and "" tells the caller to keep the title it
-// already holds. A user who sets the same string gets SanitizeName's own
-// refusal, so neither path writes it.
+// TestExtractPlanTitleDropsFullyStrippedTitle covers the branch where nothing
+// survives the character rule. The cut runs last, so the only empty result left
+// is one whose every character was stripped or trimmed, and "" tells the caller
+// to keep the title it already holds. A user who sets the same string gets
+// SanitizeName's own refusal, so neither path writes it.
 func TestExtractPlanTitleDropsFullyStrippedTitle(t *testing.T) {
 	t.Parallel()
 
@@ -374,8 +523,8 @@ func TestExtractPlanTitleDropsFullyStrippedTitle(t *testing.T) {
 		name    string
 		content string
 	}{
-		{name: "only stripped characters", content: `# $$"\%%`},
-		{name: "long run of stripped characters", content: "# " + strings.Repeat("%", 400)},
+		{name: "only stripped characters", content: "# \u200b\ufeff\u00ad\u2060"},
+		{name: "long run of stripped characters", content: "# " + strings.Repeat("\u200b", 400)},
 		{name: "no content", content: ""},
 		{name: "only whitespace", content: "  \n\t\n  "},
 	}

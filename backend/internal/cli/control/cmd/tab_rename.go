@@ -36,10 +36,10 @@ func RunTabRename(rawCtx any, args []string) error {
 		switch got.TabType {
 		case leapmuxv1.TabType_TAB_TYPE_AGENT:
 			// Report the worker's title, not the one this command sent. The
-			// worker cuts the title to 128 UTF-8 bytes and strips the
-			// forbidden characters, and a title that cleans to nothing leaves
-			// the tab with the name it already had -- so echoing --title back
-			// printed a name the tab does not carry.
+			// worker cleans it with the rule that validate.CleanName
+			// documents. A title that cleans to nothing leaves the tab with
+			// the name it already had. Echoing --title back therefore printed
+			// a name that the tab does not carry.
 			var resp leapmuxv1.RenameAgentResponse
 			if err := callInnerRPC(ctx, c, got.WorkerID, "RenameAgent", &leapmuxv1.RenameAgentRequest{AgentId: got.TabID, Title: title}, &resp); err != nil {
 				return err

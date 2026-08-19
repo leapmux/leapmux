@@ -3,7 +3,7 @@
 // worker OutputSink via neutral Upsert/Close primitives (see OutputSink);
 // this package owns the in-memory model, the proto / DB-column conversions,
 // and the neutral normalization rules that every provider's write meets
-// (SanitizeRowKey, Upsert.CleanTitle, Item.PreservingBlanksFrom). Each rule
+// (ValidateRowKey, Upsert.CleanTitle, Item.PreservingBlanksFrom). Each rule
 // lives here so the registry applier and the provider tests' recording sink
 // share one copy and cannot drift.
 // There is no reducer here -- unlike agent_todos, the provider
@@ -15,8 +15,11 @@
 package bgtask
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/validate"
@@ -33,18 +36,61 @@ import (
 // burst of one cannot push out the other.
 const MaxTasks = 64
 
-// SanitizeRowKey strips control characters (bytes < 0x20) from a
-// provider-supplied registry row key. Row keys reach DOM data-attributes and
-// log lines; at least one provider (Cursor) ships toolCallIds with an embedded
-// newline. Applied in the neutral layer (the sink entry points) so every
-// provider is covered without a per-integration fix.
-func SanitizeRowKey(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 {
-			return -1
-		}
-		return r
-	}, s)
+// RowKeyByteLimit caps a provider-supplied registry row key.
+//
+// A row key is not a name, so NameByteLimit is the wrong number for it: it is
+// an opaque provider identifier, and a UUID with a prefix already runs past
+// 64 bytes. The cap exists because the PROVIDER chooses the length and
+// nothing else on the path does: the key is a primary key column, it is held
+// in memory for the life of the agent, and every registry snapshot broadcast
+// carries it again. MaxTasks caps how MANY rows exist and says nothing about
+// how large one is.
+const RowKeyByteLimit = 256
+
+// ValidateRowKey reports why a provider-supplied registry row key is unusable,
+// or nil when the key is usable. The empty key is accepted and means "this
+// call carries no registry linkage" -- EnsureChildAgent and
+// RenameBackgroundTask each test for it and do less work.
+//
+// THIS RULE REFUSES AND NEVER REWRITES, and that is the whole point of it. A
+// row key is an IDENTITY: it is the second half of the
+// (owner_agent_id, row_key) primary key, and every later upsert, status
+// change, close and rename addresses the row by it. A rule that rewrites an
+// identifier is not injective, so two provider keys can map onto one string --
+// and then two background tasks share one registry row, the second overwrites
+// the first's title and status, and one of the two disappears from the
+// sidebar. validate.ValidateSessionID refuses rather than strips for the same
+// reason, and the earlier version of this function stated the invariant ("two
+// keys that differ only in their whitespace must stay two keys") while a strip
+// and a cap broke it.
+//
+// It refuses exactly what makes a key UNUSABLE, and nothing that makes it
+// merely hard to read:
+//
+//   - Over RowKeyByteLimit bytes. The PROVIDER chooses the length and nothing
+//     else on the path limits it: the key is a primary-key column, it stays in
+//     memory for the life of the agent, and every registry snapshot broadcast
+//     carries it again. Refusing keeps that bound AND injectivity, which a cap
+//     cannot do -- no total function onto a bounded set is injective.
+//   - Invalid UTF-8. BackgroundTaskItem.id is a proto `string`, and a marshal
+//     of an invalid one fails the WHOLE registry broadcast, not this row alone.
+//
+// A control character, a C1 byte, a bidirectional override and an embedded
+// newline are NOT refused. At least one provider (Cursor) ships toolCallIds
+// with an embedded newline, so refusing them would drop that provider's rows
+// altogether. They are a READABILITY problem, and they are answered where the
+// key is READ: the row key is the last fallback of a registry row's label, and
+// `rowTitle` in frontend/src/components/backgroundtasks/BackgroundTaskList.tsx
+// cleans it there. A log line needs no help, because slog quotes a value that
+// holds a control character.
+func ValidateRowKey(s string) error {
+	if len(s) > RowKeyByteLimit {
+		return fmt.Errorf("registry row key must be at most %d bytes (got %d)", RowKeyByteLimit, len(s))
+	}
+	if !utf8.ValidString(s) {
+		return errors.New("registry row key must be valid UTF-8")
+	}
+	return nil
 }
 
 // FirstLine returns the content up to the first newline (trimmed). Empty input
@@ -69,6 +115,28 @@ func TruncateRunes(s string, max int) string {
 		return string(r[:max])
 	}
 	return s
+}
+
+// CleanTitleRunes cleans s with the shared title rule and then cuts it to at
+// most max runes. Call it instead of TruncateRunes wherever the cut result
+// becomes a title.
+//
+// The order is CLEAN FIRST, CUT SECOND, for the reason validate.CleanName
+// gives: a cut that runs first spends its budget on characters the clean is
+// about to remove. A spawn prompt whose first line opens with `max`
+// zero-width characters lost its whole title that way -- the cut kept the
+// invisible run, the clean then emptied it, and the row kept the title it
+// already had.
+//
+// The trailing trim is required because the rune cut can land on the one
+// space that separated two words, exactly as it is inside CleanName.
+//
+// The result is already what CleanName returns for it, so the sink's own
+// CleanName is a no-op on it: the rule is idempotent, and max runes of a
+// value that is at most NameByteLimit bytes stays at most NameByteLimit
+// bytes.
+func CleanTitleRunes(s string, max int) string {
+	return strings.TrimSpace(TruncateRunes(validate.CleanName(s), max))
 }
 
 // Kind discriminates subagent rows (an openable transcript tab) from shell
@@ -209,16 +277,16 @@ type Upsert struct {
 }
 
 // CleanTitle returns a copy of u whose Title meets the rule that every title
-// column in the worker shares: validate.CleanName cuts the title to a byte
-// limit, then strips the control characters and " \ $ %. The registry applier
-// calls it, and so does the recording sink the provider tests assert against,
-// so the two cannot disagree about what a provider's title becomes.
+// column in the worker shares: validate.CleanName, whose doc holds the steps.
+// The registry applier calls it, and so does the recording sink the provider
+// tests assert against, so the two cannot disagree about what a provider's
+// title becomes.
 //
-// A row that sets TitleIsCommand loses the shell templating characters with
-// the rest: `npm test --grep "$FOO"` reads as `npm test --grep FOO`. That is
-// the accepted cost of one rule for every title column. A registry title is a
-// LABEL for a command that already runs somewhere else. It is not a command to
-// copy back and run.
+// A row that sets TitleIsCommand keeps its command whole, quoting included.
+// The rule used to strip `"`, `\`, `$` and `%`, so `npm test --grep "$FOO"`
+// reached the row as `npm test --grep FOO` and the label identified a command
+// that nobody ran. Nothing depended on that strip: the command executes from
+// the provider's own field, never from this title.
 //
 // A Title that the rule empties says what a blank Title says: this upsert
 // carries no usable title. So it takes the same answer -- the row keeps the

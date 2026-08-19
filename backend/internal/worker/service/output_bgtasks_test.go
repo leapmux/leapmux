@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -723,32 +724,121 @@ func TestBgTask_CleanupDropsCache(t *testing.T) {
 	assert.False(t, loaded, "cache dropped after CleanupAgent")
 }
 
-// TestUpsertBackgroundTaskSanitizesRowKey verifies the neutral layer strips
-// control characters from provider-supplied row keys before they reach the DB
-// (Cursor toolCallIds can contain an embedded newline).
-func TestUpsertBackgroundTaskSanitizesRowKey(t *testing.T) {
+// TestUpsertBackgroundTaskKeepsTheRowKeyVerbatim verifies that the neutral
+// layer stores a provider's row key exactly as the provider wrote it, and that
+// every later primitive addresses the row by that same string.
+//
+// The key that carries an embedded newline is Cursor's observed toolCallId
+// shape. The layer used to STRIP it, which is what made the rule
+// non-injective: see TestUpsertBackgroundTaskRefusesToMergeTwoKeys below.
+// Readability is answered at the reader instead (rowTitle in
+// BackgroundTaskList.tsx), so the identity can stay verbatim.
+func TestUpsertBackgroundTaskKeepsTheRowKeyVerbatim(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupBgTaskTest(t)
-	// Embedded newline (Cursor's observed toolCallId quirk).
+	const key = "call-abc\nfc-def"
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
-		RowKey: "call-abc\nfc-def",
+		RowKey: key,
 		Kind:   bgtask.KindSubagent,
 		Title:  "x",
 		Status: bgtask.StatusRunning,
 	}))
 	rows := listRows()
 	require.Len(t, rows, 1)
-	assert.Equal(t, "call-abcfc-def", rows[0].RowKey, "newline stripped in the neutral layer")
-	assert.NotContains(t, rows[0].RowKey, "\n")
+	assert.Equal(t, key, rows[0].RowKey, "the key reaches the DB as the provider wrote it")
 
-	// Update + close must also key on the sanitized form.
-	require.NoError(t, sink.UpdateBackgroundTaskStatus("call-abc\nfc-def", bgtask.StatusRunning, "working"))
-	require.NoError(t, sink.CloseBackgroundTask("call-abc\nfc-def", bgtask.StatusCompleted))
+	// The update and the close address the row by the SAME string the provider
+	// sent. A rewrite on one path and not the other is how a status update
+	// stops finding its own row.
+	require.NoError(t, sink.UpdateBackgroundTaskStatus(key, bgtask.StatusRunning, "working"))
+	require.NoError(t, sink.CloseBackgroundTask(key, bgtask.StatusCompleted))
 	rows = listRows()
 	require.Len(t, rows, 1)
 	assert.Equal(t, "completed", rows[0].Status)
 	assert.Equal(t, "working", rows[0].ActiveForm)
+}
+
+// The regression this rule exists for, end to end. Two providers' keys that a
+// strip or a cap maps onto one string must stay TWO registry rows. When they
+// did not, the second task overwrote the first's title and status, and one of
+// the two disappeared from the sidebar with no report of why.
+func TestUpsertBackgroundTaskRefusesToMergeTwoKeys(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupBgTaskTest(t)
+	pairs := [][2]string{
+		{"call-abc", "call-a\u200bbc"},                                         // an invisible character
+		{"call-def", "call-def\n"},                                             // a trailing newline
+		{"call-ghi", "call-\u202eghi"},                                         // a bidirectional override
+		{strings.Repeat("k", 250) + "-one", strings.Repeat("k", 250) + "-two"}, // differ past a 256-byte cap
+	}
+	for i, pair := range pairs {
+		for j, key := range pair {
+			require.NoErrorf(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey: key,
+				Kind:   bgtask.KindShell,
+				Title:  fmt.Sprintf("task %d-%d", i, j),
+				Status: bgtask.StatusRunning,
+			}), "pair %d member %d must be storable", i, j)
+		}
+	}
+
+	rows := listRows()
+	assert.Len(t, rows, 2*len(pairs), "each key must own a row: a merge loses one task per pair")
+
+	// Every title survives, which is the user-visible half: a merge would have
+	// left the second title on one row and dropped the first.
+	titles := make([]string, 0, len(rows))
+	for _, r := range rows {
+		titles = append(titles, r.Title)
+	}
+	for i := range pairs {
+		for j := range 2 {
+			assert.Containsf(t, titles, fmt.Sprintf("task %d-%d", i, j),
+				"the title of pair %d member %d must survive", i, j)
+		}
+	}
+}
+
+// An unusable key fails its own mutation and leaves every other row
+// addressable. Refusing is what keeps the bound AND the injectivity: a cap
+// would keep the bound by merging two keys, and no total function onto a
+// bounded set is injective.
+func TestUpsertBackgroundTaskRefusesAnUnusableRowKey(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupBgTaskTest(t)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "good-key",
+		Kind:   bgtask.KindShell,
+		Title:  "kept",
+		Status: bgtask.StatusRunning,
+	}))
+
+	for _, tc := range []struct{ name, key, marker string }{
+		{"past the byte limit", strings.Repeat("a", bgtask.RowKeyByteLimit+1), "must be at most"},
+		{"invalid UTF-8", "call-\xffabc", "must be valid UTF-8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := sink.UpsertBackgroundTask(bgtask.Upsert{
+				RowKey: tc.key,
+				Kind:   bgtask.KindShell,
+				Title:  "refused",
+				Status: bgtask.StatusRunning,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.marker)
+
+			assert.Error(t, sink.UpdateBackgroundTaskStatus(tc.key, bgtask.StatusRunning, "working"))
+			assert.Error(t, sink.CloseBackgroundTask(tc.key, bgtask.StatusCompleted))
+		})
+	}
+
+	rows := listRows()
+	require.Len(t, rows, 1, "a refused key must not add a row, and must not disturb the one already there")
+	assert.Equal(t, "good-key", rows[0].RowKey)
+	assert.Equal(t, "kept", rows[0].Title)
 }
 
 // Each KIND gets its own cap pool. A run that opens shell after shell must not

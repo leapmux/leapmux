@@ -63,3 +63,7 @@ func TestSanitizePath_Windows(t *testing.T) {
 	}
 	runSanitizeCases(t, cases)
 }
+
+func TestSanitizePathDropsInvalidBytes(t *testing.T) {
+	assertSanitizePathDropsInvalidBytes(t, `C:\tmp\`, `C:\H\U`)
+}

@@ -145,16 +145,47 @@ func TestPi_ApplySubagentNotification_NonNotificationNoop(t *testing.T) {
 }
 
 // TestPi_ExtractDescription_MultibyteTruncateNoInvalidUTF8 verifies that the
-// first-line truncate counts RUNES, not bytes. A byte slice at 80 on a
+// first-line cut lands on a rune boundary. A byte slice at 80 on a
 // multi-byte-rune prompt splits the rune and emits invalid UTF-8, which fails
 // the proto broadcast marshal.
 func TestPi_ExtractDescription_MultibyteTruncateNoInvalidUTF8(t *testing.T) {
 	// 100 U+4E2D ("中") runes; each is 3 bytes. Byte offset 80 lands mid-rune
 	// (26 full runes = 78 bytes + 2 bytes of the 27th rune).
+	//
+	// The result is 42 runes and not 80, because CleanTitleRunes cleans first
+	// and the clean caps at validate.NameByteLimit (128 bytes = 42 CJK runes).
+	// The 80-rune cap is a DISPLAY cap on top of that byte cap, so it binds
+	// for ASCII and the byte cap binds for CJK. The sink applies the same byte
+	// cap afterwards, so 80 was never what this path could store.
 	runes := strings.Repeat("中", 100)
 	got := piExtractDescription(json.RawMessage(`{"prompt":`+strconv.Quote(runes)+`}`), "tool")
-	assert.Equal(t, strings.Repeat("中", 80), got, "exactly 80 runes")
+	assert.Equal(t, strings.Repeat("中", 42), got, "the byte cap binds before the 80-rune cap")
 	assert.True(t, utf8.ValidString(got), "title must be valid UTF-8")
+}
+
+// TestPi_ExtractDescription_CleansBeforeItCuts pins the order that
+// CleanTitleRunes exists for. A cut that ran first spent its whole budget on
+// characters the clean was about to remove, and the row then kept the title it
+// already held -- the same defect validate.CleanName removed from itself.
+func TestPi_ExtractDescription_CleansBeforeItCuts(t *testing.T) {
+	// 85 zero width spaces, then the text. A cut-first rule kept the first 80
+	// invisible runes, the clean emptied them, and "Fix the auth bug" never
+	// reached the registry row.
+	prompt := strings.Repeat("\u200b", 85) + "Fix the auth bug"
+	got := piExtractDescription(json.RawMessage(`{"prompt":`+strconv.Quote(prompt)+`}`), "tool")
+	assert.Equal(t, "Fix the auth bug", got)
+
+	// The description branch takes the same rule as the prompt branch, so a
+	// caller that reads one does not have to know which branch answered.
+	desc := strings.Repeat("\u200b", 85) + "Run the linter"
+	got = piExtractDescription(json.RawMessage(`{"description":`+strconv.Quote(desc)+`}`), "tool")
+	assert.Equal(t, "Run the linter", got)
+
+	// A model-written description is no more bounded than a prompt is, so the
+	// description branch caps too.
+	long := strings.Repeat("a", 500)
+	got = piExtractDescription(json.RawMessage(`{"description":`+strconv.Quote(long)+`}`), "tool")
+	assert.Equal(t, strings.Repeat("a", 80), got, "the 80-rune display cap binds for ASCII")
 }
 
 // Compile-time check: ensure the helpers participate in the package's sink

@@ -155,6 +155,49 @@ describe('newWorkspaceDialog', () => {
     })
   })
 
+  // The dialog sends the CLEANED title, not the raw one. The hub applies the
+  // same rule to whatever arrives, so a raw send showed one title in the UI
+  // while the hub stored another until the next refresh overwrote it. The gap
+  // widened when the rule started to FOLD: a plain double space is a far more
+  // common typo than a control character was.
+  it.each([
+    ['a repeated space', 'Auth  fix', 'Auth fix'],
+    ['a tab', 'Auth\tfix', 'Auth fix'],
+    // No newline case here: an `<input type="text">` value cannot hold one,
+    // so the DOM removes it before the handler reads it. The fold is covered
+    // where it is reachable -- `~/lib/validate` and the sidebar rename, which
+    // sets the value through a signal rather than a DOM input.
+    ['a no-break space', 'Auth\u00A0fix', 'Auth fix'],
+    ['an invisible format character', 'Auth\u200Bfix', 'Authfix'],
+    ['a control character', 'Auth\u0000fix', 'Authfix'],
+  ])('sends the cleaned title when the input carries %s', async (_label, typed, stored) => {
+    renderDialog()
+
+    fireEvent.input(await screen.findByPlaceholderText('New Workspace'), {
+      target: { value: typed },
+    })
+    await submitDialog()
+
+    await waitFor(() => {
+      expect(workspaceClient.createWorkspace).toHaveBeenCalledWith({ title: stored })
+    })
+  })
+
+  // The punctuation the rule now KEEPS must reach the hub untouched, so the
+  // clean does not become a second, stricter character ban on this side.
+  it('sends visible punctuation unchanged', async () => {
+    renderDialog()
+
+    fireEvent.input(await screen.findByPlaceholderText('New Workspace'), {
+      target: { value: '100% of $HOME "quoted"' },
+    })
+    await submitDialog()
+
+    await waitFor(() => {
+      expect(workspaceClient.createWorkspace).toHaveBeenCalledWith({ title: '100% of $HOME "quoted"' })
+    })
+  })
+
   it('places the agent in the CRDT and seeds its metadata as hydrated', async () => {
     const props = renderDialog()
 

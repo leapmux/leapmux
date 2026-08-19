@@ -6,12 +6,12 @@ describe('buildFontFamily', () => {
     expect(buildFontFamily(['Inter', 'Noto Sans KR'])).toBe('"Inter", "Noto Sans KR"')
   })
 
-  // The escape is the point of the helper. This value reaches a stylesheet
-  // that xterm builds by CONCATENATION, so an unescaped quote would end the
-  // declaration and the rest of the name would be read as live CSS. The
-  // account write path refuses such a name, but the emitter must be safe
-  // whatever a stored value holds — the browser tier reads from a document
-  // a person can edit.
+  // The escape is the point of the helper, and it is the ONLY guard on the
+  // quote and the backslash. This value reaches a stylesheet that xterm builds
+  // by CONCATENATION, so an unescaped quote would end the declaration and the
+  // rest of the name would be read as live CSS. The account write path stores
+  // such a name, and the browser tier reads from a document a person can edit,
+  // so the emitter must be safe whatever a stored value holds.
   it('escapes a quote so a name cannot end the declaration', () => {
     expect(buildFontFamily(['Ev"il'])).toBe('"Ev\\"il"')
   })
@@ -55,6 +55,19 @@ describe('buildFontFamily', () => {
   it('yields a font-family declaration the CSSOM accepts', () => {
     const el = document.createElement('div')
     el.style.fontFamily = `${buildFontFamily(['My\nFont', 'Ev"il', 'back\\slash'])}, monospace`
+    expect(el.style.fontFamily).not.toBe('')
+    expect(el.style.fontFamily).toContain('monospace')
+  })
+
+  // `$` and `%` need NO escape: neither is CSS syntax inside a quoted string.
+  // The name rule used to strip both before a name could reach here, and this
+  // asserts that the emitter is correct without that help.
+  it('passes a dollar and a percent through unescaped', () => {
+    expect(buildFontFamily(['Fira$Code'])).toBe('"Fira$Code"')
+    expect(buildFontFamily(['Fira%Code'])).toBe('"Fira%Code"')
+
+    const el = document.createElement('div')
+    el.style.fontFamily = `${buildFontFamily(['Fira$Code', 'Fira%Code'])}, monospace`
     expect(el.style.fontFamily).not.toBe('')
     expect(el.style.fontFamily).toContain('monospace')
   })

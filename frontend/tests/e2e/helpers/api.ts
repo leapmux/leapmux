@@ -212,6 +212,29 @@ export async function deregisterWorkerViaAPI(
 }
 
 /**
+ * Open self-serve sign-up on a hub, as an admin.
+ *
+ * A hub started with `leapmux hub` resolves `signup_enabled` from its STORED
+ * row, and the code default is closed. Only `leapmux dev` reports it open, and
+ * only while no operator row exists (`SignupEnabledEffective`). So a fixture
+ * that spawns a plain hub and then signs a second account up has to store the
+ * row first, or the hub answers `failed_precondition: sign-up is disabled`.
+ *
+ * The first account is exempt and needs no call here: a hub with no users at
+ * all accepts one sign-up and makes it an administrator.
+ */
+export async function enableSignupViaAPI(hubUrl: string, cookie: string): Promise<void> {
+  const res = await fetch(`${hubUrl}/leapmux.v1.AdminSettingsService/UpdateSetting`, {
+    method: 'POST',
+    headers: authedHeaders(cookie),
+    body: JSON.stringify({ key: 'signup_enabled', partialJson: 'true' }),
+  })
+  if (!res.ok) {
+    throw new Error(`enableSignupViaAPI failed: ${res.status} ${await res.text()}`)
+  }
+}
+
+/**
  * Mint a registration key as an authenticated user. Mirrors the
  * production UI flow: an admin (or any authorized user) calls
  * `WorkerManagementService.CreateRegistrationKey` and hands the

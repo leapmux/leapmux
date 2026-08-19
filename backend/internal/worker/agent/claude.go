@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 // Claude Code permission mode values.
@@ -159,6 +160,43 @@ type ClaudeCodeAgent struct {
 	pendingTaskEnd map[string]bgtask.Status // spawn tool_use_id -> terminal status
 }
 
+// claudeResumeArgs returns the `--resume` argv pair for a stored session ID,
+// or nil when the worker must not pass one.
+//
+// This is the ONE place any provider puts a session ID into argv: Codex, Pi
+// and the ACP providers each carry theirs inside a JSON request. So the token
+// rule is applied HERE and not at the sink that stores the value.
+// agentOutputSink.UpdateSessionID writes whatever the agent process reports,
+// and what a provider reports is its own shape -- Pi's is a session FILE PATH,
+// which the token rule refuses by design and which no argv of ours ever holds.
+// Applying the rule at the store would refuse a legitimate Pi handle. Applying
+// it at the argv sink refuses nothing real, because a Claude session ID is a
+// UUID. This is the same split the repository states for every provider
+// decision: the hazard belongs to Claude's launch, so the guard lives with it.
+//
+// A stored value that fails the rule is corrupt or hostile, and OpenAgent's
+// own check does not cover this path: the value the agent process reports goes
+// straight to the `agent_session_id` column, and resolveResumeSessionID reads
+// it back. `--resume` takes an OPTIONAL value, so a token that starts with a
+// hyphen is not read as that value at all -- it parses as a flag of its own,
+// and `--dangerously-skip-permissions` is one argv element away. Quoting keeps
+// the SHELL from reading the token as syntax and does nothing about the CLI
+// reading it as syntax.
+//
+// Start a fresh session instead, and say why. Losing the resume is
+// recoverable; passing the token is not.
+func claudeResumeArgs(agentID, resumeSessionID string) []string {
+	if resumeSessionID == "" {
+		return nil
+	}
+	if err := validate.ValidateSessionID(resumeSessionID); err != nil {
+		slog.Warn("refusing to resume: the stored session ID is not a valid token",
+			"agent_id", agentID, "error", err)
+		return nil
+	}
+	return []string{"--resume", resumeSessionID}
+}
+
 // StartClaudeCode spawns a new Claude Code process and begins reading its output.
 // The sink receives parsed output events via the Agent.HandleOutput method.
 //
@@ -195,9 +233,7 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		"--forward-subagent-text",
 	}
 
-	if opts.ResumeSessionID != "" {
-		baseArgs = append(baseArgs, "--resume", opts.ResumeSessionID)
-	}
+	baseArgs = append(baseArgs, claudeResumeArgs(opts.AgentID, opts.ResumeSessionID)...)
 
 	// opts.Model() is the raw stored/operator-default value, which may be a legacy
 	// or fully-qualified id (a persisted "opus", a "claude-opus-4-8" from

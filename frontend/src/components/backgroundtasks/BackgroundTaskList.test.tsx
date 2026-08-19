@@ -101,6 +101,53 @@ describe('backgroundTaskList', () => {
     expect(titleOf('Review').className).not.toContain(styles.taskTitleCommand)
   })
 
+  // The worker keeps a row key VERBATIM, because the key is the row's identity
+  // and a rewrite merges two providers' rows into one. So the reader is where
+  // an unreadable key is cleaned, and this block is the guard on that split.
+  describe('the label falls back to a CLEANED row key', () => {
+    const labelOf = (container: HTMLElement) => titles(container)[0].textContent
+
+    // Cursor's observed toolCallId shape. It reaches the browser with the
+    // newline in it, and the label must not carry one.
+    it('folds a newline the provider put in the key', () => {
+      const { container } = renderList({
+        tasks: [row({ rowKey: 'call-abc\nfc-def', title: '' })],
+      })
+      expect(labelOf(container)).toBe('call-abc fc-def')
+    })
+
+    it('strips a bidirectional override, which reorders what the reader sees', () => {
+      const { container } = renderList({
+        tasks: [row({ rowKey: 'call-‮abc', title: '' })],
+      })
+      expect(labelOf(container)).toBe('call-abc')
+    })
+
+    it('leaves an ordinary key alone', () => {
+      const { container } = renderList({ tasks: [row({ rowKey: 'toolu_01A2b3', title: '' })] })
+      expect(labelOf(container)).toBe('toolu_01A2b3')
+    })
+
+    // Each arm is cleaned and the FALLBACK reads the cleaned arm, so a
+    // description of nothing but invisible characters falls through to the key
+    // instead of rendering the row as a blank line.
+    it('falls through an arm that cleans to nothing', () => {
+      const { container } = renderList({
+        tasks: [row({ rowKey: 'call-abc', title: '', description: '​​' })],
+      })
+      expect(labelOf(container)).toBe('call-abc')
+    })
+
+    // The worker already cleaned the title, and the rule is idempotent, so the
+    // reader's clean must be a no-op on it.
+    it('passes a worker-cleaned title through unchanged', () => {
+      const { container } = renderList({
+        tasks: [row({ rowKey: 'k', title: 'npm test --grep "$FOO"' })],
+      })
+      expect(labelOf(container)).toBe('npm test --grep "$FOO"')
+    })
+  })
+
   it('renders the end label for a finished row instead of activity', () => {
     const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'failed' })] })
     expect(container.textContent).toContain('Failed')

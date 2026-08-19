@@ -209,7 +209,7 @@ func (a *CodexAgent) recordCollabChildTitle(threadID, prompt string) {
 	if threadID == "" {
 		return
 	}
-	title := bgtask.TruncateRunes(bgtask.FirstLine(prompt), 80)
+	title := bgtask.CleanTitleRunes(bgtask.FirstLine(prompt), 80)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.collabChildTitles == nil {

@@ -53,3 +53,7 @@ func TestSanitizePath_Unix(t *testing.T) {
 	}
 	runSanitizeCases(t, cases)
 }
+
+func TestSanitizePathDropsInvalidBytes(t *testing.T) {
+	assertSanitizePathDropsInvalidBytes(t, "/tmp/", "/home/u")
+}

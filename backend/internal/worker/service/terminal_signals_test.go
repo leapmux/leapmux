@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/util/validate"
 )
 
 func startTerminalWithOutputFn(t *testing.T, svc *Service, terminalID string) {
@@ -239,4 +240,209 @@ func TestTerminalOutput_ProgressBroadcast(t *testing.T) {
 	require.NotEmpty(t, states)
 	assert.Equal(t, leapmuxv1.TerminalProgress_STATE_NORMAL, states[len(states)-1])
 	assert.Equal(t, int32(42), percents[len(percents)-1])
+}
+
+// terminalTitlesBroadcast collects every TitleChanged title the watcher saw.
+func terminalTitlesBroadcast(w *testResponseWriter, terminalID string) []string {
+	var out []string
+	for _, s := range w.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+			continue
+		}
+		te := resp.GetTerminalEvent()
+		if te == nil || te.GetTerminalId() != terminalID {
+			continue
+		}
+		if tc := te.GetTitleChanged(); tc != nil {
+			out = append(out, tc.GetTitle())
+		}
+	}
+	return out
+}
+
+// terminalNotificationsBroadcast collects every notification the watcher saw.
+func terminalNotificationsBroadcast(w *testResponseWriter, terminalID string) []*leapmuxv1.TerminalNotification {
+	var out []*leapmuxv1.TerminalNotification
+	for _, s := range w.streamsSnapshot() {
+		var resp leapmuxv1.WatchEventsResponse
+		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
+			continue
+		}
+		te := resp.GetTerminalEvent()
+		if te == nil || te.GetTerminalId() != terminalID {
+			continue
+		}
+		if n := te.GetNotification(); n != nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// The OSC title is the ONE writer of a tab label whose bytes a remote process
+// chooses. `printf '\e]0;<anything>\a'` sets it, and so does the PS1 of the
+// REMOTE host in an `ssh` session, a `cat` of a hostile file, and any command
+// an agent runs in that terminal.
+//
+// validate.CleanName's own doc says "Every writer of a tab title calls this",
+// and this writer did not. The browser renders the result as the tab label and
+// the tab tooltip, so a right-to-left override reordered what the tab strip
+// showed -- the exact attack testdata/title_cleaning_conformance.json says the
+// strip prevents -- and an OSC title could reach oscBufCap (2048 bytes), 16
+// times the limit every other writer of a tab title obeys.
+func TestBroadcastTerminalSignal_CleansTheOSCTitle(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		osc  string
+		want string
+	}{
+		{
+			name: "strips a right-to-left override",
+			osc:  "\u202etxt.exe",
+			want: "txt.exe",
+		},
+		{
+			name: "strips an invisible run that pads the label",
+			osc:  strings.Repeat("\u200b", 500) + "me@host",
+			want: "me@host",
+		},
+		{
+			name: "folds a run of whitespace to one space",
+			osc:  "  me@host:  ~/src  ",
+			want: "me@host: ~/src",
+		},
+		{
+			name: "strips a control character",
+			osc:  "me@host\x00:~",
+			want: "me@host:~",
+		},
+		{
+			name: "keeps the punctuation a prompt actually writes",
+			osc:  `me@host: ~/src "work" 100% $HOME c:\tmp`,
+			want: `me@host: ~/src "work" 100% $HOME c:\tmp`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc, _, _ := setupTestService(t)
+			const terminalID = "term-osc-clean"
+			w := registerTerminalNotifyWatch(t, svc, terminalID)
+
+			svc.broadcastTerminalSignal(terminalID, terminal.Signal{
+				Kind:  terminal.SignalTitle,
+				Title: tc.osc,
+			})
+
+			assert.Equal(t, []string{tc.want}, terminalTitlesBroadcast(w, terminalID))
+		})
+	}
+}
+
+// The cap every other writer of a tab label obeys. oscBufCap lets an OSC body
+// reach ~2046 bytes, and the browser renders the title into a tooltip with no
+// line clamp.
+func TestBroadcastTerminalSignal_CapsTheOSCTitle(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	const terminalID = "term-osc-cap"
+	w := registerTerminalNotifyWatch(t, svc, terminalID)
+
+	svc.broadcastTerminalSignal(terminalID, terminal.Signal{
+		Kind:  terminal.SignalTitle,
+		Title: strings.Repeat("a", 2046),
+	})
+
+	titles := terminalTitlesBroadcast(w, terminalID)
+	require.Len(t, titles, 1)
+	assert.Len(t, titles[0], validate.NameByteLimit)
+}
+
+// A title that cleans to nothing is a NO-OP, not a clear. The same answer
+// UpdateTerminalTitle gives, and the answer the browser's own
+// `if (!value.title) return` already expects -- broadcasting "" would spend a
+// message to say nothing.
+func TestBroadcastTerminalSignal_DropsAnOSCTitleThatCleansToNothing(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	const terminalID = "term-osc-empty"
+	w := registerTerminalNotifyWatch(t, svc, terminalID)
+
+	for _, osc := range []string{"", "   ", "\u200b\ufeff\u00ad", "\x00\x01"} {
+		svc.broadcastTerminalSignal(terminalID, terminal.Signal{
+			Kind:  terminal.SignalTitle,
+			Title: osc,
+		})
+	}
+
+	assert.Empty(t, terminalTitlesBroadcast(w, terminalID),
+		"an OSC title that cleans to nothing must broadcast nothing")
+}
+
+// The notification arrives from the same untrusted PTY bytes, and the browser
+// hands both fields to the OS notification service.
+//
+// The TITLE takes the name rule, because it IS a title. The BODY takes the
+// strip and the cap WITHOUT the fold and the trim: a run of spaces inside a
+// build summary is the sender's formatting.
+func TestBroadcastTerminalSignal_CleansTheOSCNotification(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	const terminalID = "term-osc-notify"
+	w := registerTerminalNotifyWatch(t, svc, terminalID)
+
+	svc.broadcastTerminalSignal(terminalID, terminal.Signal{
+		Kind:  terminal.SignalNotification,
+		Title: "\u202eBuild   done",
+		Body:  "  3 tests   failed\u202e\u200b " + strings.Repeat("x", 1000),
+	})
+
+	got := terminalNotificationsBroadcast(w, terminalID)
+	require.Len(t, got, 1)
+	assert.Equal(t, "Build done", got[0].GetTitle(),
+		"the title takes the name rule: the override goes and the whitespace run folds")
+
+	body := got[0].GetBody()
+	assert.NotContains(t, body, "\u202e", "the body loses the bidi override")
+	assert.NotContains(t, body, "\u200b", "the body loses the invisible run")
+	assert.True(t, strings.HasPrefix(body, "  3 tests   failed"),
+		"the body keeps the sender's whitespace: no fold and no trim, got %q", body)
+	assert.LessOrEqual(t, len(body), notificationBodyByteLimit,
+		"the body is capped, because the process that wrote the OSC chose its length")
+}
+
+// The two rules answer a NEWLINE differently, and each answer is deliberate.
+// The tab title folds it to a space, so a two-line paste does not run its two
+// lines together in a one-line label. The notification body strips it with the
+// other control characters, so "unreadable" has one definition rather than
+// two.
+func TestBroadcastTerminalSignal_HandlesANewlineInEachField(t *testing.T) {
+	t.Parallel()
+
+	svc, _, _ := setupTestService(t)
+	const terminalID = "term-osc-newline"
+	w := registerTerminalNotifyWatch(t, svc, terminalID)
+
+	svc.broadcastTerminalSignal(terminalID, terminal.Signal{
+		Kind:  terminal.SignalTitle,
+		Title: "me@host\n~/src",
+	})
+	svc.broadcastTerminalSignal(terminalID, terminal.Signal{
+		Kind:  terminal.SignalNotification,
+		Title: "Build",
+		Body:  "one\ntwo",
+	})
+
+	assert.Equal(t, []string{"me@host ~/src"}, terminalTitlesBroadcast(w, terminalID),
+		"the tab title FOLDS a newline, so the two words do not run together")
+
+	notes := terminalNotificationsBroadcast(w, terminalID)
+	require.Len(t, notes, 1)
+	assert.Equal(t, "onetwo", notes[0].GetBody(),
+		"the body STRIPS a newline with the other control characters")
 }
