@@ -59,7 +59,20 @@ type testSink struct {
 	childIDMu   sync.Mutex
 	childIDVal  string
 	// bgTasks records the latest registry state per row key (owner == this sink).
-	bgTasks   map[string]bgtask.Item
+	bgTasks map[string]bgtask.Item
+	// revivedTasks records every row key ReviveBackgroundTask actually reopened,
+	// in order. The effect alone cannot prove the call: a revive leaves the row
+	// running, which is also how it looked before it ever finished.
+	revivedTasks []string
+	// reviveErr, when set, is what ReviveBackgroundTask returns INSTEAD of
+	// reopening the row. The only way to exercise the caller's failure path: a
+	// revive that cannot fail leaves the "arm is spent, message is lost" branch
+	// unreachable from a test. Read without the lock -- set at construction.
+	reviveErr error
+	// lookupErr, when set, is what LookupBackgroundTask returns instead of an
+	// answer -- the "registry unreadable" third case, which a miss cannot stand
+	// in for. Read without the lock: set at construction.
+	lookupErr error
 	bgTasksMu sync.Mutex
 	// notifSuppressBroadcast makes PersistNotification report broadcast=false,
 	// simulating the service layer collapsing a flapping notification
@@ -330,6 +343,20 @@ func (s *testSink) CancelAutoContinue(reason AutoContinueReason) {
 // provider tests can assert child resolution without a DB. The same span always
 // resolves to the same id (idempotent replay).
 func (s *testSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+	// Resolve by ROW KEY before spawn span, as the real sink does. That order is
+	// load-bearing, not an optimization: Claude re-registers a revived subagent
+	// under the tool_use id of the call that restarted it, so a spawn-span-only
+	// lookup would miss and hand back a SECOND transcript for the same subagent.
+	// A double that resolved differently would report a split the real sink does
+	// not have, and hide one it does.
+	if providerChildKey != "" {
+		s.bgTasksMu.Lock()
+		existing := s.bgTasks[providerChildKey].ChildAgentID
+		s.bgTasksMu.Unlock()
+		if existing != "" {
+			return existing, nil
+		}
+	}
 	s.childSinkMu.Lock()
 	defer s.childSinkMu.Unlock()
 	if s.children == nil {
@@ -435,10 +462,39 @@ func (s *testSink) PersistChildPrompt(childAgentID, prompt string) error {
 	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, SpanInfo{})
 }
 
+// PersistChildUserMessage mirrors the real sink: it APPENDS, with no emptiness
+// guard, and carries the scroll-rail mark the opening prompt does not. The
+// missing guard is the whole difference from PersistChildPrompt above -- a
+// delivered message belongs wherever the transcript currently ends.
+func (s *testSink) PersistChildUserMessage(childAgentID, text string) error {
+	if childAgentID == "" || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	cs, _ := s.ChildSink(childAgentID).(*testSink)
+	if cs == nil {
+		return nil
+	}
+	content, err := json.Marshal(map[string]string{"content": text})
+	if err != nil {
+		return err
+	}
+	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, SpanInfo{
+		MarkType: leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
+	})
+}
+
 // testFakeEndedAt is the instant the fake stamps on an active -> final
 // transition. A fixed value, because the fake models WHETHER ended_at is set,
 // not when: an assertion that the stamp is absent for a non-final status was
 // vacuously true while nothing ever set it.
+//
+// updated_at is deliberately NOT modeled, although every production applier
+// stamps it. Nothing in this package can read it: LookupBackgroundTask hands
+// back a status and a child id rather than an Item, so the field reaches no
+// provider decision. Stamping a fixed instant would make "the second write
+// advanced updated_at" fail against correct code, and stamping the real clock
+// would make the fake non-deterministic. A test that needs the stamp belongs in
+// the service package, against the real registry.
 var testFakeEndedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func (s *testSink) UpsertBackgroundTask(task bgtask.Upsert) error {
@@ -506,6 +562,69 @@ func (s *testSink) CloseBackgroundTask(rowKey string, status bgtask.Status) erro
 		s.bgTasks[rowKey] = item
 	}
 	return nil
+}
+
+func (s *testSink) LookupBackgroundTask(rowKey string) (string, bgtask.Status, bool, error) {
+	var noStatus bgtask.Status
+	if s.lookupErr != nil {
+		return "", noStatus, false, s.lookupErr
+	}
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	item, ok := s.bgTasks[rowKey]
+	if !ok {
+		return "", noStatus, false, nil
+	}
+	return item.ChildAgentID, item.Status, true, nil
+}
+
+// ReviveBackgroundTask mirrors the registry's revive: a finished row returns to
+// running with its ended_at cleared, and an absent or already-active row is a
+// no-op. The row keys it actually revived are recorded so a test can assert the
+// call happened rather than only its effect.
+func (s *testSink) ReviveBackgroundTask(rowKey string) error {
+	if s.reviveErr != nil {
+		return s.reviveErr
+	}
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	item, ok := s.bgTasks[rowKey]
+	if !ok || !item.Status.IsFinished() {
+		return nil
+	}
+	item.Status = bgtask.StatusRunning
+	item.ActiveForm = ""
+	item.EndedAt = time.Time{}
+	s.bgTasks[rowKey] = item
+	s.revivedTasks = append(s.revivedTasks, rowKey)
+	return nil
+}
+
+// RevivedTasks returns the row keys ReviveBackgroundTask actually reopened.
+// ForgetBackgroundTask drops a row the way cap-eviction and a cold seed window
+// do: the registry entry goes, and the child agent row survives it.
+func (s *testSink) ForgetBackgroundTask(rowKey string) {
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	delete(s.bgTasks, rowKey)
+}
+
+// ChildAgentIDs lists every child transcript this sink handed out, so a test can
+// assert that a resolution did NOT open a second one.
+func (s *testSink) ChildAgentIDs() []string {
+	s.childSinkMu.Lock()
+	defer s.childSinkMu.Unlock()
+	ids := make([]string, 0, len(s.children))
+	for id := range s.children {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (s *testSink) RevivedTasks() []string {
+	s.bgTasksMu.Lock()
+	defer s.bgTasksMu.Unlock()
+	return append([]string(nil), s.revivedTasks...)
 }
 
 func (s *testSink) RenameBackgroundTask(oldKey, newKey string) error {
@@ -768,4 +887,10 @@ func (noopSink) UpdateBackgroundTaskStatus(string, bgtask.Status, string) error 
 }
 func (noopSink) CloseBackgroundTask(string, bgtask.Status) error { return nil }
 func (noopSink) RenameBackgroundTask(string, string) error       { return nil }
-func (noopSink) CleanupChildAgent(string)                        {}
+func (noopSink) LookupBackgroundTask(string) (string, bgtask.Status, bool, error) {
+	var noStatus bgtask.Status
+	return "", noStatus, false, nil
+}
+func (noopSink) ReviveBackgroundTask(string) error            { return nil }
+func (noopSink) PersistChildUserMessage(string, string) error { return nil }
+func (noopSink) CleanupChildAgent(string)                     {}

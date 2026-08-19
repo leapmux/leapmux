@@ -632,6 +632,69 @@ func TestHandleCodexOutput_SpawnAgentCompletedLeavesNoSpan(t *testing.T) {
 	assert.Empty(t, messages[1].SpansOpenAtPersist, "and it draws no rail")
 }
 
+// A collab child that runs again after its row went final. The upsert absorbs a
+// non-final status against a final row -- deliberately, because a replayed
+// snapshot cannot prove a restart -- so without the revive the sidebar row and
+// the tab chip read "finished" for the whole second run.
+func TestHandleCodexOutput_ARerunCollabChildReopensItsRow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+	// The root resumes the finished child: item/started re-registers the receiver,
+	// which is the proof a replayed snapshot never carries. The child's own
+	// turn/started then reports it working again.
+	resumed := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"collabAgentToolCall","id":"call-2","tool":"resumeAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"more work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	childTurn := `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-c2"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
+	require.True(t, ok)
+	require.True(t, status.IsFinished(), "the first run closed the row")
+
+	handleCodexOutput(agent, parseLine([]byte(resumed)))
+	handleCodexOutput(agent, parseLine([]byte(childTurn)))
+
+	assert.Equal(t, []string{"child-1"}, sink.RevivedTasks(), "the re-registered child reopens its row")
+	_, status, ok, _ = sink.LookupBackgroundTask("child-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusRunning, status)
+}
+
+// A replayed snapshot that still calls an old child running must NOT resurrect
+// it. The close dropped the child index, and nothing re-registered it, so the
+// row stays final and keeps its closer.
+func TestHandleCodexOutput_AReplayedRunningStateDoesNotReopenARow(t *testing.T) {
+	t.Parallel()
+
+	sink := &testSink{}
+	agent := newCodexAgentWithSink(sink)
+
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
+	// A LATER collab call for a DIFFERENT child, whose snapshot still carries the
+	// old child as running.
+	stale := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"collabAgentToolCall","id":"call-2","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-2"],"prompt":"other","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running"},"child-2":{"status":"completed"}}}}}`
+
+	// A child turn/started for the closed child, with no re-registration before
+	// it: knownCollabChild is false, so nothing reopens the row.
+	orphanTurn := `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-c9"}}}`
+
+	handleCodexOutput(agent, parseLine([]byte(started)))
+	handleCodexOutput(agent, parseLine([]byte(completed)))
+	handleCodexOutput(agent, parseLine([]byte(stale)))
+	handleCodexOutput(agent, parseLine([]byte(orphanTurn)))
+
+	assert.Empty(t, sink.RevivedTasks(), "a snapshot alone cannot prove a restart")
+	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusCompleted, status, "the row keeps its final status")
+}
+
 // A subagent spawn that starts while an unrelated command is running draws that
 // command's rail and nothing more -- one column, not two.
 func TestHandleCodexOutput_SpawnInsideOpenCommandDrawsOneColumn(t *testing.T) {

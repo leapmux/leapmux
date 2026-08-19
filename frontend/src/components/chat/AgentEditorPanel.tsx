@@ -173,7 +173,18 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   /** Register the editor ref if the editor is ready and both refs are available. */
   const tryRegisterEditorRef = (agentId: string) => {
     if (editorReady && editorContentRef && editorFocusFn) {
-      registerEditorRef(agentId, { get: editorContentRef.get, set: editorContentRef.set, focus: editorFocusFn, insert: text => editorInsertFn?.(text) })
+      // `writable` reads the SAME predicate that drives the disabled placeholder,
+      // the send button, and the Enter-to-send plugin, so every surface agrees
+      // about whether this composer takes input. It is passed as a thunk because
+      // `disabledReason` is reactive: a subagent tab resolves it again once the
+      // worker's authoritative acceptsMessages arrives.
+      registerEditorRef(agentId, {
+        get: editorContentRef.get,
+        set: editorContentRef.set,
+        focus: editorFocusFn,
+        insert: text => editorInsertFn?.(text),
+        writable: () => !disabled(),
+      })
       registeredAgentId = agentId
     }
   }

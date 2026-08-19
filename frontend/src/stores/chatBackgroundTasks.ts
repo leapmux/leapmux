@@ -207,6 +207,20 @@ export function subagentWorkState(childAgentId: string, rootTasks: BackgroundTas
  * own row by construction: that row belongs to its parent. Without the scoping
  * a subagent tab read its PARENT's count, siblings and itself included.
  */
+/**
+ * Whether this row owns a subagent transcript that a click can open. A shell row
+ * owns none, and a subagent whose provider never linked one owns none either.
+ * Shared, so the Background tasks list and the SendMessage card cannot disagree
+ * about which rows are a link.
+ *
+ * The row property only. Whether the HOST supplied an open handler is the call
+ * site's own question, and folding it in here would make a pure registry
+ * predicate depend on a component's props.
+ */
+export function opensSubagentTranscript(item: BackgroundTaskItem): boolean {
+  return item.kind === 'subagent' && !!item.childAgentId
+}
+
 export function chipTasksFor(
   agentId: string,
   rootTasks: BackgroundTaskItem[],

@@ -347,6 +347,20 @@ type OutputSink interface {
 	// below the transcript it is supposed to introduce.
 	PersistChildPrompt(childAgentID, prompt string) error
 
+	// PersistChildUserMessage APPENDS text to a child transcript as a USER
+	// message, in the same {"content": text} envelope PersistChildPrompt uses.
+	// For a message the parent delivered to a subagent mid-transcript, where
+	// PersistChildPrompt cannot help: that one opens the transcript and is a
+	// no-op once the subagent has spoken.
+	//
+	// Carries MARK_TYPE_USER_MESSAGE, which the opening prompt does not: this
+	// message lands in the MIDDLE of a transcript, and a mid-transcript user
+	// message is exactly what the scroll rail exists to find.
+	//
+	// A no-op for a blank text or an empty child id. The envelope shape stays
+	// here, with the other transcript primitives, so no provider encodes it.
+	PersistChildUserMessage(childAgentID, text string) error
+
 	// CleanupChildAgent releases the per-child service state (span tracker,
 	// todos cache, cached child sink) for a child that has reached a final
 	// state. A provider calls this once a subagent closes for good so a
@@ -375,6 +389,38 @@ type OutputSink interface {
 	// the row opens under the toolCallId and the session id surfaces late). A
 	// no-op when oldKey is absent or newKey is empty.
 	RenameBackgroundTask(oldKey, newKey string) error
+
+	// LookupBackgroundTask resolves a provider row key to the child transcript it
+	// owns and the row's current status. ok is false when the root's registry
+	// holds no such row, and the returned status is meaningless then -- the zero
+	// Status is StatusPending, a real value, not an "unknown" sentinel.
+	//
+	// err is non-nil when the registry could not be READ at all, which is a third
+	// answer and not a miss. A caller must not treat it as "no such row": the two
+	// are indistinguishable in the return values, and the decisions that turn on
+	// a miss (this is a first start; there is nothing to revive) are all wrong
+	// when the truth is "unknown".
+	//
+	// This is how a provider turns an id the MODEL supplied into one of its own
+	// subagents. The registry is the right index for it: it is keyed by row key,
+	// it carries the child linkage, and it survives both a provider's own
+	// bookkeeping being dropped at task end and a worker restart. A key that
+	// identifies nothing (a display name, another session, a foreign address)
+	// simply misses.
+	LookupBackgroundTask(rowKey string) (childAgentID string, status bgtask.Status, ok bool, err error)
+
+	// ReviveBackgroundTask returns a FINISHED row to Running, clears its
+	// ended_at, and lets the reopened transcript be closed again by the next
+	// completion. A no-op for an absent row and for one that is already active,
+	// so a duplicate revive is harmless.
+	//
+	// Call this ONLY with positive evidence that the provider restarted the task.
+	// Every other registry write treats a final status as absorbing, because a
+	// replayed running update cannot prove a restart and honoring it would leave
+	// a row Running that nothing closes -- which pins the parent's thinking
+	// indicator for good. This method is the one deliberate exception, and the
+	// burden of proof sits with its caller.
+	ReviveBackgroundTask(rowKey string) error
 }
 
 // Agent is the interface that all coding agent providers must implement.

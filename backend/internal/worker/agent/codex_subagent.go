@@ -66,7 +66,8 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 		// Link the registry row to a child transcript when the index knows the
 		// thread (EnsureChildAgent is idempotent).
 		childAgentID := ""
-		if spawnSpan := a.collabSpanForThread(threadID); spawnSpan != "" {
+		spawnSpan := a.collabSpanForThread(threadID)
+		if spawnSpan != "" {
 			var err error
 			childAgentID, err = a.sink.EnsureChildAgent(spawnSpan, threadID, title)
 			if err != nil {
@@ -77,6 +78,19 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 					slog.Warn("codex collab persist prompt failed", "thread", threadID, "error", err)
 				}
 			}
+		}
+		// The SECOND signal that a child runs again after its row went final. The
+		// child's own turn/started is the first and the prompt one; this covers a
+		// collab call that reports a still-running child without one. Same helper,
+		// same proof, and idempotent -- a no-op for a row that is already active.
+		//
+		// The child INDEX is the proof. removeCollabChildIndex drops the span at
+		// the close, so a non-empty spawnSpan here means registerCollabReceiver
+		// re-registered this thread AFTER that close, which a replayed
+		// agentsStates snapshot never does. The reopened row keeps a closer: this
+		// same walk closes it when the state goes final again.
+		if !finished && spawnSpan != "" {
+			a.reviveFinishedCollabChild(threadID)
 		}
 		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
 			RowKey:        threadID,
@@ -102,6 +116,23 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 				a.sink.CleanupChildAgent(childAgentID)
 			}
 		}
+	}
+}
+
+// reviveFinishedCollabChild returns a collab child's row to Running when the
+// registry still holds it in a final status. A no-op for an absent row and for
+// one that is already active, so the common case costs one cache read.
+func (a *CodexAgent) reviveFinishedCollabChild(threadID string) {
+	_, status, ok, err := a.sink.LookupBackgroundTask(threadID)
+	if err != nil {
+		slog.Warn("codex collab registry lookup failed", "thread", threadID, "error", err)
+		return
+	}
+	if !ok || !status.IsFinished() {
+		return
+	}
+	if err := a.sink.ReviveBackgroundTask(threadID); err != nil {
+		slog.Warn("codex collab revive failed", "thread", threadID, "error", err)
 	}
 }
 

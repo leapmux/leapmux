@@ -3,7 +3,7 @@ import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
 import type { ReadFileResultSource } from '../../../results/readFileResult'
 import { joinContentParagraphs } from '~/lib/contentBlocks'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickObject } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { cachedRenderValue } from '../../../messageRenderCache'
 import { pickFileEditDiff } from '../../../results/fileEditDiff'
@@ -13,10 +13,12 @@ import { SearchResultBody } from '../../../results/searchResult'
 import { WebFetchResultBody } from '../../../results/webFetchResult'
 import { WebSearchResultsBody } from '../../../results/webSearchResults'
 import { ToolResultMessage } from '../../../toolRenderers'
+import { claudeAgentFromToolResult } from '../extractors/agent'
 import { extractToolUseInfo, getMessageContentArray } from '../extractors/assistantContent'
 import { claudeBashFromToolResult } from '../extractors/bash'
 import { claudeCreateResultDiff, claudeFileEditFromToolUseInput, claudeFileEditFromToolUseResult, isClaudeFileEditTool } from '../extractors/fileEdit'
 import { claudeGlobFromToolResult, claudeGrepFromToolResult } from '../extractors/grepGlob'
+import { claudeListAgentsListing } from '../extractors/listAgents'
 import { claudeMcpFromToolResult, isClaudeMcpTool } from '../extractors/mcp'
 import { claudeReadFromToolResult } from '../extractors/read'
 import { claudeRemoteTriggerFromToolResult } from '../extractors/remoteTrigger'
@@ -25,6 +27,7 @@ import { claudeWebSearchFromToolResult } from '../extractors/webSearch'
 import { AgentResultView } from './agent'
 import { AskUserQuestionResultView } from './askUserQuestion'
 import { ExitPlanModeResultView } from './exitPlanMode'
+import { ListAgentsResultView } from './listAgents'
 import { RemoteTriggerResultView } from './remoteTrigger'
 import { TaskOutputResultView } from './taskOutput'
 import { ToolSearchResultView } from './toolSearch'
@@ -98,14 +101,10 @@ const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
   },
 
   [CLAUDE_TOOL.AGENT]: (info, ctx) => {
-    if (!info.toolUseResult)
+    const source = claudeAgentFromToolResult(info.toolUseResult, info.resultContent)
+    if (!source)
       return null
-    const agentId = pickString(info.toolUseResult, 'agentId')
-    const status = pickString(info.toolUseResult, 'status', 'completed')
-    const agentContent = Array.isArray(info.toolUseResult.content)
-      ? joinContentParagraphs(info.toolUseResult.content as Array<Record<string, unknown>>, { text: 'text' })
-      : info.resultContent
-    return <AgentResultView agentId={agentId} status={status} content={agentContent} context={ctx} />
+    return <AgentResultView source={source} context={ctx} />
   },
 
   [CLAUDE_TOOL.TASK_OUTPUT]: (info, ctx) => {
@@ -148,6 +147,13 @@ const TOOL_RESULT_ENTRIES: Record<string, ToolResultEntry> = {
       context={ctx}
     />
   ),
+
+  [CLAUDE_TOOL.LIST_AGENTS]: (info, ctx) => {
+    const listing = claudeListAgentsListing(info.toolUseResult, info.resultContent)
+    if (!listing.trim())
+      return null
+    return <ListAgentsResultView listing={listing} context={ctx} />
+  },
 
   [CLAUDE_TOOL.REMOTE_TRIGGER]: (info, ctx) => {
     const source = claudeRemoteTriggerFromToolResult(info.toolUseResult, info.resultContent)

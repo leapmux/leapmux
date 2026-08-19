@@ -292,6 +292,12 @@ func (a *ClaudeCodeAgent) processAssistantBlocks(env *messageEnvelope) {
 	// Determine the parent span for any Agent tool_use blocks.
 	parentSpanID := env.ParentToolUseID
 
+	// A SendMessage here may be about to restart a finished subagent. Record the
+	// recipient before the tool runs, because the task_started it produces cannot
+	// be told from a session resume's hydration burst on its own. This is the
+	// ROOT transcript, so the arms are scoped to it ("").
+	a.claudeArmRevivesFromBlocks(env, "")
+
 	toolUseCount := 0
 	planFileProcessed := false
 	for _, block := range env.ContentBlocks() {
@@ -450,7 +456,7 @@ func claudeCloseToolResultSpans(sink OutputSink, env *messageEnvelope) {
 // Source for persistence is derived from msgType: USER for the `user`
 // envelope (which on the Claude wire includes both human input and
 // tool_result echoes under role:"user"); AGENT for assistant text,
-// system notifications, and the terminal `result` envelope. `result`
+// system notifications, and the final `result` envelope. `result`
 // routes through PersistTurnEnd so its source value is unused.
 func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType string) {
 	source := leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
@@ -579,6 +585,16 @@ func (a *ClaudeCodeAgent) handlePersistableMessage(content []byte, msgType strin
 
 		// Reset all span tracking so the next turn starts clean.
 		a.sink.ResetSpans()
+		// Drop the ROOT's SendMessage revive arms with it. A revive's task_started
+		// lands inside the turn that sent the message (the tool awaits the
+		// restart), so an arm still standing here addressed a live subagent, a
+		// recipient outside this session, or a send the CLI refused -- and none of
+		// those will ever fire it.
+		//
+		// Only the root's. A subagent runs past this boundary and clears its own
+		// arms at its own turn end, so wiping every arm here would drop a live
+		// subagent's before its task_started arrived.
+		a.clearClaudeRevives("")
 	}
 }
 

@@ -205,6 +205,14 @@ export interface AgentLifecycleProps {
   providerLabel?: string
   /** Full registry (active + past) for the chip and the popover it opens. */
   backgroundTasks?: BackgroundTaskItem[]
+  /**
+   * The ROOT registry, unfiltered -- what a tool card resolves a recipient id
+   * against. Deliberately NOT `backgroundTasks`: that list is CHIP-scoped, so on
+   * a child tab it holds only the rows that tab itself spawned, and a
+   * SendMessage addressing a sibling or the parent would resolve to nothing --
+   * exactly the sibling-to-sibling case the worker arms a revive for.
+   */
+  registryRows?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
   /** The agent's to-do list for the todos chip + popover. */
   todos?: TodoItem[]
@@ -333,11 +341,33 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // re-bundled per row, so buildMessageHost below only assembles the genuinely
   // per-message bindings on top -- making the agent-scoped vs message-scoped split
   // explicit instead of a flat 8-field literal where the distinction is invisible.
-  const hostLookups = createMemo(() => ({
-    getTodoById: props.lookups?.getTodoById,
-    getToolUseParsedBySpanId: props.lookups?.getToolUseParsedBySpanId,
-    getToolResultParsedBySpanId: props.lookups?.getToolResultParsedBySpanId,
-  }))
+  // Solid compiles `agentLifecycle` -- an object literal at the call site -- to
+  // ONE getter, so reading any field of it inside a tracking scope subscribes to
+  // EVERY field, `thinkingTokens` included, and that streams many deltas per
+  // turn. These two memos absorb that: each re-runs per delta but returns the
+  // same identity (`registryRows` is itself a memo upstream, `onOpenSubagent` a
+  // stable const), so the default === equality stops the propagation here rather
+  // than letting it reach `hostLookups` and rebuild every row's host.
+  const registryRows = createMemo(() => props.agentLifecycle?.registryRows)
+  const openSubagent = createMemo(() => props.agentLifecycle?.onOpenSubagent)
+
+  const hostLookups = createMemo(() => {
+    // The ROOT registry, indexed by row key so a tool card can turn an agent id
+    // into a link. Indexed once per registry change rather than scanned per
+    // card: a transcript can hold many SendMessage rows, each resolving on every
+    // render, and the registry arrives authoritative-and-replaced-wholesale so
+    // there is exactly one moment to rebuild.
+    const byRowKey = new Map(
+      (registryRows() ?? []).map(t => [t.rowKey, t] as const),
+    )
+    return {
+      getTodoById: props.lookups?.getTodoById,
+      getToolUseParsedBySpanId: props.lookups?.getToolUseParsedBySpanId,
+      getToolResultParsedBySpanId: props.lookups?.getToolResultParsedBySpanId,
+      resolveBackgroundTaskRow: (rowKey: string) => byRowKey.get(rowKey),
+      onOpenSubagent: openSubagent(),
+    }
+  })
 
   // The scroll container (also handed to scroll.attachListRef below). Read
   // non-reactively by isRowNearViewport at worker-dispatch time.

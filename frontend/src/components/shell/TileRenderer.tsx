@@ -48,7 +48,7 @@ import { parentDirectory, relativizePath } from '~/lib/paths'
 import { pluralize } from '~/lib/plural'
 import { formatFileMention, formatFileQuote } from '~/lib/quoteUtils'
 import { chipTasksFor, rootWorkState, subagentWorkState } from '~/stores/chatBackgroundTasks'
-import { appendText, insertIntoMruAgentEditor } from '~/stores/editorRef.store'
+import { appendText, insertIntoMruAgentEditor, queueInsertForAgent } from '~/stores/editorRef.store'
 import { buildTilePredicateMap, CLOSE_MODE_NONE } from '~/stores/layout.store'
 import { agentTabToInfo, isSteerableAgentTab, rootAgentIdFor } from '~/stores/tab.helpers'
 import { emitMergeTabsIntoTile, emitReassignTabsToTile } from '~/stores/tabOps'
@@ -178,6 +178,28 @@ export function createTileRenderer(opts: TileRendererOpts) {
   } = opts.stores
   const { agentOps, termOps } = opts.ops
   const mruEditorDeps = opts.mruEditorDeps
+
+  // A child (subagent) tab whose provider cannot steer a subagent conversation
+  // is a READ-ONLY transcript: the worker routes both a child message
+  // (SendChildInput) and a child interrupt (InterruptChild) through the same
+  // ChildSteerer, so a provider that implements neither can do neither. Roots
+  // and steerable children stay fully interactive. isSteerableAgentTab resolves
+  // acceptsMessages (backend-authoritative) with a supportsSubagentSend fallback
+  // for optimistic state.
+  //
+  // One predicate feeds the composer gate, its hint, the Interrupt button, and
+  // where a quote goes, so those cannot disagree about what a tab can do. It
+  // takes an agent id rather than reading the focused one, because the quote
+  // handlers run per TAB inside the tile loop while the composer is built for
+  // the focused tab alone.
+  const isSubagentReadOnly = (agentId: string): boolean => {
+    const t = view.getAgentTab(agentId)
+    // Absent tab -> not read-only: nothing is mounted to refuse, and the write
+    // path (appendText, the composer gate) answers for itself. isSteerableAgentTab
+    // already returns true for a root, so this needs no parentAgentId test of its
+    // own -- a second copy of that rule is how the two answers drift apart.
+    return t !== undefined && !isSteerableAgentTab(t)
+  }
   const {
     isActiveWorkspaceMutatable,
     isActiveWorkspaceArchived,
@@ -792,12 +814,50 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // re-filtered the whole registry, and each fresh array identity
             // defeated BackgroundTaskList's own sort-and-group memo.
             const chipTasks = createMemo(() => chipTasksForTab(agentId))
+            // The ROOT registry, unfiltered. `chipTasks` above is chip-scoped --
+            // a child tab sees only the rows IT spawned -- so a SendMessage card
+            // in a subagent transcript could not resolve a sibling or the parent.
+            // Memoized because bgRootFor walks the parent chain on every call.
+            const rootTasks = createMemo(() => bgTasksFor(agentId))
 
             const railProps = createMemo<ChatRailProps>(() => ({
               ...chatStore.getRailData(agentId),
               previewFor: railPreviewFor,
               warmPreview: railWarmPreview,
             }))
+            // Quoting a message from THIS transcript. Both the toolbar's Quote
+            // action and the selection popover land here, so they cannot diverge.
+            //
+            // A read-only subagent transcript has no composer to quote into, so
+            // the text goes where the file viewer's quote and @mention already
+            // send theirs: the most-recent agent tab that accepts messages --
+            // normally the parent this tab was opened from. That call activates
+            // and focuses the destination, so the quote is never inserted out of
+            // sight, and it filters this tab out by construction.
+            //
+            // A writable tab keeps the same-tab insert. Routing every quote
+            // through the MRU resolution would collapse the branch and is wrong:
+            // mruOrder is workspace-wide, so with split tiles its head can be an
+            // agent in a different tile than the one being read.
+            const quoteIntoComposer = (text: string) => {
+              if (isSubagentReadOnly(agentId)) {
+                insertIntoMruAgentEditor(mruEditorDeps, text)
+                return
+              }
+              if (appendText(agentId, text)) {
+                focusEditorRef()?.()
+                return
+              }
+              // No ref registered for this agent. The composer is mounted for the
+              // FOCUSED tab alone, so this quote came from another tile: queue it
+              // and bring that tab forward, the way an unmounted editor is already
+              // handled for a mention. Focusing here instead would focus a
+              // DIFFERENT agent's composer -- the one that received no text.
+              const tab = view.getAgentTab(agentId)
+              if (tab)
+                mruEditorDeps.activate(tab)
+              queueInsertForAgent(agentId, text)
+            }
             onCleanup(() => {
               agentScrollStates.delete(agentId)
               agentScrollToBottoms.delete(agentId)
@@ -856,18 +916,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       }
                     }}
                     lookups={lookups}
-                    onQuote={isActiveWorkspaceArchived()
-                      ? undefined
-                      : (text) => {
-                          appendText(agentId, text)
-                          focusEditorRef()?.()
-                        }}
-                    onReply={isActiveWorkspaceArchived()
-                      ? undefined
-                      : (text) => {
-                          appendText(agentId, text)
-                          focusEditorRef()?.()
-                        }}
+                    onQuote={isActiveWorkspaceArchived() ? undefined : quoteIntoComposer}
+                    onReply={isActiveWorkspaceArchived() ? undefined : quoteIntoComposer}
                     agentLifecycle={{
                       agentWorking: agentThinking(agentId),
                       thinkingTokens: agentSessionStore.getInfo(agentId).thinkingTokens,
@@ -876,6 +926,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       startupMessage: agent()?.startupMessage,
                       providerLabel: agentProviderLabel(agent()?.agentProvider),
                       backgroundTasks: chipTasks(),
+                      registryRows: rootTasks(),
                       onOpenSubagent: onOpenBackgroundTask,
                       todos: todosFor(agentId),
                     }}
@@ -1023,22 +1074,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const FocusedAgentEditorPanel: Component<{ containerHeight: number }> = (props) => {
     const agentId = () => focusedAgentId()!
-    // A child (subagent) tab whose provider cannot steer a subagent conversation
-    // is a READ-ONLY transcript: the worker routes both a child message
-    // (SendChildInput) and a child interrupt (InterruptChild) through the same
-    // ChildSteerer, so a provider that implements neither can do neither. Roots
-    // and steerable children stay fully interactive. isSteerableAgentTab
-    // resolves acceptsMessages (backend-authoritative) with a
-    // supportsSubagentSend fallback for optimistic state.
-    //
-    // One predicate feeds the composer gate, its hint, and the Interrupt button,
-    // so the three cannot disagree about what this tab can do.
-    const subagentReadOnly = () => {
-      const t = view.getAgentTab(agentId())
-      if (!t?.parentAgentId)
-        return false
-      return !isSteerableAgentTab(t)
-    }
+    const subagentReadOnly = () => isSubagentReadOnly(agentId())
     // The composer's GitBranch chip: one call answers both "can these actions
     // run?" and "what ref do the dialogs get?", so an enabled menu item can
     // never resolve to nothing. `buildRef` is lazy — the guard is read on

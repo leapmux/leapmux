@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -310,7 +311,7 @@ func TestCleanupChildAgent_OrphanedTrackerPointerIsBenign(t *testing.T) {
 }
 
 // TestCleanupChildAgent_PrunesChildSinkFromDirectParent verifies that a
-// terminal child close prunes the cached child sink from the DIRECT PARENT in
+// final child close prunes the cached child sink from the DIRECT PARENT in
 // O(1) (the parent sink is the receiver), without scanning every root sink.
 // Closes one of two children and asserts the sibling stays cached. A regression
 // that reverted to the O(roots) rootSinks scan would still pass today (one
@@ -930,4 +931,229 @@ func TestMarkBackgroundTasksExited_SkipsATranscriptThatAlreadyEnded(t *testing.T
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "result", msgs[0]["type"])
+}
+
+// --- Revive ---
+//
+// Claude restarts a finished subagent when the parent messages it. The registry
+// row has to reopen, and the transcript has to become closeable again -- the
+// first completion durably claimed its closing divider, so without a release the
+// second run would end with no divider at all.
+
+// registrySnapshotRow reads one row back through the snapshot clients receive,
+// which is the cache. Distinct from registryRow in title_cleaning_test.go, which
+// reads the DB directly -- the revive writes BOTH, so the two together are what
+// catch a cache that drifted from the durable row.
+func registrySnapshotRow(t *testing.T, svc *Service, rootID, rowKey string) bgtask.Item {
+	t.Helper()
+	items, err := svc.Output.LoadBackgroundTasks(context.Background(), rootID)
+	require.NoError(t, err)
+	for _, it := range items {
+		if it.RowKey == rowKey {
+			return it
+		}
+	}
+	t.Fatalf("no registry row %q", rowKey)
+	return bgtask.Item{}
+}
+
+func TestReviveBackgroundTask_ReturnsAFinishedRowToRunning(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	// A finished Claude subagent carries its output file in Description, written
+	// by the same task_notification that ended it.
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey:      "task-1",
+		Kind:        bgtask.KindSubagent,
+		Description: "/tmp/task-1.output",
+		Status:      bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusCompleted, "wrote the report"))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.True(t, registrySnapshotRow(t, svc, "root-1", "task-1").Status.IsFinished())
+
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+
+	row := registrySnapshotRow(t, svc, "root-1", "task-1")
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.True(t, row.EndedAt.IsZero(), "a running row carries no end time")
+	assert.Empty(t, row.ActiveForm,
+		"active_form described the finished run; the new one has reported nothing yet")
+	assert.Empty(t, row.Description,
+		"description held the finished run's output file; the new run has not named one")
+
+	// The durable row too, not only the cache. The revive writes both, and a
+	// cache that says running over a DB row that still says completed would
+	// survive until the next worker restart and then silently un-revive.
+	stored := registryRow(t, svc)
+	assert.Equal(t, "running", stored.Status)
+	assert.False(t, stored.EndedAt.Valid, "ended_at is cleared to NULL, not left stamped")
+	assert.Empty(t, stored.ActiveForm)
+	assert.Empty(t, stored.Description)
+}
+
+// Idempotent in both directions, so a duplicate revive and a revive for a task
+// this root never ran are both harmless.
+func TestReviveBackgroundTask_IsANoOpForAnActiveOrAbsentRow(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	// Still running: nothing to reopen, and the row must not be disturbed.
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusRunning, "reading files"))
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+	row := registrySnapshotRow(t, svc, "root-1", "task-1")
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.Equal(t, "reading files", row.ActiveForm, "an active row keeps its live activity text")
+
+	// Absent: no row, no error.
+	assert.NoError(t, sink.ReviveBackgroundTask("task-nope"))
+}
+
+// The claim release is the half that is easy to forget, and forgetting it costs
+// the second run its closing divider entirely.
+func TestReviveBackgroundTask_ReleasesTheTranscriptCloseClaim(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.False(t, svc.Output.claimSubagentTranscriptClose(context.Background(), childID),
+		"the first completion holds the claim")
+
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+
+	assert.True(t, svc.Output.claimSubagentTranscriptClose(context.Background(), childID),
+		"the revive gives the claim back so the next completion can take it")
+}
+
+// End to end: a transcript holds one divider per completion, not one for its
+// whole life.
+func TestSubagentEndDivider_WrittenAgainAfterARevive(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusFailed))
+
+	msgs := transcriptMessages(t, svc, childID)
+	require.Len(t, msgs, 2, "one divider for each run")
+	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, "completed", msgs[0]["status"])
+	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[1]["type"])
+	assert.Equal(t, "failed", msgs[1]["status"], "the second divider reports the SECOND run's outcome")
+}
+
+// Regression lock. Nothing seals a child transcript: a divider is a message, not
+// a terminator, and a revived subagent's output has to keep landing below it. A
+// future "stop persisting once it ended" shortcut would break the revive
+// silently, so the behavior is pinned here rather than left implicit.
+func TestChildTranscript_AppendsBelowTheEndDivider(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+
+	require.NoError(t, sink.PersistChildMessage(childID,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		[]byte(`{"content":"keep going"}`), agent.SpanInfo{}))
+
+	msgs := transcriptMessages(t, svc, childID)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, agent.NotificationTypeSubagentEnded, msgs[0]["type"])
+	assert.Equal(t, "keep going", msgs[1]["content"], "the later message sits below the divider")
+}
+
+func TestLookupBackgroundTask_ResolvesTheChildAndStatus(t *testing.T) {
+	t.Parallel()
+
+	_, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	gotChild, status, ok, _ := sink.LookupBackgroundTask("task-1")
+	require.True(t, ok)
+	assert.Equal(t, childID, gotChild)
+	assert.Equal(t, bgtask.StatusRunning, status)
+
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	_, status, ok, _ = sink.LookupBackgroundTask("task-1")
+	require.True(t, ok)
+	assert.Equal(t, bgtask.StatusCompleted, status)
+}
+
+// A row key that identifies nothing misses, which is what every recipient outside
+// this session's subagents does -- a display name, another session, an address.
+func TestLookupBackgroundTask_ReportsAMissForAnUnknownKey(t *testing.T) {
+	t.Parallel()
+
+	_, sink := setupRootSink(t, "root-1")
+	_, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+
+	for _, key := range []string{"", "task-nope", "bridge:another-machine"} {
+		childID, _, ok, _ := sink.LookupBackgroundTask(key)
+		assert.False(t, ok, "key %q identifies no row", key)
+		assert.Empty(t, childID)
+	}
+}
+
+// A shell row owns no transcript, so there is no close claim to give back. The
+// revive still reopens the row, and the release must not run against an empty
+// child id.
+func TestReviveBackgroundTask_RowWithNoTranscript(t *testing.T) {
+	t.Parallel()
+
+	svc, sink := setupRootSink(t, "root-1")
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		RowKey: "shell-1",
+		Kind:   bgtask.KindShell,
+		Title:  "npm test",
+		Status: bgtask.StatusRunning,
+	}))
+	require.NoError(t, sink.CloseBackgroundTask("shell-1", bgtask.StatusCompleted))
+
+	require.NoError(t, sink.ReviveBackgroundTask("shell-1"))
+	assert.Equal(t, bgtask.StatusRunning, registrySnapshotRow(t, svc, "root-1", "shell-1").Status)
+}
+
+// The cache and the durable row are two sources, and the query is the one that
+// decides. When the DB says the row is already active the UPDATE matches nothing,
+// and reporting a revive anyway would release a transcript-close claim for a
+// transcript that never reopened -- letting a SECOND divider be written for the
+// FIRST completion.
+func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink := setupRootSink(t, "root-1")
+	childID, err := sink.EnsureChildAgent("span-1", "task-1", "SCAN")
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.False(t, svc.Output.claimSubagentTranscriptClose(ctx, childID))
+
+	// Put the DB back to running behind the cache's back, so the two disagree
+	// exactly as a concurrent revive would leave them.
+	require.NoError(t, svc.Queries.UpdateAgentBackgroundTaskStatus(ctx, db.UpdateAgentBackgroundTaskStatusParams{
+		Status:       bgtask.StatusWire(bgtask.StatusRunning),
+		UpdatedAt:    sqltime.NewSQLiteTime(nowMillis()),
+		OwnerAgentID: "root-1",
+		RowKey:       "task-1",
+	}))
+
+	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
+
+	assert.False(t, svc.Output.claimSubagentTranscriptClose(ctx, childID),
+		"the claim is still held: no revive was reported, so none was released")
 }

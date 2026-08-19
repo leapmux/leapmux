@@ -50,13 +50,19 @@ const (
 	NotificationTypeRateLimit      = "rate_limit"
 	NotificationTypeRateLimitEvent = "rate_limit_event"
 
-	// NotificationTypeSubagentEnded closes a subagent transcript. The worker
-	// writes exactly one into a child transcript when that subagent's
-	// background-task row reaches a final status, so the subagent tab shows
-	// WHERE it stopped and WHY instead of a thinking indicator that never
-	// resolves. Carries a `status` field holding the registry's final wire
-	// status (completed / failed / stopped / interrupted). Provider-neutral:
-	// the registry close is the one moment every provider agrees a subagent is
-	// over, including the ones whose child transcript simply stops.
+	// NotificationTypeSubagentEnded closes a subagent RUN. The worker writes one
+	// into a child transcript each time that subagent's background-task row
+	// reaches a final status, so the subagent tab shows WHERE it stopped and WHY
+	// instead of a thinking indicator that never resolves. Carries a `status`
+	// field holding the registry's final wire status (completed / failed /
+	// stopped / interrupted). Provider-neutral: the registry close is the one
+	// moment every provider agrees a subagent is over, including the ones whose
+	// child transcript simply stops.
+	//
+	// One per run, NOT one per transcript, and nothing follows it only until
+	// something does. Claude restarts a finished subagent when the parent
+	// messages it, and the restarted run ends the same way -- so a transcript
+	// holds as many of these as the subagent had runs, each with more messages
+	// below it.
 	NotificationTypeSubagentEnded = "subagent_ended"
 )

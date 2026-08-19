@@ -15,6 +15,7 @@ import {
   filterBackgroundTasksByKind,
   groupBackgroundTasks,
   isActiveBackgroundTaskStatus,
+  opensSubagentTranscript,
   sortBackgroundTasks,
 } from '~/stores/chatBackgroundTasks'
 import * as styles from './BackgroundTaskList.css'
@@ -250,7 +251,7 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
   })
 
   const renderRow = (item: BackgroundTaskItem): JSX.Element => {
-    const clickable = item.kind === 'subagent' && !!item.childAgentId && !!props.onOpenSubagent
+    const clickable = opensSubagentTranscript(item) && !!props.onOpenSubagent
     return (
       <Show
         when={clickable}

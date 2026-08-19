@@ -171,6 +171,13 @@ type registryChange struct {
 	// the divider reports what the applier actually wrote rather than what the
 	// caller asked for (an upsert can keep an existing final status instead).
 	endedStatus bgtask.Status
+	// revivedChildID is the child transcript this mutation REOPENED, or "" when
+	// the row stayed final, was already active, carries no child, or nothing
+	// changed. The mirror of endedChildID: a revive owes the transcript-close
+	// release exactly as an ending owes the divider, so both travel with the
+	// change and applyAndBroadcast performs both. A revive path cannot reach the
+	// registry and forget the release.
+	revivedChildID string
 }
 
 // applyBackgroundTaskUpsert is the persist-mutate-broadcast for an upsert. It
@@ -304,6 +311,75 @@ func (h *OutputHandler) applyBackgroundTaskClose(rootAgentID, rowKey string, sta
 		changed:      true,
 		endedChildID: cache.Rows[idx].ChildAgentID,
 		endedStatus:  status,
+	}, nil
+}
+
+// applyBackgroundTaskRevive returns a FINISHED row to Running and clears its
+// ended_at and its descriptive state, for a subagent that its provider
+// restarted. The change carries the child transcript the revive reopened, so
+// applyAndBroadcast releases that transcript's close claim.
+//
+// This is the ONLY applier that undoes a final status, and it stays separate
+// from the upsert and the status update on purpose. Those two absorb a non-final
+// status against a final row, and that guard must hold: a replayed running
+// upsert has no way to prove the task restarted, so honoring it would leave a
+// row Running that nothing closes and pin the parent's thinking indicator. A
+// caller reaches THIS applier only with positive evidence of a restart, so the
+// two cases never have to be told apart after the fact.
+//
+// Idempotent: an absent row and an already-active row both return an unchanged
+// no-op, which is what makes a duplicate revive harmless.
+func (h *OutputHandler) applyBackgroundTaskRevive(rootAgentID, rowKey string) (registryChange, error) {
+	ctx := h.bgTaskCtx()
+	cache := h.bgTaskCache(rootAgentID)
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	if err := cache.ensureSeededLocked(ctx, rootAgentID); err != nil {
+		return registryChange{}, err
+	}
+	idx := cache.indexOf(rowKey)
+	if idx < 0 {
+		return registryChange{rows: cache.snapshot()}, nil
+	}
+	if !cache.Rows[idx].Status.IsFinished() {
+		return registryChange{rows: cache.snapshot()}, nil
+	}
+	// One ms-floored instant for the DB write and the cache, so a warm-cache read
+	// matches a cold-start read (no Go-time.Now-vs-SQLite drift).
+	now := nowMillis()
+	rows, err := h.queries.ReviveAgentBackgroundTask(ctx, db.ReviveAgentBackgroundTaskParams{
+		UpdatedAt:    sqltime.NewSQLiteTime(now),
+		OwnerAgentID: rootAgentID,
+		RowKey:       rowKey,
+	})
+	if err != nil {
+		return registryChange{}, err
+	}
+	if rows == 0 {
+		// The DB disagrees with the cache about this row being finished, and the DB
+		// decides. Report NO revive, so the transcript-close claim stays held for a
+		// transcript that never reopened -- but adopt the durable answer, because
+		// the UPDATE matched nothing only if the row is already active. Leaving the
+		// cache saying "finished" would keep every later broadcast and cold read
+		// disagreeing with the row until the worker restarts.
+		cache.Rows[idx].Status = bgtask.StatusRunning
+		cache.Rows[idx].EndedAt = time.Time{}
+		return registryChange{rows: cache.snapshot(), changed: true}, nil
+	}
+	cache.Rows[idx].Status = bgtask.StatusRunning
+	// ActiveForm and Description both describe the run that ENDED -- the last
+	// activity text, and the output file its task_notification named. The
+	// restarted run has reported neither yet, and the row's activity slot shows
+	// whichever is present, so leaving them pins the previous run's output path
+	// under a subagent that is running again.
+	cache.Rows[idx].ActiveForm = ""
+	cache.Rows[idx].Description = ""
+	cache.Rows[idx].EndedAt = time.Time{}
+	cache.Rows[idx].UpdatedAt = now
+	return registryChange{
+		rows:           cache.snapshot(),
+		changed:        true,
+		revivedChildID: cache.Rows[idx].ChildAgentID,
 	}, nil
 }
 
@@ -665,7 +741,7 @@ func (s *agentOutputSink) PersistChildPrompt(childAgentID, prompt string) error 
 	}
 	// The same envelope a typed user message uses, so the renderer needs no new
 	// shape: markdown body, USER source, no span.
-	content, err := json.Marshal(map[string]string{"content": prompt})
+	content, err := childUserMessageContent(prompt)
 	if err != nil {
 		return fmt.Errorf("marshal child prompt: %w", err)
 	}
@@ -673,13 +749,54 @@ func (s *agentOutputSink) PersistChildPrompt(childAgentID, prompt string) error 
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
 }
 
+// childUserMessageContent encodes text as the transcript's user-message
+// envelope. One encoder for the opening prompt and for a delivered message, so
+// the wire shape has a single home in the service layer and no provider spells
+// it out.
+func childUserMessageContent(text string) ([]byte, error) {
+	return json.Marshal(map[string]string{"content": text})
+}
+
+// PersistChildUserMessage appends a delivered message to a child transcript.
+// See the OutputSink doc for the contract. Unlike PersistChildPrompt there is
+// NO emptiness guard: this message belongs wherever the transcript currently
+// ends, which is the point of it.
+func (s *agentOutputSink) PersistChildUserMessage(childAgentID, text string) error {
+	if childAgentID == "" || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	content, err := childUserMessageContent(text)
+	if err != nil {
+		return fmt.Errorf("marshal child user message: %w", err)
+	}
+	return s.ChildSink(childAgentID).PersistMessage(
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content,
+		agent.SpanInfo{MarkType: leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE})
+}
+
 // claimSubagentTranscriptClose reports whether THIS caller owns the closing
 // divider for a subagent transcript.
 //
-// Exactly one divider closes a transcript, and TWO independent writers can end
-// one: the registry (whichever applier moved the row into a final status) and
-// the child's own turn end (a provider that forwards its subagent's closing
+// Exactly one divider closes each COMPLETION, and TWO independent writers can
+// end one: the registry (whichever applier moved the row into a final status)
+// and the child's own turn end (a provider that forwards its subagent's closing
 // envelope, like Claude's result). Either can arrive first.
+//
+// One completion, not one transcript: a subagent that its parent revives runs
+// again and ends again, so ReviveBackgroundTask releases the claim and the next
+// completion takes a fresh one. A transcript therefore holds as many dividers as
+// the subagent had runs.
+//
+// The key is the child id alone, and a run number cannot improve it. The second
+// writer is the child's own turn end (PersistTurnEnd), which holds s.agentID and
+// the envelope bytes and nothing else -- no run number rides on the wire. So a
+// generation-keyed claim would have to READ the current generation from the
+// registry, and a run-1 result that arrived after the revive would read run 2's
+// generation, take run 2's slot, and produce exactly what the plain key
+// produces: a divider in the middle of run 2 and none at its end. The ordered
+// stream is what keeps the two apart. One goroutine reads the CLI's stdout in
+// line order (processBase.readOutput) and both writers run inside that call, so
+// run 1's result is processed before the task_started that revives the subagent.
 //
 // A durable INSERT decides it, rather than each side reading the transcript's
 // last message and inferring what the other did. Two reasons the probes could
@@ -709,10 +826,11 @@ func (h *OutputHandler) claimSubagentTranscriptClose(ctx context.Context, childA
 // update, or a close, whichever the provider uses -- plus the process-exit
 // sweep and the boot sweep, which end rows no provider will ever close.
 //
-// Called exactly once per row: an applier reports endedChildID only on that
-// transition, and the DB's own status guard makes it hold across a worker
-// restart. A no-op for an empty id (a shell row, a re-close, or a subagent
-// whose provider never linked a transcript).
+// Called exactly once per active -> final transition: an applier reports
+// endedChildID only on that transition, and the DB's own status guard makes it
+// hold across a worker restart. A revived row transitions again, and writes
+// another divider then. A no-op for an empty id (a shell row, a re-close, or a
+// subagent whose provider never linked a transcript).
 //
 // The provider comes from the child's own agent row rather than from a caller:
 // createMessageRow refuses an UNSPECIFIED provider, and the sweeps have no sink
@@ -835,6 +953,17 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 	// DB's own status guard makes that hold across a worker restart, so this
 	// runs exactly once per row and needs no emptiness check of its own.
 	s.h.persistSubagentEndDivider(change.endedChildID, change.endedStatus)
+	// The mirror write: a revive gives the transcript-close claim back, so the
+	// restarted run can take a fresh one and end with a divider of its own.
+	// Failing it is logged, never returned. The row is already committed and
+	// already broadcast by this point, so reporting an error here would tell the
+	// caller a revive that DID happen did not -- and Claude's caller answers that
+	// by dropping the message the parent just delivered.
+	if change.revivedChildID != "" {
+		if err := s.h.queries.ReleaseSubagentTranscriptClose(s.h.bgTaskCtx(), change.revivedChildID); err != nil {
+			slog.Warn("release subagent transcript close", "child", change.revivedChildID, "error", err)
+		}
+	}
 	return nil
 }
 
@@ -865,6 +994,49 @@ func (s *agentOutputSink) CloseBackgroundTask(rowKey string, status bgtask.Statu
 	return s.applyAndBroadcast(rowKey, func(root, key string) (registryChange, error) {
 		return s.h.applyBackgroundTaskClose(root, key, status)
 	})
+}
+
+func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.Status, bool, error) {
+	// The zero Status is StatusPending, a real value rather than an "unknown"
+	// sentinel, so a miss returns it alongside ok=false and callers must read ok.
+	var noStatus bgtask.Status
+	rowKey = bgtask.SanitizeRowKey(rowKey)
+	if rowKey == "" {
+		return "", noStatus, false, nil
+	}
+	cache := s.h.bgTaskCache(s.rootAgentID)
+	cache.Mu.Lock()
+	defer cache.Mu.Unlock()
+	// The seed failure is RETURNED, not folded into ok=false. It runs on the
+	// first registry touch of a process, which is exactly the state a worker
+	// restart leaves behind -- so the one call most likely to hit it is a revive
+	// for a subagent that finished in the previous process, and answering "no
+	// such row" there closes a live span and leaves the row finished.
+	if err := cache.ensureSeededLocked(s.h.bgTaskCtx(), s.rootAgentID); err != nil {
+		return "", noStatus, false, fmt.Errorf("seed background tasks for %s: %w", s.rootAgentID, err)
+	}
+	idx := cache.indexOf(rowKey)
+	if idx < 0 {
+		return "", noStatus, false, nil
+	}
+	return cache.Rows[idx].ChildAgentID, cache.Rows[idx].Status, true, nil
+}
+
+// ReviveBackgroundTask returns a finished row to Running and lets the reopened
+// transcript be closed again.
+//
+// The claim release is the second half of the revive and cannot be skipped: the
+// first completion durably claimed this transcript's closing divider, so without
+// the release the revived run would end with no divider at all. The applier
+// reports the reopened child on the change, and applyAndBroadcast performs the
+// release beside the ending divider -- so the two halves cannot come apart, and
+// a revive that changed nothing releases nothing.
+//
+// The error this returns therefore covers the REGISTRY write alone. That is what
+// the caller needs to know: it holds a one-shot arm, and only a failure to
+// reopen the row means the restart went unrecorded.
+func (s *agentOutputSink) ReviveBackgroundTask(rowKey string) error {
+	return s.applyAndBroadcast(rowKey, s.h.applyBackgroundTaskRevive)
 }
 
 // RenameBackgroundTask atomically re-keys a row from oldKey to newKey under the

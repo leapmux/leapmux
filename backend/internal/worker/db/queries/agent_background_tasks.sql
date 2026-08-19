@@ -97,6 +97,37 @@ UPDATE agent_background_tasks SET
     updated_at = ?
 WHERE owner_agent_id = ? AND row_key = ? AND status IN ('pending','running');
 
+-- ReviveAgentBackgroundTask returns a FINISHED row to running and clears its
+-- ended_at, for a subagent that its parent restarted by sending it a message.
+--
+-- This is the one write that undoes a final status, and it is deliberately its
+-- own statement rather than a relaxation of the guards on the upsert and the
+-- status update. Those guards drop a NON-final status against a final row, and
+-- they must keep doing so: a replayed running upsert (a duplicate task_started,
+-- a worker restart, a resumed session that re-announces every task it once ran)
+-- would otherwise leave a row running that nothing ever closes, which pins the
+-- parent's thinking indicator for good. A caller reaches this query only with
+-- positive evidence that the provider restarted the task.
+--
+-- active_form and description are cleared with the status. Both describe the run
+-- that ENDED -- the last activity text, and the output file its task_notification
+-- named -- and the restarted run has reported neither yet. The row's activity
+-- slot shows whichever is present, so leaving them pins the previous run's
+-- output path under a subagent that is running again.
+--
+-- The status-IN filter makes the call idempotent -- an absent or still-active
+-- row matches nothing -- and :execrows lets the caller tell a real revive from
+-- a no-op, because only a real one owes the transcript-close release.
+-- name: ReviveAgentBackgroundTask :execrows
+UPDATE agent_background_tasks SET
+    status      = 'running',
+    active_form = '',
+    description = '',
+    ended_at    = NULL,
+    updated_at  = ?
+WHERE owner_agent_id = ? AND row_key = ?
+  AND status IN ('completed','failed','stopped','interrupted');
+
 -- name: DeleteAgentBackgroundTaskByRowKey :execresult
 DELETE FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
 

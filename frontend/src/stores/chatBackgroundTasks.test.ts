@@ -11,6 +11,7 @@ import {
   filterBackgroundTasksByKind,
   groupBackgroundTasks,
   isActiveBackgroundTaskStatus,
+  opensSubagentTranscript,
   protoBackgroundTaskToStore,
   rootWorkState,
   shouldShowBackgroundTasksSection,
@@ -329,5 +330,28 @@ describe('shouldShowBackgroundTasksSection', () => {
   // the flag only decides visibility, never what replaces the content.
   it('shows the section when the load failed and rows survive', () => {
     expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a' })], true)).toBe(true)
+  })
+})
+
+// One predicate for "is this row a link", read by the Background tasks list and
+// by the SendMessage card. Each site covers only half of it today, so the cases
+// live here.
+describe('opensSubagentTranscript', () => {
+  it('reports a subagent row that owns a transcript', () => {
+    expect(opensSubagentTranscript(item({ rowKey: 'r1', kind: 'subagent', childAgentId: 'c1' }))).toBe(true)
+  })
+
+  it('reports a subagent whose provider never linked one', () => {
+    expect(opensSubagentTranscript(item({ rowKey: 'r1', kind: 'subagent', childAgentId: undefined }))).toBe(false)
+  })
+
+  // The falsy-empty-string case, which is why the predicate tests truthiness
+  // rather than `!== undefined`.
+  it('reports a blank child id as no transcript', () => {
+    expect(opensSubagentTranscript(item({ rowKey: 'r1', kind: 'subagent', childAgentId: '' }))).toBe(false)
+  })
+
+  it('reports a shell row as no transcript, whatever it carries', () => {
+    expect(opensSubagentTranscript(item({ rowKey: 'r1', kind: 'shell', childAgentId: 'c1' }))).toBe(false)
   })
 })

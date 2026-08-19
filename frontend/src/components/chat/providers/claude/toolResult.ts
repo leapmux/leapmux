@@ -8,8 +8,10 @@ import { formatUnifiedDiffText } from '../../diff'
 import { COLLAPSED_RESULT_ROWS, hasMoreLinesThan } from '../../results/collapse'
 import { commandOutputIsCollapsible } from '../../results/commandResult'
 import { fileEditDiffHunks, fileEditHasDiff } from '../../results/fileEditDiff'
+import { claudeAgentFromToolResult, claudeAgentResultBody } from './extractors/agent'
 import { extractToolResultText } from './extractors/assistantContent'
 import { claudeFileEditFromToolUseResult } from './extractors/fileEdit'
+import { claudeListAgentsListing } from './extractors/listAgents'
 import { claudeRemoteTriggerFromToolResult } from './extractors/remoteTrigger'
 
 /** Resolve toolName + tool_use_result for a Claude tool_result message. */
@@ -24,6 +26,35 @@ function extractToolResultInfo(
   if (!toolName && !toolUseResult)
     return null
   return { toolName, toolUseResult }
+}
+
+/**
+ * The body a structured card RENDERS, for the tools that have one.
+ *
+ * These are the only tools whose three questions below -- is it collapsible, is
+ * there anything to copy, what gets copied -- have ONE answer, so reading the
+ * body once here is what stops them drifting. Every other tool measures the
+ * three differently (Grep counts filenames, Read reads file.numLines, Bash
+ * normalizes \r-overwrites first), which is why they keep their own branches and
+ * this returns null for them.
+ *
+ * null means "this tool has no structured body, answer from resultText". '' means
+ * "it has one and it is empty" -- a launch with no prompt, which must NOT fall
+ * back to resultText, because there resultText is the CLI's instructions to the
+ * model and the card never shows them.
+ */
+function structuredResultBody(
+  toolName: string,
+  toolUseResult: Record<string, unknown> | undefined,
+  resultText: string | null,
+): string | null {
+  if (toolName === CLAUDE_TOOL.LIST_AGENTS)
+    return claudeListAgentsListing(toolUseResult, resultText ?? '')
+  if (toolName === CLAUDE_TOOL.AGENT) {
+    const source = claudeAgentFromToolResult(toolUseResult, resultText ?? '')
+    return source ? claudeAgentResultBody(source) : null
+  }
+  return null
 }
 
 /**
@@ -53,13 +84,12 @@ function isCollapsible(
       return (file.numLines as number) > COLLAPSED_RESULT_ROWS
   }
 
-  if (toolName === CLAUDE_TOOL.AGENT) {
-    if (Array.isArray(toolUseResult?.content)
-      && (toolUseResult.content as Array<Record<string, unknown>>).some(c => isObject(c) && c.type === 'text')) {
-      return true
-    }
-    return resultText != null && hasMoreLinesThan(resultText, COLLAPSED_RESULT_ROWS)
-  }
+  // Judge the text the CARD shows, which for a launch is the prompt rather than
+  // the harness instructions in resultText. Reading resultText there put the
+  // expand button on a body the card no longer renders.
+  const structuredCollapsible = structuredResultBody(toolName, toolUseResult, resultText)
+  if (structuredCollapsible !== null)
+    return hasMoreLinesThan(structuredCollapsible, COLLAPSED_RESULT_ROWS)
 
   if (toolName === CLAUDE_TOOL.WEB_FETCH && typeof toolUseResult?.code === 'number')
     return true
@@ -98,6 +128,13 @@ function hasCopyable(
   }
   if (toolName === CLAUDE_TOOL.WRITE)
     return typeof toolUseResult?.newString === 'string'
+  // Mirrors computeCopyableContent's structured branch. Without it the default
+  // answers from resultText, which extractToolResultText reports as null for an
+  // empty block content -- so a card showing a structured listing, or a launch
+  // showing its prompt, offered no Copy button at all.
+  const structured = structuredResultBody(toolName, toolUseResult, resultText)
+  if (structured !== null)
+    return structured !== ''
   return resultText !== null
 }
 
@@ -128,6 +165,13 @@ function computeCopyableContent(
     if (source)
       return `HTTP ${source.status}\n${prettifyJson(source.parsed ?? source.json)}`
   }
+
+  // No `|| resultText` fallback. For a launch with no prompt the body is empty
+  // and resultText is the CLI's instructions to the model -- text the card
+  // deliberately never shows, so Copy must not hand it over either.
+  const structuredCopy = structuredResultBody(toolName, toolUseResult, resultText)
+  if (structuredCopy !== null)
+    return structuredCopy || null
 
   return resultText
 }

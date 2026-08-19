@@ -70,6 +70,14 @@ gooseTest.describe('Goose subagent registry', () => {
       // box, so a read-only subagent tab said the same sentence twice, a few
       // pixels apart.
       await expect(page.getByText(noMessages, { exact: true })).toHaveCount(0)
+
+      // Quote routing out of a read-only transcript is NOT asserted here. Goose's
+      // child transcript carries only `subagent_tool_request` rows, and the ACP
+      // plugin returns no quotable text for that category, so no row in it ever
+      // renders a Quote action -- every locator for one matches zero elements.
+      // The guarded version of this check reported green while asserting
+      // nothing. The routing is covered where it has a real seam, in
+      // `editorRef.store.test.ts` and `tab.helpers.test.ts`.
     }
 
     await expectRowBecomesFinal(page, r)
