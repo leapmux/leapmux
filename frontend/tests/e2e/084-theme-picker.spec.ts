@@ -116,6 +116,43 @@ test.describe('Theme picker', () => {
       .getByTestId('theme-option-default')).toHaveText('Default (GitHub)')
   })
 
+  // The chip is the only part of the picker that describes a palette instead of
+  // naming it, and it is built from nine palette tokens drawn on a tenth. The
+  // unit suites prove the token choice and the wiring; this proves the last hop
+  // -- that the colours reach the DOM and that the chip agrees with what the app
+  // actually painted.
+  test('previews the chosen palette in the chip beside its name', async ({ page, leapmuxServer }) => {
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await page.goto('/')
+    await openPreferencesDialog(page, 'appearance')
+    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    const themeRow = dialog.locator('[data-setting-id="appearance.theme"]')
+
+    await pickTheme(themeRow, 'gruvbox')
+    await expect(page.locator('html')).toHaveAttribute('data-ui-theme', 'gruvbox')
+
+    const swatch = themeRow.getByTestId('theme-chooser-name').getByTestId('theme-swatch')
+    await expect(swatch.locator('rect')).toHaveCount(9)
+
+    // The chip's fill is the palette's own --background, which is the value the
+    // page is painted with. Compared through `resolvedColor` because the
+    // palette states a hex and the DOM reports `rgb(...)`.
+    const painted = await backgroundVar(page)
+    await expect.poll(() => swatch.evaluate(el => getComputedStyle(el).backgroundColor))
+      .toBe(await resolvedColor(page, painted))
+
+    // Every pip stands off that background, which is the property that makes
+    // the chip readable rather than a flat square.
+    const fills = await swatch.locator('rect').evaluateAll(els => els.map(el => el.getAttribute('fill')))
+    expect(fills).toHaveLength(9)
+    expect(fills).not.toContain(painted)
+    // Nine nearly-distinct colours, which catches a fill mapping that painted
+    // every pip the same. Not exactly nine: --border and --input are one value
+    // in Default Dark, so the catalogue does not promise it. ThemeSwatch's own
+    // suite is what measures the separation, on all thirty variants.
+    expect(new Set(fills).size).toBeGreaterThanOrEqual(8)
+  })
+
   // The terminal is a SECOND appearance choice that defaults to following the
   // app. These cases are the requirement the split exists for.
   test('moves the terminal with the app while the terminal is left alone', async ({ page, leapmuxServer }) => {

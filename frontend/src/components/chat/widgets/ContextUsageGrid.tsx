@@ -2,8 +2,9 @@ import type { Component } from 'solid-js'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ContextUsageInfo } from '~/stores/agentSession.store'
 import Info from 'lucide-solid/icons/info'
-import { createMemo, For, Show } from 'solid-js'
+import { createMemo, Show } from 'solid-js'
 import { pluginFor } from '~/components/chat/providers/registry'
+import { PIP_GRID_COLUMNS, PIP_GRID_PIPS, PipGrid } from '~/components/common/PipGrid'
 import { Tooltip } from '~/components/common/Tooltip'
 
 interface ContextUsageGridProps {
@@ -55,16 +56,18 @@ export function computePercentage(usage: ContextUsageInfo | undefined, modelCont
   return Math.min(100, (total / usable) * 100)
 }
 
-/** Map a percentage (0-100) to the number of filled squares (0-9). */
+/** Map a percentage (0-100) to the number of filled pips (0-9). */
 function filledCount(pct: number): number {
   if (pct <= 0)
     return 0
   if (pct >= 81)
-    return 9
+    return PIP_GRID_PIPS
   return Math.ceil(pct / 10)
 }
 
-// Fill order: bottom-left to top-right (row 2 L-R, row 1 L-R, row 0 L-R).
+// Fill order: bottom-left to top-right (row 2 L-R, row 1 L-R, row 0 L-R), so
+// the meter fills upwards the way a bar chart does. `PipGrid` takes its fills
+// row-major, so `fills` below maps this order onto that one.
 const fillOrder: [row: number, col: number][] = [
   [2, 0],
   [2, 1],
@@ -76,10 +79,6 @@ const fillOrder: [row: number, col: number][] = [
   [0, 1],
   [0, 2],
 ]
-
-const SQUARE_SIZE = 3
-const GAP = 1
-const STEP = SQUARE_SIZE + GAP // 4
 
 export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
   const percentage = createMemo(() => computePercentage(props.contextUsage, props.modelContextWindow, props.agentProvider))
@@ -93,6 +92,15 @@ export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
 
   const activeColor = () => warning() ? 'var(--context-grid-warning)' : 'currentColor'
 
+  const fills = createMemo(() => {
+    const active = activeColor()
+    const lit = new Set(fillOrder.slice(0, filled()).map(([row, col]) => row * PIP_GRID_COLUMNS + col))
+    return Array.from(
+      { length: PIP_GRID_PIPS },
+      (_, i) => lit.has(i) ? active : 'var(--context-grid-inactive)',
+    )
+  })
+
   const tooltip = createMemo(() => {
     const pct = percentage()
     return pct != null ? `Context: ${Math.round(pct)}%` : undefined
@@ -101,25 +109,7 @@ export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
   return (
     <Show when={percentage() != null} fallback={<Info size={props.size} />}>
       <Tooltip text={tooltip()} ariaLabel>
-        <svg
-          width={props.size}
-          height={props.size}
-          viewBox="0 0 11 11"
-          fill="none"
-        >
-          <For each={fillOrder}>
-            {([row, col], i) => (
-              <rect
-                x={col * STEP}
-                y={row * STEP}
-                width={SQUARE_SIZE}
-                height={SQUARE_SIZE}
-                rx={0.5}
-                fill={i() < filled() ? activeColor() : 'var(--context-grid-inactive)'}
-              />
-            )}
-          </For>
-        </svg>
+        <PipGrid size={props.size} fills={fills()} testId="context-usage-grid" />
       </Tooltip>
     </Show>
   )

@@ -4,6 +4,7 @@ import { createMemo, createSignal, For, on, Show } from 'solid-js'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
 import { PillGroup } from '~/components/common/PillGroup'
+import { ThemeSwatch } from '~/components/common/ThemeSwatch'
 import { isThemeMode } from '~/lib/themeStore'
 import { errorText } from '~/styles/shared.css'
 import { DEFAULT_THEME_ID, isThemeId, MATCH_UI, resolveVariant, themeById, themeLabel, THEMES, variantsFor } from '~/styles/themes'
@@ -74,29 +75,6 @@ export interface ThemeChooserProps<T extends ThemeValue | TerminalThemeValue> {
   align?: 'start' | 'center'
   /** Accessible name for the controls. Defaults to the UI theme's wording. */
   label?: string
-}
-
-/**
- * A theme's colours, as a chip: its background, with its text and its accent
- * marked on top.
- *
- * Decorative — the option's label carries the name. It exists because an
- * `<option>` never could: a palette is the one thing a picker cannot describe
- * in words, and it is the whole reason these two controls are menus rather than
- * native selects.
- */
-function Swatch(props: { variant: ThemeVariant }) {
-  return (
-    <span
-      class={styles.swatch}
-      aria-hidden="true"
-      style={{
-        '--swatch-bg': props.variant.palette['--background'],
-        '--swatch-fg': props.variant.palette['--foreground'],
-        '--swatch-accent': props.variant.palette['--primary'],
-      }}
-    />
-  )
 }
 
 /**
@@ -271,7 +249,7 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
             data-testid="theme-chooser-name"
             data-value={selectedName()}
           >
-            <Swatch variant={current()} />
+            <ThemeSwatch variant={current()} />
             <span class={styles.triggerText}>
               {matching() ? 'Match UI' : themeLabel(theme(), props.surface ?? 'ui')}
             </span>
@@ -285,7 +263,7 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
             label="Match UI"
             checked={matching()}
             data-testid="theme-option-match-ui"
-            leading={<Swatch variant={current()} />}
+            leading={<ThemeSwatch variant={current()} />}
             onSelect={() => selectName(MATCH_UI)}
           />
         </Show>
@@ -296,7 +274,7 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
               label={themeLabel(option, props.surface ?? 'ui')}
               checked={!matching() && selectedName() === option.id}
               data-testid={`theme-option-${option.id}`}
-              leading={<Swatch variant={resolveVariant(option, undefined, polarity())} />}
+              leading={<ThemeSwatch variant={resolveVariant(option, undefined, polarity())} />}
               onSelect={() => selectName(option.id)}
             />
           )}
@@ -317,7 +295,7 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
               data-value={current().id}
               disabled={matching()}
             >
-              <Swatch variant={current()} />
+              <ThemeSwatch variant={current()} />
               <span class={styles.triggerText}>{current().label}</span>
               <Icon icon={ChevronDown} size="xs" aria-hidden="true" />
             </button>
@@ -341,7 +319,7 @@ export function ThemeChooser<T extends ThemeValue | TerminalThemeValue>(
                       label={option.label}
                       checked={currentFor(option.polarity).id === option.id}
                       data-testid={`variant-option-${option.id}`}
-                      leading={<Swatch variant={option} />}
+                      leading={<ThemeSwatch variant={option} />}
                       onSelect={() => selectVariant(option)}
                     />
                   )}

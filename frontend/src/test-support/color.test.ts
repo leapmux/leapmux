@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { colorAlpha, contrast, luminance, mixOver, parseColor } from '~/test-support/color'
+import { colorAlpha, colorDistance, contrast, deltaE, luminance, mixOver, parseColor } from '~/test-support/color'
 
 /**
- * The palette suites measure THROUGH these four functions: `themes.test.ts`
- * checks the catalogue's own tokens and `codePalette.test.ts` checks the fields a
- * code surface derives from them, and both assert contrast floors that only mean
- * something if the instrument is right. A wrong WCAG coefficient or a regex that
- * silently fails to parse would not fail either suite -- it would move every
- * floor at once and keep passing. So the instrument is pinned here against values
- * the standard fixes, not against values these functions produce.
+ * The palette suites measure THROUGH these functions: `themes.test.ts` checks the
+ * catalogue's own tokens, `codePalette.test.ts` checks the fields a code surface
+ * derives from them, and `ThemeSwatch.test.tsx` checks that the nine colours in a
+ * theme chip stay apart. All three assert floors that only mean something if the
+ * instrument is right. A wrong WCAG coefficient, a wrong Lab white point, or a
+ * regex that silently fails to parse would not fail any of them -- it would move
+ * every floor at once and keep passing. So the instrument is pinned here against
+ * values the standards fix, not against values these functions produce.
  */
 describe('parseColor', () => {
   it('reads a six-digit hex, in either case', () => {
@@ -167,5 +168,98 @@ describe('mixOver', () => {
   it('throws when either colour is unreadable', () => {
     expect(() => mixOver('var(--fg)', '50%', '#000000')).toThrow(/cannot mix/)
     expect(() => mixOver('#ffffff', '50%', 'transparent')).toThrow(/cannot mix/)
+  })
+})
+
+describe('colorDistance', () => {
+  it('pins the diagonal of the sRGB cube', () => {
+    // The largest distance the function can report: all three channels at full
+    // travel. sqrt(3) * 255, from the definition and not from the function.
+    expect(colorDistance('#000000', '#ffffff')).toBeCloseTo(Math.sqrt(3) * 255, 10)
+  })
+
+  it('reports zero for one colour against itself, in either spelling', () => {
+    expect(colorDistance('#123456', '#123456')).toBe(0)
+    expect(colorDistance('rgb(18 52 86)', '#123456')).toBe(0)
+  })
+
+  it('does not depend on which colour is named first', () => {
+    expect(colorDistance('#123456', '#abcdef')).toBeCloseTo(colorDistance('#abcdef', '#123456'), 12)
+  })
+
+  it('measures one channel at a time', () => {
+    expect(colorDistance('#000000', '#ff0000')).toBeCloseTo(255, 10)
+    expect(colorDistance('#000000', '#0000ff')).toBeCloseTo(255, 10)
+    // Two channels at full travel: sqrt(2) * 255.
+    expect(colorDistance('#000000', '#ffff00')).toBeCloseTo(Math.SQRT2 * 255, 10)
+  })
+
+  it('throws on a colour it cannot read, rather than measuring a zero', () => {
+    expect(() => colorDistance('var(--fg)', '#ffffff')).toThrow(/cannot measure the distance/)
+    expect(() => colorDistance('#ffffff', 'transparent')).toThrow(/cannot measure the distance/)
+  })
+})
+
+describe('deltaE', () => {
+  it('pins the L* range the standard fixes', () => {
+    // Black and white are both neutral, so their difference is the whole L*
+    // axis: 0 to 100. This is the one value CIE Lab fixes exactly.
+    expect(deltaE('#000000', '#ffffff')).toBeCloseTo(100, 5)
+  })
+
+  it('measures two neutrals as the gap in their lightness', () => {
+    // sRGB #777777 is the classic L* = 50 anchor, so it must sit halfway
+    // between black and white on this scale.
+    expect(deltaE('#777777', '#000000')).toBeCloseTo(50, 1)
+    expect(deltaE('#777777', '#ffffff')).toBeCloseTo(50, 1)
+  })
+
+  it('reports zero for one colour against itself, in either spelling', () => {
+    expect(deltaE('#123456', '#123456')).toBe(0)
+    expect(deltaE('rgb(18, 52, 86)', '#123456')).toBe(0)
+  })
+
+  it('does not depend on which colour is named first', () => {
+    expect(deltaE('#123456', '#abcdef')).toBeCloseTo(deltaE('#abcdef', '#123456'), 12)
+  })
+
+  it('separates two hues further than the lightness axis alone can', () => {
+    // Red and green share a lightness band, so a scale that only tracked
+    // brightness would call them close. They are the furthest apart of any
+    // pair in the sRGB gamut on this scale.
+    expect(deltaE('#ff0000', '#00ff00')).toBeGreaterThan(100)
+  })
+
+  it('disagrees with colorDistance exactly where the eye does', () => {
+    // THE REASON THIS FUNCTION EXISTS, in two pairs the catalogue really
+    // holds. sRGB rates them as the same distance apart, within 4%. By eye one
+    // is a single flat colour and the other is a green beside a blue-grey --
+    // and ThemeSwatch had to reject the surface ramp on exactly this evidence.
+    const rampPair = ['#f8f9fa', '#eff0f0'] as const // Ayu Light --card / --muted
+    const huePair = ['#162a19', '#181c22'] as const // GitHub Dark --lm-success-subtle / --faint
+
+    expect(colorDistance(...rampPair)).toBeCloseTo(16.2, 0)
+    expect(colorDistance(...huePair)).toBeCloseTo(16.8, 0)
+
+    expect(deltaE(...rampPair)).toBeLessThan(5)
+    expect(deltaE(...huePair)).toBeGreaterThan(15)
+    // The ordering inverts outright: sRGB calls the ramp pair the WIDER of the
+    // two, and it is the one nobody can see.
+    expect(deltaE(...rampPair)).toBeLessThan(deltaE(...huePair))
+  })
+
+  it('rises as a colour moves away, so a floor can be compared against it', () => {
+    const steps = ['#000000', '#202020', '#606060', '#a0a0a0', '#ffffff']
+      .map(v => deltaE('#000000', v))
+    for (let i = 1; i < steps.length; i++)
+      expect(steps[i]!).toBeGreaterThan(steps[i - 1]!)
+  })
+
+  it('throws on a colour it cannot read, rather than measuring a zero', () => {
+    // Silence is the failure mode that matters here too: ThemeSwatch asserts a
+    // separation floor on all thirty variants, and an unreadable token that
+    // measured as black would clear that floor and prove nothing.
+    expect(() => deltaE('var(--fg)', '#ffffff')).toThrow(/cannot measure the difference/)
+    expect(() => deltaE('#ffffff', 'color-mix(in srgb, #fff 50%, #000)')).toThrow(/cannot measure the difference/)
   })
 })

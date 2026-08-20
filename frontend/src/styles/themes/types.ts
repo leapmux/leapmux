@@ -279,6 +279,14 @@ export interface ThemeDefinition {
 // the floor is darkened (light variants) or lightened (dark variants) until it
 // passes, and the theme file records the adjustment.
 //
+// NINE OF THESE TOKENS ALSO HAVE TO STAY APART FROM EACH OTHER. The theme
+// picker previews a palette as a 3x3 chip, so components/common/ThemeSwatch.tsx
+// draws --primary, --accent, --danger, --success, --warning, --border, --input,
+// --lm-icon-monochrome and --lm-success-subtle on --background. Its suite fails
+// a variant that puts two look-alike colours in one row or column of that chip,
+// or that lets one of the nine sink into its own background. SWATCH_TOKENS in
+// that file carries the measured floors and why these nine were chosen.
+//
 // A SECOND VARIANT OF ONE POLARITY -- another Catppuccin flavour, another
 // Gruvbox contrast level -- is derived through this same table, from its own
 // upstream values, and never by eye. Two rules make it reproducible:

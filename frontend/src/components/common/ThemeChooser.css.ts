@@ -71,46 +71,6 @@ export const triggerText = style({
   },
 })
 
-/**
- * A theme's colours as a chip: the background, with the text colour and the
- * accent as two bars across it.
- *
- * Fixed pixel geometry, not a spacing token: this is an icon-sized graphic
- * whose proportions are its own, the way the scrollbar and resizer widths are.
- */
-export const swatch = style({
-  position: 'relative',
-  flexShrink: 0,
-  width: '16px',
-  height: '16px',
-  borderRadius: 'var(--radius-small)',
-  backgroundColor: 'var(--swatch-bg)',
-  border: '1px solid var(--border)',
-  overflow: 'hidden',
-  selectors: {
-    // The text colour, as a bar across the upper half.
-    '&::before': {
-      content: '""',
-      position: 'absolute',
-      left: '2px',
-      right: '2px',
-      top: '4px',
-      height: '2px',
-      backgroundColor: 'var(--swatch-fg)',
-    },
-    // The accent, as a shorter bar below it.
-    '&::after': {
-      content: '""',
-      position: 'absolute',
-      left: '2px',
-      width: '6px',
-      top: '9px',
-      height: '2px',
-      backgroundColor: 'var(--swatch-accent)',
-    },
-  },
-})
-
 /** Heads the light and dark halves of the variant menu when both offer a pick. */
 export const variantGroup = style({
   padding: 'var(--space-2) var(--space-3) var(--space-1)',

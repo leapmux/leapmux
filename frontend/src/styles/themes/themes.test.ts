@@ -5,7 +5,7 @@ import { DIFF_TINT } from '~/styles/diffTint'
 import { ALL_VARIANTS, DEFAULT_THEME_ID, isThemeId, paletteColorToHex, resolveVariant, themeById, themeLabel, THEMES, variantsFor } from '~/styles/themes'
 import { defaultTheme } from '~/styles/themes/default'
 import { oneTheme } from '~/styles/themes/one'
-import { contrast, luminance, mixOver, parseColor } from '~/test-support/color'
+import { colorDistance, contrast, luminance, mixOver, parseColor } from '~/test-support/color'
 
 // These modules have two consumers that cannot check each other: global.css.ts
 // spreads them into the app's theme selectors, and scripts/generate-notice.mjs
@@ -52,14 +52,6 @@ function hueGap(a: string, b: string): number {
     return 0
   const raw = Math.abs(x - y)
   return Math.min(raw, 360 - raw)
-}
-
-/** Straight-line distance in sRGB, a rough stand-in for how different two fills look. */
-function colorDistance(a: string, b: string): number {
-  const [x, y] = [parseColor(a), parseColor(b)]
-  if (!x || !y)
-    throw new Error(`cannot measure the distance between ${a} and ${b}`)
-  return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2])
 }
 
 describe('theme catalogue', () => {

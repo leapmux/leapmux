@@ -48,7 +48,11 @@ test.describe('Clear Command', () => {
     // After /clear and a new response, context usage is repopulated by the
     // new session's system prompt tokens.  Verify the grid is visible again
     // (indicating the new session has active context).
-    const grid = page.locator('svg[viewBox="0 0 11 11"]')
+    //
+    // By test id, not by the SVG's viewBox: ThemeSwatch renders the same
+    // `PipGrid` shape, so a viewBox selector matches every theme chip on the
+    // page as well and fails Playwright's strict mode.
+    const grid = page.getByTestId('context-usage-grid')
     await expect(grid).toBeVisible()
   })
 })

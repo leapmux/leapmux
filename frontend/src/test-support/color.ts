@@ -1,9 +1,14 @@
 // Colour maths for the palette suites: parse a token's value, then measure it.
 //
-// Two suites need the same four functions -- `themes.test.ts` measures the
-// catalogue's own tokens, and `codePalette.test.ts` measures the fields a code
-// surface DERIVES from them. A second copy of `luminance` is a second place for
-// the WCAG coefficients to be wrong, and a wrong contrast floor passes silently.
+// Several suites need the same functions -- `themes.test.ts` measures the
+// catalogue's own tokens, `codePalette.test.ts` measures the fields a code
+// surface DERIVES from them, and `ThemeSwatch.test.tsx` measures the nine it
+// puts in a chip. A second copy of `luminance` is a second place for the WCAG
+// coefficients to be wrong, and a wrong contrast floor passes silently.
+//
+// Two distance functions live here on purpose, and they answer different
+// questions. `colorDistance` orders a ramp; `deltaE` says whether an eye can
+// tell two fills apart. Each one's doc comment states when to reach for it.
 
 /** One colour as 8-bit sRGB channels. */
 export type Rgb = [number, number, number]
@@ -59,6 +64,65 @@ export function contrast(fg: string, bg: string): number {
     throw new Error(`cannot measure contrast between ${fg} and ${bg}`)
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
   return (hi + 0.05) / (lo + 0.05)
+}
+
+/**
+ * Straight-line distance in sRGB, a rough stand-in for how different two fills
+ * look.
+ *
+ * Cheap, and good enough to order one ramp against itself, which is what the
+ * diff-tint cases use it for. It is NOT a measure of whether two colours look
+ * alike, because sRGB is not perceptually even. Two pairs the catalogue
+ * actually holds sit at the same distance by this function and nowhere near it
+ * by eye: Ayu Light's `--card` and `--muted` measure 16.2 here and 3.2 delta-E
+ * (indistinguishable), while GitHub Dark's `--lm-success-subtle` and `--faint`
+ * measure 16.8 here and 19.0 delta-E (plainly different -- a dark green beside
+ * a dark blue-grey). Use `deltaE` whenever the question is whether a reader can
+ * tell two fills apart.
+ */
+export function colorDistance(a: string, b: string): number {
+  const [x, y] = [parseColor(a), parseColor(b)]
+  if (!x || !y)
+    throw new Error(`cannot measure the distance between ${a} and ${b}`)
+  return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2])
+}
+
+/** One colour in CIE Lab, D65. */
+function toLab([r, g, b]: Rgb): [number, number, number] {
+  const linear = (v: number) => {
+    const s = v / 255
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+  }
+  const [lr, lg, lb] = [linear(r), linear(g), linear(b)]
+  // sRGB to XYZ, then normalised by the D65 white point.
+  const x = (lr * 0.4124 + lg * 0.3576 + lb * 0.1805) / 0.95047
+  const y = lr * 0.2126 + lg * 0.7152 + lb * 0.0722
+  const z = (lr * 0.0193 + lg * 0.1192 + lb * 0.9505) / 1.08883
+  const f = (c: number) => c > 0.008856 ? Math.cbrt(c) : 7.787 * c + 16 / 116
+  const [fx, fy, fz] = [f(x), f(y), f(z)]
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)]
+}
+
+/**
+ * CIE76 delta-E: how different two colours LOOK, on a perceptually even scale.
+ *
+ * Approximately 1 is the smallest difference an eye can find, 2.3 is the
+ * "just noticeable difference", and anything under about 5 reads as the same
+ * colour at the size of an icon. Two neutrals differ by exactly the gap in
+ * their L*, so black to white is 100.
+ *
+ * Prefer this to `colorDistance` whenever the question is whether a reader can
+ * tell two fills apart. `ThemeSwatch` is the caller that needs it: the surface
+ * ramp tokens it had to reject measure a respectable distance in sRGB and
+ * almost nothing here.
+ */
+export function deltaE(a: string, b: string): number {
+  const [x, y] = [parseColor(a), parseColor(b)]
+  if (!x || !y)
+    throw new Error(`cannot measure the difference between ${a} and ${b}`)
+  const [la, aa, ba] = toLab(x)
+  const [lb, ab, bb] = toLab(y)
+  return Math.hypot(la - lb, aa - ab, ba - bb)
 }
 
 /**

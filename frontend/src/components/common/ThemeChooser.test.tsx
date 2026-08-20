@@ -1,8 +1,9 @@
 import type { TerminalThemeValue, ThemeValue } from '~/styles/themes'
 import { fireEvent, render, screen, within } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { themeLabel, THEMES } from '~/styles/themes'
+import { ALL_VARIANTS, resolveVariant, themeById, themeLabel, THEMES } from '~/styles/themes'
 import { ThemeChooser } from './ThemeChooser'
+import { SWATCH_TOKENS } from './ThemeSwatch'
 
 const MATCH_BOTH: TerminalThemeValue = { name: 'match-ui', mode: 'match-ui' }
 
@@ -53,6 +54,15 @@ function optionsOf(menu: 'name' | 'variant'): string[] {
 function pick(menu: 'name' | 'variant', label: string) {
   const popover = screen.getByTestId(`theme-chooser-${menu}-menu`)
   fireEvent.click(within(popover).getByRole('menuitemradio', { name: label, hidden: true }))
+}
+
+/** The nine pip colours of the one chip inside `scope`, in token order. */
+function swatchFills(scope: HTMLElement): (string | null)[] {
+  const chips = scope.querySelectorAll('svg')
+  const pips = [...scope.querySelectorAll('rect')]
+  if (pips.length !== SWATCH_TOKENS.length)
+    throw new Error(`expected one chip of ${SWATCH_TOKENS.length} pips, found ${pips.length} in ${chips.length} svg`)
+  return pips.map(r => r.getAttribute('fill'))
 }
 
 describe('the appearance picker (ThemeChooser)', () => {
@@ -402,5 +412,59 @@ describe('the appearance picker reporting a refused write', () => {
     fireEvent.click(within(modeGroup()).getByRole('radio', { name: 'Dark' }))
     await vi.waitFor(() => expect(onChange).toHaveBeenCalled())
     expect(screen.queryByTestId('theme-chooser-error')).toBeNull()
+  })
+})
+
+/**
+ * The chip beside every label, which is the only thing here that describes a
+ * palette rather than naming it.
+ *
+ * `ThemeSwatch.test.tsx` owns what the chip draws and which tokens it draws.
+ * These cases own the wiring: that each mount site is handed the right VARIANT.
+ */
+describe('the appearance picker\'s palette chips', () => {
+  it('previews each palette option with that option\'s own theme', () => {
+    renderChooser({ name: 'default', mode: 'light' })
+
+    for (const theme of THEMES) {
+      const option = screen.getByTestId(`theme-option-${theme.id}`)
+      const expected = resolveVariant(theme, undefined, 'light')
+      expect(swatchFills(option), `${theme.id} previews the wrong palette`)
+        .toEqual(SWATCH_TOKENS.map(t => expected.palette[t]))
+    }
+  })
+
+  it('previews an unpicked palette at the polarity on screen', () => {
+    renderChooser({ name: 'default', mode: 'dark' })
+
+    const option = screen.getByTestId('theme-option-nord')
+    expect(swatchFills(option)).toEqual(
+      SWATCH_TOKENS.map(t => resolveVariant(themeById('nord'), undefined, 'dark').palette[t]),
+    )
+  })
+
+  it('follows the current selection on the palette trigger', () => {
+    renderChooser({ name: 'gruvbox', mode: 'dark' })
+
+    const expected = resolveVariant(themeById('gruvbox'), undefined, 'dark')
+    expect(swatchFills(nameTrigger())).toEqual(SWATCH_TOKENS.map(t => expected.palette[t]))
+  })
+
+  it('previews each variant option with that variant, not the one on screen', () => {
+    // Catppuccin on Light, so every dark flavour's chip has to disagree with
+    // the polarity showing -- which is the whole reason the menu lists both.
+    renderChooser({ name: 'catppuccin', mode: 'light' })
+
+    const mocha = screen.getByTestId('variant-option-catppuccin-mocha')
+    const expected = ALL_VARIANTS.find(v => v.id === 'catppuccin-mocha')!
+    expect(swatchFills(mocha)).toEqual(SWATCH_TOKENS.map(t => expected.palette[t]))
+  })
+
+  it('previews Match UI with the palette the app resolved to', () => {
+    renderTerminal(MATCH_BOTH, { name: 'nord', mode: 'dark' })
+
+    const expected = resolveVariant(themeById('nord'), undefined, 'dark')
+    expect(swatchFills(screen.getByTestId('theme-option-match-ui')))
+      .toEqual(SWATCH_TOKENS.map(t => expected.palette[t]))
   })
 })
