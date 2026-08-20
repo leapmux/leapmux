@@ -986,15 +986,23 @@ export function settingsGroupTrigger(page: Page, groupId: string): Locator {
  * Opens BOTH triggers inside one `toPass` block rather than calling
  * `openPlusMenu` first: a settings round-trip that lands between the two closes
  * the `[+]` menu, and only a retry that re-opens both recovers from it.
+ *
+ * The close is INSIDE the loop, so each attempt starts from a shut menu. With it
+ * outside, every retry ran against the menu the first attempt had left open, and
+ * `ensureExpanded` does not re-click one that reports itself open -- so a menu
+ * that opened onto the wrong content could never be reopened, and the loop
+ * spun on it until the test budget died. That is how a `[+]` menu opened before
+ * the agent's first status push read as a 5-minute timeout on an unrelated
+ * locator.
  */
 export async function openSettingsMenu(page: Page, groupId: string): Promise<Locator> {
   const plus = page.locator('[data-testid="composer-plus-trigger"]')
   const submenu = settingsGroupTrigger(page, groupId)
   await expect(plus).toBeVisible()
-  // Start closed: a submenu left open from a previous group covers this one's
-  // trigger, and the click below would be intercepted.
-  await closeComposerMenus(page)
   await expect(async () => {
+    // Start closed: a submenu left open from a previous group covers this one's
+    // trigger, and the click below would be intercepted.
+    await closeComposerMenus(page)
     await ensureExpanded(plus)
     await ensureExpanded(submenu)
   }).toPass()
@@ -1204,11 +1212,17 @@ export async function waitForSettingsIdle(page: Page) {
  * nothing invented for the tests. A freshly opened tab shows no model group at
  * all for as long as its agent takes to hand over its groups, so any assertion
  * about a model's name has to wait for this.
+ *
+ * Each attempt shuts the menu first, for the reason {@link openSettingsMenu}
+ * gives: `ensureExpanded` never re-clicks a menu that reports itself open, so a
+ * loop that leaves one open can only ever re-read the content that first open
+ * produced.
  */
 export async function waitForSettingsHydrated(page: Page) {
   const plus = page.locator('[data-testid="composer-plus-trigger"]')
   await expect(plus).toBeVisible()
   await expect(async () => {
+    await closeComposerMenus(page)
     await ensureExpanded(plus)
     await expect(settingsGroupTrigger(page, 'model')).toBeVisible()
   }).toPass()
