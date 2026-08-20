@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { clippedText } from '~/styles/shared.css'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
+import { toolMetaRow } from '../toolStyles.css'
 import { WebSearchResultsBody } from './webSearchResults'
 
 const LONG_TITLE = 'How to configure a reverse proxy for a self-hosted service without breaking websockets'
@@ -19,6 +20,14 @@ function renderResults(title = LONG_TITLE) {
 }
 
 describe('webSearchResultsBody', () => {
+  // The link row and the Agent card's meta row are one primitive, and this file
+  // held a byte-identical copy of it. Pinning the shared class here is what stops
+  // the next renderer from forking a third.
+  it('puts each link on the shared tool meta row', () => {
+    const { container } = renderResults()
+    expect(container.querySelector(classSelector(toolMetaRow))).toBeTruthy()
+  })
+
   it('renders the link title and its domain', () => {
     const { container } = renderResults()
     expect(container.textContent).toContain(LONG_TITLE)

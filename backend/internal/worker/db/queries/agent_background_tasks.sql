@@ -21,14 +21,24 @@ ORDER BY seq DESC LIMIT ?;
 -- DeleteFinishedAgentBackgroundTasksBelowSeq reclaims the rows a pool's seed
 -- window left behind.
 --
--- The cap is SOFT: an upsert exceeds it rather than orphan a steerable child, so
--- a pool can hold more rows than its window admits. Eviction only ever deletes a
--- row the CACHE holds, so without this pass the surplus is never loaded and
--- never deleted -- invisible in the sidebar and growing without limit in the DB.
--- Only FINISHED rows are reclaimed: an active row still names a live child.
+-- The cap limits the DISPLAY list, not the table: a row that carries a child
+-- transcript survives eviction, so a pool holds more rows than its window
+-- admits. Eviction only ever touches a row the CACHE holds, so without this pass
+-- an unlinked surplus row is never loaded and never deleted -- invisible in the
+-- sidebar and growing without limit in the DB.
+--
+-- Two filters keep this pass off the rows that are still worth something. Only
+-- FINISHED rows are reclaimed: an active row still identifies a live child. And only
+-- UNLINKED rows: the row of a subagent is the one index from that child agent id
+-- back to (owner, row_key), the child agents row outlives the registry delete,
+-- and deleting the row leaves that subagent permanently unmessageable and
+-- uninterruptible. A linked row is retained for the life of its root agent,
+-- which is what ON DELETE CASCADE from agents(id) already gives the transcript
+-- it points at.
 -- name: DeleteFinishedAgentBackgroundTasksBelowSeq :execrows
 DELETE FROM agent_background_tasks
 WHERE owner_agent_id = ? AND kind = ? AND seq < ?
+  AND child_agent_id = ''
   AND status IN ('completed','failed','stopped','interrupted');
 
 -- UpsertAgentBackgroundTask inserts a new row or updates an existing one keyed
@@ -97,8 +107,54 @@ UPDATE agent_background_tasks SET
     updated_at = ?
 WHERE owner_agent_id = ? AND row_key = ? AND status IN ('pending','running');
 
+-- ReviveAgentBackgroundTask returns a FINISHED row to running and clears its
+-- ended_at, for a subagent that its parent restarted by sending it a message.
+--
+-- This is the one write that undoes a final status, and it is deliberately its
+-- own statement rather than a relaxation of the guards on the upsert and the
+-- status update. Those guards drop a NON-final status against a final row, and
+-- they must keep doing so: a replayed running upsert (a duplicate task_started,
+-- a worker restart, a resumed session that re-announces every task it once ran)
+-- would otherwise leave a row running that nothing ever closes, which pins the
+-- parent's thinking indicator for good. A caller reaches this query only with
+-- positive evidence that the provider restarted the task.
+--
+-- active_form and description are cleared with the status. Both describe the run
+-- that ENDED -- the last activity text, and the output file its task_notification
+-- identified -- and the restarted run reported neither yet. The row's activity
+-- slot shows whichever is present, so leaving them pins the previous run's
+-- output path under a subagent that runs again.
+--
+-- The status-IN filter makes the call idempotent -- an absent or still-active
+-- row matches nothing -- and :execrows lets the caller tell a real revive from
+-- a no-op, because only a real one owes the transcript-close release.
+-- name: ReviveAgentBackgroundTask :execrows
+UPDATE agent_background_tasks SET
+    status      = 'running',
+    active_form = '',
+    description = '',
+    ended_at    = NULL,
+    updated_at  = ?
+WHERE owner_agent_id = ? AND row_key = ?
+  AND status IN ('completed','failed','stopped','interrupted');
+
 -- name: DeleteAgentBackgroundTaskByRowKey :execresult
 DELETE FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
+
+-- ResequenceAgentBackgroundTask gives a row a new seq, for one the display cache
+-- re-admitted after the cap evicted it.
+--
+-- The seq is the display list's one ordering key: the cache holds its rows in
+-- ascending seq, and the cold-start seed reads the newest rows by seq. A
+-- re-admission that changed the in-memory order alone left the two disagreeing
+-- -- so a subagent a revive had just reopened sat at the end of the sidebar for
+-- the life of the process, then fell outside the seed window and vanished on the
+-- next worker restart, while 64 older finished rows stayed on screen.
+--
+-- UNIQUE (owner_agent_id, seq) makes the caller's monotonic nextSeq the only
+-- safe value, which is the same value an INSERT would bind.
+-- name: ResequenceAgentBackgroundTask :exec
+UPDATE agent_background_tasks SET seq = ? WHERE owner_agent_id = ? AND row_key = ?;
 
 -- RenameAgentBackgroundTask re-keys a row (owner_agent_id, old_row_key) to
 -- new_row_key. The row_key is the provider linkage key; a provider that learns
@@ -116,20 +172,35 @@ UPDATE agent_background_tasks SET row_key = ? WHERE owner_agent_id = ? AND row_k
 -- name: CountAgentBackgroundTasksByRowKey :one
 SELECT COUNT(*) FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
 
+-- GetAgentBackgroundTaskByRowKey reads one row by its PRIMARY KEY, so a lookup
+-- that misses the capped display cache still resolves. The cap limits what the
+-- sidebar shows; a row that carries a child transcript outlives it, and this
+-- point lookup is how the linkage stays reachable after the row leaves the
+-- cache.
+-- name: GetAgentBackgroundTaskByRowKey :one
+SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
+
 -- GetAgentBackgroundTaskByChildAgentID is the reverse lookup behind
 -- send-to-subagent and interrupt routing: child agent id -> (owner, row_key).
 -- name: GetAgentBackgroundTaskByChildAgentID :one
 SELECT * FROM agent_background_tasks WHERE child_agent_id = ?;
 
 -- MarkAgentBackgroundTasksEnded gives every still-active row owned by an agent a
--- final status (used on clean process exit). Returns the affected-row count so
--- the caller can skip the broadcast when nothing moved.
--- name: MarkAgentBackgroundTasksEnded :execrows
+-- final status (used on clean process exit).
+--
+-- It RETURNS the child transcript of each row it ended, for the same reason the
+-- boot sweep below does: the write is the single source for both facts. The
+-- caller cannot read the set back afterwards (the rows are no longer active),
+-- and its in-memory cache holds the DISPLAY list only -- so a row past the cap
+-- or below the seed window would get a final status here and no closing
+-- divider, permanently.
+-- name: MarkAgentBackgroundTasksEnded :many
 UPDATE agent_background_tasks SET
     status     = ?,
     ended_at   = ?,
     updated_at = ?
-WHERE owner_agent_id = ? AND status IN ('pending','running');
+WHERE owner_agent_id = ? AND status IN ('pending','running')
+RETURNING child_agent_id;
 
 -- MarkAllActiveAgentBackgroundTasksInterrupted runs at worker boot before any
 -- caches exist: every active row left over from the previous process is

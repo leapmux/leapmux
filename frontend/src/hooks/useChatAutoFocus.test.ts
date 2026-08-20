@@ -6,8 +6,14 @@ import { useChatAutoFocus } from './useChatAutoFocus'
 
 const AGENT_ID = 'agent-1'
 
-/** An editor ref that records what the hook inserts into it. */
-function fakeEditor(): { ref: EditorRef, inserted: string[] } {
+/**
+ * An editor ref that records what the hook inserts into it.
+ *
+ * `writable` decides whether the registry lets the insert through at all: this
+ * hook types straight into `getEditorRef(...).insert`, so a read-only composer
+ * is refused by the guarded handle rather than by the hook.
+ */
+function fakeEditor(writable = true): { ref: EditorRef, inserted: string[] } {
   const inserted: string[] = []
   return {
     inserted,
@@ -18,6 +24,7 @@ function fakeEditor(): { ref: EditorRef, inserted: string[] } {
       insert: (text: string) => {
         inserted.push(text)
       },
+      writable: () => writable,
     },
   }
 }
@@ -29,8 +36,8 @@ function fakeEditor(): { ref: EditorRef, inserted: string[] } {
  * the focused editor received rather than on the hook's return value — the
  * hook returns nothing.
  */
-function mount(agentId: string | null = AGENT_ID) {
-  const editor = fakeEditor()
+function mount(agentId: string | null = AGENT_ID, writable = true) {
+  const editor = fakeEditor(writable)
   registerEditorRef(AGENT_ID, editor.ref)
   const { cleanup } = renderHook(() => useChatAutoFocus(() => agentId))
   return { inserted: editor.inserted, cleanup }
@@ -174,5 +181,27 @@ describe('useChatAutoFocus', () => {
     cleanup()
     expect(press('a')).toBe(false)
     expect(inserted).toEqual([])
+  })
+})
+
+// Type-to-focus reaches the editor through `getEditorRef(...).insert`, which
+// never passes through a function in editorRef.store. That is exactly why the
+// registry hands out a guarded handle: a subagent tab that refuses messages has
+// a mounted, registered, disabled composer, and a keystroke must not land in it.
+describe('useChatAutoFocus on a read-only composer', () => {
+  afterEach(() => {
+    unregisterEditorRef(AGENT_ID)
+    document.body.replaceChildren()
+  })
+
+  it('inserts nothing and reports the key unhandled when the focused agent refuses input', () => {
+    const { inserted, cleanup } = mount(AGENT_ID, false)
+    try {
+      expect(press('a')).toBe(false)
+      expect(inserted).toEqual([])
+    }
+    finally {
+      cleanup()
+    }
   })
 })

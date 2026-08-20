@@ -174,10 +174,18 @@ function buildMetadata(
   item: { parentAgentId?: string, title?: string },
 ): TabMetadata {
   const parent = item.parentAgentId ? deps.view.getAgentTab(item.parentAgentId) : undefined
-  // workerId and parentAgentId are NOT metadata fields: workerId lives on the
-  // projection (the emit*Tab op carries it), and parentAgentId is hydrated by
-  // listAgents. Seed only title/workingDir/agentProvider + the optimistic git
-  // fields the sidebar groups by until hydration lands.
+  // workerId is NOT a metadata field: it lives on the projection, and the
+  // emit*Tab op carries it. `parentAgentId` IS one (see AgentMeta in
+  // tabMetadata.store), and it is left out deliberately rather than because it
+  // has nowhere to go: listAgents hydrates it, along with `acceptsMessages`.
+  //
+  // The cost of leaving it out is real and worth knowing. Until hydration lands
+  // the tab has no parent, so isSteerableAgentTab calls it steerable, and a
+  // mention or quote taken in that window is routed to this tab and then
+  // dropped when the composer mounts read-only.
+  //
+  // Seed only title/workingDir/agentProvider + the optimistic git fields the
+  // sidebar groups by until hydration lands.
   const git = parent ? resolveOptimisticGitInfo(parent, { workingDir: parent.workingDir }) : undefined
   return {
     title: item.title || undefined,

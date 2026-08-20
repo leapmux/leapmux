@@ -357,7 +357,12 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// which the frontend classifies as user_content and renders as markdown.
 			// When attachments are present, include their metadata (filename + mime_type)
 			// but not the raw binary data (too large for DB storage).
-			var payload interface{}
+			// A marshal failure must NOT fall through: innerJSON would stay nil and we'd
+			// compress + persist + broadcast an empty-content row (while still handing the
+			// agent the real content), silently corrupting the visible history. Fail the
+			// RPC instead so the caller can retry, mirroring the persist-failure path below.
+			var innerJSON []byte
+			var encErr error
 			if len(attachments) > 0 {
 				type attachmentMeta struct {
 					Filename string `json:"filename"`
@@ -367,17 +372,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				for i, a := range attachments {
 					meta[i] = attachmentMeta{Filename: a.GetFilename(), MimeType: a.GetMimeType()}
 				}
-				payload = map[string]interface{}{"content": content, "attachments": meta}
+				// A different envelope, so it stays inline: userMessageContent encodes
+				// the {content} shape alone.
+				innerJSON, encErr = json.Marshal(map[string]interface{}{"content": content, "attachments": meta})
 			} else {
-				payload = map[string]string{"content": content}
+				innerJSON, encErr = userMessageContent(content)
 			}
-			// A marshal failure must NOT fall through: innerJSON would stay nil and we'd
-			// compress + persist + broadcast an empty-content row (while still handing the
-			// agent the real content), silently corrupting the visible history. Fail the
-			// RPC instead so the caller can retry, mirroring the persist-failure path below.
-			innerJSON, err := json.Marshal(payload)
-			if err != nil {
-				slog.Error("failed to encode user message", "agent_id", agentID, "error", err)
+			if encErr != nil {
+				slog.Error("failed to encode user message", "agent_id", agentID, "error", encErr)
 				sendInternalError(sender, "failed to encode message")
 				return
 			}
@@ -1318,7 +1320,7 @@ func (svc *Service) sendChildMessage(
 	persistChildUserRowWithDeliveryError := func(deliveryErr string) {
 		childMsgID := id.Generate()
 		nowChild := nowMillis()
-		innerJSON, mErr := json.Marshal(map[string]string{"content": r.GetContent()})
+		innerJSON, mErr := userMessageContent(r.GetContent())
 		if mErr != nil {
 			sendInternalError(sender, "failed to encode message")
 			return
@@ -2884,7 +2886,7 @@ func (svc *Service) persistSyntheticUserMessage(agentID string, provider leapmux
 		return
 	}
 
-	innerJSON, err := json.Marshal(map[string]string{"content": content})
+	innerJSON, err := userMessageContent(content)
 	if err != nil {
 		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
 		return
@@ -3032,7 +3034,7 @@ func (svc *Service) sendSyntheticUserMessage(agentID, content string, markType l
 
 	messageID := id.Generate()
 	now := nowMillis()
-	innerJSON, err := json.Marshal(map[string]string{"content": content})
+	innerJSON, err := userMessageContent(content)
 	if err != nil {
 		slog.Warn("synthetic user message: marshal failed", "agent_id", agentID, "error", err)
 		return

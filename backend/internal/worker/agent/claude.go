@@ -19,7 +19,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
@@ -137,27 +136,13 @@ type ClaudeCodeAgent struct {
 	// catalog.
 	availableModels []*ModelInfo
 
-	// Subagent (Task/Workflow) index. Maps a Claude task_id <-> the spawning
-	// tool_use id (parent_tool_use_id on forwarded envelopes). Used to route
-	// forwarded subagent output into the right child transcript and to drive
-	// the background-task registry. Guarded by a.mu. NOT cleared at turn end
-	// (background tasks outlive turns); entries dropped on the terminal
-	// task_notification.
-	taskToolUse map[string]string // task_id -> tool_use_id
-	toolUseTask map[string]string // tool_use_id -> task_id
-	// taskKind remembers what task_started said a task IS, because only
-	// task_started carries task_type. A later task_notification has to upsert
-	// the row again (to record a shell's output_file) and would otherwise have
-	// to guess the kind -- guessing "shell" there rewrote every Task subagent's
-	// row into a shell one, since notifications fire for subagents too.
-	// Guarded by a.mu; dropped with the rest of the index on the closing
-	// notification.
-	taskKind map[string]bgtask.Kind // task_id -> kind
-	// pendingTaskEnd holds a final status for a Task subagent whose result
-	// message arrived BEFORE its task_started (a forward of the child's terminal
-	// result can race past a reordered task_started). Keyed by spawn tool_use id
-	// so the late task_started can close the row it just opened. Guarded by a.mu.
-	pendingTaskEnd map[string]bgtask.Status // spawn tool_use_id -> terminal status
+	// tasks indexes everything this agent knows about a Claude task. It carries
+	// its own mutex, so the eight maps no longer contend on processBase.mu --
+	// the process-lifecycle lock every provider embeds, which guards `stopped`,
+	// the model, and the effort. A value, not a pointer: ClaudeCodeAgent is
+	// built at many sites that do not go through StartClaudeCode, and a nil
+	// receiver would be reachable from every one of them.
+	tasks claudeTaskIndex
 }
 
 // claudeResumeArgs returns the `--resume` argv pair for a stored session ID,
@@ -296,9 +281,6 @@ func StartClaudeCode(ctx context.Context, opts Options, sink OutputSink) (*Claud
 		thirdPartyFromSettings: thirdPartyFromSettings,
 		pendingControl:         make(map[string]chan<- claudeCodeControlResult),
 		alwaysThinking:         AlwaysThinkingOn,
-		taskToolUse:            make(map[string]string),
-		toolUseTask:            make(map[string]string),
-		taskKind:               make(map[string]bgtask.Kind),
 	}
 
 	TraceStartupPhase(opts.AgentID, "before_exec_start")

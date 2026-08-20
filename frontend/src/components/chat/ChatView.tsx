@@ -205,6 +205,14 @@ export interface AgentLifecycleProps {
   providerLabel?: string
   /** Full registry (active + past) for the chip and the popover it opens. */
   backgroundTasks?: BackgroundTaskItem[]
+  /**
+   * The ROOT registry, unfiltered -- what a tool card resolves a recipient id
+   * against. Deliberately NOT `backgroundTasks`: that list is CHIP-scoped, so on
+   * a child tab it holds only the rows that tab itself spawned, and a
+   * SendMessage addressing a sibling or the parent would resolve to nothing --
+   * exactly the sibling-to-sibling case the worker arms a revive for.
+   */
+  registryRows?: BackgroundTaskItem[]
   onOpenSubagent?: (item: BackgroundTaskItem) => void
   /** The agent's to-do list for the todos chip + popover. */
   todos?: TodoItem[]
@@ -333,10 +341,31 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // re-bundled per row, so buildMessageHost below only assembles the genuinely
   // per-message bindings on top -- making the agent-scoped vs message-scoped split
   // explicit instead of a flat 8-field literal where the distinction is invisible.
+  // The ROOT registry, indexed by row key so a tool card can turn an agent id
+  // into a link. Indexed once per registry change rather than scanned per card:
+  // a transcript can hold many SendMessage rows, each resolving on every render,
+  // and the registry arrives authoritative-and-replaced-wholesale so there is
+  // exactly one moment to rebuild.
+  const bgRowIndex = createMemo(() => new Map(
+    (props.agentLifecycle?.registryRows ?? []).map(t => [t.rowKey, t] as const),
+  ))
+  // Declared OUTSIDE hostLookups, and by reference. The index has to live in its
+  // own memo: the registry is replaced wholesale on every task_progress tick of
+  // any shell or subagent under this root, so building it inside hostLookups
+  // gave that memo a new identity per tick -- and hostLookups is spread into
+  // every row's host, so one background shell's progress line rebuilt the host
+  // of every message on screen, in every agent tab of the tile. Reading
+  // bgRowIndex() here instead subscribes the CARD that calls this, and nothing
+  // else.
+  const resolveBackgroundTaskRow = (rowKey: string): BackgroundTaskItem | undefined =>
+    bgRowIndex().get(rowKey)
+
   const hostLookups = createMemo(() => ({
     getTodoById: props.lookups?.getTodoById,
     getToolUseParsedBySpanId: props.lookups?.getToolUseParsedBySpanId,
     getToolResultParsedBySpanId: props.lookups?.getToolResultParsedBySpanId,
+    resolveBackgroundTaskRow,
+    onOpenSubagent: props.agentLifecycle?.onOpenSubagent,
   }))
 
   // The scroll container (also handed to scroll.attachListRef below). Read

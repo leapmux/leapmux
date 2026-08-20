@@ -127,7 +127,11 @@ func (a *CodexAgent) handleTurnStarted(params json.RawMessage) {
 			// running registry row so the child tab reflects activity.
 			a.setChildTurnID(notif.ThreadID, notif.Turn.ID)
 			if a.knownCollabChild(notif.ThreadID) {
-				_ = a.sink.UpsertBackgroundTask(bgtask.Upsert{
+				// upsertCollabChildRow reopens the row first when this child runs
+				// again after going final. The reopened row keeps a closer: that
+				// collab call's own item/completed runs the states walk, which
+				// closes it.
+				_ = a.upsertCollabChildRow(bgtask.Upsert{
 					RowKey:     notif.ThreadID,
 					Kind:       bgtask.KindSubagent,
 					Title:      a.collabChildTitle(notif.ThreadID),

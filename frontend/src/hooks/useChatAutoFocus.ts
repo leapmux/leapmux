@@ -18,8 +18,12 @@ export function useChatAutoFocus(getFocusedAgentId: () => string | null): void {
     if (!agentId)
       return
 
+    // `writable()` decides it, not the mere presence of a ref: a read-only
+    // subagent's composer is mounted and registered, merely disabled. Returning
+    // here rather than calling the guarded no-op keeps preventDefault honest --
+    // the handler must not report a key as handled when it dropped it.
     const ref = getEditorRef(agentId)
-    if (!ref)
+    if (!ref?.writable())
       return
 
     ref.insert(e.key)

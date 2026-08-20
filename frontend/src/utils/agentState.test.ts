@@ -418,10 +418,14 @@ describe('shouldShowThinkingIndicator', () => {
   })
 })
 
-// A subagent transcript is closed by the worker's subagent-end divider (written
-// when that subagent's registry row reaches a final status). It is a notification, so
+// A subagent RUN is closed by the worker's subagent-end divider (written when
+// that subagent's registry row reaches a final status). It is a notification, so
 // without an explicit stop the backwards scan would step over it, reach the
 // subagent's last real message, and report a finished subagent as still working.
+//
+// One divider per run, not per transcript: Claude restarts a finished subagent
+// when the parent messages it, so a transcript can hold several with work
+// between them.
 describe('isAgentWorking: the subagent-end divider', () => {
   const ended = (status: string) =>
     makeMsg(MessageSource.LEAPMUX, rawContent({ type: 'subagent_ended', status }))
@@ -444,12 +448,27 @@ describe('isAgentWorking: the subagent-end divider', () => {
   })
 
   it('still reports working when the subagent spoke after the divider', () => {
-    // Not a shape the worker produces, but the scan must answer from the LAST
-    // message rather than from "a divider exists somewhere".
+    // This IS a shape the worker produces: a revived subagent appends below the
+    // divider that closed its previous run. The scan answers from the LAST
+    // message rather than from "a divider exists somewhere", which is what makes
+    // the revive need no change here.
     expect(isAgentWorking([
       ended('completed'),
       makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'more' })),
     ])).toBe(true)
+  })
+
+  // The full revive shape end to end: first run, its divider, the message the
+  // parent sent, and the restarted run's output.
+  it('reports working again through a revive, and finished after the second divider', () => {
+    const revived = [
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'first run' })),
+      ended('completed'),
+      makeMsg(MessageSource.USER, rawContent({ content: 'keep going' })),
+      makeMsg(MessageSource.AGENT, rawContent({ type: 'text', text: 'second run' })),
+    ]
+    expect(isAgentWorking(revived)).toBe(true)
+    expect(isAgentWorking([...revived, ended('completed')])).toBe(false)
   })
 
   it('reports working while the subagent is mid-flight', () => {

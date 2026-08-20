@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { RenderContext } from '../../../messageRenderers'
-import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, RemoteTriggerInput, TaskStopInput, ToolSearchInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
+import type { BashInput, EditInput, GlobInput, GrepInput, ReadInput, RemoteTriggerInput, SendMessageInput, TaskStopInput, ToolSearchInput, WebFetchInput, WebSearchInput, WriteInput } from '~/types/toolMessages'
+import { pickString } from '~/lib/jsonPick'
 import { CLAUDE_TOOL } from '~/types/toolMessages'
 import { joinMetaParts } from '../../../rendererUtils'
 import { toolInputCode, toolInputText } from '../../../toolStyles.css'
@@ -16,6 +17,7 @@ import {
   renderWriteTitle,
 } from '../../../toolTitleRenderers'
 import { formatClaudeMcpDisplayName, parseClaudeMcpToolName } from '../extractors/mcp'
+import { renderSendMessageTitle } from './sendMessage'
 
 /** Prefer common parameter names for the hint, then fall back to first short string. */
 const HINT_KEYS = ['query', 'input', 'prompt', 'text', 'command', 'description', 'url']
@@ -53,6 +55,22 @@ export function renderClaudeToolTitle(toolName: string, input: Record<string, un
     case CLAUDE_TOOL.TASK: return renderAgentTitle(String(input.description || toolName), input.subagent_type ? String(input.subagent_type) : undefined)
 
     // Claude-only tool titles
+    case CLAUDE_TOOL.SEND_MESSAGE:
+      return renderSendMessageTitle(input as SendMessageInput, context)
+    case CLAUDE_TOOL.LIST_AGENTS: {
+      // Both filters are optional and usually absent, so the bare label is the
+      // normal case rather than a fallback. pickString rather than a cast: the
+      // model writes this input, and a non-string that survives a bare cast is
+      // still truthy, so it template-interpolates into `channel: [object
+      // Object]` where an absent field correctly yields the plain label.
+      const channel = pickString(input, 'channel').trim()
+      const q = pickString(input, 'q').trim()
+      const filters = joinMetaParts([
+        channel && `channel: ${channel}`,
+        q && `matching: ${q}`,
+      ])
+      return <span class={toolInputText}>{filters ? `List agents (${filters})` : 'List agents'}</span>
+    }
     case CLAUDE_TOOL.TASK_OUTPUT: {
       const { task_id, block, timeout } = input as { task_id?: string, block?: boolean, timeout?: number }
       const inner = joinMetaParts([

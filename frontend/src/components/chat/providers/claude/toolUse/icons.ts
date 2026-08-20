@@ -13,9 +13,11 @@ import OctagonX from 'lucide-solid/icons/octagon-x'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import PocketKnife from 'lucide-solid/icons/pocket-knife'
 import Search from 'lucide-solid/icons/search'
+import Send from 'lucide-solid/icons/send'
 import Terminal from 'lucide-solid/icons/terminal'
 import TextSearch from 'lucide-solid/icons/text-search'
 import TicketsPlane from 'lucide-solid/icons/tickets-plane'
+import Users from 'lucide-solid/icons/users'
 import Vote from 'lucide-solid/icons/vote'
 import Webhook from 'lucide-solid/icons/webhook'
 import Wrench from 'lucide-solid/icons/wrench'
@@ -46,6 +48,8 @@ export function toolIconFor(name: string): LucideIcon {
     case CLAUDE_TOOL.TOOL_SEARCH: return Search
     case CLAUDE_TOOL.TASK_STOP: return OctagonX
     case CLAUDE_TOOL.REMOTE_TRIGGER: return Webhook
+    case CLAUDE_TOOL.SEND_MESSAGE: return Send
+    case CLAUDE_TOOL.LIST_AGENTS: return Users
     default: return isClaudeMcpTool(name) ? Wrench : ChevronsRight
   }
 }

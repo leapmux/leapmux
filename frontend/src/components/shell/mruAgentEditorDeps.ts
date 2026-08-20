@@ -1,8 +1,9 @@
+import type { MruAgentEditorDeps } from '~/stores/editorRef.store'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { Tab } from '~/stores/tab.types'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
+import { showInfoToast } from '~/components/common/Toast'
 import { focusTile } from './tileLifecycle'
 
 /**
@@ -28,7 +29,7 @@ export function mruAgentEditorDeps(deps: {
   layoutStore: ReturnType<typeof createLayoutStore>
   floatingWindowStore: ReturnType<typeof createFloatingWindowStore> | undefined
   getWorkspaceId: () => string | undefined
-}): { mruTabs: () => Tab[], activate: (tab: Tab) => void } {
+}): MruAgentEditorDeps {
   return {
     // EVERY tab type in MRU order, not just agents. `insertIntoMruAgentEditor`
     // owns the AGENT narrowing; calling this `mruAgentTabs` made that filter
@@ -39,5 +40,10 @@ export function mruAgentEditorDeps(deps: {
       if (tab.tileId)
         focusTile(deps.layoutStore, deps.floatingWindowStore, tab.tileId, tab.workspaceId)
     },
+    // The store reports; the shell decides it is a toast. Both moments move the
+    // user's text somewhere other than where the click implied, and both are
+    // silent without this -- a re-routed insert lands in a different composer
+    // while the tab moves, and a refused one lands nowhere at all.
+    notify: showInfoToast,
   }
 }

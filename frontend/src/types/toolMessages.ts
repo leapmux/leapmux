@@ -40,18 +40,6 @@ export interface GlobInput {
   path?: string
 }
 
-export interface TaskInput {
-  description?: string
-  prompt?: string
-  subagent_type?: string
-}
-
-export interface AgentInput {
-  description?: string
-  prompt?: string
-  subagent_type?: string
-}
-
 export interface WebFetchInput {
   url?: string
   prompt?: string
@@ -59,20 +47,6 @@ export interface WebFetchInput {
 
 export interface WebSearchInput {
   query?: string
-}
-
-export interface TodoWriteInput {
-  todos?: Array<{
-    content?: string
-    status?: string
-    activeForm?: string
-  }>
-}
-
-export interface TaskOutputInput {
-  task_id?: string
-  block?: boolean
-  timeout?: number
 }
 
 export interface ToolSearchInput {
@@ -85,56 +59,18 @@ export interface TaskStopInput {
 }
 
 /**
- * Claude Code 2.1.142+ to-do list tools. TaskCreate / TaskUpdate /
- * TaskGet / TaskList replace TodoWrite's single snapshot model with
- * incremental mutations addressed by `taskId`.
+ * SendMessage addresses another agent. `to` is the recipient: for a subagent of
+ * this session it is the background-task row key (Claude keys its task registry
+ * by agent id), and otherwise a display name, another session, or a
+ * uds:/bridge:/did: address.
+ *
+ * `message` is a plain string for an ordinary message and an object for the
+ * structured kinds (shutdown_request, plan_approval_response, ...).
  */
-export interface TaskCreateInput {
-  subject?: string
-  description?: string
-  activeForm?: string
-  metadata?: Record<string, unknown>
-}
-
-/**
- * Wire sentinel passed in `TaskUpdateInput.status` (or echoed as
- * `tool_use_result.statusChange.to`) to permanently remove a task.
- * Not a real status — handle it as a delete request, not a status
- * value to display.
- */
-export const TASK_DELETE_SENTINEL = 'deleted'
-
-export interface TaskUpdateInput {
-  taskId?: string
-  subject?: string
-  description?: string
-  activeForm?: string
-  status?: 'pending' | 'in_progress' | 'completed' | typeof TASK_DELETE_SENTINEL
-  addBlocks?: string[]
-  addBlockedBy?: string[]
-  owner?: string
-  metadata?: Record<string, unknown>
-}
-
-export interface TaskGetInput {
-  taskId?: string
-}
-
-export interface TaskListInput {
-  // intentionally empty — TaskList takes no arguments.
-  [key: string]: never
-}
-
-export interface AskUserQuestionInput {
-  questions?: Array<{
-    question?: string
-    header?: string
-    options?: Array<{
-      label?: string
-      description?: string
-    }>
-    multiSelect?: boolean
-  }>
+export interface SendMessageInput {
+  to?: string
+  message?: string | Record<string, unknown>
+  summary?: string
 }
 
 export interface RemoteTriggerInput {
@@ -172,63 +108,11 @@ export const CLAUDE_TOOL = {
   EXIT_PLAN_MODE: 'ExitPlanMode',
   SKILL: 'Skill',
   REMOTE_TRIGGER: 'RemoteTrigger',
+  SEND_MESSAGE: 'SendMessage',
+  LIST_AGENTS: 'ListAgents',
 } as const
 
 export type ClaudeToolName = typeof CLAUDE_TOOL[keyof typeof CLAUDE_TOOL]
-
-/** Discriminated union of all known tool input types keyed by tool name. */
-export type KnownToolInput
-  = | { toolName: typeof CLAUDE_TOOL.BASH, input: BashInput }
-    | { toolName: typeof CLAUDE_TOOL.READ, input: ReadInput }
-    | { toolName: typeof CLAUDE_TOOL.WRITE, input: WriteInput }
-    | { toolName: typeof CLAUDE_TOOL.EDIT, input: EditInput }
-    | { toolName: typeof CLAUDE_TOOL.GREP, input: GrepInput }
-    | { toolName: typeof CLAUDE_TOOL.GLOB, input: GlobInput }
-    | { toolName: typeof CLAUDE_TOOL.TASK, input: TaskInput }
-    | { toolName: typeof CLAUDE_TOOL.AGENT, input: AgentInput }
-    | { toolName: typeof CLAUDE_TOOL.WEB_FETCH, input: WebFetchInput }
-    | { toolName: typeof CLAUDE_TOOL.WEB_SEARCH, input: WebSearchInput }
-    | { toolName: typeof CLAUDE_TOOL.TODO_WRITE, input: TodoWriteInput }
-    | { toolName: typeof CLAUDE_TOOL.TASK_CREATE, input: TaskCreateInput }
-    | { toolName: typeof CLAUDE_TOOL.TASK_UPDATE, input: TaskUpdateInput }
-    | { toolName: typeof CLAUDE_TOOL.TASK_GET, input: TaskGetInput }
-    | { toolName: typeof CLAUDE_TOOL.TASK_LIST, input: TaskListInput }
-    | { toolName: typeof CLAUDE_TOOL.TASK_OUTPUT, input: TaskOutputInput }
-    | { toolName: typeof CLAUDE_TOOL.TOOL_SEARCH, input: ToolSearchInput }
-    | { toolName: typeof CLAUDE_TOOL.TASK_STOP, input: TaskStopInput }
-    | { toolName: typeof CLAUDE_TOOL.ASK_USER_QUESTION, input: AskUserQuestionInput }
-    | { toolName: typeof CLAUDE_TOOL.REMOTE_TRIGGER, input: RemoteTriggerInput }
-
-/** All known tool names (subset of ClaudeToolName that have typed inputs). */
-export type KnownToolName = KnownToolInput['toolName']
-
-const KNOWN_TOOLS = new Set<string>([
-  CLAUDE_TOOL.BASH,
-  CLAUDE_TOOL.READ,
-  CLAUDE_TOOL.WRITE,
-  CLAUDE_TOOL.EDIT,
-  CLAUDE_TOOL.GREP,
-  CLAUDE_TOOL.GLOB,
-  CLAUDE_TOOL.TASK,
-  CLAUDE_TOOL.AGENT,
-  CLAUDE_TOOL.WEB_FETCH,
-  CLAUDE_TOOL.WEB_SEARCH,
-  CLAUDE_TOOL.TASK_OUTPUT,
-  CLAUDE_TOOL.TODO_WRITE,
-  CLAUDE_TOOL.TASK_CREATE,
-  CLAUDE_TOOL.TASK_UPDATE,
-  CLAUDE_TOOL.TASK_GET,
-  CLAUDE_TOOL.TASK_LIST,
-  CLAUDE_TOOL.TOOL_SEARCH,
-  CLAUDE_TOOL.TASK_STOP,
-  CLAUDE_TOOL.ASK_USER_QUESTION,
-  CLAUDE_TOOL.REMOTE_TRIGGER,
-])
-
-/** Type guard: returns true if the tool name is a known tool. */
-export function isKnownTool(name: string): name is KnownToolName {
-  return KNOWN_TOOLS.has(name)
-}
 
 /**
  * Canonical ACP `sessionUpdate` literals (the discriminator used by the Agent

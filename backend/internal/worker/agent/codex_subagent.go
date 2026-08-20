@@ -66,7 +66,8 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 		// Link the registry row to a child transcript when the index knows the
 		// thread (EnsureChildAgent is idempotent).
 		childAgentID := ""
-		if spawnSpan := a.collabSpanForThread(threadID); spawnSpan != "" {
+		spawnSpan := a.collabSpanForThread(threadID)
+		if spawnSpan != "" {
 			var err error
 			childAgentID, err = a.sink.EnsureChildAgent(spawnSpan, threadID, title)
 			if err != nil {
@@ -78,7 +79,10 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 				}
 			}
 		}
-		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		// upsertCollabChildRow reopens the row first when this walk reports the
+		// child still running after its row went final. The reopened row keeps a
+		// closer: this same walk closes it when the state goes final again.
+		if err := a.upsertCollabChildRow(bgtask.Upsert{
 			RowKey:        threadID,
 			Kind:          bgtask.KindSubagent,
 			ChildAgentID:  childAgentID,
@@ -103,6 +107,46 @@ func (a *CodexAgent) collabAgentsStatesToRegistry(collab *codexCollabAgentToolCa
 			}
 		}
 	}
+}
+
+// reviveFinishedCollabChild returns a collab child's row to Running when the
+// registry still holds it in a final status. A no-op for an absent row and for
+// one that is already active, so the common case costs one cache read. A row
+// past the display cap costs one indexed point lookup instead, and still
+// revives -- which is the point: a session's older collab children must reopen
+// the same way its newest one does.
+func (a *CodexAgent) reviveFinishedCollabChild(threadID string) {
+	_, status, ok, err := a.sink.LookupBackgroundTask(threadID)
+	if err != nil {
+		slog.Warn("codex collab registry lookup failed", "thread", threadID, "error", err)
+		return
+	}
+	if !ok || !status.IsFinished() {
+		return
+	}
+	if err := a.sink.ReviveBackgroundTask(threadID); err != nil {
+		slog.Warn("codex collab revive failed", "thread", threadID, "error", err)
+	}
+}
+
+// upsertCollabChildRow writes a collab child's registry row, reopening the row
+// first when this write reports the child ACTIVE again and the registry still
+// holds it finished.
+//
+// The proof and the write are ONE call, so a fourth writer cannot forget the
+// reopen -- which is the whole hazard, because the upsert deliberately absorbs
+// a non-final status against a final row. Three sites report a child active (a
+// child turn/started, a collab agentsStates walk, a subAgentActivity), and each
+// carried its own hand-placed copy of the same pair.
+//
+// The child INDEX is the proof: removeCollabChildIndex drops the entry at the
+// close, so a thread that is still known was re-registered by a later collab
+// call, which a replayed snapshot never does.
+func (a *CodexAgent) upsertCollabChildRow(up bgtask.Upsert) error {
+	if !up.Status.IsFinished() && a.knownCollabChild(up.RowKey) {
+		a.reviveFinishedCollabChild(up.RowKey)
+	}
+	return a.sink.UpsertBackgroundTask(up)
 }
 
 // handleCodexSubAgentActivity handles a v2 subAgentActivity item (registry
@@ -136,7 +180,10 @@ func (a *CodexAgent) handleCodexSubAgentActivity(item json.RawMessage) bool {
 	default:
 		status = bgtask.StatusRunning
 	}
-	if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
+	// upsertCollabChildRow reopens the row first. Without it an activity that
+	// follows a close lands its ActiveForm ("received input") on a row that still
+	// reads "completed" -- a finished subagent that just took a message.
+	if err := a.upsertCollabChildRow(bgtask.Upsert{
 		RowKey:     act.AgentThreadID,
 		Kind:       bgtask.KindSubagent,
 		Title:      a.collabChildTitle(act.AgentThreadID),

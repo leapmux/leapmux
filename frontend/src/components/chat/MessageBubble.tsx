@@ -7,6 +7,7 @@ import type { MessageUiKey } from './messageUiKeys'
 import type { ToolResultMeta } from './providers/registry'
 import type { AgentChatMessage } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
 
@@ -134,6 +135,14 @@ export interface MessageBubbleHost {
   /** Look up the parsed tool_result message by spanId (for tool_use → tool_result linking). */
   getToolResultParsedBySpanId?: (spanId: string) => ParsedMessageContent | undefined
   /**
+   * Resolve a background-task row key to its row, so a tool card that identifies
+   * an agent by id (Claude's SendMessage `to`) can link to that subagent's
+   * transcript.
+   */
+  resolveBackgroundTaskRow?: (rowKey: string) => BackgroundTaskItem | undefined
+  /** Open (or activate, or revive) a subagent's tab from its registry row. */
+  onOpenSubagent?: (item: BackgroundTaskItem) => void
+  /**
    * Live command stream for this message's span, as a thunk so the host
    * literal stays cheap to construct: callers do the lookup only when a
    * renderer reads it.
@@ -245,7 +254,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // Toolbar metadata for the current message — collapsibility, diff presence,
   // and a lazy copyable-content getter. Each provider's plugin decides which
   // messages produce metadata (Claude returns it for tool_result; Codex for
-  // terminal-state tool_use spans).
+  // final-state tool_use spans).
   const toolMeta = createMemo<ToolResultMeta | null>(() => {
     const plugin = providerFor(props.message.agentProvider)
     if (!plugin?.toolResultMeta)
@@ -291,6 +300,8 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get homeDir() { return props.homeDir },
     diffView,
     get onReply() { return wrappedOnReply() },
+    get resolveBackgroundTaskRow() { return props.host?.resolveBackgroundTaskRow },
+    get onOpenSubagent() { return props.host?.onOpenSubagent },
     get onCopyJson() { return copyJson },
     get jsonCopied() { return props.premeasureMode ? () => false : jsonCopied },
     get createdAt() { return props.message.createdAt },

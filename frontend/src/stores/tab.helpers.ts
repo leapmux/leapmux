@@ -284,7 +284,13 @@ export function descendantAgentTabs(tabs: readonly Tab[], agentId: string): Agen
  * always accept. Children accept only when their feeding provider can steer a
  * subagent conversation (acceptsMessages === true); a non-steerable child is a
  * read-only transcript. Used to exclude non-steerable children from MRU-agent
- * resolution (file mentions/quotes never target a disabled composer).
+ * resolution (file mentions/quotes never target a disabled composer), and to
+ * decide that a quote taken IN such a transcript goes to the nearest writable
+ * agent instead of into the composer beside it.
+ *
+ * This is the tab-state answer, not the last word: `EditorRef.writable` is what
+ * actually refuses a write, because the mounted editor is the one that knows and
+ * every route to a composer goes through that registry.
  */
 export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string, acceptsMessages?: boolean, agentProvider?: AgentProvider }): boolean {
   if (tab.type !== TabType.AGENT)

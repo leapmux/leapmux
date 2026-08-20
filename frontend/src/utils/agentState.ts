@@ -145,11 +145,17 @@ export function isAgentWorking(msgs: AgentChatMessage[]): boolean {
     // forever, so it likewise stops the scan as "not working".
     if (category.kind === 'result_divider' || category.kind === 'unsupported_provider')
       return false
-    // The subagent-end divider is a subagent transcript's closing boundary:
-    // the worker writes exactly one, when that subagent's registry row reaches a
-    // final status, and nothing follows it. `subagent_ended` is not a
-    // non-progress type, so without this guard the scan stops AT this message
-    // and reports a finished subagent as still working.
+    // The subagent-end divider closes one subagent RUN: the worker writes one
+    // each time that subagent's registry row reaches a final status.
+    // `subagent_ended` is not a non-progress type, so without this guard the
+    // scan stops AT this message and reports a finished subagent as still
+    // working.
+    //
+    // A transcript can hold several, because Claude restarts a finished subagent
+    // when the parent messages it. This scan runs BACKWARDS, so it meets a
+    // restarted run's messages before the divider that closed the previous run
+    // and reports the subagent working again -- which is why the revive needs no
+    // change here.
     if (getInnerMessageType(parsed) === NOTIFICATION_TYPE.SubagentEnded)
       return false
     // context_cleared in a notification-thread row means the agent
@@ -211,11 +217,20 @@ export function shouldShowThinkingIndicator(
   if (override !== null && override !== undefined)
     return override
   // A finished registry row outranks the MESSAGE HISTORY, but not live evidence
-  // of a turn in flight. A steerable subagent -- Codex re-registers a collab
-  // child on any later tool call -- can be sent a new message after its row went
-  // final, and the row never reopens. Placing this ahead of `streamingText` and
-  // the provider's own turn check meant that turn ran with no thinking indicator
-  // and, because the same predicate gates Interrupt, no way to cancel it.
+  // of a turn in flight, which is why this sits BELOW `streamingText` and the
+  // provider's own turn check rather than above them.
+  //
+  // The worker reopens the row for both providers now -- Claude when a parent
+  // messages a finished subagent, Codex when a later collab call re-registers a
+  // child that runs again -- so `work` returns to 'active' and the check at the
+  // top of this function answers first. But not INSTANTLY: the revive is a
+  // worker-side write that reaches the client asynchronously, so a restarted run
+  // can be streaming while `work` still reads 'finished'. The live checks above
+  // cover that window; putting this branch ahead of them left that run with no
+  // thinking indicator and, because the same predicate controls Interrupt, no
+  // way to cancel it.
+  //
+  // So this branch is the answer for a subagent that is genuinely over.
   if (work === 'finished')
     return false
   return isAgentWorking(msgs)

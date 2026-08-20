@@ -7,6 +7,7 @@ import type { ControlResponseDeriver } from './persistedControlResponse'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { AgentProvider } from '~/generated/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { TodoItem } from '~/stores/chatTodos'
 import type { CommandStreamSegment } from '~/stores/chatTypes'
 import Brain from 'lucide-solid/icons/brain'
@@ -128,6 +129,18 @@ export interface RenderContext {
    * scrolled in (see createWorkerPriorityGate).
    */
   rowOffscreen?: () => boolean
+  /**
+   * Resolve a provider registry row key to its background-task row, so a tool
+   * card that identifies an agent by id can link to that subagent's transcript.
+   *
+   * The key is `BackgroundTaskItem.rowKey` (the proto item calls it `id`) — the
+   * same string Claude's SendMessage carries in `to`. Returns undefined when the
+   * key identifies no row of this root, which is the answer for every recipient
+   * outside this session's subagents.
+   */
+  resolveBackgroundTaskRow?: (rowKey: string) => BackgroundTaskItem | undefined
+  /** Open (or activate, or revive) a subagent's tab from its registry row. */
+  onOpenSubagent?: (item: BackgroundTaskItem) => void
 }
 
 export interface MessageContentRenderer {

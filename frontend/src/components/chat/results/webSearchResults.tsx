@@ -10,10 +10,10 @@ import { clippedText } from '~/styles/shared.css'
 import { getToolResultExpanded, renderMarkdownForContext } from '../messageRenderers'
 import {
   toolMessage,
+  toolMetaRow,
   toolResultCollapsed,
   toolResultContent,
   toolResultPrompt,
-  webSearchLink,
   webSearchLinkDomain,
   webSearchLinkList,
 } from '../toolStyles.css'
@@ -45,7 +45,7 @@ export function WebSearchResultsBody(props: {
         <div class={`${webSearchLinkList}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
           <For each={displayLinks()}>
             {link => (
-              <div class={webSearchLink}>
+              <div class={toolMetaRow}>
                 {/* The raw style plus a hand-built `Tooltip`, not `ClippedText`:
                     the label has to hold the <a>, and `ClippedText` renders a
                     plain string. The clip must stay on the SPAN, because an

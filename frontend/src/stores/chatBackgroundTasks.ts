@@ -216,6 +216,20 @@ export function chipTasksFor(
 }
 
 /**
+ * Whether this row owns a subagent transcript that a click can open. A shell row
+ * owns none, and a subagent whose provider never linked one owns none either.
+ * Shared, so the Background tasks list and the SendMessage card cannot disagree
+ * about which rows are a link.
+ *
+ * The row property only. Whether the HOST supplied an open handler is the call
+ * site's own question, and folding it in here would make a pure registry
+ * predicate depend on a component's props.
+ */
+export function opensSubagentTranscript(item: BackgroundTaskItem): boolean {
+  return item.kind === 'subagent' && !!item.childAgentId
+}
+
+/**
  * What the registry says about a ROOT agent's work.
  *
  * Never `finished`: a root with no running subagent may still be mid-turn on

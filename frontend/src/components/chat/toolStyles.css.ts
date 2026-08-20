@@ -253,15 +253,6 @@ export const webSearchLinkList = style({
   gap: '2px',
 })
 
-export const webSearchLink = style({
-  display: 'flex',
-  alignItems: 'baseline',
-  gap: 'var(--space-2)',
-  fontSize: 'var(--text-8)',
-  lineHeight: 1.5,
-  overflow: 'hidden',
-})
-
 export const webSearchLinkDomain = style({
   color: 'var(--muted-foreground)',
   fontSize: 'var(--text-9)',
@@ -295,4 +286,66 @@ export const mcpImageRow = style({
   gap: 'var(--space-1)',
   marginTop: 'var(--space-1)',
   marginBottom: 'var(--space-1)',
+})
+
+// The SendMessage card's recipient, when it resolves to a subagent tab.
+//
+// `all: unset` first, because Oat's base layer paints every `button` as a solid
+// primary pill -- inline-flex, 8px/16px padding, a border and a radius -- and a
+// class that sets only colour leaves all of it standing. Without the reset the
+// recipient rendered as a filled button inside the one-line tool header, and the
+// row changed height the moment the registry hydrated and turned the plain span
+// into that button.
+export const toolRecipientLink = style([{ all: 'unset' }, clippedText, {
+  // `all: unset` is its own composed layer, FIRST, so the clipping and the
+  // colours below survive it rather than being reset by it.
+  cursor: 'pointer',
+  color: 'var(--primary)',
+  textDecoration: 'underline',
+  textUnderlineOffset: '2px',
+  selectors: {
+    '&:hover': { color: 'rgb(from var(--primary) r g b / 0.8)' },
+  },
+}])
+
+// A label/value list for a tool result's structured fields (the Agent card's
+// agent id, model, output file). The label is muted and does not shrink, so the
+// values line up while a long path is the part that wraps.
+export const toolMetaList = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-1)',
+  marginTop: 'var(--space-1)',
+  marginBottom: 'var(--space-1)',
+})
+
+/**
+ * One "label: value" line. Shared by the Agent result card's meta list and by
+ * the WebSearch link rows, which are the same primitive: a baseline-aligned flex
+ * row that clips. The role difference between the two lives entirely on the
+ * CHILDREN -- WebSearch puts the muted non-shrinking part on the right (the
+ * domain), the Agent card on the left (the label) -- so the row itself carries
+ * no property either renderer owns.
+ */
+export const toolMetaRow = style({
+  display: 'flex',
+  alignItems: 'baseline',
+  gap: 'var(--space-2)',
+  fontSize: 'var(--text-8)',
+  lineHeight: 1.5,
+  overflow: 'hidden',
+})
+
+export const toolMetaLabel = style({
+  color: 'var(--muted-foreground)',
+  flexShrink: 0,
+  whiteSpace: 'nowrap',
+})
+
+// The value half. `minWidth: 0` is what lets a long path actually wrap inside
+// the flex row instead of forcing the row wider than the card.
+export const toolMetaValue = style({
+  ...codeTypography,
+  ...codeWrap,
+  minWidth: 0,
 })
