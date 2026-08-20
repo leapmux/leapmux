@@ -163,12 +163,6 @@ export function useShortcuts(props: UseShortcutsProps): void {
   cmd('app.openPreferences', 'Open Preferences', () => {
     openPreferences('appearance')
   }, 'App')
-  cmd('dialog.close', 'Close Dialog', () => {
-    const dialogs = [...document.querySelectorAll('dialog[open]')]
-    const last = dialogs.at(-1) as HTMLDialogElement | undefined
-    if (last && !last.hasAttribute('data-busy'))
-      last.close()
-  }, 'App')
 
   cmd('app.openInExternalEditor', 'Open in External Editor', async () => {
     const dir = getCurrentTabContext().workingDir

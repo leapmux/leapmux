@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
+import { motion } from '../../src/styles/tokens'
 import { colorAlpha } from '../../src/test-support/color'
 import { expect, test } from './fixtures'
 import { getBrowserPrefValue, loginViaToken, openPreferencesDialog, pickTheme, resolvedColor } from './helpers/ui'
@@ -441,6 +442,37 @@ test.describe('Theme picker', () => {
     })
     expect(item?.role, 'ArrowDown did not land on a menu item').toMatch(/^menuitem/)
     expect(item?.outline, 'the focused menu item draws no ring').not.toBe('none')
+  })
+
+  // One Escape dismisses ONE layer, innermost first -- the WAI-ARIA menu
+  // pattern. The menu is the layer above the dialog, so the first press takes
+  // the menu and leaves the dialog; only the second press takes the dialog.
+  //
+  // Chromium is required. happy-dom has no `showModal`, no top layer and no
+  // native popover light-dismiss, so a unit test passes on the broken app.
+  test('dismisses the menu on the first Escape and the dialog on the second', async ({ page, leapmuxServer }) => {
+    const { trigger, menu } = await openThemeMenu(page, leapmuxServer.adminToken)
+    const dialog = page.getByRole('dialog', { name: 'Preferences' })
+    await trigger.click()
+    await expect(menu).toBeVisible()
+
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+
+    // `Dialog` defers its unmount by `motion.fast` ms so the fade-out can play,
+    // so a bare visibility check here also passes on a dialog that IS closing.
+    // Outlast that window before reading the dialog.
+    await page.waitForTimeout(motion.fast * 3)
+    await expect(dialog, 'the first Escape took the dialog as well as the menu').toBeVisible()
+
+    // The dialog is still live, not merely still painted.
+    await trigger.click()
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+
+    await page.keyboard.press('Escape')
+    await expect(dialog, 'the second Escape left the dialog open').toBeHidden()
   })
 
   test('turns the code block opaque when the syntax theme opposes the app', async ({ page, leapmuxServer }) => {

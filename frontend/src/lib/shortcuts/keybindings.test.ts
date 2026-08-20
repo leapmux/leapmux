@@ -13,7 +13,7 @@ const DEFAULTS: Keybinding[] = [
   { key: '$mod+n', command: 'app.newAgent', when: '!dialogOpen' },
   { key: '$mod+t', command: 'app.newTerminal', when: '!dialogOpen' },
   { key: '$mod+w', command: 'app.closeActiveTab' },
-  { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },
+  { key: '$mod+Shift+e', command: 'app.openInExternalEditor', when: 'isDesktop' },
   { key: '$mod+Shift+BracketLeft', command: 'app.toggleLeftSidebar' },
 ]
 
@@ -131,6 +131,43 @@ describe('mergeKeybindings', () => {
     mergeKeybindings(DEFAULTS, [{ key: '$mod+Shift+a', command: 'app.newAgent' }])
     expect(DEFAULTS).toEqual(original)
   })
+
+  it('drops an override that binds the reserved Escape key', () => {
+    const overrides: UserKeybindingOverride[] = [
+      { key: 'Escape', command: 'app.newAgent' },
+    ]
+    const result = mergeKeybindings(DEFAULTS, overrides)
+    expect(result.some(b => b.key === 'Escape')).toBe(false)
+    // The command keeps its default rather than losing its binding, so one
+    // bad line in the hand-edited JSON costs the user that line alone.
+    expect(result.find(b => b.command === 'app.newAgent')?.key).toBe('$mod+n')
+  })
+
+  it('keeps the other overrides for a command whose Escape entry is dropped', () => {
+    const overrides: UserKeybindingOverride[] = [
+      { key: 'Escape', command: 'app.newAgent' },
+      { key: '$mod+Shift+a', command: 'app.newAgent' },
+    ]
+    const result = mergeKeybindings(DEFAULTS, overrides)
+    const newAgent = result.filter(b => b.command === 'app.newAgent')
+    expect(newAgent.map(b => b.key)).toEqual(['$mod+Shift+a'])
+  })
+
+  it('reserves the bare key only, so a chord that contains Escape survives', () => {
+    // Shift+Escape makes no close request, so it displaces no layer.
+    const overrides: UserKeybindingOverride[] = [
+      { key: 'Shift+Escape', command: 'app.newAgent' },
+    ]
+    const result = mergeKeybindings(DEFAULTS, overrides)
+    expect(result.find(b => b.command === 'app.newAgent')?.key).toBe('Shift+Escape')
+  })
+
+  it('still unbinds a command through an empty-key override', () => {
+    // The empty key is not reserved: the reserved-key skip must not swallow
+    // the one override shape that means "remove this binding".
+    const result = mergeKeybindings(DEFAULTS, [{ key: '', command: 'app.newAgent' }])
+    expect(result.some(b => b.command === 'app.newAgent')).toBe(false)
+  })
 })
 
 describe('groupBindings', () => {
@@ -152,28 +189,28 @@ describe('groupBindings', () => {
 describe('resolve', () => {
   it('returns first matching command', () => {
     const bindings: Keybinding[] = [
-      { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },
-      { key: 'Escape', command: 'app.blur' },
+      { key: '$mod+w', command: 'app.closeActiveTab', when: 'dialogOpen' },
+      { key: '$mod+w', command: 'app.blur' },
     ]
     setContext('dialogOpen', true)
-    expect(resolve(bindings, 'Escape')).toBe('dialog.close')
+    expect(resolve(bindings, '$mod+w')).toBe('app.closeActiveTab')
   })
 
   it('skips bindings with failing when clause', () => {
     const bindings: Keybinding[] = [
-      { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },
-      { key: 'Escape', command: 'app.blur' },
+      { key: '$mod+w', command: 'app.closeActiveTab', when: 'dialogOpen' },
+      { key: '$mod+w', command: 'app.blur' },
     ]
     setContext('dialogOpen', false)
-    expect(resolve(bindings, 'Escape')).toBe('app.blur')
+    expect(resolve(bindings, '$mod+w')).toBe('app.blur')
   })
 
   it('returns null when no binding matches', () => {
     const bindings: Keybinding[] = [
-      { key: 'Escape', command: 'dialog.close', when: 'dialogOpen' },
+      { key: '$mod+w', command: 'app.closeActiveTab', when: 'dialogOpen' },
     ]
     setContext('dialogOpen', false)
-    expect(resolve(bindings, 'Escape')).toBeNull()
+    expect(resolve(bindings, '$mod+w')).toBeNull()
   })
 
   it('returns command when no when clause is set', () => {
@@ -201,10 +238,14 @@ describe('resolve', () => {
 
   it('still suppresses other plain special keys when input is focused', () => {
     const bindings: Keybinding[] = [
-      { key: 'Escape', command: 'app.example' },
+      { key: 'Home', command: 'app.example' },
     ]
     setContext('inputFocused', true)
-    expect(resolve(bindings, 'Escape')).toBeNull()
+    expect(resolve(bindings, 'Home')).toBeNull()
+    // The same binding fires once the caret leaves the input, so the null
+    // above is the suppression and not an absent binding.
+    setContext('inputFocused', false)
+    expect(resolve(bindings, 'Home')).toBe('app.example')
   })
 })
 

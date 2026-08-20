@@ -266,6 +266,11 @@ export const StringListControl: Component<StringListControlProps> = (props) => {
                           commitEdit(i())
                         }
                         else if (e.key === 'Escape') {
+                          // Consume it, the way `PreferencesSearch` does. An
+                          // Escape left unhandled becomes a close request, and
+                          // that request closes the Preferences dialog around
+                          // the edit the user meant to cancel.
+                          e.preventDefault()
                           cancelEdit()
                         }
                       }}
